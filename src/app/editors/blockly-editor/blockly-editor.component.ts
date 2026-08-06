@@ -34,6 +34,7 @@ import { MissingLibInfo, PasteInstallDialogComponent } from './components/paste-
 import { Subscription } from 'rxjs';
 import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
 import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
+import { projectResourceGc } from './services/project-resource-gc.service';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
 import { ProjectDataError } from '../../services/project-data/project-data.types';
 
@@ -372,6 +373,16 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     await this.waitForNextFrame();
     this.blocklyService.loadProjectDocument(projectDocument, false);
+    if (!usedBoardTemplateAbi) {
+      try {
+        const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
+        if (cleanup.deleted.length > 0) {
+          console.info(`[ProjectResourceGC] Removed ${cleanup.deleted.length} unreferenced project resource(s).`);
+        }
+      } catch (error) {
+        console.warn('[ProjectResourceGC] Resource cleanup was skipped:', error);
+      }
+    }
     if (!usedBoardTemplateAbi && this._projectService.syncUsedLibraryManifest(projectPath, projectDocument)) {
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
       this.applyProjectPackageJson(packageJson);

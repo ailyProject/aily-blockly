@@ -192,6 +192,37 @@
             "LIB_MANAGER_TITLE": "庫管理器",
             "LIB_MANAGER_DESC": "點擊這裡打開庫管理器，可以安裝、移除各種功能擴展庫，為你的項目添加更多積木。"
         },
+        "AUDIO": {
+            "BUTTON_UPLOAD": "上傳",
+            "BUTTON_CLEAR": "清除",
+            "BUTTON_PLAY": "播放選取範圍",
+            "BUTTON_STOP": "停止播放",
+            "UPLOAD_TOOLTIP": "選擇瀏覽器支援解碼的音訊檔案",
+            "LABEL_SAMPLE_RATE": "採樣率",
+            "LABEL_CHANNELS": "聲道",
+            "LABEL_BIT_RATE": "位元率",
+            "LABEL_MONO": "單聲道",
+            "LABEL_STEREO": "立體聲",
+            "LABEL_START": "開始",
+            "LABEL_END": "結束",
+            "EMPTY": "尚未上傳音訊",
+            "STATUS_READING": "正在讀取 {{name}}...",
+            "STATUS_DECODING": "正在解碼 {{name}}...",
+            "STATUS_ENCODING": "正在編碼 MP3... {{progress}}%",
+            "STATUS_INFO": "{{name}} | {{duration}} | {{sampleRate}} Hz | {{channels}} 聲道 | {{bitRate}} kbps | {{size}}",
+            "ERROR_FILE_SIZE": "檔案大小不能超過 {{maxSize}}，目前檔案為 {{currentSize}}",
+            "ERROR_DECODE": "瀏覽器無法解碼此音訊檔案",
+            "ERROR_ENCODE": "MP3 編碼失敗",
+            "ERROR_LOAD": "音訊檔案載入失敗：{{message}}",
+            "ERROR_PROJECT_PATH_MISSING": "找不到目前的項目資料夾",
+            "ERROR_FS_UNAVAILABLE": "檔案系統 API 無法使用，無法讀寫音訊檔案",
+            "ERROR_FILE_MISSING": "音訊檔案不存在：{{path}}",
+            "WORKER_ERROR_INVALID_PCM": "解碼後的 PCM 資料無效",
+            "WORKER_ERROR_DURATION_EXCEEDED": "音訊長度不能超過 30 分鐘",
+            "WORKER_ERROR_INVALID_SETTINGS": "MP3 編碼參數無效",
+            "WORKER_ERROR_EMPTY_SELECTION": "請選擇非空的音訊範圍",
+            "WORKER_ERROR_ENCODE_FAILED": "MP3 編碼器未傳回資料"
+        },
         "TFTESPI_ANIMATION": {
             "UPLOAD_TOOLTIP": "支援格式：MP4、GIF",
             "LABEL_COLOR_MODE": "色彩",
@@ -1012,6 +1043,13 @@
         "LOCK_FOCUS_OTHER": "切換到已開啟的視窗",
         "LOCK_FORCE_OPEN": "仍要開啟",
         "LOCK_ACQUIRE_FAILED": "無法取得專案鎖，請重試"
+    },
+    "SUBAPP": {
+        "BUSY_TITLE": "子應用正在使用中",
+        "BUSY_MESSAGE": "相關進程正在使用安裝目錄，無法卸載或更新。是否強制關閉這些進程並繼續？",
+        "BUSY_UNKNOWN_HOLDERS": "未能識別具體進程，仍會嘗試停止相關子應用進程。",
+        "FORCE_CLOSE_CONTINUE": "強制關閉並繼續",
+        "CANCEL": "取消"
     },
     "LIBRARY_PUBLISH": {
         "RELOAD_TITLE": "重新載入目前專案",

@@ -199,6 +199,7 @@
     "@blockly/block-dynamic-connection": "^0.7.16",
     "@blockly/field-colour-hsv-sliders": "^5.0.19",
     "@blockly/workspace-minimap": "^0.2.16",
+    "@breezystack/lamejs": "^1.2.7",
     "@ctrl/tinycolor": "^4.1.0",
     "@lydell/node-pty": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.25.1",

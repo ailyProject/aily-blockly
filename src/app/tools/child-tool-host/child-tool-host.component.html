@@ -96,14 +96,21 @@
       <iframe [src]="iframeSrc" (load)="onFrameLoad($event)"></iframe>
       }
 
-      @if (isLoading) {
+      @if (subappUpdateInProgress) {
+      <div class="host-overlay loading" role="status" aria-live="polite" aria-busy="true">
+        <div class="host-loading-spinner" aria-hidden="true"></div>
+        <div class="host-loading-text">
+          {{ 'APP_STORE.UPDATING_IN_PROGRESS' | translate:{ name: (titleKey | translate), progress: subappUpdateProgress } }}
+        </div>
+      </div>
+      } @else if (isLoading) {
       <div class="host-overlay loading" role="status" aria-live="polite" aria-busy="true">
         <div class="host-loading-spinner" aria-hidden="true"></div>
         <div class="host-loading-text">{{ titleKey | translate }}加载中</div>
       </div>
       }
 
-      @if (hostStatus === 'error') {
+      @if (!subappUpdateInProgress && hostStatus === 'error') {
       <div class="host-overlay error">
         <strong>{{ uiHealthFailed ? childUiUnavailableTitle : backendFailedText }}</strong>
         <span>{{ errorMessage }}</span>

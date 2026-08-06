@@ -225,6 +225,37 @@
             "LIB_MANAGER_TITLE": "库管理器",
             "LIB_MANAGER_DESC": "点击这里打开库管理器，可以安装、卸载各种功能扩展库，为您的项目添加更多积木块。"
         },
+        "AUDIO": {
+            "BUTTON_UPLOAD": "上传",
+            "BUTTON_CLEAR": "清空",
+            "BUTTON_PLAY": "播放选区",
+            "BUTTON_STOP": "停止播放",
+            "UPLOAD_TOOLTIP": "选择浏览器支持解码的音频文件",
+            "LABEL_SAMPLE_RATE": "采样率",
+            "LABEL_CHANNELS": "声道",
+            "LABEL_BIT_RATE": "码率",
+            "LABEL_MONO": "单声道",
+            "LABEL_STEREO": "双声道",
+            "LABEL_START": "开始",
+            "LABEL_END": "结束",
+            "EMPTY": "未上传音频",
+            "STATUS_READING": "正在读取 {{name}}...",
+            "STATUS_DECODING": "正在解码 {{name}}...",
+            "STATUS_ENCODING": "正在编码 MP3... {{progress}}%",
+            "STATUS_INFO": "{{name}} | {{duration}} | {{sampleRate}} Hz | {{channels}} 声道 | {{bitRate}} kbps | {{size}}",
+            "ERROR_FILE_SIZE": "文件大小不能超过 {{maxSize}}，当前文件为 {{currentSize}}",
+            "ERROR_DECODE": "浏览器无法解码此音频文件",
+            "ERROR_ENCODE": "MP3 编码失败",
+            "ERROR_LOAD": "音频文件加载失败：{{message}}",
+            "ERROR_PROJECT_PATH_MISSING": "未找到当前项目目录",
+            "ERROR_FS_UNAVAILABLE": "文件系统接口不可用，无法读写音频文件",
+            "ERROR_FILE_MISSING": "音频文件不存在：{{path}}",
+            "WORKER_ERROR_INVALID_PCM": "解码后的 PCM 数据无效",
+            "WORKER_ERROR_DURATION_EXCEEDED": "音频时长不能超过 30 分钟",
+            "WORKER_ERROR_INVALID_SETTINGS": "MP3 编码参数无效",
+            "WORKER_ERROR_EMPTY_SELECTION": "请选择非空的音频区间",
+            "WORKER_ERROR_ENCODE_FAILED": "MP3 编码器未返回数据"
+        },
         "TFTESPI_ANIMATION": {
             "UPLOAD_TOOLTIP": "支持格式：MP4、GIF",
             "LABEL_COLOR_MODE": "色彩",
@@ -1089,6 +1120,13 @@
         "LOCK_FOCUS_OTHER": "切换到已打开的窗口",
         "LOCK_FORCE_OPEN": "仍要打开",
         "LOCK_ACQUIRE_FAILED": "无法获取项目锁，请重试"
+    },
+    "SUBAPP": {
+        "BUSY_TITLE": "子应用正在使用中",
+        "BUSY_MESSAGE": "相关进程正在使用安装目录，无法卸载或更新。是否强制关闭这些进程并继续？",
+        "BUSY_UNKNOWN_HOLDERS": "未能识别具体进程，仍会尝试停止相关子应用进程。",
+        "FORCE_CLOSE_CONTINUE": "强制关闭并继续",
+        "CANCEL": "取消"
     },
     "LIBRARY_PUBLISH": {
         "RELOAD_TITLE": "重新加载当前项目",

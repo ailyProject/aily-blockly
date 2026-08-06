@@ -65,6 +65,7 @@ import './custom-field/field-u8g2-bitmap';
 import { setU8g2AnimationFieldTranslator } from './custom-field/field-u8g2-animation';
 import { setTftEsPiAnimationFieldTranslator } from './custom-field/field-tftespi-animation';
 import { setTftEsPiImageFieldTranslator } from './custom-field/field-tftespi-image';
+import { setAudioFieldTranslator } from './custom-field/field-audio';
 import { registerMediaFieldEditorStyles } from './custom-field/field-media-editor-style';
 import './custom-field/field-image';
 import './custom-field/field-image-preview';
@@ -2106,6 +2107,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     setU8g2AnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiAnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiImageFieldTranslator((key, params) => this.translateService.instant(key, params));
+    setAudioFieldTranslator((key, params) => this.translateService.instant(key, params));
     this.queueProjectBreakpointMarkerSync();
 
     // 如果工作区已存在，刷新工具箱以应用新语言

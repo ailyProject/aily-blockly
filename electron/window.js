@@ -379,6 +379,57 @@ async function restartChildToolSession(toolId) {
     return { success: true };
 }
 
+function resolveChildToolIdsForCatalogId(catalogId) {
+    const id = sanitizeChildToolId(catalogId);
+    if (!id) return [];
+    try {
+        const { TOOL_ID_ALIASES } = require('./subapp-manager');
+        const aliased = TOOL_ID_ALIASES[id];
+        return Array.from(new Set([id, aliased].filter(Boolean)));
+    } catch (_) {
+        return [id];
+    }
+}
+
+function listChildToolHoldersForCatalogId(catalogId) {
+    const toolIds = resolveChildToolIdsForCatalogId(catalogId);
+    const holders = [];
+    for (const toolId of toolIds) {
+        const session = childToolSessions.get(toolId);
+        if (!session) continue;
+        const pid = Number.isInteger(session?.hostInfo?.pid)
+            ? session.hostInfo.pid
+            : null;
+        holders.push({
+            pid,
+            name: toolId,
+            toolId,
+            source: 'child-tool-session',
+        });
+    }
+    return holders;
+}
+
+async function forceStopChildToolByCatalogId(catalogId) {
+    const toolIds = resolveChildToolIdsForCatalogId(catalogId);
+    let stopped = false;
+    for (const toolId of toolIds) {
+        const session = childToolSessions.get(toolId);
+        if (!session) continue;
+        cancelChildToolRelease(session);
+        await stopChildToolSessionProcess(session);
+        if (session.streamId) {
+            pendingChildToolProcessMessages.delete(session.streamId);
+        }
+        childToolSessions.delete(toolId);
+        stopped = true;
+    }
+    if (stopped) {
+        broadcastChildToolSessionStateChanged();
+    }
+    return { success: stopped, reason: stopped ? undefined : 'not-found' };
+}
+
 function isChildToolSessionAlive(session) {
     if (!session) {
         return false;
@@ -1712,4 +1763,6 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 module.exports = {
     registerWindowHandlers,
+    forceStopChildToolByCatalogId,
+    listChildToolHoldersForCatalogId,
 };

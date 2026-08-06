@@ -924,7 +924,11 @@ function handleProtocol(url) {
 
 // ipc handlers模块
 const { registerTerminalHandlers, killAllTerminals, getActiveTerminals } = require("./terminal");
-const { registerWindowHandlers } = require("./window");
+const {
+  registerWindowHandlers,
+  forceStopChildToolByCatalogId,
+  listChildToolHoldersForCatalogId,
+} = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
@@ -2780,7 +2784,10 @@ function createWindow() {
   registerNotificationHandlers(mainWindow);
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
-  registerSubappManagerHandlers(() => mainWindow);
+  registerSubappManagerHandlers(() => mainWindow, {
+    forceStopChildToolByCatalogId,
+    listChildToolHoldersForCatalogId,
+  });
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);
   simulatorGateway.registerHandlers({

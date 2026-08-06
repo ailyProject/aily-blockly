@@ -51,6 +51,8 @@ export interface SubappActivity {
   lastCompletedAt?: number;
   lastToolCallId?: string;
   lastError?: string;
+  /** True after Dock auto-open has fired once for this session+tool (first-active). */
+  dockAutoOpened?: boolean;
   presentation?: SubappActivityPresentation;
   summary?: SubappActivitySummary;
 }
@@ -146,9 +148,12 @@ export class SubappActivityService {
     const presentation = input.presentation
       ? this.copyPresentation(input.presentation)
       : this.copyPresentation(current?.presentation);
+    // first-active = first Dock auto-open for this session+tool, not first tool call.
+    // Earlier read-only calls (e.g. serial_ports_list) create an activity without Dock
+    // presentation; the later open/session action must still expand the left Dock promptly.
     const shouldAutoOpen = presentation?.mode === 'dock' && (
       presentation.autoOpen === 'always'
-      || (presentation.autoOpen === 'first-active' && !current)
+      || (presentation.autoOpen === 'first-active' && !current?.dockAutoOpened)
     );
     const next: SubappActivity = {
       sessionId,
@@ -170,6 +175,7 @@ export class SubappActivityService {
           ? { lastToolCallId: current.lastToolCallId }
           : {}),
       ...(current?.lastError ? { lastError: current.lastError } : {}),
+      ...(shouldAutoOpen || current?.dockAutoOpened ? { dockAutoOpened: true } : {}),
       ...(presentation ? { presentation } : {}),
       ...(current?.summary ? { summary: { ...current.summary } } : {}),
     };
@@ -208,6 +214,7 @@ export class SubappActivityService {
       && current.presentation.autoOpen === 'on-error'
     ) {
       next.surfaceState = 'expanded';
+      next.dockAutoOpened = true;
     }
     if (error) {
       next.lastError = error;

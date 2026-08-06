@@ -14,6 +14,10 @@ export interface ChildToolHostInfo {
   port?: number;
   pid?: number;
   apiServer?: string;
+  /** Package-relative Node entry used to start this Runtime. */
+  entry?: string;
+  /** Absolute package root used as cwd for this Runtime. */
+  packagePath?: string;
 }
 
 export type ChildToolRuntimeState = 'unknown' | 'starting' | 'ready' | 'stopped' | 'error';
@@ -393,12 +397,63 @@ export class ChildToolProcessService implements OnDestroy {
       return null;
     }
 
+    if (await this.sharedSessionUsesStaleEntry(config, hostInfo, String(sharedSession.streamId || ''))) {
+      this.log(config, 'discard shared session with stale package entry', {
+        expectedEntry: config.entry || 'index.js',
+        packagePath: config.packagePath || null,
+        streamId: String(sharedSession.streamId || ''),
+      });
+      await window['childToolSession']?.restart?.(config.id);
+      return null;
+    }
+
     session.streamId = String(sharedSession.streamId || '');
     session.hostInfo = hostInfo;
     session.running = true;
     this.publishRuntimeState(config.id, 'ready', session);
     this.log(config, 'shared session acquired', this.sanitizeHostInfo(hostInfo));
     return hostInfo;
+  }
+
+  private async sharedSessionUsesStaleEntry(
+    config: ChildToolConfig,
+    hostInfo: ChildToolHostInfo,
+    streamId: string,
+  ): Promise<boolean> {
+    const expectedEntry = String(config.entry || 'index.js').replace(/\\/g, '/');
+    const recordedEntry = String(hostInfo.entry || '').replace(/\\/g, '/');
+    if (recordedEntry && recordedEntry !== expectedEntry) {
+      return true;
+    }
+
+    const recordedPackagePath = String(hostInfo.packagePath || '').replace(/\\/g, '/');
+    const expectedPackagePath = String(config.packagePath || '').replace(/\\/g, '/');
+    if (recordedPackagePath && expectedPackagePath && recordedPackagePath !== expectedPackagePath) {
+      return true;
+    }
+
+    try {
+      const listed = await window['childToolSession']?.list?.();
+      const rows = Array.isArray(listed) ? listed : [];
+      const row = rows.find((item: any) => String(item?.toolId || '') === config.id
+        || String(item?.streamId || '') === streamId);
+      const command = String(row?.command || '').replace(/\\/g, '/');
+      if (!command) return false;
+      // Older persistent Runtimes were started as .../server/index.js before the
+      // package-root index.js supervisor entry. Reuse would keep a dead UI.
+      if (command.includes(`/${expectedEntry} `) || command.endsWith(`/${expectedEntry}`)) {
+        return false;
+      }
+      if (expectedEntry === 'index.js' && /\/server\/index\.js(?:\s|$)/.test(command)) {
+        return true;
+      }
+      if (expectedPackagePath && !command.includes(expectedPackagePath)) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
   }
 
   private async startServer(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
@@ -523,6 +578,8 @@ export class ChildToolProcessService implements OnDestroy {
       const registeredHostInfo: ChildToolHostInfo = {
         ...hostInfo,
         ...(hostApiServer ? { apiServer: hostApiServer } : {}),
+        entry: config.entry || 'index.js',
+        packagePath: projectPath,
       };
       session.hostInfo = registeredHostInfo;
       const registered = await window['childToolSession']?.register?.({

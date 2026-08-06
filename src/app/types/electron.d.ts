@@ -45,9 +45,9 @@ declare global {
       };
       subapps?: {
         list: (options?: { refresh?: boolean; locale?: string }) => Promise<any>;
-        install: (options: { id: string; locale?: string }) => Promise<any>;
-        update: (options: { id: string; locale?: string }) => Promise<any>;
-        uninstall: (options: { id: string; locale?: string }) => Promise<any>;
+        install: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        update: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        uninstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         onChanged: (callback: (payload: any) => void) => () => void;
         onProgress: (callback: (payload: {
           id: string;

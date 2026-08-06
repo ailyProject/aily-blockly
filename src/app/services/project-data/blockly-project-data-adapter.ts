@@ -364,11 +364,13 @@ function projectU8g2Animation(state: Record<string, any>, payload: unknown): unk
     width,
     height,
     fps,
-    frames: Array.from({ length: frameCount }, (_, index) => unpackMonochromeFrame(
-      bytes.subarray(index * frameLength, (index + 1) * frameLength),
-      width,
-      height,
-    )),
+    frames: frameCount === 0
+      ? [createEmptyMatrix(width, height, 0)]
+      : Array.from({ length: frameCount }, (_, index) => unpackMonochromeFrame(
+        bytes.subarray(index * frameLength, (index + 1) * frameLength),
+        width,
+        height,
+      )),
   };
 }
 

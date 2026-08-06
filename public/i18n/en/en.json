@@ -229,6 +229,37 @@
             "LIB_MANAGER_TITLE": "Library Manager",
             "LIB_MANAGER_DESC": "Manage external libraries here. You can add, remove, or update libraries for your project."
         },
+        "AUDIO": {
+            "BUTTON_UPLOAD": "Upload",
+            "BUTTON_CLEAR": "Clear",
+            "BUTTON_PLAY": "Play selection",
+            "BUTTON_STOP": "Stop playback",
+            "UPLOAD_TOOLTIP": "Select an audio file supported by the browser",
+            "LABEL_SAMPLE_RATE": "Sample rate",
+            "LABEL_CHANNELS": "Channels",
+            "LABEL_BIT_RATE": "Bit rate",
+            "LABEL_MONO": "Mono",
+            "LABEL_STEREO": "Stereo",
+            "LABEL_START": "Start",
+            "LABEL_END": "End",
+            "EMPTY": "No audio uploaded",
+            "STATUS_READING": "Reading {{name}}...",
+            "STATUS_DECODING": "Decoding {{name}}...",
+            "STATUS_ENCODING": "Encoding MP3... {{progress}}%",
+            "STATUS_INFO": "{{name}} | {{duration}} | {{sampleRate}} Hz | {{channels}} ch | {{bitRate}} kbps | {{size}}",
+            "ERROR_FILE_SIZE": "File size cannot exceed {{maxSize}}. Current file: {{currentSize}}",
+            "ERROR_DECODE": "The browser could not decode this audio file",
+            "ERROR_ENCODE": "MP3 encoding failed",
+            "ERROR_LOAD": "Audio file could not be loaded: {{message}}",
+            "ERROR_PROJECT_PATH_MISSING": "Current project folder was not found",
+            "ERROR_FS_UNAVAILABLE": "File system API is unavailable for audio files",
+            "ERROR_FILE_MISSING": "Audio file does not exist: {{path}}",
+            "WORKER_ERROR_INVALID_PCM": "The decoded PCM data is invalid",
+            "WORKER_ERROR_DURATION_EXCEEDED": "Audio duration cannot exceed 30 minutes",
+            "WORKER_ERROR_INVALID_SETTINGS": "The MP3 settings are invalid",
+            "WORKER_ERROR_EMPTY_SELECTION": "Select a non-empty audio range",
+            "WORKER_ERROR_ENCODE_FAILED": "The MP3 encoder returned no data"
+        },
         "TFTESPI_ANIMATION": {
             "UPLOAD_TOOLTIP": "Supported formats: MP4, GIF",
             "LABEL_COLOR_MODE": "Color",
@@ -1093,6 +1124,13 @@
         "LOCK_FOCUS_OTHER": "Bring to front",
         "LOCK_FORCE_OPEN": "Open anyway",
         "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
+    },
+    "SUBAPP": {
+        "BUSY_TITLE": "Subapp is in use",
+        "BUSY_MESSAGE": "Related processes are locking the install directory. Force close them to continue uninstall/update?",
+        "BUSY_UNKNOWN_HOLDERS": "No specific process was identified; related child-tool processes will still be stopped.",
+        "FORCE_CLOSE_CONTINUE": "Force close and continue",
+        "CANCEL": "Cancel"
     },
     "LIBRARY_PUBLISH": {
         "RELOAD_TITLE": "Reload current project",

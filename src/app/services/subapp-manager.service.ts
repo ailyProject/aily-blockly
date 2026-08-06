@@ -112,16 +112,16 @@ export class SubappManagerService implements OnDestroy {
     await this.load(force);
   }
 
-  install(id: string): Promise<void> {
-    return this.mutate('install', id);
+  install(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('install', id, options);
   }
 
-  update(id: string): Promise<void> {
-    return this.mutate('update', id);
+  update(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('update', id, options);
   }
 
-  uninstall(id: string): Promise<void> {
-    return this.mutate('uninstall', id);
+  uninstall(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('uninstall', id, options);
   }
 
   getCatalogApps(): AppItem[] {
@@ -178,7 +178,11 @@ export class SubappManagerService implements OnDestroy {
     }
   }
 
-  private async mutate(action: 'install' | 'update' | 'uninstall', id: string): Promise<void> {
+  private async mutate(
+    action: 'install' | 'update' | 'uninstall',
+    id: string,
+    options: { forceClose?: boolean } = {},
+  ): Promise<void> {
     const api = (window as any).electronAPI?.subapps;
     const operation = api?.[action];
     if (!operation) throw new Error('Subapp manager is unavailable outside the desktop app');
@@ -191,7 +195,11 @@ export class SubappManagerService implements OnDestroy {
       extractProgress: 0,
     });
     try {
-      const result = await operation({ id, locale: this.currentLocale() });
+      const result = await operation({
+        id,
+        locale: this.currentLocale(),
+        forceClose: options.forceClose === true,
+      });
       this.applyResult(result);
       this.progressSubject.next({
         id,

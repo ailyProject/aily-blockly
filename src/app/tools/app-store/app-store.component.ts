@@ -419,12 +419,14 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       if (action === 'uninstall') {
         this.uiService.closeTool(app.id);
       }
-      await this.subappManager[action](subapp.catalogId);
+      await this.runSubappMutationWithBusyRetry(action, app);
       this.pendingProgress = 100;
       this.message.success(this.translate.instant(`APP_STORE.${action.toUpperCase()}_SUCCESS`, { name: app.name }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
-      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+      if (!this.isBusyCancelledError(error)) {
+        const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+        this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+      }
     } finally {
       this.pendingCatalogId = '';
       this.pendingProgress = 0;
@@ -456,25 +458,46 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const wasActive = this.isSubappActive(app);
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
     let restartTarget: AppItem | null = null;
+    let forceClose = false;
+
+    if (wasActive) {
+      const confirmed = await this.confirmBusyForceClose(app, 'update');
+      if (!confirmed) return;
+      forceClose = true;
+      // 保持子应用界面打开，便于显示「正在更新」遮罩
+      this.uiService.openTool(app.id);
+    }
+
     this.pendingCatalogId = subapp.catalogId;
     this.pendingProgress = 1;
     this.cdr.markForCheck();
     try {
-      await this.subappManager.update(subapp.catalogId);
+      await this.childToolProcess.stop(app.id);
+      if (!wasActive) {
+        this.uiService.closeTool(app.id);
+      }
+      await this.runSubappMutationWithBusyRetry('update', app, { forceClose });
       this.pendingProgress = 100;
       const updatedApp = this.subappManager.getCatalogApps()
         .find((item) => item.subapp?.catalogId === subapp.catalogId);
       const updatedInstalledVersion = String(updatedApp?.subapp?.installedVersion || '').trim();
-      if (wasActive
-        && updatedApp?.subapp?.installed
+      if (wasActive && updatedApp?.subapp?.installed) {
+        // 使用中强制更新：完成后自动重启服务（不再弹二次确认）
+        restartTarget = updatedApp;
+      } else if (
+        updatedApp?.subapp?.installed
         && !!updatedInstalledVersion
-        && updatedInstalledVersion !== previousInstalledVersion) {
+        && updatedInstalledVersion !== previousInstalledVersion
+        && this.isSubappActive(updatedApp)
+      ) {
         restartTarget = updatedApp;
       }
       this.message.success(this.translate.instant('APP_STORE.UPDATE_SUCCESS', { name: app.name }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
-      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+      if (!this.isBusyCancelledError(error)) {
+        const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+        this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+      }
     } finally {
       this.pendingCatalogId = '';
       this.pendingProgress = 0;
@@ -482,8 +505,76 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     if (restartTarget) {
-      this.confirmSubappRestart(restartTarget);
+      // 强制更新前已确认关闭进程，更新完成后自动重启，不再二次确认
+      await this.restartSubapp(restartTarget);
     }
+  }
+
+  private async runSubappMutationWithBusyRetry(
+    action: 'install' | 'update' | 'uninstall',
+    app: AppItem,
+    options: { forceClose?: boolean } = {},
+  ): Promise<void> {
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId) return;
+
+    try {
+      await this.subappManager[action](catalogId, { forceClose: options.forceClose === true });
+    } catch (error) {
+      if (options.forceClose || !this.isBusyForceRequiredError(error)) {
+        throw error;
+      }
+      const confirmed = await this.confirmBusyForceClose(app, action);
+      if (!confirmed) {
+        const cancelled = new Error(this.translate.instant('APP_STORE.BUSY_CANCELLED'));
+        (cancelled as Error & { code?: string }).code = 'EBUSY_CANCELLED';
+        throw cancelled;
+      }
+      if (action === 'update') {
+        this.uiService.openTool(app.id);
+      }
+      await this.childToolProcess.stop(app.id);
+      await this.subappManager[action](catalogId, { forceClose: true });
+    }
+  }
+
+  private confirmBusyForceClose(
+    app: AppItem,
+    action: 'install' | 'update' | 'uninstall' | string,
+  ): Promise<boolean> {
+    const actionLabel = action === 'uninstall'
+      ? this.translate.instant('APP_STORE.UNINSTALL')
+      : this.translate.instant('APP_STORE.UPDATE');
+    return new Promise((resolve) => {
+      this.modal.confirm({
+        nzClassName: 'subapp-service-confirm-modal',
+        nzTitle: this.translate.instant('APP_STORE.BUSY_TITLE'),
+        nzContent: this.translate.instant('APP_STORE.BUSY_MESSAGE', {
+          name: app.name,
+          action: actionLabel,
+        }),
+        nzOkText: this.translate.instant('APP_STORE.FORCE_CLOSE_CONTINUE'),
+        nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+        nzOkDanger: true,
+        nzMaskClosable: false,
+        nzOnOk: () => resolve(true),
+        nzOnCancel: () => resolve(false),
+      });
+    });
+  }
+
+  private isBusyForceRequiredError(error: unknown): boolean {
+    const err = error as { code?: string; requiresForceClose?: boolean; message?: string } | null;
+    if (!err) return false;
+    if (err.requiresForceClose === true || err.code === 'EBUSY') return true;
+    return /EBUSY|resource busy|被占用/i.test(String(err.message || ''));
+  }
+
+  private isBusyCancelledError(error: unknown): boolean {
+    const err = error as { code?: string; message?: string } | null;
+    if (!err) return false;
+    if (err.code === 'EBUSY_CANCELLED') return true;
+    return /已取消强制关闭|BUSY_CANCELLED/i.test(String(err.message || ''));
   }
 
   private async restartSubapp(app: AppItem): Promise<void> {
