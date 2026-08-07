@@ -163,7 +163,12 @@ export class SubappActivityService {
       toolName: this.normalizeText(input.toolName, 120) || current?.toolName || '',
       invocationState: 'running',
       runtimeState: current?.runtimeState === 'ready' ? 'ready' : 'starting',
-      surfaceState: shouldAutoOpen ? 'expanded' : current?.surfaceState || 'collapsed',
+      surfaceState:
+        presentation?.mode === 'window'
+          ? 'collapsed'
+          : shouldAutoOpen
+            ? 'expanded'
+            : current?.surfaceState || 'collapsed',
       invocationCount: (current?.invocationCount || 0) + 1,
       activeInvocationCount: (current?.activeInvocationCount || 0) + 1,
       firstUsedAt: current?.firstUsedAt || now,

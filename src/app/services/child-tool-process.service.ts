@@ -4,6 +4,7 @@ import { ConfigService } from './config.service';
 import { ProjectService } from './project.service';
 import { appendProjectLog, type ProjectLogLevel } from '../utils/project-log.utils';
 import { BehaviorSubject, distinctUntilChanged, map, type Observable } from 'rxjs';
+import { classifyRecordedChildToolRuntimeEntry } from './child-tool-runtime-entry';
 
 export interface ChildToolHostInfo {
   url: string;
@@ -422,15 +423,20 @@ export class ChildToolProcessService implements OnDestroy {
   ): Promise<boolean> {
     const expectedEntry = String(config.entry || 'index.js').replace(/\\/g, '/');
     const recordedEntry = String(hostInfo.entry || '').replace(/\\/g, '/');
-    if (recordedEntry && recordedEntry !== expectedEntry) {
-      return true;
-    }
-
     const recordedPackagePath = String(hostInfo.packagePath || '').replace(/\\/g, '/');
     const expectedPackagePath = String(config.packagePath || '').replace(/\\/g, '/');
-    if (recordedPackagePath && expectedPackagePath && recordedPackagePath !== expectedPackagePath) {
-      return true;
-    }
+    const recordedEntryState = classifyRecordedChildToolRuntimeEntry({
+      expectedEntry,
+      expectedPackagePath,
+      recordedEntry,
+      recordedPackagePath,
+    });
+    if (recordedEntryState === 'stale') return true;
+    // Modern registrations carry both canonical fields. Trust that metadata:
+    // Electron's process inventory may expose only `command: "node"`, without
+    // argv, so applying the legacy command-string fallback here would falsely
+    // restart a healthy shared Runtime every time another renderer attaches.
+    if (recordedEntryState === 'current') return false;
 
     try {
       const listed = await window['childToolSession']?.list?.();

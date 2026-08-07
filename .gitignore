@@ -84,6 +84,7 @@ child/aily-builder*
 !src/app/services/serial-port-selection.spec.ts
 !src/app/services/subapp-agent-presentation.spec.ts
 !src/app/services/aily-chat-tool-routing.spec.ts
+!src/app/editors/blockly-editor/components/dev-tool/dev-tool-drag-controller.spec.ts
 !src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts
 !src/app/tools/aily-chat/tools/blocklyEditorOperationQueue.spec.ts
 !src/app/tools/aily-chat/components/x-dialog/x-markdown-target-morph.spec.ts

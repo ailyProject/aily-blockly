@@ -131,6 +131,12 @@ export class MainUiAutomationService {
     return { ok: true, app: await this.describeChildApp(config, await this.readChildToolSessions()) };
   }
 
+  async isChildAppWindowOpen(toolId: string): Promise<boolean> {
+    const config = getChildToolConfig(String(toolId || '').trim());
+    if (!config) return false;
+    return (await this.readWindowState(this.routePath(config))).open === true;
+  }
+
   async openChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
     const mode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;

@@ -46,7 +46,6 @@
   align-items: center;
   gap: 6px;
   min-width: 32px;
-  max-width: 190px;
   height: 26px;
   padding: 0 8px 0 6px;
   border: 1px solid transparent;
@@ -111,32 +110,9 @@
 }
 
 .subapp-activity-title {
-  overflow: hidden;
+  flex: 0 0 auto;
   font-size: 12px;
-  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.subapp-activity-summary {
-  max-width: 92px;
-  overflow: hidden;
-  color: var(--aily-text-secondary);
-  font-family: Consolas, Monaco, monospace;
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0.82;
-}
-
-.subapp-activity-count {
-  min-width: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  color: var(--aily-text-secondary);
-  background: color-mix(in srgb, var(--aily-text-secondary) 14%, transparent);
-  font-size: 10px;
-  line-height: 16px;
-  text-align: center;
 }
 
 @keyframes subapp-activity-pulse {
