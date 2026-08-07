@@ -123,6 +123,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private subappActivitySubscription: Subscription | null = null;
   private configReloadSubscription: Subscription | null = null;
   private aiWritingStateSubscription: Subscription | null = null;
+  private authStateSubscription: Subscription | null = null;
   private subappCatalogSubscription: Subscription | null = null;
   private subappProgressSubscription: Subscription | null = null;
   private subappRestartRequired = false;
@@ -184,6 +185,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       if (!writing && !waitWriting && !this.ailyChatOperationActive) {
         this.clearAiOperationNotice();
       }
+    });
+    this.authStateSubscription = this.authService.isLoggedIn$.subscribe((authenticated) => {
+      this.penpalRemoteWindow?.postMessage({
+        type: 'aily-auth-complete',
+        authenticated,
+      }, '*');
     });
     this.lastKnownApiServer = this.normalizeApiServer(this.configService.getCurrentApiServer());
     this.configReloadSubscription = this.configService.configReloaded$.subscribe(() => {
@@ -333,6 +340,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.configReloadSubscription = null;
     this.aiWritingStateSubscription?.unsubscribe();
     this.aiWritingStateSubscription = null;
+    this.authStateSubscription?.unsubscribe();
+    this.authStateSubscription = null;
     this.subappCatalogSubscription?.unsubscribe();
     this.subappCatalogSubscription = null;
     this.subappProgressSubscription?.unsubscribe();
@@ -882,6 +891,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
           (window as any).electronAPI?.other?.openByBrowser?.(url);
         },
         startGithubLogin: (payload: { inviteCode?: string } = {}) => this.startGithubLogin(payload),
+        requestLogin: (payload: { reason?: string } = {}) => this.requestHostLogin(payload),
         selectChatResources: () => this.selectChatResources(),
         listChildApps: (payload: { limit?: number } = {}) => this.listChatChildApps(payload),
         openChildApp: (payload: { toolId?: string; mode?: 'embedded' | 'window' } = {}) => this.openChatChildApp(payload),
@@ -1334,6 +1344,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         snapshotRefresh: true,
         userInteractionNotifications: true,
         hostGithubLogin: isAilyChat,
+        hostLoginDialog: isAilyChat,
         resourcePicker: isAilyChat
           && typeof (window as any).dialog?.selectFiles === 'function',
         childAppMenu: isAilyChat,
@@ -1725,6 +1736,34 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.electronService.openUrl(response.authorization_url);
     return { ok: true, state: response.state };
+  }
+
+  private async requestHostLogin(payload: { reason?: string } = {}): Promise<Record<string, unknown>> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, message: 'The main-window login dialog is unavailable' };
+    }
+
+    const reason = typeof payload.reason === 'string' && payload.reason.trim()
+      ? payload.reason.trim().slice(0, 80)
+      : 'aily-chat-react';
+
+    if (this.isStandalone) {
+      const sendToMain = window['iWindow']?.send;
+      if (typeof sendToMain !== 'function') {
+        return { ok: false, message: 'The main-window bridge is unavailable' };
+      }
+      const response = await sendToMain({
+        to: 'main',
+        data: { action: 'request-login', reason },
+        timeout: 3000,
+      });
+      return response === 'timeout' || response?.success === false
+        ? { ok: false, message: 'The main-window login request timed out' }
+        : { ok: true };
+    }
+
+    this.ngZone.run(() => this.authService.requestLogin(reason));
+    return { ok: true };
   }
 
   private async notifyUserInteraction(payload: any): Promise<Record<string, unknown>> {

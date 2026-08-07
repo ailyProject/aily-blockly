@@ -2061,7 +2061,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (!this.authService.isLoggedIn) {
       this.message.warning(this.translateService.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
-      this.uiService.openTool('aily-chat');
+      this.authService.requestLogin('block-explain');
       return;
     }
 

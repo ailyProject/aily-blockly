@@ -21,6 +21,7 @@ import {
   resolveAilyChatMountDelay,
   resolvePreferredAilyChatTool,
 } from './aily-chat-tool-routing';
+import { collectOpenAuthRequiredToolIds, isAuthRequiredTool } from './auth-required-tool';
 
 @Injectable({
   providedIn: 'root',
@@ -91,7 +92,13 @@ export class UiService {
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         let data;
-        if (message.data?.action === 'logout') {
+        if (message.data?.action === 'request-login') {
+          const reason = typeof message.data?.reason === 'string'
+            ? message.data.reason.trim().slice(0, 80)
+            : '';
+          this.authService.requestLogin(reason || 'sub-window');
+          data = { success: true };
+        } else if (message.data?.action === 'logout') {
           // 处理登出请求
           try {
             await this.authService.logout();
@@ -168,6 +175,9 @@ export class UiService {
 
   // 这个方法是给header用的
   turnTool(opt: ToolOpts) {
+    if (this.requestLoginForProtectedTool(opt?.data)) {
+      return;
+    }
     if (this.topTool == opt.data) {
       this.closeTool(opt.data);
     } else {
@@ -177,6 +187,9 @@ export class UiService {
 
   // 如果其它组件/程序要打开工具，调用这个方法
   openTool(name: string) {
+    if (this.requestLoginForProtectedTool(name)) {
+      return;
+    }
     // if (name == 'terminal') {
     //   this.openTerminal();
     //   return;
@@ -202,17 +215,29 @@ export class UiService {
    * the requested presentation mode before calling this method.
    */
   openToolEmbedded(name: string): boolean {
+    if (this.requestLoginForProtectedTool(name)) {
+      return false;
+    }
     this.openToolInMainWindow(name);
     return this.topTool === name;
   }
 
   private openToolInMainWindow(name: string) {
-    if (!name) {
+    if (!name || this.requestLoginForProtectedTool(name)) {
       return;
     }
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.openToolList.push(name);
     this.actionSubject.next({ action: 'open', type: 'tool', data: name });
+  }
+
+  private requestLoginForProtectedTool(name: string | null | undefined): boolean {
+    if (!isAuthRequiredTool(name) || this.authService.isLoggedIn) {
+      return false;
+    }
+
+    this.authService.requestLogin(`tool:${name}`);
+    return true;
   }
 
   private resolveToolNameFromWindowPath(pathOrName: string | null | undefined): string {
@@ -274,6 +299,10 @@ export class UiService {
   }
 
   private isToolWindowOpen(name: string): boolean {
+    if (this.getOpenWindowPathForTool(name)) {
+      return true;
+    }
+
     const toolWindowPath = this.getToolWindowPath(name);
     if (!toolWindowPath) {
       return false;
@@ -283,6 +312,10 @@ export class UiService {
     return !!normalizedPath && this.openWindowPathList.includes(normalizedPath);
   }
 
+  private getOpenWindowPathForTool(name: string): string | null {
+    return this.openWindowPathList.find((path) => this.resolveToolNameFromWindowPath(path) === name) || null;
+  }
+
   closeTool(name: string) {
     if (name == 'terminal') {
       this.closeTerminal();
@@ -290,6 +323,32 @@ export class UiService {
     }
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.actionSubject.next({ action: 'close', type: 'tool', data: name });
+  }
+
+  getOpenAuthRequiredToolIds(): string[] {
+    return collectOpenAuthRequiredToolIds(this.openToolList, this.openWindowPathList);
+  }
+
+  async forceCloseToolEverywhere(name: string): Promise<boolean> {
+    if (this.openToolList.includes(name)) {
+      this.closeTool(name);
+    }
+
+    const openWindowPath = this.getOpenWindowPathForTool(name);
+    if (openWindowPath) {
+      try {
+        const result = await window['subWindow']?.control?.(openWindowPath, 'close');
+        if (result?.success !== true) {
+          return false;
+        }
+        this.updateSubWindowState(openWindowPath, false);
+      } catch (error) {
+        console.warn(`关闭独立工具窗口失败: ${name}`, error);
+        return false;
+      }
+    }
+
+    return !this.openToolList.includes(name) && !this.getOpenWindowPathForTool(name);
   }
 
   closeToolAll() {
@@ -354,7 +413,9 @@ export class UiService {
 
   /**
    * Open the Aily Chat surface that is currently highest in the embedded tool
-   * stack. When neither chat is open, retain the legacy chat as the fallback.
+   * stack. When neither chat is open, use the installed React child as the
+   * default; the Angular implementation remains hidden as a compatibility
+   * reference only.
    */
   openPreferredAilyChat(): string {
     const targetToolId = resolvePreferredAilyChatTool(this.openToolList);

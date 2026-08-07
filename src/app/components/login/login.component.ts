@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, ViewChild, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { Component, ViewChild, OnDestroy, OnInit, ChangeDetectorRef, Input } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
@@ -31,8 +31,11 @@ import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss',
 })
-export class LoginComponent implements OnDestroy {
+export class LoginComponent implements OnInit, OnDestroy {
   private destroy$ = new Subject<void>();
+  private initialized = false;
+
+  @Input() presentation: 'request' | 'dialog' = 'request';
 
   @ViewChild(AltchaComponent) altchaComponent!: AltchaComponent;
 
@@ -111,6 +114,9 @@ export class LoginComponent implements OnDestroy {
       .subscribe((isLoggedIn) => {
         const wasHidden = !this.showLogin;
         this.showLogin = !isLoggedIn;
+        if (this.initialized && !isLoggedIn && this.presentation === 'request') {
+          this.authService.requestLogin('auth-required');
+        }
         // 退出登录后组件重新显示时，若当前在微信扫码模式则刷新二维码
         if (this.showLogin && wasHidden && this.mode === 'wechat') {
           this.refreshWeChatQrcode();
@@ -128,6 +134,13 @@ export class LoginComponent implements OnDestroy {
           this.cdr.detectChanges();
         });
       });
+  }
+
+  ngOnInit(): void {
+    this.initialized = true;
+    if (!this.authService.isLoggedIn && this.presentation === 'request') {
+      this.authService.requestLogin('auth-required');
+    }
   }
 
   get showWeChatLogin(): boolean {

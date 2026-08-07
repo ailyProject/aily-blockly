@@ -1697,6 +1697,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
                     data: data.data,
                     messageId: messageId
                 });
+                if (data?.data?.action === 'request-login') {
+                    if (mainWindow.isMinimized()) {
+                        mainWindow.restore();
+                    }
+                    mainWindow.show();
+                    if (typeof mainWindow.moveTop === 'function') {
+                        mainWindow.moveTop();
+                    }
+                    mainWindow.focus();
+                }
                 // 自定义超时或默认9秒超�?
                 setTimeout(() => {
                     ipcMain.removeListener('main-window-response', responseListener);

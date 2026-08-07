@@ -20,7 +20,6 @@ import { Router } from '@angular/router';
 import { ElectronService } from '../../../services/electron.service';
 import { ConfigService } from '../../../services/config.service';
 import { AuthService } from '../../../services/auth.service';
-import { LoginDialogComponent } from '../login-dialog/login-dialog.component';
 import { PlatformService } from '../../../services/platform.service';
 import { ProbeRsService } from '../../../services/probe-rs.service';
 import { AppItem } from '../../../configs/tool.config';
@@ -1218,19 +1217,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
             break;
         }
       });
-    });
-  }
-
-  openLoginDialog() {
-    const modalRef = this.modal.create({
-      nzTitle: null,
-      nzFooter: null,
-      nzClosable: false,
-      nzBodyStyle: {
-        padding: '0',
-      },
-      nzWidth: '350px',
-      nzContent: LoginDialogComponent
     });
   }
 

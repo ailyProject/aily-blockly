@@ -93,6 +93,12 @@ export type AuthInitializationState =
   | 'signed_out'
   | 'unavailable';
 
+export interface LoginDialogRequestState {
+  requestId: number;
+  reason: string;
+  allowSkip: boolean;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -141,14 +147,40 @@ export class AuthService {
   private readonly authInitializationStateSubject = new BehaviorSubject<AuthInitializationState>('idle');
   readonly authInitializationState$ = this.authInitializationStateSubject.asObservable();
 
+  private loginDialogRequestId = 0;
+  private readonly loginDialogRequestSubject = new BehaviorSubject<LoginDialogRequestState | null>(null);
+  readonly loginDialogRequest$ = this.loginDialogRequestSubject.asObservable();
+
   // 登录弹窗显示状态
   showUser = new BehaviorSubject<any>(null);
 
   constructor() {
     // 登录状态变化后强制触发全局变更检测
-    this.isLoggedInSubject.subscribe(() => {
+    this.isLoggedInSubject.subscribe((isLoggedIn) => {
+      if (isLoggedIn) {
+        this.dismissLoginDialog();
+      }
       setTimeout(() => this.appRef.tick());
     });
+  }
+
+  requestLogin(reason = 'auth-required', options: { allowSkip?: boolean } = {}): void {
+    if (this.isLoggedIn) {
+      return;
+    }
+
+    const current = this.loginDialogRequestSubject.value;
+    this.loginDialogRequestSubject.next({
+      requestId: ++this.loginDialogRequestId,
+      reason,
+      allowSkip: options.allowSkip === true || current?.allowSkip === true,
+    });
+  }
+
+  dismissLoginDialog(): void {
+    if (this.loginDialogRequestSubject.value !== null) {
+      this.loginDialogRequestSubject.next(null);
+    }
   }
 
   /**

@@ -492,7 +492,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   private requireLogin(): boolean {
     if (!this.authService.isLoggedIn) {
       this.messageService.warning(this.translate.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
-      this.uiService.openPreferredAilyChat();
+      this.authService.requestLogin('dev-tool');
       return false;
     }
     return true;

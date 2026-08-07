@@ -1,16 +1,16 @@
 .login-box {
     padding: 15px;
-    height: 100%;
+    height: auto;
     width: 100%;
-    position: absolute;
-    top: 0;
-    background: var(--aily-overlay-bg);
+    position: relative;
+    background: transparent;
     flex-direction: column;
-    z-index: 10;
 
     .inner {
         background: var(--aily-bg-elevated);
         width: 100%;
+        max-height: min(720px, calc(100vh - 96px));
+        overflow: auto;
         padding: 15px;
         border-radius: 10px;
     }

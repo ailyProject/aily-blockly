@@ -21,9 +21,9 @@ describe('resolvePreferredAilyChatTool', () => {
       .toBe('aily-chat-react');
   });
 
-  it('falls back to the legacy chat when no chat is open', () => {
+  it('falls back to the React child chat when no chat is open', () => {
     expect(resolvePreferredAilyChatTool(['serial-monitor']))
-      .toBe('aily-chat');
+      .toBe('aily-chat-react');
   });
 
   it('reports no active chat when neither chat is open', () => {

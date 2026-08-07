@@ -16,6 +16,7 @@ import { ProjectService } from '../services/project.service';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
+import { AppStoreService } from '../tools/app-store/app-store.service';
 import { UpdateService } from '../services/update.service';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '../services/npm.service';
@@ -29,8 +30,10 @@ import { OnboardingComponent } from '../components/onboarding/onboarding.compone
 import { OnboardingService } from '../services/onboarding.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { isChildTool } from '../configs/tool.config';
-import { AuthService } from '../services/auth.service';
+import { AuthService, type LoginDialogRequestState } from '../services/auth.service';
 import { ElectronService } from '../services/electron.service';
+import { SubappManagerService } from '../services/subapp-manager.service';
+import { LoginComponent } from '../components/login/login.component';
 import { resolveTranslatedApiErrorMessage } from '../utils/api-error.utils';
 import { ToolI18nService } from '../services/tool-i18n.service';
 import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
@@ -39,6 +42,11 @@ import { SimulatorSubappHostComponent } from '../tools/simulator/simulator-subap
 import type { DevelopmentModePreference } from '../services/config.service';
 import { ChatRuntimeHostResourceOperationHandlerService } from '../tools/aily-chat/services/chat-runtime-host-resource-operation-handler.service';
 import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-chat-child-protocol.service';
+import {
+  bootstrapDefaultAilyChatSubapp,
+  DEFAULT_AILY_CHAT_SUBAPP_BOOTSTRAP_KEY,
+  DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
+} from '../services/default-aily-chat-bootstrap';
 
 const RIGHT_SIDER_WIDTH_STORAGE_KEY = 'aily-main-window.right-sider-width';
 const RIGHT_SIDER_DEFAULT_WIDTH = 450;
@@ -73,6 +81,7 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     LibManagerToolComponent,
     ModeWelcomeComponent,
     SimulatorSubappHostComponent,
+    LoginComponent,
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
@@ -114,6 +123,9 @@ export class MainWindowComponent implements OnDestroy {
   private configNoticeSubscription: Subscription | null = null;
   private projectContextSubscription: Subscription | null = null;
   private developmentModePreferencePromptOpen = false;
+  private loginDialogSubscription: Subscription | null = null;
+
+  loginDialogState: LoginDialogRequestState | null = null;
 
   // 首次开发模式选择（全屏引导）
   showModeWelcome = false;
@@ -132,12 +144,17 @@ export class MainWindowComponent implements OnDestroy {
     private onboardingService: OnboardingService,
     private authService: AuthService,
     private electronService: ElectronService,
+    private appStoreService: AppStoreService,
+    private subappManager: SubappManagerService,
     private toolI18n: ToolI18nService,
     private readonly chatRuntimeHostResourceOperationHandler: ChatRuntimeHostResourceOperationHandlerService,
     private readonly ailyChatChildProtocol: AilyChatChildProtocolService
   ) { }
 
   async ngOnInit(): Promise<void> {
+    this.loginDialogSubscription = this.authService.loginDialogRequest$.subscribe((state) => {
+      this.loginDialogState = state;
+    });
     void this.chatRuntimeHostResourceOperationHandler.start().catch(error => {
         console.error('[AilyChat][RuntimeHostResourceOperationHandler] Failed to start:', error);
     });
@@ -158,9 +175,8 @@ export class MainWindowComponent implements OnDestroy {
     this.setupGlobalOAuthListener();
     this.setupExampleListListener();
     void this.electronService.sendRendererReady();
-    void this.authService.initializeAuth().catch(error => {
-      console.warn('[Auth] Background authentication initialization failed:', error);
-    });
+    void this.initializeAuthAndPromptIfNeeded();
+    void this.ensureDefaultAilyChatSubapp();
     // 重置 footer 状态
     this.uiService.updateFooterState({ text: '', timeout: 0 });
 
@@ -196,6 +212,40 @@ export class MainWindowComponent implements OnDestroy {
     setTimeout(() => {
       void this.promptDevelopmentModePreferenceIfNeeded();
     }, 0);
+  }
+
+  closeLoginDialog(): void {
+    this.authService.dismissLoginDialog();
+  }
+
+  private async initializeAuthAndPromptIfNeeded(): Promise<void> {
+    try {
+      await this.authService.initializeAuth();
+      if (this.authService.getAuthInitializationState() === 'signed_out') {
+        this.authService.requestLogin('startup', { allowSkip: true });
+      }
+    } catch (error) {
+      console.warn('[Auth] Background authentication initialization failed:', error);
+    }
+  }
+
+  private async ensureDefaultAilyChatSubapp(): Promise<void> {
+    try {
+      await bootstrapDefaultAilyChatSubapp({
+        completed: !!this.configService.data?.[DEFAULT_AILY_CHAT_SUBAPP_BOOTSTRAP_KEY],
+        initialize: () => this.subappManager.initialize(),
+        readCatalog: () => this.subappManager.state.apps,
+        install: catalogId => this.subappManager.install(catalogId),
+        isPinned: () => this.appStoreService.isAppInZone('header', DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID),
+        pin: () => this.appStoreService.addAppToZone('header', DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID),
+        markCompleted: async () => {
+          this.configService.data[DEFAULT_AILY_CHAT_SUBAPP_BOOTSTRAP_KEY] = Date.now();
+          await this.configService.save();
+        },
+      });
+    } catch (error) {
+      console.warn('[Subapp] Default Aily Chat installation failed:', error);
+    }
   }
 
   private async promptDevelopmentModePreferenceIfNeeded(): Promise<void> {
@@ -235,6 +285,8 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.loginDialogSubscription?.unsubscribe();
+    this.loginDialogSubscription = null;
     this.configNoticeSubscription?.unsubscribe();
     this.configNoticeSubscription = null;
     this.projectContextSubscription?.unsubscribe();
