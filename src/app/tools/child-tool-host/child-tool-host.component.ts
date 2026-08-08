@@ -187,10 +187,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       }
     });
     this.authStateSubscription = this.authService.isLoggedIn$.subscribe((authenticated) => {
-      this.penpalRemoteWindow?.postMessage({
-        type: 'aily-auth-complete',
-        authenticated,
-      }, '*');
+      this.pushChildAuthState(authenticated);
     });
     this.lastKnownApiServer = this.normalizeApiServer(this.configService.getCurrentApiServer());
     this.configReloadSubscription = this.configService.configReloaded$.subscribe(() => {
@@ -1342,6 +1339,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       blockResources: isAilyChat && this.active ? this.createSelectedBlockResources() : [],
       capabilities: {
         snapshotRefresh: true,
+        authStateRefresh: isAilyChat,
         userInteractionNotifications: true,
         hostGithubLogin: isAilyChat,
         hostLoginDialog: isAilyChat,
@@ -1764,6 +1762,23 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.ngZone.run(() => this.authService.requestLogin(reason));
     return { ok: true };
+  }
+
+  private pushChildAuthState(authenticated: boolean): void {
+    if (typeof this.remoteApi?.refreshAuthState === 'function') {
+      void Promise.resolve(this.remoteApi.refreshAuthState({ authenticated })).catch(() => {
+        this.postLegacyChildAuthState(authenticated);
+      });
+      return;
+    }
+    this.postLegacyChildAuthState(authenticated);
+  }
+
+  private postLegacyChildAuthState(authenticated: boolean): void {
+    this.penpalRemoteWindow?.postMessage({
+      type: 'aily-auth-complete',
+      authenticated,
+    }, '*');
   }
 
   private async notifyUserInteraction(payload: any): Promise<Record<string, unknown>> {
