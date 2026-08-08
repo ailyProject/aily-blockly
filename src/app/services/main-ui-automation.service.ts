@@ -8,6 +8,7 @@ import { UiService } from './ui.service';
 
 export type ChildAppOpenMode = 'embedded' | 'window';
 export type ChildAppControlAction =
+  | 'prepareUpdate'
   | 'restart'
   | 'maximize'
   | 'unmaximize'
@@ -220,7 +221,7 @@ export class MainUiAutomationService {
     }
 
     const supported: ChildAppControlAction[] = [
-      'restart', 'maximize', 'unmaximize', 'minimize', 'restore', 'focus', 'detach', 'embed', 'close',
+      'prepareUpdate', 'restart', 'maximize', 'unmaximize', 'minimize', 'restore', 'focus', 'detach', 'embed', 'close',
     ];
     if (!supported.includes(action)) {
       return { ok: false, message: `不支持的子应用动作: ${action || '(空)'}`, supportedActions: supported };
@@ -242,7 +243,7 @@ export class MainUiAutomationService {
       return this.openChildApp({ toolId, mode: 'embedded' });
     }
 
-    if (action === 'restart' || action === 'close') {
+    if (action === 'prepareUpdate' || action === 'restart' || action === 'close') {
       const hostAction = action as ChildAppHostAction;
       if (embedded && this.childHostRegistry.has(toolId)) {
         return this.childHostRegistry.control(toolId, hostAction);

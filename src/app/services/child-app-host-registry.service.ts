@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 
-export type ChildAppHostAction = 'status' | 'restart' | 'close' | 'detach' | 'embed';
+export type ChildAppHostAction = 'status' | 'prepareUpdate' | 'restart' | 'close' | 'detach' | 'embed';
 
 export interface ChildAppWindowPlacement {
   x?: number;
@@ -25,6 +25,7 @@ export interface ChildAppHostControlOptions extends ChildAppWindowPlacement {
 
 export interface ChildAppHostController {
   status(): Record<string, unknown>;
+  prepareUpdate(): Promise<Record<string, unknown>>;
   restart(): Promise<Record<string, unknown>>;
   close(): Promise<Record<string, unknown>>;
   detach(options?: ChildAppWindowPlacement): Promise<Record<string, unknown>>;
@@ -154,6 +155,8 @@ export class ChildAppHostRegistryService {
           surface: registration.surface,
           ...controller.status(),
         };
+      case 'prepareUpdate':
+        return controller.prepareUpdate();
       case 'restart':
         return controller.restart();
       case 'close':

@@ -252,7 +252,8 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   isSubappRestartRequired(app: AppItem): boolean {
     const installedVersion = String(app.subapp?.installedVersion || '').trim();
     const activeVersion = this.getSubappActiveVersion(app);
-    return this.isSubappActive(app)
+    const hasOpenUi = this.isSubappActive(app) || this.activeSubappVersions.has(app.id);
+    return hasOpenUi
       && !!installedVersion
       && !!activeVersion
       && activeVersion !== installedVersion;
@@ -455,7 +456,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const subapp = app.subapp;
     if (!subapp?.updateAvailable || this.pendingCatalogId) return;
 
-    const wasActive = this.isSubappActive(app);
+    const wasActive = await this.isSubappUiOpen(app);
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
     let restartTarget: AppItem | null = null;
     let forceClose = false;
@@ -472,7 +473,16 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.pendingProgress = 1;
     this.cdr.markForCheck();
     try {
-      await this.childToolProcess.stop(app.id);
+      if (wasActive) {
+        const preparation = await this.mainUiAutomation.controlChildApp({
+          toolId: app.id,
+          action: 'prepareUpdate',
+        });
+        if (preparation['ok'] !== true) {
+          throw new Error(String(preparation['message'] || '子应用尚未准备好更新'));
+        }
+      }
+      await this.childToolProcess.forceStop(app.id);
       if (!wasActive) {
         this.uiService.closeTool(app.id);
       }
@@ -533,7 +543,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       if (action === 'update') {
         this.uiService.openTool(app.id);
       }
-      await this.childToolProcess.stop(app.id);
+      await this.childToolProcess.forceStop(app.id);
       await this.subappManager[action](catalogId, { forceClose: true });
     }
   }
@@ -590,6 +600,12 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       });
       if (result['ok'] !== true) {
         throw new Error(String(result['message'] || this.translate.instant('APP_STORE.RESTART_FAILED')));
+      }
+      const expectedVersion = String(app.subapp?.installedVersion || '').trim();
+      const restartedHost = result['host'] as Record<string, unknown> | undefined;
+      const runningVersion = String(restartedHost?.['version'] || '').trim();
+      if (expectedVersion && runningVersion !== expectedVersion) {
+        throw new Error(`子应用运行版本校验失败：应为 ${expectedVersion}，实际为 ${runningVersion || '未知'}`);
       }
       await this.refreshSubappActiveVersion(app);
       this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', { name: app.name }));
@@ -652,18 +668,26 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async refreshSubappActiveVersion(app: AppItem): Promise<void> {
-    if (!this.isSubappActive(app)) {
+    const result = await this.mainUiAutomation.getChildApp({ toolId: app.id });
+    const describedApp = result['app'] as Record<string, any> | undefined;
+    const mode = String(describedApp?.['mode'] || 'closed');
+    if (mode === 'closed' || mode === 'background') {
       this.activeSubappVersions.delete(app.id);
       return;
     }
-
-    const result = await this.mainUiAutomation.getChildApp({ toolId: app.id });
-    const describedApp = result['app'] as Record<string, any> | undefined;
     const version = describedApp?.['ui']?.['host']?.['version'];
     if (typeof version === 'string' && version.trim()) {
       this.activeSubappVersions.set(app.id, version.trim());
       this.cdr.markForCheck();
     }
+  }
+
+  private async isSubappUiOpen(app: AppItem): Promise<boolean> {
+    if (this.isSubappActive(app)) return true;
+    const result = await this.mainUiAutomation.getChildApp({ toolId: app.id });
+    const describedApp = result['app'] as Record<string, unknown> | undefined;
+    const mode = String(describedApp?.['mode'] || 'closed');
+    return mode === 'window' || mode === 'embedded' || mode === 'embedded_and_window';
   }
 
   private closeSubappMore(): void {

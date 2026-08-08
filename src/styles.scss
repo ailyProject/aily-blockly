@@ -187,6 +187,12 @@ nz-modal-container {
   z-index: 10000 !important;
 }
 
+// 登录遮罩位于 100100；消息出现时提升其外层堆叠上下文，
+// 否则仅提高 .ant-message 自身仍会被父级 overlay 容器限制。
+.cdk-overlay-container:has(.ant-message) {
+  z-index: 100200 !important;
+}
+
 .aily-chat-menu-left-tooltip.ant-tooltip {
   max-width: min(180px, calc(100vw - 24px));
   z-index: 1000040;

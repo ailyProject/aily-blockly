@@ -132,10 +132,8 @@ export class ChildToolProcessService implements OnDestroy {
     const session = this.ensureSession(config.id);
     this.cancelReleaseTimer(session);
     this.publishRuntimeState(config.id, 'starting', session);
-    session.expectedStopReason = 'restart';
     try {
-      await window['childToolSession']?.restart?.(config.id);
-      await this.stopSession(config, session, 'restart');
+      await this.forceStopSession(config, session, 'restart');
       const hostInfo = await this.startSession(config, session);
       this.publishRuntimeState(config.id, 'ready', session);
       return hostInfo;
@@ -157,6 +155,25 @@ export class ChildToolProcessService implements OnDestroy {
     }
     await window['childToolSession']?.stop?.(config?.id || toolId);
     this.publishRuntimeState(config?.id || toolId, 'stopped');
+  }
+
+  async forceStop(toolId: string): Promise<void> {
+    const config = getChildToolConfig(toolId);
+    const normalizedToolId = config?.id || toolId;
+    const session = this.sessions.get(normalizedToolId);
+    if (config && session) {
+      this.cancelReleaseTimer(session);
+      await this.forceStopSession(config, session, 'shutdown');
+      this.sessions.delete(normalizedToolId);
+      this.publishRuntimeState(normalizedToolId, 'stopped', session);
+      return;
+    }
+
+    const result = await window['childToolSession']?.stop?.(normalizedToolId);
+    if (result?.success !== true && result?.reason !== 'not-found') {
+      throw new Error(`${normalizedToolId} related process tree could not be stopped`);
+    }
+    this.publishRuntimeState(normalizedToolId, 'stopped');
   }
 
   async stopAll(): Promise<void> {
@@ -374,6 +391,44 @@ export class ChildToolProcessService implements OnDestroy {
       this.handleClose(session);
       this.publishRuntimeState(config.id, reason === 'restart' ? 'starting' : 'stopped', session);
     }
+  }
+
+  private async forceStopSession(
+    config: ChildToolConfig,
+    session: ChildToolSession,
+    reason: 'restart' | 'shutdown'
+  ): Promise<void> {
+    const streamId = session.streamId;
+    session.expectedStopReason = reason;
+    this.rejectReady(session, new Error(`${config.id} startup stopped: ${reason}`));
+
+    const stopGlobally = () => reason === 'restart'
+      ? window['childToolSession']?.restart?.(config.id)
+      : window['childToolSession']?.stop?.(config.id);
+
+    let result: any;
+    try {
+      result = await stopGlobally();
+    } catch (error) {
+      this.logError(config, 'global process-tree stop failed', error);
+    }
+
+    if (result?.success !== true && result?.reason !== 'not-found' && streamId) {
+      await window['cmd']?.kill?.(streamId);
+      try {
+        result = await stopGlobally();
+      } catch (error) {
+        this.logError(config, 'global process-tree stop verification failed', error);
+      }
+    }
+
+    if (result?.success !== true && result?.reason !== 'not-found') {
+      session.expectedStopReason = null;
+      throw new Error(`${config.id} related process tree could not be stopped`);
+    }
+
+    this.handleClose(session);
+    this.publishRuntimeState(config.id, reason === 'restart' ? 'starting' : 'stopped', session);
   }
 
   private async acquireSharedSession(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo | null> {

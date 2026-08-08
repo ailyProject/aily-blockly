@@ -373,7 +373,10 @@ async function restartChildToolSession(toolId) {
     }
 
     cancelChildToolRelease(session);
-    await stopChildToolSessionProcess(session);
+    const stopped = await stopChildToolSessionProcess(session);
+    if (!stopped) {
+        return { success: false, reason: 'process-still-running' };
+    }
     pendingChildToolProcessMessages.delete(session.streamId);
     childToolSessions.delete(normalizedToolId);
     return { success: true };
@@ -413,11 +416,16 @@ function listChildToolHoldersForCatalogId(catalogId) {
 async function forceStopChildToolByCatalogId(catalogId) {
     const toolIds = resolveChildToolIdsForCatalogId(catalogId);
     let stopped = false;
+    let failed = false;
     for (const toolId of toolIds) {
         const session = childToolSessions.get(toolId);
         if (!session) continue;
         cancelChildToolRelease(session);
-        await stopChildToolSessionProcess(session);
+        const processStopped = await stopChildToolSessionProcess(session);
+        if (!processStopped) {
+            failed = true;
+            continue;
+        }
         if (session.streamId) {
             pendingChildToolProcessMessages.delete(session.streamId);
         }
@@ -427,7 +435,10 @@ async function forceStopChildToolByCatalogId(catalogId) {
     if (stopped) {
         broadcastChildToolSessionStateChanged();
     }
-    return { success: stopped, reason: stopped ? undefined : 'not-found' };
+    return {
+        success: stopped && !failed,
+        reason: failed ? 'process-still-running' : stopped ? undefined : 'not-found'
+    };
 }
 
 function isChildToolSessionAlive(session) {
@@ -1541,7 +1552,10 @@ function registerWindowHandlers(mainWindow, options = {}) {
             return { success: false, reason: 'not-found' };
         }
         cancelChildToolRelease(session);
-        await stopChildToolSessionProcess(session);
+        const stopped = await stopChildToolSessionProcess(session);
+        if (!stopped) {
+            return { success: false, reason: 'process-still-running' };
+        }
         pendingChildToolProcessMessages.delete(session.streamId);
         childToolSessions.delete(normalizedToolId);
         notifyChildToolSessionStateChanged();

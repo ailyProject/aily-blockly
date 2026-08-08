@@ -41,7 +41,7 @@ import { ChatSubappDockComponent } from '../aily-chat/components/subapp-activity
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
-type ChildLifecycleReason = 'close' | 'restart' | 'destroy';
+type ChildLifecycleReason = 'close' | 'restart' | 'update' | 'destroy';
 
 interface HostProjectContext {
   workspace?: string | null;
@@ -399,6 +399,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return task;
   }
 
+  async prepareUpdate(): Promise<Record<string, unknown>> {
+    const prepared = await this.notifyChildBeforeClose('update');
+    return prepared
+      ? { ok: true, toolId: this.resolvedToolId, action: 'prepareUpdate' }
+      : { ok: false, toolId: this.resolvedToolId, action: 'prepareUpdate', message: '子应用拒绝更新，可能存在未完成操作。' };
+  }
+
   async runSubappVersionAction(event: Event): Promise<void> {
     event.stopPropagation();
     if (this.subappVersionActionBusy) return;
@@ -482,6 +489,17 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     await this.startServer(true);
     const restartedStatus = this.hostStatus as HostStatus;
     if (restartedStatus === 'ready') {
+      const expectedVersion = String(this.currentSubappCatalogItem?.installedVersion || '').trim();
+      const runningVersion = String(this.childVersion || '').trim();
+      if (expectedVersion && runningVersion !== expectedVersion) {
+        this.subappRestartRequired = true;
+        return {
+          ok: false,
+          toolId: this.resolvedToolId,
+          action: 'restart',
+          message: `子应用运行版本校验失败：应为 ${expectedVersion}，实际为 ${runningVersion || '未知'}`
+        };
+      }
       this.subappRestartRequired = false;
       return { ok: true, toolId: this.resolvedToolId, action: 'restart', host: this.hostAutomationStatus() };
     }
@@ -646,9 +664,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.subappUpdateProgress = 1;
     this.cdr.markForCheck();
     try {
+      const preparation = await this.prepareUpdate();
+      if (preparation['ok'] !== true) {
+        throw new Error(String(preparation['message'] || '子应用尚未准备好更新'));
+      }
       // 宿主内更新：先停进程，界面保留并显示「正在更新」，完成后自动重启。
       if (this.resolvedToolId) {
-        await this.processService.stop(this.resolvedToolId);
+        await this.processService.forceStop(this.resolvedToolId);
       }
       try {
         await this.subappManager.update(item.id, { forceClose });
@@ -772,6 +794,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       close: () => this.close(),
       detach: options => this.detach(options),
       embed: () => this.embed(),
+      prepareUpdate: () => this.prepareUpdate(),
     }, {
       instanceId: this.hostContextId,
       surface: this.resolveLaunchContext().surface,
@@ -1152,7 +1175,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
           toolId: this.resolvedToolId,
           context: this.createHostContext()
         })),
-        1500
+        reason === 'restart' || reason === 'update' ? 10_000 : 1500
       );
       const canClose = result !== false && result?.canClose !== false;
 

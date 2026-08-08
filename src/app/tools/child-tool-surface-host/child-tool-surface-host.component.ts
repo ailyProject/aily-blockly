@@ -163,6 +163,13 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     const instanceId = String(this.instanceId || '').trim() || `compact:${this.contextId}`;
     this.unregisterHostController = this.hostRegistry.register(toolId, {
       status: () => this.hostAutomationStatus(),
+      prepareUpdate: async () => ({
+        ok: true,
+        toolId,
+        instanceId,
+        action: 'prepareUpdate',
+        surface: this.surface,
+      }),
       restart: async () => ({
         ok: false,
         toolId,
