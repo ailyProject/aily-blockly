@@ -395,6 +395,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     });
     this.projectService.stateSubject.next('loaded');
     this.generatorRuntime.markReady(projectPath);
+    this.projectService.markBlocklyLibraryRuntimeReady(projectPath);
     this.scheduleProjectLoadedCodeRefresh();
 
     if (missingDeclaredLibraries.length > 0) {
@@ -844,7 +845,33 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
 
     if (shouldRebuildRuntime && this.watchedPackageJsonProjectPath === projectPath) {
-      await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+      try {
+        await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+        candidateNames.forEach((name) => this.pendingLibraryLoadAttempts.delete(name));
+      } catch (error) {
+        const errorMessage = (error as Error)?.message || String(error);
+        if (errorMessage.startsWith('[BlocklyLibraryRuntime] retained dependencies are not ready:')) {
+          let shouldRetry = false;
+          for (const libPackageName of stillRemovedLibraryNames) {
+            const attempts = (this.pendingLibraryLoadAttempts.get(libPackageName) || 0) + 1;
+            if (attempts < this.maxPendingLibraryLoadAttempts) {
+              this.pendingLibraryLoadAttempts.set(libPackageName, attempts);
+              this.pendingRemovedLibraryDependencies.add(libPackageName);
+              shouldRetry = true;
+            } else {
+              this.pendingLibraryLoadAttempts.delete(libPackageName);
+            }
+          }
+          if (shouldRetry) {
+            console.warn('[PackageJsonWatch] retained libraries are not ready; retrying runtime rebuild:', errorMessage);
+            this.scheduleRemovedLibrarySettle(projectPath);
+            return;
+          }
+        }
+
+        console.error('[PackageJsonWatch] Blockly runtime rebuild after library removal failed:', error);
+        this.message.error(`卸载积木库后刷新工作区失败: ${errorMessage}`);
+      }
     }
   }
 

@@ -41,7 +41,7 @@ import { ChatSubappDockComponent } from '../aily-chat/components/subapp-activity
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
-type ChildLifecycleReason = 'close' | 'restart' | 'update' | 'destroy';
+type ChildLifecycleReason = 'close' | 'restart' | 'update';
 
 interface HostProjectContext {
   workspace?: string | null;
@@ -112,7 +112,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private penpalState: 'idle' | 'connecting' | 'connected' | 'failed' = 'idle';
   private readonly hostContextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   private hostContextVersion = 0;
-  private beforeCloseNotified = false;
   private beforeCloseTask: Promise<boolean> | null = null;
   private restartTask: Promise<Record<string, unknown>> | null = null;
   private langSubscription: Subscription | null = null;
@@ -351,13 +350,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController = null;
     const releaseToolId = this.acquired ? this.resolvedToolId : '';
     this.acquired = false;
-    const finishDestroy = () => {
-      this.destroyPenpalConnection();
-      if (releaseToolId) {
-        void this.processService.release(releaseToolId);
-      }
-    };
-    void this.notifyChildBeforeClose('destroy').then(finishDestroy, finishDestroy);
+    this.destroyPenpalConnection();
+    if (releaseToolId) {
+      void this.processService.release(releaseToolId);
+    }
   }
 
   async close(): Promise<Record<string, unknown>> {
@@ -376,7 +372,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
 
     if (this.resolvedToolId) {
-      this.uiService.closeTool(this.resolvedToolId);
+      this.uiService.completeToolClose(this.resolvedToolId);
     } else {
       this.closing = false;
     }
@@ -522,7 +518,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     if (!opened) {
       return { ok: false, message: `无法为子应用创建独立窗口: ${this.resolvedToolId}` };
     }
-    this.uiService.closeTool(this.resolvedToolId);
+    this.uiService.completeToolClose(this.resolvedToolId);
     return { ok: true, toolId: this.resolvedToolId, action: 'detach', mode: 'window' };
   }
 
@@ -940,7 +936,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         this.log('penpal connected');
         this.remoteApi = remote;
         this.penpalState = 'connected';
-        this.beforeCloseNotified = false;
         this.syncHostContext();
         this.pushChatSubappActivities();
       })
@@ -1142,10 +1137,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private async notifyChildBeforeClose(reason: ChildLifecycleReason): Promise<boolean> {
-    if (this.beforeCloseNotified && reason === 'destroy') {
-      return true;
-    }
-
     if (this.beforeCloseTask) {
       return this.beforeCloseTask;
     }
@@ -1164,7 +1155,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private async runChildBeforeClose(reason: ChildLifecycleReason): Promise<boolean> {
     const beforeClose = this.remoteApi?.beforeClose;
     if (typeof beforeClose !== 'function') {
-      this.beforeCloseNotified = true;
       return true;
     }
 
@@ -1194,14 +1184,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         return false;
       }
 
-      this.beforeCloseNotified = true;
       this.log('beforeClose complete', {
         reason,
         result: this.sanitizeLifecycleResult(result)
       });
       return true;
     } catch (error) {
-      this.beforeCloseNotified = true;
       const errorRecord = this.isRecord(error) ? error : {};
       const errorMessage = this.stringifyHostMessageValue(errorRecord['message'] ?? error)
         || 'Unknown child lifecycle error';

@@ -86,6 +86,7 @@ child/aily-builder*
 !src/app/services/aily-chat-tool-routing.spec.ts
 !src/app/services/auth-required-tool.spec.ts
 !src/app/services/default-aily-chat-bootstrap.spec.ts
+!src/app/services/child-tool-close-lifecycle.spec.ts
 !src/app/editors/blockly-editor/components/dev-tool/dev-tool-drag-controller.spec.ts
 !src/app/tools/app-store/app-store.service.spec.ts
 !src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts

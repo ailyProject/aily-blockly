@@ -515,6 +515,7 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectBuild(params: Record<string, any>): Promise<Record<string, any>> {
+    await this.projectService.ensureBlocklyLibraryRuntimeReady(this.projectService.currentProjectPath);
     const toolResult = await buildProjectTool(
       this.builderService,
       {
@@ -595,6 +596,7 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectUpload(params: Record<string, any>): Promise<Record<string, any>> {
+    await this.projectService.ensureBlocklyLibraryRuntimeReady(this.projectService.currentProjectPath);
     const requestedPort = typeof params['port'] === 'string' ? params['port'].trim() : undefined;
     try {
       const { ports, selection } = await this.getSerialPortSelection(requestedPort);
@@ -642,6 +644,7 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeBlocksTidy(): Promise<Record<string, any>> {
+    await this.projectService.ensureBlocklyLibraryRuntimeReady(this.projectService.currentProjectPath);
     const workspace = this.blocklyService.workspace ?? (Blockly.getMainWorkspace() as Blockly.WorkspaceSvg | null);
     if (!workspace) {
       return { ok: false, message: 'Blockly 工作区未就绪，无法整理块' };
@@ -688,6 +691,7 @@ export class BlocklyLiveOperationBridgeService {
     if (!projectPath) {
       return { ok: false, message: '当前未打开 Blockly 项目' };
     }
+    await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
     const saveResult = await this.projectService.save(projectPath);
     if (!saveResult.success) {
       return {

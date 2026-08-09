@@ -1454,6 +1454,15 @@ export class BlocklyService {
         await this.loadLibrary(libraryName, options.projectPath);
       }
 
+      const missingBlockTypes = this.collectBlockTypesFromProjectDocument(projectDocument)
+        .filter((blockType) => typeof Blockly.Blocks[blockType]?.init !== 'function');
+      if (missingBlockTypes.length > 0) {
+        throw new Error(
+          '[BlocklyLibraryRuntime] project block definitions are not ready: '
+          + missingBlockTypes.join(', '),
+        );
+      }
+
       this.refreshToolboxFromContents();
       // Recreate block instances so extensions/callbacks owned by the old
       // iframe Realm cannot survive through the in-place runtime swap.

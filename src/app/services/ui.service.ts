@@ -22,6 +22,8 @@ import {
   resolvePreferredAilyChatTool,
 } from './aily-chat-tool-routing';
 import { collectOpenAuthRequiredToolIds, isAuthRequiredTool } from './auth-required-tool';
+import { ChildAppHostRegistryService } from './child-app-host-registry.service';
+import { closeToolThroughLifecycle } from './child-tool-close-lifecycle';
 
 @Injectable({
   providedIn: 'root',
@@ -63,6 +65,7 @@ export class UiService {
     private configService: ConfigService,
     private injector: Injector,
     private chatService: ChatService,
+    private childHostRegistry: ChildAppHostRegistryService,
   ) { }
 
   private get modal(): NzModalService {
@@ -316,11 +319,31 @@ export class UiService {
     return this.openWindowPathList.find((path) => this.resolveToolNameFromWindowPath(path) === name) || null;
   }
 
-  closeTool(name: string) {
+  closeTool(name: string): void {
+    void this.closeToolAndWait(name);
+  }
+
+  async closeToolAndWait(name: string): Promise<boolean> {
     if (name == 'terminal') {
       this.closeTerminal();
-      return;
+      return true;
     }
+
+    const childHostRegistered = !!getChildToolConfig(name) && this.childHostRegistry.has(name);
+    try {
+      return await closeToolThroughLifecycle({
+        childHostRegistered,
+        requestChildClose: () => this.childHostRegistry.control(name, 'close'),
+        completeClose: () => this.completeToolClose(name),
+      });
+    } catch (error) {
+      console.warn(`关闭子应用失败: ${name}`, error);
+      return false;
+    }
+  }
+
+  /** Complete a close after the child lifecycle guard has already settled. */
+  completeToolClose(name: string): void {
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.actionSubject.next({ action: 'close', type: 'tool', data: name });
   }
@@ -331,7 +354,10 @@ export class UiService {
 
   async forceCloseToolEverywhere(name: string): Promise<boolean> {
     if (this.openToolList.includes(name)) {
-      this.closeTool(name);
+      const closed = await this.closeToolAndWait(name);
+      if (!closed) {
+        return false;
+      }
     }
 
     const openWindowPath = this.getOpenWindowPathForTool(name);
@@ -351,11 +377,10 @@ export class UiService {
     return !this.openToolList.includes(name) && !this.getOpenWindowPathForTool(name);
   }
 
-  closeToolAll() {
-    this.openToolList.forEach((name) => {
-      this.closeTool(name);
-    });
-    this.openToolList = [];
+  async closeToolAll(): Promise<void> {
+    for (const name of [...this.openToolList].reverse()) {
+      await this.closeToolAndWait(name);
+    }
   }
 
   // 发送工具信号，格式为 "toolname:action"，如 "serial-monitor:disconnect"
