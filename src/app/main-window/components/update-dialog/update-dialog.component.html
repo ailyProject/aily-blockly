@@ -17,6 +17,12 @@
   }
   }
 
+  @if (mode === 'preparing-install') {
+  <div class="text" role="status" aria-live="polite">
+    {{ 'UPDATE_DIALOG.SAVING_BEFORE_INSTALL' | translate }}
+  </div>
+  }
+
   @if (mode === 'error') {
   <div class="error-container">
     <i nz-icon nzType="close-circle" nzTheme="fill" style="color: #f5222d;"></i>

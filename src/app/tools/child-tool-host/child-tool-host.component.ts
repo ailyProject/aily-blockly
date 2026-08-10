@@ -11,7 +11,11 @@ import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { ChildToolConfig, getChildToolConfig } from '../../configs/tool.config';
-import { ChildToolHostInfo, ChildToolProcessService } from '../../services/child-tool-process.service';
+import {
+  ChildToolHostInfo,
+  ChildToolProcessService,
+  type ChildToolRuntimeSnapshot,
+} from '../../services/child-tool-process.service';
 import {
   type SubappCatalogItem,
   type SubappInstallProgress,
@@ -19,6 +23,7 @@ import {
 } from '../../services/subapp-manager.service';
 import {
   ChildAppHostRegistryService,
+  type ChildAppLifecycleOptions,
   type ChildAppWindowPlacement,
 } from '../../services/child-app-host-registry.service';
 import { AuthService } from '../../services/auth.service';
@@ -114,6 +119,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private hostContextVersion = 0;
   private beforeCloseTask: Promise<boolean> | null = null;
   private restartTask: Promise<Record<string, unknown>> | null = null;
+  private runtimeRecoveryScheduled = false;
+  private runtimeRecoveryRequestTimes: number[] = [];
+  private readonly runtimeRecoveryWindowMs = 2 * 60 * 1000;
+  private readonly maxRuntimeRecoveriesPerWindow = 2;
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectPathSubscription: Subscription | null = null;
@@ -123,6 +132,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private configReloadSubscription: Subscription | null = null;
   private aiWritingStateSubscription: Subscription | null = null;
   private authStateSubscription: Subscription | null = null;
+  private runtimeSubscription: Subscription | null = null;
   private subappCatalogSubscription: Subscription | null = null;
   private subappProgressSubscription: Subscription | null = null;
   private subappRestartRequired = false;
@@ -338,6 +348,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.aiWritingStateSubscription = null;
     this.authStateSubscription?.unsubscribe();
     this.authStateSubscription = null;
+    this.runtimeSubscription?.unsubscribe();
+    this.runtimeSubscription = null;
     this.subappCatalogSubscription?.unsubscribe();
     this.subappCatalogSubscription = null;
     this.subappProgressSubscription?.unsubscribe();
@@ -395,8 +407,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return task;
   }
 
-  async prepareUpdate(): Promise<Record<string, unknown>> {
-    const prepared = await this.notifyChildBeforeClose('update');
+  async prepareUpdate(options: ChildAppLifecycleOptions = {}): Promise<Record<string, unknown>> {
+    const prepared = await this.notifyChildBeforeClose('update', options.strict === true);
     return prepared
       ? { ok: true, toolId: this.resolvedToolId, action: 'prepareUpdate' }
       : { ok: false, toolId: this.resolvedToolId, action: 'prepareUpdate', message: '子应用拒绝更新，可能存在未完成操作。' };
@@ -444,13 +456,16 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private restartForApiServerChange(): Promise<Record<string, unknown>> {
+    return this.forceRestart();
+  }
+
+  private forceRestart(): Promise<Record<string, unknown>> {
     if (this.restartTask) {
       return this.restartTask;
     }
 
-    // A region change invalidates the old authentication endpoint. It is a
-    // host-owned runtime transition, so it must not remain on the old endpoint
-    // when a child beforeClose hook declines a normal user restart.
+    // Host-owned recovery must be able to replace an unhealthy Runtime even
+    // when the child cannot complete its normal beforeClose handshake.
     const task = this.performRestart(true);
     this.restartTask = task;
     const clearRestartTask = () => {
@@ -592,6 +607,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.config = config;
     this.resolvedToolId = config.id;
+    this.runtimeSubscription?.unsubscribe();
+    this.runtimeSubscription = this.processService.observeRuntime(config.id).subscribe(snapshot => {
+      this.handleRuntimeSnapshot(snapshot);
+    });
     this.childVersion = config.version || '';
     this.subappRestartRequired = false;
     this.titleKey = config.titleKey;
@@ -843,6 +862,50 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
   }
 
+  private handleRuntimeSnapshot(snapshot: ChildToolRuntimeSnapshot): void {
+    const recoveredHost = snapshot.hostInfo;
+    if (
+      !this.initialized
+      || !this.acquired
+      || this.closing
+      || snapshot.state !== 'ready'
+      || !recoveredHost?.url
+      || !this.serverInfo
+    ) {
+      return;
+    }
+
+    const sameRuntime = this.serverInfo.url === recoveredHost.url
+      && this.serverInfo.pid === recoveredHost.pid
+      && this.serverInfo.entry === recoveredHost.entry
+      && this.serverInfo.packagePath === recoveredHost.packagePath;
+    if (sameRuntime) return;
+
+    this.log('adopt recovered Runtime', {
+      previous: this.sanitizeHostInfo(this.serverInfo),
+      recovered: this.sanitizeHostInfo(recoveredHost),
+    });
+    this.serverInfo = recoveredHost;
+    this.childToolUrl = this.buildChildToolUrl(recoveredHost.url);
+    this.frameLoaded = false;
+    this.uiHealthFailed = false;
+    this.hostStatus = 'starting';
+    this.errorMessage = '';
+    this.destroyPenpalConnection();
+    this.iframeSrc = null;
+    this.cdr.detectChanges();
+
+    setTimeout(() => {
+      if (!this.initialized || this.closing || this.serverInfo !== recoveredHost) return;
+      this.ngZone.run(() => {
+        this.iframeSrc = this.sanitizer.bypassSecurityTrustResourceUrl(
+          this.withReloadToken(this.childToolUrl),
+        );
+        this.cdr.markForCheck();
+      });
+    }, 0);
+  }
+
   private startPenpalConnection(iframe: HTMLIFrameElement): void {
     this.destroyPenpalConnection();
     this.penpalRemoteWindow = iframe.contentWindow;
@@ -893,6 +956,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         },
         notifyUserInteraction: (payload: any) => this.notifyUserInteraction(payload),
         reportHostMessage: (payload: any) => this.ngZone.run(() => this.reportHostMessage(payload)),
+        requestRuntimeRecovery: (payload: any = {}) => this.ngZone.run(() => this.requestRuntimeRecovery(payload)),
         requestClose: () => {
           this.ngZone.run(() => {
             void this.close();
@@ -976,6 +1040,58 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.emitHostMessage(hostMessage);
     return { ok: true };
+  }
+
+  private requestRuntimeRecovery(payload: any): Record<string, unknown> {
+    if (!this.isAilyChatTool()) {
+      return { ok: false, accepted: false, reason: 'unsupported-tool' };
+    }
+    if (this.runtimeRecoveryScheduled || this.restartTask) {
+      return { ok: true, accepted: true, reason: 'already-in-progress' };
+    }
+
+    const now = Date.now();
+    this.runtimeRecoveryRequestTimes = this.runtimeRecoveryRequestTimes.filter(
+      timestamp => now - timestamp < this.runtimeRecoveryWindowMs,
+    );
+    if (this.runtimeRecoveryRequestTimes.length >= this.maxRuntimeRecoveriesPerWindow) {
+      this.logError('Runtime recovery budget exhausted', {
+        signature: String(payload?.signature || ''),
+        commandType: String(payload?.commandType || ''),
+        errorCode: String(payload?.errorCode || ''),
+      });
+      return { ok: false, accepted: false, reason: 'recovery-budget-exhausted' };
+    }
+
+    this.runtimeRecoveryRequestTimes.push(now);
+    this.runtimeRecoveryScheduled = true;
+    const diagnostic = {
+      signature: String(payload?.signature || '').slice(0, 160),
+      commandType: String(payload?.commandType || '').slice(0, 80),
+      errorCode: String(payload?.errorCode || '').slice(0, 80),
+      requestId: String(payload?.requestId || '').slice(0, 120),
+      sessionId: String(payload?.sessionId || '').slice(0, 160),
+      attempt: this.runtimeRecoveryRequestTimes.length,
+    };
+    this.logError('critical child recovery exhausted; replacing Runtime', diagnostic);
+    this.reportHostMessage({
+      state: 'warning',
+      title: `${this.getToolDisplayName()} Runtime 恢复`,
+      message: '关键会话恢复连续失败，宿主正在替换 Runtime。',
+      detail: JSON.stringify(diagnostic),
+      showMessage: false,
+      sendToLog: true,
+    });
+
+    setTimeout(() => {
+      this.ngZone.run(() => {
+        this.runtimeRecoveryScheduled = false;
+        void this.forceRestart().then(result => {
+          if (result['ok'] !== true) this.logError('Runtime recovery restart failed', result);
+        }).catch(error => this.logError('Runtime recovery restart failed', error));
+      });
+    }, 0);
+    return { ok: true, accepted: true };
   }
 
   private normalizeHostMessage(payload: any): NormalizedHostMessage | null {
@@ -1136,12 +1252,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       && (this.penpalState === 'connecting' || this.penpalState === 'connected');
   }
 
-  private async notifyChildBeforeClose(reason: ChildLifecycleReason): Promise<boolean> {
+  private async notifyChildBeforeClose(reason: ChildLifecycleReason, strict = false): Promise<boolean> {
     if (this.beforeCloseTask) {
       return this.beforeCloseTask;
     }
 
-    const task = this.runChildBeforeClose(reason);
+    const task = this.runChildBeforeClose(reason, strict);
     this.beforeCloseTask = task;
     const clearBeforeCloseTask = () => {
       if (this.beforeCloseTask === task) {
@@ -1152,7 +1268,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return task;
   }
 
-  private async runChildBeforeClose(reason: ChildLifecycleReason): Promise<boolean> {
+  private async runChildBeforeClose(reason: ChildLifecycleReason, strict: boolean): Promise<boolean> {
     const beforeClose = this.remoteApi?.beforeClose;
     if (typeof beforeClose !== 'function') {
       return true;
@@ -1198,7 +1314,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         'beforeClose failed',
         `reason=${reason}${errorCode ? ` code=${errorCode}` : ''} error=${errorMessage}`
       );
-      return true;
+      return !strict;
     }
   }
 
@@ -1362,7 +1478,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         childFrameFocus: isAilyChat,
         childSurfaceWindow: true,
         aiOperationState: isAilyChat,
-        subappDock: isAilyChat
+        subappDock: isAilyChat,
+        runtimeRecovery: isAilyChat
       }
     };
   }

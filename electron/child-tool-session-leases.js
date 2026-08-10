@@ -147,9 +147,16 @@ function ownerCount(session) {
   return session?.owners instanceof Map ? session.owners.size : 0;
 }
 
+function classifyRegistration(existing, candidateStreamId, existingAlive) {
+  if (!existing) return 'register';
+  if (String(existing.streamId || '') === String(candidateStreamId || '')) return 'same-stream';
+  return existingAlive ? 'reuse-existing' : 'replace-stale';
+}
+
 module.exports = {
   acquireOwner,
   authorizeMessagePortSend,
+  classifyRegistration,
   electMessageControllerOwner,
   hasOwner,
   hasOwnerId,

@@ -498,6 +498,10 @@
         "CANCEL_DOWNLOAD": "Download abbrechen",
         "INSTALL_LATER": "Später installieren",
         "INSTALL_NOW": "Jetzt installieren",
+        "SAVING_BEFORE_INSTALL": "Das aktuelle Projekt und die Codesitzungen werden gespeichert. Die Installation startet anschließend automatisch…",
+        "PREPARATION_FAILED": "Die Installation wurde abgebrochen, da Ihre Arbeit nicht sicher gespeichert werden konnte. {{detail}}",
+        "SAVE_FAILED": "Das aktuelle Projekt konnte nicht gespeichert werden",
+        "SESSION_SAVE_FAILED": "Eine Codesitzung konnte nicht gespeichert werden",
         "CLOSE": "Schließen",
         "RETRY": "Erneut versuchen"
     },
@@ -866,6 +870,7 @@
             "PROGRESS_CORE": "Kern wird kompiliert",
             "PROGRESS_LINKING": "Firmware wird verknüpft",
             "PROGRESS_OBJCOPY": "Firmware wird erstellt",
+            "PROGRESS_RESOURCES": "Cloud-Ressourcen werden angefordert",
             "PROGRESS_FINALIZING": "Kompilierung wird abgeschlossen",
             "PROGRESS_COMPLETE": "Kompilierung abgeschlossen",
             "PROCESS_SIGNAL_TERMINATED": "Build-Prozess wurde durch Signal beendet: {{signal}}",

@@ -14,7 +14,10 @@ import {
 } from '../components/blockly/generators/arduino/arduino';
 import { convertBlockTreeToAbs, convertAbiToAbsWithLineMap } from '../../../tools/aily-chat/public-api';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
-import { dragSelectionWeakMap } from '../components/blockly/plugins/workspace-multiselect/index.js';
+import {
+  dragSelectionWeakMap,
+  registerFieldInputIncrementPolicy,
+} from '../components/blockly/plugins/workspace-multiselect/index.js';
 import { exportWorkspaceToSvg } from './workspace-svg-exporter';
 import { createProjectDataMarker, isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
 import {
@@ -1392,8 +1395,40 @@ export class BlocklyService {
         libPackageName,
         (key) => this.translateService.instant(key),
       );
+      this.registerBlockFieldInputIncrementPolicy(block);
       Blockly.defineBlocksWithJsonArray([block]);
     }
+  }
+
+  private registerBlockFieldInputIncrementPolicy(block: any): void {
+    const blockType = typeof block?.type === 'string' ? block.type : '';
+    if (!blockType) {
+      return;
+    }
+
+    let hasExplicitPolicy = false;
+    const incrementableFields: string[] = [];
+    Object.keys(block)
+      .filter((key) => /^args\d+$/.test(key) && Array.isArray(block[key]))
+      .forEach((key) => {
+        block[key].forEach((arg: any) => {
+          if (arg?.type !== 'field_input' || typeof arg.autoIncrement !== 'boolean') {
+            return;
+          }
+          hasExplicitPolicy = true;
+          if (arg.autoIncrement && typeof arg.name === 'string') {
+            incrementableFields.push(arg.name);
+          }
+          // autoIncrement belongs to Aily's library schema, not Blockly's
+          // FieldTextInput JSON contract.
+          delete arg.autoIncrement;
+        });
+      });
+
+    registerFieldInputIncrementPolicy(
+      blockType,
+      hasExplicitPolicy ? incrementableFields : null,
+    );
   }
 
   loadLibBlocksJS(filePath) {

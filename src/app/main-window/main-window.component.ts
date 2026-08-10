@@ -124,6 +124,7 @@ export class MainWindowComponent implements OnDestroy {
   private projectContextSubscription: Subscription | null = null;
   private developmentModePreferencePromptOpen = false;
   private loginDialogSubscription: Subscription | null = null;
+  private unregisterApplicationUpdatePreparation: (() => void) | null = null;
 
   loginDialogState: LoginDialogRequestState | null = null;
 
@@ -152,6 +153,10 @@ export class MainWindowComponent implements OnDestroy {
   ) { }
 
   async ngOnInit(): Promise<void> {
+    this.unregisterApplicationUpdatePreparation = this.updateService.registerInstallPreparationHook(
+      'host-aily-chat-session',
+      () => this.ailyChatChildProtocol.prepareForApplicationUpdate(),
+    );
     this.loginDialogSubscription = this.authService.loginDialogRequest$.subscribe((state) => {
       this.loginDialogState = state;
     });
@@ -285,6 +290,8 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.unregisterApplicationUpdatePreparation?.();
+    this.unregisterApplicationUpdatePreparation = null;
     this.loginDialogSubscription?.unsubscribe();
     this.loginDialogSubscription = null;
     this.configNoticeSubscription?.unsubscribe();

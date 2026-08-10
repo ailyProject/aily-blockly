@@ -12,6 +12,7 @@ const { killRegisteredProcessTree } = require('./process-tree');
 const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
+    classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
     releaseOwner: releaseChildToolOwner,
@@ -1464,14 +1465,36 @@ function registerWindowHandlers(mainWindow, options = {}) {
         const existing = childToolSessions.get(toolId);
         const ownerId = trackChildToolSessionOwner(event.sender);
         const leaseId = String(payload.leaseId || 'legacy-renderer');
-        if (existing && existing.streamId === payload.streamId) {
+        const registration = classifyChildToolSessionRegistration(
+            existing,
+            payload.streamId,
+            isChildToolSessionAlive(existing),
+        );
+        if (registration === 'same-stream') {
             cancelChildToolRelease(existing);
             const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
             return acquired.success
                 ? { success: true, session: cloneChildToolSession(existing) }
                 : { success: false, reason: acquired.reason };
         }
-        if (existing && existing.streamId && existing.streamId !== payload.streamId) {
+        if (registration === 'reuse-existing') {
+            cancelChildToolRelease(existing);
+            const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
+            if (!acquired.success) {
+                return { success: false, reason: acquired.reason };
+            }
+            console.info('[ChildToolSession] Concurrent Runtime start reused existing process', {
+                toolId,
+                existingStreamId: existing.streamId,
+                candidateStreamId: payload.streamId,
+                ownerId,
+                leaseId,
+                refCount: childToolOwnerCount(existing),
+            });
+            notifyChildToolSessionStateChanged();
+            return { success: true, reused: true, session: cloneChildToolSession(existing) };
+        }
+        if (registration === 'replace-stale' && existing?.streamId) {
             cancelChildToolRelease(existing);
             await stopChildToolSessionProcess(existing);
             pendingChildToolProcessMessages.delete(existing.streamId);

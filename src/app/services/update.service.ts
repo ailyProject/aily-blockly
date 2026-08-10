@@ -6,6 +6,21 @@ import { NzModalService } from 'ng-zorro-antd/modal';
 import { UpdateDialogComponent } from '../main-window/components/update-dialog/update-dialog.component';
 import { version } from '../../../package.json';
 import { ConfigService } from './config.service';
+import { ProjectService } from './project.service';
+import { UiService } from './ui.service';
+import { ChildAppHostRegistryService } from './child-app-host-registry.service';
+import { NzMessageService } from 'ng-zorro-antd/message';
+import { TranslateService } from '@ngx-translate/core';
+
+export interface ApplicationUpdatePreparationResult {
+  ok: boolean;
+  message?: string;
+  [key: string]: unknown;
+}
+
+export type ApplicationUpdatePreparationHook = () =>
+  | ApplicationUpdatePreparationResult
+  | Promise<ApplicationUpdatePreparationResult>;
 
 @Injectable({
   providedIn: 'root',
@@ -24,12 +39,19 @@ export class UpdateService {
 
   // private updateInfo: any = null;
   private ailyBuilderUpdateDialogOpen = false;
+  private installTask: Promise<boolean> | null = null;
+  private readonly installPreparationHooks = new Map<string, ApplicationUpdatePreparationHook>();
 
   constructor(
     private electronService: ElectronService,
     // private message: NzMessageService,
     private modal: NzModalService,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private projectService: ProjectService,
+    private uiService: UiService,
+    private childHostRegistry: ChildAppHostRegistryService,
+    private message: NzMessageService,
+    private translate: TranslateService,
   ) { }
 
   init() {
@@ -120,6 +142,114 @@ export class UpdateService {
 
   quitAndInstall() {
     window['updater'].quitAndInstall();
+  }
+
+  registerInstallPreparationHook(id: string, hook: ApplicationUpdatePreparationHook): () => void {
+    const normalizedId = String(id || '').trim();
+    if (!normalizedId) {
+      throw new Error('Application update preparation hook id is required');
+    }
+    this.installPreparationHooks.set(normalizedId, hook);
+    return () => {
+      if (this.installPreparationHooks.get(normalizedId) === hook) {
+        this.installPreparationHooks.delete(normalizedId);
+      }
+    };
+  }
+
+  prepareAndInstall(): Promise<boolean> {
+    if (this.installTask) {
+      return this.installTask;
+    }
+
+    const task = this.runInstallPreparation();
+    this.installTask = task;
+    void task.finally(() => {
+      if (this.installTask === task) {
+        this.installTask = null;
+      }
+    });
+    return task;
+  }
+
+  private async runInstallPreparation(): Promise<boolean> {
+    this.updateStatus.next('preparing-install');
+
+    try {
+      const embeddedPreparation = await this.childHostRegistry.prepareAllForApplicationUpdate();
+      if (!embeddedPreparation.ok) {
+        throw new Error(this.firstPreparationError(embeddedPreparation.results));
+      }
+
+      await this.prepareStandaloneChildApps();
+
+      for (const [id, hook] of this.installPreparationHooks) {
+        const result = await hook();
+        if (result?.ok === false) {
+          throw new Error(result.message || `Update preparation failed: ${id}`);
+        }
+      }
+
+      if (this.projectService.currentProjectPath) {
+        const saveResult = await this.projectService.save(this.projectService.currentProjectPath, 15_000);
+        if (!saveResult.success) {
+          throw new Error(saveResult.error || this.translate.instant('UPDATE_DIALOG.SAVE_FAILED'));
+        }
+      }
+
+      await this.configService.save();
+      this.quitAndInstall();
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('[Updater] Install preparation failed:', error);
+      this.updateStatus.next('downloaded');
+      this.message.error(
+        this.translate.instant('UPDATE_DIALOG.PREPARATION_FAILED', { detail }),
+        { nzDuration: 6000 },
+      );
+      return false;
+    }
+  }
+
+  private async prepareStandaloneChildApps(): Promise<void> {
+    for (const routePath of [...this.uiService.openWindowPathList]) {
+      const toolId = this.childToolIdFromRoute(routePath);
+      if (!toolId) {
+        continue;
+      }
+      const command = window['subWindow']?.command;
+      if (typeof command !== 'function') {
+        throw new Error(`无法确认子应用 ${toolId} 的升级前保存状态`);
+      }
+      const result = await command(routePath, {
+        toolId,
+        action: 'prepareUpdate',
+        strictLifecycle: true,
+      });
+      if (result?.ok !== true) {
+        throw new Error(result.message || `子应用 ${toolId} 未完成升级前保存`);
+      }
+    }
+  }
+
+  private childToolIdFromRoute(routePath: string): string {
+    const match = String(routePath || '').match(/^\/?child-tool\/([^/?#]+)/);
+    if (!match?.[1]) {
+      return '';
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  private firstPreparationError(results: Array<Record<string, unknown>>): string {
+    const failed = results.find(result => result['ok'] === false);
+    return typeof failed?.['message'] === 'string' && failed['message'].trim()
+      ? failed['message'].trim()
+      : this.translate.instant('UPDATE_DIALOG.SESSION_SAVE_FAILED');
   }
 
   skipVersion(version: string) {
@@ -213,7 +343,7 @@ export class UpdateService {
           break;
         case 'install':
           // 安装更新
-          this.quitAndInstall();
+          await this.prepareAndInstall();
           break;
         case 'download_stop':
           // 取消下载

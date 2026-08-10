@@ -572,6 +572,10 @@
         "CANCEL_DOWNLOAD": "取消下载",
         "INSTALL_LATER": "稍后安装",
         "INSTALL_NOW": "立即安装",
+        "SAVING_BEFORE_INSTALL": "正在保存当前项目和代码会话，完成后将自动安装…",
+        "PREPARATION_FAILED": "安装已取消：当前工作尚未安全保存。{{detail}}",
+        "SAVE_FAILED": "当前项目保存失败",
+        "SESSION_SAVE_FAILED": "代码会话保存失败",
         "CLOSE": "关闭",
         "RETRY": "重试"
     },
@@ -1020,6 +1024,7 @@
             "PROGRESS_CORE": "正在编译核心",
             "PROGRESS_LINKING": "正在链接固件",
             "PROGRESS_OBJCOPY": "正在生成固件",
+            "PROGRESS_RESOURCES": "正在请求云端资源",
             "PROGRESS_FINALIZING": "正在完成编译",
             "PROGRESS_COMPLETE": "编译完成",
             "PROCESS_SIGNAL_TERMINATED": "编译进程被信号终止: {{signal}}",

@@ -498,6 +498,10 @@
         "CANCEL_DOWNLOAD": "Annuler le téléchargement",
         "INSTALL_LATER": "Installer plus tard",
         "INSTALL_NOW": "Installer maintenant",
+        "SAVING_BEFORE_INSTALL": "Enregistrement du projet actuel et des sessions de code. L’installation démarrera automatiquement…",
+        "PREPARATION_FAILED": "L’installation a été annulée, car votre travail n’a pas pu être enregistré en toute sécurité. {{detail}}",
+        "SAVE_FAILED": "Impossible d’enregistrer le projet actuel",
+        "SESSION_SAVE_FAILED": "Impossible d’enregistrer une session de code",
         "CLOSE": "Fermer",
         "RETRY": "Réessayer"
     },
@@ -866,6 +870,7 @@
             "PROGRESS_CORE": "Compilation du cœur",
             "PROGRESS_LINKING": "Édition des liens du micrologiciel",
             "PROGRESS_OBJCOPY": "Génération du micrologiciel",
+            "PROGRESS_RESOURCES": "Demande de ressources cloud en cours",
             "PROGRESS_FINALIZING": "Finalisation de la compilation",
             "PROGRESS_COMPLETE": "Compilation terminée",
             "PROCESS_SIGNAL_TERMINATED": "Le processus de compilation a été arrêté par le signal: {{signal}}",

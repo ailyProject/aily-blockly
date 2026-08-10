@@ -498,6 +498,10 @@
         "CANCEL_DOWNLOAD": "إلغاء التنزيل",
         "INSTALL_LATER": "التثبيت لاحقًا",
         "INSTALL_NOW": "التثبيت الآن",
+        "SAVING_BEFORE_INSTALL": "جارٍ حفظ المشروع الحالي وجلسات البرمجة. سيبدأ التثبيت تلقائيًا بعد ذلك…",
+        "PREPARATION_FAILED": "تم إلغاء التثبيت لتعذر حفظ العمل بأمان. {{detail}}",
+        "SAVE_FAILED": "تعذر حفظ المشروع الحالي",
+        "SESSION_SAVE_FAILED": "تعذر حفظ جلسة برمجة",
         "CLOSE": "إغلاق",
         "RETRY": "إعادة المحاولة"
     },
@@ -866,6 +870,7 @@
             "PROGRESS_CORE": "جارٍ تجميع النواة",
             "PROGRESS_LINKING": "جارٍ ربط البرنامج الثابت",
             "PROGRESS_OBJCOPY": "جارٍ إنشاء البرنامج الثابت",
+            "PROGRESS_RESOURCES": "جارٍ طلب الموارد السحابية",
             "PROGRESS_FINALIZING": "جارٍ إنهاء البناء",
             "PROGRESS_COMPLETE": "اكتمل البناء",
             "PROCESS_SIGNAL_TERMINATED": "تم إنهاء عملية البناء بإشارة: {{signal}}",

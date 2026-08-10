@@ -9,4 +9,8 @@
  */
 
 export {Multiselect} from './multiselect';
-export {dragSelectionWeakMap, inMultipleSelectionModeWeakMap} from './global';
+export {
+  dragSelectionWeakMap,
+  inMultipleSelectionModeWeakMap,
+  registerFieldInputIncrementPolicy,
+} from './global';

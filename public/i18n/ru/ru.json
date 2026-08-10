@@ -498,6 +498,10 @@
         "CANCEL_DOWNLOAD": "Отменить загрузку",
         "INSTALL_LATER": "Установить позже",
         "INSTALL_NOW": "Установить сейчас",
+        "SAVING_BEFORE_INSTALL": "Сохраняются текущий проект и сеансы кода. После этого установка начнётся автоматически…",
+        "PREPARATION_FAILED": "Установка отменена, так как не удалось безопасно сохранить работу. {{detail}}",
+        "SAVE_FAILED": "Не удалось сохранить текущий проект",
+        "SESSION_SAVE_FAILED": "Не удалось сохранить сеанс кода",
         "CLOSE": "Закрыть",
         "RETRY": "Повторить"
     },
@@ -866,6 +870,7 @@
             "PROGRESS_CORE": "Компиляция ядра",
             "PROGRESS_LINKING": "Компоновка прошивки",
             "PROGRESS_OBJCOPY": "Создание прошивки",
+            "PROGRESS_RESOURCES": "Запрос облачных ресурсов",
             "PROGRESS_FINALIZING": "Завершение сборки",
             "PROGRESS_COMPLETE": "Сборка завершена",
             "PROCESS_SIGNAL_TERMINATED": "Процесс сборки завершен сигналом: {{signal}}",

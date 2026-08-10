@@ -498,6 +498,10 @@
         "CANCEL_DOWNLOAD": "Cancelar descarga",
         "INSTALL_LATER": "Instalar más tarde",
         "INSTALL_NOW": "Instalar ahora",
+        "SAVING_BEFORE_INSTALL": "Guardando el proyecto actual y las sesiones de código. La instalación comenzará automáticamente…",
+        "PREPARATION_FAILED": "La instalación se canceló porque el trabajo no pudo guardarse de forma segura. {{detail}}",
+        "SAVE_FAILED": "No se pudo guardar el proyecto actual",
+        "SESSION_SAVE_FAILED": "No se pudo guardar una sesión de código",
         "CLOSE": "Cerrar",
         "RETRY": "Reintentar"
     },
@@ -866,6 +870,7 @@
             "PROGRESS_CORE": "Compilando el núcleo",
             "PROGRESS_LINKING": "Enlazando el firmware",
             "PROGRESS_OBJCOPY": "Generando el firmware",
+            "PROGRESS_RESOURCES": "Solicitando recursos en la nube",
             "PROGRESS_FINALIZING": "Finalizando la compilación",
             "PROGRESS_COMPLETE": "Compilación completada",
             "PROCESS_SIGNAL_TERMINATED": "El proceso de compilación fue terminado por la señal: {{signal}}",

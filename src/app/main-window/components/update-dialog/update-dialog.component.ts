@@ -117,9 +117,13 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
     this.modal.close(result);
   }
 
-  onButtonClick(action: string): void {
+  async onButtonClick(action: string): Promise<void> {
     if (action === 'download') {
       this.download();
+    } else if (action === 'install') {
+      this.mode = 'preparing-install';
+      this.cd.detectChanges();
+      await this.updateService.prepareAndInstall();
     } else {
       this.modal.close(action);
     }

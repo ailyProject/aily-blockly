@@ -935,7 +935,7 @@ export class ProjectService {
   }
 
   // 保存项目
-  save(path = this.currentProjectPath) {
+  save(path = this.currentProjectPath, feedbackTimeoutMs = 5000) {
     if (this.isProjectOpening) {
       return Promise.resolve({
         success: false,
@@ -957,7 +957,7 @@ export class ProjectService {
           this.stateSubject.next('error');
           resolve({ success: false, error: result.error, path });
         }
-      });
+      }, feedbackTimeoutMs);
     });
   }
 

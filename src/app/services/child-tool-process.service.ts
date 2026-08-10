@@ -44,6 +44,13 @@ interface ChildToolBackendMessage {
   data?: any;
 }
 
+interface SharedChildToolRuntime {
+  toolId?: string;
+  streamId?: string;
+  hostInfo?: ChildToolHostInfo | null;
+  running?: boolean;
+}
+
 interface ChildToolSession {
   leaseId: string;
   streamId: string;
@@ -57,6 +64,9 @@ interface ChildToolSession {
   hostInfo: ChildToolHostInfo | null;
   refCount: number;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  recoveryTimer: ReturnType<typeof setTimeout> | null;
+  recoveryAttempts: number;
+  reconcilePromise: Promise<void> | null;
   expectedStopReason: 'release' | 'restart' | 'shutdown' | null;
 }
 
@@ -66,6 +76,8 @@ interface ChildToolSession {
 export class ChildToolProcessService implements OnDestroy {
   private sessions = new Map<string, ChildToolSession>();
   private readonly releaseGraceMs = 15000;
+  private readonly recoveryBaseDelayMs = 500;
+  private readonly maxRecoveryAttempts = 3;
   private readonly runtimeSnapshots = new Map<string, ChildToolRuntimeSnapshot>();
   private readonly runtimeStatesSubject = new BehaviorSubject<readonly ChildToolRuntimeSnapshot[]>([]);
   private readonly processMessageListeners = new Map<
@@ -73,12 +85,20 @@ export class ChildToolProcessService implements OnDestroy {
     Set<(message: Record<string, unknown>) => void>
   >();
   private removeProcessMessageListener: (() => void) | null = null;
+  private removeSessionStateListener: (() => void) | null = null;
   readonly runtimeStates$ = this.runtimeStatesSubject.asObservable();
 
   constructor(
     private configService: ConfigService,
     private projectService: ProjectService,
-  ) {}
+  ) {
+    const onStateChanged = window['childToolSession']?.onStateChanged;
+    if (typeof onStateChanged === 'function') {
+      this.removeSessionStateListener = onStateChanged((payload: unknown) => {
+        this.reconcileSharedRuntimeStates(payload);
+      });
+    }
+  }
 
   async acquire(toolId: string): Promise<ChildToolHostInfo> {
     const config = this.requireConfig(toolId);
@@ -123,6 +143,7 @@ export class ChildToolProcessService implements OnDestroy {
       session,
     );
     if (session.refCount === 0) {
+      this.cancelRecovery(session);
       this.scheduleRelease(config, session);
     }
   }
@@ -131,6 +152,7 @@ export class ChildToolProcessService implements OnDestroy {
     const config = this.requireConfig(toolId);
     const session = this.ensureSession(config.id);
     this.cancelReleaseTimer(session);
+    this.cancelRecovery(session, true);
     this.publishRuntimeState(config.id, 'starting', session);
     try {
       await this.forceStopSession(config, session, 'restart');
@@ -148,6 +170,7 @@ export class ChildToolProcessService implements OnDestroy {
     const session = this.sessions.get(toolId);
     if (config && session) {
       this.cancelReleaseTimer(session);
+      this.cancelRecovery(session, true);
       await this.stopSession(config, session, 'shutdown');
       this.sessions.delete(toolId);
       this.publishRuntimeState(config.id, 'stopped', session);
@@ -163,6 +186,7 @@ export class ChildToolProcessService implements OnDestroy {
     const session = this.sessions.get(normalizedToolId);
     if (config && session) {
       this.cancelReleaseTimer(session);
+      this.cancelRecovery(session, true);
       await this.forceStopSession(config, session, 'shutdown');
       this.sessions.delete(normalizedToolId);
       this.publishRuntimeState(normalizedToolId, 'stopped', session);
@@ -182,6 +206,7 @@ export class ChildToolProcessService implements OnDestroy {
       const config = getChildToolConfig(toolId);
       if (config) {
         this.cancelReleaseTimer(session);
+        this.cancelRecovery(session, true);
         await this.stopSession(config, session, 'shutdown');
       }
       this.sessions.delete(toolId);
@@ -198,6 +223,9 @@ export class ChildToolProcessService implements OnDestroy {
         && previous.running === current.running
         && previous.refCount === current.refCount
         && previous.hostInfo?.url === current.hostInfo?.url
+        && previous.hostInfo?.pid === current.hostInfo?.pid
+        && previous.hostInfo?.entry === current.hostInfo?.entry
+        && previous.hostInfo?.packagePath === current.hostInfo?.packagePath
         && previous.error === current.error),
     );
   }
@@ -263,7 +291,10 @@ export class ChildToolProcessService implements OnDestroy {
   ngOnDestroy(): void {
     this.removeProcessMessageListener?.();
     this.removeProcessMessageListener = null;
+    this.removeSessionStateListener?.();
+    this.removeSessionStateListener = null;
     this.processMessageListeners.clear();
+    for (const session of this.sessions.values()) this.cancelRecovery(session, true);
     void this.stopAll();
   }
 
@@ -291,6 +322,9 @@ export class ChildToolProcessService implements OnDestroy {
         hostInfo: null,
         refCount: 0,
         releaseTimer: null,
+        recoveryTimer: null,
+        recoveryAttempts: 0,
+        reconcilePromise: null,
         expectedStopReason: null
       };
       this.sessions.set(toolId, session);
@@ -330,6 +364,14 @@ export class ChildToolProcessService implements OnDestroy {
 
     clearTimeout(session.releaseTimer);
     session.releaseTimer = null;
+  }
+
+  private cancelRecovery(session: ChildToolSession, resetAttempts = false): void {
+    if (session.recoveryTimer) {
+      clearTimeout(session.recoveryTimer);
+      session.recoveryTimer = null;
+    }
+    if (resetAttempts) session.recoveryAttempts = 0;
   }
 
   private async startSession(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
@@ -652,6 +694,10 @@ export class ChildToolProcessService implements OnDestroy {
       if (registered && registered.success !== true) {
         throw new Error(`${config.id} Runtime registration failed: ${registered.reason || 'unknown error'}`);
       }
+      if (registered?.reused === true) {
+        return await this.adoptConcurrentSharedSession(config, session, streamId, registered.session);
+      }
+      this.cancelRecovery(session, true);
       this.log(config, 'server ready promise resolved', this.sanitizeHostInfo(registeredHostInfo));
       return registeredHostInfo;
     } catch (error) {
@@ -660,6 +706,52 @@ export class ChildToolProcessService implements OnDestroy {
       await this.cleanupFailedStart(config, session, streamId);
       throw error;
     }
+  }
+
+  private async adoptConcurrentSharedSession(
+    config: ChildToolConfig,
+    session: ChildToolSession,
+    candidateStreamId: string,
+    registeredSession: any,
+  ): Promise<ChildToolHostInfo> {
+    const sharedStreamId = String(registeredSession?.streamId || '');
+    const sharedHostInfo = registeredSession?.hostInfo as ChildToolHostInfo | undefined;
+    if (!sharedStreamId || !sharedHostInfo?.url) {
+      throw new Error(`${config.id} shared Runtime registration did not return a usable session`);
+    }
+
+    session.removeListener?.();
+    session.removeListener = null;
+    session.streamId = '';
+    session.running = false;
+    const killed = await window['cmd']?.kill?.(candidateStreamId);
+    if (killed?.success !== true) {
+      await window['childToolSession']?.release?.({
+        toolId: config.id,
+        streamId: sharedStreamId,
+        leaseId: session.leaseId,
+      });
+      throw new Error(`${config.id} redundant Runtime process could not be stopped`);
+    }
+    await window['childToolSession']?.unregister?.({
+      toolId: config.id,
+      streamId: candidateStreamId,
+    });
+
+    session.streamId = sharedStreamId;
+    session.hostInfo = sharedHostInfo;
+    session.running = true;
+    session.stdoutBuffer = '';
+    session.stderrBuffer = '';
+    session.expectedStopReason = null;
+    this.cancelRecovery(session, true);
+    this.publishRuntimeState(config.id, 'ready', session);
+    this.log(config, 'concurrent start reused shared session', {
+      candidateStreamId,
+      sharedStreamId,
+      ...this.sanitizeHostInfo(sharedHostInfo),
+    });
+    return sharedHostInfo;
   }
 
   private async cleanupFailedStart(
@@ -723,7 +815,8 @@ export class ChildToolProcessService implements OnDestroy {
 
     if (output.type === 'close') {
       const expectedStopReason = session.expectedStopReason;
-      const reason = `${config.id} server closed with code ${output.code ?? 'unknown'}${this.formatBufferedStderr(session)}`;
+      const shouldRecover = !expectedStopReason && session.refCount > 0;
+      const reason = `${config.id} server closed with code ${this.formatProcessExitCode(output.code)}${this.formatBufferedStderr(session)}`;
       const details = {
         code: output.code,
         signal: output.signal,
@@ -743,7 +836,9 @@ export class ChildToolProcessService implements OnDestroy {
       this.handleClose(session);
       this.publishRuntimeState(
         config.id,
-        expectedStopReason === 'restart'
+        shouldRecover
+          ? 'starting'
+          : expectedStopReason === 'restart'
           ? 'starting'
           : expectedStopReason
             ? 'stopped'
@@ -755,6 +850,103 @@ export class ChildToolProcessService implements OnDestroy {
         toolId: config.id,
         streamId
       });
+      if (shouldRecover) this.scheduleRecovery(config, session, reason);
+    }
+  }
+
+  private scheduleRecovery(
+    config: ChildToolConfig,
+    session: ChildToolSession,
+    reason: string,
+  ): void {
+    if (session.refCount === 0 || session.running || session.recoveryTimer) return;
+    if (session.recoveryAttempts >= this.maxRecoveryAttempts) {
+      this.publishRuntimeState(config.id, 'error', session, reason);
+      return;
+    }
+
+    const delayMs = this.recoveryBaseDelayMs * (2 ** session.recoveryAttempts);
+    this.log(config, 'unexpected close recovery scheduled', {
+      attempt: session.recoveryAttempts + 1,
+      delayMs,
+      reason,
+    });
+    session.recoveryTimer = setTimeout(() => {
+      session.recoveryTimer = null;
+      if (session.refCount === 0 || session.running) return;
+      session.recoveryAttempts += 1;
+      void this.startSession(config, session).then(() => {
+        this.cancelRecovery(session, true);
+        this.publishRuntimeState(config.id, 'ready', session);
+      }).catch(error => {
+        const recoveryError = error instanceof Error ? error.message : String(error || reason);
+        if (session.recoveryAttempts >= this.maxRecoveryAttempts) {
+          this.publishRuntimeState(config.id, 'error', session, recoveryError);
+          return;
+        }
+        this.publishRuntimeState(config.id, 'starting', session, recoveryError);
+        this.scheduleRecovery(config, session, recoveryError);
+      });
+    }, delayMs);
+  }
+
+  private reconcileSharedRuntimeStates(payload: unknown): void {
+    const runtimes = Array.isArray(payload) ? payload as SharedChildToolRuntime[] : [];
+    for (const [toolId, session] of this.sessions) {
+      if (session.refCount === 0 || session.startPromise || session.readyResolve || session.reconcilePromise) continue;
+      const shared = runtimes.find(runtime =>
+        runtime?.toolId === toolId
+        && runtime.running === true
+        && !!runtime.streamId
+        && !!runtime.hostInfo?.url);
+      if (!shared || (session.running && session.streamId === shared.streamId)) continue;
+      const config = getChildToolConfig(toolId);
+      if (!config) continue;
+      session.reconcilePromise = this.reacquireSharedRuntime(config, session).finally(() => {
+        session.reconcilePromise = null;
+      });
+    }
+  }
+
+  private async reacquireSharedRuntime(
+    config: ChildToolConfig,
+    session: ChildToolSession,
+  ): Promise<void> {
+    try {
+      const shared = await window['childToolSession']?.acquire?.({
+        toolId: config.id,
+        leaseId: session.leaseId,
+      });
+      const sharedStreamId = String(shared?.streamId || '');
+      const sharedHostInfo = shared?.hostInfo as ChildToolHostInfo | undefined;
+      if (!sharedStreamId || !sharedHostInfo?.url) return;
+      if (session.refCount === 0) {
+        await window['childToolSession']?.release?.({
+          toolId: config.id,
+          streamId: sharedStreamId,
+          leaseId: session.leaseId,
+        });
+        return;
+      }
+
+      const previousStreamId = session.streamId;
+      session.removeListener?.();
+      session.removeListener = null;
+      session.streamId = sharedStreamId;
+      session.hostInfo = sharedHostInfo;
+      session.running = true;
+      session.stdoutBuffer = '';
+      session.stderrBuffer = '';
+      session.expectedStopReason = null;
+      this.cancelRecovery(session, true);
+      this.publishRuntimeState(config.id, 'ready', session);
+      this.log(config, 'shared session replacement acquired', {
+        previousStreamId,
+        sharedStreamId,
+        ...this.sanitizeHostInfo(sharedHostInfo),
+      });
+    } catch (error) {
+      this.logError(config, 'shared session replacement acquire failed', error);
     }
   }
 
@@ -935,6 +1127,17 @@ export class ChildToolProcessService implements OnDestroy {
   private formatBufferedStderr(session: ChildToolSession): string {
     const stderr = this.tailText(session.stderrBuffer).trim();
     return stderr ? `: ${stderr}` : '';
+  }
+
+  private formatProcessExitCode(value: unknown): string {
+    if (!Number.isInteger(value)) return 'unknown';
+    const code = Number(value);
+    const unsigned = code >>> 0;
+    if (unsigned <= 0x7fffffff) return String(code);
+    const hex = `0x${unsigned.toString(16).toUpperCase().padStart(8, '0')}`;
+    return unsigned === 0xC0000409
+      ? `${code} (${hex}, Windows fail-fast)`
+      : `${code} (${hex})`;
   }
 
   private tailText(value: string, maxLength = 4000): string {

@@ -524,6 +524,10 @@
         "CANCEL_DOWNLOAD": "取消下載",
         "INSTALL_LATER": "稍後安裝",
         "INSTALL_NOW": "立即安裝",
+        "SAVING_BEFORE_INSTALL": "正在儲存目前專案和程式碼工作階段，完成後將自動安裝…",
+        "PREPARATION_FAILED": "安裝已取消：目前工作尚未安全儲存。{{detail}}",
+        "SAVE_FAILED": "目前專案儲存失敗",
+        "SESSION_SAVE_FAILED": "程式碼工作階段儲存失敗",
         "CLOSE": "關閉",
         "RETRY": "重試"
     },
@@ -943,6 +947,7 @@
             "PROGRESS_CORE": "正在編譯核心",
             "PROGRESS_LINKING": "正在連結韌體",
             "PROGRESS_OBJCOPY": "正在產生韌體",
+            "PROGRESS_RESOURCES": "正在請求雲端資源",
             "PROGRESS_FINALIZING": "正在完成編譯",
             "PROGRESS_COMPLETE": "編譯完成",
             "PROCESS_SIGNAL_TERMINATED": "編譯進程被訊號終止: {{signal}}",

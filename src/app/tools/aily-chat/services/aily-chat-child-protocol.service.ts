@@ -122,6 +122,37 @@ export class AilyChatChildProtocolService {
     });
   }
 
+  async prepareForApplicationUpdate(): Promise<{
+    ok: boolean;
+    interrupted: boolean;
+    sessionId?: string;
+    message?: string;
+  }> {
+    const sessionId = typeof this.chatService.currentSessionId === 'string'
+      ? this.chatService.currentSessionId.trim()
+      : '';
+    let interrupted = false;
+
+    if (sessionId && this.chatService.isWaiting) {
+      interrupted = await this.engine.stopAndWait(sessionId);
+      if (!interrupted) {
+        return {
+          ok: false,
+          interrupted: false,
+          sessionId,
+          message: '当前代码会话仍在运行，无法确认已安全中断。',
+        };
+      }
+    }
+
+    this.engine.saveCurrentSession();
+    return {
+      ok: true,
+      interrupted,
+      ...(sessionId ? { sessionId } : {}),
+    };
+  }
+
   private async handleRequest(request: ChildChatRequest): Promise<void> {
     const id = String(request.id || '');
     const method = String(request.method || '');

@@ -498,6 +498,10 @@
         "CANCEL_DOWNLOAD": "ダウンロードをキャンセル",
         "INSTALL_LATER": "後でインストール",
         "INSTALL_NOW": "今すぐインストール",
+        "SAVING_BEFORE_INSTALL": "現在のプロジェクトとコードセッションを保存しています。完了後、自動的にインストールします…",
+        "PREPARATION_FAILED": "作業を安全に保存できなかったため、インストールをキャンセルしました。{{detail}}",
+        "SAVE_FAILED": "現在のプロジェクトを保存できませんでした",
+        "SESSION_SAVE_FAILED": "コードセッションを保存できませんでした",
         "CLOSE": "閉じる",
         "RETRY": "再試行"
     },
@@ -866,6 +870,7 @@
             "PROGRESS_CORE": "コアをコンパイル中",
             "PROGRESS_LINKING": "ファームウェアをリンク中",
             "PROGRESS_OBJCOPY": "ファームウェアを生成中",
+            "PROGRESS_RESOURCES": "クラウドリソースをリクエスト中",
             "PROGRESS_FINALIZING": "ビルドを仕上げています",
             "PROGRESS_COMPLETE": "ビルド完了",
             "PROCESS_SIGNAL_TERMINATED": "ビルドプロセスはシグナルで終了しました: {{signal}}",
