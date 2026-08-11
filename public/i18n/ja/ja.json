@@ -839,6 +839,7 @@
         "LOADING_LIB": "{{name}}を読み込み中",
         "LOADING_BLOCKLY_PROGRAM": "Blocklyプログラムを読み込み中",
         "PROJECT_LOAD_SUCCESS": "プロジェクトの読み込みが完了しました",
+        "BOARD_CLOUD_AUTH_REQUIRED": "このハードウェアの開発にはクラウドサービスが必要です。正常に開発を行うにはログインしてください。",
         "EXPLAIN_BLOCK_PROMPT": "このブロックの役割、動作原理、および現在のプログラムでの用途を説明してください。",
         "BUILD": {
             "RUNNING_TITLE": "{{board}}をビルド中",

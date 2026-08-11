@@ -715,6 +715,15 @@ export class BlocklyLiveOperationBridgeService {
       return { ok: false, message: '当前未打开 Blockly 项目' };
     }
     await this.projectService.projectOpen();
+    const state = this.projectService.stateSubject.value;
+    if (state !== 'loaded') {
+      return {
+        ok: false,
+        operation: 'project_reload',
+        project: projectPath,
+        message: `项目从磁盘重新加载失败（state=${state}）`,
+      };
+    }
     return {
       ok: true,
       operation: 'project_reload',

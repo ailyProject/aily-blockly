@@ -993,6 +993,7 @@
         "LOADING_LIB": "正在加载{{name}}",
         "LOADING_BLOCKLY_PROGRAM": "正在加载Blockly程序",
         "PROJECT_LOAD_SUCCESS": "项目加载成功",
+        "BOARD_CLOUD_AUTH_REQUIRED": "该硬件的开发依赖云服务，需要登录后才能正常进行开发。",
         "EXPLAIN_BLOCK_PROMPT": "请解释这个积木块的作用、工作原理，以及它在当前程序中的用途。",
         "BUILD": {
             "RUNNING_TITLE": "正在编译{{board}}",

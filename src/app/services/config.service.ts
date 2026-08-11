@@ -5,6 +5,7 @@ import { ElectronService } from './electron.service';
 import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../configs/api.config';
 import { calculateSimilarity, extractKeywords } from '../utils/fuzzy-search.utils';
 import { mapCoderBoardIndexToBoardList, type CoderBoardIndexEntry } from '../utils/coder-board.mapper';
+import { normalizeLanguageCode } from '../utils/language-code';
 
 export const DEVELOPMENT_MODE_PREFERENCES = ['coder', 'blockly'] as const;
 export type DevelopmentModePreference = typeof DEVELOPMENT_MODE_PREFERENCES[number];
@@ -193,26 +194,13 @@ export class ConfigService {
     //console.log('[ConfigService] 初始化完成, isDataReady=', this.isDataReady);
   }
 
-  get_lang_filename(lang: string) {
-    if (!lang) lang = 'zh_cn';
-    else if(lang.toLowerCase() == 'zh-cn' || lang.toLowerCase() == 'zh_cn') lang = 'zh_cn';
-    else if(lang.toLowerCase() == 'zh-hk' || lang.toLowerCase() == 'zh_hk') lang = 'zh_hk';
-    else if(lang.startsWith('en_') || lang.startsWith('en-')) lang = 'en';
-    else if(lang.startsWith('fr_') || lang.startsWith('fr-')) lang = 'fr';
-    else if(lang.startsWith('de_') || lang.startsWith('de-')) lang = 'de';
-    else if(lang.startsWith('pt_') || lang.startsWith('pt-')) lang = 'pt';
-    else lang = lang.toLowerCase();
-
-    return lang;
-  }
-
   async load() {
     //console.log('[ConfigService] load() 开始执行...');
     let defaultConfigFilePath = window['path'].getElectronPath();
     let defaultConfigFile = window['fs'].readFileSync(`${defaultConfigFilePath}/config/config.json`);
     this.data = await JSON.parse(defaultConfigFile);
 
-    this.data["selectedLanguage"] = this.get_lang_filename(window['platform'].lang);
+    this.data["selectedLanguage"] = normalizeLanguageCode(window['platform'].lang);
 
     let userConfData;
     let configFilePath = window['path'].getAppDataPath();
@@ -225,6 +213,7 @@ export class ConfigService {
 
     // 合并用户配置和默认配置
     this.data = { ...this.data, ...userConfData };
+    this.data.selectedLanguage = normalizeLanguageCode(this.data.selectedLanguage);
     this.data.developmentModePreference = this.isCoderEnabled()
       ? this.normalizeDevelopmentModePreference(this.data.developmentModePreference)
       : 'blockly';
@@ -260,7 +249,7 @@ export class ConfigService {
 
     // 添加当前系统类型到data中
     this.data["platform"] = window['platform'].type;
-    this.data["lang"] = this.get_lang_filename(window['platform'].lang);
+    this.data["lang"] = normalizeLanguageCode(window['platform'].lang);
     this.configReloaded$.next();
 
     // 并行加载缓存的boards.json、libraries.json和tags.json（旧格式，用于基础功能）

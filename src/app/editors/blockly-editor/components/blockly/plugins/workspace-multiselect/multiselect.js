@@ -20,6 +20,7 @@ import {
 } from './global';
 import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
+import {shouldAutoFocusWorkspace} from './workspace-auto-focus';
 
 /**
  * Class for using multiple select blocks on workspace.
@@ -64,13 +65,14 @@ export class Multiselect {
     this.onFocusOutWrapper_ = Blockly.browserEvents.conditionalBind(
         injectionDiv, 'focusout', this, this.onBlur_);
     injectionDiv.addEventListener('mouseenter', () => {
-      if (options.workspaceAutoFocus === false ||
-          document.activeElement === this.workspace_.svgGroup_.parentElement ||
-          document.activeElement.nodeName.toLowerCase() === 'input' ||
-          document.activeElement.nodeName.toLowerCase() === 'textarea') {
+      const workspaceFocusTarget = this.workspace_.svgGroup_.parentElement;
+      if (!shouldAutoFocusWorkspace(
+          options.workspaceAutoFocus,
+          document.activeElement,
+          workspaceFocusTarget)) {
         return;
       }
-      this.workspace_.svgGroup_.parentElement.focus();
+      workspaceFocusTarget.focus();
     });
     this.eventListenerWrapper_ = this.eventListener_.bind(this);
     this.workspace_.addChangeListener(this.eventListenerWrapper_);

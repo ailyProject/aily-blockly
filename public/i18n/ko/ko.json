@@ -827,6 +827,7 @@
         "LOADING_LIB": "{{name}} 로드 중",
         "LOADING_BLOCKLY_PROGRAM": "Blockly 프로그램 로드 중",
         "PROJECT_LOAD_SUCCESS": "프로젝트 로드 완료",
+        "BOARD_CLOUD_AUTH_REQUIRED": "이 하드웨어 개발에는 클라우드 서비스가 필요합니다. 정상적으로 개발하려면 로그인해 주세요.",
         "EXPLAIN_BLOCK_PROMPT": "이 블록의 역할, 동작 원리, 현재 프로그램에서의 용도를 설명해 주세요.",
         "BUILD": {
             "RUNNING_TITLE": "{{board}} 빌드 중",

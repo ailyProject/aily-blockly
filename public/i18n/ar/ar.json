@@ -839,6 +839,7 @@
         "LOADING_LIB": "جاري تحميل {{name}}",
         "LOADING_BLOCKLY_PROGRAM": "جاري تحميل برنامج Blockly",
         "PROJECT_LOAD_SUCCESS": "تم تحميل المشروع بنجاح",
+        "BOARD_CLOUD_AUTH_REQUIRED": "يعتمد التطوير باستخدام هذا الجهاز على الخدمات السحابية. يرجى تسجيل الدخول لمتابعة التطوير بشكل طبيعي.",
         "EXPLAIN_BLOCK_PROMPT": "يرجى شرح وظيفة هذه الكتلة وكيفية عملها ودورها في البرنامج الحالي.",
         "BUILD": {
             "RUNNING_TITLE": "جاري بناء {{board}}",

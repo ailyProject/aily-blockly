@@ -5,6 +5,7 @@ import {
   isFieldInputIncrementable,
   registerFieldInputIncrementPolicy,
 } from './global.js';
+import {shouldAutoFocusWorkspace} from './workspace-auto-focus.js';
 
 const VARIABLE_BLOCK = 'test_copy_increment_variable';
 const LITERAL_BLOCK = 'test_copy_increment_literal';
@@ -125,5 +126,52 @@ describe('workspace multiselect field_input increment policy', () => {
         .withContext(fieldName)
         .toBeFalse();
     }
+  });
+});
+
+describe('workspace multiselect hover autofocus', () => {
+  let workspaceFocusTarget: HTMLDivElement;
+
+  beforeEach(() => {
+    workspaceFocusTarget = document.createElement('div');
+  });
+
+  it('preserves focus owned by an embedded child app iframe', () => {
+    const iframe = document.createElement('iframe');
+
+    expect(shouldAutoFocusWorkspace(undefined, iframe, workspaceFocusTarget))
+      .toBeFalse();
+  });
+
+  it('preserves the existing host input and textarea behavior', () => {
+    const input = document.createElement('input');
+    const textarea = document.createElement('textarea');
+
+    expect(shouldAutoFocusWorkspace(undefined, input, workspaceFocusTarget))
+      .toBeFalse();
+    expect(shouldAutoFocusWorkspace(undefined, textarea, workspaceFocusTarget))
+      .toBeFalse();
+  });
+
+  it('does not refocus a workspace that already owns focus', () => {
+    expect(shouldAutoFocusWorkspace(
+      undefined,
+      workspaceFocusTarget,
+      workspaceFocusTarget,
+    )).toBeFalse();
+  });
+
+  it('honors an explicitly disabled workspace autofocus option', () => {
+    const button = document.createElement('button');
+
+    expect(shouldAutoFocusWorkspace(false, button, workspaceFocusTarget))
+      .toBeFalse();
+  });
+
+  it('keeps the original autofocus behavior for ordinary elements', () => {
+    const button = document.createElement('button');
+
+    expect(shouldAutoFocusWorkspace(undefined, button, workspaceFocusTarget))
+      .toBeTrue();
   });
 });

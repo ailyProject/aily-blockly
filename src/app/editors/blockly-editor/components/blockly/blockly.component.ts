@@ -7,6 +7,7 @@ import { TranslateService } from '@ngx-translate/core';
 import { UiService } from '../../../../services/ui.service';
 import { AuthService } from '../../../../services/auth.service';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { normalizeLanguageCode, type SupportedLanguageCode } from '../../../../utils/language-code';
 
 // Blockly 多语言包
 import * as zhHans from 'blockly/msg/zh-hans';
@@ -22,11 +23,9 @@ import * as ru from 'blockly/msg/ru';
 import * as ar from 'blockly/msg/ar';
 
 // 语言代码到 Blockly 语言包的映射
-const BLOCKLY_LOCALES: { [key: string]: any } = {
+const BLOCKLY_LOCALES: Record<SupportedLanguageCode, any> = {
   'zh_cn': zhHans,
   'zh_hk': zhHant,
-  'zh-hans': zhHans,
-  'zh-hant': zhHant,
   'en': en,
   'ja': ja,
   'ko': ko,
@@ -2087,11 +2086,10 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   updateBlocklyLocale(lang: string) {
-    // 获取对应的 Blockly 语言包
-    const locale = BLOCKLY_LOCALES[lang] || BLOCKLY_LOCALES['en'] || zhHans;
+    const normalizedLang = normalizeLanguageCode(lang);
 
     // 设置 Blockly locale
-    Blockly.setLocale(locale);
+    Blockly.setLocale(BLOCKLY_LOCALES[normalizedLang]);
 
     // 设置自定义消息（覆盖或补充）
     Blockly.Msg["CROSS_TAB_COPY"] = this.translateService.instant('BLOCKLY.CROSS_TAB_COPY') || "复制到指定位置";
@@ -2101,9 +2099,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     Blockly.Msg["EXPLAIN_BLOCK"] = this.translateService.instant('BLOCKLY.EXPLAIN_BLOCK') || "Explain with AI";
 
     // 自定义扩展的多语言消息（switch-case 等）
-    Blockly.Msg["CONTROLS_SWITCH_CASE"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_CASE') || (lang.startsWith('zh') ? "情况" : "case");
-    Blockly.Msg["CONTROLS_SWITCH_DO"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DO') || (lang.startsWith('zh') ? "执行" : "do");
-    Blockly.Msg["CONTROLS_SWITCH_DEFAULT"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DEFAULT') || (lang.startsWith('zh') ? "默认执行" : "default");
+    Blockly.Msg["CONTROLS_SWITCH_CASE"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_CASE') || (normalizedLang.startsWith('zh') ? "情况" : "case");
+    Blockly.Msg["CONTROLS_SWITCH_DO"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DO') || (normalizedLang.startsWith('zh') ? "执行" : "do");
+    Blockly.Msg["CONTROLS_SWITCH_DEFAULT"] = this.translateService.instant('BLOCKLY.CONTROLS_SWITCH_DEFAULT') || (normalizedLang.startsWith('zh') ? "默认执行" : "default");
     setU8g2AnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiAnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiImageFieldTranslator((key, params) => this.translateService.instant(key, params));

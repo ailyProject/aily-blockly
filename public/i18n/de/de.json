@@ -839,6 +839,7 @@
         "LOADING_LIB": "{{name}} wird geladen",
         "LOADING_BLOCKLY_PROGRAM": "Blockly-Programm wird geladen",
         "PROJECT_LOAD_SUCCESS": "Projekt erfolgreich geladen",
+        "BOARD_CLOUD_AUTH_REQUIRED": "Die Entwicklung mit dieser Hardware ist von Cloud-Diensten abhängig. Bitte melden Sie sich an, um normal weiterzuentwickeln.",
         "EXPLAIN_BLOCK_PROMPT": "Bitte erklären Sie, was dieser Block macht, wie er funktioniert und welche Rolle er im aktuellen Programm spielt.",
         "BUILD": {
             "RUNNING_TITLE": "{{board}} wird kompiliert",

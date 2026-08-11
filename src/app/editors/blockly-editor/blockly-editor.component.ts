@@ -37,6 +37,8 @@ import { projectDataRuntime } from '../../services/project-data/project-data-run
 import { projectResourceGc } from './services/project-resource-gc.service';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
 import { ProjectDataError } from '../../services/project-data/project-data.types';
+import { AuthService } from '../../services/auth.service';
+import { boardRequiresCloudAuth } from './board-auth-gate';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -118,6 +120,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     private codeViewerIpcService: CodeViewerIpcService,
     private blocklyLibraryPackageService: BlocklyLibraryPackageService,
     private generatorRuntime: BlocklyGeneratorRuntimeService,
+    private authService: AuthService,
   ) { }
 
   ngOnInit(): void {
@@ -244,6 +247,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.applyProjectPackageJson(packageJson);
     // 与 Aily Code（code-editor-pro）共用：node_modules 不齐则 npm install
     if (!(await this.npmService.ensureProjectDependenciesInstalled(projectPath))) {
+      this.projectService.stateSubject.next('error');
       return;
     }
 
@@ -397,6 +401,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.generatorRuntime.markReady(projectPath);
     this.projectService.markBlocklyLibraryRuntimeReady(projectPath);
     this.scheduleProjectLoadedCodeRefresh();
+    void this.promptLoginForAuthRequiredBoard(projectPath);
 
     if (missingDeclaredLibraries.length > 0) {
       const libraryNames = missingDeclaredLibraries.join(', ');
@@ -428,6 +433,35 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         console.log('install board dependencies success');
       })
       .catch(() => undefined);
+  }
+
+  private async promptLoginForAuthRequiredBoard(projectPath: string): Promise<void> {
+    try {
+      const boardPackageJson = await this.projectService.getBoardPackageJson();
+      if (!boardRequiresCloudAuth(boardPackageJson)) {
+        return;
+      }
+
+      const authState = this.authService.getAuthInitializationState();
+      if (authState === 'idle' || authState === 'checking') {
+        await this.authService.initializeAuth();
+      }
+
+      if (
+        this.projectService.currentProjectPath !== projectPath
+        || this.authService.isLoggedIn
+      ) {
+        return;
+      }
+
+      this.message.warning(
+        this.translate.instant('BLOCKLY_EDITOR.BOARD_CLOUD_AUTH_REQUIRED'),
+        { nzDuration: 6000 },
+      );
+      this.authService.requestLogin('board-cloud-service');
+    } catch (error) {
+      console.warn('[ProjectLoad] Failed to check board authentication requirement:', error);
+    }
   }
 
   private async loadProjectAbiDocument(projectPath: string): Promise<{

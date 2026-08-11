@@ -997,6 +997,7 @@
         "LOADING_LIB": "Loading {{name}}",
         "LOADING_BLOCKLY_PROGRAM": "Loading Blockly program",
         "PROJECT_LOAD_SUCCESS": "Project loaded successfully",
+        "BOARD_CLOUD_AUTH_REQUIRED": "Development with this hardware depends on cloud services. Please sign in to continue developing normally.",
         "EXPLAIN_BLOCK_PROMPT": "Please explain what this block does, how it works, and its role in the current program.",
         "BUILD": {
             "RUNNING_TITLE": "Building {{board}}",

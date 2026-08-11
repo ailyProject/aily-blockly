@@ -916,6 +916,7 @@
         "LOADING_LIB": "正在載入{{name}}",
         "LOADING_BLOCKLY_PROGRAM": "正在載入Blockly程式",
         "PROJECT_LOAD_SUCCESS": "專案載入成功",
+        "BOARD_CLOUD_AUTH_REQUIRED": "此硬件的開發依賴雲端服務，需要登入後才能正常進行開發。",
         "EXPLAIN_BLOCK_PROMPT": "請解釋這個積木的作用、工作原理，以及它在目前程式中的用途。",
         "BUILD": {
             "RUNNING_TITLE": "正在編譯{{board}}",
