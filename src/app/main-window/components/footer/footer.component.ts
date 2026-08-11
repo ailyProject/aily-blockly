@@ -30,13 +30,15 @@ export class FooterComponent {
   }
 
   changeState(e: ActionState) {
+    const previousState = this.actionData?.state;
     this.actionData = e;
     this.cd.detectChanges();
-    // 默认超时设置10秒, warn 和 error 不超时 
-    if (!this.actionData.timeout && this.actionData.state === 'loading' || this.actionData.state === 'done') {
+    // 默认超时设置10秒, warn 和 error 不超时
+    if (!this.actionData.timeout && (this.actionData.state === 'loading' || this.actionData.state === 'done')) {
       this.actionData.timeout = 10000;
     }
-    if (this.actionData.timeout) {
+    // doing 状态持续更新文案时不要重置超时清理，避免图标反复挂载。
+    if (this.actionData.timeout && !(previousState === 'doing' && this.actionData.state === 'doing')) {
       clearTimeout(this.timer);
       this.timer = setTimeout(() => {
         this.actionData = null;

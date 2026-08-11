@@ -172,6 +172,7 @@ export class BlocklyService {
   private libraryIntegrityFailureLogSignatures = new Map<string, string>();
   private libraryIntegrityWarningLogSignatures = new Map<string, string>();
   private rebuildingLibraryRuntime = false;
+  private toolboxRefreshSuppressionDepth = 0;
   // blockType → 库信息映射（用于跨实例复制粘贴时携带库元信息）
   blockTypeToLibMap = new Map<string, { name: string; version: string; localPath?: string }>();
 
@@ -1459,7 +1460,19 @@ export class BlocklyService {
 
     this.ensureToolboxItemIds(this.toolbox.contents);
     this.applyToolboxSortOrderToContents(this.toolbox.contents);
-    if (!this.rebuildingLibraryRuntime) {
+    if (!this.rebuildingLibraryRuntime && this.toolboxRefreshSuppressionDepth === 0) {
+      this.refreshToolboxFromContents();
+    }
+  }
+
+  /** 批量加载库时抑制每次 toolbox 全量刷新，结束时统一刷新一次。 */
+  beginToolboxRefreshSuppression(): void {
+    this.toolboxRefreshSuppressionDepth += 1;
+  }
+
+  endToolboxRefreshSuppression(): void {
+    this.toolboxRefreshSuppressionDepth = Math.max(0, this.toolboxRefreshSuppressionDepth - 1);
+    if (this.toolboxRefreshSuppressionDepth === 0 && !this.rebuildingLibraryRuntime) {
       this.refreshToolboxFromContents();
     }
   }

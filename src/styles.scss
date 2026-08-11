@@ -55,9 +55,73 @@ img {
 
 .ant-message {
   top: 40px !important;
+  // 项目加载等重活会占满主线程；把消息层提到独立合成层，减少转圈掉帧。
+  transform: translateZ(0);
+  contain: layout style;
+  pointer-events: none;
 
   .ant-message-notice-content {
     border-radius: 25px;
+    pointer-events: auto;
+  }
+
+  // 不用 FA/Ant 默认较慢的旋转；Windows 主线程繁忙时更容易看出卡顿。
+  .anticon-spin {
+    display: inline-block;
+    transform-origin: center center;
+    backface-visibility: hidden;
+    will-change: transform;
+    animation: aily-message-spin 0.75s linear infinite !important;
+  }
+}
+
+@keyframes aily-message-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+// 项目加载状态：挂在 body 上的独立层，避免被 Blockly toolbox 重绘打断。
+.aily-project-status {
+  position: fixed;
+  top: 48px;
+  left: 50%;
+  z-index: 100300;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 25px;
+  background: var(--aily-bg-elevated, #1f1f1f);
+  color: var(--aily-text-primary, #fff);
+  box-shadow: var(--aily-shadow-md, 0 6px 16px rgba(0, 0, 0, 0.28));
+  transform: translate3d(-50%, 0, 0);
+  contain: layout style paint;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.aily-project-status__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--aily-border-secondary, rgba(127, 127, 127, 0.35));
+  border-top-color: var(--aily-color-accent, #3b82f6);
+  border-radius: 50%;
+  flex-shrink: 0;
+  will-change: transform;
+  backface-visibility: hidden;
+  animation: aily-project-status-spin 0.7s linear infinite;
+}
+
+.aily-project-status__text {
+  font-size: 14px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+@keyframes aily-project-status-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -306,22 +370,20 @@ nz-option-container {
 }
 
 .lloading {
-  .fa-spinner-third {
-    animation: rotate45 2s steps(60, end) infinite;
-  }
-
+  .fa-spinner-third,
   .fa-loader {
-    animation: rotate45 1s steps(8, end) infinite;
+    display: inline-block;
+    transform-origin: center center;
+    backface-visibility: hidden;
+    will-change: transform;
+    // steps 在 Windows 掉帧时会像卡住的百分比圈；改用更快的线性旋转。
+    animation: aily-lloading-spin 0.75s linear infinite;
   }
+}
 
-  @keyframes rotate45 {
-    from {
-      transform: rotate(0deg);
-    }
-
-    to {
-      transform: rotate(360deg);
-    }
+@keyframes aily-lloading-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

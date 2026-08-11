@@ -12,28 +12,23 @@
   <!-- 这里显示状态，如保存中，项目加载中，正在安装xxx等 -->
   @if(actionData){
   <div class="state ccenter">
-    @switch(actionData.state){
-    @case('doing'){
-    <div class="icon lloading ccenter">
+    <!-- spinner 容器按 state 切换 class，避免仅文案更新时销毁旋转节点导致动画重启 -->
+    <div class="icon ccenter" [class.lloading]="actionData.state === 'doing'">
+      @switch(actionData.state){
+      @case('doing'){
       <i class="fa-duotone fa-solid fa-loader"></i>
-    </div>
-    }
-    @case('error'){
-    <div class="icon ccenter">
+      }
+      @case('error'){
       <i class="fa-light fa-circle-xmark"></i>
-    </div>
-    }
-    @case('warn'){
-    <div class="icon ccenter">
+      }
+      @case('warn'){
       <i class="fa-light fa-triangle-exclamation"></i>
-    </div>
-    }
-    @case('done'){
-    <div class="icon ccenter">
+      }
+      @case('done'){
       <i class="fa-light fa-circle-check"></i>
+      }
+      }
     </div>
-    }
-    }
     {{ actionData.text }}
   </div>
   }

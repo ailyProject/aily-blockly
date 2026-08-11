@@ -341,15 +341,23 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       projectService: this.projectService,
     });
 
-    for (let index = 0; index < libraryModuleList.length; index++) {
-      const libPackageName = libraryModuleList[index];
-      this.uiService.updateFooterState({
-        state: 'doing',
-        text: this.translate.instant('BLOCKLY_EDITOR.LOADING_LIB', {
-          name: libPackageName,
-        }),
-      });
-      await this.blocklyService.loadLibrary(libPackageName, projectPath);
+    this.blocklyService.beginToolboxRefreshSuppression();
+    try {
+      for (let index = 0; index < libraryModuleList.length; index++) {
+        const libPackageName = libraryModuleList[index];
+        this.uiService.updateFooterState({
+          state: 'doing',
+          text: this.translate.instant('BLOCKLY_EDITOR.LOADING_LIB', {
+            name: libPackageName,
+          }),
+        });
+        // 每个库加载前后让出主线程，避免顶部 loading 转圈因长时间同步工作掉帧。
+        await this.yieldToUi();
+        await this.blocklyService.loadLibrary(libPackageName, projectPath);
+        await this.yieldToUi();
+      }
+    } finally {
+      this.blocklyService.endToolboxRefreshSuppression();
     }
     // 5. 加载project.abi数据
     this.uiService.updateFooterState({
@@ -371,10 +379,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
       this.applyProjectPackageJson(packageJson);
-      await this.loadInstalledBlocklyLibraries(projectPath);
+      this.blocklyService.beginToolboxRefreshSuppression();
+      try {
+        await this.loadInstalledBlocklyLibraries(projectPath);
+      } finally {
+        this.blocklyService.endToolboxRefreshSuppression();
+      }
     }
 
-    await this.waitForNextFrame();
+    await this.yieldToUi();
     this.blocklyService.loadProjectDocument(projectDocument, false);
     if (!usedBoardTemplateAbi) {
       try {
@@ -601,6 +614,19 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       }
 
       setTimeout(resolve, 0);
+    });
+  }
+
+  /** 先回到事件循环，再等一帧绘制，供加载中 UI（顶部转圈）持续刷新。 */
+  private yieldToUi(): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => resolve());
+          return;
+        }
+        resolve();
+      }, 0);
     });
   }
 

@@ -126,6 +126,8 @@ export class MainWindowComponent implements OnDestroy {
   private developmentModePreferencePromptOpen = false;
   private loginDialogSubscription: Subscription | null = null;
   private unregisterApplicationUpdatePreparation: (() => void) | null = null;
+  private projectStatusMessageTimer: ReturnType<typeof setTimeout> | null = null;
+  private projectStatusHost: HTMLDivElement | null = null;
 
   loginDialogState: LoginDialogRequestState | null = null;
 
@@ -301,6 +303,7 @@ export class MainWindowComponent implements OnDestroy {
     this.projectContextSubscription = null;
     this.projectStateSubscription?.unsubscribe();
     this.projectStateSubscription = null;
+    this.clearProjectStatusMessage();
     this.oauthResultListener?.();
     this.oauthResultListener = null;
     this.exampleListListener?.();
@@ -435,34 +438,79 @@ export class MainWindowComponent implements OnDestroy {
     ).subscribe((state) => {
       switch (state) {
         case 'loading':
-          // this.loaded = false;
-          setTimeout(() => {
-            this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
-            // this.loaded = true;
-          }, 20);
+          // 延迟一帧再挂 loading，避免与路由切换的同步重绘抢同一帧。
+          this.scheduleProjectStatusMessage(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
           break;
         case 'loaded':
-          this.message.remove();
+          this.clearProjectStatusMessage();
           this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_LOADED'));
           void this.reloadTerminalAfterProjectOpen();
+          this.cd.detectChanges();
           break;
         case 'saving':
-          this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'));
+          this.scheduleProjectStatusMessage(this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'));
           break;
         case 'saved':
-          this.message.remove();
+          this.clearProjectStatusMessage();
           this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_SAVED'));
           break;
         case 'default':
-          // this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_CLOSED'));
-          // this.loaded = false;
+        case 'error':
+          this.clearProjectStatusMessage();
           break;
         default:
           break;
       }
-      this.cd.detectChanges();
     });
 
+  }
+
+  private scheduleProjectStatusMessage(content: string): void {
+    if (this.projectStatusMessageTimer) {
+      clearTimeout(this.projectStatusMessageTimer);
+      this.projectStatusMessageTimer = null;
+    }
+    this.projectStatusMessageTimer = setTimeout(() => {
+      this.projectStatusMessageTimer = null;
+      this.showProjectStatusMessage(content);
+    }, 20);
+  }
+
+  private showProjectStatusMessage(content: string): void {
+    this.clearProjectStatusMessage(false);
+    // 不用 nz-message loading：加载中会刷新 Blockly toolbox DOM，
+    // 容易打断 overlay 合成层。改为挂到 body 的独立 CSS 转圈。
+    this.mountIsolatedProjectStatus(content);
+  }
+
+  private clearProjectStatusMessage(cancelScheduled = true): void {
+    if (cancelScheduled && this.projectStatusMessageTimer) {
+      clearTimeout(this.projectStatusMessageTimer);
+      this.projectStatusMessageTimer = null;
+    }
+    this.unmountIsolatedProjectStatus();
+  }
+
+  private mountIsolatedProjectStatus(content: string): void {
+    this.unmountIsolatedProjectStatus();
+    const host = document.createElement('div');
+    host.className = 'aily-project-status';
+    host.setAttribute('role', 'status');
+    host.setAttribute('aria-live', 'polite');
+    host.innerHTML = `<span class="aily-project-status__spinner" aria-hidden="true"></span><span class="aily-project-status__text"></span>`;
+    const textEl = host.querySelector('.aily-project-status__text');
+    if (textEl) {
+      textEl.textContent = content;
+    }
+    document.body.appendChild(host);
+    this.projectStatusHost = host;
+  }
+
+  private unmountIsolatedProjectStatus(): void {
+    if (this.projectStatusHost) {
+      this.projectStatusHost.remove();
+      this.projectStatusHost = null;
+    }
   }
 
   closeRightBox() {
