@@ -91,10 +91,10 @@ export class ProjectService {
   private projectOpenTask: { path: string; promise: Promise<void> } | null = null;
   private blocklyLibraryRuntimeRebuildTask: {
     path: string;
-    packageSignature: string;
+    runtimeSignature: string;
     promise: Promise<boolean>;
   } | null = null;
-  private blocklyLibraryRuntimePackageSignatures = new Map<string, string>();
+  private blocklyLibraryRuntimeSignatures = new Map<string, string>();
 
   currentPackageData: ProjectPackageData = {
     name: 'aily blockly',
@@ -647,26 +647,24 @@ export class ProjectService {
 
     const packageJsonPath = window['path'].join(projectPath, 'package.json');
     const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+    const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
     const activeTask = this.blocklyLibraryRuntimeRebuildTask;
-    if (activeTask?.path === projectPath && activeTask.packageSignature === packageContent) {
+    if (activeTask?.path === projectPath && activeTask.runtimeSignature === runtimeSignature) {
       await activeTask.promise;
       return;
     }
 
     // This is deliberately an in-place library-layer rebuild. It must not call
     // projectOpen(), Router navigation, location.reload(), or webContents.reload().
-    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent);
+    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent, runtimeSignature);
     this.blocklyLibraryRuntimeRebuildTask = {
       path: projectPath,
-      packageSignature: packageContent,
+      runtimeSignature,
       promise,
     };
     try {
       if (await promise) {
-        this.blocklyLibraryRuntimePackageSignatures.set(
-          projectPath,
-          this.getBlocklyLibraryDependencySignature(packageContent),
-        );
+        this.blocklyLibraryRuntimeSignatures.set(projectPath, runtimeSignature);
       }
     } finally {
       if (this.blocklyLibraryRuntimeRebuildTask?.promise === promise) {
@@ -675,7 +673,7 @@ export class ProjectService {
     }
   }
 
-  /** Record the package.json snapshot represented by the loaded Blockly runtime. */
+  /** Record the installed library files represented by the loaded Blockly runtime. */
   markBlocklyLibraryRuntimeReady(projectPath = this.currentProjectPath): void {
     if (!projectPath || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
       return;
@@ -684,9 +682,9 @@ export class ProjectService {
     try {
       const packageJsonPath = window['path'].join(projectPath, 'package.json');
       const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
-      this.blocklyLibraryRuntimePackageSignatures.set(
+      this.blocklyLibraryRuntimeSignatures.set(
         projectPath,
-        this.getBlocklyLibraryDependencySignature(packageContent),
+        this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent),
       );
     } catch (error) {
       console.warn('[ProjectService] failed to snapshot the Blockly library runtime:', error);
@@ -701,23 +699,25 @@ export class ProjectService {
 
     const packageJsonPath = window['path'].join(projectPath, 'package.json');
     const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+    const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
     const activeTask = this.blocklyLibraryRuntimeRebuildTask;
-    if (activeTask?.path === projectPath && activeTask.packageSignature === packageContent) {
+    if (activeTask?.path === projectPath && activeTask.runtimeSignature === runtimeSignature) {
       await activeTask.promise;
       return;
     }
 
-    if (
-      this.blocklyLibraryRuntimePackageSignatures.get(projectPath)
-      === this.getBlocklyLibraryDependencySignature(packageContent)
-    ) {
+    if (this.blocklyLibraryRuntimeSignatures.get(projectPath) === runtimeSignature) {
       return;
     }
 
     await this.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
   }
 
-  private async rebuildActiveBlocklyLibraryRuntime(projectPath: string, packageContent: string): Promise<boolean> {
+  private async rebuildActiveBlocklyLibraryRuntime(
+    projectPath: string,
+    packageContent: string,
+    runtimeSignature: string,
+  ): Promise<boolean> {
     const { BlocklyGeneratorRuntimeService } = await import('../editors/blockly-editor/services/blockly-generator-runtime.service');
     const generatorRuntime = this.injector.get(BlocklyGeneratorRuntimeService);
     if (!generatorRuntime.isActive() || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
@@ -762,8 +762,7 @@ export class ProjectService {
     const normalizedLibraryNames = [...orderedLibraryNames].sort((a, b) => a.localeCompare(b));
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
-      this.blocklyLibraryRuntimePackageSignatures.get(projectPath)
-        === this.getBlocklyLibraryDependencySignature(packageContent)
+      this.blocklyLibraryRuntimeSignatures.get(projectPath) === runtimeSignature
       && JSON.stringify(normalizedLoadedLibraryNames) === JSON.stringify(normalizedLibraryNames)
     ) {
       return false;
@@ -782,7 +781,9 @@ export class ProjectService {
     return true;
   }
 
-  private getBlocklyLibraryDependencySignature(packageContent: string): string {
+  // A file: dependency can keep the same spec and version while its Blockly
+  // runtime files change, so dependency metadata alone is not a valid identity.
+  private getBlocklyLibraryRuntimeSignature(projectPath: string, packageContent: string): string {
     const packageJson = JSON.parse(packageContent);
     const dependencyEntries = Object.entries({
       ...(packageJson?.dependencies || {}),
@@ -792,7 +793,39 @@ export class ProjectService {
       .filter(([name]) => name.startsWith('@aily-project/lib-'))
       .map(([name, version]) => [name, String(version ?? '')] as const)
       .sort(([a], [b]) => a.localeCompare(b));
-    return JSON.stringify(dependencyEntries);
+    const language = this.translate.currentLang || this.translate.defaultLang || 'en';
+    const runtimeFileNames = [
+      'package.json',
+      'block.json',
+      'toolbox.json',
+      'generator.js',
+      window['path'].join('i18n', `${language}.json`),
+    ];
+    const scopePath = window['path'].join(projectPath, 'node_modules', '@aily-project');
+    const libraryFileSignatures: Array<[string, string, string]> = [];
+
+    if (window['fs'].existsSync(scopePath)) {
+      const libraryDirectoryNames = window['fs'].readdirSync(scopePath)
+        .filter((name: string) => name.startsWith('lib-'))
+        .sort((a: string, b: string) => a.localeCompare(b));
+
+      for (const directoryName of libraryDirectoryNames) {
+        for (const fileName of runtimeFileNames) {
+          const filePath = window['path'].join(scopePath, directoryName, fileName);
+          const fileSignature = window['fs'].existsSync(filePath)
+            ? window['fs'].md5Buffer(window['fs'].readFileSync(filePath))
+            : 'missing';
+          libraryFileSignatures.push([directoryName, fileName, fileSignature]);
+        }
+      }
+    }
+
+    return JSON.stringify({
+      dependencyEntries,
+      toolboxOrder: packageJson?.blocklyToolboxOrder || [],
+      language,
+      libraryFileSignatures,
+    });
   }
 
   private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}): Promise<any> {
