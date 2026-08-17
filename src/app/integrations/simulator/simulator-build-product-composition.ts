@@ -21,8 +21,8 @@ import {
   type SimulatorProjectArtifactCallbackAuthorityOptions,
 } from './simulator-project-artifact-callback-authority';
 import type {
-  SimulatorSceneCodeReconciliationPort,
-} from './simulator-scene-code-reconciliation-coordinator';
+  SimulatorMainAgentSceneChangePort,
+} from './simulator-main-agent-scene-change-port';
 
 export interface SimulatorBuildProductCompositionOptions {
   projectRoot: string;
@@ -31,7 +31,7 @@ export interface SimulatorBuildProductCompositionOptions {
   sceneId?: string;
   files: SimulatorProjectArtifactCallbackAuthorityOptions['files'];
   activeProject: SimulatorActiveProjectBindingPort;
-  reconciliation: SimulatorSceneCodeReconciliationPort;
+  mainAgent: SimulatorMainAgentSceneChangePort;
   builderService: SimulatorBlocklyBuilderServicePort;
   maxBuildJobs?: SimulatorBuildCallbackAuthorityOptions['maxJobs'];
   artifactReferenceTtlMs?: number;
@@ -102,7 +102,7 @@ export class SimulatorBuildProductComposition {
       projectIdentity: options.projectIdentity,
       sceneId: options.sceneId,
       activeProject: options.activeProject,
-      reconciliation: options.reconciliation,
+      mainAgent: options.mainAgent,
       builder,
       artifacts: {
         readLatest: async (

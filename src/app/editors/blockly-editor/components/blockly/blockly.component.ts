@@ -1047,6 +1047,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private onDocumentKeyDown(event: KeyboardEvent): void {
+    this.markTrustedWorkspaceKeyboardInteraction(event);
     if (!this.isWorkspaceSearchShortcut(event) || this.shouldIgnoreWorkspaceSearchShortcut(event)) {
       return;
     }
@@ -1191,6 +1192,9 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private onWorkspacePointerDown(event: PointerEvent) {
+    if (event.isTrusted) {
+      this.blocklyService.markWorkspaceUserInteraction();
+    }
     const target = event.target as Element | null;
     if (!target || this.isPointerInsideFlyout(target)) {
       return;
@@ -1198,6 +1202,17 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (target.closest('.blocklySvg')) {
       this.blocklyService.closeToolboxSearchFlyout();
+    }
+  }
+
+  private markTrustedWorkspaceKeyboardInteraction(event: KeyboardEvent): void {
+    if (!event.isTrusted || !this.workspace) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+    const host = this.workspacePaneComponent?.blocklyHostElement;
+    const selectedBlock = Blockly.getSelected?.();
+    if (host?.contains(target) || selectedBlock) {
+      this.blocklyService.markWorkspaceUserInteraction();
     }
   }
 

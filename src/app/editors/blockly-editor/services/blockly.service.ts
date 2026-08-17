@@ -176,6 +176,7 @@ export class BlocklyService {
   codeSubject = new BehaviorSubject<string>('');
   dependencySubject = new BehaviorSubject<string>('');
   private workspaceCodeRevision = 0;
+  private workspaceUserEditRevision = 0;
   private generatedCodeRevision = -1;
   private latestGeneratedCode = '';
   private codeViewerRefreshRequestSubject = new Subject<boolean>();
@@ -332,8 +333,26 @@ export class BlocklyService {
     this.workspaceCodeRevision++;
   }
 
+  /**
+   * Records a trusted user interaction with the Blockly editing surface.
+   * Programmatic Blockly events cannot reliably preserve their origin across
+   * the execution-host/renderer boundary, so they must not advance this guard.
+   */
+  markWorkspaceUserInteraction(): void {
+    this.workspaceUserEditRevision++;
+  }
+
   getWorkspaceContentRevision(): number {
     return this.workspaceCodeRevision;
+  }
+
+  /**
+   * Monotonic revision for trusted interactions with the Blockly UI.
+   * Agent/editor operations still advance the content revision, but not this
+   * revision.
+   */
+  getWorkspaceUserEditRevision(): number {
+    return this.workspaceUserEditRevision;
   }
 
   publishGeneratedCode(code: unknown): void {

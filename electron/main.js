@@ -916,7 +916,7 @@ function handleProtocol(url) {
 
 // ipc handlers模块
 const { registerTerminalHandlers, killAllTerminals, getActiveTerminals } = require("./terminal");
-const { registerWindowHandlers } = require("./window");
+const { prepareChildToolPackageMutation, registerWindowHandlers } = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
@@ -936,6 +936,9 @@ const { registerNotificationHandlers } = require("./notification");
 const { registerProbeRsHandlers } = require("./probe-rs");
 const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
 const { registerSubappManagerHandlers } = require("./subapp-manager");
+const {
+  loadBundledSubappReleaseTrustRoot,
+} = require("./subapp-release-trust-root");
 const { resolveAilyAppDataPath } = require("./appdata-path");
 const { shouldBeginRendererGeneration } = require("./renderer-lifecycle");
 
@@ -2566,7 +2569,13 @@ function createWindow() {
   registerNotificationHandlers(mainWindow);
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
-  registerSubappManagerHandlers(() => mainWindow);
+  const subappReleaseTrustRoot = loadBundledSubappReleaseTrustRoot();
+  registerSubappManagerHandlers(() => mainWindow, {
+    beforePackageMutation: ({ action, toolId }) => (
+      prepareChildToolPackageMutation(toolId, action)
+    ),
+    releaseTrustPolicies: subappReleaseTrustRoot.policies,
+  });
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);
 

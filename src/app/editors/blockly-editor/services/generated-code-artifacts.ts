@@ -12,6 +12,20 @@ function isArduinoGeneratedArtifactSource(
   return typeof (generator as ArduinoGeneratedArtifactSource | null)?.getGeneratedArtifacts === 'function';
 }
 
+/** Capture generator-owned files without writing into the active project. */
+export function collectArduinoGeneratedArtifacts(
+  generator: unknown,
+): readonly ArduinoGeneratedArtifact[] {
+  if (!isArduinoGeneratedArtifactSource(generator)) return Object.freeze([]);
+  return Object.freeze(
+    generator.getGeneratedArtifacts().map((artifact) => Object.freeze({
+      fileName: artifact.fileName,
+      content: artifact.content,
+      sourceTag: artifact.sourceTag,
+    })),
+  );
+}
+
 /**
  * Materialize large generator declarations in the project's regular Arduino
  * source directory. The build and lint boundaries copy project/src into the
@@ -29,7 +43,7 @@ export async function writeArduinoGeneratedArtifacts(
   if (!projectPath || !isArduinoGeneratedArtifactSource(generator)) return;
   const fsApi = window['fs'];
   const pathApi = window['path'];
-  const artifacts = generator.getGeneratedArtifacts();
+  const artifacts = collectArduinoGeneratedArtifacts(generator);
   const outputDirectory = pathApi.join(projectPath, 'src');
   if (!artifacts.length && !fsApi.existsSync(outputDirectory)) return;
   if (!fsApi.existsSync(outputDirectory)) fsApi.mkdirSync(outputDirectory, { recursive: true });

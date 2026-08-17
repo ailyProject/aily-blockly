@@ -44,6 +44,7 @@ import type {
   ChatRuntimeHostWorkspaceMutationReceiptInput,
 } from '../core/chat-runtime-host-contract';
 import { createElectronChatRuntimeHostTransport } from '../core/electron-chat-runtime-host-transport';
+import { inheritStableBlockIds } from './blockly-stable-id-reconciler';
 
 declare const Blockly: any;
 
@@ -1849,7 +1850,8 @@ function serializeWorkspaceBlock(block: any): any {
   if (!block) return null;
   
   const result: any = {
-    type: block.type
+    type: block.type,
+    id: block.id,
   };
   
   // 序列化字段
@@ -2074,6 +2076,10 @@ async function rebuildBlockChildren(
 ): Promise<{ failedBlocks: Array<{ blockType: string; error: string }> }> {
   const failedBlocks: Array<{ blockType: string; error: string }> = [];
   // console.log(`    🔧 开始重建子树: ${existingBlock.type}`);
+
+  // ABS has no block ids. Reattach ids from the live tree before disposing it
+  // so field-only edits keep GDB breakpoints and source-map identities stable.
+  inheritStableBlockIds(serializeWorkspaceBlock(existingBlock), newConfig);
   
   // 1. 更新 extraState（如 custom_function_def 的 params/returnType）
   // 必须在更新字段和清空子块之前执行，以确保动态输入（如 RETURN、PARAM_TYPEn）已创建
@@ -2173,7 +2179,12 @@ async function rebuildBlockChildren(
       preprocessVariableReferences(childConfig, variableNameToId);
       
       try {
-        const result = await createBlockFromConfig(workspace, childConfig, undefined, invocationContext);
+        const result = await createBlockFromConfig(
+          workspace,
+          childConfig,
+          undefined,
+          { ...invocationContext, preserveConfigBlockIds: true },
+        );
         if (result.block) {
           const targetConnection = result.block.outputConnection || result.block.previousConnection;
           if (targetConnection) {

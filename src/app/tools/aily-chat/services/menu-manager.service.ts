@@ -42,6 +42,7 @@ export interface ChatSessionListItem {
   readonly pinned?: boolean;
   readonly read?: boolean;
   readonly markedUnread?: boolean;
+  readonly readOnly?: boolean;
   readonly current: boolean;
   readonly actions: readonly ChatSessionListAction[];
 }

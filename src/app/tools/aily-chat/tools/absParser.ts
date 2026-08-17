@@ -282,6 +282,11 @@ const FALLBACK_BLOCKS: Record<string, Partial<BlockMeta>> = {
     statementInputNames: ['DO0', 'ELSE'],
     valueInputNames: ['IF0']
   },
+  'controls_ifelse': {
+    hasStatementInput: true,
+    statementInputNames: ['DO0', 'ELSE'],
+    valueInputNames: ['IF0']
+  },
   'controls_switch': {
     hasStatementInput: true,
     statementInputNames: ['DO0', 'DEFAULT'],

@@ -107,10 +107,10 @@ const SESSION_STORE_SQL_BLOCKED_PATTERNS = [
 ];
 const PROJECT_SCENE_AGENT_TYPE = 'ProjectSceneAgent';
 const GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL = 'get_project_scene_generation_context';
-const SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL = 'submit_project_scene_generation_proposal';
+const SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL = 'submit_project_scene_wiring_intent';
 const PROJECT_SCENE_AGENT_TOOLS = [
   GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-  SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+  SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
 ];
 const PROJECT_SCENE_AGENT_REQUIRED_CONTEXT = {
   scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
@@ -119,18 +119,18 @@ const PROJECT_SCENE_AGENT_REQUIRED_CONTEXT = {
 };
 const PROJECT_SCENE_AGENT_PROMPT = `You are the bounded native v2 Project Scene proposal Agent.
 
-You operate only inside an Electron execution-host scoped invocation. The provider prompt contains one requestId and no project data.
+You run as the named Agent selected by a normal visible Blockly Chat turn. The provider prompt contains one requestId and no project data.
 
 Required workflow:
 1. Call get_project_scene_generation_context exactly once with that requestId.
 2. Infer the physical components and electrical connections only from the returned bounded context and Component Package guide.
-3. Call submit_project_scene_generation_proposal exactly once with the same requestId.
+3. Call submit_project_scene_wiring_intent exactly once with the same requestId.
 
 Authority boundaries:
-- Submit a candidate proposal only. Never save, replace, patch, or approve a Scene document.
+- Submit semantic part refs and multi-terminal nets only. Simulator owns package versions, persistent IDs, layout, routing, diagnostics and Scene CAS.
 - Never call legacy SchematicAgent/AWS/connection_output tools.
 - Never read or write workspace files and never control Simulator, QEMU, GDB, build, upload, or Blockly.
-- Do not invent package IDs, versions, pin IDs, or pin functions outside the returned guide.
+- Do not invent package IDs, pin IDs, or pin functions outside the returned guide. Never submit package versions, instance/segment IDs, coordinates, colors, or routing.
 - LED and button components have two electrical terminals. Add explicit resistor components when current limiting or external pull-up/pull-down is required.
 - If the bounded context is insufficient, fail without using another tool or data source.`;
 const PROJECT_SCENE_TOOL_DEFINITIONS = [
@@ -148,14 +148,14 @@ const PROJECT_SCENE_TOOL_DEFINITIONS = [
     readOnly: true,
   },
   {
-    name: SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
-    description: 'Submit a bounded native v2 Project Scene candidate without saving or editing a Scene document.',
+    name: SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
+    description: 'Submit a bounded semantic wiring intent without saving or editing a Scene document.',
     inputSchema: {
       type: 'object',
       properties: {
         requestId: { type: 'string' },
         summary: { type: 'string', minLength: 1, maxLength: 512 },
-        components: {
+        parts: {
           type: 'array',
           minItems: 1,
           maxItems: 64,
@@ -163,44 +163,47 @@ const PROJECT_SCENE_TOOL_DEFINITIONS = [
             type: 'object',
             additionalProperties: false,
             properties: {
-              instanceId: { type: 'string' },
-              package: {
+              ref: { type: 'string' },
+              packageId: { type: 'string' },
+              properties: {
                 type: 'object',
-                additionalProperties: false,
-                properties: {
-                  id: { type: 'string' },
-                  version: { type: 'string' },
+                maxProperties: 16,
+                additionalProperties: {
+                  anyOf: [
+                    { type: 'string', maxLength: 256 },
+                    { type: 'number' },
+                    { type: 'boolean' },
+                  ],
                 },
-                required: ['id', 'version'],
-              },
-              placement: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  x: { type: 'number' },
-                  y: { type: 'number' },
-                },
-                required: ['x', 'y'],
               },
             },
-            required: ['instanceId', 'package', 'placement'],
+            required: ['ref', 'packageId'],
           },
         },
-        connections: {
+        nets: {
           type: 'array',
           maxItems: 64,
           items: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              segmentId: { type: 'string' },
-              from: { $ref: '#/$defs/endpoint' },
-              to: { $ref: '#/$defs/endpoint' },
-              signalKind: { type: 'string', enum: ['ground', 'power', 'gpio', 'analog', 'pwm', 'i2c', 'spi', 'uart'] },
-              label: { type: 'string', maxLength: 128 },
-              color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+              ref: { type: 'string' },
+              signal: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['ground', 'power', 'gpio', 'analog', 'pwm', 'i2c', 'spi', 'uart'] },
+                },
+                required: ['kind'],
+              },
+              endpoints: {
+                type: 'array',
+                minItems: 2,
+                maxItems: 32,
+                items: { $ref: '#/$defs/endpoint' },
+              },
             },
-            required: ['segmentId', 'from', 'to', 'signalKind'],
+            required: ['ref', 'signal', 'endpoints'],
           },
         },
       },
@@ -209,78 +212,14 @@ const PROJECT_SCENE_TOOL_DEFINITIONS = [
           type: 'object',
           additionalProperties: false,
           properties: {
-            instanceId: { type: 'string' },
-            pinId: { type: 'string' },
+            part: { type: 'string' },
+            pin: { type: 'string' },
             function: { type: 'string' },
           },
-          required: ['instanceId', 'pinId', 'function'],
+          required: ['part', 'pin', 'function'],
         },
       },
-      required: ['requestId', 'summary', 'components', 'connections'],
-      additionalProperties: false,
-    },
-    readOnly: false,
-  },
-];
-const SCENE_CODE_RECONCILIATION_AGENT_TYPE = 'SceneCodeReconciliationAgent';
-const GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL = 'get_scene_code_reconciliation_context';
-const SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL = 'submit_scene_code_reconciliation_candidate';
-const SCENE_CODE_RECONCILIATION_AGENT_TOOLS = [
-  GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL,
-  SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL,
-];
-const SCENE_CODE_RECONCILIATION_AGENT_REQUIRED_CONTEXT = {
-  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
-  strict: true,
-  hydrateBeforeFirstModelCall: true,
-};
-const SCENE_CODE_RECONCILIATION_AGENT_PROMPT = `You are the bounded Scene-to-Blockly ABS candidate Agent.
-
-You operate only inside an Electron execution-host scoped invocation. The provider prompt contains one requestId and no project data.
-
-Required workflow:
-1. Call get_scene_code_reconciliation_context exactly once with that requestId.
-2. Reconcile only the returned native Scene revision and complete current ABS program.
-3. Call submit_scene_code_reconciliation_candidate exactly once with either a complete changed ABS program or already-aligned.
-
-Authority boundaries:
-- Submit a candidate only. Never edit Blockly, project.abs, files, Scenes, Artifacts, or runtime state.
-- Never request or imply approval. The Host asks the user after receiving the complete candidate.
-- Never call legacy SchematicAgent/AWS/connection_output tools, generic file tools, shell, network, or arbitrary tool discovery.
-- Never build/upload firmware or control Simulator, QEMU, GDB, UART, instruments, sessions, or processes.
-- Preserve unrelated program behavior and never submit an ABS patch, fragment, or Markdown fence.
-- If the bounded context is insufficient, fail without using another tool or data source.`;
-const SCENE_CODE_RECONCILIATION_TOOL_DEFINITIONS = [
-  {
-    name: GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL,
-    description: 'Read one bounded native Scene revision and the current complete Blockly ABS program.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        requestId: { type: 'string', description: 'Exact requestId supplied in the provider prompt.' },
-      },
-      required: ['requestId'],
-      additionalProperties: false,
-    },
-    readOnly: true,
-  },
-  {
-    name: SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL,
-    description: 'Submit a complete ABS candidate for Host review without editing Blockly.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        requestId: { type: 'string' },
-        outcome: { type: 'string', enum: ['applied', 'already-aligned'] },
-        summary: { type: 'string', minLength: 1, maxLength: 512 },
-        absContent: {
-          oneOf: [
-            { type: 'string', minLength: 1, maxLength: 1000000 },
-            { type: 'null' },
-          ],
-        },
-      },
-      required: ['requestId', 'outcome', 'summary', 'absContent'],
+      required: ['requestId', 'summary', 'parts', 'nets'],
       additionalProperties: false,
     },
     readOnly: false,
@@ -471,7 +410,6 @@ class LexExecutionRuntimeOwner {
     this.listeners = new Set();
     this.sessions = new Map();
     this.editingNavigationTransactions = new Map();
-    this.scopedAgentRuns = new Map();
   }
 
   async commitResourceMutationBatch(request, result) {
@@ -1147,149 +1085,6 @@ class LexExecutionRuntimeOwner {
     return this.createSessionState(session, 'cancelled', false, null);
   }
 
-  async runScopedAgent(command = {}) {
-    const invocationId = normalizePortableScopedAgentId(command.invocationId, 'invocationId');
-    const agentType = normalizeString(command.agentType);
-    const prompt = normalizeString(command.prompt);
-    const scopedAgentConfig = agentType === PROJECT_SCENE_AGENT_TYPE
-      ? {
-          sessionPrefix: 'scoped-project-scene',
-          description: 'Generate a bounded native v2 Project Scene proposal',
-        }
-      : agentType === SCENE_CODE_RECONCILIATION_AGENT_TYPE
-        ? {
-            sessionPrefix: 'scoped-scene-code-reconciliation',
-            description: 'Generate a bounded Scene-to-Blockly ABS candidate',
-          }
-        : null;
-    if (!scopedAgentConfig) {
-      throw new Error(`[AilyChat][ExecutionHost] Unsupported scoped Agent type: ${agentType || '<missing>'}.`);
-    }
-    if (command.runtimeMode !== 'blockly') {
-      throw new Error(`[AilyChat][ExecutionHost] ${agentType} requires Blockly runtime mode.`);
-    }
-    if (!prompt || prompt.length > 4096) {
-      throw new Error('[AilyChat][ExecutionHost] Scoped Agent prompt must contain 1-4096 characters.');
-    }
-    const existing = this.scopedAgentRuns.get(invocationId);
-    if (existing) {
-      return existing.promise;
-    }
-
-    const abortController = new AbortController();
-    const derivedSessionId = `${scopedAgentConfig.sessionPrefix}:${createHash('sha256').update(invocationId).digest('hex').slice(0, 24)}`;
-    const sessionId = normalizeString(command.executionSessionId) || derivedSessionId;
-    if (sessionId !== derivedSessionId) {
-      throw new Error('[AilyChat][ExecutionHost] Scoped Agent execution session identity is invalid.');
-    }
-    const providerOptions = {
-      ...(command.providerOptions && typeof command.providerOptions === 'object'
-        ? command.providerOptions
-        : {}),
-      // Scoped Agents can only submit inert candidates through their two
-      // allowlisted tools. The renderer Host asks for explicit user approval
-      // after the candidate returns and before any Scene/Blockly mutation.
-      approvalPolicy: 'never',
-      permissionMode: 'default',
-    };
-    const promise = (async () => {
-      const startedAt = Date.now();
-      let phase = 'project-info';
-      console.info('[AilyChat][LexExecutionHostScopedAgent]', JSON.stringify({
-        phase: 'start',
-        invocationId,
-        agentType,
-        sessionId,
-      }));
-      try {
-        const projectInfo = await this.readProjectInfo(sessionId);
-        if (abortController.signal.aborted) {
-          throw abortController.signal.reason || createAbortError('[AilyChat][ExecutionHost] Scoped Agent cancelled.');
-        }
-        phase = 'session';
-        const session = await this.ensureSession(sessionId, {
-          sessionId,
-          providerOptions,
-          currentModel: command.currentModel && typeof command.currentModel === 'object'
-            ? command.currentModel
-            : null,
-        }, projectInfo);
-        const executor = session?.handle?.agent?.getAgentExecutor?.();
-        if (!executor || typeof executor.runSync !== 'function') {
-          throw new Error('[AilyChat][ExecutionHost] Scoped Agent executor is unavailable.');
-        }
-        phase = 'execute';
-        const result = await executor.runSync({
-          prompt,
-          description: scopedAgentConfig.description,
-          agentType,
-          signal: abortController.signal,
-          inheritMessages: 'none',
-          inheritDiscoveredTools: false,
-          toolCallLimitPolicy: 'stop',
-        });
-        const resultReason = normalizeString(result?.reason) || 'unknown';
-        // aily-lex currently reports a normal run as "unknown" and may use
-        // "completed" in host adapters. Every other terminal reason represents
-        // cancellation, policy denial, nesting rejection, or execution failure.
-        if (!['unknown', 'completed'].includes(resultReason)) {
-          throw new Error(normalizeString(result?.error?.message || result?.message || result?.text)
-            || `[AilyChat][ExecutionHost] ${agentType} failed (${resultReason}).`);
-        }
-        console.info('[AilyChat][LexExecutionHostScopedAgent]', JSON.stringify({
-          phase: 'complete',
-          invocationId,
-          agentType,
-          resultReason,
-          elapsedMs: Date.now() - startedAt,
-        }));
-        return {
-          schemaVersion: 1,
-          kind: 'aily-chat-runtime-scoped-agent-result',
-          invocationId,
-          agentType,
-          reason: resultReason,
-        };
-      } catch (error) {
-        console.error('[AilyChat][LexExecutionHostScopedAgent]', JSON.stringify({
-          phase: 'failed',
-          invocationId,
-          agentType,
-          failedAt: phase,
-          errorName: normalizeString(error?.name).slice(0, 80) || null,
-          errorCode: normalizeString(error?.code).slice(0, 120) || null,
-          elapsedMs: Date.now() - startedAt,
-        }));
-        throw error;
-      } finally {
-        try {
-          await this.disposeSessionResources({ sessionId, deleteStorage: false });
-        } finally {
-          const active = this.scopedAgentRuns.get(invocationId);
-          if (active?.abortController === abortController) {
-            this.scopedAgentRuns.delete(invocationId);
-          }
-        }
-      }
-    })();
-    this.scopedAgentRuns.set(invocationId, { abortController, sessionId, promise });
-    return promise;
-  }
-
-  async cancelScopedAgent(command = {}) {
-    const invocationId = normalizePortableScopedAgentId(command.invocationId, 'invocationId');
-    const active = this.scopedAgentRuns.get(invocationId);
-    if (active && !active.abortController.signal.aborted) {
-      active.abortController.abort(createAbortError('[AilyChat][ExecutionHost] Scoped Agent cancelled by host.'));
-    }
-    return {
-      schemaVersion: 1,
-      kind: 'aily-chat-runtime-scoped-agent-cancel-result',
-      invocationId,
-      cancelled: Boolean(active),
-    };
-  }
-
   async disposeSessionResources(command = {}) {
     const sessionId = normalizeSessionId(command.sessionId);
     const session = this.sessions.get(sessionId);
@@ -1327,12 +1122,6 @@ class LexExecutionRuntimeOwner {
   }
 
   async dispose() {
-    for (const scoped of this.scopedAgentRuns.values()) {
-      if (!scoped.abortController.signal.aborted) {
-        scoped.abortController.abort(createAbortError('[AilyChat][ExecutionHost] Runtime owner disposed.'));
-      }
-    }
-    this.scopedAgentRuns.clear();
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     const navigationTransactions = [...this.editingNavigationTransactions.values()];
@@ -2143,7 +1932,6 @@ class LexExecutionRuntimeOwner {
       builder: createExternalBuilder(sessionId, this.requestResourceOperation, projectInfo, readCwd, session),
       blockly: createExternalBlockly(sessionId, this.requestResourceOperation),
       projectSceneProposal: createExternalProjectSceneProposal(sessionId, this.requestResourceOperation),
-      sceneCodeReconciliation: createExternalSceneCodeReconciliation(sessionId, this.requestResourceOperation),
       boardSearch: createExternalBoardSearch(sessionId, this.requestResourceOperation),
       subappAgent: createExternalSubappAgent(sessionId, this.requestResourceOperation, this.env),
       chronicle: {
@@ -6019,7 +5807,7 @@ export function createElectronBlocklyAgentProvider() {
           agentType: PROJECT_SCENE_AGENT_TYPE,
           name: 'Project Scene Agent',
           description: 'Generate one bounded native v2 Project Scene candidate for an active execution-host invocation.',
-          argumentHint: 'Use the requestId in the scoped provider prompt',
+          argumentHint: 'Use the requestId in the current visible Agent request',
           target: 'aily',
           whenToUse: 'Use only when the independent Project Scene proposal provider starts this Agent with an active requestId.',
           whenNotToUse: 'Do not invoke from normal Chat, legacy schematic workflows, Scene editing, build, simulation, or debugging tasks.',
@@ -6034,29 +5822,6 @@ export function createElectronBlocklyAgentProvider() {
           commands: [],
           excludeTools: [],
           maxTurns: 12,
-          model: 'inherit',
-          messageInheritance: 'none',
-          agents: [],
-        },
-        {
-          agentType: SCENE_CODE_RECONCILIATION_AGENT_TYPE,
-          name: 'Scene Code Reconciliation Agent',
-          description: 'Produce one bounded Scene-to-Blockly ABS candidate for an active Host reconciliation request.',
-          argumentHint: 'Use the requestId in the scoped provider prompt',
-          target: 'aily',
-          whenToUse: 'Use only when the Host Scene code reconciliation provider starts this Agent with an active requestId.',
-          whenNotToUse: 'Do not invoke from normal Chat, Scene generation, legacy schematic workflows, build, simulation, debugging, or without an active reconciliation request.',
-          uri: `aily-chat-agent:/agents/${SCENE_CODE_RECONCILIATION_AGENT_TYPE}.agent.md`,
-          modeInstructions: {
-            content: SCENE_CODE_RECONCILIATION_AGENT_PROMPT,
-            toolReferences: [],
-          },
-          requiredContext: SCENE_CODE_RECONCILIATION_AGENT_REQUIRED_CONTEXT,
-          systemPrompt: SCENE_CODE_RECONCILIATION_AGENT_PROMPT,
-          tools: [...SCENE_CODE_RECONCILIATION_AGENT_TOOLS],
-          commands: [],
-          excludeTools: [],
-          maxTurns: 16,
           model: 'inherit',
           messageInheritance: 'none',
           agents: [],
@@ -7559,9 +7324,6 @@ Prefer flowchart TD or flowchart LR. After this tool succeeds, do not repeat the
   if (hostAPI.projectSceneProposal) {
     appendElectronProjectSceneToolContributions(contributions);
   }
-  if (hostAPI.sceneCodeReconciliation) {
-    appendElectronSceneCodeReconciliationToolContributions(contributions);
-  }
   appendElectronSubappAgentToolContributions(contributions, hostAPI.subappAgent?.bindings);
   return contributions;
 }
@@ -7607,24 +7369,6 @@ function appendElectronProjectSceneToolContributions(contributions) {
       runtimeModes: ['blockly'],
       requiredCapabilities: ['runtime:blockly'],
       agentScope: [PROJECT_SCENE_AGENT_TYPE],
-    });
-  }
-}
-
-function appendElectronSceneCodeReconciliationToolContributions(contributions) {
-  for (const definition of SCENE_CODE_RECONCILIATION_TOOL_DEFINITIONS) {
-    contributions.push({
-      name: definition.name,
-      toolSet: 'blockly-scene-code-reconciliation',
-      description: definition.description,
-      prompt: definition.description,
-      inputSchema: definition.inputSchema,
-      annotations: definition.readOnly
-        ? { readOnly: true, idempotent: true }
-        : { readOnly: false, destructive: false, idempotent: true },
-      runtimeModes: ['blockly'],
-      requiredCapabilities: ['runtime:blockly'],
-      agentScope: [SCENE_CODE_RECONCILIATION_AGENT_TYPE],
     });
   }
 }
@@ -7681,11 +7425,8 @@ export async function invokeElectronBlocklyTool(toolName, input, hostAPI, contex
     case 'save_arch':
       return invokeElectronSaveArchTool(input, hostAPI, context);
     case GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL:
-    case SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL:
+    case SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL:
       return invokeElectronProjectSceneTool(toolName, input, hostAPI, context);
-    case GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL:
-    case SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL:
-      return invokeElectronSceneCodeReconciliationTool(toolName, input, hostAPI, context);
     default:
       return toolError(`Unknown contributed tool: ${toolName}`);
   }
@@ -7697,16 +7438,6 @@ async function invokeElectronProjectSceneTool(toolName, input, hostAPI, context 
   }
   return normalizeHostToolUseResult(
     await hostAPI.projectSceneProposal.invoke(toolName, input, context),
-    { env: hostAPI.env },
-  );
-}
-
-async function invokeElectronSceneCodeReconciliationTool(toolName, input, hostAPI, context = {}) {
-  if (!hostAPI.sceneCodeReconciliation) {
-    return toolError('Scene code reconciliation service is not available in this environment.');
-  }
-  return normalizeHostToolUseResult(
-    await hostAPI.sceneCodeReconciliation.invoke(toolName, input, context),
     { env: hostAPI.env },
   );
 }
@@ -8810,8 +8541,8 @@ export function createExternalProjectSceneProposal(sessionId, requestResourceOpe
       }
       const action = toolName === GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL
         ? 'readContext'
-        : toolName === SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL
-          ? 'submitProposal'
+        : toolName === SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL
+          ? 'submitWiringIntent'
           : '';
       if (!action) {
         throw new Error(`Unsupported Project Scene proposal tool: ${String(toolName || '<missing>')}`);
@@ -8823,36 +8554,6 @@ export function createExternalProjectSceneProposal(sessionId, requestResourceOpe
         kind: 'project-scene-proposal',
         payload: {
           adapter: 'projectSceneProposal',
-          action,
-          input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
-        },
-      });
-      return result?.result ?? result;
-    },
-  };
-}
-
-export function createExternalSceneCodeReconciliation(sessionId, requestResourceOperation) {
-  return {
-    invoke: async (toolName, input = {}, context = {}) => {
-      if (typeof requestResourceOperation !== 'function') {
-        throw new Error('Scene code reconciliation resource bridge is unavailable.');
-      }
-      const action = toolName === GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL
-        ? 'readContext'
-        : toolName === SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL
-          ? 'submitCandidate'
-          : '';
-      if (!action) {
-        throw new Error(`Unsupported Scene code reconciliation tool: ${String(toolName || '<missing>')}`);
-      }
-      const result = await requestResourceOperation({
-        sessionId,
-        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
-        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
-        kind: 'scene-code-reconciliation',
-        payload: {
-          adapter: 'sceneCodeReconciliation',
           action,
           input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
         },
@@ -9189,14 +8890,6 @@ function logMissingHistoricalImage({ turnId, attachmentId, mediaRef, origin }) {
     stableErrorCode: 'IMAGE_MEDIA_MISSING',
     mediaHashPrefix: mediaHash.slice(0, 12),
   }));
-}
-
-function normalizePortableScopedAgentId(value, label) {
-  const id = normalizeString(value);
-  if (!id || id.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id)) {
-    throw new Error(`[AilyChat][ExecutionHost] ${label} must be a portable identifier.`);
-  }
-  return id;
 }
 
 function normalizeTurnId(value) {

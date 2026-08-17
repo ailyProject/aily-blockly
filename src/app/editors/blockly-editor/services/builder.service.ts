@@ -16,6 +16,10 @@ import {
 import {
   runWithPreparedActiveProjectGenerator,
 } from './blockly-generator-runtime.service';
+import {
+  createBlocklyBuildSourceMappings,
+  type BlocklyBuildSourceMapping,
+} from './blockly-build-source-mappings';
 
 import { BlocklyService as BlocklyService } from './blockly.service';
 
@@ -256,13 +260,7 @@ export class _BuilderService {
     detail?: string,
   ): Promise<{
     code: string;
-    blockSourceMappings: Array<{
-      blockId: string;
-      executionRole: 'statement' | 'value';
-      ranges: Array<{ startLine: number; endLine: number }>;
-      executableRanges: Array<{ startLine: number; endLine: number }>;
-      supportRanges: Array<{ startLine: number; endLine: number }>;
-    }>;
+    blockSourceMappings: readonly BlocklyBuildSourceMapping[];
   }> {
     await this.waitForOneIdleBoundary();
     const projectPath = this.projectService.currentProjectPath;
@@ -280,9 +278,9 @@ export class _BuilderService {
             ?? new Map<string, BlockCodeMapping>();
           return {
             code,
-            blockSourceMappings: this.createBlockSourceMappings(
+            blockSourceMappings: createBlocklyBuildSourceMappings(
               blockCodeMap,
-              workspace,
+              workspace as any,
             ),
             generator,
           };
@@ -1878,6 +1876,18 @@ export class _BuilderService {
                 
                 this.passed = true;
 
+                try {
+                  this.projectDebugConfigurationService
+                    .rebindBreakpointsToCurrentArtifact(
+                      this.currentProjectPath,
+                    );
+                } catch (error) {
+                  console.warn(
+                    'Successful build could not rebind Blockly breakpoints:',
+                    error,
+                  );
+                }
+
                 void this.projectDebugConfigurationService
                   .updateWorkspaceGeneratedCode(
                     this.currentProjectPath,
@@ -1977,67 +1987,6 @@ export class _BuilderService {
         this.activeBuildRequestId = null;
       }
     });
-    }
-
-    /**
-     * Keep the build hand-off independent from Blockly generator internals.
-     * compile.js combines these ranges with a hash of the exact sketch bytes.
-     */
-    private createBlockSourceMappings(
-      generatedCodeMap: ReadonlyMap<string, BlockCodeMapping>,
-      generatedWorkspace: unknown = this.blocklyService.workspace,
-    ): Array<{
-      blockId: string;
-      executionRole: 'statement' | 'value';
-      ranges: Array<{ startLine: number; endLine: number }>;
-      executableRanges: Array<{ startLine: number; endLine: number }>;
-      supportRanges: Array<{ startLine: number; endLine: number }>;
-    }> {
-      return [...generatedCodeMap.values()]
-        .map((mapping) => {
-          const block = (generatedWorkspace as {
-            getBlockById?: (blockId: string) => {
-              outputConnection?: unknown;
-            } | null;
-          } | null | undefined)?.getBlockById?.(
-            mapping.blockId,
-          );
-          return {
-            blockId: mapping.blockId,
-            executionRole: block?.outputConnection
-              ? 'value' as const
-              : 'statement' as const,
-            ranges: this.normalizeBlockSourceRanges(mapping.lineRanges),
-            executableRanges: this.normalizeBlockSourceRanges(
-              mapping.executableLineRanges ?? mapping.lineRanges,
-            ),
-            supportRanges: this.normalizeBlockSourceRanges(
-              mapping.supportLineRanges ?? [],
-            ),
-          };
-        })
-        .filter((mapping) => mapping.blockId.length > 0 && mapping.ranges.length > 0)
-        .sort((left, right) => left.blockId.localeCompare(right.blockId));
-    }
-
-    private normalizeBlockSourceRanges(
-      ranges: ReadonlyArray<{ startLine: number; endLine: number }>,
-    ): Array<{ startLine: number; endLine: number }> {
-      return ranges
-        .filter((range) => (
-          Number.isSafeInteger(range.startLine)
-          && Number.isSafeInteger(range.endLine)
-          && range.startLine >= 1
-          && range.endLine >= range.startLine
-        ))
-        .map((range) => ({
-          startLine: range.startLine,
-          endLine: range.endLine,
-        }))
-        .sort((left, right) => (
-          left.startLine - right.startLine
-          || left.endLine - right.endLine
-        ));
     }
 
   /**

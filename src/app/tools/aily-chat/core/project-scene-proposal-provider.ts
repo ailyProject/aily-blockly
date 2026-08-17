@@ -25,7 +25,7 @@ export type ProjectSceneProposalProvider = (
 ) => Promise<Record<string, unknown>>;
 
 /**
- * Adapts one headless ProjectSceneAgent runner to the Electron broker contract.
+ * Adapts one standard visible ProjectSceneAgent turn to the Host provider contract.
  * The active request data stays in a bounded in-memory invocation; the model
  * receives only the requestId and must use the two scoped Scene proposal tools.
  */
@@ -66,7 +66,7 @@ export function createProjectSceneAgentPrompt(requestId: string): string {
   return `A native v2 Project Scene generation request is active.
 requestId: ${requestId}
 
-Call get_project_scene_generation_context exactly once with this requestId. Infer only from that bounded context, then call submit_project_scene_generation_proposal exactly once with the same requestId. Submit a candidate only; do not save files, edit a Scene, call legacy schematic tools, or control Simulator/QEMU/GDB.`;
+Call get_project_scene_generation_context exactly once with this requestId. Infer only from that bounded context, then call submit_project_scene_wiring_intent exactly once with the same requestId. Submit semantic parts and nets only; Simulator owns package versions, IDs, layout, routing, diagnostics and Scene CAS. Do not save files, edit a Scene, call legacy schematic tools, or control Simulator/QEMU/GDB.`;
 }
 
 async function waitForAgent(

@@ -13,7 +13,7 @@ import { createToolCallProgressEditorOperationSink } from '../tools/editorOperat
 import {
   createProjectSceneGenerationHandlers,
   GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-  SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+  SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
 } from '../core/blockly-project-scene-tools';
 import { beginProjectSceneProposalInvocation } from '../core/project-scene-proposal-invocation';
 
@@ -503,51 +503,45 @@ function createE2eProjectSceneProposalInput(requestId: string): Record<string, u
   return {
     requestId,
     summary: 'Generate a native v2 Scene for the Blockly LED and button fixture.',
-    components: [
+    parts: [
       {
-        instanceId: 'xiao_esp32s3_1',
-        package: { id: 'aily.component-package.xiao-esp32s3', version: '1.0.0' },
-        placement: { x: 140, y: 120 },
+        ref: 'board',
+        packageId: 'aily.component-package.xiao-esp32s3',
       },
       {
-        instanceId: 'led_1',
-        package: { id: 'aily.component-package.gpio-led', version: '1.0.0' },
-        placement: { x: 520, y: 100 },
+        ref: 'status-led',
+        packageId: 'aily.component-package.gpio-led',
       },
       {
-        instanceId: 'button_1',
-        package: { id: 'aily.component-package.gpio-button', version: '1.0.0' },
-        placement: { x: 520, y: 260 },
+        ref: 'input-button',
+        packageId: 'aily.component-package.gpio-button',
       },
     ],
-    connections: [
+    nets: [
       {
-        segmentId: 'wire_board_d0_led_anode',
-        from: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_1', function: 'GPIO1' },
-        to: { instanceId: 'led_1', pinId: 'anode', function: 'A(IO)' },
-        signalKind: 'gpio',
-        label: 'LED GPIO1',
+        ref: 'status-led-drive',
+        signal: { kind: 'gpio' },
+        endpoints: [
+          { part: 'board', pin: 'pin_1', function: 'GPIO1' },
+          { part: 'status-led', pin: 'anode', function: 'A(IO)' },
+        ],
       },
       {
-        segmentId: 'wire_led_cathode_ground',
-        from: { instanceId: 'led_1', pinId: 'cathode', function: 'C(GND)' },
-        to: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_9', function: 'GND' },
-        signalKind: 'ground',
-        label: 'LED GND',
+        ref: 'button-input',
+        signal: { kind: 'gpio' },
+        endpoints: [
+          { part: 'board', pin: 'pin_2', function: 'GPIO2' },
+          { part: 'input-button', pin: 'terminal_a', function: 'A(IO)' },
+        ],
       },
       {
-        segmentId: 'wire_board_d1_button_a',
-        from: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_2', function: 'GPIO2' },
-        to: { instanceId: 'button_1', pinId: 'terminal_a', function: 'A(IO)' },
-        signalKind: 'gpio',
-        label: 'BUTTON GPIO2',
-      },
-      {
-        segmentId: 'wire_button_b_ground',
-        from: { instanceId: 'button_1', pinId: 'terminal_b', function: 'B(GND)' },
-        to: { instanceId: 'xiao_esp32s3_1', pinId: 'pin_9', function: 'GND' },
-        signalKind: 'ground',
-        label: 'BUTTON GND',
+        ref: 'ground',
+        signal: { kind: 'ground' },
+        endpoints: [
+          { part: 'board', pin: 'pin_9', function: 'GND' },
+          { part: 'status-led', pin: 'cathode', function: 'C(GND)' },
+          { part: 'input-button', pin: 'terminal_b', function: 'B(GND)' },
+        ],
       },
     ],
   };
@@ -1508,7 +1502,7 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
       const sessionId = await engine.ensureSessionReadyForSubmit() ?? getCurrentSessionId(engine);
       const toolHandlers = createProjectSceneGenerationHandlers();
       const contextTool = toolHandlers[GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL];
-      const submitTool = toolHandlers[SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL];
+      const submitTool = toolHandlers[SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL];
       if (typeof contextTool !== 'function' || typeof submitTool !== 'function') {
         throw new Error('The Host Runtime owner does not expose the Project Scene proposal tools.');
       }
@@ -1529,7 +1523,45 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
             graphSemanticRevision: '3'.repeat(64),
             catalogRevision: '4'.repeat(64),
           },
-          legacySource: null,
+          componentPackages: [
+            {
+              packageId: 'aily.component-package.xiao-esp32s3',
+              version: '1.0.0',
+              name: 'XIAO ESP32-S3',
+              category: 'board',
+              instanceIdPrefix: 'xiao_esp32s3_',
+              maxInstances: 1,
+              pins: [
+                { pinId: 'pin_1', functions: [{ name: 'GPIO1', type: 'gpio' }] },
+                { pinId: 'pin_2', functions: [{ name: 'GPIO2', type: 'gpio' }] },
+                { pinId: 'pin_9', functions: [{ name: 'GND', type: 'gnd' }] },
+              ],
+            },
+            {
+              packageId: 'aily.component-package.gpio-led',
+              version: '1.0.0',
+              name: 'GPIO LED',
+              category: 'output',
+              instanceIdPrefix: 'led_',
+              maxInstances: 16,
+              pins: [
+                { pinId: 'anode', functions: [{ name: 'A(IO)', type: 'digital' }] },
+                { pinId: 'cathode', functions: [{ name: 'C(GND)', type: 'gnd' }] },
+              ],
+            },
+            {
+              packageId: 'aily.component-package.gpio-button',
+              version: '1.0.0',
+              name: 'GPIO Button',
+              category: 'input',
+              instanceIdPrefix: 'button_',
+              maxInstances: 16,
+              pins: [
+                { pinId: 'terminal_a', functions: [{ name: 'A(IO)', type: 'digital' }] },
+                { pinId: 'terminal_b', functions: [{ name: 'B(GND)', type: 'gnd' }] },
+              ],
+            },
+          ],
           expiresAtUnixMs,
         },
         hardwareIntent: {

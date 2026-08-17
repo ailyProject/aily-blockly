@@ -1414,7 +1414,20 @@ export class ChatEngineService implements IChatContext {
     undoLastEdits: () => this.sessionBoundary.undoEdits(),
     newChat: () => this.requestNewChatFromPane(),
     ensureSessionReadyForSubmit: () => this.ensureSessionReadyForSubmit(),
-      submitText: (text, clearInput, sessionId) => this.submitUserText(text, { clearInput, sessionId }),
+    submitText: async (text, clearInput, sessionId, options) => {
+      await this.submitUserText(text, { clearInput, sessionId });
+      const receiptId = options?.externalInputReceiptId;
+      const targetSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+      if (!receiptId || !targetSessionId) return;
+      this.chatService.markExternalInputExecutionSubmitted(receiptId, targetSessionId);
+      await this.awaitRuntimeHostRequestCompletion(targetSessionId);
+    },
+    completeExternalInputExecution: (receiptId, sessionId) => {
+      this.chatService.completeExternalInputExecution(receiptId, sessionId);
+    },
+    failExternalInputExecution: (receiptId, reason) => {
+      this.chatService.failExternalInputExecution(receiptId, reason);
+    },
     focusInput: () => this.scheduleComposerInputFocus(),
     schedulePostInputWork: (work) => {
       setTimeout(work, 100);

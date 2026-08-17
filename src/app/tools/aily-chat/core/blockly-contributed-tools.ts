@@ -52,10 +52,6 @@ import {
   appendProjectSceneGenerationContributions,
   createProjectSceneGenerationHandlers,
 } from './blockly-project-scene-tools';
-import {
-  appendSceneCodeReconciliationContributions,
-  createSceneCodeReconciliationHandlers,
-} from './blockly-scene-code-reconciliation-tools';
 
 export const BLOCKLY_LEX_DEFERRED_GROUPS = [
   { id: 'blockly-library-discovery', label: '硬件/库工具', description: '开发板、库搜索与库定义分析' },
@@ -121,7 +117,6 @@ function createHandlers(runtimeMode: ChatAgentRuntimeMode, options?: BlocklyTool
       handlers,
       createBlocklyWorkspaceHandlers(options),
       createProjectSceneGenerationHandlers(),
-      createSceneCodeReconciliationHandlers(),
     );
   }
 
@@ -146,7 +141,6 @@ function collectBlocklyContributions(hostAPI: IExternalHostAPI, runtimeMode: Cha
   if (runtimeMode === 'blockly') {
     appendBlocklyWorkspaceContributions(contributions, hostAPI, createDeferred);
     appendProjectSceneGenerationContributions(contributions);
-    appendSceneCodeReconciliationContributions(contributions);
   }
 
   return contributions;

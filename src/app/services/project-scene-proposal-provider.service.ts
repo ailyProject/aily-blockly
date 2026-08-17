@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, NgZone } from '@angular/core';
 
 import { createElectronChatRuntimeHostTransport } from '../tools/aily-chat/core/electron-chat-runtime-host-transport';
 import {
@@ -6,13 +6,19 @@ import {
   type ProjectSceneAgentRunInput,
 } from '../tools/aily-chat/core/project-scene-proposal-provider';
 import type { ProjectSceneProposalInvocationInput } from '../tools/aily-chat/core/project-scene-proposal-invocation';
+import { UiService } from './ui.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectSceneProposalProviderService {
   private readonly activeRequests = new Map<string, AbortController>();
   private readonly provider = createProjectSceneProposalProvider(
-    input => this.runScopedAgent(input),
+    input => this.runVisibleChatAgent(input),
   );
+
+  constructor(
+    private readonly uiService: UiService,
+    private readonly ngZone: NgZone,
+  ) {}
 
   async request(
     input: ProjectSceneProposalInvocationInput,
@@ -53,13 +59,25 @@ export class ProjectSceneProposalProviderService {
     return true;
   }
 
-  private async runScopedAgent(input: ProjectSceneAgentRunInput): Promise<unknown> {
+  private async runVisibleChatAgent(input: ProjectSceneAgentRunInput): Promise<unknown> {
     const runtimeHost = createElectronChatRuntimeHostTransport();
-    if (!runtimeHost) {
-      throw new Error('Independent Electron execution host is unavailable.');
-    }
+    const execution = this.ngZone.run(() => this.uiService.openAndRunStandardChatTurn(
+      `@${input.agentType} ${input.prompt}`,
+      `project-scene:${input.requestId}`,
+      {
+        autoSend: true,
+        newChatFirst: true,
+        cover: true,
+      },
+    ));
     const cancel = () => {
-      void runtimeHost.cancelScopedAgent({ invocationId: input.requestId }).catch(() => undefined);
+      execution.cancel(input.signal?.reason ?? new Error(
+        'Project Scene proposal request was cancelled.',
+      ));
+      void execution.sessionId.then(
+        sessionId => runtimeHost?.stopTurn(sessionId).catch(() => undefined),
+        () => undefined,
+      );
     };
     if (input.signal?.aborted) {
       cancel();
@@ -67,19 +85,7 @@ export class ProjectSceneProposalProviderService {
     }
     input.signal?.addEventListener('abort', cancel, { once: true });
     try {
-      const result = await runtimeHost.runScopedAgent({
-        invocationId: input.requestId,
-        agentType: input.agentType,
-        prompt: input.prompt,
-        runtimeMode: 'blockly',
-      });
-      if (
-        result.invocationId !== input.requestId
-        || result.agentType !== input.agentType
-      ) {
-        throw new Error('Independent execution host returned a mismatched scoped Agent result.');
-      }
-      return result;
+      return await execution.completion;
     } finally {
       input.signal?.removeEventListener('abort', cancel);
     }

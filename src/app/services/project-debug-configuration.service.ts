@@ -8,6 +8,7 @@ export const PROJECT_ARTIFACT_MANIFEST_PATH =
 
 const MAX_CONFIGURATION_BYTES = 1024 * 1024;
 const MAX_ARTIFACT_MANIFEST_BYTES = 4 * 1024 * 1024;
+const MAX_SOURCE_MAP_BYTES = 16 * 1024 * 1024;
 const SOURCE_MAP_REVISION_PATTERN = /^[a-f0-9]{64}$/;
 
 export interface ProjectBlockBreakpointIntent {
@@ -327,6 +328,52 @@ export class ProjectDebugConfigurationService {
     return cloneProjectDebugConfigurationState(state);
   }
 
+  /**
+   * Rebinds persisted block breakpoint intents after a successful build.
+   *
+   * A block ID is the user intent; sourceMapRevision is only its binding to
+   * one immutable Artifact. Keep removed/non-executable blocks stale so the
+   * editor can explain why they no longer apply, while surviving executable
+   * blocks follow the newly built source map.
+   */
+  rebindBreakpointsToCurrentArtifact(
+    projectPath: string,
+  ): ProjectDebugConfigurationState {
+    const current = this.refresh(projectPath);
+    if (
+      !current.sourceMapRevision
+      || current.configurationError
+      || current.sourceMapError
+      || current.configuration.breakpoints.length === 0
+    ) {
+      return current;
+    }
+    const executableBlockIds = this.readExecutableArtifactBlockIds(
+      projectPath,
+      current.sourceMapRevision,
+    );
+    let changed = false;
+    const breakpoints = current.configuration.breakpoints.map((breakpoint) => {
+      if (
+        !executableBlockIds.has(breakpoint.blockId)
+        || breakpoint.sourceMapRevision === current.sourceMapRevision
+      ) {
+        return { ...breakpoint };
+      }
+      changed = true;
+      return {
+        ...breakpoint,
+        sourceMapRevision: current.sourceMapRevision,
+      };
+    });
+    if (!changed) return current;
+    this.write(projectPath, {
+      ...current.configuration,
+      breakpoints,
+    });
+    return this.snapshot;
+  }
+
   upsertBreakpoint(
     projectPath: string,
     breakpoint: ProjectBlockBreakpointIntent,
@@ -565,6 +612,89 @@ export class ProjectDebugConfigurationService {
     }
   }
 
+  private readExecutableArtifactBlockIds(
+    projectPath: string,
+    expectedRevision: string,
+  ): Set<string> {
+    const manifestPath = window['path'].join(
+      projectPath,
+      ...PROJECT_ARTIFACT_MANIFEST_PATH.split('/'),
+    );
+    const manifestRaw = window['fs'].readFileSync(manifestPath, 'utf8');
+    if (
+      typeof manifestRaw !== 'string'
+      || manifestRaw.length > MAX_ARTIFACT_MANIFEST_BYTES
+    ) {
+      throw new Error('Artifact manifest exceeds the debug binding limit.');
+    }
+    const manifest = JSON.parse(manifestRaw) as unknown;
+    if (!isRecord(manifest) || !Array.isArray(manifest['files'])) {
+      throw new Error('Artifact manifest does not describe a source map.');
+    }
+    const debug = isRecord(manifest['debug']) ? manifest['debug'] : null;
+    const requestedPath = normalizePortableArtifactPath(
+      debug?.['sourceMapPath'],
+    );
+    const descriptor = manifest['files'].find((file) => {
+      if (!isRecord(file) || file['role'] !== 'source-map') return false;
+      const candidatePath = normalizePortableArtifactPath(file['path']);
+      return !!candidatePath && (!requestedPath || candidatePath === requestedPath);
+    });
+    if (!isRecord(descriptor)) {
+      throw new Error('Artifact source-map descriptor is unavailable.');
+    }
+    const sourceMapPath = normalizePortableArtifactPath(descriptor['path']);
+    const sourceMapRevision = typeof descriptor['sha256'] === 'string'
+      ? descriptor['sha256'].toLowerCase()
+      : '';
+    if (
+      !sourceMapPath
+      || sourceMapRevision !== expectedRevision
+      || !SOURCE_MAP_REVISION_PATTERN.test(sourceMapRevision)
+    ) {
+      throw new Error('Artifact source-map identity changed during binding.');
+    }
+    const sourceMapFilePath = window['path'].join(
+      projectPath,
+      '.build',
+      ...sourceMapPath.split('/'),
+    );
+    const sourceMapRaw = window['fs'].readFileSync(sourceMapFilePath, 'utf8');
+    if (
+      typeof sourceMapRaw !== 'string'
+      || sourceMapRaw.length > MAX_SOURCE_MAP_BYTES
+    ) {
+      throw new Error('Artifact source map exceeds the debug binding limit.');
+    }
+    const sourceMap = JSON.parse(sourceMapRaw) as unknown;
+    if (
+      !isRecord(sourceMap)
+      || sourceMap['schemaVersion'] !== 1
+      || sourceMap['kind'] !== 'aily-block-source-map'
+      || !Array.isArray(sourceMap['mappings'])
+    ) {
+      throw new Error('Artifact source map is invalid.');
+    }
+    const executableBlockIds = new Set<string>();
+    for (const mapping of sourceMap['mappings']) {
+      if (!isRecord(mapping)) continue;
+      const blockId = mapping['blockId'];
+      const ranges = mapping['executableRanges'];
+      if (
+        typeof blockId !== 'string'
+        || !blockId
+        || blockId.length > 256
+        || /[\u0000-\u001f\u007f]/u.test(blockId)
+        || !Array.isArray(ranges)
+        || !ranges.some(isExecutableSourceRange)
+      ) {
+        continue;
+      }
+      executableBlockIds.add(blockId);
+    }
+    return executableBlockIds;
+  }
+
   private configurationFilePath(projectPath: string): string {
     return window['path'].join(
       projectPath,
@@ -759,6 +889,16 @@ function normalizePortableArtifactPath(value: unknown): string {
 
 function normalizeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isExecutableSourceRange(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const startLine = value['startLine'];
+  const endLine = value['endLine'];
+  return Number.isSafeInteger(startLine)
+    && Number.isSafeInteger(endLine)
+    && Number(startLine) >= 1
+    && Number(endLine) >= Number(startLine);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

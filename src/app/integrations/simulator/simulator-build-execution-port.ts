@@ -8,9 +8,9 @@ import type {
   SimulatorBuildExecutionPort,
 } from './simulator-build-callback-authority';
 import type {
-  SimulatorSceneCodeReconciliationPort,
-  SimulatorSceneCodeReconciliationRequest,
-} from './simulator-scene-code-reconciliation-coordinator';
+  SimulatorMainAgentSceneChangePort,
+  SimulatorMainAgentSceneChangeRequest,
+} from './simulator-main-agent-scene-change-port';
 
 const PORTABLE_IDENTIFIER_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
@@ -53,13 +53,12 @@ export interface BlocklySimulatorBuildExecutionPortOptions {
   projectIdentity: string;
   sceneId?: string;
   activeProject: SimulatorActiveProjectBindingPort;
-  reconciliation: SimulatorSceneCodeReconciliationPort;
+  mainAgent: SimulatorMainAgentSceneChangePort;
   builder: SimulatorBlocklyBuilderPort;
   artifacts: SimulatorLatestArtifactDescriptorPort;
 }
 
 type SimulatorBuildErrorCode =
-  | 'request-rejected'
   | 'project-unavailable'
   | 'generation-failed'
   | 'compile-failed'
@@ -67,7 +66,7 @@ type SimulatorBuildErrorCode =
   | 'cancelled';
 
 /**
- * Product-owned Scene -> Agent -> Builder -> Artifact orchestration.
+ * Product-owned Scene -> visible main Agent -> Builder -> Artifact orchestration.
  *
  * The port is bound to one active Blockly Project and returns only a Host SDK
  * Artifact descriptor. It never imports or controls Simulator Runtime state.
@@ -78,7 +77,7 @@ implements SimulatorBuildExecutionPort {
   private readonly projectIdentity: string;
   private readonly sceneId: string;
   private readonly activeProject: SimulatorActiveProjectBindingPort;
-  private readonly reconciliation: SimulatorSceneCodeReconciliationPort;
+  private readonly mainAgent: SimulatorMainAgentSceneChangePort;
   private readonly builder: SimulatorBlocklyBuilderPort;
   private readonly artifacts: SimulatorLatestArtifactDescriptorPort;
 
@@ -100,10 +99,10 @@ implements SimulatorBuildExecutionPort {
       throw new TypeError('Active Project binding port is invalid.');
     }
     if (
-      !options.reconciliation
-      || typeof options.reconciliation.reconcile !== 'function'
+      !options.mainAgent
+      || typeof options.mainAgent.execute !== 'function'
     ) {
-      throw new TypeError('Scene code reconciliation port is invalid.');
+      throw new TypeError('Simulator main-Agent port is invalid.');
     }
     if (!options.builder || typeof options.builder.build !== 'function') {
       throw new TypeError('Blockly Builder port is invalid.');
@@ -115,7 +114,7 @@ implements SimulatorBuildExecutionPort {
       throw new TypeError('Latest Artifact descriptor port is invalid.');
     }
     this.activeProject = options.activeProject;
-    this.reconciliation = options.reconciliation;
+    this.mainAgent = options.mainAgent;
     this.builder = options.builder;
     this.artifacts = options.artifacts;
   }
@@ -130,9 +129,9 @@ implements SimulatorBuildExecutionPort {
     observer.report('resolving', 100);
     this.requireActiveBlocklyProject();
 
-    const reconciliationRequest: SimulatorSceneCodeReconciliationRequest = {
+    const mainAgentRequest: SimulatorMainAgentSceneChangeRequest = {
       schemaVersion: 1,
-      kind: 'aily-simulator-scene-code-reconciliation-request',
+      kind: 'aily-simulator-main-agent-scene-change-request',
       requestId: request.requestId,
       projectIdentity: request.projectIdentity,
       sceneId: request.sceneId,
@@ -140,10 +139,10 @@ implements SimulatorBuildExecutionPort {
       sceneDocument: structuredClone(request.sceneDocument),
     };
     observer.report('generating', 250);
-    let reconciliation;
+    let mainAgentReceipt;
     try {
-      reconciliation = await this.reconciliation.reconcile(
-        reconciliationRequest,
+      mainAgentReceipt = await this.mainAgent.execute(
+        mainAgentRequest,
         signal,
       );
     } catch (error) {
@@ -151,25 +150,17 @@ implements SimulatorBuildExecutionPort {
     }
     throwIfAborted(signal);
     this.requireActiveBlocklyProject();
-    if (reconciliation.decision !== 'approved') {
-      throw buildError(
-        'request-rejected',
-        'Scene code reconciliation was rejected.',
-      );
-    }
     if (
-      reconciliation.requestId !== request.requestId
-      || reconciliation.projectIdentity !== request.projectIdentity
-      || reconciliation.sceneId !== request.sceneId
-      || reconciliation.graphSemanticRevision !== request.sceneRevision
-      || (
-        reconciliation.outcome !== 'applied'
-        && reconciliation.outcome !== 'already-aligned'
-      )
+      mainAgentReceipt.requestId !== request.requestId
+      || mainAgentReceipt.projectIdentity !== request.projectIdentity
+      || mainAgentReceipt.sceneId !== request.sceneId
+      || mainAgentReceipt.graphSemanticRevision !== request.sceneRevision
+      || mainAgentReceipt.outcome !== 'completed'
+      || !mainAgentReceipt.agentRunId
     ) {
       throw buildError(
         'generation-failed',
-        'Scene code reconciliation returned a mismatched completion.',
+        'Simulator main Agent returned a mismatched completion receipt.',
       );
     }
 

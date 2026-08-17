@@ -252,10 +252,12 @@ function convertBlockToAbs(block: any, indentLevel: number, context: ConversionC
   const lines: string[] = [];
   const indent = context.indent(indentLevel);
   
-  // 特殊处理 controls_if：始终使用命名输入格式
-  if (block.type === 'controls_if') {
+  // controls_if / controls_ifelse 共用同一组 Blockly 输入名。
+  // 必须始终输出 @IF0:/@DO0:/@ELSE: 的精确名称，否则通用的
+  // 友好名称 @do: 在导入时只能恢复为 DO，会丢失真实输入 DO0。
+  if (block.type === 'controls_if' || block.type === 'controls_ifelse') {
     const result = convertControlsIfToAbs(block, indentLevel, context);
-    // controls_if 内部已处理 lineOffset，此处记录整个块范围
+    // 转换器内部已处理 lineOffset，此处记录整个块范围
     context.recordBlockLines(block.id, startLine, result.length);
     return result;
   }
@@ -318,7 +320,7 @@ function convertBlockToAbs(block: any, indentLevel: number, context: ConversionC
 }
 
 /**
- * 特殊处理 controls_if 块
+ * 特殊处理 controls_if / controls_ifelse 块
  * 始终使用 @IF0:/@DO0:/@ELSE: 格式，确保导入时能正确还原
  */
 function convertControlsIfToAbs(block: any, indentLevel: number, context: ConversionContext): string[] {
@@ -330,7 +332,7 @@ function convertControlsIfToAbs(block: any, indentLevel: number, context: Conver
   // 主块行
   const idComment = context.includeBlockIds ? `  # id: ${block.id}` : '';
   const extraStateAnnotation = formatExtraStateAnnotation(block.extraState);
-  lines.push(`${indent}controls_if()${extraStateAnnotation}${idComment}`);
+  lines.push(`${indent}${block.type}()${extraStateAnnotation}${idComment}`);
   context.lineOffset++;
   
   if (block.inputs) {

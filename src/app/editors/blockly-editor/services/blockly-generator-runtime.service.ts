@@ -67,6 +67,7 @@ interface RuntimeSession {
 }
 
 let activeProjectGenerator: ProjectGenerator | null = null;
+let activeProjectWorkspaceOverride: Blockly.Workspace | null = null;
 
 export function getActiveProjectGenerator(): ProjectGenerator | null {
   return activeProjectGenerator;
@@ -93,13 +94,23 @@ export async function runWithPreparedActiveProjectGenerator<T>(
     throw new Error('Blockly generator runtime changed while Project Data was being prepared');
   }
 
-  // Keep workspaceToCode(), generated artifacts, and mutable source maps in one
-  // synchronous runtime-owned phase. The callback must not return a Promise.
-  const result = operation(generator);
-  if (result && typeof (result as any)?.then === 'function') {
-    throw new Error('Active Blockly generator operation must remain synchronous');
+  // Keep workspaceToCode(), generated artifacts, mutable source maps, and the
+  // generator realm's getMainWorkspace() view in one synchronous phase. This
+  // is what lets a detached build use the existing project-scoped libraries
+  // without exposing or mutating the live editor workspace.
+  if (activeProjectWorkspaceOverride) {
+    throw new Error('A Blockly generator workspace operation is already active');
   }
-  return result;
+  activeProjectWorkspaceOverride = workspace;
+  try {
+    const result = operation(generator);
+    if (result && typeof (result as any)?.then === 'function') {
+      throw new Error('Active Blockly generator operation must remain synchronous');
+    }
+    return result;
+  } finally {
+    activeProjectWorkspaceOverride = null;
+  }
 }
 
 function cloneRuntimeValue<T>(value: T): T {
@@ -321,7 +332,8 @@ export class BlocklyGeneratorRuntimeService {
         }
         if (key === 'getMainWorkspace') {
           return () => {
-            const workspace = session.context.getWorkspace();
+            const workspace = activeProjectWorkspaceOverride
+              ?? session.context.getWorkspace();
             return workspace ? this.getWorkspaceFacade(session, workspace) : null;
           };
         }

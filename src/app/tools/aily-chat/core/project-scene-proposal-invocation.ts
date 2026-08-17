@@ -106,17 +106,15 @@ export function submitProjectSceneProposalInvocation(
   if (!pending.contextRead) {
     throw new Error('Project Scene proposal generation context must be read before submission.');
   }
-  const proposalRecord = record(proposal, 'proposal');
-  const target = record(proposalRecord['target'], 'proposal.target');
+  const intentRecord = record(proposal, 'wiring intent');
   if (
-    proposalRecord['schemaVersion'] !== 1
-    || proposalRecord['kind'] !== 'aily-agent-scene-change-proposal'
-    || target['projectIdentity'] !== pending.context.request['projectIdentity']
-    || target['sceneId'] !== pending.context.request['sceneId']
+    intentRecord['schemaVersion'] !== 1
+    || intentRecord['kind'] !== 'aily-project-wiring-intent'
+    || intentRecord['requestId'] !== pending.requestId
   ) {
-    throw new Error('Project Scene proposal does not match its active invocation.');
+    throw new Error('Project wiring intent does not match its active invocation.');
   }
-  settleInvocation(pending, () => pending.resolve(structuredClone(proposalRecord)));
+  settleInvocation(pending, () => pending.resolve(structuredClone(intentRecord)));
 }
 
 export function resetProjectSceneProposalInvocationsForTest(): void {
@@ -133,7 +131,7 @@ function validateInvocationInput(
   exactKeys(input, ['request', 'hardwareIntent'], 'Project Scene proposal invocation');
   const request = record(input['request'], 'request');
   const hardwareIntent = record(input['hardwareIntent'], 'hardwareIntent');
-  exactKeys(request, [
+  allowedKeys(request, [
     'schemaVersion',
     'kind',
     'requestId',
@@ -141,9 +139,9 @@ function validateInvocationInput(
     'sceneId',
     'reason',
     'base',
-    'legacySource',
+    'componentPackages',
     'expiresAtUnixMs',
-  ], 'request');
+  ], ['instruction'], 'request');
   exactKeys(hardwareIntent, [
     'schemaVersion',
     'kind',
@@ -171,11 +169,17 @@ function validateInvocationInput(
     throw new Error('Project Scene proposal invocation identities do not match.');
   }
   portableIdentifier(request['sceneId'], 'request.sceneId');
-  if (!['missing-scene', 'legacy-detected', 'user-regenerate'].includes(String(request['reason']))) {
+  if (!['missing-scene', 'user-regenerate'].includes(String(request['reason']))) {
     throw new Error('Project Scene proposal invocation reason is unsupported.');
   }
   if (!Array.isArray(hardwareIntent['libraries']) || !Array.isArray(hardwareIntent['hardwareHints'])) {
     throw new Error('Project Scene hardware intent collections are invalid.');
+  }
+  if (!Array.isArray(request['componentPackages']) || request['componentPackages'].length < 1) {
+    throw new Error('Project Scene generation Component Package snapshot is invalid.');
+  }
+  if (request['instruction'] !== undefined) {
+    safeInstruction(request['instruction'], 'request.instruction');
   }
   return structuredClone({ request, hardwareIntent });
 }
@@ -223,6 +227,34 @@ function exactKeys(
   ) {
     throw new Error(`${label} contains unsupported fields.`);
   }
+}
+
+function allowedKeys(
+  value: Record<string, unknown>,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[],
+  label: string,
+): void {
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  if (
+    Object.keys(value).some(key => !allowed.has(key))
+    || requiredKeys.some(key => !Object.hasOwn(value, key))
+  ) {
+    throw new Error(`${label} contains unsupported fields.`);
+  }
+}
+
+function safeInstruction(value: unknown, label: string): string {
+  if (typeof value !== 'string') throw new Error(`${label} must be a string.`);
+  const normalized = value.trim();
+  if (
+    normalized.length < 1
+    || new TextEncoder().encode(normalized).byteLength > 2 * 1024
+    || /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    throw new Error(`${label} must be safe non-empty text within 2 KiB.`);
+  }
+  return normalized;
 }
 
 function portableIdentifier(value: unknown, label: string): string {

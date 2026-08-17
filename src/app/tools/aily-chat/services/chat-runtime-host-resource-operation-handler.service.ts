@@ -36,16 +36,12 @@ import { AilyChatConfigService } from './aily-chat-config.service';
 import { ChatRuntimeOwnerSubmittedTurnTitleService } from './chat-runtime-owner-submitted-turn-title.service';
 import { ChatRuntimeOwnerToolApprovalService } from './chat-runtime-owner-tool-approval.service';
 import { normalizeToolApprovalArgs } from '../core/tool-approval-input';
+import { waitForWorkspaceRevisionQuiescence } from '../core/agent-project-mutation-tool';
 import {
   createProjectSceneGenerationHandlers,
   GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-  SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+  SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
 } from '../core/blockly-project-scene-tools';
-import {
-  createSceneCodeReconciliationHandlers,
-  GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL,
-  SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL,
-} from '../core/blockly-scene-code-reconciliation-tools';
 
 type HostResourceOperationPayload = {
   readonly adapter?: unknown;
@@ -218,8 +214,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
         return this.runSubappAgentOperation(request);
       case 'project-scene-proposal':
         return this.runProjectSceneProposalOperation(request);
-      case 'scene-code-reconciliation':
-        return this.runSceneCodeReconciliationOperation(request);
       case 'board-search':
         return this.runBoardSearchOperation(request);
       case 'library-analysis':
@@ -251,8 +245,8 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
     );
     const toolName = payload.action === 'readContext'
       ? GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL
-      : payload.action === 'submitProposal'
-        ? SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL
+      : payload.action === 'submitWiringIntent'
+        ? SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL
         : '';
     if (!toolName) {
       throw new HostResourceOperationError(
@@ -300,71 +294,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
       throw new HostResourceOperationError(
         `[AilyChat][RuntimeHost] Project Scene proposal tool returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
         'project_scene_proposal_tool_result_invalid',
-        false,
-      );
-    }
-  }
-
-  private async runSceneCodeReconciliationOperation(
-    request: ChatRuntimeHostResourceOperationRequest,
-  ): Promise<Record<string, unknown>> {
-    this.requireSessionId(request, 'Scene code reconciliation');
-    const payload = this.requirePayloadAdapter(
-      request.payload,
-      'sceneCodeReconciliation',
-      'Scene code reconciliation',
-    );
-    const toolName = payload.action === 'readContext'
-      ? GET_SCENE_CODE_RECONCILIATION_CONTEXT_TOOL
-      : payload.action === 'submitCandidate'
-        ? SUBMIT_SCENE_CODE_RECONCILIATION_CANDIDATE_TOOL
-        : '';
-    if (!toolName) {
-      throw new HostResourceOperationError(
-        `[AilyChat][RuntimeHost] Unsupported Scene code reconciliation action: ${String(payload.action || '<missing>')}.`,
-        'resource_operation_payload_invalid',
-        false,
-      );
-    }
-    const input = payload.input;
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      throw new HostResourceOperationError(
-        '[AilyChat][RuntimeHost] Scene code reconciliation tool requires an input object.',
-        'resource_operation_payload_invalid',
-        false,
-      );
-    }
-    const handler = createSceneCodeReconciliationHandlers()[toolName];
-    const result = await handler(
-      input as Record<string, unknown>,
-      {} as never,
-      {
-        toolCallId: this.normalizeSessionId(request.toolCallId),
-        trace: { turnId: this.normalizeSessionId(request.turnId) },
-      },
-    );
-    const text = result.content
-      .filter(item => item.type === 'text')
-      .map(item => item.type === 'text' ? item.text : '')
-      .join('\n')
-      .trim();
-    if (result.isError) {
-      throw new HostResourceOperationError(
-        text || 'Scene code reconciliation tool failed.',
-        'scene_code_reconciliation_tool_failed',
-        false,
-      );
-    }
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('result is not an object');
-      }
-      return parsed as Record<string, unknown>;
-    } catch (error) {
-      throw new HostResourceOperationError(
-        `[AilyChat][RuntimeHost] Scene code reconciliation tool returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-        'scene_code_reconciliation_tool_result_invalid',
         false,
       );
     }
@@ -463,39 +392,54 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
           transactionId,
         }, this.electronService)
       : null;
-    let result;
+    const agentWritingSource = args.operation === 'import'
+      ? `runtime-host-${transactionId}`
+      : '';
+    if (agentWritingSource) {
+      this.blocklyService.setAiWritingActive(agentWritingSource, true);
+    }
     try {
-      result = await runSyncAbsFileConcreteHandler(
-        args,
-        this.projectService,
-        this.electronService,
-        this.absAutoSyncService,
-        {
-          sessionId,
-          turnId,
-          toolCallId,
-          recordMutationReceipt: mutationTransaction?.record,
-        },
-      );
-    } catch (error) {
-      await mutationTransaction?.rollback();
-      throw error;
+      let result;
+      try {
+        result = await runSyncAbsFileConcreteHandler(
+          args,
+          this.projectService,
+          this.electronService,
+          this.absAutoSyncService,
+          {
+            sessionId,
+            turnId,
+            toolCallId,
+            recordMutationReceipt: mutationTransaction?.record,
+          },
+        );
+      } catch (error) {
+        await mutationTransaction?.rollback();
+        throw error;
+      }
+      if (result.is_error) {
+        await mutationTransaction?.rollback();
+        throw new HostResourceOperationError(
+          result.content || '[AilyChat][RuntimeHost] syncAbs resource operation failed.',
+          'syncabs_operation_failed',
+          false,
+        );
+      }
+      if (!mutationTransaction?.hasMutations) {
+        return result;
+      }
+      return {
+        ...result,
+        mutationBatch: this.prepareWorkspaceMutation(mutationTransaction),
+      };
+    } finally {
+      if (agentWritingSource) {
+        await waitForWorkspaceRevisionQuiescence(
+          () => this.blocklyService.getWorkspaceContentRevision(),
+        );
+        this.blocklyService.setAiWritingActive(agentWritingSource, false);
+      }
     }
-    if (result.is_error) {
-      await mutationTransaction?.rollback();
-      throw new HostResourceOperationError(
-        result.content || '[AilyChat][RuntimeHost] syncAbs resource operation failed.',
-        'syncabs_operation_failed',
-        false,
-      );
-    }
-    if (!mutationTransaction?.hasMutations) {
-      return result;
-    }
-    return {
-      ...result,
-      mutationBatch: this.prepareWorkspaceMutation(mutationTransaction),
-    };
   }
 
   private async runProjectInfoOperation(request: ChatRuntimeHostResourceOperationRequest): Promise<unknown> {
@@ -597,25 +541,34 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
     }, this.electronService);
     await transaction.captureTextFiles(relativeFilePaths.map(filePath => this.joinProjectPath(projectPath, filePath)));
 
-    let result: unknown;
+    const agentWritingSource = `runtime-host-${transactionId}`;
+    this.blocklyService.setAiWritingActive(agentWritingSource, true);
     try {
-      result = await operation();
-      if (this.isToolUseError(result)) {
-        await transaction.rollback();
-        return result;
-      }
-      await transaction.recordCapturedTextFileChanges();
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
-
-    return transaction.hasMutations
-      ? {
-          ...(result && typeof result === 'object' ? result : { result }),
-          mutationBatch: this.prepareWorkspaceMutation(transaction),
+      let result: unknown;
+      try {
+        result = await operation();
+        if (this.isToolUseError(result)) {
+          await transaction.rollback();
+          return result;
         }
-      : result;
+        await transaction.recordCapturedTextFileChanges();
+      } catch (error) {
+        await transaction.rollback();
+        throw error;
+      }
+
+      return transaction.hasMutations
+        ? {
+            ...(result && typeof result === 'object' ? result : { result }),
+            mutationBatch: this.prepareWorkspaceMutation(transaction),
+          }
+        : result;
+    } finally {
+      await waitForWorkspaceRevisionQuiescence(
+        () => this.blocklyService.getWorkspaceContentRevision(),
+      );
+      this.blocklyService.setAiWritingActive(agentWritingSource, false);
+    }
   }
 
   private async runProjectCreateOperation(

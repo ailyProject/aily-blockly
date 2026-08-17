@@ -722,6 +722,7 @@ export class AilyChatChildProtocolService {
         detail: [item.description, item.projectPath].filter(Boolean),
         pinned: item.pinned,
         archived: item.archived,
+        readOnly: item.readOnly === true,
         actions: Array.isArray(item.actions)
           ? item.actions.map(action => ({
               icon: action.icon,

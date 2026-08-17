@@ -40,6 +40,7 @@ import {
 } from '../core/chat-agent-runtime-mode';
 import type { ChatRuntimeOwnerScheduler } from '../core/chat-runtime-owner-scheduler';
 import { normalizeGovernanceToolName, toRuntimeGovernanceToolName } from '../core/tool-name-normalizer';
+import { isAgentProjectMutationToolCall } from '../core/agent-project-mutation-tool';
 import {
   createBlocklyContextSnapshotService,
   getBlocklyContextSnapshotService,
@@ -816,7 +817,7 @@ export function getConfiguredCoreToolFilter(
   );
 }
 
-function cloneContributionWithScopedAgents(
+function cloneContributionWithAgentScope(
   contribution: IToolContribution,
   agents: readonly ToolConfigAgent[],
 ): IToolContribution {
@@ -845,7 +846,7 @@ export function filterContributedToolsByAgentToolConfig(
     const sameScope = configuredAgents.length === originalAgents.length
       && configuredAgents.every((agent, index) => agent === originalAgents[index]);
 
-    filtered.push(sameScope ? contribution : cloneContributionWithScopedAgents(contribution, configuredAgents));
+    filtered.push(sameScope ? contribution : cloneContributionWithAgentScope(contribution, configuredAgents));
   }
 
   return filtered;
@@ -2240,6 +2241,7 @@ export function bootstrapBlocklyLexAgent(
     configSource: ctx.ailyChatConfigService,
   });
   let agent: BlocklyLexAgentInstance | undefined;
+  let activeProjectMutationToolName: string | null = null;
   const skillCustomizationProvider = createBlocklySkillCustomizationProvider();
   const hookCustomizationProvider = createBlocklyHookCustomizationProvider({
     getAgent: () => agent,
@@ -2322,34 +2324,50 @@ export function bootstrapBlocklyLexAgent(
     hooks: {
       askHandler: askHandler ?? (async () => false),
       onBeforeToolExecution: async (toolName: string, input: Record<string, unknown>) => {
-        if (toolName !== 'run_in_terminal') return { action: 'allow' as const };
-        const cmd = String(input['command'] || '');
-        const isInstall = /\bnpm\s+(install|i|ci)\b/.test(cmd);
-        const isUninstall = /\bnpm\s+uninstall\b/.test(cmd);
-        if (!isInstall && !isUninstall) return { action: 'allow' as const };
-        pendingNpmCommand = { command: cmd, isInstall, isUninstall };
-        if (isUninstall) {
-          const blockReason = checkNpmUninstallSafety(cmd);
-          if (blockReason) {
-            pendingNpmCommand = null;
-            return { action: 'block' as const, reason: blockReason };
+        if (toolName === 'run_in_terminal') {
+          const cmd = String(input['command'] || '');
+          const isInstall = /\bnpm\s+(install|i|ci)\b/.test(cmd);
+          const isUninstall = /\bnpm\s+uninstall\b/.test(cmd);
+          if (isInstall || isUninstall) {
+            pendingNpmCommand = { command: cmd, isInstall, isUninstall };
+            if (isUninstall) {
+              const blockReason = checkNpmUninstallSafety(cmd);
+              if (blockReason) {
+                pendingNpmCommand = null;
+                return { action: 'block' as const, reason: blockReason };
+              }
+            }
           }
+        }
+        if (isAgentProjectMutationToolCall(toolName, input)) {
+          activeProjectMutationToolName = normalizeGovernanceToolName(toolName);
+          AilyHost.get().blockly.aiWriting = true;
         }
         return { action: 'allow' as const };
       },
       onAfterToolExecution: async (toolName: string, result: unknown) => {
-        if (toolName !== 'run_in_terminal' || !pendingNpmCommand) return { action: 'continue' as const };
-        const npmCmd = pendingNpmCommand;
-        pendingNpmCommand = null;
-        const isError = (result as any)?.isError ?? false;
-        if (isError) return { action: 'continue' as const };
-        if (npmCmd.isInstall) {
-          await loadNpmLibraries(npmCmd.command);
-          contextSnapshotService.invalidate(['libraryIndex', 'libraryReadmeRefs'], 'npm install');
-        }
-        if (npmCmd.isUninstall) {
-          await rebuildBlocklyRuntimeAfterNpmUninstall();
-          contextSnapshotService.invalidate(['libraryIndex', 'libraryReadmeRefs'], 'npm uninstall');
+        try {
+          if (toolName === 'run_in_terminal' && pendingNpmCommand) {
+            const npmCmd = pendingNpmCommand;
+            pendingNpmCommand = null;
+            const isError = (result as any)?.isError ?? false;
+            if (!isError && npmCmd.isInstall) {
+              await loadNpmLibraries(npmCmd.command);
+              contextSnapshotService.invalidate(['libraryIndex', 'libraryReadmeRefs'], 'npm install');
+            }
+            if (!isError && npmCmd.isUninstall) {
+              await rebuildBlocklyRuntimeAfterNpmUninstall();
+              contextSnapshotService.invalidate(['libraryIndex', 'libraryReadmeRefs'], 'npm uninstall');
+            }
+          }
+        } finally {
+          if (
+            activeProjectMutationToolName
+            && activeProjectMutationToolName === normalizeGovernanceToolName(toolName)
+          ) {
+            activeProjectMutationToolName = null;
+            AilyHost.get().blockly.aiWriting = false;
+          }
         }
         return { action: 'continue' as const };
       },

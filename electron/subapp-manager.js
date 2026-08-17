@@ -7,6 +7,13 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { URL } = require('url');
 const semver = require('semver');
+const {
+  SubappReleaseTrustError,
+  normalizeSubappReleaseTrustPolicies,
+  requiresTrustedSubappDistribution,
+  validateSubappDistribution,
+  verifyDownloadedSubappDistribution,
+} = require('./subapp-release-trust');
 
 const DEFAULT_INDEX_URL = 'https://rs1.aily.pro/subapp-index.json';
 const INDEX_CACHE_FILE = 'subapp-index.json';
@@ -22,6 +29,9 @@ const STARTUP_TIMEOUTS = Object.freeze({
 });
 const DEFAULT_TOOLBAR_IDS = new Set(['aily-chat-react']);
 const mutationQueues = new Map();
+const SUBAPP_HEALTH_OUTPUT_LIMIT = 64 * 1024;
+const SUBAPP_HEALTH_STARTUP_TIMEOUT_MS = 30000;
+const SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS = 15000;
 
 function resolveAppDataPath(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.AILY_APPDATA_PATH) return path.resolve(env.AILY_APPDATA_PATH);
@@ -138,6 +148,9 @@ function validateIndex(rawIndex) {
         locales,
       },
       ...(isObject(rawEntry.compatibility) ? { compatibility: rawEntry.compatibility } : {}),
+      ...(rawEntry.distribution !== undefined
+        ? { distribution: validateSubappDistribution(rawEntry.distribution) }
+        : {}),
     };
   }
   return index;
@@ -1048,6 +1061,40 @@ async function installPackage(rootDir, entry, npmRunner, options = {}) {
     packagePath: packagePathFor(rootDir, entry.package),
   };
 
+  if (options.preparedTrustedTarball) {
+    await runNpmWithBusyRetry(
+      npmRunner,
+      packageInstallFromTarballArgs(
+        rootDir,
+        options.preparedTrustedTarball.tarballPath,
+      ),
+      npmOptions,
+      retryOptions,
+    );
+    tracker?.setExtract(100);
+    return;
+  }
+
+  const trustedTarball = await prepareTrustedPackageTarball(
+    rootDir,
+    entry,
+    npmOptions,
+  );
+  if (trustedTarball) {
+    try {
+      await runNpmWithBusyRetry(
+        npmRunner,
+        packageInstallFromTarballArgs(rootDir, trustedTarball.tarballPath),
+        npmOptions,
+        retryOptions,
+      );
+      tracker?.setExtract(100);
+      return;
+    } finally {
+      cleanupPreparedTarball(trustedTarball);
+    }
+  }
+
   if (options.disableTarballProgress === true) {
     await runNpmWithBusyRetry(npmRunner, packageInstallArgs(rootDir, entry), npmOptions, retryOptions);
     tracker?.setDownload(100);
@@ -1076,6 +1123,9 @@ async function installPackage(rootDir, entry, npmRunner, options = {}) {
     );
     tracker?.setExtract(100);
   } catch (error) {
+    if (error?.code === 'SUBAPP_RELEASE_TRUST_FAILED') {
+      throw error;
+    }
     console.warn(
       '[subapp-manager] progress-aware install failed, falling back to npm install:',
       error.message || error,
@@ -1216,8 +1266,6 @@ async function uninstallInstalledPackage(rootDir, entry, npmRunner, options = {}
 
 async function replaceInstalledPackage(rootDir, entry, npmRunner, options = {}) {
   const packagePath = packagePathFor(rootDir, entry.package);
-  const backupRoot = fs.mkdtempSync(path.join(rootDir, '.subapp-update-'));
-  const backupPath = path.join(backupRoot, 'package');
   const packageJsonPath = path.join(rootDir, 'package.json');
   const packageLockPath = path.join(rootDir, 'package-lock.json');
   const packageJsonSnapshot = snapshotFile(packageJsonPath);
@@ -1225,6 +1273,13 @@ async function replaceInstalledPackage(rootDir, entry, npmRunner, options = {}) 
   const tracker = options.progressTracker;
   let backedUp = false;
   tracker?.start();
+  const preparedTrustedTarball = await prepareTrustedPackageTarball(
+    rootDir,
+    entry,
+    withProgressOutput(options, tracker),
+  );
+  const backupRoot = fs.mkdtempSync(path.join(rootDir, '.subapp-update-'));
+  const backupPath = path.join(backupRoot, 'package');
 
   try {
     if (fs.existsSync(packagePath)) {
@@ -1236,12 +1291,24 @@ async function replaceInstalledPackage(rootDir, entry, npmRunner, options = {}) 
       backedUp = true;
     }
 
-    await installPackage(rootDir, entry, npmRunner, options);
+    await installPackage(rootDir, entry, npmRunner, {
+      ...options,
+      preparedTrustedTarball,
+    });
     const installedState = readInstalledState(rootDir, entry);
     if (!installedState.installed || installedState.installedVersion !== entry.version) {
       throw new Error(
         `Subapp update verification failed: expected ${entry.version}, got ${installedState.installedVersion || 'missing'}`,
       );
+    }
+    if (typeof options.verifyInstalledPackage === 'function') {
+      await options.verifyInstalledPackage({
+        phase: 'candidate',
+        rootDir,
+        entry,
+        packagePath,
+        installedState,
+      });
     }
 
     fs.rmSync(backupRoot, { recursive: true, force: true });
@@ -1261,13 +1328,277 @@ async function replaceInstalledPackage(rootDir, entry, npmRunner, options = {}) 
     restoreFile(packageJsonPath, packageJsonSnapshot);
     restoreFile(packageLockPath, packageLockSnapshot);
     fs.rmSync(backupRoot, { recursive: true, force: true });
+    if (backedUp && typeof options.verifyInstalledPackage === 'function') {
+      try {
+        const restoredState = readInstalledState(rootDir, {
+          ...entry,
+          version: JSON.parse(fs.readFileSync(
+            path.join(packagePath, 'package.json'),
+            'utf8',
+          )).version,
+        });
+        await options.verifyInstalledPackage({
+          phase: 'restored',
+          rootDir,
+          entry,
+          packagePath,
+          installedState: restoredState,
+        });
+      } catch (rollbackVerificationError) {
+        throw new AggregateError(
+          [error, rollbackVerificationError],
+          `Subapp update failed and the restored package health check also failed: ${rollbackVerificationError.message || rollbackVerificationError}`,
+          { cause: error },
+        );
+      }
+    }
+    throw error;
+  } finally {
+    cleanupPreparedTarball(preparedTrustedTarball);
+  }
+}
+
+async function prepareTrustedPackageTarball(rootDir, entry, options = {}) {
+  const trustRequired = requiresTrustedSubappDistribution(
+    entry,
+    options.indexUrl,
+    options.releaseTrustPolicies,
+  );
+  const signedDistribution = entry.distribution !== undefined;
+  if (!trustRequired && !signedDistribution) return null;
+  if (trustRequired && !signedDistribution) {
+    throw new SubappReleaseTrustError(
+      `A signed distribution is required for ${entry.package}@${entry.version}.`,
+    );
+  }
+  if (!trustRequired) {
+    throw new SubappReleaseTrustError(
+      `No trusted release policy matches ${entry.package}@${entry.version}.`,
+    );
+  }
+  const stagingRoot = fs.mkdtempSync(path.join(rootDir, '.subapp-download-'));
+  const tarballPath = path.join(stagingRoot, 'package.tgz');
+  try {
+    const download = options.downloadFile || downloadFileWithProgress;
+    await download(
+      entry.distribution.tarballUrl,
+      tarballPath,
+      (percent) => options.progressTracker?.setDownload(percent),
+      options,
+    );
+    options.progressTracker?.setDownload(100);
+    const verification = await verifyDownloadedSubappDistribution({
+      entry,
+      indexUrl: options.indexUrl,
+      policies: options.releaseTrustPolicies,
+      tarballPath,
+    });
+    return Object.freeze({ stagingRoot, tarballPath, verification });
+  } catch (error) {
+    cleanupPreparedTarball({ stagingRoot });
     throw error;
   }
+}
+
+function cleanupPreparedTarball(prepared) {
+  if (!prepared?.stagingRoot || !fs.existsSync(prepared.stagingRoot)) return;
+  try {
+    fs.rmSync(prepared.stagingRoot, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(
+      '[subapp-manager] failed to cleanup trusted download staging:',
+      error.message || error,
+    );
+  }
+}
+
+async function verifyInstalledSubappStartup({
+  packagePath,
+  entry,
+  phase,
+  env = process.env,
+  startupTimeoutMs = SUBAPP_HEALTH_STARTUP_TIMEOUT_MS,
+  shutdownTimeoutMs = SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS,
+}) {
+  const packageManifest = readJson(path.join(packagePath, 'package.json'));
+  const mainEntry = resolvePackageRelativePath(
+    packagePath,
+    packageManifest.main || 'index.js',
+    'subapp main entry',
+  ).resolved;
+  if (!fs.existsSync(mainEntry)) {
+    throw new Error(`Subapp ${phase} health check main entry is missing.`);
+  }
+  const stderr = [];
+  const child = spawn(process.execPath, [
+    mainEntry,
+    'serve',
+    '--host', '127.0.0.1',
+    '--port', '0',
+  ], {
+    cwd: packagePath,
+    env,
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    windowsHide: true,
+  });
+  child.stderr.on('data', (chunk) => appendBoundedOutput(stderr, chunk));
+  try {
+    const startup = await waitForSubappHealthStartup(
+      child,
+      stderr,
+      startupTimeoutMs,
+    );
+    if (startup.event !== 'ready') {
+      throw new Error(
+        `Subapp ${phase} startup health check failed: ${publicStartupMessage(startup.data)}`,
+      );
+    }
+    await stopSubappHealthProbe(child, startup.data, shutdownTimeoutMs);
+    return {
+      status: 'ready',
+      phase,
+      packageName: entry.package,
+      packageVersion: packageManifest.version,
+    };
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+      await waitForSubappHealthExit(child, shutdownTimeoutMs).catch(() => {
+        child.kill('SIGKILL');
+      });
+    }
+  }
+}
+
+function waitForSubappHealthStartup(child, stderr, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    let settled = false;
+    const timeout = setTimeout(() => finish(new Error(
+      `Subapp startup health check timed out: ${stderr.join('').trim()}`,
+    )), timeoutMs);
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.stdout.off('data', onData);
+      child.off('exit', onExit);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onData = (chunk) => {
+      buffer += chunk.toString('utf8');
+      if (Buffer.byteLength(buffer, 'utf8') > SUBAPP_HEALTH_OUTPUT_LIMIT) {
+        finish(new Error('Subapp startup health output exceeded the allowed limit.'));
+        return;
+      }
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message?.event === 'ready' || message?.event === 'fatal') {
+          finish(null, { event: message.event, data: message.data });
+          return;
+        }
+      }
+    };
+    const onExit = (code, signal) => finish(new Error(
+      `Subapp exited before startup health was reported (code=${code}, signal=${signal}): ${stderr.join('').trim()}`,
+    ));
+    child.stdout.on('data', onData);
+    child.once('exit', onExit);
+  });
+}
+
+async function stopSubappHealthProbe(child, readyData, timeoutMs) {
+  const shutdownUrl = safeSubappShutdownUrl(readyData);
+  if (shutdownUrl) {
+    const response = await fetch(shutdownUrl.toString(), {
+      method: 'POST',
+      headers: { Origin: shutdownUrl.origin },
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 10000)),
+    });
+    if (!response.ok) {
+      throw new Error(`Subapp startup health shutdown returned HTTP ${response.status}.`);
+    }
+  } else {
+    child.kill('SIGTERM');
+  }
+  const exit = await waitForSubappHealthExit(child, timeoutMs);
+  if (exit.code !== 0 && exit.signal === null) {
+    throw new Error(`Subapp startup health process exited with code ${exit.code}.`);
+  }
+}
+
+function waitForSubappHealthExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.off('exit', onExit);
+      reject(new Error('Subapp startup health process did not stop in time.'));
+    }, timeoutMs);
+    const onExit = (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal });
+    };
+    child.once('exit', onExit);
+  });
+}
+
+function safeSubappShutdownUrl(readyData) {
+  const baseValue = typeof readyData?.origin === 'string'
+    ? readyData.origin
+    : typeof readyData?.baseUrl === 'string'
+      ? readyData.baseUrl
+      : '';
+  const shutdownValue = typeof readyData?.shutdownUrl === 'string'
+    ? readyData.shutdownUrl
+    : '';
+  if (!baseValue || !shutdownValue) return null;
+  try {
+    const baseUrl = new URL(baseValue);
+    const shutdownUrl = new URL(shutdownValue, baseUrl);
+    if (
+      baseUrl.protocol !== 'http:'
+      || shutdownUrl.protocol !== 'http:'
+      || shutdownUrl.origin !== baseUrl.origin
+      || !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(shutdownUrl.hostname)
+    ) {
+      return null;
+    }
+    return shutdownUrl;
+  } catch {
+    return null;
+  }
+}
+
+function appendBoundedOutput(chunks, chunk) {
+  chunks.push(chunk.toString('utf8'));
+  while (Buffer.byteLength(chunks.join(''), 'utf8') > SUBAPP_HEALTH_OUTPUT_LIMIT) {
+    chunks.shift();
+  }
+}
+
+function publicStartupMessage(data) {
+  const message = typeof data?.message === 'string' ? data.message.trim() : '';
+  return message || 'runtime reported fatal';
 }
 
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
   const indexUrl = options.indexUrl || process.env.AILY_SUBAPP_INDEX_URL || DEFAULT_INDEX_URL;
+  const releaseTrustPolicies = normalizeSubappReleaseTrustPolicies(
+    options.releaseTrustPolicies,
+  );
   let currentIndex = null;
   let currentMeta = null;
 
@@ -1344,10 +1675,24 @@ function createSubappManager(options = {}) {
       });
       const mutationOptions = {
         ...options,
+        indexUrl,
         progressTracker,
+        releaseTrustPolicies,
       };
 
       try {
+        if (
+          (action === 'update' || action === 'uninstall')
+          && typeof options.beforePackageMutation === 'function'
+        ) {
+          await options.beforePackageMutation({
+            action,
+            id,
+            toolId: TOOL_ID_ALIASES[id] || id,
+            entry,
+            rootDir,
+          });
+        }
         if (action === 'uninstall') {
           await uninstallInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
         } else if (action === 'update') {
@@ -1388,7 +1733,7 @@ function createSubappManager(options = {}) {
 let handlersRegistered = false;
 let defaultManager = null;
 
-function registerSubappManagerHandlers(getMainWindow = () => null) {
+function registerSubappManagerHandlers(getMainWindow = () => null, options = {}) {
   if (handlersRegistered) return;
   const { ipcMain } = require('electron');
 
@@ -1399,7 +1744,12 @@ function registerSubappManagerHandlers(getMainWindow = () => null) {
     }
   };
 
-  defaultManager = createSubappManager({ onProgress: sendProgress });
+  defaultManager = createSubappManager({
+    ...options,
+    onProgress: sendProgress,
+    verifyInstalledPackage: options.verifyInstalledPackage
+      || verifyInstalledSubappStartup,
+  });
 
   const handleMutation = (action) => async (_event, payload = {}) => {
     const result = await defaultManager[action](payload);
@@ -1433,5 +1783,7 @@ module.exports = {
   registerSubappManagerHandlers,
   renameWithBusyRetry,
   resolveSubappRoot,
+  safeSubappShutdownUrl,
   validateIndex,
+  verifyInstalledSubappStartup,
 };

@@ -22,6 +22,9 @@ const {
     stopChildToolSessionProcess: stopChildToolSessionProcessWithDependencies,
 } = require('./child-tool-session-process');
 const {
+    quiesceChildToolPackageMutation,
+} = require('./child-tool-package-mutation');
+const {
     registerChatRuntimeHostIpc,
 } = require('./chat-runtime-host');
 const {
@@ -379,6 +382,20 @@ async function restartChildToolSession(toolId) {
     pendingChildToolProcessMessages.delete(session.streamId);
     childToolSessions.delete(normalizedToolId);
     return { success: true };
+}
+
+async function prepareChildToolPackageMutation(toolId, action = 'update') {
+    const normalizedToolId = sanitizeChildToolId(toolId);
+    return await quiesceChildToolPackageMutation({
+        toolId: normalizedToolId,
+        action,
+        sessions: childToolSessions,
+        ownerCount: childToolOwnerCount,
+        cancelRelease: cancelChildToolRelease,
+        stopSession: stopChildToolSessionProcess,
+        pendingMessages: pendingChildToolProcessMessages,
+        onChanged: broadcastChildToolSessionStateChanged,
+    });
 }
 
 function isChildToolSessionAlive(session) {
@@ -1680,5 +1697,6 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 
 module.exports = {
+    prepareChildToolPackageMutation,
     registerWindowHandlers,
 };

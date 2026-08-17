@@ -1,18 +1,19 @@
 import {
   validateProjectHardwareIntentSnapshotV1,
+  validateProjectWiringIntentV1,
   type ProjectHardwareIntentSnapshotV1,
   type ProjectSceneGenerationRequestV1,
+  type ProjectWiringIntentV1,
   type SimulatorAgentHostProviderAdapterOptions,
-  type SimulatorAgentSceneApprovalDecision,
-  type SimulatorSubappHostAgentSceneProposalDecisionV1,
+  type SimulatorSubappHostAgentSceneCandidateV1,
 } from '@aily-project/simulator-host-sdk';
 
 import type {
   SimulatorActiveProjectBindingPort,
 } from './simulator-build-execution-port';
 
-type AgentSceneProposal = NonNullable<
-  SimulatorSubappHostAgentSceneProposalDecisionV1['proposal']
+type AgentSceneWiringIntent = NonNullable<
+  SimulatorSubappHostAgentSceneCandidateV1['intent']
 >;
 
 export interface SimulatorProjectHardwareIntentPort {
@@ -25,7 +26,7 @@ export interface SimulatorProjectHardwareIntentPort {
   ): unknown | Promise<unknown>;
 }
 
-export interface SimulatorProjectSceneProposalPort {
+export interface SimulatorProjectWiringIntentPort {
   request(
     input: Readonly<{
       request: ProjectSceneGenerationRequestV1;
@@ -35,36 +36,21 @@ export interface SimulatorProjectSceneProposalPort {
   ): unknown | Promise<unknown>;
 }
 
-export interface SimulatorAgentSceneApprovalPort {
-  requestApproval(
-    request: ProjectSceneGenerationRequestV1,
-    proposal: AgentSceneProposal,
-    signal: AbortSignal,
-  ): Readonly<{
-    approved: boolean;
-    approvalId: string;
-  }> | Promise<Readonly<{
-    approved: boolean;
-    approvalId: string;
-  }>>;
-}
-
 export interface SimulatorBlocklyAgentCallbackAuthorityOptions {
   projectRoot: string;
   projectIdentity: string;
   sceneId?: string;
   activeProject: SimulatorActiveProjectBindingPort;
   hardwareIntent: SimulatorProjectHardwareIntentPort;
-  proposals: SimulatorProjectSceneProposalPort;
-  approvals: SimulatorAgentSceneApprovalPort;
+  wiringIntents: SimulatorProjectWiringIntentPort;
   now?: () => number;
 }
 
 /**
  * Project-scoped Blockly implementation of the Host SDK Agent callbacks.
- * The Agent can produce only a bounded native Scene proposal. The callback
- * rechecks active Project scope before and after every async boundary and the
- * user-owned approval port is the only path to an approved decision.
+ * The Agent can produce only a bounded semantic wiring intent. The callback
+ * rechecks active Project scope before and after every async boundary. It has
+ * no approval callback: Simulator owns candidate preview, decision and CAS.
  */
 export class SimulatorBlocklyAgentCallbackAuthority {
   readonly callbacks: SimulatorAgentHostProviderAdapterOptions;
@@ -74,8 +60,7 @@ export class SimulatorBlocklyAgentCallbackAuthority {
   private readonly sceneId: string;
   private readonly activeProject: SimulatorActiveProjectBindingPort;
   private readonly hardwareIntent: SimulatorProjectHardwareIntentPort;
-  private readonly proposals: SimulatorProjectSceneProposalPort;
-  private readonly approvals: SimulatorAgentSceneApprovalPort;
+  private readonly wiringIntents: SimulatorProjectWiringIntentPort;
   private readonly now: () => number;
   private readonly pendingControllers = new Set<AbortController>();
   private closed = false;
@@ -97,29 +82,17 @@ export class SimulatorBlocklyAgentCallbackAuthority {
     if (!options.hardwareIntent || typeof options.hardwareIntent.resolve !== 'function') {
       throw new TypeError('Agent hardware intent port is invalid.');
     }
-    if (!options.proposals || typeof options.proposals.request !== 'function') {
-      throw new TypeError('Agent Scene proposal port is invalid.');
-    }
-    if (!options.approvals || typeof options.approvals.requestApproval !== 'function') {
-      throw new TypeError('Agent Scene approval port is invalid.');
+    if (!options.wiringIntents || typeof options.wiringIntents.request !== 'function') {
+      throw new TypeError('Agent wiring-intent port is invalid.');
     }
     this.activeProject = options.activeProject;
     this.hardwareIntent = options.hardwareIntent;
-    this.proposals = options.proposals;
-    this.approvals = options.approvals;
+    this.wiringIntents = options.wiringIntents;
     this.now = options.now ?? Date.now;
     this.callbacks = Object.freeze({
-      proposeScene: (request, signal) => this.runScoped(
+      createWiringIntent: (request, signal) => this.runScoped(
         signal,
-        scopedSignal => this.proposeScene(request, scopedSignal),
-      ),
-      approveSceneProposal: (input, signal) => this.runScoped(
-        signal,
-        scopedSignal => this.approveSceneProposal(
-          input.request,
-          input.proposal,
-          scopedSignal,
-        ),
+        scopedSignal => this.createWiringIntent(request, scopedSignal),
       ),
     });
   }
@@ -138,10 +111,10 @@ export class SimulatorBlocklyAgentCallbackAuthority {
     }
   }
 
-  private async proposeScene(
+  private async createWiringIntent(
     request: ProjectSceneGenerationRequestV1,
     signal: AbortSignal,
-  ): Promise<AgentSceneProposal> {
+  ): Promise<AgentSceneWiringIntent> {
     this.requireActiveRequest(request, signal);
     const hardwareIntent = validateProjectHardwareIntentSnapshotV1(
       await this.hardwareIntent.resolve(Object.freeze({
@@ -156,35 +129,12 @@ export class SimulatorBlocklyAgentCallbackAuthority {
     ) {
       throw new Error('Project hardware intent is outside the Agent request scope.');
     }
-    const proposal = await this.proposals.request(Object.freeze({
+    const intent = await this.wiringIntents.request(Object.freeze({
       request: structuredClone(request),
       hardwareIntent: structuredClone(hardwareIntent),
     }), signal);
     this.requireActiveRequest(request, signal);
-    return requireScopedProposal(proposal, request);
-  }
-
-  private async approveSceneProposal(
-    request: ProjectSceneGenerationRequestV1,
-    proposal: AgentSceneProposal,
-    signal: AbortSignal,
-  ): Promise<SimulatorAgentSceneApprovalDecision> {
-    this.requireActiveRequest(request, signal);
-    const scopedProposal = requireScopedProposal(proposal, request);
-    const decision = await this.approvals.requestApproval(
-      structuredClone(request),
-      structuredClone(scopedProposal),
-      signal,
-    );
-    this.requireActiveRequest(request, signal);
-    const approvalId = requirePortableIdentifier(
-      decision?.approvalId,
-      'approvalId',
-    );
-    return Object.freeze({
-      disposition: decision.approved ? 'approved' : 'rejected',
-      approvalId,
-    });
+    return requireScopedIntent(intent, request);
   }
 
   private requireActiveRequest(
@@ -245,36 +195,15 @@ export class SimulatorBlocklyAgentCallbackAuthority {
   }
 }
 
-function requireScopedProposal(
+function requireScopedIntent(
   value: unknown,
   request: ProjectSceneGenerationRequestV1,
-): AgentSceneProposal {
-  const proposal = record(value, 'Agent Scene proposal');
-  const target = record(proposal['target'], 'Agent Scene proposal target');
-  const base = record(proposal['base'], 'Agent Scene proposal base');
-  const expectedReason = request.reason === 'legacy-detected'
-    ? 'legacy-regeneration'
-    : 'user-requested-change';
-  if (
-    proposal['schemaVersion'] !== 1
-    || proposal['kind'] !== 'aily-agent-scene-change-proposal'
-    || proposal['reason'] !== expectedReason
-    || target['projectIdentity'] !== request.projectIdentity
-    || target['sceneId'] !== request.sceneId
-    || base['visualRevision'] !== request.base.visualRevision
-    || base['graphSemanticRevision'] !== request.base.graphSemanticRevision
-    || base['catalogRevision'] !== request.base.catalogRevision
-  ) {
-    throw new Error('Agent Scene proposal is outside the requested revision scope.');
+): AgentSceneWiringIntent {
+  const intent: ProjectWiringIntentV1 = validateProjectWiringIntentV1(value);
+  if (intent.requestId !== request.requestId) {
+    throw new Error('Agent wiring intent is outside the requested generation scope.');
   }
-  return structuredClone(proposal) as unknown as AgentSceneProposal;
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError(`${label} must be an object.`);
-  }
-  return value as Record<string, unknown>;
+  return structuredClone(intent);
 }
 
 function throwIfAborted(signal: AbortSignal): void {

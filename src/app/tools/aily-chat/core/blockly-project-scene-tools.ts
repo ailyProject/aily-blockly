@@ -11,13 +11,12 @@ import {
 
 export const GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL =
   'get_project_scene_generation_context';
-export const SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL =
-  'submit_project_scene_generation_proposal';
+export const SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL =
+  'submit_project_scene_wiring_intent';
 
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const PORTABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
-const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/u;
 const SIGNAL_KINDS = new Set([
   'ground',
   'power',
@@ -36,88 +35,46 @@ interface ProjectSceneToolInvocationContext {
   readonly trace?: { readonly turnId?: string };
 }
 
-interface ProposalComponentInput {
-  readonly instanceId: string;
-  readonly package: {
-    readonly id: string;
-    readonly version: string;
-  };
-  readonly placement: {
-    readonly x: number;
-    readonly y: number;
-  };
+interface WiringPartInput {
+  readonly ref: string;
+  readonly packageId: string;
+  readonly properties: Readonly<Record<string, string | number | boolean>>;
 }
 
-interface ProposalEndpointInput {
-  readonly instanceId: string;
-  readonly pinId: string;
+interface WiringEndpointInput {
+  readonly part: string;
+  readonly pin: string;
   readonly function: string;
 }
 
-interface ProposalConnectionInput {
-  readonly segmentId: string;
-  readonly from: ProposalEndpointInput;
-  readonly to: ProposalEndpointInput;
-  readonly signalKind: string;
-  readonly label?: string;
-  readonly color?: string;
+interface WiringNetInput {
+  readonly ref: string;
+  readonly signal: Readonly<{ kind: string }>;
+  readonly endpoints: readonly WiringEndpointInput[];
 }
 
 interface SubmitProjectSceneGenerationProposalInput {
   readonly requestId: string;
   readonly summary: string;
-  readonly components: readonly ProposalComponentInput[];
-  readonly connections: readonly ProposalConnectionInput[];
+  readonly parts: readonly WiringPartInput[];
+  readonly nets: readonly WiringNetInput[];
 }
 
-const COMPONENT_PACKAGE_GUIDE = Object.freeze([
-  Object.freeze({
-    id: 'aily.component-package.xiao-esp32s3',
-    version: '1.0.0',
-    instanceIdPrefix: 'xiao_esp32s3_',
-    maxInstances: 1,
-    pins: Object.freeze([
-      'pin_1:D0/A0/GPIO1/TOUCH1',
-      'pin_2:D1/A1/GPIO2/TOUCH2',
-      'pin_3:D2/A2/GPIO3/TOUCH3',
-      'pin_4:D3/A3/GPIO4/TOUCH4',
-      'pin_5:D4/A4/SDA/GPIO5/TOUCH5',
-      'pin_6:D5/A5/SCL/GPIO6/TOUCH6',
-      'pin_7:D6/TX/GPIO43',
-      'pin_8:5V',
-      'pin_9:GND',
-      'pin_10:3V3',
-      'pin_11:D10/A10/MOSI/GPIO9/TOUCH9',
-      'pin_12:D9/A9/MISO/GPIO8/TOUCH8',
-      'pin_13:D8/A8/SCK/GPIO7/TOUCH7',
-      'pin_14:D7/RX/GPIO44',
-    ]),
-  }),
-  Object.freeze({
-    id: 'aily.component-package.gpio-led',
-    version: '1.0.0',
-    instanceIdPrefix: 'led_',
-    pins: Object.freeze(['anode:A(IO)/A(3V3)', 'cathode:C(IO)/C(GND)']),
-  }),
-  Object.freeze({
-    id: 'aily.component-package.gpio-button',
-    version: '1.0.0',
-    instanceIdPrefix: 'button_',
-    pins: Object.freeze([
-      'terminal_a:A(IO)/A(3V3)/A(GND)',
-      'terminal_b:B(IO)/B(3V3)/B(GND)',
-    ]),
-  }),
-  Object.freeze({
-    id: 'aily.component-package.resistor',
-    version: '1.0.0',
-    instanceIdPrefix: 'resistor_',
-    pins: Object.freeze([
-      'terminal_a:A(IO)/A(3V3)/A(GND)',
-      'terminal_b:B(IO)/B(3V3)/B(GND)',
-    ]),
-  }),
-]);
+interface GenerationComponentPackageGuide {
+  readonly packageId: string;
+  readonly version: string;
+  readonly name: string;
+  readonly category: string;
+  readonly instanceIdPrefix: string;
+  readonly maxInstances: number;
+  readonly pins: readonly {
+    readonly pinId: string;
+    readonly functions: readonly {
+      readonly name: string;
+      readonly type: string;
+    }[];
+  }[];
+}
 
 function result(value: unknown): ToolResultContent {
   return {
@@ -142,7 +99,7 @@ export function appendProjectSceneGenerationContributions(
       description: 'Read the bounded hardware intent and revision baseline for one active Project Scene generation request.',
       prompt: `Use this read-only tool exactly once for the requestId supplied in the provider prompt.
 It returns only the provider-neutral generation request, bounded project hardware intent, and a temporary Component Package guide. It never returns a host path, Blockly workspace, legacy JSON body, Scene body, capability token, iframe URL, or runtime process handle.
-After inferring the circuit, call ${SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL}.`,
+After inferring the circuit, call ${SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL}.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -160,13 +117,13 @@ After inferring the circuit, call ${SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOO
       agentScope: [PROJECT_SCENE_AGENT_TYPE],
     },
     {
-      name: SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL,
+      name: SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
       toolSet: 'blockly-project-scene',
-      description: 'Submit a bounded Project Scene candidate proposal without saving or editing a Scene document.',
+      description: 'Submit a bounded semantic wiring intent without saving or editing a Scene document.',
       prompt: `Use this only after ${GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL} returns the matching active request and you have inferred the circuit.
-This operation only returns a candidate to the provider. It cannot save, replace or edit a Scene document and cannot write connection_output.json. The host fills projectIdentity, sceneId, revision baseline, reason, proposalId, and agentRunId.
-components declares exact Component Package instances in the new empty Scene. connections creates point-to-point segments between declared component pins. The endpoint function must be one function advertised for that pin (for example GPIO1, A(IO), C(GND), 3V3, or GND). signalKind must be ground, power, gpio, analog, pwm, i2c, spi, or uart.
-Use stable unique portable IDs that follow each Component Package instanceIdPrefix. Include the XIAO board and every required physical component. LED and button each have two electrical terminals; model pull-up/pull-down or LED current limiting with explicit resistor components when required.`,
+This operation only returns semantic intent to the provider. It cannot save, replace or edit a Scene document and cannot write connection_output.json. Simulator resolves exact package versions, persistent instance/net/segment/junction IDs, layout, routing, colors, diagnostics, diff and revision/CAS.
+parts uses request-scoped refs plus packageId values from the supplied catalog snapshot. nets supports two or more endpoints and uses those refs. Each endpoint pin/function must be advertised for its selected package (for example GPIO1, A(IO), C(GND), 3V3, or GND). signal.kind must be ground, power, gpio, analog, pwm, i2c, spi, or uart.
+Never submit package versions, instance IDs, segment IDs, line colors, or coordinates. Include the board and every required physical component. LED and button each have two electrical terminals; model pull-up/pull-down or LED current limiting with explicit resistor parts when required.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -180,7 +137,7 @@ Use stable unique portable IDs that follow each Component Package instanceIdPref
             minLength: 1,
             maxLength: MAX_SUMMARY_LENGTH,
           },
-          components: {
+          parts: {
             type: 'array',
             minItems: 1,
             maxItems: MAX_COMMANDS,
@@ -188,47 +145,47 @@ Use stable unique portable IDs that follow each Component Package instanceIdPref
               type: 'object',
               additionalProperties: false,
               properties: {
-                instanceId: { type: 'string' },
-                package: {
+                ref: { type: 'string' },
+                packageId: { type: 'string' },
+                properties: {
                   type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    id: { type: 'string' },
-                    version: { type: 'string' },
+                  maxProperties: 16,
+                  additionalProperties: {
+                    anyOf: [
+                      { type: 'string', maxLength: 256 },
+                      { type: 'number' },
+                      { type: 'boolean' },
+                    ],
                   },
-                  required: ['id', 'version'],
-                },
-                placement: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    x: { type: 'number' },
-                    y: { type: 'number' },
-                  },
-                  required: ['x', 'y'],
                 },
               },
-              required: ['instanceId', 'package', 'placement'],
+              required: ['ref', 'packageId'],
             },
           },
-          connections: {
+          nets: {
             type: 'array',
             maxItems: MAX_COMMANDS,
             items: {
               type: 'object',
               additionalProperties: false,
               properties: {
-                segmentId: { type: 'string' },
-                from: { $ref: '#/$defs/endpoint' },
-                to: { $ref: '#/$defs/endpoint' },
-                signalKind: {
-                  type: 'string',
-                  enum: [...SIGNAL_KINDS],
+                ref: { type: 'string' },
+                signal: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: 'string', enum: [...SIGNAL_KINDS] },
+                  },
+                  required: ['kind'],
                 },
-                label: { type: 'string', maxLength: 128 },
-                color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+                endpoints: {
+                  type: 'array',
+                  minItems: 2,
+                  maxItems: 32,
+                  items: { $ref: '#/$defs/endpoint' },
+                },
               },
-              required: ['segmentId', 'from', 'to', 'signalKind'],
+              required: ['ref', 'signal', 'endpoints'],
             },
           },
         },
@@ -237,14 +194,14 @@ Use stable unique portable IDs that follow each Component Package instanceIdPref
             type: 'object',
             additionalProperties: false,
             properties: {
-              instanceId: { type: 'string' },
-              pinId: { type: 'string' },
+              part: { type: 'string' },
+              pin: { type: 'string' },
               function: { type: 'string' },
             },
-            required: ['instanceId', 'pinId', 'function'],
+            required: ['part', 'pin', 'function'],
           },
         },
-        required: ['requestId', 'summary', 'components', 'connections'],
+        required: ['requestId', 'summary', 'parts', 'nets'],
         additionalProperties: false,
       },
       annotations: {
@@ -264,15 +221,22 @@ export function createProjectSceneGenerationHandlers(): Record<string, InvokeHan
     [GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL]: async (input) => {
       const requestId = requireRequestIdInput(input);
       const context = consumeProjectSceneProposalInvocationContext(requestId);
+      const request = requireGenerationRequest(context);
+      const componentPackages = requireGenerationComponentPackages(
+        request['componentPackages'],
+      );
+      const { componentPackages: _catalogProjection, ...boundedRequest } = request;
+      void _catalogProjection;
       return result({
         schemaVersion: 1,
         kind: 'aily-project-scene-agent-generation-context',
-        request: context.request,
+        request: boundedRequest,
         hardwareIntent: context.hardwareIntent,
-        componentPackages: COMPONENT_PACKAGE_GUIDE,
+        componentPackages,
         constraints: {
           sceneStartsEmpty: true,
           maxCommands: MAX_COMMANDS,
+          componentCatalogAuthority: 'simulator-request-snapshot',
           authority: 'electron-main-project-scene',
           forbiddenInputs: [
             'host-path',
@@ -284,213 +248,209 @@ export function createProjectSceneGenerationHandlers(): Record<string, InvokeHan
         },
       });
     },
-    [SUBMIT_PROJECT_SCENE_GENERATION_PROPOSAL_TOOL]: async (
+    [SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL]: async (
       input,
       _hostAPI,
       invocationContext,
     ) => {
-      const normalized = validateSubmitInput(input);
-      const context = readProjectSceneProposalInvocation(normalized.requestId);
+      const requestId = requireRequestIdFromSubmitInput(input);
+      const context = readProjectSceneProposalInvocation(requestId);
       const request = requireGenerationRequest(context);
+      const normalized = validateSubmitInput(
+        input,
+        requireGenerationComponentPackages(request['componentPackages']),
+      );
       if (Number(request['expiresAtUnixMs']) <= Date.now()) {
         return error('Project Scene generation request has expired.');
       }
-      const proposal = buildGenerationProposal(
+      const wiringIntent = buildGenerationWiringIntent(
         context,
         normalized,
         invocationContext,
       );
-      submitProjectSceneProposalInvocation(normalized.requestId, proposal);
+      submitProjectSceneProposalInvocation(normalized.requestId, wiringIntent);
       return result({
         schemaVersion: 1,
-        kind: 'aily-project-scene-agent-proposal-submission-result',
+        kind: 'aily-project-scene-agent-wiring-intent-submission-result',
         state: 'submitted',
         requestId: normalized.requestId,
-        proposalId: proposal['proposalId'],
       });
     },
   };
 }
 
-export function buildGenerationProposal(
+export function buildGenerationWiringIntent(
   context: ProjectSceneProposalInvocationInput,
   input: SubmitProjectSceneGenerationProposalInput,
-  invocationContext?: ProjectSceneToolInvocationContext,
+  _invocationContext?: ProjectSceneToolInvocationContext,
 ): Record<string, unknown> {
   const request = requireGenerationRequest(context);
   const requestId = String(request['requestId']);
-  const proposalId = createPortableRuntimeId(
-    'scene-proposal',
-    invocationContext?.toolCallId,
-    requestId,
-  );
-  const agentRunId = createPortableRuntimeId(
-    'scene-agent-run',
-    invocationContext?.trace?.turnId,
-    invocationContext?.toolCallId ?? requestId,
-  );
   return {
     schemaVersion: 1,
-    kind: 'aily-agent-scene-change-proposal',
-    proposalId,
-    agentRunId,
-    reason: request['reason'] === 'legacy-detected'
-      ? 'legacy-regeneration'
-      : 'user-requested-change',
+    kind: 'aily-project-wiring-intent',
+    requestId,
+    mode: 'reconcile',
     summary: input.summary,
-    target: {
-      projectIdentity: request['projectIdentity'],
-      sceneId: request['sceneId'],
-    },
-    base: {
-      ...(requireRecord(request['base'], 'request.base') as {
-        visualRevision: string;
-        graphSemanticRevision: string;
-        catalogRevision: string;
-      }),
-    },
-    componentMutations: input.components.map((component) => ({
-      type: 'instantiate-component',
-      instanceId: component.instanceId,
-      package: { ...component.package },
-      placement: { ...component.placement },
+    parts: input.parts.map(part => ({
+      ref: part.ref,
+      packageId: part.packageId,
+      properties: { ...part.properties },
     })),
-    batch: input.connections.length === 0
-      ? null
-      : {
-          schemaVersion: 1,
-          kind: 'aily-scene-editor-network-command-batch',
-          commands: input.connections.map((connection) => ({
-            type: 'create-segment',
-            segmentId: connection.segmentId,
-            from: {
-              kind: 'component-terminal',
-              ...connection.from,
-              extensions: {},
-            },
-            to: {
-              kind: 'component-terminal',
-              ...connection.to,
-              extensions: {},
-            },
-            signalKind: connection.signalKind,
-            presentation: {
-              label: connection.label ?? '',
-              color: connection.color ?? defaultSignalColor(connection.signalKind),
-              vertices: [],
-            },
-            extensions: {},
-          })),
-        },
+    nets: input.nets.map(net => ({
+      ref: net.ref,
+      signal: { ...net.signal },
+      endpoints: net.endpoints.map(endpoint => ({ ...endpoint })),
+    })),
   };
 }
 
-function validateSubmitInput(value: unknown): SubmitProjectSceneGenerationProposalInput {
-  const input = requireRecord(value, 'proposal input');
+function validateSubmitInput(
+  value: unknown,
+  componentPackages: readonly GenerationComponentPackageGuide[],
+): SubmitProjectSceneGenerationProposalInput {
+  const input = requireRecord(value, 'wiring intent input');
   requireExactKeys(input, [
     'requestId',
     'summary',
-    'components',
-    'connections',
-  ], 'proposal input');
+    'parts',
+    'nets',
+  ], 'wiring intent input');
   const requestId = requirePortableId(input['requestId'], 'requestId');
   const summary = requireText(input['summary'], MAX_SUMMARY_LENGTH, 'summary');
-  if (!Array.isArray(input['components']) || !Array.isArray(input['connections'])) {
-    throw new Error('components 与 connections 必须是数组。');
+  if (!Array.isArray(input['parts']) || !Array.isArray(input['nets'])) {
+    throw new Error('parts and nets must be arrays.');
   }
-  if (input['components'].length < 1) {
-    throw new Error('新的 Project Scene 至少需要一个 Component Package。');
+  if (input['parts'].length < 1) {
+    throw new Error('Project wiring intent requires at least one part.');
   }
-  if (input['components'].length + input['connections'].length > MAX_COMMANDS) {
-    throw new Error(`proposal 最多允许 ${MAX_COMMANDS} 个组件/连线命令。`);
+  if (input['parts'].length + input['nets'].length > MAX_COMMANDS) {
+    throw new Error(`Wiring intent permits at most ${MAX_COMMANDS} parts and nets.`);
   }
 
-  const instanceIds = new Set<string>();
-  const components = input['components'].map((entry, index) => {
-    const component = requireRecord(entry, `components[${index}]`);
-    requireExactKeys(component, ['instanceId', 'package', 'placement'], `components[${index}]`);
-    const instanceId = requirePortableId(component['instanceId'], `components[${index}].instanceId`);
-    if (instanceIds.has(instanceId)) throw new Error(`组件 instanceId 重复：${instanceId}`);
-    instanceIds.add(instanceId);
-    const packageReference = requireRecord(component['package'], `components[${index}].package`);
-    requireExactKeys(packageReference, ['id', 'version'], `components[${index}].package`);
-    const packageId = requirePortableId(packageReference['id'], `components[${index}].package.id`);
-    const version = requireText(packageReference['version'], 64, `components[${index}].package.version`);
-    if (!SEMVER_PATTERN.test(version)) throw new Error(`Component Package version 无效：${version}`);
-    const placement = requireRecord(component['placement'], `components[${index}].placement`);
-    requireExactKeys(placement, ['x', 'y'], `components[${index}].placement`);
+  const partRefs = new Set<string>();
+  const partPackages = new Map<string, GenerationComponentPackageGuide>();
+  const packageCounts = new Map<string, number>();
+  const packageById = new Map(componentPackages.map((componentPackage) => [
+    componentPackage.packageId,
+    componentPackage,
+  ]));
+  const parts = input['parts'].map((entry, index) => {
+    const part = requireRecord(entry, `parts[${index}]`);
+    requireAllowedKeys(part, ['ref', 'packageId', 'properties'], `parts[${index}]`);
+    for (const required of ['ref', 'packageId']) {
+      if (!(required in part)) throw new Error(`parts[${index}].${required} is required.`);
+    }
+    const ref = requirePortableId(part['ref'], `parts[${index}].ref`);
+    if (partRefs.has(ref)) throw new Error(`Duplicate wiring part ref: ${ref}`);
+    partRefs.add(ref);
+    const packageId = requirePortableId(part['packageId'], `parts[${index}].packageId`);
+    const componentPackage = packageById.get(packageId);
+    if (!componentPackage) {
+      throw new Error(`parts[${index}].packageId is not in the Simulator catalog snapshot.`);
+    }
+    const nextCount = (packageCounts.get(packageId) ?? 0) + 1;
+    if (nextCount > componentPackage.maxInstances) {
+      throw new Error(`Component Package ${packageId} exceeds maxInstances.`);
+    }
+    packageCounts.set(packageId, nextCount);
+    partPackages.set(ref, componentPackage);
     return {
-      instanceId,
-      package: { id: packageId, version },
-      placement: {
-        x: requireCoordinate(placement['x'], `components[${index}].placement.x`),
-        y: requireCoordinate(placement['y'], `components[${index}].placement.y`),
-      },
+      ref,
+      packageId,
+      properties: validateProperties(part['properties'], `parts[${index}].properties`),
     };
   });
 
-  const segmentIds = new Set<string>();
-  const connections = input['connections'].map((entry, index) => {
-    const connection = requireRecord(entry, `connections[${index}]`);
-    requireAllowedKeys(connection, [
-      'segmentId',
-      'from',
-      'to',
-      'signalKind',
-      'label',
-      'color',
-    ], `connections[${index}]`);
-    for (const key of ['segmentId', 'from', 'to', 'signalKind']) {
-      if (!(key in connection)) throw new Error(`connections[${index}].${key} 缺失。`);
+  const netRefs = new Set<string>();
+  const connectedPins = new Set<string>();
+  const nets = input['nets'].map((entry, index) => {
+    const net = requireRecord(entry, `nets[${index}]`);
+    requireExactKeys(net, ['ref', 'signal', 'endpoints'], `nets[${index}]`);
+    const ref = requirePortableId(net['ref'], `nets[${index}].ref`);
+    if (netRefs.has(ref)) throw new Error(`Duplicate wiring net ref: ${ref}`);
+    netRefs.add(ref);
+    const signal = requireRecord(net['signal'], `nets[${index}].signal`);
+    requireExactKeys(signal, ['kind'], `nets[${index}].signal`);
+    const kind = requireText(signal['kind'], 16, `nets[${index}].signal.kind`);
+    if (!SIGNAL_KINDS.has(kind)) throw new Error(`Unsupported signal kind: ${kind}`);
+    if (!Array.isArray(net['endpoints']) || net['endpoints'].length < 2 || net['endpoints'].length > 32) {
+      throw new Error(`nets[${index}].endpoints must contain 2..32 endpoints.`);
     }
-    const segmentId = requirePortableId(connection['segmentId'], `connections[${index}].segmentId`);
-    if (segmentIds.has(segmentId)) throw new Error(`连线 segmentId 重复：${segmentId}`);
-    segmentIds.add(segmentId);
-    const from = validateEndpoint(connection['from'], `connections[${index}].from`, instanceIds);
-    const to = validateEndpoint(connection['to'], `connections[${index}].to`, instanceIds);
-    if (from.instanceId === to.instanceId && from.pinId === to.pinId) {
-      throw new Error(`connections[${index}] 不能把同一引脚连接到自身。`);
-    }
-    const signalKind = requireText(connection['signalKind'], 16, `connections[${index}].signalKind`);
-    if (!SIGNAL_KINDS.has(signalKind)) throw new Error(`signalKind 不受支持：${signalKind}`);
-    const label = connection['label'] === undefined
-      ? undefined
-      : requireOptionalText(connection['label'], 128, `connections[${index}].label`);
-    const color = connection['color'] === undefined
-      ? undefined
-      : requireText(connection['color'], 7, `connections[${index}].color`);
-    if (color !== undefined && !COLOR_PATTERN.test(color)) {
-      throw new Error(`connections[${index}].color 必须是 #RRGGBB。`);
-    }
+    const localPins = new Set<string>();
+    const endpoints = net['endpoints'].map((endpoint, endpointIndex) => {
+      const resolved = validateEndpoint(
+        endpoint,
+        `nets[${index}].endpoints[${endpointIndex}]`,
+        partRefs,
+        partPackages,
+      );
+      const identity = `${resolved.part}\0${resolved.pin}`;
+      if (localPins.has(identity) || connectedPins.has(identity)) {
+        throw new Error(`Wiring endpoint ${resolved.part}.${resolved.pin} is duplicated.`);
+      }
+      localPins.add(identity);
+      connectedPins.add(identity);
+      return resolved;
+    });
     return {
-      segmentId,
-      from,
-      to,
-      signalKind,
-      ...(label !== undefined ? { label } : {}),
-      ...(color !== undefined ? { color } : {}),
+      ref,
+      signal: { kind },
+      endpoints,
     };
   });
 
-  return { requestId, summary, components, connections };
+  return { requestId, summary, parts, nets };
 }
 
 function validateEndpoint(
   value: unknown,
   field: string,
-  instanceIds: ReadonlySet<string>,
-): ProposalEndpointInput {
+  partRefs: ReadonlySet<string>,
+  partPackages: ReadonlyMap<string, GenerationComponentPackageGuide>,
+): WiringEndpointInput {
   const endpoint = requireRecord(value, field);
-  requireExactKeys(endpoint, ['instanceId', 'pinId', 'function'], field);
-  const instanceId = requirePortableId(endpoint['instanceId'], `${field}.instanceId`);
-  if (!instanceIds.has(instanceId)) {
-    throw new Error(`${field}.instanceId 未在 components 中声明：${instanceId}`);
+  requireExactKeys(endpoint, ['part', 'pin', 'function'], field);
+  const part = requirePortableId(endpoint['part'], `${field}.part`);
+  if (!partRefs.has(part)) {
+    throw new Error(`${field}.part is not declared: ${part}`);
   }
-  return {
-    instanceId,
-    pinId: requirePortableId(endpoint['pinId'], `${field}.pinId`),
-    function: requireText(endpoint['function'], 128, `${field}.function`),
-  };
+  const pinId = requirePortableId(endpoint['pin'], `${field}.pin`);
+  const selectedFunction = requireText(
+    endpoint['function'],
+    128,
+    `${field}.function`,
+  );
+  const componentPackage = partPackages.get(part);
+  const pin = componentPackage?.pins.find((candidate) => candidate.pinId === pinId);
+  if (!pin) throw new Error(`${field}.pin is not in the Simulator catalog snapshot.`);
+  if (!pin.functions.some((candidate) => candidate.name === selectedFunction)) {
+    throw new Error(`${field}.function is not exposed by ${part}.${pinId}.`);
+  }
+  return { part, pin: pinId, function: selectedFunction };
+}
+
+function validateProperties(
+  value: unknown,
+  field: string,
+): Readonly<Record<string, string | number | boolean>> {
+  if (value === undefined) return {};
+  const properties = requireRecord(value, field);
+  if (Object.keys(properties).length > 16) throw new Error(`${field} is too large.`);
+  const normalized: Record<string, string | number | boolean> = {};
+  for (const [key, property] of Object.entries(properties)) {
+    requirePortableId(key, `${field} key`);
+    if (typeof property === 'boolean') normalized[key] = property;
+    else if (typeof property === 'number' && Number.isFinite(property)) normalized[key] = property;
+    else if (typeof property === 'string') normalized[key] = requireText(property, 256, `${field}.${key}`);
+    else throw new Error(`${field}.${key} must be a bounded scalar.`);
+  }
+  return normalized;
+}
+
+function requireRequestIdFromSubmitInput(value: unknown): string {
+  const input = requireRecord(value, 'proposal input');
+  return requirePortableId(input['requestId'], 'requestId');
 }
 
 function requireRequestIdInput(value: unknown): string {
@@ -503,7 +463,7 @@ function requireGenerationRequest(
   context: ProjectSceneProposalInvocationInput,
 ): Record<string, unknown> {
   const request = requireRecord(context.request, 'generation request');
-  requireExactKeys(request, [
+  requireRequiredAndOptionalKeys(request, [
     'schemaVersion',
     'kind',
     'requestId',
@@ -511,9 +471,9 @@ function requireGenerationRequest(
     'sceneId',
     'reason',
     'base',
-    'legacySource',
+    'componentPackages',
     'expiresAtUnixMs',
-  ], 'generation request');
+  ], ['instruction'], 'generation request');
   if (
     request['schemaVersion'] !== 1
     || request['kind'] !== 'aily-project-scene-generation-request'
@@ -521,7 +481,7 @@ function requireGenerationRequest(
   requirePortableId(request['requestId'], 'generation request.requestId');
   requirePortableId(request['projectIdentity'], 'generation request.projectIdentity');
   requirePortableId(request['sceneId'], 'generation request.sceneId');
-  if (!['missing-scene', 'legacy-detected', 'user-regenerate'].includes(String(request['reason']))) {
+  if (!['missing-scene', 'user-regenerate'].includes(String(request['reason']))) {
     throw new Error('Project Scene generation reason is invalid.');
   }
   const base = requireRecord(request['base'], 'generation request.base');
@@ -536,57 +496,91 @@ function requireGenerationRequest(
     'generation request.base.graphSemanticRevision',
   );
   requireSha256(base['catalogRevision'], 'generation request.base.catalogRevision');
-  if (request['reason'] === 'legacy-detected') {
-    const legacySource = requireRecord(
-      request['legacySource'],
-      'generation request.legacySource',
-    );
-    requireExactKeys(
-      legacySource,
-      ['kind', 'revision', 'bytes'],
-      'generation request.legacySource',
-    );
-    if (
-      legacySource['kind'] !== 'connection-output-v1'
-      || !Number.isSafeInteger(legacySource['bytes'])
-      || Number(legacySource['bytes']) < 1
-    ) throw new Error('Project Scene generation legacy source metadata is invalid.');
-    requireSha256(legacySource['revision'], 'generation request.legacySource.revision');
-  } else if (request['legacySource'] !== null) {
-    throw new Error('Only legacy-detected generation may include legacy source metadata.');
-  }
+  requireGenerationComponentPackages(request['componentPackages']);
   if (
     !Number.isSafeInteger(request['expiresAtUnixMs'])
     || Number(request['expiresAtUnixMs']) <= 0
   ) throw new Error('Project Scene generation expiry is invalid.');
+  if (request['instruction'] !== undefined) {
+    requireSafeInstruction(request['instruction'], 'generation request.instruction');
+  }
   return request;
 }
 
-function createPortableRuntimeId(
-  prefix: string,
-  value: string | undefined,
-  fallback: string,
-): string {
-  const source = typeof value === 'string' && value.trim() ? value : fallback;
-  const suffix = source
-    .replace(/[^A-Za-z0-9._:-]+/gu, '-')
-    .replace(/^-+/u, '')
-    .slice(0, Math.max(1, 127 - prefix.length));
-  return `${prefix}:${suffix || 'unknown'}`.slice(0, 128);
-}
-
-function defaultSignalColor(signalKind: string): string {
-  switch (signalKind) {
-    case 'ground': return '#111827';
-    case 'power': return '#EF4444';
-    case 'analog': return '#10B981';
-    case 'pwm': return '#EAB308';
-    case 'i2c': return '#8B5CF6';
-    case 'spi': return '#EC4899';
-    case 'uart': return '#F59E0B';
-    case 'gpio':
-    default: return '#3B82F6';
+function requireGenerationComponentPackages(
+  value: unknown,
+): readonly GenerationComponentPackageGuide[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 32) {
+    throw new Error('generation request.componentPackages is invalid.');
   }
+  const identities = new Set<string>();
+  return value.map((entry, packageIndex) => {
+    const field = `generation request.componentPackages[${packageIndex}]`;
+    const componentPackage = requireRecord(entry, field);
+    requireExactKeys(componentPackage, [
+      'packageId',
+      'version',
+      'name',
+      'category',
+      'instanceIdPrefix',
+      'maxInstances',
+      'pins',
+    ], field);
+    const packageId = requirePortableId(
+      componentPackage['packageId'],
+      `${field}.packageId`,
+    );
+    const version = requireText(componentPackage['version'], 64, `${field}.version`);
+    if (!SEMVER_PATTERN.test(version)) throw new Error(`${field}.version is invalid.`);
+    const identity = `${packageId}\0${version}`;
+    if (identities.has(identity)) throw new Error(`${field} is duplicated.`);
+    identities.add(identity);
+    const maxInstances = componentPackage['maxInstances'];
+    if (!Number.isSafeInteger(maxInstances) || Number(maxInstances) < 1 || Number(maxInstances) > 64) {
+      throw new Error(`${field}.maxInstances is invalid.`);
+    }
+    if (!Array.isArray(componentPackage['pins']) || componentPackage['pins'].length < 1) {
+      throw new Error(`${field}.pins is invalid.`);
+    }
+    const pinIds = new Set<string>();
+    const pins = componentPackage['pins'].map((pinEntry, pinIndex) => {
+      const pinField = `${field}.pins[${pinIndex}]`;
+      const pin = requireRecord(pinEntry, pinField);
+      requireExactKeys(pin, ['pinId', 'functions'], pinField);
+      const pinId = requirePortableId(pin['pinId'], `${pinField}.pinId`);
+      if (pinIds.has(pinId)) throw new Error(`${pinField}.pinId is duplicated.`);
+      pinIds.add(pinId);
+      if (!Array.isArray(pin['functions']) || pin['functions'].length < 1) {
+        throw new Error(`${pinField}.functions is invalid.`);
+      }
+      const names = new Set<string>();
+      const functions = pin['functions'].map((functionEntry, functionIndex) => {
+        const functionField = `${pinField}.functions[${functionIndex}]`;
+        const functionValue = requireRecord(functionEntry, functionField);
+        requireExactKeys(functionValue, ['name', 'type'], functionField);
+        const name = requireText(functionValue['name'], 128, `${functionField}.name`);
+        if (names.has(name)) throw new Error(`${functionField}.name is duplicated.`);
+        names.add(name);
+        return {
+          name,
+          type: requirePortableId(functionValue['type'], `${functionField}.type`),
+        };
+      });
+      return { pinId, functions };
+    });
+    return {
+      packageId,
+      version,
+      name: requireText(componentPackage['name'], 512, `${field}.name`),
+      category: requirePortableId(componentPackage['category'], `${field}.category`),
+      instanceIdPrefix: requirePortableId(
+        componentPackage['instanceIdPrefix'],
+        `${field}.instanceIdPrefix`,
+      ),
+      maxInstances: Number(maxInstances),
+      pins,
+    };
+  });
 }
 
 function requireRecord(value: unknown, field: string): Record<string, unknown> {
@@ -619,6 +613,33 @@ function requireAllowedKeys(
   }
 }
 
+function requireRequiredAndOptionalKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  field: string,
+): void {
+  requireAllowedKeys(value, [...required, ...optional], field);
+  for (const key of required) {
+    if (!Object.hasOwn(value, key)) {
+      throw new Error(`${field}.${key} is required.`);
+    }
+  }
+}
+
+function requireSafeInstruction(value: unknown, field: string): string {
+  if (typeof value !== 'string') throw new Error(`${field} must be a string.`);
+  const normalized = value.trim();
+  if (
+    normalized.length < 1
+    || new TextEncoder().encode(normalized).byteLength > 2 * 1024
+    || /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    throw new Error(`${field} must be safe non-empty text within 2 KiB.`);
+  }
+  return normalized;
+}
+
 function requirePortableId(value: unknown, field: string): string {
   const text = requireText(value, 128, field);
   if (!PORTABLE_ID_PATTERN.test(text)) throw new Error(`${field} 不是 portable ID。`);
@@ -639,17 +660,5 @@ function requireText(value: unknown, maxLength: number, field: string): string {
     || value.length > maxLength
     || /[\u0000-\u001F\u007F]/u.test(value)
   ) throw new Error(`${field} 文本无效。`);
-  return value;
-}
-
-function requireOptionalText(value: unknown, maxLength: number, field: string): string {
-  if (value === '') return '';
-  return requireText(value, maxLength, field);
-}
-
-function requireCoordinate(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1_000_000) {
-    throw new Error(`${field} 坐标无效。`);
-  }
   return value;
 }

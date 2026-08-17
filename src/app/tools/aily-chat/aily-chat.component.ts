@@ -217,7 +217,7 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
     CacheExplorer: ChatDebugBrowserViewState.CacheExplorer,
   } as const;
 
-  @ViewChild('chatContainer') chatContainer: ElementRef;
+  @ViewChild('chatContainer') chatContainer?: ElementRef<HTMLElement>;
   private chatTextareaRef?: ElementRef;
   private chatTextareaSubmitCleanup: (() => void) | null = null;
   @ViewChild('chatTextarea')
@@ -860,8 +860,10 @@ export class AilyChatComponent implements OnDestroy, AfterViewChecked {
   ngAfterViewInit(): void {
     ChatPerformanceTracer.increment('entry_open.pane_setup_complete');
     ChatPerformanceTracer.mark('entry_open.pane_setup_complete');
-    this.viewportShellCoordinator.initialize(this.chatContainer);
-    this.bindConversationScrollListener(this.chatContainer.nativeElement);
+    if (this.chatContainer) {
+      this.viewportShellCoordinator.initialize(this.chatContainer);
+      this.bindConversationScrollListener(this.chatContainer.nativeElement);
+    }
     this.scrollManager.handleContentHeightChange();
     this.syncSessionListDisplayState();
     this.scheduleChatInputFocusAfterSessionChange();

@@ -103,12 +103,38 @@ export interface ChatTextOptions {
   newChatFirst?: boolean; // 发送前先新建会话
   action?: string;
   payload?: unknown;
+  /** Internal receipt used by Host adapters that must await a normal Chat turn. */
+  externalInputReceiptId?: string;
 }
 
 export interface ChatTextMessage {
   text: string;
   options?: ChatTextOptions;
   timestamp?: number;
+}
+
+export interface ChatExternalInputExecutionResult {
+  readonly receiptId: string;
+  readonly sessionId: string;
+}
+
+export interface ChatExternalInputExecution {
+  readonly receiptId: string;
+  readonly sessionId: Promise<string>;
+  readonly completion: Promise<ChatExternalInputExecutionResult>;
+  cancel(reason?: unknown): void;
+}
+
+interface PendingChatExternalInputExecution {
+  readonly receiptId: string;
+  readonly sessionId: Promise<string>;
+  readonly completion: Promise<ChatExternalInputExecutionResult>;
+  readonly resolveSessionId: (sessionId: string) => void;
+  readonly rejectSessionId: (reason: Error) => void;
+  readonly resolveCompletion: (result: ChatExternalInputExecutionResult) => void;
+  readonly rejectCompletion: (reason: Error) => void;
+  submittedSessionId: string;
+  settled: boolean;
 }
 
 export interface ChatServiceSessionProviderOptions {
@@ -162,6 +188,18 @@ function normalizeChatSessionApprovalPolicy(value: unknown): 'on_request' | 'nev
   return value === 'never' || value === 'on_request'
     ? value
     : undefined;
+}
+
+function normalizeExternalInputReceiptId(value: unknown): string {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (
+    normalized.length < 1
+    || normalized.length > 192
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(normalized)
+  ) {
+    throw new Error('Chat external input receiptId must be a portable identifier.');
+  }
+  return normalized;
 }
 
 function disposeSessionProviderOptionsSourceSubscription(
@@ -466,6 +504,10 @@ export class ChatService {
    * 消息被 ChatEngineService 消费后会立即清空，避免重新打开面板时重复自动发送。
    */
   private textSubject = new ReplaySubject<ChatTextMessage | null>(1);
+  private readonly pendingExternalInputExecutions = new Map<
+    string,
+    PendingChatExternalInputExecution
+  >();
   private static readonly maxRecentModelPresetIds = 5;
 
 
@@ -2368,6 +2410,111 @@ export class ChatService {
     this.textSubject.next(message);
 
     // 发送后滚动到页面底部
+  }
+
+  /**
+   * Create a receipt for one message that will still travel through the
+   * ordinary visible Chat external-input pipeline.
+   */
+  beginExternalInputExecution(receiptId: string): ChatExternalInputExecution {
+    const normalizedReceiptId = normalizeExternalInputReceiptId(receiptId);
+    if (this.pendingExternalInputExecutions.has(normalizedReceiptId)) {
+      throw new Error(`Chat external input receipt is already active: ${normalizedReceiptId}`);
+    }
+
+    let resolveSessionId!: (sessionId: string) => void;
+    let rejectSessionId!: (reason: Error) => void;
+    let resolveCompletion!: (result: ChatExternalInputExecutionResult) => void;
+    let rejectCompletion!: (reason: Error) => void;
+    const sessionId = new Promise<string>((resolve, reject) => {
+      resolveSessionId = resolve;
+      rejectSessionId = reject;
+    });
+    const completion = new Promise<ChatExternalInputExecutionResult>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    // Callers normally observe both promises, but cancellation can win before
+    // a session is allocated. Keep those early rejections handled as well.
+    void sessionId.catch(() => undefined);
+    void completion.catch(() => undefined);
+
+    const pending: PendingChatExternalInputExecution = {
+      receiptId: normalizedReceiptId,
+      sessionId,
+      completion,
+      resolveSessionId,
+      rejectSessionId,
+      resolveCompletion,
+      rejectCompletion,
+      submittedSessionId: '',
+      settled: false,
+    };
+    this.pendingExternalInputExecutions.set(normalizedReceiptId, pending);
+
+    return Object.freeze({
+      receiptId: normalizedReceiptId,
+      sessionId,
+      completion,
+      cancel: (reason?: unknown) => this.failExternalInputExecution(
+        normalizedReceiptId,
+        reason ?? new Error('Chat external input execution was cancelled.'),
+      ),
+    });
+  }
+
+  markExternalInputExecutionSubmitted(receiptId: string, sessionId: string): void {
+    const pending = this.readPendingExternalInputExecution(receiptId);
+    if (!pending || pending.settled) return;
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) {
+      this.failExternalInputExecution(receiptId, new Error(
+        'Chat external input execution did not allocate a session.',
+      ));
+      return;
+    }
+    if (pending.submittedSessionId && pending.submittedSessionId !== normalizedSessionId) {
+      this.failExternalInputExecution(receiptId, new Error(
+        'Chat external input execution changed its owning session.',
+      ));
+      return;
+    }
+    if (!pending.submittedSessionId) {
+      pending.submittedSessionId = normalizedSessionId;
+      pending.resolveSessionId(normalizedSessionId);
+    }
+  }
+
+  completeExternalInputExecution(receiptId: string, sessionId: string): void {
+    const pending = this.readPendingExternalInputExecution(receiptId);
+    if (!pending || pending.settled) return;
+    this.markExternalInputExecutionSubmitted(receiptId, sessionId);
+    if (pending.settled || !pending.submittedSessionId) return;
+    pending.settled = true;
+    this.pendingExternalInputExecutions.delete(pending.receiptId);
+    pending.resolveCompletion({
+      receiptId: pending.receiptId,
+      sessionId: pending.submittedSessionId,
+    });
+  }
+
+  failExternalInputExecution(receiptId: string, reason: unknown): void {
+    const pending = this.readPendingExternalInputExecution(receiptId);
+    if (!pending || pending.settled) return;
+    pending.settled = true;
+    this.pendingExternalInputExecutions.delete(pending.receiptId);
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    if (!pending.submittedSessionId) pending.rejectSessionId(error);
+    pending.rejectCompletion(error);
+  }
+
+  private readPendingExternalInputExecution(
+    receiptId: string,
+  ): PendingChatExternalInputExecution | undefined {
+    const normalizedReceiptId = typeof receiptId === 'string' ? receiptId.trim() : '';
+    return normalizedReceiptId
+      ? this.pendingExternalInputExecutions.get(normalizedReceiptId)
+      : undefined;
   }
 
   /**

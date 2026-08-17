@@ -65,6 +65,8 @@ interface Position {
 
 export interface EditorOperationFrameBudgetContext {
   editorFrameBudget?: BrowserFrameBudgetController;
+  /** Internal import path only: recreate structurally matched blocks with their prior ids. */
+  preserveConfigBlockIds?: boolean;
 }
 
 function createEditBlockFrameBudget(operation: string): BrowserFrameBudgetController {
@@ -1026,6 +1028,7 @@ async function createBlockSafely(
   position: Position,
   animate: boolean,
   frameBudgetContext?: EditorOperationFrameBudgetContext,
+  stableBlockId?: string,
 ): Promise<any> {
   try {
     await checkpointEditBlockFrameBudget(frameBudgetContext, `createBlock.${type}.before-newBlock`);
@@ -1035,7 +1038,7 @@ async function createBlockSafely(
     }
 
     // 直接创建块，使用 Blockly 默认事件处理
-    const block = workspace.newBlock(type);
+    const block = workspace.newBlock(type, stableBlockId);
 
     if (!block) {
       throw new Error(`创建块 "${type}" 失败`);
@@ -5603,7 +5606,18 @@ export async function createBlockFromConfig(
     // 🆕 单独捕获 createBlockSafely 的错误
     let block: any = null;
     try {
-      block = await createBlockSafely(workspace, config.type, position, false, operationFrameBudgetContext);
+      block = await createBlockSafely(
+        workspace,
+        config.type,
+        position,
+        false,
+        operationFrameBudgetContext,
+        operationFrameBudgetContext.preserveConfigBlockIds
+          && typeof config.id === 'string'
+          && config.id.length > 0
+          ? config.id
+          : undefined,
+      );
     } catch (createError) {
       debugBlocklyImportIssue(`createBlockSafely threw: ${config.type}`, createError);
       const suggestion = generateBlockFailureSuggestion(config.type);

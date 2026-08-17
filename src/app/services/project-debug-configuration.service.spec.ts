@@ -234,6 +234,83 @@ describe('ProjectDebugConfigurationService', () => {
     expect(state.buildConsistency).toBe('current');
   });
 
+  it('rebinds surviving executable block intents to a newly built source map', () => {
+    const previousRevision = 'e'.repeat(64);
+    const nextRevision = 'f'.repeat(64);
+    const sourceMapPath = `${projectPath}/.build/aily-block-source-map.json`;
+    files.set(configurationPath, JSON.stringify({
+      schemaVersion: 1,
+      kind: 'aily-project-debug-configuration',
+      breakpoints: [
+        {
+          blockId: 'block-disabled',
+          sourceMapRevision: previousRevision,
+          enabled: false,
+        },
+        {
+          blockId: 'block-removed',
+          sourceMapRevision: previousRevision,
+          enabled: true,
+        },
+        {
+          blockId: 'block-survives',
+          sourceMapRevision: previousRevision,
+          enabled: true,
+        },
+      ],
+    }));
+    files.set(artifactPath, JSON.stringify({
+      build: { source: { sha256: artifactSourceSha256 } },
+      debug: { sourceMapPath: 'aily-block-source-map.json' },
+      files: [{
+        role: 'source-map',
+        path: 'aily-block-source-map.json',
+        sha256: nextRevision,
+      }],
+    }));
+    files.set(sourceMapPath, JSON.stringify({
+      schemaVersion: 1,
+      kind: 'aily-block-source-map',
+      mappings: [
+        {
+          blockId: 'block-disabled',
+          executableRanges: [{ startLine: 4, endLine: 4 }],
+        },
+        {
+          blockId: 'block-survives',
+          executableRanges: [{ startLine: 8, endLine: 9 }],
+        },
+        {
+          blockId: 'support-only',
+          executableRanges: [],
+        },
+      ],
+    }));
+    const service = new ProjectDebugConfigurationService();
+
+    const state = service.rebindBreakpointsToCurrentArtifact(projectPath);
+
+    expect(state.configuration.breakpoints).toEqual([
+      {
+        blockId: 'block-disabled',
+        sourceMapRevision: nextRevision,
+        enabled: false,
+      },
+      {
+        blockId: 'block-removed',
+        sourceMapRevision: previousRevision,
+        enabled: true,
+      },
+      {
+        blockId: 'block-survives',
+        sourceMapRevision: nextRevision,
+        enabled: true,
+      },
+    ]);
+    expect(JSON.parse(files.get(configurationPath) || '{}').breakpoints)
+      .toEqual(state.configuration.breakpoints);
+  });
+
   it('derives build consistency from all three required identities', () => {
     expect(deriveProjectBuildConsistency('', artifactSourceSha256, revision))
       .toBe('artifact-unavailable');

@@ -17,7 +17,14 @@ interface ExternalInputCallbacks {
   undoLastEdits: () => Promise<void> | void;
   newChat: () => Promise<void> | void;
   ensureSessionReadyForSubmit: () => Promise<string | null>;
-  submitText: (text: string, clearInput: boolean, sessionId?: string | null) => Promise<void> | void;
+  submitText: (
+    text: string,
+    clearInput: boolean,
+    sessionId?: string | null,
+    options?: ChatTextOptions,
+  ) => Promise<void> | void;
+  completeExternalInputExecution?: (receiptId: string, sessionId: string) => void;
+  failExternalInputExecution?: (receiptId: string, reason: unknown) => void;
   focusInput: () => void;
   schedulePostInputWork: (work: () => void) => void;
 }
@@ -45,6 +52,7 @@ export class ChatExternalInputCoordinator {
 
     if (options?.autoSend && this.ctx.isWaiting) {
       this.ctx.message.warning('当前对话正在执行中，请等待完成后再试');
+      this.failReceipt(options, new Error('The visible Chat session is already running a request.'));
       return;
     }
 
@@ -79,24 +87,34 @@ export class ChatExternalInputCoordinator {
     this.pendingAutoSendText = undefined;
     this.pendingAutoSendOptions = undefined;
     const shouldStartFreshSession = options?.newChatFirst === true;
-    if (options?.newChatFirst) {
-      await this.callbacks.newChat();
-      this.ctx.inputValue = text;
-      this.ctx.triggerSyncDetectChanges();
-    }
-
-    let targetSessionId = shouldStartFreshSession ? '' : this.ctx.sessionId;
-    if (!targetSessionId) {
-      targetSessionId = await this.callbacks.ensureSessionReadyForSubmit();
-      if (!targetSessionId) {
-        this.ctx.message.warning('无法创建会话，请稍后重试');
-        return;
+    try {
+      if (options?.newChatFirst) {
+        await this.callbacks.newChat();
+        this.ctx.inputValue = text;
+        this.ctx.triggerSyncDetectChanges();
       }
-    }
 
-    this.ctx.scrollManager.startNewExchange();
-    await this.callbacks.submitText(text, true, targetSessionId);
-    this.ctx.triggerSyncDetectChanges();
+      let targetSessionId = shouldStartFreshSession ? '' : this.ctx.sessionId;
+      if (!targetSessionId) {
+        targetSessionId = await this.callbacks.ensureSessionReadyForSubmit();
+        if (!targetSessionId) {
+          this.ctx.message.warning('无法创建会话，请稍后重试');
+          this.failReceipt(options, new Error('Chat could not create a session for external input.'));
+          return;
+        }
+      }
+
+      this.ctx.scrollManager.startNewExchange();
+      if (options?.externalInputReceiptId) {
+        await this.callbacks.submitText(text, true, targetSessionId, options);
+      } else {
+        await this.callbacks.submitText(text, true, targetSessionId);
+      }
+      this.completeReceipt(options, targetSessionId);
+      this.ctx.triggerSyncDetectChanges();
+    } catch (error) {
+      this.failReceipt(options, error);
+    }
   }
 
   private handleButtonText(text: string): void {
@@ -130,5 +148,19 @@ export class ChatExternalInputCoordinator {
 
     this.ctx.scrollManager.startNewExchange();
     await this.callbacks.submitText(text, false, targetSessionId);
+  }
+
+  private completeReceipt(options: ChatTextOptions | undefined, sessionId: string): void {
+    const receiptId = options?.externalInputReceiptId;
+    if (receiptId) {
+      this.callbacks.completeExternalInputExecution?.(receiptId, sessionId);
+    }
+  }
+
+  private failReceipt(options: ChatTextOptions | undefined, reason: unknown): void {
+    const receiptId = options?.externalInputReceiptId;
+    if (receiptId) {
+      this.callbacks.failExternalInputExecution?.(receiptId, reason);
+    }
   }
 }

@@ -11,9 +11,8 @@ import { ProjectDebugConfigurationService } from './project-debug-configuration.
 import { ProjectService } from './project.service';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
 import { ProjectSceneProposalProviderService } from './project-scene-proposal-provider.service';
-import { SimulatorAgentSceneApprovalService } from './simulator-agent-scene-approval.service';
 import { SimulatorEntitlementAccountService } from './simulator-entitlement-account.service';
-import { SimulatorSceneCodeReconciliationService } from './simulator-scene-code-reconciliation.service';
+import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-scene-change.service';
 import {
   SubappHostProviderDispatcher,
   type SubappHostProviderAdapter,
@@ -55,10 +54,9 @@ export class SimulatorHostProviderProductService {
     private readonly registry: SubappHostProviderProductRegistryService,
     private readonly project: ProjectService,
     private readonly builder: BuilderService,
-    private readonly reconciliation: SimulatorSceneCodeReconciliationService,
+    private readonly simulatorMainAgent: SimulatorMainAgentSceneChangeService,
     private readonly hardwareIntent: ProjectHardwareIntentProviderService,
     private readonly sceneProposals: ProjectSceneProposalProviderService,
-    private readonly sceneApprovals: SimulatorAgentSceneApprovalService,
     private readonly entitlementAccount: SimulatorEntitlementAccountService,
     private readonly blockly: BlocklyService,
     private readonly projectDebug: ProjectDebugConfigurationService,
@@ -132,7 +130,7 @@ export class SimulatorHostProviderProductService {
       sceneId: 'main',
       files,
       activeProject,
-      reconciliation: this.reconciliation,
+      mainAgent: this.simulatorMainAgent,
       builderService: this.builder,
     });
     const editor = new SimulatorBlocklyEditorCallbackAuthority({
@@ -181,7 +179,7 @@ export class SimulatorHostProviderProductService {
           this.hardwareIntent.resolve(request, signal)
         ),
       },
-      proposals: {
+      wiringIntents: {
         request: (input, signal) => this.sceneProposals.request({
           request: structuredClone(
             input.request as unknown as Record<string, unknown>,
@@ -191,7 +189,6 @@ export class SimulatorHostProviderProductService {
           ),
         }, signal),
       },
-      approvals: this.sceneApprovals,
     });
     const entitlement = new SimulatorEntitlementCallbackAuthority({
       account: this.entitlementAccount,

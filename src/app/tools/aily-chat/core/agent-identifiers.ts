@@ -3,14 +3,11 @@ export const MAIN_AGENT_LEGACY_ALIAS = 'mainAgent';
 export const SCHEMATIC_AGENT_TYPE = 'SchematicAgent';
 export const SCHEMATIC_AGENT_LEGACY_ALIAS = 'schematicAgent';
 export const PROJECT_SCENE_AGENT_TYPE = 'ProjectSceneAgent';
-export const SCENE_CODE_RECONCILIATION_AGENT_TYPE =
-  'SceneCodeReconciliationAgent';
 
 export type CanonicalAgentIdentifier =
   | typeof MAIN_AGENT_TYPE
   | typeof SCHEMATIC_AGENT_TYPE
-  | typeof PROJECT_SCENE_AGENT_TYPE
-  | typeof SCENE_CODE_RECONCILIATION_AGENT_TYPE;
+  | typeof PROJECT_SCENE_AGENT_TYPE;
 
 export function normalizeAgentIdentifier(agentName: string | null | undefined): string {
   const normalized = typeof agentName === 'string' ? agentName.trim() : '';
@@ -48,11 +45,4 @@ export function isSchematicAgentIdentifier(agentName: string | null | undefined)
 
 export function isProjectSceneAgentIdentifier(agentName: string | null | undefined): boolean {
   return normalizeAgentIdentifier(agentName) === PROJECT_SCENE_AGENT_TYPE;
-}
-
-export function isSceneCodeReconciliationAgentIdentifier(
-  agentName: string | null | undefined,
-): boolean {
-  return normalizeAgentIdentifier(agentName)
-    === SCENE_CODE_RECONCILIATION_AGENT_TYPE;
 }

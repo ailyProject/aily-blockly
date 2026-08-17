@@ -2,7 +2,10 @@
  */
 import { Injectable, Injector } from '@angular/core';
 import { filter, Observable, Subject } from 'rxjs';
-import { ChatService } from '../tools/aily-chat/services/chat.service';
+import {
+  ChatService,
+  type ChatExternalInputExecution,
+} from '../tools/aily-chat/services/chat.service';
 import { ElectronService } from './electron.service';
 import { TerminalService } from '../tools/terminal/terminal.service';
 import { Router } from '@angular/router';
@@ -363,6 +366,44 @@ export class UiService {
     }
     this.openTool(targetToolId);
     return targetToolId;
+  }
+
+  /**
+   * Open the canonical Angular/Lex Chat and run one ordinary visible turn.
+   * The receipt observes that existing pipeline; it does not create a second
+   * session type or a headless presentation projection.
+   */
+  openAndRunStandardChatTurn(
+    text: string,
+    receiptId: string,
+    options?: Record<string, any>,
+  ): ChatExternalInputExecution {
+    const execution = this.chatService.beginExternalInputExecution(receiptId);
+    const targetToolId = 'aily-chat';
+    if (!this.openToolList.includes(targetToolId)) {
+      this.legacyAilyChatReadyAt = Date.now() + LEGACY_AILY_CHAT_MOUNT_DELAY_MS;
+    }
+    this.openTool(targetToolId);
+    const deliver = () => {
+      const deliveryOptions = resolveAilyChatExternalInputOptions(
+        targetToolId,
+        {
+          ...options,
+          autoSend: true,
+          externalInputReceiptId: execution.receiptId,
+        },
+        this.chatService.currentSessionId,
+      );
+      this.chatService.sendTextToChat(text, deliveryOptions);
+    };
+    const mountDelay = resolveAilyChatMountDelay(
+      targetToolId,
+      this.legacyAilyChatReadyAt,
+      Date.now(),
+    );
+    if (mountDelay > 0) setTimeout(deliver, mountDelay);
+    else deliver();
+    return execution;
   }
 
   /** The highest currently open Aily Chat, or null when neither chat is open. */

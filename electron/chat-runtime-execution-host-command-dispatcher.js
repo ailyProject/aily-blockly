@@ -17,8 +17,6 @@ const VALID_RUNTIME_OWNER_METHODS = new Set([
   'startTurn',
   'stopTurn',
   'disposeSessionResources',
-  'runScopedAgent',
-  'cancelScopedAgent',
   'resolveInteraction',
 ]);
 
@@ -300,18 +298,6 @@ function callRuntimeOwnerMethod(runtimeOwner, method, args) {
         throw new Error('[AilyChat][RuntimeHost] Runtime owner does not support image preflight.');
       }
       return runtimeOwner.preflightTurnImages(args[0] || {});
-    }
-    case 'runScopedAgent': {
-      if (typeof runtimeOwner.runScopedAgent !== 'function') {
-        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not support scoped Agents.');
-      }
-      return runtimeOwner.runScopedAgent(args[0] || {});
-    }
-    case 'cancelScopedAgent': {
-      if (typeof runtimeOwner.cancelScopedAgent !== 'function') {
-        throw new Error('[AilyChat][RuntimeHost] Runtime owner does not support scoped Agent cancellation.');
-      }
-      return runtimeOwner.cancelScopedAgent(args[0] || {});
     }
     case 'resolveInteraction':
       return runtimeOwner.resolveInteraction(args[0]);

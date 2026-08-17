@@ -15,7 +15,9 @@ const {
   quoteWindowsShellPath,
   renameWithBusyRetry,
   resolveSubappRoot,
+  safeSubappShutdownUrl,
   validateIndex,
+  verifyInstalledSubappStartup,
 } = require('./subapp-manager');
 
 function fixtureIndex(version = '0.1.0') {
@@ -587,6 +589,161 @@ test('update restores the previous package when the replacement cannot be verifi
   );
   assert.equal(JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')).version, '0.1.0');
   assert.equal(fs.readFileSync(path.join(packageDir, 'index.js'), 'utf8'), 'old runtime');
+});
+
+test('update refuses to mutate a package until the generic runtime guard allows it', async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-update-in-use-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  let npmCalls = 0;
+  const manager = createSubappManager({
+    rootDir,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(fixtureIndex('0.1.1')),
+    }),
+    beforePackageMutation: async (context) => {
+      assert.equal(context.action, 'update');
+      assert.equal(context.id, 'aily-chat');
+      assert.equal(context.toolId, 'aily-chat-react');
+      const error = new Error('subapp is in use');
+      error.code = 'SUBAPP_UPDATE_IN_USE';
+      throw error;
+    },
+    runNpm: async () => {
+      npmCalls += 1;
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  await assert.rejects(
+    manager.update({ id: 'aily-chat', locale: 'en' }),
+    (error) => error.code === 'SUBAPP_UPDATE_IN_USE',
+  );
+  assert.equal(npmCalls, 0);
+});
+
+test('candidate startup failure restores and health-checks the previous package', async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-health-rollback-'));
+  const packageDir = path.join(rootDir, 'node_modules', '@aily-project', 'subapp-aily-chat');
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
+  fs.writeFileSync(path.join(packageDir, 'index.js'), 'old runtime');
+  fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: '@aily-project/subapp-aily-chat',
+    version: '0.1.0',
+    main: 'index.js',
+  }));
+
+  const phases = [];
+  const manager = createSubappManager({
+    rootDir,
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify(fixtureIndex('0.1.1')),
+    }),
+    runNpm: async () => {
+      fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
+      fs.writeFileSync(path.join(packageDir, 'index.js'), 'candidate runtime');
+      fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
+      fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+        name: '@aily-project/subapp-aily-chat',
+        version: '0.1.1',
+        main: 'index.js',
+      }));
+      return { code: 0, stdout: 'changed 1 package', stderr: '' };
+    },
+    verifyInstalledPackage: async ({ phase, installedState }) => {
+      phases.push([phase, installedState.installedVersion]);
+      if (phase === 'candidate') throw new Error('candidate failed to start');
+    },
+  });
+
+  await assert.rejects(
+    manager.update({ id: 'aily-chat', locale: 'en' }),
+    /candidate failed to start/,
+  );
+  assert.deepEqual(phases, [
+    ['candidate', '0.1.1'],
+    ['restored', '0.1.0'],
+  ]);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')).version,
+    '0.1.0',
+  );
+  assert.equal(fs.readFileSync(path.join(packageDir, 'index.js'), 'utf8'), 'old runtime');
+});
+
+test('generic startup verifier accepts ready, performs loopback shutdown, and rejects fatal', async (t) => {
+  const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-health-probe-'));
+  t.after(() => fs.rmSync(packageDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: '@aily-project/health-fixture',
+    version: '1.0.0',
+    main: 'index.js',
+  }));
+  fs.writeFileSync(path.join(packageDir, 'index.js'), [
+    "const http = require('node:http');",
+    "const server = http.createServer((request, response) => {",
+    "  if (request.method === 'POST' && request.url === '/shutdown') {",
+    "    response.end('ok', () => server.close(() => process.exit(0)));",
+    "    return;",
+    "  }",
+    "  response.statusCode = 404; response.end();",
+    "});",
+    "server.listen(0, '127.0.0.1', () => {",
+    "  const origin = `http://127.0.0.1:${server.address().port}`;",
+    "  console.log(JSON.stringify({ event: 'ready', data: { origin, shutdownUrl: `${origin}/shutdown` } }));",
+    "});",
+  ].join('\n'));
+
+  const verified = await verifyInstalledSubappStartup({
+    packagePath: packageDir,
+    entry: { package: '@aily-project/health-fixture' },
+    phase: 'candidate',
+    startupTimeoutMs: 5000,
+    shutdownTimeoutMs: 5000,
+  });
+  assert.deepEqual(verified, {
+    status: 'ready',
+    phase: 'candidate',
+    packageName: '@aily-project/health-fixture',
+    packageVersion: '1.0.0',
+  });
+
+  fs.writeFileSync(
+    path.join(packageDir, 'index.js'),
+    "console.log(JSON.stringify({ event: 'fatal', data: { message: 'fixture startup rejected' } }));\n",
+  );
+  await assert.rejects(
+    verifyInstalledSubappStartup({
+      packagePath: packageDir,
+      entry: { package: '@aily-project/health-fixture' },
+      phase: 'candidate',
+      startupTimeoutMs: 5000,
+      shutdownTimeoutMs: 5000,
+    }),
+    /fixture startup rejected/,
+  );
+});
+
+test('health probe only accepts same-origin loopback shutdown URLs', () => {
+  assert.equal(
+    safeSubappShutdownUrl({
+      origin: 'http://127.0.0.1:43100',
+      shutdownUrl: 'http://127.0.0.1:43100/shutdown',
+    })?.pathname,
+    '/shutdown',
+  );
+  assert.equal(safeSubappShutdownUrl({
+    origin: 'http://127.0.0.1:43100',
+    shutdownUrl: 'http://example.com/shutdown',
+  }), null);
+  assert.equal(safeSubappShutdownUrl({
+    origin: 'https://127.0.0.1:43100',
+    shutdownUrl: 'https://127.0.0.1:43100/shutdown',
+  }), null);
 });
 
 test('isBusyRenameError detects npm and fs EBUSY rename failures', () => {

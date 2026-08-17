@@ -4,15 +4,11 @@ import type {
   IHostAgentProvider,
 } from 'aily-lex/browser';
 
-import {
-  PROJECT_SCENE_AGENT_TYPE,
-  SCENE_CODE_RECONCILIATION_AGENT_TYPE,
-} from './agent-identifiers';
+import { PROJECT_SCENE_AGENT_TYPE } from './agent-identifiers';
 import { normalizeGovernanceToolName } from './tool-name-normalizer';
 
 export {
   PROJECT_SCENE_AGENT_TYPE,
-  SCENE_CODE_RECONCILIATION_AGENT_TYPE,
 };
 
 export const BLOCKLY_HOST_AGENT_URI_SCHEME = 'aily-chat-agent';
@@ -27,29 +23,7 @@ export const PROJECT_SCENE_AGENT_REQUIRED_CONTEXT = {
 } as const;
 export const PROJECT_SCENE_AGENT_TOOLS = [
   'get_project_scene_generation_context',
-  'submit_project_scene_generation_proposal',
-] as const;
-
-export const SCENE_CODE_RECONCILIATION_AGENT_NAME =
-  SCENE_CODE_RECONCILIATION_AGENT_TYPE;
-export const SCENE_CODE_RECONCILIATION_AGENT_MAX_TURNS = 16;
-export const SCENE_CODE_RECONCILIATION_AGENT_MESSAGE_INHERITANCE =
-  'none' as const;
-export const SCENE_CODE_RECONCILIATION_AGENT_MODEL = 'inherit';
-export const SCENE_CODE_RECONCILIATION_AGENT_REQUIRED_CONTEXT = {
-  scopes: [
-    'workspaceIdentity',
-    'projectInfo',
-    'boardInfo',
-    'libraryIndex',
-    'workspaceArtifacts',
-  ],
-  strict: true,
-  hydrateBeforeFirstModelCall: true,
-} as const;
-export const SCENE_CODE_RECONCILIATION_AGENT_TOOLS = [
-  'get_scene_code_reconciliation_context',
-  'submit_scene_code_reconciliation_candidate',
+  'submit_project_scene_wiring_intent',
 ] as const;
 
 type AgentConfigChangeSubscription = { unsubscribe(): void };
@@ -78,13 +52,6 @@ export const PROJECT_SCENE_AGENT_WHEN_NOT_TO_USE =
   'Do not use without an active Project Scene generation request. Never read or translate connection_output.json, generate AWS, edit files, control QEMU/GDB, or handle non-Scene tasks.';
 export const PROJECT_SCENE_AGENT_ARGUMENT_HINT =
   'Generate the requested native Project Scene proposal';
-export const SCENE_CODE_RECONCILIATION_AGENT_WHEN_TO_USE =
-  'Produce one bounded Scene-to-Blockly ABS candidate for an active Host reconciliation request.';
-export const SCENE_CODE_RECONCILIATION_AGENT_WHEN_NOT_TO_USE =
-  'Do not invoke from normal Chat, Scene generation, legacy schematic workflows, build, simulation, debugging, or without an active reconciliation request.';
-export const SCENE_CODE_RECONCILIATION_AGENT_ARGUMENT_HINT =
-  'Use the requestId in the scoped provider prompt';
-
 export const PROJECT_SCENE_PROMPT_BODY = `You are ProjectSceneAgent, a narrowly scoped proposal provider for the independent Aily Simulator.
 
 # Authority boundary
@@ -100,7 +67,7 @@ export const PROJECT_SCENE_PROMPT_BODY = `You are ProjectSceneAgent, a narrowly 
 1. Call get_project_scene_generation_context exactly once with the requestId from the provider prompt.
 2. Use only the bounded request, authoritative Component Package guide, and injected current-project context.
 3. Infer the physical board, components, exact GPIO/bus functions, power topology, internal pull configuration, and required explicit resistors.
-4. Submit only exact package instances and point-to-point terminal connections through submit_project_scene_generation_proposal.
+4. Submit only request-scoped part refs, catalog package IDs, and multi-terminal semantic nets through submit_project_scene_wiring_intent. Never choose package versions, persistent IDs, layout, routing, or presentation.
 5. If the request is expired, replaced, or revision-conflicted, stop without writing any file.
 
 # Electrical rules
@@ -110,25 +77,6 @@ export const PROJECT_SCENE_PROMPT_BODY = `You are ProjectSceneAgent, a narrowly 
 - Distinguish internal INPUT_PULLUP/INPUT_PULLDOWN from an external resistor.
 - Never short power to ground or connect multiple push-pull outputs together.
 - Use only package IDs, versions, terminal IDs, terminal functions, and signal kinds advertised by the generation context.`;
-
-export const SCENE_CODE_RECONCILIATION_PROMPT_BODY =
-`You are SceneCodeReconciliationAgent, a narrowly scoped candidate producer for the Blockly Host.
-
-# Authority boundary
-
-- You never edit Blockly, project.abs, files, Scenes, Artifacts, or runtime state.
-- You never request or imply user approval. The Host asks for approval only after receiving your complete candidate.
-- You never build or upload firmware and never control Simulator, QEMU, GDB, UART, instruments, sessions, or processes.
-- You never use legacy schematic/AWS/connection_output.json tools, Scene generation, generic file tools, shell, network, or arbitrary tool discovery.
-
-# Workflow
-
-1. Call get_scene_code_reconciliation_context exactly once with the requestId from the provider prompt.
-2. Treat the returned Scene revision and current complete ABS program as the only task inputs.
-3. Preserve unrelated behavior. Change only the minimum Blockly program semantics required to match physical components, GPIO assignments, bus assignments, pull configuration, polarity, and other code-relevant Scene facts.
-4. If code already matches the Scene, submit outcome="already-aligned" and absContent=null.
-5. Otherwise submit outcome="applied" with one complete, parseable ABS program.
-6. Call submit_scene_code_reconciliation_candidate exactly once.`;
 
 export function createBlocklyHostAgentUri(agentType: string): string {
   const normalizedAgentType = typeof agentType === 'string' ? agentType.trim() : '';
@@ -156,30 +104,6 @@ const PROJECT_SCENE_AGENT_CONTRIBUTION: IAgentContribution = {
   agents: [],
 };
 
-const SCENE_CODE_RECONCILIATION_AGENT_CONTRIBUTION: IAgentContribution = {
-  agentType: SCENE_CODE_RECONCILIATION_AGENT_TYPE,
-  name: 'Scene Code Reconciliation Agent',
-  description: SCENE_CODE_RECONCILIATION_AGENT_WHEN_TO_USE,
-  argumentHint: SCENE_CODE_RECONCILIATION_AGENT_ARGUMENT_HINT,
-  target: 'aily',
-  whenToUse: SCENE_CODE_RECONCILIATION_AGENT_WHEN_TO_USE,
-  whenNotToUse: SCENE_CODE_RECONCILIATION_AGENT_WHEN_NOT_TO_USE,
-  uri: createBlocklyHostAgentUri(SCENE_CODE_RECONCILIATION_AGENT_TYPE),
-  modeInstructions: {
-    content: SCENE_CODE_RECONCILIATION_PROMPT_BODY,
-    toolReferences: [],
-  },
-  requiredContext: SCENE_CODE_RECONCILIATION_AGENT_REQUIRED_CONTEXT,
-  systemPrompt: SCENE_CODE_RECONCILIATION_PROMPT_BODY,
-  tools: [...SCENE_CODE_RECONCILIATION_AGENT_TOOLS],
-  commands: [],
-  excludeTools: [],
-  maxTurns: SCENE_CODE_RECONCILIATION_AGENT_MAX_TURNS,
-  model: SCENE_CODE_RECONCILIATION_AGENT_MODEL,
-  messageInheritance: SCENE_CODE_RECONCILIATION_AGENT_MESSAGE_INHERITANCE,
-  agents: [],
-};
-
 function getConfiguredAgentTools(
   configSource: BlocklyAgentProviderConfigSource | undefined,
   agentName: string,
@@ -199,14 +123,6 @@ function buildBlocklyAgentContributions(
     {
       ...PROJECT_SCENE_AGENT_CONTRIBUTION,
       tools: getConfiguredAgentTools(configSource, PROJECT_SCENE_AGENT_TYPE, PROJECT_SCENE_AGENT_TOOLS),
-    },
-    {
-      ...SCENE_CODE_RECONCILIATION_AGENT_CONTRIBUTION,
-      tools: getConfiguredAgentTools(
-        configSource,
-        SCENE_CODE_RECONCILIATION_AGENT_TYPE,
-        SCENE_CODE_RECONCILIATION_AGENT_TOOLS,
-      ),
     },
   ];
 }

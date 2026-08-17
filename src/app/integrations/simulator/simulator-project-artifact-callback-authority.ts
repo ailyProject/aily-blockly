@@ -1,7 +1,6 @@
 import {
   SimulatorHostArtifactChunkError,
   SimulatorHostProviderOperationError,
-  SIMULATOR_SUBAPP_CONTROL_MAX_CONNECTION_GRAPH_BYTES,
   createPortableRandomId,
   validateProjectSceneNetworkDescriptorV2,
   validateSimulationArtifact,
@@ -14,8 +13,6 @@ import {
   type SimulatorSubappHostProjectArtifactReadV1,
   type SimulatorSubappHostProjectContextReadV1,
   type SimulatorSubappHostProjectContextSnapshotV1,
-  type SimulatorSubappHostProjectLegacySceneInspectV1,
-  type SimulatorSubappHostProjectLegacySceneSnapshotV1,
   type SimulatorSubappHostProjectSceneReadV1,
   type SimulatorSubappHostProjectSceneReadResultV1,
   type SimulatorSubappHostProjectSceneWriteV1,
@@ -105,14 +102,12 @@ export class SimulatorProjectArtifactCallbackAuthority {
     | 'readContext'
     | 'readScene'
     | 'writeScene'
-    | 'inspectLegacyScene'
     | 'readArtifact'
     | 'readArtifactChunk'
   >;
 
   private readonly projectRoot: string;
   private readonly sceneFilePath: string;
-  private readonly legacyConnectionGraphFilePath: string;
   private readonly buildRoot: string;
   private readonly manifestFilePath: string;
   private readonly files: SimulatorProjectArtifactFilePort;
@@ -144,10 +139,6 @@ export class SimulatorProjectArtifactCallbackAuthority {
       '.aily',
       'simulator',
       'scene-network-v2.json',
-    );
-    this.legacyConnectionGraphFilePath = this.files.join(
-      this.projectRoot,
-      'connection_output.json',
     );
     this.buildRoot = this.files.join(this.projectRoot, '.build');
     this.manifestFilePath = this.files.join(
@@ -184,10 +175,6 @@ export class SimulatorProjectArtifactCallbackAuthority {
         request: SimulatorSubappHostProjectSceneWriteV1,
         signal: AbortSignal,
       ) => this.writeScene(request, signal),
-      inspectLegacyScene: (
-        request: SimulatorSubappHostProjectLegacySceneInspectV1,
-        signal: AbortSignal,
-      ) => this.inspectLegacyScene(request, signal),
       readArtifact: (
         request: SimulatorSubappHostProjectArtifactReadV1,
         signal: AbortSignal,
@@ -265,32 +252,6 @@ export class SimulatorProjectArtifactCallbackAuthority {
       };
     }
     return structuredClone(scene.descriptor);
-  }
-
-  private async inspectLegacyScene(
-    request: SimulatorSubappHostProjectLegacySceneInspectV1,
-    signal: AbortSignal,
-  ): Promise<SimulatorSubappHostProjectLegacySceneSnapshotV1> {
-    this.requireSceneScope(request.projectIdentity, request.sceneId);
-    const bytes = await this.readRegularFile(
-      this.legacyConnectionGraphFilePath,
-      SIMULATOR_SUBAPP_CONTROL_MAX_CONNECTION_GRAPH_BYTES,
-      signal,
-      true,
-    );
-    return {
-      schemaVersion: 1,
-      kind: 'aily-simulator-host-project-legacy-scene-snapshot',
-      projectIdentity: this.projectIdentity,
-      sceneId: this.sceneId,
-      legacySource: bytes
-        ? {
-            kind: 'connection-output-v1',
-            revision: await digestBytes(bytes),
-            bytes: bytes.byteLength,
-          }
-        : null,
-    };
   }
 
   private writeScene(

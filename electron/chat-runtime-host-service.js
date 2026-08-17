@@ -1,5 +1,4 @@
 const RUNTIME_OWNER_REGISTER_CHANNEL = 'aily-chat-runtime-owner-register';
-const { createHash } = require('node:crypto');
 const RUNTIME_OWNER_UNREGISTER_CHANNEL = 'aily-chat-runtime-owner-unregister';
 const HOST_COMMAND_CHANNEL = 'aily-chat-runtime-host-command';
 const RUNTIME_OWNER_COMMAND_CHANNEL = 'aily-chat-runtime-owner-command';
@@ -10,7 +9,6 @@ const RESOURCE_HANDLER_REGISTER_CHANNEL = 'aily-chat-runtime-resource-handler-re
 const RESOURCE_HANDLER_UNREGISTER_CHANNEL = 'aily-chat-runtime-resource-handler-unregister';
 const RESOURCE_HANDLER_COMMAND_CHANNEL = 'aily-chat-runtime-resource-handler-command';
 const RESOURCE_HANDLER_RESPONSE_CHANNEL = 'aily-chat-runtime-resource-handler-response';
-const SCOPED_AGENT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 let chatImageMediaStorePromise;
 const {
   ChatRuntimeHostSessionStore,
@@ -78,8 +76,6 @@ const ALLOWED_METHODS = new Set([
   'resolveInteraction',
   'recordResourceRequest',
   'requestResourceOperation',
-  'runScopedAgent',
-  'cancelScopedAgent',
 ]);
 
 const EXECUTION_HOST_ALLOWED_METHODS = new Set([
@@ -196,6 +192,9 @@ function summarizeRuntimeOwnerPayload(payload) {
     hasRenderEvent: !!renderEvent,
     renderEventType: typeof renderEvent?.type === 'string' ? renderEvent.type : undefined,
     renderEventKind: typeof renderEvent?.kind === 'string' ? renderEvent.kind : undefined,
+    renderEventToolName: typeof renderEvent?.toolName === 'string'
+      ? renderEvent.toolName.slice(0, 120)
+      : undefined,
     nestedEventKind: typeof event?.kind === 'string' ? event.kind : undefined,
     stateRequestInProgress: typeof state?.requestInProgress === 'boolean' ? state.requestInProgress : undefined,
     stateActiveTurnId: typeof state?.activeTurnId === 'string' ? state.activeTurnId : undefined,
@@ -413,9 +412,6 @@ class ChatRuntimeHostProcessService {
     }
     if (method === 'requestResourceOperation') {
       return this.handleRequestResourceOperation(args);
-    }
-    if (method === 'runScopedAgent' || method === 'cancelScopedAgent') {
-      return this.handleScopedAgentCommand(method, args);
     }
     if (method === 'runWorkspaceFinalizeBoundaryProbe') {
       return Promise.resolve();
@@ -1311,50 +1307,6 @@ class ChatRuntimeHostProcessService {
       attachmentId: typeof request.attachmentId === 'string' ? request.attachmentId.trim() : '',
       mimeType: typeof request.mimeType === 'string' ? request.mimeType.trim() : '',
     });
-  }
-
-  async handleScopedAgentCommand(method, args) {
-    const request = args && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])
-      ? args[0]
-      : null;
-    if (!request) {
-      throw new Error(`[AilyChat][RuntimeHost] ${method} requires a request object.`);
-    }
-    if (!this.runtimeOwnerController.hasUsableRuntimeOwner()) {
-      throw new Error('[AilyChat][RuntimeHost] Independent execution host is unavailable.');
-    }
-    if (method === 'cancelScopedAgent') {
-      return this.runtimeOwnerController.dispatchCommand(method, [clonePayload(request)]);
-    }
-    const invocationId = typeof request.invocationId === 'string'
-      ? request.invocationId.trim()
-      : '';
-    if (!invocationId) {
-      throw new Error('[AilyChat][RuntimeHost] runScopedAgent requires invocationId.');
-    }
-    const agentType = typeof request.agentType === 'string'
-      ? request.agentType.trim()
-      : '';
-    const scopedSessionPrefix = agentType === 'SceneCodeReconciliationAgent'
-      ? 'scoped-scene-code-reconciliation'
-      : 'scoped-project-scene';
-    const executionSessionId = `${scopedSessionPrefix}:${createHash('sha256')
-      .update(invocationId)
-      .digest('hex')
-      .slice(0, 24)}`;
-    try {
-      return await this.runtimeOwnerController.dispatchCommand(method, [{
-        ...clonePayload(request),
-        executionSessionId,
-      }], { timeoutMs: SCOPED_AGENT_COMMAND_TIMEOUT_MS });
-    } catch (error) {
-      await this.runtimeOwnerController.dispatchCommand('cancelScopedAgent', [{
-        invocationId,
-      }]).catch(() => undefined);
-      throw error;
-    } finally {
-      this.hostSessionStore.clearSession(executionSessionId);
-    }
   }
 
   dispatchResourceOperationToRegisteredHandler(request) {
