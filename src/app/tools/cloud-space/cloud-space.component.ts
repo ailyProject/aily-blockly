@@ -16,7 +16,6 @@ import { ElectronService } from '../../services/electron.service';
 import { distinctUntilChanged } from 'rxjs/operators';
 import { PlatformService } from "../../services/platform.service";
 import { CrossPlatformCmdService } from "../../services/cross-platform-cmd.service";
-import { LoginComponent } from '../../components/login/login.component';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '../../services/local-library-sync.service';
 import { TranslateService } from '@ngx-translate/core';
@@ -31,8 +30,7 @@ import { extractStructuredAbsValues } from '../../services/project-data/project-
     FormsModule,
     CommonModule,
     NzButtonModule,
-    EditorComponent,
-    LoginComponent
+    EditorComponent
   ],
   templateUrl: './cloud-space.component.html',
   styleUrl: './cloud-space.component.scss'

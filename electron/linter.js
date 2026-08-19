@@ -468,18 +468,37 @@ async function waitForReady() {
 }
 
 function getStatus() {
-  const commandState = probeAilyLinterCommand();
+  const commandState = startupResult || {
+    ok: false,
+    path: getAilyLinterCommandPath(),
+    entryPath: "",
+    version: null,
+    installed: false,
+    error: "",
+  };
+  const commandStillExists = !commandState.ok || (
+    !!commandState.path && fs.existsSync(commandState.path) &&
+    !!commandState.entryPath && fs.existsSync(commandState.entryPath)
+  );
+  const effectiveState = commandStillExists
+    ? commandState
+    : {
+      ...commandState,
+      ok: false,
+      version: null,
+      error: "aily-linter command or entry file is missing",
+    };
   return {
     key: TOOL_KEY,
     packageName: PACKAGE_NAME,
-    installed: commandState.ok,
-    installedVersion: commandState.version,
-    path: commandState.path,
-    entryPath: commandState.entryPath,
+    installed: effectiveState.ok,
+    installedVersion: effectiveState.version,
+    path: effectiveState.path,
+    entryPath: effectiveState.entryPath,
     installing: !!mutationPromise || (!!startupPromise && !startupResult),
     installingKey: installPromise ? TOOL_KEY : null,
     configLoaded: true,
-    error: commandState.ok ? "" : (startupResult?.error || commandState.error),
+    error: effectiveState.ok ? "" : effectiveState.error,
   };
 }
 
@@ -489,6 +508,7 @@ async function checkForUpdate(childPath) {
   const latestVersion = await getLatestVersion(childPath);
 
   if (currentState.ok && currentVersion && !semver.gt(latestVersion, currentVersion)) {
+    rememberReadyResult(currentState);
     return {
       updated: false,
       previousVersion: currentVersion,

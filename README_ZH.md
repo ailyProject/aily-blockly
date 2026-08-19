@@ -14,8 +14,9 @@ aily Blockly 不是某一款硬件的配套软件，而是一个真正通用的�
 ## 视频介绍
 [ailyblockly-2min.webm](https://github.com/user-attachments/assets/bc8da095-2e4d-4ba0-ad31-2a4824a21576)  
 
-## 中国版下载地址
-[下载](https://yiyu.pro/download)  
+## 下载地址
+- [中国版](https://yiyu.pro/download)
+- [海外版](https://aily.pro/download)
 
 
 ## 项目亮点  

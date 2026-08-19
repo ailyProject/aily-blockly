@@ -26,6 +26,12 @@ export class BaseDialogComponent {
   
   // 是否显示关闭按钮
   @Input() showCloseButton: boolean = true;
+
+  // 是否显示标题栏最小化按钮
+  @Input() showMinimizeButton: boolean = false;
+
+  // 最小化按钮的无障碍标签和提示
+  @Input() minimizeButtonLabel: string = '';
   
   // 是否显示 footer
   @Input() showFooter: boolean = true;
@@ -41,12 +47,19 @@ export class BaseDialogComponent {
   
   // 关闭事件
   @Output() closeDialog = new EventEmitter<void>();
+
+  // 最小化事件
+  @Output() minimizeDialog = new EventEmitter<void>();
   
   // 按钮点击事件
   @Output() buttonClick = new EventEmitter<string>();
 
   onClose(): void {
     this.closeDialog.emit();
+  }
+
+  onMinimize(): void {
+    this.minimizeDialog.emit();
   }
 
   onButtonClick(action: string): void {

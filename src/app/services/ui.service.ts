@@ -24,6 +24,17 @@ import {
   resolveAilyChatMountDelay,
   resolvePreferredAilyChatTool,
 } from './aily-chat-tool-routing';
+import { collectOpenAuthRequiredToolIds, isAuthRequiredTool } from './auth-required-tool';
+import { ChildAppHostRegistryService } from './child-app-host-registry.service';
+import { closeToolThroughLifecycle } from './child-tool-close-lifecycle';
+import { switchServiceRegionAndRequestLogin } from './service-region-switch';
+import {
+  closeAuthRequiredTools as closeAuthRequiredToolsThroughLifecycle,
+  ProtectedToolCloseError,
+} from './auth-required-tool-close';
+import { ChildAppSafetyService } from './child-app-safety.service';
+import { ChildToolProcessService } from './child-tool-process.service';
+import { DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID } from './default-aily-chat-bootstrap';
 
 @Injectable({
   providedIn: 'root',
@@ -65,6 +76,8 @@ export class UiService {
     private configService: ConfigService,
     private injector: Injector,
     private chatService: ChatService,
+    private childHostRegistry: ChildAppHostRegistryService,
+    private childAppSafety: ChildAppSafetyService,
   ) { }
 
   private get modal(): NzModalService {
@@ -94,14 +107,92 @@ export class UiService {
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         let data;
-        if (message.data?.action === 'logout') {
+        if (message.data?.action === 'get-auth-state') {
+          const initializationState = this.authService.getAuthInitializationState();
+          if (initializationState === 'idle' || initializationState === 'checking') {
+            await this.authService.initializeAuth();
+          }
+          data = {
+            success: true,
+            authenticated: this.authService.isLoggedIn,
+            initializationState: this.authService.getAuthInitializationState(),
+            openProtectedToolIds: this.getOpenAuthRequiredToolIds(),
+          };
+        } else if (message.data?.action === 'request-login') {
+          const reason = typeof message.data?.reason === 'string'
+            ? message.data.reason.trim().slice(0, 80)
+            : '';
+          this.authService.requestLogin(reason || 'sub-window');
+          data = {
+            success: true,
+            authenticated: this.authService.isLoggedIn,
+            initializationState: this.authService.getAuthInitializationState(),
+          };
+        } else if (
+          message.data?.action === 'auth-token-invalid'
+          && message.data?.errorCode === 'AUTH_TOKEN_INVALID'
+        ) {
+          const accepted = this.authService.requestSessionInvalidation(
+            'AUTH_TOKEN_INVALID',
+            'sub-window',
+          );
+          data = { success: true, accepted };
+        } else if (message.data?.action === 'logout') {
           // 处理登出请求
           try {
-            await this.authService.logout();
-            data = { success: true };
+            const protectedToolIds = this.getOpenAuthRequiredToolIds()
+              .filter(toolId => toolId !== 'user-center');
+            const confirmed = await this.childAppSafety.confirmInterruption('logout', protectedToolIds);
+            if (!confirmed) {
+              data = { success: false, cancelled: true };
+            } else {
+              await this.closeAuthRequiredTools(protectedToolIds);
+              await this.authService.logout();
+              data = { success: true };
+            }
           } catch (error) {
             console.error('登出失败:', error);
             data = { success: false, error: error.message };
+          }
+        } else if (message.data?.action === 'switch-service-region') {
+          try {
+            const regionKey = typeof message.data?.regionKey === 'string'
+              ? message.data.regionKey.trim()
+              : '';
+            if (!this.configService.getEnabledRegionList().some((region) => region.key === regionKey)) {
+              throw new Error('Unknown or disabled service region');
+            }
+            await switchServiceRegionAndRequestLogin(regionKey, {
+              closeProtectedTools: () => this.closeAuthRequiredTools(),
+              clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
+              stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
+              setRegion: (nextRegionKey) => this.configService.setRegion(nextRegionKey),
+              requestLogin: (reason) => this.authService.requestLogin(reason),
+            });
+            data = { success: true };
+          } catch (error) {
+            console.error('切换服务区域失败:', error);
+            data = {
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        } else if (message.data?.action === 'set-service-region') {
+          try {
+            const regionKey = typeof message.data?.regionKey === 'string'
+              ? message.data.regionKey.trim()
+              : '';
+            if (!this.configService.getEnabledRegionList().some((region) => region.key === regionKey)) {
+              throw new Error('Unknown or disabled service region');
+            }
+            await this.configService.setRegion(regionKey);
+            data = { success: true };
+          } catch (error) {
+            console.error('设置服务区域失败:', error);
+            data = {
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            };
           }
         } else if (message.data?.action === 'log') {
           // 处理子窗口发来的日志
@@ -171,6 +262,9 @@ export class UiService {
 
   // 这个方法是给header用的
   turnTool(opt: ToolOpts) {
+    if (this.requestLoginForProtectedTool(opt?.data)) {
+      return;
+    }
     if (this.topTool == opt.data) {
       this.closeTool(opt.data);
     } else {
@@ -180,6 +274,9 @@ export class UiService {
 
   // 如果其它组件/程序要打开工具，调用这个方法
   openTool(name: string) {
+    if (this.requestLoginForProtectedTool(name)) {
+      return;
+    }
     // if (name == 'terminal') {
     //   this.openTerminal();
     //   return;
@@ -205,17 +302,29 @@ export class UiService {
    * the requested presentation mode before calling this method.
    */
   openToolEmbedded(name: string): boolean {
+    if (this.requestLoginForProtectedTool(name)) {
+      return false;
+    }
     this.openToolInMainWindow(name);
     return this.topTool === name;
   }
 
   private openToolInMainWindow(name: string) {
-    if (!name) {
+    if (!name || this.requestLoginForProtectedTool(name)) {
       return;
     }
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.openToolList.push(name);
     this.actionSubject.next({ action: 'open', type: 'tool', data: name });
+  }
+
+  private requestLoginForProtectedTool(name: string | null | undefined): boolean {
+    if (!isAuthRequiredTool(name) || this.authService.isLoggedIn) {
+      return false;
+    }
+
+    this.authService.requestLogin(`tool:${name}`);
+    return true;
   }
 
   private resolveToolNameFromWindowPath(pathOrName: string | null | undefined): string {
@@ -277,6 +386,10 @@ export class UiService {
   }
 
   private isToolWindowOpen(name: string): boolean {
+    if (this.getOpenWindowPathForTool(name)) {
+      return true;
+    }
+
     const toolWindowPath = this.getToolWindowPath(name);
     if (!toolWindowPath) {
       return false;
@@ -286,20 +399,111 @@ export class UiService {
     return !!normalizedPath && this.openWindowPathList.includes(normalizedPath);
   }
 
-  closeTool(name: string) {
+  private getOpenWindowPathForTool(name: string): string | null {
+    return this.openWindowPathList.find((path) => this.resolveToolNameFromWindowPath(path) === name) || null;
+  }
+
+  closeTool(name: string): void {
+    void this.closeToolAndWait(name);
+  }
+
+  async closeToolAndWait(name: string): Promise<boolean> {
     if (name == 'terminal') {
       this.closeTerminal();
-      return;
+      return true;
     }
+
+    const childHostRegistered = !!getChildToolConfig(name) && this.childHostRegistry.has(name);
+    try {
+      return await closeToolThroughLifecycle({
+        childHostRegistered,
+        requestChildClose: () => this.childHostRegistry.control(name, 'close'),
+        completeClose: () => this.completeToolClose(name),
+      });
+    } catch (error) {
+      console.warn(`关闭子应用失败: ${name}`, error);
+      return false;
+    }
+  }
+
+  /** Complete a close after the child lifecycle guard has already settled. */
+  completeToolClose(name: string): void {
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.actionSubject.next({ action: 'close', type: 'tool', data: name });
   }
 
-  closeToolAll() {
-    this.openToolList.forEach((name) => {
-      this.closeTool(name);
+  getOpenAuthRequiredToolIds(): string[] {
+    return collectOpenAuthRequiredToolIds(this.openToolList, this.openWindowPathList);
+  }
+
+  async closeAuthRequiredTools(toolIds = this.getOpenAuthRequiredToolIds()): Promise<void> {
+    const { MainUiAutomationService } = await import('./main-ui-automation.service');
+    const mainUiAutomation = this.injector.get(MainUiAutomationService);
+    const shouldPrepareHostWork = toolIds.some(
+      toolId => toolId === 'aily-chat' || toolId === 'aily-chat-react',
+    );
+    if (shouldPrepareHostWork) {
+      try {
+        // This also covers the host-owned legacy Aily Chat session. React child
+        // apps are prepared individually below through their strict lifecycle.
+        await this.childAppSafety.prepareRegisteredWork();
+      } catch {
+        throw new ProtectedToolCloseError('aily-chat');
+      }
+    }
+    await closeAuthRequiredToolsThroughLifecycle(toolIds, {
+      isChildTool: (toolId) => !!getChildToolConfig(toolId),
+      prepareChildApp: (toolId) => mainUiAutomation.controlChildApp({
+        toolId,
+        action: 'prepareUpdate',
+        strictLifecycle: true,
+      }),
+      controlChildApp: (toolId) => mainUiAutomation.controlChildApp({
+        toolId,
+        action: 'close',
+      }),
+      forceCloseToolEverywhere: (toolId) => this.forceCloseToolEverywhere(toolId),
     });
-    this.openToolList = [];
+  }
+
+  async stopDefaultAilyChatRuntime(): Promise<void> {
+    if (!this.electronService.isElectron) {
+      return;
+    }
+
+    const childToolProcess = this.injector.get(ChildToolProcessService);
+    await childToolProcess.forceStop(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID);
+  }
+
+  async forceCloseToolEverywhere(name: string): Promise<boolean> {
+    if (this.openToolList.includes(name)) {
+      const closed = await this.closeToolAndWait(name);
+      if (!closed) {
+        return false;
+      }
+    }
+
+    const openWindowPath = this.getOpenWindowPathForTool(name);
+    if (openWindowPath) {
+      try {
+        const result = await window['subWindow']?.control?.(openWindowPath, 'close');
+        if (result?.success !== true) {
+          return false;
+        }
+        this.updateSubWindowState(openWindowPath, false);
+      } catch (error) {
+        console.warn(`关闭独立工具窗口失败: ${name}`, error);
+        return false;
+      }
+    }
+
+    return !this.openToolList.includes(name) && !this.getOpenWindowPathForTool(name);
+  }
+
+  async closeToolAll(): Promise<void> {
+    for (const name of [...this.openToolList].reverse()) {
+      await this.closeToolAndWait(name);
+    }
   }
 
   // 发送工具信号，格式为 "toolname:action"，如 "serial-monitor:disconnect"
@@ -357,7 +561,9 @@ export class UiService {
 
   /**
    * Open the Aily Chat surface that is currently highest in the embedded tool
-   * stack. When neither chat is open, retain the legacy chat as the fallback.
+   * stack. When neither chat is open, use the installed React child as the
+   * default; the Angular implementation remains hidden as a compatibility
+   * reference only.
    */
   openPreferredAilyChat(): string {
     const targetToolId = resolvePreferredAilyChatTool(this.openToolList);

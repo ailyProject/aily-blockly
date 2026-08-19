@@ -760,18 +760,18 @@ export class _BuilderService {
         this.preprocessError = null;
         this.preprocessFullError = '';
 
-        // 使用 cmdService 后台静默运行预处理脚本
+        // 使用 cmdService 在后台运行预处理脚本，并把标准输出转发到日志面板。
         const spawnStartedAt = Date.now();
         const preprocessStreamId = `builder_preprocess_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         this.preprocessStreamId = preprocessStreamId;
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
-          { streamId: preprocessStreamId, forwardStdout: false },
+          { streamId: preprocessStreamId, forwardStdout: true },
           true,
         ).subscribe({
           next: (output) => {
-            // Only stderr/error/close crosses into the renderer for this background operation.
+            // 将预编译普通输出发送到日志（错误信息先收集，最后统一发送）
             if (output.data) {
               // 检查输出中是否包含错误信息
               if (output.data.includes('[ERROR]') || output.data.toLowerCase().includes('error:')) {
@@ -783,6 +783,8 @@ export class _BuilderService {
                 if (errorLine) {
                   this.preprocessError = errorLine.trim();
                 }
+              } else {
+                this.logService.update({ "detail": output.data, "state": "doing" });
               }
             }
             if (output.type === 'error') {

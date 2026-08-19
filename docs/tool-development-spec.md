@@ -2,7 +2,7 @@
 
 本文档用于后续新增工具时统一架构、集成方式、通信协议、打包和验证流程。这里的“工具”指通过 App Store、顶部/右侧工具栏或独立窗口打开的功能模块，例如串口监视器、网络调试器、BLE 调试器等。
 
-> 子应用交付方式已更新：主软件运行时读取 `https://rs1.aily.pro/subapp-index.json`，并把用户选择的 npm 包安装到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`。下文仍出现的 `child/tools/<tool-id>` 仅用于旧版本兼容和本地子应用开发，不再是发布版主软件的注册、安装或启动来源。新子应用必须发布 npm 包并进入远端索引，宿主会从已安装包的绝对路径启动 `package.json.main`。
+> 子应用交付方式已更新：主软件运行时从当前 `regions.<region>.resource` 读取 `subapp-index.json`（CN 默认为 `https://blockly.yiyu.pro/subapp-index.json`，Global 默认为 `https://rs1.aily.pro/subapp-index.json`），并把用户选择的 npm 包安装到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`。下文仍出现的 `child/tools/<tool-id>` 仅用于旧版本兼容和本地子应用开发，不再是发布版主软件的注册、安装或启动来源。新子应用必须发布 npm 包并进入对应区域的远端索引，宿主会从已安装包的绝对路径启动 `package.json.main`。
 
 开发态不再使用主软件的源码仓库安装脚本或 `child` 源码扫描。子应用源码仓库通过 `npm run dev:link` 把开发包链接到同一个用户级 npm 安装目录，主软件继续按正式协议发现和启动包；联调结束后执行 `npm run dev:unlink`。
 

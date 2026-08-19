@@ -11,7 +11,15 @@ import { Subject, combineLatest } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { BlockCodeMapping } from '../../components/blockly/generators/arduino/arduino';
 import { ThemeService } from '../../../../services/theme.service';
-import { CodeViewerIpcService, CodeViewerIpcState } from '../../services/code-viewer-ipc.service';
+import {
+  CodeViewerIpcService,
+  CodeViewerIpcState,
+  normalizeCodeViewerSelectedBlockIds,
+} from '../../services/code-viewer-ipc.service';
+import {
+  resolveCodeViewerHighlightRanges,
+  resolveCodeViewerNavigationRange,
+} from './code-viewer-range';
 
 @Component({
   selector: 'app-code-viewer',
@@ -47,6 +55,7 @@ export class CodeViewerComponent implements OnDestroy {
   private destroy$ = new Subject<void>();
   private currentBlockCodeMap = new Map<string, BlockCodeMapping>();
   private currentSelectedBlockId: string | null = null;
+  private currentSelectedBlockIds: string[] = [];
   private ipcStateCleanup: (() => void) | null = null;
 
   constructor(
@@ -102,11 +111,13 @@ export class CodeViewerComponent implements OnDestroy {
     // 监听选中块 + 代码映射变化，实时高亮
     combineLatest([
       this.blocklyService.selectedBlockSubject,
+      this.blocklyService.selectedBlockIdsSubject,
       this.blocklyService.blockCodeMapSubject
     ])
       .pipe(takeUntil(this.destroy$))
-      .subscribe(([blockId, codeMap]) => {
+      .subscribe(([blockId, blockIds, codeMap]) => {
         this.currentSelectedBlockId = blockId;
+        this.currentSelectedBlockIds = normalizeCodeViewerSelectedBlockIds(blockId, blockIds);
         this.currentBlockCodeMap = codeMap;
         this.updateHighlight();
       });
@@ -134,16 +145,41 @@ export class CodeViewerComponent implements OnDestroy {
       this.currentSelectedBlockId = state.selectedBlockId ?? null;
     }
 
+    if ('selectedBlockIds' in state) {
+      this.currentSelectedBlockIds = normalizeCodeViewerSelectedBlockIds(
+        this.currentSelectedBlockId,
+        state.selectedBlockIds,
+      );
+    } else if ('selectedBlockId' in state) {
+      // 兼容仍只发布单选状态的旧 Electron 主进程。
+      this.currentSelectedBlockIds = normalizeCodeViewerSelectedBlockIds(
+        this.currentSelectedBlockId,
+        [],
+      );
+    }
+
     this.updateHighlight();
     this.cdr.markForCheck();
   }
 
   private updateHighlight(): void {
-    if (this.currentSelectedBlockId && this.currentBlockCodeMap.has(this.currentSelectedBlockId)) {
-      this.highlightBlock(this.currentBlockCodeMap.get(this.currentSelectedBlockId)!);
-    } else {
+    const highlightRanges = resolveCodeViewerHighlightRanges(
+      this.currentBlockCodeMap,
+      this.currentSelectedBlockIds,
+    );
+    if (!highlightRanges.length) {
       this.clearHighlight();
+      return;
     }
+
+    const primaryMapping = (
+      this.currentSelectedBlockId
+        ? this.currentBlockCodeMap.get(this.currentSelectedBlockId)
+        : undefined
+    ) ?? this.currentSelectedBlockIds
+      .map((blockId) => this.currentBlockCodeMap.get(blockId))
+      .find((mapping): mapping is BlockCodeMapping => !!mapping);
+    this.highlightBlocks(highlightRanges, primaryMapping);
   }
 
   /**
@@ -158,11 +194,14 @@ export class CodeViewerComponent implements OnDestroy {
   /**
    * 高亮指定 block 对应的代码行（支持列级精度）
    */
-  private highlightBlock(mapping: BlockCodeMapping): void {
+  private highlightBlocks(
+    lineRanges: BlockCodeMapping['lineRanges'],
+    primaryMapping: BlockCodeMapping | undefined,
+  ): void {
     if (!this.editorInstance || !this.monacoInstance) return;
 
     const monaco = this.monacoInstance;
-    const decorations = mapping.lineRanges.map(range => {
+    const decorations = lineRanges.map(range => {
       const hasColumns = range.startColumn !== undefined && range.endColumn !== undefined;
       return {
         range: hasColumns
@@ -188,9 +227,12 @@ export class CodeViewerComponent implements OnDestroy {
       decorations
     );
 
-    // 滚动到第一个高亮区域
-    if (mapping.lineRanges.length > 0) {
-      this.editorInstance.revealLineInCenter(mapping.lineRanges[0].startLine);
+    // 优先定位到积木的可执行语句，避免 include/对象/辅助函数抢占首跳位置。
+    const navigationRange = primaryMapping
+      ? resolveCodeViewerNavigationRange(primaryMapping)
+      : null;
+    if (navigationRange) {
+      this.editorInstance.revealLineInCenter(navigationRange.startLine);
     }
   }
 

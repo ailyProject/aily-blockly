@@ -15,6 +15,7 @@ import { UiService } from '../../../../services/ui.service';
 import { WorkflowService, ProcessState } from '../../../../services/workflow.service';
 import { ImageViewerComponent } from '../../../../components/image-viewer/image-viewer.component';
 import { InstalledChildToolLauncherService } from '../../../../services/installed-child-tool-launcher.service';
+import { DevToolDragController, DragBounds, DragPoint } from './dev-tool-drag-controller';
 
 @Component({
   selector: 'app-dev-tool',
@@ -29,25 +30,20 @@ import { InstalledChildToolLauncherService } from '../../../../services/installe
 })
 export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('imageViewer') imageViewer!: ImageViewerComponent;
-  @ViewChild('devtoolBox') devtoolBox?: ElementRef<HTMLElement>;
-
-  isDragging = false;
-  dragStartX = 0;
-  dragStartY = 0;
-  currentX = 0;
-  currentY = 1;
-  offsetX = 0;
-  offsetY = 0;
-  positionReady = false;
-  isViewportAdjusting = false;
+  @ViewChild('devtoolBox', { static: true }) private devtoolBox!: ElementRef<HTMLElement>;
+  @ViewChild('dragHandle', { static: true }) private dragHandle!: ElementRef<HTMLElement>;
 
   boardPackagePath = '';
   isReloading = false;
+  dragTooltipVisible?: boolean;
 
   private _autoSave = true;
   private loadBoardInfoTimer: ReturnType<typeof setTimeout> | null = null;
-  private viewportAdjustTimer: ReturnType<typeof setTimeout> | null = null;
+  private positionReady = false;
+  private dragController: DevToolDragController | null = null;
   private resizeAnimationFrame: number | null = null;
+  private initAnimationFrame: number | null = null;
+  private containerResizeObserver: ResizeObserver | null = null;
 
   get autoSave(): boolean {
     return this._autoSave;
@@ -87,136 +83,127 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit() {
-    setTimeout(() => this.centerAtBottom(), 0);
     this.ngZone.runOutsideAngular(() => {
-      window.addEventListener('resize', this.onViewportResize);
+      const handle = this.dragHandle.nativeElement;
+      this.dragController = new DevToolDragController({
+        handle,
+        initialPosition: { x: 0, y: 1 },
+        getBounds: () => this.getPositionBounds(),
+        applyPosition: (position, bounds) => this.applyPosition(position, bounds),
+        onDraggingChange: dragging => this.setDragging(dragging),
+      });
+      this.dragController.connect();
+      handle.addEventListener('pointerleave', this.onDragHandleLeave);
+
+      const container = this.getPositionContainer();
+      if (container) {
+        this.containerResizeObserver = new ResizeObserver(this.onContainerResize);
+        this.containerResizeObserver.observe(container);
+      }
+
+      this.initAnimationFrame = window.requestAnimationFrame(() => {
+        this.initAnimationFrame = null;
+        this.centerAtBottom();
+      });
     });
   }
 
   ngOnDestroy() {
-    document.removeEventListener('mousemove', this.onDrag);
-    document.removeEventListener('mouseup', this.onDragEnd);
-    window.removeEventListener('resize', this.onViewportResize);
+    const handle = this.dragHandle?.nativeElement;
+    handle?.removeEventListener('pointerleave', this.onDragHandleLeave);
+    this.dragController?.disconnect();
+    this.dragController = null;
+    this.containerResizeObserver?.disconnect();
+    this.containerResizeObserver = null;
 
     if (this.loadBoardInfoTimer) {
       clearTimeout(this.loadBoardInfoTimer);
       this.loadBoardInfoTimer = null;
     }
 
-    if (this.viewportAdjustTimer) {
-      clearTimeout(this.viewportAdjustTimer);
-      this.viewportAdjustTimer = null;
-    }
-
     if (this.resizeAnimationFrame !== null) {
       window.cancelAnimationFrame(this.resizeAnimationFrame);
       this.resizeAnimationFrame = null;
     }
+
+    if (this.initAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.initAnimationFrame);
+      this.initAnimationFrame = null;
+    }
   }
 
-  onDragStart(event: MouseEvent) {
-    this.isDragging = true;
-    this.dragStartX = event.clientX - this.currentX;
-    this.dragStartY = event.clientY;
-    this.offsetY = window.innerHeight - this.currentY;
+  private onDragHandleLeave = () => {
+    if (!this.dragController?.isDragging) {
+      this.setDragTooltipVisible(undefined);
+    }
+  };
 
-    document.addEventListener('mousemove', this.onDrag);
-    document.addEventListener('mouseup', this.onDragEnd);
-
-    event.preventDefault();
+  private setDragging(dragging: boolean): void {
+    const element = this.devtoolBox.nativeElement;
+    element.classList.toggle('dragging', dragging);
+    if (dragging) {
+      this.setDragTooltipVisible(false);
+    } else if (!this.dragHandle.nativeElement.matches(':hover')) {
+      this.setDragTooltipVisible(undefined);
+    }
   }
 
-  onDrag = (event: MouseEvent) => {
-    if (!this.isDragging) return;
-
-    this.currentX = event.clientX - this.dragStartX;
-    this.currentY = window.innerHeight - event.clientY + (this.dragStartY - this.offsetY);
-
-    this.clampToViewport();
-  }
-
-  onDragEnd = () => {
-    this.isDragging = false;
-
-    document.removeEventListener('mousemove', this.onDrag);
-    document.removeEventListener('mouseup', this.onDragEnd);
+  private setDragTooltipVisible(visible: boolean | undefined): void {
+    if (this.dragTooltipVisible === visible) {
+      return;
+    }
+    this.ngZone.run(() => this.dragTooltipVisible = visible);
   }
 
   private centerAtBottom() {
-    const bounds = this.getViewportBounds();
-    this.currentX = Math.round(bounds.maxX / 2);
-    this.currentY = bounds.minY;
+    const bounds = this.getPositionBounds();
+    this.dragController?.setPosition({
+      x: Math.round(bounds.maxX / 2),
+      y: bounds.minY,
+    }, bounds);
     this.positionReady = true;
+    this.devtoolBox.nativeElement.classList.add('position-ready');
   }
 
-  private onViewportResize = () => {
-    if (!this.positionReady) return;
-    if (this.resizeAnimationFrame !== null) return;
+  private applyPosition(position: DragPoint, bounds = this.getPositionBounds()): void {
+    const x = this.clamp(position.x, 0, bounds.maxX);
+    const y = this.clamp(position.y, bounds.minY, bounds.maxY);
+    this.devtoolBox.nativeElement.style.transform =
+      `translate3d(${Math.round(x)}px, ${-Math.round(y)}px, 0)`;
+  }
+
+  private onContainerResize = () => {
+    if (!this.positionReady || this.resizeAnimationFrame !== null) {
+      return;
+    }
 
     this.resizeAnimationFrame = window.requestAnimationFrame(() => {
       this.resizeAnimationFrame = null;
-      const clampedPosition = this.getClampedPosition();
-
-      if (clampedPosition.x === this.currentX && clampedPosition.y === this.currentY) {
-        return;
-      }
-
-      this.ngZone.run(() => {
-        this.currentX = clampedPosition.x;
-        this.currentY = clampedPosition.y;
-        this.markViewportAdjusting();
-      });
+      const bounds = this.getPositionBounds();
+      this.dragController?.refreshBounds(bounds);
     });
+  };
+
+  private getPositionContainer(): HTMLElement | null {
+    return this.devtoolBox.nativeElement.offsetParent as HTMLElement | null;
   }
 
-  private clampToViewport(): boolean {
-    const originalX = this.currentX;
-    const originalY = this.currentY;
-    const clampedPosition = this.getClampedPosition();
-
-    this.currentX = clampedPosition.x;
-    this.currentY = clampedPosition.y;
-
-    return this.currentX !== originalX || this.currentY !== originalY;
-  }
-
-  private getClampedPosition(): { x: number; y: number } {
-    const bounds = this.getViewportBounds();
-
-    return {
-      x: this.clamp(this.currentX, 0, bounds.maxX),
-      y: this.clamp(this.currentY, bounds.minY, bounds.maxY)
-    };
-  }
-
-  private getViewportBounds(): { maxX: number; minY: number; maxY: number } {
-    const topExclusionZone = 70;
+  private getPositionBounds(): DragBounds {
     const minY = 1;
-    const componentWidth = this.devtoolBox?.nativeElement.offsetWidth || 360;
-    const componentHeight = this.devtoolBox?.nativeElement.offsetHeight || 40;
+    const element = this.devtoolBox.nativeElement;
+    const container = this.getPositionContainer();
+    const containerWidth = container?.clientWidth ?? window.innerWidth;
+    const containerHeight = container?.clientHeight ?? window.innerHeight;
 
     return {
-      maxX: Math.max(0, window.innerWidth - componentWidth),
+      maxX: Math.max(0, containerWidth - element.offsetWidth),
       minY,
-      maxY: Math.max(minY, window.innerHeight - topExclusionZone - componentHeight)
+      maxY: Math.max(minY, containerHeight - element.offsetHeight)
     };
   }
 
   private clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(value, max));
-  }
-
-  private markViewportAdjusting() {
-    this.isViewportAdjusting = true;
-
-    if (this.viewportAdjustTimer) {
-      clearTimeout(this.viewportAdjustTimer);
-    }
-
-    this.viewportAdjustTimer = setTimeout(() => {
-      this.isViewportAdjusting = false;
-      this.viewportAdjustTimer = null;
-    }, 120);
   }
 
   async reload() {
@@ -494,7 +481,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   private requireLogin(): boolean {
     if (!this.authService.isLoggedIn) {
       this.messageService.warning(this.translate.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
-      this.uiService.openPreferredAilyChat();
+      this.authService.requestLogin('dev-tool');
       return false;
     }
     return true;

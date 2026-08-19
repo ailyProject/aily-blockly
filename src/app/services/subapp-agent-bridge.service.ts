@@ -13,6 +13,7 @@ import {
   type SubappRuntimeState,
 } from './subapp-activity.service';
 import { resolveSubappAgentPresentation } from './subapp-agent-presentation';
+import { acquireSubappRuntimePresentationLease } from './subapp-runtime-presentation-lease';
 
 interface SubappRpcResponse {
   id?: string | number;
@@ -85,11 +86,18 @@ export class SubappAgentBridgeService implements OnDestroy {
     const tool = String(input['tool'] || '');
     const ownerSessionId = String(context.sessionId || '').trim();
     let resolved: ResolvedAgentTool | null = null;
+    let releasePresentationRuntimeLease: (() => Promise<void>) | null = null;
 
     try {
       resolved = this.resolveAgentTool(requestedToolId, tool);
       const params = this.record(input['params']);
-      const presentationPolicy = resolveSubappAgentPresentation(params, resolved.definition);
+      const hasExplicitPresentation = Object.prototype.hasOwnProperty.call(params, 'presentUi');
+      const activeMode = !hasExplicitPresentation
+        && resolved.definition.presentation
+        && await this.mainUiAutomationService.isChildAppWindowOpen(resolved.config.id)
+        ? 'window' as const
+        : undefined;
+      const presentationPolicy = resolveSubappAgentPresentation(params, resolved.definition, activeMode);
       this.subappActivityService.recordInvocationStarted({
         sessionId: ownerSessionId,
         toolId: resolved.config.id,
@@ -106,6 +114,15 @@ export class SubappAgentBridgeService implements OnDestroy {
       let presentation: Record<string, unknown> | undefined;
 
       if (presentationPolicy.uiMode === 'window') {
+        // Opening a detached host is asynchronous. Acquire the shared Runtime
+        // first so the main renderer and the new window cannot both observe an
+        // empty registry and spawn competing processes. The request channel
+        // takes its own long-lived lease below; this temporary lease only spans
+        // presentation startup and the first RPC.
+        releasePresentationRuntimeLease = await acquireSubappRuntimePresentationLease(
+          this.childToolProcessService,
+          resolved.config.id,
+        );
         presentation = await this.mainUiAutomationService.openChildApp({
           toolId: resolved.config.id,
           mode: 'window',
@@ -183,6 +200,8 @@ export class SubappAgentBridgeService implements OnDestroy {
       return resolved
         ? this.enforceResponseBudget(response, resolved.config.id, tool, resolved.definition)
         : response;
+    } finally {
+      await releasePresentationRuntimeLease?.().catch(() => undefined);
     }
   }
 

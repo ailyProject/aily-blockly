@@ -91,6 +91,7 @@ export const PROJECT_RUNTIME_TOOL_DEFINITIONS = [
 - 设置ESP32上传速度: set_board_config({ config_key: "UploadSpeed", config_value: "921600" })
 - 设置Flash大小: set_board_config({ config_key: "FlashSize", config_value: "16M" })
 - 设置分区方案: set_board_config({ config_key: "PartitionScheme", config_value: "default" })
+- 设置ESP32自定义分区: set_board_config({ config_key: "PartitionScheme", config_value: "custom" })。如果结果返回 requires_file=true，必须生成 ESP32 分区表 CSV 并保存到 required_file_path，标准文件名为 partitions.csv。
 
 注意：配置变更后会自动触发预编译检查。`,
         input_schema: {

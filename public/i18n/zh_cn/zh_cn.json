@@ -225,6 +225,37 @@
             "LIB_MANAGER_TITLE": "库管理器",
             "LIB_MANAGER_DESC": "点击这里打开库管理器，可以安装、卸载各种功能扩展库，为您的项目添加更多积木块。"
         },
+        "AUDIO": {
+            "BUTTON_UPLOAD": "上传",
+            "BUTTON_CLEAR": "清空",
+            "BUTTON_PLAY": "播放选区",
+            "BUTTON_STOP": "停止播放",
+            "UPLOAD_TOOLTIP": "选择浏览器支持解码的音频文件",
+            "LABEL_SAMPLE_RATE": "采样率",
+            "LABEL_CHANNELS": "声道",
+            "LABEL_BIT_RATE": "码率",
+            "LABEL_MONO": "单声道",
+            "LABEL_STEREO": "双声道",
+            "LABEL_START": "开始",
+            "LABEL_END": "结束",
+            "EMPTY": "未上传音频",
+            "STATUS_READING": "正在读取 {{name}}...",
+            "STATUS_DECODING": "正在解码 {{name}}...",
+            "STATUS_ENCODING": "正在编码 MP3... {{progress}}%",
+            "STATUS_INFO": "{{name}} | {{duration}} | {{sampleRate}} Hz | {{channels}} 声道 | {{bitRate}} kbps | {{size}}",
+            "ERROR_FILE_SIZE": "文件大小不能超过 {{maxSize}}，当前文件为 {{currentSize}}",
+            "ERROR_DECODE": "浏览器无法解码此音频文件",
+            "ERROR_ENCODE": "MP3 编码失败",
+            "ERROR_LOAD": "音频文件加载失败：{{message}}",
+            "ERROR_PROJECT_PATH_MISSING": "未找到当前项目目录",
+            "ERROR_FS_UNAVAILABLE": "文件系统接口不可用，无法读写音频文件",
+            "ERROR_FILE_MISSING": "音频文件不存在：{{path}}",
+            "WORKER_ERROR_INVALID_PCM": "解码后的 PCM 数据无效",
+            "WORKER_ERROR_DURATION_EXCEEDED": "音频时长不能超过 30 分钟",
+            "WORKER_ERROR_INVALID_SETTINGS": "MP3 编码参数无效",
+            "WORKER_ERROR_EMPTY_SELECTION": "请选择非空的音频区间",
+            "WORKER_ERROR_ENCODE_FAILED": "MP3 编码器未返回数据"
+        },
         "TFTESPI_ANIMATION": {
             "UPLOAD_TOOLTIP": "支持格式：MP4、GIF",
             "LABEL_COLOR_MODE": "色彩",
@@ -373,6 +404,8 @@
             "OPEN_RESOURCE_FOLDER": "打开资源文件夹",
             "REGION_TITLE": "切换服务区域",
             "REGION_DESC": "切换服务区域后需要重新登录，是否继续？",
+            "REGION_CLOSE_APPS_TITLE": "切换服务区域并关闭应用？",
+            "REGION_CLOSE_APPS_DESC": "切换区域前会先安全结束或中断正在进行的任务并保存可恢复状态，然后关闭这些应用：{{apps}}。任一步失败都不会切换；成功后需重新登录。是否继续？",
             "REGION_CONFIRM": "确认",
             "REGION_CANCEL": "取消",
             "REPOSITORY_URLS": "仓库地址",
@@ -460,7 +493,7 @@
             "NONE": "不使用模板"
         },
         "WARNINGS": {
-            "BETA_VERSION": "内测版本，未经验证，谨慎使用",
+            "BETA_VERSION": "测试版本，未经验证，谨慎使用",
             "TODO": "该设备支持即将上线"
         },
         "PROJECT_CATEGORY": {
@@ -539,8 +572,23 @@
         "SKIP_VERSION": "跳过此版本",
         "UPDATE_NOW": "立即更新",
         "CANCEL_DOWNLOAD": "取消下载",
+        "DOWNLOAD_IN_BACKGROUND": "后台下载",
+        "UPDATE_AVAILABLE_TOOLTIP": "发现新版本 {{version}}，点击查看",
+        "DOWNLOADING_TOOLTIP": "正在后台下载 {{version}}（{{progress}}%），点击查看",
+        "UPDATE_READY_TOOLTIP": "新版本 {{version}} 已下载完成，点击安装",
+        "PREPARING_TOOLTIP": "正在保存工作并准备安装 {{version}}",
+        "DOWNLOAD_ERROR_TOOLTIP": "版本 {{version}} 下载失败，点击查看",
         "INSTALL_LATER": "稍后安装",
         "INSTALL_NOW": "立即安装",
+        "SAVING_BEFORE_INSTALL": "正在保存当前项目和代码会话，完成后将自动安装…",
+        "PREPARING_BEFORE_INSTALL": "正在完成安装前准备，完成后将自动安装…",
+        "CHILD_APPS_IN_USE_TITLE": "安装更新将关闭子应用",
+        "CHILD_APPS_IN_USE_MESSAGE": "{{names}} 正在使用中。继续前会先安全结束或中断正在进行的任务并保存可恢复状态，然后关闭这些子应用。任一步失败都不会安装，是否继续？",
+        "CONTINUE_INSTALL": "安全结束并继续",
+        "CANCEL_INSTALL": "取消",
+        "PREPARATION_FAILED": "安装已取消：当前工作尚未安全保存。{{detail}}",
+        "SAVE_FAILED": "当前项目保存失败",
+        "SESSION_SAVE_FAILED": "代码会话保存失败",
         "CLOSE": "关闭",
         "RETRY": "重试"
     },
@@ -899,6 +947,13 @@
     },
     "COMMON": {
         "FEATURE_COMING_SOON": "功能即将上线",
+        "AUTH_SESSION_REPLACED_NOTICE": "该账号已在其他设备登录，本机登录已失效，请重新登录。",
+        "SAFE_LOGOUT_TITLE": "确认退出登录？",
+        "SAFE_LOGOUT_DESC": "确定要退出当前账号吗？",
+        "SAFE_LOGOUT_CLOSE_APPS_TITLE": "退出登录并关闭应用？",
+        "SAFE_LOGOUT_CLOSE_APPS_DESC": "退出前会先安全结束或中断正在进行的任务并保存可恢复状态，然后关闭这些应用：{{apps}}。任一步失败都不会退出登录，是否继续？",
+        "SAFE_LOGOUT_CONFIRM": "退出登录",
+        "CANCEL": "取消",
         "ONBOARDING": {
             "SKIP": "跳过",
             "PREV": "上一步",
@@ -958,6 +1013,7 @@
         "LOADING_LIB": "正在加载{{name}}",
         "LOADING_BLOCKLY_PROGRAM": "正在加载Blockly程序",
         "PROJECT_LOAD_SUCCESS": "项目加载成功",
+        "BOARD_CLOUD_AUTH_REQUIRED": "该硬件的开发依赖云服务，需要登录后才能正常进行开发。",
         "EXPLAIN_BLOCK_PROMPT": "请解释这个积木块的作用、工作原理，以及它在当前程序中的用途。",
         "BUILD": {
             "RUNNING_TITLE": "正在编译{{board}}",
@@ -989,6 +1045,7 @@
             "PROGRESS_CORE": "正在编译核心",
             "PROGRESS_LINKING": "正在链接固件",
             "PROGRESS_OBJCOPY": "正在生成固件",
+            "PROGRESS_RESOURCES": "正在请求云端资源",
             "PROGRESS_FINALIZING": "正在完成编译",
             "PROGRESS_COMPLETE": "编译完成",
             "PROCESS_SIGNAL_TERMINATED": "编译进程被信号终止: {{signal}}",
@@ -1089,6 +1146,13 @@
         "LOCK_FOCUS_OTHER": "切换到已打开的窗口",
         "LOCK_FORCE_OPEN": "仍要打开",
         "LOCK_ACQUIRE_FAILED": "无法获取项目锁，请重试"
+    },
+    "SUBAPP": {
+        "BUSY_TITLE": "子应用正在使用中",
+        "BUSY_MESSAGE": "相关进程正在使用安装目录，无法卸载或更新。是否强制关闭这些进程并继续？",
+        "BUSY_UNKNOWN_HOLDERS": "未能识别具体进程，仍会尝试停止相关子应用进程。",
+        "FORCE_CLOSE_CONTINUE": "强制关闭并继续",
+        "CANCEL": "取消"
     },
     "LIBRARY_PUBLISH": {
         "RELOAD_TITLE": "重新加载当前项目",

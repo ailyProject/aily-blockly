@@ -1,6 +1,6 @@
-<div #devtoolBox class="devtool-box" [style.left.px]="currentX" [style.bottom.px]="currentY"
-    [class.dragging]="isDragging" [class.position-ready]="positionReady" [class.viewport-adjusting]="isViewportAdjusting">
-    <div class="drag-handle" (mousedown)="onDragStart($event)" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.DRAG_TO_MOVE' | translate">
+<div #devtoolBox class="devtool-box">
+    <div #dragHandle class="drag-handle" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.DRAG_TO_MOVE' | translate"
+        [nzTooltipVisible]="dragTooltipVisible">
         <i class="fa-solid fa-grip-dots-vertical"></i>
     </div>
     <div class="btn ccenter" [class.disabled]="reloadDisabled" (click)="reload()" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.RELOAD_PROJECT' | translate">

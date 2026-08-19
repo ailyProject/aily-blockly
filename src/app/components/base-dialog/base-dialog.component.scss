@@ -71,6 +71,14 @@
         }
     }
 
+    button.btn {
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+    }
+
     .minimize {
         font-size: 18px;
     }

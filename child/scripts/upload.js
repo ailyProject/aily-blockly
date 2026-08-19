@@ -165,43 +165,7 @@ function normalizeUploadParam(value) {
     return value.trim().replace(/;+$/, '').trim();
 }
 
-function resolvePlatformCmd(platformConfig, toolPrefix, platform) {
-    if (platform === 'win32' && platformConfig[`${toolPrefix}cmd.windows`]) {
-        return platformConfig[`${toolPrefix}cmd.windows`];
-    }
-    if (platform === 'darwin' && platformConfig[`${toolPrefix}cmd.macosx`]) {
-        return platformConfig[`${toolPrefix}cmd.macosx`];
-    }
-    if (platform === 'linux' && platformConfig[`${toolPrefix}cmd.linux`]) {
-        return platformConfig[`${toolPrefix}cmd.linux`];
-    }
-    return platformConfig[`${toolPrefix}cmd`] || '';
-}
-
-function renderArduinoPatternTemplate(pattern, resolver, maxDepth = 8) {
-    let result = pattern;
-
-    for (let i = 0; i < maxDepth; i++) {
-        let changed = false;
-        result = result.replace(/\{([^{}]+)\}/g, (match, rawKey) => {
-            const key = String(rawKey || '').trim();
-            const replacement = resolver(key);
-            if (replacement === undefined || replacement === null) {
-                return match;
-            }
-            changed = true;
-            return String(replacement);
-        });
-
-        if (!changed) {
-            break;
-        }
-    }
-
-    return result;
-}
-
-function buildUploadParamFromPreprocess(currentProjectPath, platform) {
+function readUploadCommandFromPreprocess(currentProjectPath) {
     const preprocessPath = path.join(currentProjectPath, '.temp', 'preprocess.json');
 
     if (!fs.existsSync(preprocessPath)) {
@@ -215,118 +179,94 @@ function buildUploadParamFromPreprocess(currentProjectPath, platform) {
         return { success: false, reason: `preprocess.json 解析失败: ${error.message}` };
     }
 
-    const boardConfig = preprocess?.arduinoConfig?.board || {};
-    const platformConfig = preprocess?.arduinoConfig?.platform || {};
-    const uploadEntries = Object.entries(boardConfig).filter(([key]) => key.startsWith('upload.'));
-    if (uploadEntries.length === 0) {
-        return { success: false, reason: 'arduinoConfig.board 中未找到 upload.* 参数' };
-    }
-
-    const toolName = boardConfig['upload.tool.default'] || boardConfig['upload.tool'];
-    if (!toolName) {
-        return { success: false, reason: '缺少 upload.tool.default / upload.tool' };
-    }
-
-    const toolPrefix = `tools.${toolName}.`;
-    const toolEntries = Object.entries(platformConfig).filter(([key]) => key.startsWith(toolPrefix));
-    if (toolEntries.length === 0) {
-        return { success: false, reason: `arduinoConfig.platform 中未找到 ${toolPrefix}* 参数` };
-    }
-
-    const uploadPattern = platformConfig[`${toolPrefix}upload.pattern`];
-    if (!uploadPattern || typeof uploadPattern !== 'string') {
-        return { success: false, reason: `缺少 ${toolPrefix}upload.pattern` };
-    }
-
-    const cmd = resolvePlatformCmd(platformConfig, toolPrefix, platform);
-    const sharedContext = {
-        path: platformConfig[`${toolPrefix}path`] || '',
-        cmd,
-        'upload.pattern_args': platformConfig[`${toolPrefix}upload.pattern_args`] || '',
-        'upload.params.verbose': platformConfig[`${toolPrefix}upload.params.verbose`] || '',
-        'upload.params.quiet': platformConfig[`${toolPrefix}upload.params.quiet`] || '',
-        'upload.verbose': platformConfig[`${toolPrefix}upload.params.verbose`] || '',
-        'upload.quiet': platformConfig[`${toolPrefix}upload.params.quiet`] || '',
-        'upload.verify': platformConfig[`${toolPrefix}upload.params.verify`] || '',
-        'serial.port': '${serial}',
-        'serial.port.file': '${serial}',
-        'serial.port.label': '${serial}',
-        'upload.speed': '${baud}',
-        'build.path': platformConfig['build.path'] || '',
-        'runtime.platform.path': platformConfig['runtime.platform.path'] || ''
-    };
-
-    const resolver = (key) => {
-        if (Object.prototype.hasOwnProperty.call(sharedContext, key)) {
-            return sharedContext[key];
-        }
-
-        const scopedValue = platformConfig[`${toolPrefix}${key}`];
-        if (scopedValue !== undefined && scopedValue !== null) {
-            return scopedValue;
-        }
-
-        const globalValue = platformConfig[key];
-        if (globalValue !== undefined && globalValue !== null) {
-            return globalValue;
-        }
-
-        return undefined;
-    };
-
-    const renderedParam = normalizeUploadParam(renderArduinoPatternTemplate(uploadPattern, resolver));
-    if (!renderedParam) {
-        return { success: false, reason: 'upload.pattern 渲染后为空' };
-    }
-
-    return {
-        success: true,
-        uploadParam: renderedParam,
-        toolName,
-        uploadFlags: Object.fromEntries(uploadEntries)
-    };
-}
-
-function selectUploadParam(currentProjectPath, platform, core, fallbackUploadParam) {
-    const normalizedFallback = normalizeUploadParam(fallbackUploadParam);
-    const preferPreprocess = String(core || '').toLowerCase().includes('esp32');
-
-    // ESP32 保持原有行为：优先使用 SDK 解析结果。其他开发板仅在 board.json
-    // 未提供 uploadParam 时才使用解析结果，避免改变现有板卡的上传行为。
-    if (preferPreprocess || !normalizedFallback) {
-        const preprocessResult = buildUploadParamFromPreprocess(currentProjectPath, platform);
-        if (preprocessResult.success) {
-            return {
-                success: true,
-                uploadParam: preprocessResult.uploadParam,
-                source: 'preprocess',
-                toolName: preprocessResult.toolName,
-                fallbackUploadParam: normalizedFallback
-            };
-        }
-
-        if (!normalizedFallback) {
-            return {
-                success: false,
-                reason: preprocessResult.reason,
-                fallbackUploadParam: ''
-            };
-        }
-
+    const upload = preprocess?.upload;
+    const command = normalizeUploadParam(upload?.command);
+    if (!command) {
         return {
-            success: true,
-            uploadParam: normalizedFallback,
-            source: 'fallback',
-            preprocessFailureReason: preprocessResult.reason,
-            fallbackUploadParam: normalizedFallback
+            success: false,
+            reason: 'preprocess.json 缺少 upload.command，请使用支持完整上传命令的 aily-builder 重新预处理'
         };
     }
 
     return {
         success: true,
-        uploadParam: normalizedFallback,
-        source: 'fallback',
-        fallbackUploadParam: normalizedFallback
+        uploadParam: command,
+        toolName: upload.toolName || '',
+        uploadFlags: {
+            'upload.use_1200bps_touch': upload.use1200bpsTouch,
+            'upload.wait_for_upload_port': upload.waitForUploadPort
+        }
+    };
+}
+
+function selectUploadParam(currentProjectPath, configuredUploadParam) {
+    const normalizedConfigured = normalizeUploadParam(configuredUploadParam);
+    if (normalizedConfigured) {
+        return {
+            success: true,
+            uploadParam: normalizedConfigured,
+            source: 'board.json'
+        };
+    }
+
+    const preprocessResult = readUploadCommandFromPreprocess(currentProjectPath);
+    if (preprocessResult.success) {
+        return {
+            success: true,
+            uploadParam: preprocessResult.uploadParam,
+            source: 'preprocess',
+            toolName: preprocessResult.toolName,
+            uploadFlags: preprocessResult.uploadFlags
+        };
+    }
+
+    return {
+        success: false,
+        reason: preprocessResult.reason
+    };
+}
+
+function selectUploadParamForPort(currentProjectPath, portType, boardJson, configUploadParam) {
+    if (portType === 'debugger') {
+        const debuggerUploadParam = normalizeUploadParam(boardJson?.linkUploadParam);
+        if (!debuggerUploadParam) {
+            return {
+                success: false,
+                reason: '当前开发板未配置 linkUploadParam，不能使用调试探针烧录'
+            };
+        }
+        return {
+            success: true,
+            uploadParam: debuggerUploadParam,
+            source: 'board.json'
+        };
+    }
+
+    const configuredUploadParam = normalizeUploadParam(configUploadParam || boardJson?.uploadParam);
+    return selectUploadParam(currentProjectPath, configuredUploadParam);
+}
+
+function parseUploadBoolean(value, fallback = false) {
+    if (value === undefined || value === null || value === '') {
+        return fallback;
+    }
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function resolveUploadLifecycleFlags(uploadFlags, defaults = {}) {
+    const flags = uploadFlags || {};
+    return {
+        use1200bpsTouch: parseUploadBoolean(
+            flags['upload.use_1200bps_touch'],
+            parseUploadBoolean(defaults.use1200bpsTouch, false),
+        ),
+        waitForUploadPort: parseUploadBoolean(
+            flags['upload.wait_for_upload_port'],
+            parseUploadBoolean(defaults.waitForUploadPort, false),
+        ),
     };
 }
 
@@ -362,8 +302,8 @@ async function main() {
         probeSerial = '',
         probeVidPid = '',
         uploadParam: configUploadParam,
-        use_1200bps_touch,
-        wait_for_upload,
+        use_1200bps_touch: configuredUse1200bpsTouch,
+        wait_for_upload: configuredWaitForUpload,
         pnum
     } = config;
 
@@ -413,9 +353,9 @@ async function main() {
             platformRef?.packageName,
         );
 
-        // 4. 获取上传参数：ESP32 优先使用 preprocess.json；其他板卡仅在
-        // board.json 未提供 uploadParam 时使用 preprocess.json。
-        const fallbackUploadParam = normalizeUploadParam(configUploadParam || boardJson.uploadParam);
+        // 4. 根据烧录方式选择 board.json 中的显式命令；显式命令优先于 builder 解析结果。
+        // 调试探针只允许使用 linkUploadParam；串口显式参数为空时才回退到预处理结果。
+        const isDebuggerUpload = portType === 'debugger';
 
         // core
         const coreItem = boardJson?.core || 'arduino';
@@ -435,9 +375,6 @@ async function main() {
         // 6. 获取波特率
         const baudRate = projectConfig?.UploadSpeed || defaultBaudRate;
         console.log('使用的波特率:', baudRate);
-
-        // 判断烧录方式：serial（串口烧录）或 debugger（调试探针烧录，如 JLink/STLink/DAPLink）
-        const isDebuggerUpload = portType === 'debugger';
 
         // 共用准备：获取工具依赖、SDK路径、平台信息
         const toolDependencies = {};
@@ -465,26 +402,31 @@ async function main() {
 
         const platform = os.platform() === 'win32' ? 'win32' : (os.platform() === 'darwin' ? 'darwin' : 'linux');
 
-        const uploadSelection = selectUploadParam(
+        const uploadSelection = selectUploadParamForPort(
             currentProjectPath,
-            platform,
-            core,
-            fallbackUploadParam
+            portType,
+            boardJson,
+            configUploadParam,
         );
         if (!uploadSelection.success) {
-            throw new Error(`未找到可用的上传参数：${uploadSelection.reason || 'SDK 上传命令解析失败'}`);
+            throw new Error(`未找到可用的上传命令：${uploadSelection.reason || '预处理未输出上传命令'}`);
         }
 
-        let uploadParamSource = uploadSelection.source;
-        let uploadParam = uploadSelection.uploadParam;
+        const uploadParamSource = uploadSelection.source;
+        const uploadParam = uploadSelection.uploadParam;
+        const lifecycleFlags = resolveUploadLifecycleFlags(uploadSelection.uploadFlags, {
+            use1200bpsTouch: configuredUse1200bpsTouch,
+            waitForUploadPort: configuredWaitForUpload,
+        });
+        const use_1200bps_touch = lifecycleFlags.use1200bpsTouch;
+        const wait_for_upload = lifecycleFlags.waitForUploadPort;
         if (uploadParamSource === 'preprocess') {
-            logger.log(`[preprocess] 命中 upload.pattern，tool=${uploadSelection.toolName}`);
-        } else if (uploadSelection.preprocessFailureReason) {
-            logger.warn(`[preprocess] ${uploadSelection.preprocessFailureReason}，回退到现有 uploadParam`);
+            logger.log(`[preprocess] 使用 aily-builder 完整上传命令，tool=${uploadSelection.toolName}`);
+            logger.log('[preprocess] 上传端口切换标志:', lifecycleFlags);
         }
 
-        logger.log(`上传参数来源: ${uploadParamSource}`);
-        logger.log('使用的上传参数:', uploadParam);
+        logger.log(`上传命令来源: ${uploadParamSource}`);
+        logger.log('使用的上传命令:', uploadParam);
 
         if (isDebuggerUpload) {
             // ========== 调试探针上传路径（不涉及串口）==========
@@ -566,18 +508,7 @@ async function main() {
                 }
             };
 
-            try {
-                await runDebuggerUpload(uploadParam, uploadParamSource);
-            } catch (error) {
-                if (uploadParamSource === 'preprocess' && fallbackUploadParam) {
-                    logger.warn(`[preprocess] 调试探针命令不可用(${error.message})，回退到现有 uploadParam`);
-                    uploadParamSource = 'fallback';
-                    uploadParam = fallbackUploadParam;
-                    await runDebuggerUpload(uploadParam, uploadParamSource);
-                } else {
-                    throw error;
-                }
-            }
+            await runDebuggerUpload(uploadParam, uploadParamSource);
 
             logger.log('所有上传命令执行完成');
             process.exit(0);
@@ -610,18 +541,7 @@ async function main() {
 
         let command;
         let templateArgs;
-        try {
-            ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
-        } catch (error) {
-            if (uploadParamSource === 'preprocess' && fallbackUploadParam) {
-                logger.warn(`[preprocess] 串口命令不可用(${error.message})，回退到现有 uploadParam`);
-                uploadParamSource = 'fallback';
-                uploadParam = fallbackUploadParam;
-                ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
-            } else {
-                throw error;
-            }
-        }
+        ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
 
         // 上传预处理：处理 1200bps touch 和 wait_for_upload
         // 四种组合：
@@ -916,4 +836,5 @@ if (require.main === module) {
 module.exports = {
     hasFatalUploadOutput,
     normalizeUploadExitCode,
+    selectUploadParamForPort,
 };

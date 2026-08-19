@@ -7,8 +7,11 @@ import {
 import { isAilyCategoryDebugEnabled } from '../core/chat-debug-flags';
 import { normalizeArduinoGeneratedCode } from '../../../editors/blockly-editor/components/blockly/generators/arduino/arduino';
 import { runWithPreparedActiveProjectGenerator } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
+import { sha256Hex } from '../../../utils/crypto.utils';
 
 // Arduino 代码检查器
+
+const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 
 function createLintCodeFingerprint(code: string): string {
   let hash = 2166136261;
@@ -107,7 +110,8 @@ export class ArduinoLintService {
 
   // 库缓存机制 - 避免重复处理
   private libraryCache = new Map<string, {
-    timestamp: number;
+    schemaVersion: number;
+    sourceFingerprint: string;
     targetNames: string[];
   }>();
 
@@ -125,21 +129,106 @@ export class ArduinoLintService {
   private get platformService(): any { return AilyHost.get().platform; }
 
   /**
-   * 检查库缓存是否有效 - 参考 BuilderService.isLibraryCacheValid
+   * 检查库缓存是否有效
    * @param lib 库名称
-   * @param sourcePath 源码路径
+   * @param sourceFingerprint 递归源码内容指纹
+   * @param librariesPath 目标库目录
    * @returns 缓存是否有效
    */
-  private isLibraryCacheValid(lib: string, sourcePath: string): boolean {
+  private isLibraryCacheValid(
+    lib: string,
+    sourceFingerprint: string,
+    librariesPath: string,
+  ): boolean {
     const cached = this.libraryCache.get(lib);
     if (!cached) return false;
 
     try {
-      if (!AilyHost.get().fs.existsSync(sourcePath)) return false;
-      const stat = AilyHost.get().fs.statSync(sourcePath);
-      return stat.mtime.getTime() <= cached.timestamp;
+      return cached.schemaVersion === LIBRARY_CACHE_SCHEMA_VERSION
+        && cached.sourceFingerprint === sourceFingerprint
+        && cached.targetNames.every(targetName => {
+          const targetPath = AilyHost.get().path.join(librariesPath, targetName);
+          return AilyHost.get().fs.existsSync(targetPath)
+            && AilyHost.get().fs.statSync(targetPath).isDirectory();
+        });
     } catch {
       return false;
+    }
+  }
+
+  private async createLibrarySourceFingerprint(sourcePath: string): Promise<string> {
+    const host = AilyHost.get();
+    const rootRealPath = host.fs.realpathSync?.(sourcePath) ?? host.path.resolve(sourcePath);
+    const activeDirectories = new Set<string>();
+    const records: string[] = [];
+
+    const visit = (currentPath: string, relativePath: string): void => {
+      const realPath = host.fs.realpathSync?.(currentPath) ?? host.path.resolve(currentPath);
+      const relativeToRoot = host.path.relative(rootRealPath, realPath);
+      if (
+        relativeToRoot === '..'
+        || relativeToRoot.startsWith(`..${this.pathSeparator(rootRealPath)}`)
+        || host.path.isAbsolute(relativeToRoot)
+      ) {
+        throw new Error(`Library source link escapes its root: ${currentPath}`);
+      }
+
+      const stat = host.fs.statSync(currentPath);
+      const normalizedPath = relativePath.replace(/\\/g, '/');
+
+      if (stat.isDirectory()) {
+        if (activeDirectories.has(realPath)) {
+          throw new Error(`Library source contains a directory link cycle: ${currentPath}`);
+        }
+
+        records.push(`directory\0${normalizedPath}\0`);
+        activeDirectories.add(realPath);
+
+        const names = (host.fs.readDirSync?.(currentPath) ?? host.fs.readdirSync(currentPath))
+          .map(item => typeof item === 'string' ? item : item.name)
+          .sort((left, right) => left.localeCompare(right));
+
+        for (const name of names) {
+          visit(host.path.join(currentPath, name), host.path.join(relativePath, name));
+        }
+
+        activeDirectories.delete(realPath);
+        return;
+      }
+
+      if (stat.isFile()) {
+        const base64Content = host.fs.readFileAsBase64?.(currentPath);
+        if (base64Content !== undefined) {
+          records.push(`file-base64\0${normalizedPath}\0${base64Content.length}\0${base64Content}\0`);
+          return;
+        }
+
+        const content = host.fs.readFileSync(currentPath, 'utf-8');
+        const contentLength = new TextEncoder().encode(content).byteLength;
+        records.push(`file\0${normalizedPath}\0${contentLength}\0${content}\0`);
+        return;
+      }
+
+      records.push(`other\0${normalizedPath}\0`);
+    };
+
+    visit(sourcePath, '');
+    return `sha256:${await sha256Hex(records.join(''))}`;
+  }
+
+  private pathSeparator(referencePath: string): string {
+    return referencePath.includes('\\') ? '\\' : '/';
+  }
+
+  private async removeCachedLibraryTargets(lib: string, librariesPath: string): Promise<void> {
+    const cached = this.libraryCache.get(lib);
+    if (!cached) return;
+
+    for (const targetName of cached.targetNames) {
+      const targetPath = AilyHost.get().path.join(librariesPath, targetName);
+      if (AilyHost.get().fs.existsSync(targetPath)) {
+        await this.crossPlatformCmdService.removeItem(targetPath, true, true);
+      }
     }
   }
 
@@ -961,31 +1050,38 @@ export class ArduinoLintService {
     targetNames?: string[];
   }> {
     try {
-      const sourcePath = `${this.currentProjectPath}/node_modules/${lib}/src`;
-      
-      // 检查缓存
-      const cachedInfo = this.libraryCache.get(lib);
-      if (cachedInfo && this.isLibraryCacheValid(lib, sourcePath)) {
-        return {
-          success: true,
-          targetNames: cachedInfo.targetNames
-        };
-      }
-      
       // 准备源码路径（包含解压和嵌套目录处理）
       const preparedSourcePath = await this.prepareLibrarySource(lib);
       if (!preparedSourcePath) {
         return { success: true, targetNames: [] };
       }
 
+      const sourceFingerprint = await this.createLibrarySourceFingerprint(preparedSourcePath);
+      const cachedInfo = this.libraryCache.get(lib);
+      if (cachedInfo && this.isLibraryCacheValid(lib, sourceFingerprint, librariesPath)) {
+        return {
+          success: true,
+          targetNames: cachedInfo.targetNames
+        };
+      }
+
+      await this.removeCachedLibraryTargets(lib, librariesPath);
+
       // 检查是否包含头文件并链接
       const hasHeaderFiles = await this.checkForHeaderFiles(preparedSourcePath);
-      
-      if (hasHeaderFiles) {
-        return await this.linkLibraryWithHeaders(lib, preparedSourcePath, librariesPath);
-      } else {
-        return await this.linkLibraryDirectories(lib, preparedSourcePath, librariesPath);
+      const result = hasHeaderFiles
+        ? await this.linkLibraryWithHeaders(lib, preparedSourcePath, librariesPath)
+        : await this.linkLibraryDirectories(lib, preparedSourcePath, librariesPath);
+
+      if (result.success) {
+        this.libraryCache.set(lib, {
+          schemaVersion: LIBRARY_CACHE_SCHEMA_VERSION,
+          sourceFingerprint,
+          targetNames: result.targetNames ?? []
+        });
       }
+
+      return result;
 
     } catch (error: any) {
       console.warn(`处理库 ${lib} 失败:`, error);
@@ -1086,15 +1182,10 @@ export class ArduinoLintService {
       const targetName = lib.split('@aily-project/')[1];
       const targetPath = `${librariesPath}/${targetName}`;
 
-      if (!AilyHost.get().path.isExists(targetPath)) {
-        await this.crossPlatformCmdService.linkItem(sourcePath, targetPath);
+      if (AilyHost.get().fs.existsSync(targetPath)) {
+        await this.crossPlatformCmdService.removeItem(targetPath, true, true);
       }
-
-      // 更新缓存
-      this.libraryCache.set(lib, {
-        timestamp: Date.now(),
-        targetNames: [targetName]
-      });
+      await this.crossPlatformCmdService.linkItem(sourcePath, targetPath);
 
       return {
         success: true,
@@ -1131,19 +1222,14 @@ export class ArduinoLintService {
         if (AilyHost.get().fs.isDirectory(fullSourcePath)) {
           const targetPath = `${librariesPath}/${itemName}`;
 
-          if (!AilyHost.get().path.isExists(targetPath)) {
-            await this.crossPlatformCmdService.linkItem(fullSourcePath, targetPath);
+          if (AilyHost.get().fs.existsSync(targetPath)) {
+            await this.crossPlatformCmdService.removeItem(targetPath, true, true);
           }
+          await this.crossPlatformCmdService.linkItem(fullSourcePath, targetPath);
           
           targetNames.push(itemName);
         }
       }
-
-      // 更新缓存
-      this.libraryCache.set(lib, {
-        timestamp: Date.now(),
-        targetNames: targetNames
-      });
 
       return {
         success: true,

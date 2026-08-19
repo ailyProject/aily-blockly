@@ -22,11 +22,22 @@ export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: 
     return next(req);
   }
 
+  if (authService.isSessionInvalidating) {
+    return throwError(() => new Error('Authentication session invalidation is in progress'));
+  }
+
   return from(addTokenHeader(req, authService)).pipe(
     switchMap(request => next(request)),
     catchError(error => {
-      if (error instanceof HttpErrorResponse && shouldLogoutFor401(req, error)) {
-        return handle401Error(req, next, authService);
+      if (error instanceof HttpErrorResponse) {
+        const disposition = classifyAuth401(req, error);
+        if (disposition === 'terminal-token-invalid') {
+          notifyMainWindowOfInvalidToken(authService);
+          return throwError(() => error);
+        }
+        if (disposition === 'refreshable') {
+          return handle401Error(req, next, authService);
+        }
       }
       return throwError(() => error);
     })
@@ -50,9 +61,8 @@ async function addTokenHeader(request: HttpRequest<any>, authService: AuthServic
   return request;
 }
 
-const AUTH_401_ERROR_CODES = new Set([
+const REFRESHABLE_AUTH_401_ERROR_CODES = new Set([
   'AUTH_TOKEN_MISSING',
-  'AUTH_TOKEN_INVALID',
   'AUTH_TOKEN_EXPIRED',
   'AUTH_USER_NOT_FOUND',
 ]);
@@ -72,19 +82,27 @@ const AUTH_401_MESSAGES = new Set([
   'User info not found',
 ]);
 
-export function shouldLogoutFor401(req: HttpRequest<any>, error: HttpErrorResponse): boolean {
+export type Auth401Disposition = 'ignore' | 'business' | 'refreshable' | 'terminal-token-invalid';
+
+export function classifyAuth401(req: HttpRequest<any>, error: HttpErrorResponse): Auth401Disposition {
   if (
     error.status !== 401 ||
     req.url.includes('auth/login') ||
-    req.url.includes('auth/logout') ||
-    req.url.includes('auth/refresh')
+    req.url.includes('auth/logout')
   ) {
-    return false;
+    return 'ignore';
   }
 
   const body = error.error;
-  if (collectAuthErrorCodes(body).some(errorCode => AUTH_401_ERROR_CODES.has(errorCode))) {
-    return true;
+  const errorCodes = collectAuthErrorCodes(body);
+  if (errorCodes.includes('AUTH_TOKEN_INVALID')) {
+    return 'terminal-token-invalid';
+  }
+  if (req.url.includes('auth/refresh')) {
+    return 'ignore';
+  }
+  if (errorCodes.some(errorCode => REFRESHABLE_AUTH_401_ERROR_CODES.has(errorCode))) {
+    return 'refreshable';
   }
 
   return collectAuthMessages(body).some(message =>
@@ -92,7 +110,12 @@ export function shouldLogoutFor401(req: HttpRequest<any>, error: HttpErrorRespon
       AUTH_401_MESSAGES.has(message) ||
       message.startsWith('Invalid user info:')
     )
-  );
+  ) ? 'refreshable' : 'business';
+}
+
+export function shouldLogoutFor401(req: HttpRequest<any>, error: HttpErrorResponse): boolean {
+  const disposition = classifyAuth401(req, error);
+  return disposition === 'refreshable' || disposition === 'terminal-token-invalid';
 }
 
 function collectAuthErrorCodes(value: unknown): string[] {
@@ -131,6 +154,32 @@ function collectAuthMessages(value: unknown): string[] {
   ].flatMap(item => collectAuthMessages(item));
 }
 
+function notifyMainWindowOfInvalidToken(authService: AuthService): void {
+  const accepted = authService.requestSessionInvalidation('AUTH_TOKEN_INVALID', 'http-401');
+  if (!accepted) {
+    return;
+  }
+
+  const sendToMain = window['iWindow']?.send;
+  if (typeof sendToMain !== 'function') {
+    return;
+  }
+
+  // All Electron renderers report the terminal auth failure to the main
+  // window. The main renderer's local Subject starts immediately; this IPC is
+  // deduplicated there and also covers detached windows.
+  void Promise.resolve(sendToMain({
+    to: 'main',
+    data: {
+      action: 'auth-token-invalid',
+      errorCode: 'AUTH_TOKEN_INVALID',
+    },
+    timeout: 30000,
+  })).catch((error) => {
+    console.warn('[Auth] Unable to report invalid token to main window:', error);
+  });
+}
+
 function getRefreshAuthToken$(authService: AuthService): Observable<boolean> {
   if (refreshAuthToken$) {
     return refreshAuthToken$;
@@ -153,6 +202,10 @@ function handle401Error(req: HttpRequest<any>, next: HttpHandlerFn, authService:
         return from(addTokenHeader(req, authService)).pipe(
           switchMap(request => next(request))
         );
+      }
+
+      if (authService.isSessionInvalidating) {
+        return throwError(() => new Error('Authentication session is invalid'));
       }
 
       return from(authService.logout()).pipe(

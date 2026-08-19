@@ -52,7 +52,7 @@ export class FloatSiderComponent implements OnInit, OnDestroy {
   private requireLogin(): boolean {
     if (!this.authService.isLoggedIn) {
       this.message.warning(this.translate.instant('FLOAT_SIDER.LOGIN_REQUIRED'));
-      this.uiService.openPreferredAilyChat();
+      this.authService.requestLogin('float-sider');
       return false;
     }
     return true;

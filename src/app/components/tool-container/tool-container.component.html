@@ -3,6 +3,7 @@
     <div class="title ccenter">
       <ng-content select="[header-title-prefix]"></ng-content>
       <span class="title-text">{{ title }}</span>
+      <ng-content select="[header-title-suffix]"></ng-content>
     </div>
     <div class="tool-btns">
       <!-- <div class="btn ccenter" (click)="copy()">

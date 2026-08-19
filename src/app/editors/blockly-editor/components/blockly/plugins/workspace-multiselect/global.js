@@ -493,7 +493,49 @@ export const centerBlocksInViewport = function(blockList, workspace) {
 };
 
 /**
- * Get the next available name by incrementing trailing number.
+ * Explicit field_input increment policies declared by block definitions.
+ * A block type only appears here when at least one of its field_input entries
+ * declares `autoIncrement`. An empty set therefore deliberately opts out of
+ * the legacy variable-name fallback.
+ * @type {Map<string, Set<string>>}
+ */
+const fieldInputIncrementPolicies = new Map();
+
+/**
+ * Register or clear the increment policy for a block type.
+ * @param {string} blockType The Blockly block type.
+ * @param {?Array<string>} fieldNames Fields that contain declared names, or
+ *     null to use the legacy variable-field fallback.
+ */
+export const registerFieldInputIncrementPolicy = function(
+    blockType, fieldNames) {
+  if (!blockType) return;
+  if (fieldNames === null) {
+    fieldInputIncrementPolicies.delete(blockType);
+    return;
+  }
+  fieldInputIncrementPolicies.set(blockType, new Set(fieldNames || []));
+};
+
+/**
+ * Whether a text input represents a declared variable/object name.
+ * Unannotated legacy libraries conventionally use VAR or a *VAR suffix for
+ * these fields. Other text inputs (TEXT, CHAR, URL, CODE, etc.) are values and
+ * must remain byte-for-byte unchanged when copied.
+ * @param {string} blockType The Blockly block type.
+ * @param {string} fieldName The field name.
+ * @returns {boolean} Whether the field should receive a unique copied name.
+ */
+export const isFieldInputIncrementable = function(blockType, fieldName) {
+  const explicitPolicy = fieldInputIncrementPolicies.get(blockType);
+  if (explicitPolicy) {
+    return explicitPolicy.has(fieldName);
+  }
+  return typeof fieldName === 'string' && /VAR$/.test(fieldName);
+};
+
+/**
+ * Get the next available declared name by incrementing its trailing number.
  * @param {string} name The current field value.
  * @param {!Blockly.Workspace} workspace The workspace to check against.
  * @param {string} fieldName The field name to check.
@@ -511,7 +553,8 @@ const getNextAvailableName = function(name, workspace, fieldName, excludeBlockId
     num = 1;
   }
 
-  // Collect existing field_input values with the same field name
+  // Only compare other declared-name fields. A display NAME or literal TEXT
+  // must not force a declaration with the same raw field name to be renamed.
   const existingValues = new Set();
   const allBlocks = workspace.getAllBlocks(false);
   for (const block of allBlocks) {
@@ -521,7 +564,8 @@ const getNextAvailableName = function(name, workspace, fieldName, excludeBlockId
     for (const input of block.inputList || []) {
       for (const field of input.fieldRow || []) {
         if (field instanceof Blockly.FieldTextInput &&
-            field.name === fieldName) {
+            field.name === fieldName &&
+            isFieldInputIncrementable(block.type, field.name)) {
           existingValues.add(field.getValue());
         }
       }
@@ -542,8 +586,9 @@ const getNextAvailableName = function(name, workspace, fieldName, excludeBlockId
 };
 
 /**
- * Increment field_input (FieldTextInput) values on a pasted/duplicated block
- * to generate unique names and avoid duplicates.
+ * Increment declared variable/object names on a pasted/duplicated block.
+ * Literal, multiline, address, numeric, dropdown, and reference fields are
+ * intentionally preserved.
  * @param {!Blockly.Block} block The newly pasted/duplicated block.
  * @param {!Blockly.Workspace} workspace The target workspace.
  */
@@ -556,7 +601,8 @@ export const incrementFieldInputValues = function(block, workspace) {
   for (const b of descendants) {
     for (const input of b.inputList || []) {
       for (const field of input.fieldRow || []) {
-        if (field instanceof Blockly.FieldTextInput) {
+        if (field instanceof Blockly.FieldTextInput &&
+            isFieldInputIncrementable(b.type, field.name)) {
           const currentValue = field.getValue();
           const newValue = getNextAvailableName(
               currentValue, workspace, field.name, b.id);

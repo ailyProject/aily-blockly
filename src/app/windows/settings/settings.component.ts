@@ -22,6 +22,8 @@ import { CmdService } from '../../services/cmd.service';
 import { ElectronService } from '../../services/electron.service';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
 import { NpmService } from '../../services/npm.service';
+import { switchServiceRegionAndRequestLogin } from '../../services/service-region-switch';
+import { ChildAppSafetyService } from '../../services/child-app-safety.service';
 
 type CacheClearOption = 'all' | 'unused-7' | 'unused-30';
 type DependencyRemovalOption = 'all' | 'unused-30' | 'unused-90';
@@ -31,9 +33,9 @@ interface CacheStats {
   totalSizeFormatted: string;
 }
 
-interface DirectoryStats {
-  size: number;
-  count: number;
+interface HostAuthState {
+  authenticated: boolean;
+  openProtectedToolIds: string[];
 }
 
 @Component({
@@ -117,6 +119,7 @@ export class SettingsComponent implements OnDestroy {
   cacheSizeLoading = false;
   cacheClearing: CacheClearOption | null = null;
   dependencyRemoving: DependencyRemovalOption | null = null;
+  private cacheStatsRequestId = 0;
   private _clearCacheSubscription: Subscription | null = null;
   private _clearCacheLoadingRef: string | null = null;
 
@@ -126,8 +129,10 @@ export class SettingsComponent implements OnDestroy {
   ailyLinterStatus: any = null;
   ailyToolsCheckingUpdates = false;
   applying = false;
+  regionSwitching = false;
   private ailyBuilderStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private ailyLinterStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  private settingsReadyObserver: MutationObserver | null = null;
 
   // 搜索关键字
   boardSearchKeyword: string = '';
@@ -213,52 +218,107 @@ export class SettingsComponent implements OnDestroy {
 
   // 切换区域
   async onRegionChange(regionKey: string) {
-    // 如果选择的区域和当前区域一样，直接返回
-    if (regionKey === this.selectedRegion) {
+    if (regionKey === this.selectedRegion || this.regionSwitching) {
       return;
     }
 
-    // 检查是否已登录
-    if (this.authService.isAuthenticated) {
-      // 显示确认弹窗
-      this.modal.confirm({
-        nzTitle: this.translateService.instant('SETTINGS.FIELDS.REGION_TITLE'),
-        nzContent: this.translateService.instant('SETTINGS.FIELDS.REGION_DESC'),
-        nzOkText: this.translateService.instant('SETTINGS.FIELDS.REGION_CONFIRM'),
-        nzCancelText: this.translateService.instant('SETTINGS.FIELDS.REGION_CANCEL'),
-        nzBodyStyle: { background: 'var(--aily-bg-primary)' },
-        nzOnOk: async () => {
-          // 用户确认后，更新区域值
-          this.selectedRegion = regionKey;
+    this.regionSwitching = true;
+    try {
+      const hostAuthState = await this.getHostAuthState();
+      if (!hostAuthState.authenticated && hostAuthState.openProtectedToolIds.length === 0) {
+        await this.applyRegionChange(regionKey);
+        this.regionSwitching = false;
+        return;
+      }
 
-          // 发送消息到主窗口执行登出
-          try {
-            setTimeout(async () => {
-              if (window['iWindow'] && window['iWindow'].send) {
-                // 子窗口：发送消息到主窗口
-                window['iWindow'].send({
-                  to: 'main',
-                  data: { action: 'logout' }
-                });
-                this.authService.logout();
-              } else {
-                this.authService.logout();
-              }
-            }, 0);
-          } catch (error) {
-            console.error('登出失败:', error);
-          }
-          // 继续执行切换区域
-          await this.configService.setRegion(regionKey);
-          await this.updateBoardList();
-        }
-      });
-    } else {
-      // 未登录，直接切换区域
-      this.selectedRegion = regionKey;
-      await this.configService.setRegion(regionKey);
-      await this.updateBoardList();
+      const confirmed = await this.childAppSafety.confirmInterruption(
+        'region-switch',
+        hostAuthState.openProtectedToolIds,
+      );
+      if (!confirmed) {
+        this.regionSwitching = false;
+        return;
+      }
+      await this.applyConfirmedRegionChange(regionKey);
+      this.regionSwitching = false;
+    } catch (error) {
+      this.regionSwitching = false;
+      console.error('读取主窗口登录状态失败:', error);
     }
+  }
+
+  private async getHostAuthState(): Promise<HostAuthState> {
+    const sendToMain = window['iWindow']?.send;
+    if (typeof sendToMain === 'function') {
+      const response = await sendToMain({
+        to: 'main',
+        data: { action: 'get-auth-state' },
+        timeout: 15000,
+      });
+      if (response === 'timeout' || response?.success !== true) {
+        throw new Error('Unable to read main-window authentication state');
+      }
+      const rawOpenProtectedToolIds: unknown = response.openProtectedToolIds;
+      const openProtectedToolIds: string[] = Array.isArray(rawOpenProtectedToolIds)
+        ? rawOpenProtectedToolIds.filter((toolId: unknown): toolId is string => typeof toolId === 'string')
+        : [];
+      return {
+        authenticated: response.authenticated === true,
+        openProtectedToolIds: [...new Set(openProtectedToolIds)],
+      };
+    }
+
+    if (this.authService.getAuthInitializationState() === 'idle') {
+      await this.authService.initializeAuth();
+    }
+    return {
+      authenticated: this.authService.isAuthenticated,
+      openProtectedToolIds: this.uiService.getOpenAuthRequiredToolIds(),
+    };
+  }
+
+  private async applyConfirmedRegionChange(regionKey: string): Promise<void> {
+    const sendToMain = window['iWindow']?.send;
+    if (typeof sendToMain === 'function') {
+      const response = await sendToMain({
+        to: 'main',
+        data: { action: 'switch-service-region', regionKey },
+        timeout: 30000,
+      });
+      if (response === 'timeout' || response?.success !== true) {
+        throw new Error(response?.error || 'Main-window service region switch failed');
+      }
+      await this.applyRegionChange(regionKey, false);
+      this.uiService.closeWindow();
+      return;
+    }
+
+    await switchServiceRegionAndRequestLogin(regionKey, {
+      closeProtectedTools: () => this.uiService.closeAuthRequiredTools(),
+      clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
+      stopProtectedRuntime: () => this.uiService.stopDefaultAilyChatRuntime(),
+      setRegion: (nextRegionKey) => this.configService.setRegion(nextRegionKey),
+      requestLogin: (reason) => this.authService.requestLogin(reason),
+    });
+    await this.updateBoardList();
+  }
+
+  private async applyRegionChange(regionKey: string, updateMainWindow = true): Promise<void> {
+    const sendToMain = window['iWindow']?.send;
+    if (updateMainWindow && typeof sendToMain === 'function') {
+      const response = await sendToMain({
+        to: 'main',
+        data: { action: 'set-service-region', regionKey },
+        timeout: 15000,
+      });
+      if (response === 'timeout' || response?.success !== true) {
+        throw new Error(response?.error || 'Main-window service region update failed');
+      }
+    }
+
+    this.selectedRegion = regionKey;
+    await this.configService.setRegion(regionKey);
+    await this.updateBoardList();
   }
 
   get langList() {
@@ -301,11 +361,15 @@ export class SettingsComponent implements OnDestroy {
     private message: NzMessageService,
     private cmdService: CmdService,
     private electronService: ElectronService,
-    private npmService: NpmService
+    private npmService: NpmService,
+    private childAppSafety: ChildAppSafetyService,
   ) {
   }
 
   ngOnDestroy() {
+    this.cacheStatsRequestId++;
+    this.settingsReadyObserver?.disconnect();
+    this.settingsReadyObserver = null;
     this.scrollElement?.removeEventListener('scroll', this.scrollHandler);
     this.clearScrollEndTimer();
     this.clearAilyBuilderStatusTimer();
@@ -321,27 +385,50 @@ export class SettingsComponent implements OnDestroy {
     // await this.configService.init();
   }
 
-  async ngAfterViewInit() {
+  ngAfterViewInit() {
     this.scrollElement = this.scrollContainer?.SimpleBar?.getScrollElement() || null;
     this.scrollElement?.addEventListener('scroll', this.scrollHandler);
-    await this.updateBoardList();
-    await Promise.all([
-      this.loadAilyBuilderStatus(),
-      this.loadAilyLinterStatus()
-    ]);
-    this.loadCacheStats();
+    this.updateBoardList();
+    void this.loadAilyBuilderStatus();
+    void this.loadAilyLinterStatus();
+    void this.loadCacheStats();
+    this.notifySettingsWindowReady();
   }
 
-  async updateBoardList() {
+  private notifySettingsWindowReady() {
+    const sendReady = () => {
+      this.settingsReadyObserver?.disconnect();
+      this.settingsReadyObserver = null;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        window['ipcRenderer']?.send?.('settings-window-ready');
+      }));
+    };
+
+    if (!document.getElementById('app-loading-box')) {
+      sendReady();
+      return;
+    }
+
+    this.settingsReadyObserver = new MutationObserver(() => {
+      if (!document.getElementById('app-loading-box')) {
+        sendReady();
+      }
+    });
+    this.settingsReadyObserver.observe(document.body, { childList: true });
+  }
+
+  updateBoardList() {
     const platform = this.configService.data.platform;
     // this.appdata_path = this.configService.data.appdata_path[platform].replace('%HOMEPATH%', window['path'].getUserHome());
     this.appdata_path = window['path'].getAppDataPath();
     // 使用当前区域的仓库地址
     const npmRegistry = this.configService.getCurrentNpmRegistry();
     // this.settingsService.getBoardList(this.appdata_path, npmRegistry);
-    this.settingsService.getToolList(this.appdata_path, npmRegistry);
-    this.settingsService.getSdkList(this.appdata_path, npmRegistry);
-    this.settingsService.getCompilerList(this.appdata_path, npmRegistry);
+    void Promise.all([
+      this.settingsService.getToolList(this.appdata_path, npmRegistry),
+      this.settingsService.getSdkList(this.appdata_path, npmRegistry),
+      this.settingsService.getCompilerList(this.appdata_path, npmRegistry)
+    ]).catch(error => console.warn('加载依赖列表失败:', error));
   }
 
   async loadAilyBuilderStatus() {
@@ -685,6 +772,7 @@ export class SettingsComponent implements OnDestroy {
   }
 
   async loadCacheStats() {
+    const requestId = ++this.cacheStatsRequestId;
     const builderPath = this.getAilyBuilderPath();
     if (!builderPath) {
       this.cacheStats = this.getEmptyCacheStats();
@@ -694,12 +782,24 @@ export class SettingsComponent implements OnDestroy {
 
     this.cacheSizeLoading = true;
     try {
-      this.cacheStats = this.calculateCacheStats(builderPath);
+      const { size, count } = await window['fsp'].directoryStats(builderPath);
+      if (requestId !== this.cacheStatsRequestId) {
+        return;
+      }
+      this.cacheStats = {
+        totalFiles: count,
+        totalSizeFormatted: this.formatFileSize(size)
+      };
     } catch (e) {
+      if (requestId !== this.cacheStatsRequestId) {
+        return;
+      }
       console.error('Failed to load cache stats', e);
       this.cacheStats = this.getEmptyCacheStats();
     } finally {
-      this.cacheSizeLoading = false;
+      if (requestId === this.cacheStatsRequestId) {
+        this.cacheSizeLoading = false;
+      }
     }
   }
 
@@ -713,51 +813,6 @@ export class SettingsComponent implements OnDestroy {
 
   private getEmptyCacheStats(): CacheStats {
     return { totalFiles: 0, totalSizeFormatted: '0 B' };
-  }
-
-  private calculateCacheStats(builderPath: string): CacheStats {
-    let totalSize = 0;
-    let totalFiles = 0;
-    const entries = window['fs'].readDirSync(builderPath);
-
-    for (const entry of entries) {
-      if (!entry._isDirectory) {
-        continue;
-      }
-
-      const dirPath = window['path'].join(builderPath, entry.name);
-      const { size, count } = this.calcDirSize(dirPath);
-      totalSize += size;
-      totalFiles += count;
-    }
-
-    return {
-      totalFiles,
-      totalSizeFormatted: this.formatFileSize(totalSize)
-    };
-  }
-
-  private calcDirSize(dirPath: string): DirectoryStats {
-    let size = 0;
-    let count = 0;
-    try {
-      const entries = window['fs'].readDirSync(dirPath);
-      for (const entry of entries) {
-        const fullPath = window['path'].join(dirPath, entry.name);
-        if (entry._isDirectory) {
-          const sub = this.calcDirSize(fullPath);
-          size += sub.size;
-          count += sub.count;
-        } else {
-          try {
-            const stat = window['fs'].statSync(fullPath);
-            size += stat.size;
-            count++;
-          } catch { }
-        }
-      }
-    } catch { }
-    return { size, count };
   }
 
   private formatFileSize(bytes: number): string {

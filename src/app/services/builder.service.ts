@@ -5,7 +5,7 @@ import { CmdService } from './cmd.service';
 import { CrossPlatformCmdService } from './cross-platform-cmd.service';
 import { ActionService } from './action.service';
 import { ElectronService } from './electron.service';
-import { AilyCodeProCompileService } from './aily-code-pro-compile.service';
+import { CompileService } from './compile.service';
 
 export interface BuildFinishedEvent {
   success: boolean;
@@ -33,7 +33,7 @@ export class BuilderService {
     private cmdService: CmdService,
     private crossPlatformCmdService: CrossPlatformCmdService,
     private electronService: ElectronService,
-    private ailyCodeProCompile: AilyCodeProCompileService,
+    private compileService: CompileService,
   ) {
     this.init();
   }
@@ -115,7 +115,7 @@ export class BuilderService {
       // 含 project.aci 时改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
       let feedback: any;
       if (!this.actionService.hasListener('builder-compile-begin')) {
-        const r = await this.ailyCodeProCompile.runCompileFromDisk();
+        const r = await this.compileService.runCompileFromDisk();
         feedback = {
           success: true,
           data: { success: r.success, result: r.result },
@@ -175,7 +175,7 @@ export class BuilderService {
   }
 
   private async buildFromProjectPath(projectPath: string) {
-    const compileResult = await this.ailyCodeProCompile.runCompileFromDisk({ projectPath });
+    const compileResult = await this.compileService.runCompileFromDisk({ projectPath });
     const buildResult = compileResult.result;
     if (!compileResult.success || buildResult?.state === 'error') {
       const error: any = new Error(buildResult?.text || 'Build failed');
@@ -195,7 +195,7 @@ export class BuilderService {
    * 取消当前编译过程
    */
   cancel() {
-    this.ailyCodeProCompile.cancel();
+    this.compileService.cancel();
     this.actionService.dispatch('compile-cancel', {}, result => {
       if (result.success) {
       } else {
@@ -231,14 +231,35 @@ export class BuilderService {
   }
 
   /**
-   * 清除缓存
+   * 清除可安全重建的编译与本地库缓存，保留当前 Blockly 生成的 sketch。
+   * 供需要在同一次调用中立即继续构建的流程使用。
+   */
+  async clearBuildCache(projectPath: string): Promise<void> {
+    const buildPath = this.electronService.pathJoin(projectPath, '.build');
+    const librariesPath = this.electronService.pathJoin(projectPath, '.temp', 'libraries');
+    const libraryCachePath = this.electronService.pathJoin(projectPath, '.temp', 'library-cache.json');
+
+    console.log('清除编译产物:', buildPath);
+    await this.crossPlatformCmdService.removeItem(buildPath, true, true);
+
+    if (window['fs'].existsSync(librariesPath)) {
+      console.log('清除本地库物化缓存:', librariesPath);
+      await this.crossPlatformCmdService.removeItem(librariesPath, true, true);
+    }
+
+    if (window['fs'].existsSync(libraryCachePath)) {
+      console.log('清除本地库指纹缓存:', libraryCachePath);
+      await this.crossPlatformCmdService.removeItem(libraryCachePath, false, true);
+    }
+  }
+
+  /**
+   * 完整清除缓存。该操作会删除生成的 sketch，仅用于随后会重新预处理的流程。
    */
   async clearCache(projectPath: string) {
     try {
       const tempPath = projectPath + '/.temp';
-      const sketchPath = tempPath + '/sketch';
       const buildPath = this.electronService.pathJoin(projectPath, '.build');
-      console.log('清除编译缓存:', sketchPath);
       console.log('编译缓存路径:', buildPath);
       await this.crossPlatformCmdService.removeItem(buildPath, true, true);
 

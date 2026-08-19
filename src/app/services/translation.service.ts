@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { lastValueFrom } from 'rxjs';
 import { ConfigService } from './config.service';
 import { ElectronService } from './electron.service';
+import { normalizeLanguageCode } from '../utils/language-code';
 
 export interface Locale {
   name: string;
@@ -75,26 +76,30 @@ export class TranslationService {
 
   getSystemLanguage(): string {
     const language = navigator.language || (navigator.languages && navigator.languages[0]);
-    return language.toLowerCase().replace('-', '_');
+    return normalizeLanguageCode(language);
   }
 
   async setLanguage(lang: string) {
+    const normalizedLang = normalizeLanguageCode(lang);
+
     // 检查该语言是否已加载
-    if (!this.loadedLanguages.has(lang)) {
+    if (!this.loadedLanguages.has(normalizedLang)) {
       // 如果未加载，先加载语言数据
-      const languageData = await this.getLanguageData(lang);
-      this.translate.setTranslation(lang, languageData);
-      this.loadedLanguages.add(lang);
+      const languageData = await this.getLanguageData(normalizedLang);
+      this.translate.setTranslation(normalizedLang, languageData);
+      this.loadedLanguages.add(normalizedLang);
     }
 
     // 使用该语言
-    await lastValueFrom(this.translate.use(lang));
-    this.configService.data['selectedLanguage'] = lang;
+    await lastValueFrom(this.translate.use(normalizedLang));
+    this.configService.data['selectedLanguage'] = normalizedLang;
     this.configService.save();
-    return lang;
+    return normalizedLang;
   }
 
   getSelectedLanguage() {
-    return this.configService.data?.selectedLanguage || this.translate.getDefaultLang();
+    return normalizeLanguageCode(
+      this.configService.data?.selectedLanguage || this.translate.getDefaultLang(),
+    );
   }
 }

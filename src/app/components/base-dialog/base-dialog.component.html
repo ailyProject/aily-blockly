@@ -2,6 +2,16 @@
     <div class="header">
         <div class="title">{{title}}</div>
         <div class="win-btns">
+            @if(showMinimizeButton) {
+            <button
+                type="button"
+                class="btn ccenter minimize"
+                [attr.aria-label]="minimizeButtonLabel"
+                [title]="minimizeButtonLabel"
+                (click)="onMinimize()">
+                <i class="fa-light fa-minus" aria-hidden="true"></i>
+            </button>
+            }
             @if(showCloseButton) {
             <div class="btn ccenter close" (click)="onClose()">
                 <i class="fa-light fa-xmark"></i>

@@ -44,16 +44,23 @@ export const BRAND_LIST = [
         imgLight: 'brands\\stmicroelectronics-light.webp',
     },
     {
-        name: 'Nordic Semiconductor',
-        value: 'Nordic Semiconductor',
-        img: 'brands\\nordic.webp',
-        imgLight: 'brands\\nordic-light.webp',
-    },
-    {
         name: 'Seekfree',
         value: 'seekfree',
         img: 'sponsor\\seekfree\\logo.webp',
         imgLight: 'sponsor\\seekfree\\logo-light.webp',
+    },
+    {
+        name: 'chipintelli',
+        value: 'chipintelli',
+        img: 'brands\\chipintelli.svg',
+        imgLight: 'brands\\chipintelli.svg',
+        selected: "brands\\chipintelli-selected.svg"
+    },
+    {
+        name: 'Nordic Semiconductor',
+        value: 'Nordic Semiconductor',
+        img: 'brands\\nordic.webp',
+        imgLight: 'brands\\nordic-light.webp',
     },
     {
         name: 'adafruit',

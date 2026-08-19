@@ -4,8 +4,27 @@ import type { BlockCodeMapping } from '../components/blockly/generators/arduino/
 export interface CodeViewerIpcState {
   code?: string;
   selectedBlockId?: string | null;
+  selectedBlockIds?: string[];
   blockCodeMap?: Array<[string, BlockCodeMapping]>;
   updatedAt?: number;
+}
+
+export function normalizeCodeViewerSelectedBlockIds(
+  selectedBlockId: string | null | undefined,
+  selectedBlockIds: ReadonlyArray<string> | null | undefined,
+): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  const append = (blockId: string | null | undefined): void => {
+    if (!blockId || seen.has(blockId)) return;
+    seen.add(blockId);
+    normalized.push(blockId);
+  };
+
+  append(selectedBlockId);
+  selectedBlockIds?.forEach(append);
+  return normalized;
 }
 
 @Injectable({
@@ -15,6 +34,7 @@ export class CodeViewerIpcService {
   private pendingCodeState: { code: string; blockCodeMap: Map<string, BlockCodeMapping> } | null = null;
   private codeStatePublishTimer: ReturnType<typeof setTimeout> | null = null;
   private latestSelectedBlockId: string | null = null;
+  private latestSelectedBlockIds: string[] = [];
   private readonly codeStatePublishDelay = 200;
 
   private get api(): any {
@@ -35,10 +55,15 @@ export class CodeViewerIpcService {
     code: string,
     blockCodeMap: Map<string, BlockCodeMapping>,
     selectedBlockId: string | null,
+    selectedBlockIds: ReadonlyArray<string> = [],
   ): void {
     if (!this.isAvailable) return;
 
     this.latestSelectedBlockId = selectedBlockId;
+    this.latestSelectedBlockIds = normalizeCodeViewerSelectedBlockIds(
+      selectedBlockId,
+      selectedBlockIds,
+    );
     this.pendingCodeState = { code, blockCodeMap };
 
     if (this.codeStatePublishTimer) {
@@ -51,9 +76,19 @@ export class CodeViewerIpcService {
     }, this.codeStatePublishDelay);
   }
 
-  publishSelection(selectedBlockId: string | null): void {
+  publishSelection(
+    selectedBlockId: string | null,
+    selectedBlockIds: ReadonlyArray<string> = [],
+  ): void {
     this.latestSelectedBlockId = selectedBlockId;
-    this.publishState({ selectedBlockId });
+    this.latestSelectedBlockIds = normalizeCodeViewerSelectedBlockIds(
+      selectedBlockId,
+      selectedBlockIds,
+    );
+    this.publishState({
+      selectedBlockId,
+      selectedBlockIds: this.latestSelectedBlockIds,
+    });
   }
 
   clear(): void {
@@ -63,10 +98,12 @@ export class CodeViewerIpcService {
     }
     this.pendingCodeState = null;
     this.latestSelectedBlockId = null;
+    this.latestSelectedBlockIds = [];
 
     this.publishState({
       code: '',
       selectedBlockId: null,
+      selectedBlockIds: [],
       blockCodeMap: [],
     });
   }
@@ -100,6 +137,7 @@ export class CodeViewerIpcService {
     this.publishState({
       code: state.code,
       selectedBlockId: this.latestSelectedBlockId,
+      selectedBlockIds: this.latestSelectedBlockIds,
       blockCodeMap: Array.from(state.blockCodeMap.entries()),
       updatedAt: Date.now(),
     });

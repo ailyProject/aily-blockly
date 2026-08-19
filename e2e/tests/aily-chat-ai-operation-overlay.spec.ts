@@ -14,11 +14,11 @@ test.describe('新版 Aily Chat 的 Blockly AI 操作提示', () => {
     await openBlocklyProject(win, PROJECT_PATH!);
 
     await expect(win.locator('app-blockly-editor .blocklyBox')).toBeVisible({ timeout: 30_000 });
-    const v2ChatButton = win.locator('app-header .toolbox .btn', {
-      has: win.locator('.more', { hasText: 'v2' }),
+    const aiChatButton = win.locator('app-header .toolbox .btn', {
+      has: win.locator('.more', { hasText: 'AI' }),
     });
-    await expect(v2ChatButton).toBeVisible({ timeout: 30_000 });
-    await v2ChatButton.click();
+    await expect(aiChatButton).toBeVisible({ timeout: 30_000 });
+    await aiChatButton.click();
 
     const childHost = win.locator('app-child-tool-host');
     await expect(childHost).toBeVisible({ timeout: 30_000 });

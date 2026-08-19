@@ -28,6 +28,7 @@ import {
   resolveUploadRecoveryPolicy,
   type UploadRecoveryPolicy,
 } from '../../../services/upload-recovery-policy';
+import { getLinkUploadParam } from '../../../services/debugger-upload-policy';
 
 interface NetworkOtaUploadTarget {
   id?: string;
@@ -343,6 +344,19 @@ export class _UploaderService {
           return;
         }
 
+        const boardJson = await this.projectService.getBoardJson();
+        const isDebuggerUpload = capturedPortInfo?.type === 'debugger';
+        const debuggerUploadParam = getLinkUploadParam(boardJson);
+        if (isDebuggerUpload && !debuggerUploadParam) {
+          this.uploadInProgress = false;
+          this._builderService.isUploading = false;
+          const message = this.uploadT('MISSING_DEBUGGER_UPLOAD_PARAM');
+          this.handleUploadError(message, this.uploadT('FAILED_TITLE'));
+          this.uploadPromiseReject = null;
+          reject({ state: 'error', text: message });
+          return;
+        }
+
         if (capturedPortInfo?.type === 'network-ota' && !await this.canUseWifiOta()) {
           this.uploadInProgress = false;
           this._builderService.isUploading = false;
@@ -470,8 +484,6 @@ export class _UploaderService {
         // 设置上传状态（uploadInProgress 已在方法开始时设置）
         this._builderService.isUploading = true;
 
-        const boardJson = await this.projectService.getBoardJson()
-
         if (capturedPortInfo?.type === 'ble') {
           try {
             const result = await this.uploadByBle(buildPath, capturedPortInfo, boardJson?.name);
@@ -498,21 +510,11 @@ export class _UploaderService {
 
         const boardModule = await this.projectService.getBoardModule();
 
-        // 根据烧录方式选择上传参数：调试探针使用 linkUploadParam，串口优先使用 uploadParam。
-        // 串口上传允许 uploadParam 为空，此时 upload.js 会使用 preprocess.json 中由 SDK
-        // boards.txt / platform.txt 解析出的上传命令。
-        const isDebuggerUpload = capturedPortInfo?.type === 'debugger';
+        // 调试探针只使用 linkUploadParam；串口的 uploadParam 为空时，upload.js 才使用
+        // preprocess.json 中由 aily-builder 从 SDK 变体配置解析出的完整命令。
         const uploadParam = isDebuggerUpload
-          ? (boardJson.linkUploadParam || boardJson.uploadParam)
+          ? debuggerUploadParam
           : boardJson.uploadParam;
-        if (isDebuggerUpload && !uploadParam) {
-          this.uploadInProgress = false; // 重置上传状态
-          const errMsg = this.uploadT('MISSING_DEBUGGER_UPLOAD_PARAM');
-          this.handleUploadError(errMsg);
-          this.workflowService.finishUpload(false, 'Missing upload parameters');
-          reject({ state: 'error', text: errMsg });
-          return;
-        }
 
         const { flags, cleanParam } = this.extractFlags(uploadParam);
         const use_1200bps_touch = isDebuggerUpload ? false : !!flags['use_1200bps_touch'];

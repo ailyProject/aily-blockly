@@ -5,6 +5,8 @@ const SEARCH_CHANNEL = "webview-bridge-search";
 const PARTITION = "persist:aily-webview-bridge";
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_WAIT_AFTER_LOAD_MS = 800;
+const WARMUP_URL = "about:blank";
+const WARMUP_TIMEOUT_MS = 30000;
 const IDLE_DESTROY_MS = 60 * 1000;
 const MAX_HTML_CHARS = 1_000_000;
 const MAX_TEXT_CHARS = 200_000;
@@ -67,8 +69,44 @@ function getBridgeTabMeta(tab) {
   return {
     tabId: tab?.id ?? null,
     busy: tab?.busy === true,
+    ready: tab?.ready === true,
     operation: typeof tab?.operation === "string" ? tab.operation : null,
     ...getBridgeWindowMeta(tab?.win),
+  };
+}
+
+function isBridgeTabUsable(tab) {
+  if (!tab?.win || tab.win.isDestroyed()) {
+    return false;
+  }
+
+  return Boolean(tab.win.webContents && !tab.win.webContents.isDestroyed());
+}
+
+function getWebviewBridgeStatus() {
+  const tabs = bridgeTabs.filter(isBridgeTabUsable);
+  const readyTabs = tabs.filter(tab => tab.ready === true);
+  const idleReadyTabs = readyTabs.filter(tab => !tab.busy);
+  const busyTabs = tabs.filter(tab => tab.busy);
+  const state = idleReadyTabs.length > 0
+    ? "ready"
+    : readyTabs.length > 0
+      ? "busy"
+      : tabs.length > 0
+        ? "starting"
+        : "dormant";
+
+  return {
+    ok: true,
+    alive: readyTabs.length > 0,
+    state,
+    tabs: {
+      total: tabs.length,
+      ready: readyTabs.length,
+      idle: idleReadyTabs.length,
+      busy: busyTabs.length,
+    },
+    idleDestroyMs: IDLE_DESTROY_MS,
   };
 }
 
@@ -215,6 +253,7 @@ function createBridgeTab() {
     id: nextBridgeTabId++,
     win,
     busy: false,
+    ready: false,
     operation: null,
     idleTimer: null,
   };
@@ -392,12 +431,55 @@ async function loadUrlWithTimeout(tab, url, timeoutMs, operationLabel = "loadURL
   });
 }
 
+async function ensureBridgeTabReady(tab) {
+  if (tab.ready && isBridgeTabUsable(tab)) {
+    return;
+  }
+
+  tab.ready = false;
+  try {
+    await loadUrlWithTimeout(tab, WARMUP_URL, WARMUP_TIMEOUT_MS, "wake");
+    const readyState = await tab.win.webContents.executeJavaScript("document.readyState", true);
+    if (readyState !== "interactive" && readyState !== "complete") {
+      throw new Error(`Unexpected WebView ready state: ${String(readyState)}`);
+    }
+
+    tab.ready = true;
+    logBridgeInfo("bridge tab is ready", getBridgeTabMeta(tab));
+  } catch (error) {
+    if (bridgeTabs.includes(tab)) {
+      destroyBridgeTab(tab, "wake-failed", {
+        ...getBridgeTabMeta(tab),
+        error: describeError(error),
+      });
+    }
+    throw error;
+  }
+}
+
 async function withBridgeWindow(task, operationLabel = "bridge") {
   const tab = acquireBridgeTab(operationLabel);
   try {
+    await ensureBridgeTabReady(tab);
     return await task(tab.win, tab);
   } finally {
     releaseBridgeTab(tab);
+  }
+}
+
+async function wakeWebviewBridge() {
+  try {
+    await withBridgeWindow(async () => undefined, "wake");
+    return getWebviewBridgeStatus();
+  } catch (error) {
+    logBridgeError("failed to wake bridge", {
+      error: describeError(error),
+    });
+    return {
+      ok: false,
+      alive: false,
+      error: describeError(error),
+    };
   }
 }
 
@@ -592,5 +674,7 @@ function registerWebviewBridgeHandlers() {
 module.exports = {
   executeWebviewFetch,
   executeWebviewSearch,
+  getWebviewBridgeStatus,
   registerWebviewBridgeHandlers,
+  wakeWebviewBridge,
 };

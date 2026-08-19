@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 
-export type ChildAppHostAction = 'status' | 'restart' | 'close' | 'detach' | 'embed';
+export type ChildAppHostAction = 'status' | 'prepareUpdate' | 'restart' | 'close' | 'detach' | 'embed';
 
 export interface ChildAppWindowPlacement {
   x?: number;
@@ -21,10 +21,16 @@ export interface ChildAppHostRegistrationOptions {
 
 export interface ChildAppHostControlOptions extends ChildAppWindowPlacement {
   instanceId?: string;
+  strictLifecycle?: boolean;
+}
+
+export interface ChildAppLifecycleOptions {
+  strict?: boolean;
 }
 
 export interface ChildAppHostController {
   status(): Record<string, unknown>;
+  prepareUpdate(options?: ChildAppLifecycleOptions): Promise<Record<string, unknown>>;
   restart(): Promise<Record<string, unknown>>;
   close(): Promise<Record<string, unknown>>;
   detach(options?: ChildAppWindowPlacement): Promise<Record<string, unknown>>;
@@ -133,6 +139,43 @@ export class ChildAppHostRegistryService {
       })));
   }
 
+  async prepareAllForApplicationUpdate(): Promise<{
+    ok: boolean;
+    results: Array<Record<string, unknown>>;
+  }> {
+    const registrations = Array.from(this.controllers.entries())
+      .flatMap(([toolId, instances]) => Array.from(instances.values()).map(registration => ({
+        toolId,
+        registration,
+      })));
+    const results: Array<Record<string, unknown>> = [];
+
+    for (const { toolId, registration } of registrations) {
+      try {
+        const result = await registration.controller.prepareUpdate({ strict: true });
+        results.push({
+          toolId,
+          instanceId: registration.instanceId,
+          surface: registration.surface,
+          ...result,
+        });
+      } catch (error) {
+        results.push({
+          ok: false,
+          toolId,
+          instanceId: registration.instanceId,
+          surface: registration.surface,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      ok: results.every(result => result['ok'] === true),
+      results,
+    };
+  }
+
   async control(
     toolId: string,
     action: ChildAppHostAction,
@@ -154,6 +197,8 @@ export class ChildAppHostRegistryService {
           surface: registration.surface,
           ...controller.status(),
         };
+      case 'prepareUpdate':
+        return controller.prepareUpdate({ strict: options.strictLifecycle === true });
       case 'restart':
         return controller.restart();
       case 'close':

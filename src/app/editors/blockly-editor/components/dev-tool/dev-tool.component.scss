@@ -1,6 +1,6 @@
 .devtool-box {
     position: absolute;
-    bottom: 1px;
+    bottom: 0;
     left: 0;
     display: flex;
     gap: 5px;
@@ -10,7 +10,6 @@
     border-radius: 5px;
     box-shadow: var(--aily-shadow-sm);
     height: 40px;
-    // transition: all 0.3s ease;
     overflow: hidden;
     // Keep below active right tool-panel (z-index 100) so aily-chat menus
     // that extend into the editor are not covered by this floating chrome.
@@ -23,12 +22,8 @@
         visibility: visible;
     }
 
-    &.viewport-adjusting {
-        // transition: none;
-    }
-
     &.dragging {
-        // transition: none;
+        will-change: transform;
         opacity: 0.8;
         box-shadow: var(--aily-shadow-lg);
     }
@@ -41,6 +36,7 @@
         justify-content: center;
         color: var(--aily-text-secondary);
         border-radius: 3px;
+        touch-action: none;
 
         &:hover {
             background: var(--aily-highlight-bg);

@@ -79,11 +79,29 @@ child/aily-builder*
 /e2e/.artifacts
 
 **/*.spec.ts
+!src/app/utils/language-code.spec.ts
 !src/app/services/project-debug-configuration.service.spec.ts
 !src/app/services/project-data/project-data-legacy-import.spec.ts
 !src/app/services/serial-port-selection.spec.ts
 !src/app/services/subapp-agent-presentation.spec.ts
 !src/app/services/aily-chat-tool-routing.spec.ts
+!src/app/services/auth-required-tool.spec.ts
+!src/app/services/default-aily-chat-bootstrap.spec.ts
+!src/app/services/child-tool-close-lifecycle.spec.ts
+!src/app/services/child-app-host-registry.service.spec.ts
+!src/app/services/service-region-switch.spec.ts
+!src/app/editors/blockly-editor/board-auth-gate.spec.ts
+!src/app/services/update.service.spec.ts
+!src/app/services/child-app-safety.service.spec.ts
+!src/app/services/compile-validation.service.spec.ts
+!src/app/main-window/components/footer/footer.component.spec.ts
+!src/app/editors/code-editor-pro/services/code-editor-pro-project.service.spec.ts
+!src/app/editors/blockly-editor/components/dev-tool/dev-tool-drag-controller.spec.ts
+!src/app/editors/blockly-editor/components/blockly/plugins/workspace-multiselect/global.spec.ts
+!src/app/editors/blockly-editor/services/blockly-runtime-block-metadata.spec.ts
+!src/app/editors/blockly-editor/components/blockly/generators/arduino/arduino-entrypoint-mapping.spec.ts
+!src/app/editors/blockly-editor/tools/code-viewer/code-viewer-range.spec.ts
+!src/app/tools/app-store/app-store.service.spec.ts
 !src/app/tools/aily-chat/tools/editorOperationEvents.spec.ts
 !src/app/tools/aily-chat/tools/blocklyEditorOperationQueue.spec.ts
 !src/app/tools/aily-chat/components/x-dialog/x-markdown-target-morph.spec.ts
@@ -107,3 +125,4 @@ src/app/tools/aily-chat/tools/libraries
 src/app/tools/aily-chat/tools/new_idea
 src/app/tools/aily-chat/tools/tests
 src/app/tools/aily-chat/tools/自定义库-函数
+todo.md

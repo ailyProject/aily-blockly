@@ -849,6 +849,16 @@ async function importFromAbs(
       };
     }
 
+    if (parseResult.warnings && parseResult.warnings.length > 0) {
+      const warningMessages = parseResult.warnings
+        .map(warning => `第 ${warning.line} 行: ${warning.message}`)
+        .join('\n');
+      return {
+        is_error: true,
+        content: `ABS 预检未通过，未修改工作区:\n${warningMessages}\n\n请先安装并加载缺失的积木库，再重新执行导入；禁止按 INPUT0/INPUT1 猜测未知块结构。`,
+      };
+    }
+
     // ABS 导入必须在修改工作区前完成资源和内联大值预检。
     const inlineCandidate = { blocks: { languageVersion: 0, blocks: parseResult.rootBlocks } };
     try {

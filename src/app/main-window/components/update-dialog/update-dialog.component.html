@@ -1,4 +1,11 @@
-<app-base-dialog [title]="title" [buttons]="buttons" (closeDialog)="onClose()" (buttonClick)="onButtonClick($event)">
+<app-base-dialog
+  [title]="title"
+  [buttons]="buttons"
+  [showMinimizeButton]="mode === 'downloading'"
+  [minimizeButtonLabel]="'UPDATE_DIALOG.DOWNLOAD_IN_BACKGROUND' | translate"
+  (minimizeDialog)="onMinimize()"
+  (closeDialog)="onClose()"
+  (buttonClick)="onButtonClick($event)">
 
   @if(mode === 'available'){
   <div #markdown class="markdown-container sscroll"></div>
@@ -15,6 +22,12 @@
     <span>{{ 'UPDATE_DIALOG.USING_FALLBACK_DOWNLOAD_SOURCE' | translate:downloadSourceStatus }}</span>
   </div>
   }
+  }
+
+  @if (mode === 'preparing-install') {
+  <div class="text" role="status" aria-live="polite">
+    {{ installPreparationMessageKey | translate }}
+  </div>
   }
 
   @if (mode === 'error') {

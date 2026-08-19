@@ -1,25 +1,31 @@
 import { Injectable } from '@angular/core';
-import { HttpBackend, HttpClient, HttpHeaders } from '@angular/common/http';
-import { firstValueFrom, timeout } from 'rxjs';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { firstValueFrom, TimeoutError, timeout } from 'rxjs';
 import { API } from '../configs/api.config';
-import { AuthService, CommonResponse } from './auth.service';
+import { AuthService } from './auth.service';
+
+interface CompileValidationResponse {
+  status?: number;
+  data?: {
+    validated?: boolean;
+    message?: string;
+  };
+}
 
 @Injectable({
   providedIn: 'root'
 })
 export class CompileValidationService {
   private readonly storageKey = 'aily_compile_validated_users';
-  private readonly requestTimeoutMs = 3000;
+  private readonly requestTimeoutMs = 20_000;
   private readonly inFlightUserIds = new Set<string>();
   private readonly completedUserIds = new Set<string>();
-
-  private silentHttp: HttpClient;
+  private readonly invitationCheckedUserIds = new Set<string>();
 
   constructor(
     private authService: AuthService,
-    httpBackend: HttpBackend,
+    private http: HttpClient,
   ) {
-    this.silentHttp = new HttpClient(httpBackend);
     this.restoreCompletedUserIds();
   }
 
@@ -28,25 +34,50 @@ export class CompileValidationService {
   }
 
   private async validateInBackground(): Promise<void> {
+    const userIdAtCompile = this.authService.currentUser?.id;
+    let tokenAtCompile: string | null;
+    try {
+      tokenAtCompile = await this.authService.getToken2();
+    } catch (error) {
+      console.warn('[CompileValidation] 读取认证信息失败:', error);
+      return;
+    }
+
+    if (!tokenAtCompile) {
+      if (this.authService.isAuthenticated) {
+        this.logSkip('token-not-ready');
+      }
+      return;
+    }
+
     if (!this.authService.isAuthenticated) {
+      const authState = this.authService.getAuthInitializationState();
+      if (authState === 'idle' || authState === 'checking' || authState === 'unavailable') {
+        try {
+          await this.authService.initializeAuth();
+        } catch (error) {
+          console.warn('[CompileValidation] 等待认证初始化失败:', error);
+        }
+      }
+    }
+
+    if (!this.authService.isAuthenticated) {
+      this.logSkip('auth-not-ready', {
+        authState: this.authService.getAuthInitializationState(),
+      });
       return;
     }
 
-    const token = await this.authService.getToken2();
-    if (!token) {
-      return;
-    }
-
-    const currentUser = this.authService.currentUser;
+    let currentUser = this.authService.currentUser;
     const userId = currentUser?.id;
-    const invitation = currentUser?.invitation;
 
-    if (!userId || !invitation?.is_invited) {
+    if (!userId) {
+      this.logSkip('user-not-ready');
       return;
     }
 
-    if (invitation.compile_validated) {
-      this.markUserCompleted(userId);
+    if (userIdAtCompile && userIdAtCompile !== userId) {
+      this.logSkip('user-changed-during-auth');
       return;
     }
 
@@ -57,30 +88,89 @@ export class CompileValidationService {
     this.inFlightUserIds.add(userId);
 
     try {
-      const response: any = await firstValueFrom(
-        this.silentHttp.post<CommonResponse>(
+      if (!currentUser.invitation) {
+        if (this.invitationCheckedUserIds.has(userId)) {
+          return;
+        }
+
+        try {
+          await this.authService.refreshMe();
+        } catch (error) {
+          console.warn('[CompileValidation] 刷新邀请状态失败:', error);
+          return;
+        }
+
+        currentUser = this.authService.currentUser;
+        if (!this.authService.isAuthenticated || currentUser?.id !== userId) {
+          this.logSkip('user-changed-during-refresh');
+          return;
+        }
+        this.invitationCheckedUserIds.add(userId);
+      }
+
+      const invitation = currentUser.invitation;
+      if (!invitation) {
+        this.logSkip('invitation-not-ready');
+        return;
+      }
+
+      if (invitation.is_invited !== true) {
+        return;
+      }
+
+      if (invitation.compile_validated === true) {
+        this.markUserCompleted(userId);
+        return;
+      }
+
+      const tokenBeforeRequest = await this.authService.getToken2();
+      if (
+        tokenBeforeRequest !== tokenAtCompile
+        || !this.authService.isAuthenticated
+        || this.authService.currentUser?.id !== userId
+      ) {
+        this.logSkip('user-changed-before-request');
+        return;
+      }
+
+      const response = await firstValueFrom(
+        this.http.post<CompileValidationResponse>(
           API.invitationValidateCompile,
           {},
-          {
-            headers: new HttpHeaders({
-              Authorization: `Bearer ${token}`
-            })
-          }
-        ).pipe(timeout(this.requestTimeoutMs))
+        ).pipe(timeout({ first: this.requestTimeoutMs }))
       );
 
       const validated = Boolean(response?.data?.validated);
       const message = String(response?.data?.message || '');
 
       if (validated || message === '已验证过') {
+        if (!this.authService.isAuthenticated || this.authService.currentUser?.id !== userId) {
+          this.logSkip('user-changed-before-response');
+          return;
+        }
         this.markUserCompleted(userId);
-        this.authService.refreshMe();
+        void this.authService.refreshMe().catch((error) => {
+          console.warn('[CompileValidation] 验证成功后刷新用户状态失败:', error);
+        });
+      } else {
+        this.logSkip('response-not-confirmed', { status: response?.status });
       }
     } catch (error) {
-      console.warn('首次编译验证后台上报失败:', error);
+      const reason = error instanceof TimeoutError
+        ? 'timeout'
+        : error instanceof HttpErrorResponse && error.status === 0
+          ? 'network'
+          : error instanceof HttpErrorResponse
+            ? `http-${error.status}`
+            : 'unknown';
+      console.warn('[CompileValidation] 编译验证后台上报失败:', { reason, error });
     } finally {
       this.inFlightUserIds.delete(userId);
     }
+  }
+
+  private logSkip(reason: string, details: Record<string, unknown> = {}): void {
+    console.debug('[CompileValidation] 跳过本次编译验证上报:', { reason, ...details });
   }
 
   private markUserCompleted(userId: string): void {

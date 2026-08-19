@@ -16,6 +16,8 @@ export class SettingsService {
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5分钟缓存
   /** 同一 registry 并发请求时共用一个请求，避免并行三次 vc-package-versions.json */
   private packageVersionListInflight = new Map<string, Promise<string[]>>();
+  /** 同一 prefix 并发查询时共用一次 npm ls，不缓存结果，避免数据过期 */
+  private installedDependenciesInflight = new Map<string, Promise<Record<string, any>>>();
 
   constructor(
     private http: HttpClient
@@ -164,7 +166,20 @@ export class SettingsService {
   }
 
   // installed dependencies
-  async getInstalledDependencies(prefix: string) {
+  async getInstalledDependencies(prefix: string): Promise<Record<string, any>> {
+    let inflight = this.installedDependenciesInflight.get(prefix);
+    if (inflight) {
+      return inflight;
+    }
+
+    inflight = this.loadInstalledDependencies(prefix).finally(() => {
+      this.installedDependenciesInflight.delete(prefix);
+    });
+    this.installedDependenciesInflight.set(prefix, inflight);
+    return inflight;
+  }
+
+  private async loadInstalledDependencies(prefix: string): Promise<Record<string, any>> {
     try {
       // 首先尝试 npm ls（prefix 必须加引号：macOS 常见路径含 Application Support 空格，否则 exec 会拆参失败）
       const cmd = `npm ls --json=true --depth=0 --silent --prefix "${prefix}"`;

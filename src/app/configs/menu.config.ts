@@ -197,13 +197,6 @@ export let GUIDE_MENU: IMenuItem[] = [
     action: 'playground-open',
     data: { type: 'other', action: 'openByBrowser', url: 'https://aily.pro' },
     icon: 'fa-light fa-album-collection',
-  },
-  {
-    name: 'MENU.AI_ASSISTANT',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'aily-chat' },
-    icon: 'fa-light fa-star-christmas',
-    more: 'AI',
   }
 ];
 

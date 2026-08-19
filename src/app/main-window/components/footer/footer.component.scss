@@ -11,6 +11,13 @@ $footer-inner-height: 28px;
   position: relative;
 }
 
+.footer-status-area {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin-left: auto;
+}
+
 .btn {
   width: $footer-inner-height;
   height: $footer-inner-height;
@@ -26,12 +33,10 @@ $footer-inner-height: 28px;
 }
 
 .state {
-  position: absolute;
-  top: 0;
-  right: 10px;
   height: 26px;
   display: flex;
   align-items: center;
+  margin-right: 8px;
 
   .icon {
     width: 26px;
@@ -48,5 +53,132 @@ $footer-inner-height: 28px;
 
   .fa-circle-check{
     color: rgb(0, 200, 0);
+  }
+}
+
+.update-indicator {
+  display: grid;
+  width: $footer-inner-height;
+  height: $footer-inner-height;
+  margin-right: 4px;
+  padding: 0;
+  place-items: center;
+  color: var(--aily-text-secondary);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid transparent;
+  cursor: pointer;
+  transition: color 0.16s ease, background 0.16s ease;
+
+  &:hover {
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+  }
+
+  &:focus {
+    outline: none;
+  }
+
+  &:focus-visible {
+    color: var(--aily-text-primary);
+
+    .update-icon {
+      border-radius: 50%;
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--aily-color-accent) 70%, transparent);
+    }
+  }
+
+  &.downloading {
+    color: var(--aily-color-accent);
+
+    .update-icon > i {
+      font-size: 10px;
+    }
+  }
+
+  &.ready {
+    color: var(--aily-color-accent);
+    background: transparent;
+
+    &:hover {
+      background: var(--aily-bg-tertiary);
+    }
+
+    .update-icon > i {
+      filter: drop-shadow(0 0 3px color-mix(in srgb, var(--aily-color-accent) 48%, transparent));
+    }
+  }
+
+  &.error {
+    color: var(--aily-color-error-bright);
+  }
+}
+
+.update-icon {
+  position: relative;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  transition: box-shadow 0.16s ease;
+
+  > i {
+    position: relative;
+    z-index: 1;
+    font-size: 14px;
+  }
+}
+
+.update-progress-ring {
+  position: absolute;
+  inset: 0;
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+  transform: rotate(-90deg);
+
+  circle {
+    fill: none;
+    stroke-width: 1.5;
+  }
+}
+
+.update-progress-track {
+  stroke: color-mix(in srgb, var(--aily-text-tertiary) 25%, transparent);
+}
+
+.update-progress-value {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-dasharray: 65.97;
+  transition: stroke-dashoffset 0.2s ease;
+}
+
+.update-ready-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  width: 6px;
+  height: 6px;
+  background: #43d17d;
+  border: 1px solid var(--aily-bg-primary);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #43d17d 24%, transparent);
+  animation: update-ready-pulse 1.8s ease-out 2;
+}
+
+@keyframes update-ready-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, #43d17d 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-ready-dot {
+    animation: none;
   }
 }

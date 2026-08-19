@@ -1,4 +1,5 @@
 import * as Blockly from 'blockly';
+import { applyArduinoEntrypointBlockMappings } from './arduino-entrypoint-mapping';
 
 export enum Order {
   ATOMIC = 0, // 0 "" ...
@@ -55,7 +56,7 @@ export interface CodeLineRange {
  * 代码片段记录，记录某个 block 向某个区段( section )贡献了什么代码
  */
 export interface CodeFragment {
-  section: string;  // macros | libraries | variables | objects | functions | setups_begin | setups | setups_end | loops_begin | loops | loops_end | body
+  section: string;  // macros | libraries | variables | objects | functions | setups_begin | setups | setups_end | loops_begin | loops | loops_end | body | function_container
   tag: string;      // codeDict 中的 key（对 body 代码无 tag）
   code: string;     // 实际代码内容
 }
@@ -680,6 +681,13 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
         }
       }
     }
+
+    // setup/loop 是函数容器：选中时映射整个函数，子语句仍保留各自的精确映射。
+    applyArduinoEntrypointBlockMappings(
+      lines,
+      this._blockTypes,
+      this.blockCodeMap,
+    );
   }
 
   /**

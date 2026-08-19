@@ -766,13 +766,13 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         this.clearParameterInputTimer();
         this.parameterInputTimerId = setTimeout(() => {
             this.parameterInputTimerId = null;
-            this.applyParameterInputChange();
+            void this.applyParameterInputChange();
         }, MEDIA_FIELD_PARAMETER_DEBOUNCE_MS);
     }
 
     private commitParameterInputChange() {
         this.clearParameterInputTimer();
-        this.applyParameterInputChange();
+        return this.applyParameterInputChange();
     }
 
     private clearParameterInputTimer() {
@@ -786,6 +786,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         const operation = this.applyParameterInputChangeAsync();
         projectDataRuntime.trackMutation(operation);
         void operation.catch((error) => this.reportProjectDataLoadError(error));
+        return operation;
     }
 
     private async applyParameterInputChangeAsync() {
@@ -848,6 +849,8 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
             || nextThreshold !== currentValue.threshold;
         if (!parametersChanged) return;
 
+        this.invalidateSourceRedecode();
+        this.clearSourceRedecodeTimer();
         await this.ensureFramesLoaded();
         this.closeFrameEditor();
         const resizedFrames = dimensionsChanged
@@ -866,7 +869,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
             threshold: nextThreshold,
         };
         if (dimensionsChanged || nextFrames.length !== this.resolvedFrames.length) {
-            this.commitManualFrames(nextValue, nextFrames, true);
+            await this.commitManualFrames(nextValue, nextFrames, true);
         } else {
             this.setValue(nextValue, false);
         }
@@ -894,7 +897,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         if (!file) return;
 
         input.value = '';
-        this.commitParameterInputChange();
+        await this.commitParameterInputChange();
         this.invalidateSourceRedecode();
         this.clearSourceRedecodeTimer();
         this.closeFrameEditor(false);
@@ -2175,7 +2178,6 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         this.resolvedFrameRefId = '';
         this.resolvedFrames = nextFrames;
         this.updateBlockDisplayImage();
-        this.updateControlsFromValue();
         this.updateStatusFromValue();
 
         const mutationVersion = ++this.frameMutationVersion;
@@ -2187,6 +2189,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         });
         projectDataRuntime.trackMutation(mutation);
         void mutation.catch((error) => this.reportProjectDataLoadError(error));
+        return mutation;
     }
 
     private async persistManualFrames(
@@ -2316,7 +2319,6 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
     private refreshResolvedFrames() {
         this.updateBlockDisplayImage();
         this.renderFrameStrip();
-        this.updateControlsFromValue();
         this.updatePlayTestButtonState();
     }
 

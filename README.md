@@ -14,8 +14,9 @@ aily Blockly is not companion software for a single piece of hardware. It is a t
 ## Video Introduction
 [ailyblockly-2min.webm](https://github.com/user-attachments/assets/bc8da095-2e4d-4ba0-ad31-2a4824a21576)
 
-## China Version Download
-[Download](https://yiyu.pro/download)
+## Downloads
+- [China Version](https://yiyu.pro/download)
+- [International Version](https://aily.pro/download)
 
 ## Project Highlights
 1. **Ready Out of the Box**

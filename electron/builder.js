@@ -505,16 +505,33 @@ async function waitForReady() {
 }
 
 function getStatus() {
-  const commandState = getAilyBuilderReadyState(requireChildPath());
+  const commandState = startupResult || {
+    ok: false,
+    path: getAilyBuilderCommandPath(),
+    version: null,
+    installed: false,
+    error: "",
+  };
+  const commandStillExists = !commandState.ok || (
+    !!commandState.path && fs.existsSync(commandState.path)
+  );
+  const effectiveState = commandStillExists
+    ? commandState
+    : {
+      ...commandState,
+      ok: false,
+      version: null,
+      error: "aily-builder 命令不存在",
+    };
   return {
     key: AILY_BUILDER_KEY,
     packageName: PACKAGE_NAME,
-    installed: commandState.ok,
-    installedVersion: commandState.version,
+    installed: effectiveState.ok,
+    installedVersion: effectiveState.version,
     installing: !!mutationPromise || (!!startupPromise && !startupResult),
     installingKey: installPromise ? AILY_BUILDER_KEY : null,
     configLoaded: true,
-    error: commandState.ok ? "" : (startupResult?.error || commandState.error),
+    error: effectiveState.ok ? "" : effectiveState.error,
   };
 }
 
@@ -524,6 +541,7 @@ async function checkForUpdate(childPath) {
   const latestVersion = await getLatestVersion(childPath);
 
   if (currentState.ok && currentVersion && !semver.gt(latestVersion, currentVersion)) {
+    rememberReadyResult(currentState);
     return {
       updated: false,
       previousVersion: currentVersion,

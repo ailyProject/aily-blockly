@@ -1,4 +1,77 @@
+import { AilyHost } from '../core/host';
 import type { ToolUseResult } from '../core/tool-types';
+
+const CUSTOM_PARTITION_CONFIG_KEY = 'PartitionScheme';
+const CUSTOM_PARTITION_CONFIG_VALUE = 'custom';
+const CUSTOM_PARTITION_FILE_NAME = 'partitions.csv';
+
+interface CustomPartitionPaths {
+    projectRoot: string;
+    requiredFilePath: string;
+    legacyFilePath: string;
+}
+
+function getWindowApi(name: string): any {
+    return typeof window !== 'undefined' ? (window as any)[name] : undefined;
+}
+
+function getPathApi(): any {
+    if (AilyHost.isInitialized()) {
+        try {
+            return AilyHost.get().path;
+        } catch { /* ignore */ }
+    }
+    return getWindowApi('path');
+}
+
+function getFsApi(): any {
+    if (AilyHost.isInitialized()) {
+        try {
+            return AilyHost.get().fs;
+        } catch { /* ignore */ }
+    }
+    return getWindowApi('fs');
+}
+
+function joinPath(...parts: string[]): string {
+    const pathApi = getPathApi();
+    if (pathApi && typeof pathApi.join === 'function') {
+        return pathApi.join(...parts);
+    }
+    return parts.join('/').replace(/\/+/g, '/');
+}
+
+function resolveCustomPartitionPaths(projectService: any): CustomPartitionPaths | null {
+    const projectRoot = typeof projectService?.currentProjectPath === 'string'
+        ? projectService.currentProjectPath.trim()
+        : '';
+    if (!projectRoot) {
+        return null;
+    }
+
+    return {
+        projectRoot,
+        requiredFilePath: joinPath(projectRoot, 'src', CUSTOM_PARTITION_FILE_NAME),
+        legacyFilePath: joinPath(projectRoot, CUSTOM_PARTITION_FILE_NAME),
+    };
+}
+
+function fileExists(filePath: string): boolean {
+    const fsApi = getFsApi();
+    if (!fsApi || typeof fsApi.existsSync !== 'function') {
+        return false;
+    }
+    try {
+        return fsApi.existsSync(filePath) === true;
+    } catch {
+        return false;
+    }
+}
+
+function isCustomPartitionConfig(configKey: string, configValue: string): boolean {
+    return configKey === CUSTOM_PARTITION_CONFIG_KEY
+        && String(configValue).toLowerCase() === CUSTOM_PARTITION_CONFIG_VALUE;
+}
 
 interface GetBoardConfigInput {
     /** 不需要参数，自动获取当前开发板的配置 */
@@ -196,15 +269,39 @@ export async function setBoardConfigTool(
             builderService.triggerPreprocess('config-changed');
         }
 
+        const result: any = {
+            success: true,
+            message: `配置项 "${config_key}" 已更新为 "${config_value}"`,
+            config_key,
+            old_value: oldValue || null,
+            new_value: config_value
+        };
+
+        if (isCustomPartitionConfig(config_key, config_value)) {
+            const partitionPaths = resolveCustomPartitionPaths(projectService);
+            if (partitionPaths) {
+                const hasRequiredFile = fileExists(partitionPaths.requiredFilePath);
+                const hasLegacyFile = fileExists(partitionPaths.legacyFilePath);
+                result.custom_partition = {
+                    file_name: CUSTOM_PARTITION_FILE_NAME,
+                    required_file_path: partitionPaths.requiredFilePath,
+                    compatible_legacy_file_path: partitionPaths.legacyFilePath,
+                    exists: hasRequiredFile,
+                    legacy_exists: hasLegacyFile
+                };
+                if (!hasRequiredFile) {
+                    result.requires_file = true;
+                    result.required_file_path = partitionPaths.requiredFilePath;
+                    result.message = hasLegacyFile
+                        ? `配置项 "${config_key}" 已更新为 "${config_value}"。检测到旧位置分区文件；建议迁移或复制到 ${partitionPaths.requiredFilePath}`
+                        : `配置项 "${config_key}" 已更新为 "${config_value}"。请生成 ESP32 分区表文件并保存到 ${partitionPaths.requiredFilePath}`;
+                }
+            }
+        }
+
         return {
             is_error: false,
-            content: JSON.stringify({
-                success: true,
-                message: `配置项 "${config_key}" 已更新为 "${config_value}"`,
-                config_key,
-                old_value: oldValue || null,
-                new_value: config_value
-            })
+            content: JSON.stringify(result)
         };
     } catch (error: any) {
         return {

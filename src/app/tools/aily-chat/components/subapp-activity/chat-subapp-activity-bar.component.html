@@ -21,12 +21,6 @@
               <span class="subapp-runtime-dot" aria-hidden="true"></span>
             </span>
             <span class="subapp-activity-title">{{ activity.title | translate }}</span>
-            @if (activity.summary?.label) {
-              <span class="subapp-activity-summary">{{ activity.summary?.label }}</span>
-            }
-            @if (activity.invocationCount > 1) {
-              <span class="subapp-activity-count">{{ activity.invocationCount }}</span>
-            }
           </button>
         }
       </div>

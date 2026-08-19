@@ -12,12 +12,16 @@ import { BuilderService as TopBuilderService } from '../../services/builder.serv
 import { UploaderService } from '../../services/uploader.service';
 import { ElectronService } from '../../services/electron.service';
 import { ThemeService } from '../../services/theme.service';
-import { CodeEditorProProjectService } from './services/code-editor-pro-project.service';
+import {
+  CodeEditorProProjectService,
+  type CodeEditorProPersistenceBridge,
+} from './services/code-editor-pro-project.service';
 import { NpmService } from '../../services/npm.service';
 import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/builder.utils';
 import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-packages.utils';
 import { UiService } from '../../services/ui.service';
 import { AiCoderDiffBridgeService } from '../../services/ai-coder-diff-bridge.service';
+import { CmdService, type CmdOutput } from '../../services/cmd.service';
 
 /** 与 child/aily-coder/src/hostEmbedContext.ts 中 channel 常量一致 */
 const AILY_CODER_HOST_CONTEXT_CHANNEL = 'aily-coder-host-context';
@@ -38,6 +42,15 @@ const AILY_EMBED_CLIPBOARD_WRITE_CHANNEL = 'aily-embed-clipboard-write';
 const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-host-layout-refresh';
 /** 宿主 → iframe：磁盘 watch 事件（与 parentBackedNativeFs.ts 一致） */
 const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-native-fs-watch-event';
+const AILY_CODER_READY_CHANNEL = 'aily-coder-ready';
+const AILY_CODER_HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-host-lifecycle-request';
+const AILY_CODER_HOST_LIFECYCLE_RESPONSE_CHANNEL = 'aily-coder-host-lifecycle-response';
+/** Coder 内部目录不进入默认 Git 状态与提交。 */
+const CODER_GIT_SYSTEM_DIRECTORIES = ['.aily', '.log', '.workspace-history'] as const;
+const CODER_GIT_PATHSPECS = [
+  '.',
+  ...CODER_GIT_SYSTEM_DIRECTORIES.map((name) => `:(glob,exclude)**/${name}/**`),
+] as const;
 
 @Component({
   selector: 'app-code-editor-pro',
@@ -56,6 +69,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   coderEmbedError: string | null = null;
   coderEmbedLoading = true;
   coderEmbedFrameReady = false;
+  private coderWorkbenchReady = false;
   coderEmbedRevealing = false;
   /** 内嵌 iframe 打开的本地工程根路径（Electron postMessage FS 断言用） */
   private coderEmbedWorkspaceRoot: string | null = null;
@@ -64,6 +78,19 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   private readonly coderDevEmbedBase = 'http://127.0.0.1:5174/';
 
   private readonly coderNativeFsBridgeListener = (ev: MessageEvent) => this.onCoderNativeFsMessage(ev);
+  private readonly coderPersistenceBridge: CodeEditorProPersistenceBridge = {
+    saveAll: async () => {
+      const result = await this.requestCoderLifecycle('save-all');
+      return { ok: result.ok, ...(result.message ? { message: result.message } : {}) };
+    },
+    hasUnsavedChanges: async () => {
+      const result = await this.requestCoderLifecycle('status');
+      if (!result.ok) {
+        throw new Error(result.message || '无法检查 Aily Coder 未保存状态');
+      }
+      return result.dirtyAfter > 0;
+    },
+  };
 
   /** Worker 内扩展通过 BroadcastChannel 请求访达/资源管理器高亮 */
   private ailyOsRevealBc?: BroadcastChannel;
@@ -97,6 +124,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     private npmService: NpmService,
     private uiService: UiService,
     private aiCoderDiffBridge: AiCoderDiffBridgeService,
+    private cmdService: CmdService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -107,6 +135,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   }
 
   ngOnInit() {
+    this.proProject.registerPersistenceBridge(this.coderPersistenceBridge);
     window.addEventListener('message', this.coderNativeFsBridgeListener);
     try {
       this.ailyOsRevealBc = new BroadcastChannel(AILY_EMBED_OS_REVEAL_CHANNEL);
@@ -228,6 +257,8 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   }
 
   ngOnDestroy(): void {
+    this.proProject.unregisterPersistenceBridge(this.coderPersistenceBridge);
+    this.coderWorkbenchReady = false;
     this.clearCoderEmbedRevealTimer();
     this.embedHostResizeObserver?.disconnect();
     this.embedHostResizeObserver = undefined;
@@ -252,6 +283,69 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.builderService.cancel();
     this.uploadService.cancel();
     this.electronService.setTitle('aily blockly');
+  }
+
+  private requestCoderLifecycle(
+    action: 'status' | 'save-all',
+    timeoutMs = 10_000,
+  ): Promise<{ ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }> {
+    const target = this.coderEmbedFrame?.nativeElement?.contentWindow;
+    if (!target || !this.coderWorkbenchReady) {
+      return Promise.resolve({
+        ok: false,
+        dirtyBefore: 0,
+        dirtyAfter: 0,
+        message: 'Aily Coder 编辑器尚未就绪',
+      });
+    }
+
+    const requestId = `aily-coder-lifecycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener('message', listener);
+        resolve(result);
+      };
+      const listener = (event: MessageEvent) => {
+        if (event.source !== target) return;
+        const payload = event.data as {
+          channel?: string;
+          requestId?: string;
+          ok?: boolean;
+          dirtyBefore?: number;
+          dirtyAfter?: number;
+          message?: string;
+        };
+        if (
+          payload?.channel !== AILY_CODER_HOST_LIFECYCLE_RESPONSE_CHANNEL ||
+          payload.requestId !== requestId
+        ) {
+          return;
+        }
+        finish({
+          ok: payload.ok === true,
+          dirtyBefore: Number.isFinite(payload.dirtyBefore) ? Number(payload.dirtyBefore) : 0,
+          dirtyAfter: Number.isFinite(payload.dirtyAfter) ? Number(payload.dirtyAfter) : 0,
+          ...(typeof payload.message === 'string' && payload.message ? { message: payload.message } : {}),
+        });
+      };
+      const timer = setTimeout(() => finish({
+        ok: false,
+        dirtyBefore: 0,
+        dirtyAfter: 0,
+        message: '等待 Aily Coder 保存确认超时',
+      }), timeoutMs);
+
+      window.addEventListener('message', listener);
+      target.postMessage({
+        channel: AILY_CODER_HOST_LIFECYCLE_REQUEST_CHANNEL,
+        requestId,
+        action,
+      }, '*');
+    });
   }
 
   /**
@@ -360,6 +454,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   onCoderEmbedFrameLoad(): void {
     const frame = this.coderEmbedFrame?.nativeElement;
     const root = this.coderEmbedWorkspaceRoot;
+    this.coderWorkbenchReady = false;
     this.coderEmbedFrameReady = true;
     this.coderEmbedRevealing = true;
     this.clearCoderEmbedRevealTimer();
@@ -382,6 +477,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.clearCoderEmbedRevealTimer();
     this.coderEmbedLoading = true;
     this.coderEmbedFrameReady = false;
+    this.coderWorkbenchReady = false;
     this.coderEmbedRevealing = false;
     this.coderEmbedError = null;
   }
@@ -737,6 +833,135 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     }
   }
 
+  private runSingleCoderGitCommand(command: string, args: string[], cwd: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (error) {
+          reject(error);
+        } else {
+          resolve(stdout);
+        }
+      };
+
+      this.cmdService.spawn(
+        command,
+        args,
+        {
+          cwd,
+          shellProfile: false,
+          streamId: `coder_git_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        },
+        true,
+      ).subscribe({
+        next: (event: CmdOutput) => {
+          if (event.type === 'stdout') {
+            stdout += event.data ?? '';
+            return;
+          }
+          if (event.type === 'stderr') {
+            stderr += event.data ?? '';
+            return;
+          }
+          if (event.type === 'error') {
+            finish(new Error(event.error || stderr || 'Git 命令执行失败'));
+            return;
+          }
+          if (event.type === 'close') {
+            if (!stdout && typeof event.stdout === 'string') stdout = event.stdout;
+            if (!stderr && typeof event.stderr === 'string') stderr = event.stderr;
+            if ((event.code ?? 0) === 0) {
+              finish();
+            } else {
+              finish(new Error(stderr || stdout || `git ${args[0] ?? ''} 执行失败`));
+            }
+          }
+        },
+        error: (error: unknown) => finish(error instanceof Error ? error : new Error(String(error))),
+      });
+    });
+  }
+
+  private isGitExecutableMissing(error: unknown): boolean {
+    const message = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+    return message.includes('enoent')
+      || message.includes('command not found')
+      || message.includes('not recognized')
+      || (message.includes('无法将') && message.includes('识别'))
+      || message.includes('不是内部或外部命令');
+  }
+
+  private coderGitExecutableCandidates(): string[] {
+    const pathApi = window['path'] as {
+      join?: (...parts: string[]) => string;
+      getUserHome?: () => string;
+    };
+    const fsAny = window['fs'] as { existsSync?: (path: string) => boolean };
+    if (!pathApi.join || !fsAny.existsSync) return [];
+
+    const platform = (window as any).electronAPI?.platform?.type as string | undefined;
+    const home = pathApi.getUserHome?.() ?? '';
+    const candidates: string[] = [];
+    if (platform === 'win32') {
+      const roots = new Set<string>(['C:\\']);
+      for (const value of [home, this.coderEmbedWorkspaceRoot ?? '']) {
+        const match = value.match(/^[a-zA-Z]:[\\/]/);
+        if (match) roots.add(`${match[0][0].toUpperCase()}:\\`);
+      }
+      for (const root of roots) {
+        candidates.push(
+          pathApi.join(root, 'Program Files', 'Git', 'cmd', 'git.exe'),
+          pathApi.join(root, 'Program Files', 'Git', 'bin', 'git.exe'),
+          pathApi.join(root, 'Program Files (x86)', 'Git', 'cmd', 'git.exe'),
+        );
+      }
+      if (home) {
+        candidates.push(pathApi.join(home, 'AppData', 'Local', 'Programs', 'Git', 'cmd', 'git.exe'));
+      }
+    } else {
+      candidates.push('/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/opt/local/bin/git');
+    }
+    return [...new Set(candidates)].filter((candidate) => fsAny.existsSync?.(candidate));
+  }
+
+  private async runCoderGitCommand(args: string[], cwd: string): Promise<string> {
+    try {
+      return await this.runSingleCoderGitCommand('git', args, cwd);
+    } catch (error) {
+      if (!this.isGitExecutableMissing(error)) throw error;
+      for (const executable of this.coderGitExecutableCandidates()) {
+        try {
+          return await this.runSingleCoderGitCommand(executable, args, cwd);
+        } catch (fallbackError) {
+          if (!this.isGitExecutableMissing(fallbackError)) throw fallbackError;
+        }
+      }
+      throw error;
+    }
+  }
+
+  private assertCoderGitRelativePath(value: unknown): string {
+    const normalized = String(value ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const pathApi = window['path'] as { isAbsolute?: (path: string) => boolean };
+    const segments = normalized.split('/');
+    if (
+      !normalized
+      || normalized.includes('\0')
+      || pathApi.isAbsolute?.(normalized)
+      || segments.includes('..')
+      || segments.some((segment) =>
+        CODER_GIT_SYSTEM_DIRECTORIES.includes(segment.toLowerCase() as typeof CODER_GIT_SYSTEM_DIRECTORIES[number])
+      )
+    ) {
+      throw new Error('无效的 Git 工作区相对路径');
+    }
+    return normalized;
+  }
+
   /**
    * 在访达中高亮路径：允许工程根内、getBuildPath() 推断目录、或 aily-builder 全局缓存目录下的产物。
    * 同时校验 resolveActualBuildOutputs 解析的编译产物路径，覆盖产物落到 ~/Library/aily-builder 的常见情况。
@@ -951,7 +1176,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     }
   }
 
-  private onCoderNativeFsMessage(ev: MessageEvent): void {
+  private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
     const msg = ev.data as {
       channel?: string;
       id?: number;
@@ -959,6 +1184,12 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       payload?: Record<string, unknown>;
       absPath?: string;
     };
+    if (msg?.channel === AILY_CODER_READY_CHANNEL) {
+      if (ev.source === this.coderEmbedFrame?.nativeElement?.contentWindow) {
+        this.coderWorkbenchReady = true;
+      }
+      return;
+    }
     // 内嵌编辑器：在访达 / 资源管理器中高亮文件（工程根内或当前 getBuildPath 产物目录）
     if (msg?.channel === AILY_CODER_REVEAL_IN_OS_CHANNEL) {
       void this.runHostRevealInOs(String(msg.absPath ?? ''));
@@ -982,6 +1213,9 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       return;
     }
     if (msg?.channel !== 'aily-coder-native-fs' || typeof msg.id !== 'number' || !msg.op) {
+      return;
+    }
+    if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) {
       return;
     }
     const replyErr = (e: unknown) =>
@@ -1142,6 +1376,62 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
             this.coderEmbedFsWatchers.delete(watchId);
           }
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {});
+          break;
+        }
+        case 'nativeGitStatus': {
+          const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
+          const repositoryRoot = (
+            await this.runCoderGitCommand(['rev-parse', '--show-toplevel'], workspaceRoot)
+          ).trim();
+          const status = await this.runCoderGitCommand(
+            [
+              '-c',
+              'core.quotepath=false',
+              '-c',
+              'status.relativePaths=true',
+              'status',
+              '--porcelain=v1',
+              '-z',
+              '--untracked-files=all',
+              '--ignored=no',
+              '--',
+              ...CODER_GIT_PATHSPECS,
+            ],
+            workspaceRoot,
+          );
+          this.replyCoderNativeFs(ev.source as Window, msg.id!, { repositoryRoot, status });
+          break;
+        }
+        case 'nativeGitShowHead': {
+          const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
+          const relativePath = this.assertCoderGitRelativePath(payload['relativePath']);
+          const prefix = (
+            await this.runCoderGitCommand(['rev-parse', '--show-prefix'], workspaceRoot)
+          ).trim().replace(/\\/g, '/');
+          const content = await this.runCoderGitCommand(
+            ['show', `HEAD:${prefix}${relativePath}`],
+            workspaceRoot,
+          );
+          this.replyCoderNativeFs(ev.source as Window, msg.id!, { content });
+          break;
+        }
+        case 'nativeGitCommit': {
+          const workspaceRoot = this.assertPathInsideCoderEmbedRoot(String(payload['workspaceRoot']));
+          const message = String(payload['message'] ?? '').trim();
+          if (!message || message.length > 10000 || message.includes('\0')) {
+            replyErr(new Error('提交消息为空或过长'));
+            return;
+          }
+          await this.runCoderGitCommand(['rev-parse', '--show-toplevel'], workspaceRoot);
+          await this.runCoderGitCommand(
+            ['add', '-A', '--', ...CODER_GIT_PATHSPECS],
+            workspaceRoot,
+          );
+          const summary = await this.runCoderGitCommand(
+            ['commit', '-m', message, '--', ...CODER_GIT_PATHSPECS],
+            workspaceRoot,
+          );
+          this.replyCoderNativeFs(ev.source as Window, msg.id!, { summary: summary.trim() });
           break;
         }
         default:

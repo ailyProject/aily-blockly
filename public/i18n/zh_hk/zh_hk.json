@@ -192,6 +192,37 @@
             "LIB_MANAGER_TITLE": "庫管理器",
             "LIB_MANAGER_DESC": "點擊這裡打開庫管理器，可以安裝、移除各種功能擴展庫，為你的項目添加更多積木。"
         },
+        "AUDIO": {
+            "BUTTON_UPLOAD": "上傳",
+            "BUTTON_CLEAR": "清除",
+            "BUTTON_PLAY": "播放選取範圍",
+            "BUTTON_STOP": "停止播放",
+            "UPLOAD_TOOLTIP": "選擇瀏覽器支援解碼的音訊檔案",
+            "LABEL_SAMPLE_RATE": "採樣率",
+            "LABEL_CHANNELS": "聲道",
+            "LABEL_BIT_RATE": "位元率",
+            "LABEL_MONO": "單聲道",
+            "LABEL_STEREO": "立體聲",
+            "LABEL_START": "開始",
+            "LABEL_END": "結束",
+            "EMPTY": "尚未上傳音訊",
+            "STATUS_READING": "正在讀取 {{name}}...",
+            "STATUS_DECODING": "正在解碼 {{name}}...",
+            "STATUS_ENCODING": "正在編碼 MP3... {{progress}}%",
+            "STATUS_INFO": "{{name}} | {{duration}} | {{sampleRate}} Hz | {{channels}} 聲道 | {{bitRate}} kbps | {{size}}",
+            "ERROR_FILE_SIZE": "檔案大小不能超過 {{maxSize}}，目前檔案為 {{currentSize}}",
+            "ERROR_DECODE": "瀏覽器無法解碼此音訊檔案",
+            "ERROR_ENCODE": "MP3 編碼失敗",
+            "ERROR_LOAD": "音訊檔案載入失敗：{{message}}",
+            "ERROR_PROJECT_PATH_MISSING": "找不到目前的項目資料夾",
+            "ERROR_FS_UNAVAILABLE": "檔案系統 API 無法使用，無法讀寫音訊檔案",
+            "ERROR_FILE_MISSING": "音訊檔案不存在：{{path}}",
+            "WORKER_ERROR_INVALID_PCM": "解碼後的 PCM 資料無效",
+            "WORKER_ERROR_DURATION_EXCEEDED": "音訊長度不能超過 30 分鐘",
+            "WORKER_ERROR_INVALID_SETTINGS": "MP3 編碼參數無效",
+            "WORKER_ERROR_EMPTY_SELECTION": "請選擇非空的音訊範圍",
+            "WORKER_ERROR_ENCODE_FAILED": "MP3 編碼器未傳回資料"
+        },
         "TFTESPI_ANIMATION": {
             "UPLOAD_TOOLTIP": "支援格式：MP4、GIF",
             "LABEL_COLOR_MODE": "色彩",
@@ -339,6 +370,8 @@
             "OPEN_RESOURCE_FOLDER": "開啟資源資料夾",
             "REGION_TITLE": "切換服務區域",
             "REGION_DESC": "切換服務區域後需要重新登入，是否繼續？",
+            "REGION_CLOSE_APPS_TITLE": "切換服務區域並關閉應用程式？",
+            "REGION_CLOSE_APPS_DESC": "切換區域前會先安全結束或中斷進行中的任務並儲存可復原狀態，然後關閉這些應用程式：{{apps}}。任一步驟失敗都不會切換；成功後需重新登入。是否繼續？",
             "REGION_CONFIRM": "確認",
             "REGION_CANCEL": "取消",
             "REPOSITORY_URLS": "倉庫地址",
@@ -418,7 +451,7 @@
             "CREATING_AILY_CODE": "正在創建 Aily Code 專案"
         },
         "WARNINGS": {
-            "BETA_VERSION": "內測版本，未經驗證，謹慎使用",
+            "BETA_VERSION": "測試版本，未經驗證，謹慎使用",
             "TODO": "該設備支持即將上線"
         },
         "PROJECT_CATEGORY": {
@@ -491,8 +524,23 @@
         "SKIP_VERSION": "跳過此版本",
         "UPDATE_NOW": "立即更新",
         "CANCEL_DOWNLOAD": "取消下載",
+        "DOWNLOAD_IN_BACKGROUND": "背景下載",
+        "UPDATE_AVAILABLE_TOOLTIP": "發現新版本 {{version}}，點擊查看",
+        "DOWNLOADING_TOOLTIP": "正在背景下載 {{version}}（{{progress}}%），點擊查看",
+        "UPDATE_READY_TOOLTIP": "新版本 {{version}} 已下載完成，點擊安裝",
+        "PREPARING_TOOLTIP": "正在儲存工作並準備安裝 {{version}}",
+        "DOWNLOAD_ERROR_TOOLTIP": "版本 {{version}} 下載失敗，點擊查看",
         "INSTALL_LATER": "稍後安裝",
         "INSTALL_NOW": "立即安裝",
+        "SAVING_BEFORE_INSTALL": "正在儲存目前專案和程式碼工作階段，完成後將自動安裝…",
+        "PREPARING_BEFORE_INSTALL": "正在完成安裝前準備，完成後將自動安裝…",
+        "CHILD_APPS_IN_USE_TITLE": "安裝更新將關閉子應用",
+        "CHILD_APPS_IN_USE_MESSAGE": "{{names}} 正在使用中。繼續前會先安全結束或中斷進行中的任務並儲存可復原狀態，然後關閉這些子應用。任一步驟失敗都不會安裝，是否繼續？",
+        "CONTINUE_INSTALL": "安全結束並繼續",
+        "CANCEL_INSTALL": "取消",
+        "PREPARATION_FAILED": "安裝已取消：目前工作尚未安全儲存。{{detail}}",
+        "SAVE_FAILED": "目前專案儲存失敗",
+        "SESSION_SAVE_FAILED": "程式碼工作階段儲存失敗",
         "CLOSE": "關閉",
         "RETRY": "重試"
     },
@@ -839,6 +887,13 @@
     },
     "COMMON": {
         "FEATURE_COMING_SOON": "功能即將上線",
+        "AUTH_SESSION_REPLACED_NOTICE": "該帳號已在其他裝置登入，本機登入已失效，請重新登入。",
+        "SAFE_LOGOUT_TITLE": "確認登出？",
+        "SAFE_LOGOUT_DESC": "確定要登出目前帳戶嗎？",
+        "SAFE_LOGOUT_CLOSE_APPS_TITLE": "登出並關閉應用程式？",
+        "SAFE_LOGOUT_CLOSE_APPS_DESC": "登出前會先安全結束或中斷進行中的任務並儲存可復原狀態，然後關閉這些應用程式：{{apps}}。任一步驟失敗都不會登出，是否繼續？",
+        "SAFE_LOGOUT_CONFIRM": "登出",
+        "CANCEL": "取消",
         "ONBOARDING": {
             "SKIP": "跳過",
             "PREV": "上一步",
@@ -881,6 +936,7 @@
         "LOADING_LIB": "正在載入{{name}}",
         "LOADING_BLOCKLY_PROGRAM": "正在載入Blockly程式",
         "PROJECT_LOAD_SUCCESS": "專案載入成功",
+        "BOARD_CLOUD_AUTH_REQUIRED": "此硬件的開發依賴雲端服務，需要登入後才能正常進行開發。",
         "EXPLAIN_BLOCK_PROMPT": "請解釋這個積木的作用、工作原理，以及它在目前程式中的用途。",
         "BUILD": {
             "RUNNING_TITLE": "正在編譯{{board}}",
@@ -912,6 +968,7 @@
             "PROGRESS_CORE": "正在編譯核心",
             "PROGRESS_LINKING": "正在連結韌體",
             "PROGRESS_OBJCOPY": "正在產生韌體",
+            "PROGRESS_RESOURCES": "正在請求雲端資源",
             "PROGRESS_FINALIZING": "正在完成編譯",
             "PROGRESS_COMPLETE": "編譯完成",
             "PROCESS_SIGNAL_TERMINATED": "編譯進程被訊號終止: {{signal}}",
@@ -1012,6 +1069,13 @@
         "LOCK_FOCUS_OTHER": "切換到已開啟的視窗",
         "LOCK_FORCE_OPEN": "仍要開啟",
         "LOCK_ACQUIRE_FAILED": "無法取得專案鎖，請重試"
+    },
+    "SUBAPP": {
+        "BUSY_TITLE": "子應用正在使用中",
+        "BUSY_MESSAGE": "相關進程正在使用安裝目錄，無法卸載或更新。是否強制關閉這些進程並繼續？",
+        "BUSY_UNKNOWN_HOLDERS": "未能識別具體進程，仍會嘗試停止相關子應用進程。",
+        "FORCE_CLOSE_CONTINUE": "強制關閉並繼續",
+        "CANCEL": "取消"
     },
     "LIBRARY_PUBLISH": {
         "RELOAD_TITLE": "重新載入目前專案",

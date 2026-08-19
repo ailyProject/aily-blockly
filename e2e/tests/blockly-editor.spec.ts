@@ -1,6 +1,6 @@
 import { test, expect, getMainWindow, openBlocklyProject } from '../fixtures/electron-app';
 import { execFileSync } from 'node:child_process';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, rename, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import path from 'node:path';
 const PROJECT_PATH = process.env['AILY_E2E_PROJECT'];
 const SECOND_PROJECT_PATH = process.env['AILY_E2E_PROJECT_SECOND'];
 const REMOVAL_LIBRARY = process.env['AILY_E2E_REMOVAL_LIBRARY'] || '@aily-project/lib-async-http';
+const RETAINED_LIBRARY = '@aily-project/lib-core-serial';
 
 test.describe('Blockly 编辑器', () => {
   test.skip(!PROJECT_PATH, '未设置 AILY_E2E_PROJECT，跳过 Blockly 编辑器用例。');
@@ -131,6 +132,12 @@ test.describe('Blockly 编辑器', () => {
           : '',
       };
     });
+    const readWorkspaceProgram = () => win.evaluate(() => {
+      const iframe = document.querySelector<HTMLIFrameElement>('iframe[data-blockly-generator-runtime]');
+      const blockly = (iframe?.contentWindow as any)?.Blockly;
+      const workspace = blockly?.getMainWorkspace?.();
+      return workspace ? blockly.serialization.workspaces.save(workspace) : null;
+    });
     const readToolboxOrder = () => win.locator(
       'app-blockly-toolbox-pane .toolbox-list > .toolbox-node',
     ).evaluateAll((nodes) => nodes
@@ -142,6 +149,7 @@ test.describe('Blockly 编辑器', () => {
       await expect.poll(async () => (await readRuntime()).ready, { timeout: 60_000 }).toBe(true);
       await expect.poll(async () => (await readRuntime()).projectPath, { timeout: 60_000 }).toBe(projectPath);
       const firstRuntime = await readRuntime();
+      const workspaceBeforeRemoval = await readWorkspaceProgram();
       const toolboxOrderBeforeRemoval = await readToolboxOrder();
       expect(firstRuntime.hasRemovedLibraryGenerator).toBe(true);
       expect(toolboxOrderBeforeRemoval).toContain(REMOVAL_LIBRARY);
@@ -160,12 +168,25 @@ test.describe('Blockly 编辑器', () => {
         '--no-fund',
       ], { cwd: projectPath, stdio: 'pipe' });
 
+      // npm may temporarily move/recreate unrelated packages while it updates
+      // node_modules. The removal watcher must keep the current workspace intact
+      // until every retained library is readable again.
+      const retainedLibraryPath = path.join(projectPath, 'node_modules', ...RETAINED_LIBRARY.split('/'));
+      const transientLibraryPath = `${retainedLibraryPath}.transient`;
+      expect(existsSync(retainedLibraryPath)).toBe(true);
+      await rename(retainedLibraryPath, transientLibraryPath);
+      await win.waitForTimeout(2_000);
+      expect((await readRuntime()).id).toBe(firstRuntime.id);
+      expect(await readWorkspaceProgram()).toEqual(workspaceBeforeRemoval);
+      await rename(transientLibraryPath, retainedLibraryPath);
+
       await expect.poll(async () => (await readRuntime()).id, { timeout: 60_000 }).not.toBe(firstRuntime.id);
       await expect.poll(async () => (await readRuntime()).ready, { timeout: 60_000 }).toBe(true);
       const rebuiltRuntime = await readRuntime();
       const rendererAfterRemoval = await readRendererIdentity();
       expect(rebuiltRuntime.hasRemovedLibraryGenerator).toBe(false);
       expect(rebuiltRuntime.generatedCode.length).toBeGreaterThan(0);
+      expect(await readWorkspaceProgram()).toEqual(workspaceBeforeRemoval);
       expect(existsSync(path.join(projectPath, 'node_modules', ...REMOVAL_LIBRARY.split('/')))).toBe(false);
       expect(rendererAfterRemoval).toEqual(rendererBeforeRemoval);
       expect(await readToolboxOrder()).toEqual(

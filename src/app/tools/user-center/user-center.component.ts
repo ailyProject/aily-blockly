@@ -5,9 +5,7 @@ import { CommonModule } from '@angular/common';
 import { AuthService, LoginRequest, RegisterRequest } from '../../services/auth.service';
 import { Subject, takeUntil } from 'rxjs';
 import { ElectronService } from '../../services/electron.service';
-import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { LoginComponent } from '../../components/login/login.component';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { NzInputModule } from 'ng-zorro-antd/input';
@@ -20,7 +18,8 @@ import {
   AuthQuotaStateService,
   type AuthQuotaInfo,
 } from '../aily-chat/services/auth-quota-state.service';
-import { formatQuotaResetMetaLabel } from '../aily-chat/services/chat-quota-reset-label';
+import { ProtectedToolCloseError } from '../../services/auth-required-tool-close';
+import { ChildAppSafetyService } from '../../services/child-app-safety.service';
 
 @Component({
   selector: 'app-user-center',
@@ -28,7 +27,6 @@ import { formatQuotaResetMetaLabel } from '../aily-chat/services/chat-quota-rese
     FormsModule,
     CommonModule,
     ToolContainerComponent,
-    LoginComponent,
     NzButtonModule,
     NzProgressModule,
     NzInputModule,
@@ -50,6 +48,7 @@ export class UserCenterComponent {
   private authQuotaStateService = inject(AuthQuotaStateService);
   private electronService = inject(ElectronService);
   private translate = inject(TranslateService);
+  private childAppSafety = inject(ChildAppSafetyService);
 
   userInfo = {
     username: '',
@@ -66,6 +65,7 @@ export class UserCenterComponent {
   nicknameSaving = false;
   nicknameError = '';
   quotaUsagePercent = 0;
+  private logoutConfirmOpen = false;
 
   benefits: any = null;
   authQuotaInfo: AuthQuotaInfo | null = null;
@@ -216,16 +216,45 @@ export class UserCenterComponent {
   }
 
   async onLogout() {
+    if (this.isWaiting || this.logoutConfirmOpen) {
+      return;
+    }
+
+    const openProtectedToolIds = this.uiService.getOpenAuthRequiredToolIds()
+      .filter((toolId) => toolId !== 'user-center');
+    this.logoutConfirmOpen = true;
+    let confirmed = false;
+    try {
+      confirmed = await this.childAppSafety.confirmInterruption('logout', openProtectedToolIds);
+    } finally {
+      this.logoutConfirmOpen = false;
+    }
+    if (!confirmed) {
+      return;
+    }
+
     this.isWaiting = true;
     try {
+      await this.closeProtectedTools(openProtectedToolIds);
       await this.authService.logout();
       this.message.success(this.t('USER_CENTER.LOGOUT_SUCCESS', '已退出登录'));
+      this.close();
     } catch (error) {
       console.warn('退出登录失败:', error);
-      this.message.error(this.t('USER_CENTER.LOGOUT_FAILED', '退出登录失败'));
+      const messageKey = error instanceof ProtectedToolCloseError
+        ? 'USER_CENTER.LOGOUT_CLOSE_APPS_FAILED'
+        : 'USER_CENTER.LOGOUT_FAILED';
+      const fallback = error instanceof ProtectedToolCloseError
+        ? '无法关闭正在运行的应用，请稍后重试'
+        : '退出登录失败';
+      this.message.error(this.t(messageKey, fallback));
     } finally {
       this.isWaiting = false;
     }
+  }
+
+  private async closeProtectedTools(toolIds: string[]): Promise<void> {
+    await this.uiService.closeAuthRequiredTools(toolIds);
   }
 
   toggleRegisterMode() {
@@ -406,17 +435,15 @@ export class UserCenterComponent {
       return `${remaining}/${quota}${unitSuffix}`;
     }
 
-    return this.benefits?.ai_calls?.unlimited
-      ? '♾️'
-      : `${this.benefits?.ai_calls?.used ?? 0}/${this.benefits?.ai_calls?.total ?? 0}`;
-  }
-
-  get aiAvailableMeta(): string | null {
-    if (!this.authQuotaInfo) {
-      return null;
+    const aiCalls = this.benefits?.ai_calls;
+    if (aiCalls?.unlimited) {
+      return '♾️';
     }
 
-    return formatQuotaResetMetaLabel(this.authQuotaInfo.resetTime) ?? null;
+    const total = Math.max(0, Number(aiCalls?.total) || 0);
+    const used = Math.max(0, Number(aiCalls?.used) || 0);
+    const remaining = Math.max(0, total - used);
+    return `${remaining}/${total}次`;
   }
 
   private calculateQuotaUsagePercent(): void {

@@ -1,11 +1,55 @@
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, Subject } from 'rxjs';
+import { BehaviorSubject } from 'rxjs';
 import { ElectronService } from './electron.service';
 // import { NzMessageService } from 'ng-zorro-antd/message';
-import { NzModalService } from 'ng-zorro-antd/modal';
+import { NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { UpdateDialogComponent } from '../main-window/components/update-dialog/update-dialog.component';
 import { version } from '../../../package.json';
 import { ConfigService } from './config.service';
+import { ProjectService } from './project.service';
+import { UiService } from './ui.service';
+import { ChildAppHostRegistryService } from './child-app-host-registry.service';
+import { NzMessageService } from 'ng-zorro-antd/message';
+import { TranslateService } from '@ngx-translate/core';
+import { ChildAppSafetyService } from './child-app-safety.service';
+
+export interface ApplicationUpdatePreparationResult {
+  ok: boolean;
+  message?: string;
+  [key: string]: unknown;
+}
+
+export type ApplicationUpdatePreparationHook = () =>
+  | ApplicationUpdatePreparationResult
+  | Promise<ApplicationUpdatePreparationResult>;
+
+export type ApplicationUpdateStatus =
+  | ''
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'preparing-install'
+  | 'error';
+
+export interface ApplicationUpdateInfo {
+  version: string;
+  [key: string]: unknown;
+}
+
+const APPLICATION_UPDATE_STATUS_TRANSITIONS: Record<
+  Exclude<ApplicationUpdateStatus, ''>,
+  ApplicationUpdateStatus
+> = {
+  checking: 'checking',
+  available: 'available',
+  'not-available': 'not-available',
+  downloading: 'downloading',
+  downloaded: 'downloaded',
+  'preparing-install': 'preparing-install',
+  error: 'error',
+};
 
 @Injectable({
   providedIn: 'root',
@@ -16,20 +60,28 @@ export class UpdateService {
 
   updateProgress = new BehaviorSubject<number>(0);
 
-  updateStatus = new BehaviorSubject<string>('');
+  updateStatus = new BehaviorSubject<ApplicationUpdateStatus>('');
 
   downloadSourceStatus = new BehaviorSubject<any>(null);
 
-  dialogAction = new Subject();
+  activeUpdateInfo = new BehaviorSubject<ApplicationUpdateInfo | null>(null);
 
   // private updateInfo: any = null;
   private ailyBuilderUpdateDialogOpen = false;
+  private installTask: Promise<boolean> | null = null;
+  private updateDialogRef: NzModalRef | null = null;
 
   constructor(
     private electronService: ElectronService,
     // private message: NzMessageService,
     private modal: NzModalService,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private projectService: ProjectService,
+    private uiService: UiService,
+    private childHostRegistry: ChildAppHostRegistryService,
+    private message: NzMessageService,
+    private translate: TranslateService,
+    private childAppSafety: ChildAppSafetyService,
   ) { }
 
   init() {
@@ -46,23 +98,28 @@ export class UpdateService {
           break;
 
         case 'available':
-          this.updateStatus.next('available');
-          // this.updateInfo = status.info;
           // 检查是否已经跳过此版本
           const skippedVersions = this.getSkippedVersions();
           if (skippedVersions.includes(status.info.version)) {
             // console.log(`已跳过版本 ${status.info.version}，不再提示`);
+            this.activeUpdateInfo.next(null);
+            this.updateStatus.next('not-available');
             break;
           }
+          this.activeUpdateInfo.next(status.info);
           // 判断是否已下载，如果已下载则直接显示安装对话框
           if (status.info.isDownloaded) {
-            this.showUpdateDialog(status.info, true);
+            this.updateProgress.next(100);
+            this.updateStatus.next('downloaded');
+            this.openUpdateDialog(status.info, true);
           } else {
-            this.showUpdateDialog(status.info, false);
+            this.updateStatus.next('available');
+            this.openUpdateDialog(status.info, false);
           }
           break;
 
         case 'not-available':
+          this.activeUpdateInfo.next(null);
           this.updateStatus.next('not-available');
           break;
 
@@ -86,6 +143,10 @@ export class UpdateService {
           break;
 
         case 'downloaded':
+          if (status.info?.version) {
+            this.activeUpdateInfo.next(status.info);
+          }
+          this.updateProgress.next(100);
           this.updateStatus.next('downloaded');
           break;
       }
@@ -99,6 +160,19 @@ export class UpdateService {
     }, 3000);
   }
 
+  /** Development-only helper for exercising update UI without contacting an updater server. */
+  simulateUpdate(
+    status: Exclude<ApplicationUpdateStatus, ''> = 'available',
+    versionNumber = '0.9.92',
+    progress = status === 'downloaded' || status === 'preparing-install' ? 100 : 0,
+  ): void {
+    const normalizedVersion = String(versionNumber || '').trim() || '0.9.92';
+    this.activeUpdateInfo.next({ version: normalizedVersion });
+    this.updateProgress.next(Math.max(0, Math.min(100, progress)));
+    this.updateStatus.next(APPLICATION_UPDATE_STATUS_TRANSITIONS[status]);
+    this.openUpdateDialog();
+  }
+
   checkForUpdates(manual: boolean = false) {
     if (this.electronService.isElectron) {
       window['updater'].checkForUpdates();
@@ -109,6 +183,7 @@ export class UpdateService {
   downloadUpdate() {
     this.updateProgress.next(0);
     this.downloadSourceStatus.next(null);
+    this.updateStatus.next('downloading');
     window['updater'].downloadUpdate();
   }
 
@@ -116,10 +191,120 @@ export class UpdateService {
     if (window['updater'].cancelDownload) {
       window['updater'].cancelDownload();
     }
+    this.updateProgress.next(0);
+    this.downloadSourceStatus.next(null);
+    this.updateStatus.next(this.activeUpdateInfo.value ? 'available' : '');
   }
 
   quitAndInstall() {
     window['updater'].quitAndInstall();
+  }
+
+  registerInstallPreparationHook(id: string, hook: ApplicationUpdatePreparationHook): () => void {
+    return this.childAppSafety.registerPreparationHook(id, hook);
+  }
+
+  prepareAndInstall(): Promise<boolean> {
+    if (this.installTask) {
+      return this.installTask;
+    }
+
+    const task = this.runInstallPreparation();
+    this.installTask = task;
+    void task.finally(() => {
+      if (this.installTask === task) {
+        this.installTask = null;
+      }
+    });
+    return task;
+  }
+
+  private async runInstallPreparation(): Promise<boolean> {
+    const activeChildAppIds = this.childAppSafety.collectActiveChildAppIds(
+      this.uiService.openWindowPathList,
+    );
+    if (activeChildAppIds.length > 0) {
+      const confirmed = await this.childAppSafety.confirmInterruption(
+        'application-update',
+        activeChildAppIds,
+      );
+      if (!confirmed) {
+        return false;
+      }
+    }
+
+    this.updateStatus.next('preparing-install');
+
+    try {
+      const embeddedPreparation = await this.childHostRegistry.prepareAllForApplicationUpdate();
+      if (!embeddedPreparation.ok) {
+        throw new Error(this.firstPreparationError(embeddedPreparation.results));
+      }
+
+      await this.prepareStandaloneChildApps();
+
+      await this.childAppSafety.prepareRegisteredWork();
+
+      if (this.projectService.currentProjectPath) {
+        const saveResult = await this.projectService.save(this.projectService.currentProjectPath, 15_000);
+        if (!saveResult.success) {
+          throw new Error(saveResult.error || this.translate.instant('UPDATE_DIALOG.SAVE_FAILED'));
+        }
+      }
+
+      await this.configService.save();
+      this.quitAndInstall();
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('[Updater] Install preparation failed:', error);
+      this.updateStatus.next('downloaded');
+      this.message.error(
+        this.translate.instant('UPDATE_DIALOG.PREPARATION_FAILED', { detail }),
+        { nzDuration: 6000 },
+      );
+      return false;
+    }
+  }
+
+  private async prepareStandaloneChildApps(): Promise<void> {
+    for (const routePath of [...this.uiService.openWindowPathList]) {
+      const toolId = this.childToolIdFromRoute(routePath);
+      if (!toolId) {
+        continue;
+      }
+      const command = window['subWindow']?.command;
+      if (typeof command !== 'function') {
+        throw new Error(`无法确认子应用 ${toolId} 的升级前保存状态`);
+      }
+      const result = await command(routePath, {
+        toolId,
+        action: 'prepareUpdate',
+        strictLifecycle: true,
+      });
+      if (result?.ok !== true) {
+        throw new Error(result.message || `子应用 ${toolId} 未完成升级前保存`);
+      }
+    }
+  }
+
+  private childToolIdFromRoute(routePath: string): string {
+    const match = String(routePath || '').match(/^\/?child-tool\/([^/?#]+)/);
+    if (!match?.[1]) {
+      return '';
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  private firstPreparationError(results: Array<Record<string, unknown>>): string {
+    const failed = results.find(result => result['ok'] === false);
+    return typeof failed?.['message'] === 'string' && failed['message'].trim()
+      ? failed['message'].trim()
+      : this.translate.instant('UPDATE_DIALOG.SESSION_SAVE_FAILED');
   }
 
   skipVersion(version: string) {
@@ -131,6 +316,12 @@ export class UpdateService {
       this.configService.save();
       // console.log(`已将版本 ${version} 添加到跳过列表`);
     }
+    if (this.activeUpdateInfo.value?.version === version) {
+      this.activeUpdateInfo.next(null);
+      this.updateProgress.next(0);
+      this.downloadSourceStatus.next(null);
+      this.updateStatus.next('not-available');
+    }
   }
 
   private getSkippedVersions(): string[] {
@@ -140,6 +331,10 @@ export class UpdateService {
   clearSkipVersions() {
     this.configService.data.skippedVersions = [];
     this.configService.save();
+  }
+
+  get hasOpenProject(): boolean {
+    return !!this.projectService.currentProjectPath;
   }
 
   private async checkPackageUpdates(showOptional: boolean) {
@@ -179,10 +374,28 @@ export class UpdateService {
     }
   }
 
-  dialogActionSubscription;
-  private showUpdateDialog(info: any, isDownloaded: boolean = false) {
-    // console.log('showUpdateDialog', info, isDownloaded);
-    const mode = isDownloaded ? 'downloaded' : 'available';
+  openUpdateDialog(
+    info: ApplicationUpdateInfo | null = this.activeUpdateInfo.value,
+    isDownloaded: boolean = false,
+  ): void {
+    if (!info || this.updateDialogRef) {
+      return;
+    }
+
+    this.activeUpdateInfo.next(info);
+    const currentStatus = this.updateStatus.value;
+    const resumableStatuses: ApplicationUpdateStatus[] = [
+      'available',
+      'downloading',
+      'downloaded',
+      'preparing-install',
+      'error',
+    ];
+    const mode = isDownloaded
+      ? 'downloaded'
+      : resumableStatuses.includes(currentStatus)
+        ? currentStatus
+        : 'available';
 
     const modalRef = this.modal.create({
       nzTitle: null,
@@ -201,10 +414,11 @@ export class UpdateService {
       },
       nzMaskClosable: false,
     });
+    this.updateDialogRef = modalRef;
 
     modalRef.afterClose.subscribe(async result => {
-      if (this.dialogActionSubscription) {
-        this.dialogActionSubscription.unsubscribe();
+      if (this.updateDialogRef === modalRef) {
+        this.updateDialogRef = null;
       }
       switch (result) {
         case 'skip':
@@ -213,22 +427,16 @@ export class UpdateService {
           break;
         case 'install':
           // 安装更新
-          this.quitAndInstall();
+          await this.prepareAndInstall();
           break;
         case 'download_stop':
           // 取消下载
           this.cancelDownload();
           break;
         default:
-          // 取消操作
+          // 弹窗收起后，下载和状态监听继续在后台运行。
           break;
       }
     });
-
-    this.dialogActionSubscription = this.dialogAction.subscribe((action) => {
-      if (action === 'download') {
-        this.downloadUpdate();
-      }
-    })
   }
 }

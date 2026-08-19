@@ -8,6 +8,7 @@ import { UiService } from './ui.service';
 
 export type ChildAppOpenMode = 'embedded' | 'window';
 export type ChildAppControlAction =
+  | 'prepareUpdate'
   | 'restart'
   | 'maximize'
   | 'unmaximize'
@@ -131,6 +132,12 @@ export class MainUiAutomationService {
     return { ok: true, app: await this.describeChildApp(config, await this.readChildToolSessions()) };
   }
 
+  async isChildAppWindowOpen(toolId: string): Promise<boolean> {
+    const config = getChildToolConfig(String(toolId || '').trim());
+    if (!config) return false;
+    return (await this.readWindowState(this.routePath(config))).open === true;
+  }
+
   async openChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
     const mode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;
@@ -214,7 +221,7 @@ export class MainUiAutomationService {
     }
 
     const supported: ChildAppControlAction[] = [
-      'restart', 'maximize', 'unmaximize', 'minimize', 'restore', 'focus', 'detach', 'embed', 'close',
+      'prepareUpdate', 'restart', 'maximize', 'unmaximize', 'minimize', 'restore', 'focus', 'detach', 'embed', 'close',
     ];
     if (!supported.includes(action)) {
       return { ok: false, message: `不支持的子应用动作: ${action || '(空)'}`, supportedActions: supported };
@@ -236,13 +243,17 @@ export class MainUiAutomationService {
       return this.openChildApp({ toolId, mode: 'embedded' });
     }
 
-    if (action === 'restart' || action === 'close') {
+    if (action === 'prepareUpdate' || action === 'restart' || action === 'close') {
       const hostAction = action as ChildAppHostAction;
       if (embedded && this.childHostRegistry.has(toolId)) {
-        return this.childHostRegistry.control(toolId, hostAction);
+        return this.childHostRegistry.control(toolId, hostAction, {
+          strictLifecycle: params['strictLifecycle'] === true,
+        });
       }
       if (windowState.open) {
-        return this.sendHostCommand(routePath, toolId, hostAction);
+        return this.sendHostCommand(routePath, toolId, hostAction, {
+          strictLifecycle: params['strictLifecycle'] === true,
+        });
       }
       return {
         ok: false,
@@ -499,9 +510,14 @@ export class MainUiAutomationService {
     routePath: string,
     toolId: string,
     action: ChildAppHostAction,
+    options: { strictLifecycle?: boolean } = {},
   ): Promise<Record<string, unknown>> {
     try {
-      const result = await (window as any)['subWindow']?.command?.(routePath, { toolId, action });
+      const result = await (window as any)['subWindow']?.command?.(routePath, {
+        toolId,
+        action,
+        ...options,
+      });
       return result && typeof result === 'object'
         ? result as Record<string, unknown>
         : { ok: false, message: `子应用宿主未返回有效结果: ${toolId}` };

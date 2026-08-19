@@ -9,6 +9,7 @@ const { createInterface } = require("readline");
 const { isAbsolute } = require("path");
 const { tmpdir } = require("os");
 const nodeFsp = require("node:fs/promises");
+const { calculateDirectoryStats } = require("./directory-stats");
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -53,6 +54,7 @@ const pathApi = {
 };
 
 const fspApi = {
+  directoryStats: (rootPath) => calculateDirectoryStats(rootPath, { skipRootFiles: true }),
   glob: (...args) => nodeFsp.glob(...args),
   readFile: (...args) => nodeFsp.readFile(...args),
   writeFile: (...args) => nodeFsp.writeFile(...args),

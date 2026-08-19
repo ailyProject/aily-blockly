@@ -12,6 +12,7 @@ const { killRegisteredProcessTree } = require('./process-tree');
 const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
+    classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
     releaseOwner: releaseChildToolOwner,
@@ -21,9 +22,6 @@ const {
 const {
     stopChildToolSessionProcess: stopChildToolSessionProcessWithDependencies,
 } = require('./child-tool-session-process');
-const {
-    quiesceChildToolPackageMutation,
-} = require('./child-tool-package-mutation');
 const {
     registerChatRuntimeHostIpc,
 } = require('./chat-runtime-host');
@@ -262,6 +260,14 @@ function scheduleChildToolRelease(toolId, session) {
         return;
     }
 
+    if (session.hostInfo?.persistent === true) {
+        console.info('[ChildToolSession] Persistent Runtime retained after final lease release', {
+            toolId,
+            streamId: session.streamId,
+        });
+        return;
+    }
+
     console.info('[ChildToolSession] Runtime release scheduled', {
         toolId,
         streamId: session.streamId,
@@ -378,24 +384,72 @@ async function restartChildToolSession(toolId) {
     }
 
     cancelChildToolRelease(session);
-    await stopChildToolSessionProcess(session);
+    const stopped = await stopChildToolSessionProcess(session);
+    if (!stopped) {
+        return { success: false, reason: 'process-still-running' };
+    }
     pendingChildToolProcessMessages.delete(session.streamId);
     childToolSessions.delete(normalizedToolId);
     return { success: true };
 }
 
-async function prepareChildToolPackageMutation(toolId, action = 'update') {
-    const normalizedToolId = sanitizeChildToolId(toolId);
-    return await quiesceChildToolPackageMutation({
-        toolId: normalizedToolId,
-        action,
-        sessions: childToolSessions,
-        ownerCount: childToolOwnerCount,
-        cancelRelease: cancelChildToolRelease,
-        stopSession: stopChildToolSessionProcess,
-        pendingMessages: pendingChildToolProcessMessages,
-        onChanged: broadcastChildToolSessionStateChanged,
-    });
+function resolveChildToolIdsForCatalogId(catalogId) {
+    const id = sanitizeChildToolId(catalogId);
+    if (!id) return [];
+    try {
+        const { TOOL_ID_ALIASES } = require('./subapp-manager');
+        const aliased = TOOL_ID_ALIASES[id];
+        return Array.from(new Set([id, aliased].filter(Boolean)));
+    } catch (_) {
+        return [id];
+    }
+}
+
+function listChildToolHoldersForCatalogId(catalogId) {
+    const toolIds = resolveChildToolIdsForCatalogId(catalogId);
+    const holders = [];
+    for (const toolId of toolIds) {
+        const session = childToolSessions.get(toolId);
+        if (!session) continue;
+        const pid = Number.isInteger(session?.hostInfo?.pid)
+            ? session.hostInfo.pid
+            : null;
+        holders.push({
+            pid,
+            name: toolId,
+            toolId,
+            source: 'child-tool-session',
+        });
+    }
+    return holders;
+}
+
+async function forceStopChildToolByCatalogId(catalogId) {
+    const toolIds = resolveChildToolIdsForCatalogId(catalogId);
+    let stopped = false;
+    let failed = false;
+    for (const toolId of toolIds) {
+        const session = childToolSessions.get(toolId);
+        if (!session) continue;
+        cancelChildToolRelease(session);
+        const processStopped = await stopChildToolSessionProcess(session);
+        if (!processStopped) {
+            failed = true;
+            continue;
+        }
+        if (session.streamId) {
+            pendingChildToolProcessMessages.delete(session.streamId);
+        }
+        childToolSessions.delete(toolId);
+        stopped = true;
+    }
+    if (stopped) {
+        broadcastChildToolSessionStateChanged();
+    }
+    return {
+        success: stopped && !failed,
+        reason: failed ? 'process-still-running' : stopped ? undefined : 'not-found'
+    };
 }
 
 function isChildToolSessionAlive(session) {
@@ -664,9 +718,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     // 添加一个映射来存储已打开的窗�?
     const openWindows = new Map();
+    const SETTINGS_WINDOW_URL = '/settings';
+    let settingsWarmWindow = null;
+    let settingsWarmWindowReady = false;
+    let pendingSettingsOpenData = null;
+    let settingsWarmCreateTimer = null;
     let codeViewerState = {
         code: '',
         selectedBlockId: null,
+        selectedBlockIds: [],
         blockCodeMap: [],
         updatedAt: 0,
     };
@@ -1089,6 +1149,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
         webContents.loadURL('about:blank');
     };
 
+    const resolveSubWindowRouteUrl = (routePath) => {
+        if (isDevServeSubWindow()) {
+            return `http://localhost:4200/#/${routePath}`;
+        }
+        if (!resolveRendererUrl) {
+            throw new Error('Packaged renderer URL resolver is unavailable.');
+        }
+        return resolveRendererUrl(`#/${routePath}`);
+    };
+
     /**
      * @param {import('electron').BrowserWindow} subWindow
      * @param {string} windowUrl
@@ -1139,6 +1209,178 @@ function registerWindowHandlers(mainWindow, options = {}) {
             notifySubWindowState(windowUrl, false);
         });
     };
+
+    const clearSettingsWarmReadyTimer = (win) => {
+        if (win?.__settingsWarmReadyTimer) {
+            clearTimeout(win.__settingsWarmReadyTimer);
+            delete win.__settingsWarmReadyTimer;
+        }
+    };
+
+    function scheduleSettingsWarmWindow(delayMs = 0) {
+        if (applicationIsQuitting || settingsWarmCreateTimer
+            || (settingsWarmWindow && !settingsWarmWindow.isDestroyed())) {
+            return;
+        }
+        settingsWarmCreateTimer = setTimeout(() => {
+            settingsWarmCreateTimer = null;
+            createSettingsWarmWindow();
+        }, delayMs);
+    }
+
+    function createSettingsWarmWindow() {
+        if (applicationIsQuitting
+            || (settingsWarmWindow && !settingsWarmWindow.isDestroyed())) {
+            return;
+        }
+
+        let win;
+        try {
+            win = new BrowserWindow({
+                frame: false,
+                show: false,
+                opacity: 0,
+                backgroundColor: getSubWindowBackgroundColor(),
+                skipTaskbar: true,
+                autoHideMenuBar: true,
+                thickFrame: true,
+                titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+                alwaysOnTop: false,
+                width: 700,
+                height: 550,
+                minWidth: SUB_WINDOW_MIN_WIDTH,
+                minHeight: SUB_WINDOW_MIN_HEIGHT,
+                webPreferences: getSubWindowWebPreferences(),
+            });
+        } catch (error) {
+            console.warn('[SettingsWindowWarmup] 创建窗口失败:', error.message);
+            if (pendingSettingsOpenData) {
+                scheduleSettingsWarmWindow(1000);
+            }
+            return;
+        }
+
+        settingsWarmWindow = win;
+        settingsWarmWindowReady = false;
+        win.__settingsWarmRetryDelayMs = 0;
+
+        const replaceFailedWarmWindow = (reason) => {
+            if (win.isDestroyed()) {
+                return;
+            }
+            win.__settingsWarmRetryDelayMs = 1000;
+            console.warn(`[SettingsWindowWarmup] ${reason}，稍后重试`);
+            win.destroy();
+        };
+
+        win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+            if (!isMainFrame || errorCode === -3) {
+                return;
+            }
+            replaceFailedWarmWindow(`页面加载失败 (${errorCode}: ${errorDescription})`);
+        });
+        win.webContents.on('render-process-gone', (_event, details) => {
+            replaceFailedWarmWindow(`渲染进程退出 (${details.reason})`);
+        });
+        win.once('closed', () => {
+            clearSettingsWarmReadyTimer(win);
+            const wasActive = openWindows.get(SETTINGS_WINDOW_URL) === win;
+            const retryDelayMs = Number(win.__settingsWarmRetryDelayMs) || 0;
+            if (settingsWarmWindow === win) {
+                settingsWarmWindow = null;
+                settingsWarmWindowReady = false;
+            }
+            if (!applicationIsQuitting && (wasActive || retryDelayMs === 0 || pendingSettingsOpenData)) {
+                scheduleSettingsWarmWindow(retryDelayMs);
+            }
+        });
+
+        win.__settingsWarmReadyTimer = setTimeout(() => {
+            if (settingsWarmWindow === win && !settingsWarmWindowReady) {
+                replaceFailedWarmWindow('页面就绪超时');
+            }
+        }, 15000);
+
+        try {
+            void win.loadURL(resolveSubWindowRouteUrl('settings'))
+                .catch(error => replaceFailedWarmWindow(`页面加载失败 (${error.message})`));
+        } catch (error) {
+            replaceFailedWarmWindow(`页面加载失败 (${error.message})`);
+        }
+    }
+
+    function revealSettingsWarmWindow(data) {
+        const win = settingsWarmWindow;
+        if (!win || win.isDestroyed() || !settingsWarmWindowReady
+            || openWindows.get(SETTINGS_WINDOW_URL) === win) {
+            return false;
+        }
+
+        const width = data.width ? data.width : 700;
+        const height = data.height ? data.height : 550;
+        try {
+            win.setAlwaysOnTop(!!data.alwaysOnTop);
+            applySubWindowMinimumSize(win);
+            placeSubWindowBeforeReveal(win, mainWindow, data, width, height);
+
+            if (data.data || data.url || data.title) {
+                win.webContents.send('window-init-data', {
+                    url: data.url,
+                    title: data.title,
+                    data: data.data,
+                });
+            }
+
+            win.setOpacity(1);
+            win.setSkipTaskbar(false);
+            if (!focusSubWindow(win)) {
+                throw new Error('窗口已不可用');
+            }
+        } catch (e) {
+            console.warn('[SettingsWindowWarmup] 显示窗口失败:', e.message);
+            win.__settingsWarmRetryDelayMs = 1000;
+            if (!win.isDestroyed()) {
+                win.destroy();
+            }
+            return false;
+        }
+
+        pendingSettingsOpenData = null;
+        openWindows.set(SETTINGS_WINDOW_URL, win);
+        notifySubWindowState(SETTINGS_WINDOW_URL, true);
+        attachSubWindowLifecycleListeners(win, SETTINGS_WINDOW_URL);
+        return true;
+    }
+
+    const onSettingsWindowReady = (event) => {
+        if (!settingsWarmWindow || settingsWarmWindow.isDestroyed()
+            || event.sender !== settingsWarmWindow.webContents) {
+            return;
+        }
+        settingsWarmWindowReady = true;
+        clearSettingsWarmReadyTimer(settingsWarmWindow);
+        if (pendingSettingsOpenData) {
+            revealSettingsWarmWindow(pendingSettingsOpenData);
+        }
+    };
+    ipcMain.on('settings-window-ready', onSettingsWindowReady);
+
+    const onMainRendererReadyForSettingsWarmup = (event) => {
+        if (!mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
+            scheduleSettingsWarmWindow();
+        }
+    };
+    ipcMain.on('renderer-ready', onMainRendererReadyForSettingsWarmup);
+
+    mainWindow.once('closed', () => {
+        ipcMain.removeListener('settings-window-ready', onSettingsWindowReady);
+        ipcMain.removeListener('renderer-ready', onMainRendererReadyForSettingsWarmup);
+        if (settingsWarmCreateTimer) {
+            clearTimeout(settingsWarmCreateTimer);
+            settingsWarmCreateTimer = null;
+        }
+        clearSettingsWarmReadyTimer(settingsWarmWindow);
+    });
 
     mainWindow.on('focus', () => {
         try {
@@ -1214,7 +1456,10 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 
     ipcMain.on("window-open", (event, data) => {
-        const windowUrl = normalizeSubWindowUrl(data.path);
+        const normalizedWindowUrl = normalizeSubWindowUrl(data.path);
+        const windowUrl = /^\/settings\/?(?:\?.*)?$/.test(normalizedWindowUrl)
+            ? SETTINGS_WINDOW_URL
+            : normalizedWindowUrl;
         const width = data.width ? data.width : 800;
         const height = data.height ? data.height : 600;
         const alwaysOnTop = data.alwaysOnTop ? data.alwaysOnTop : false;
@@ -1243,6 +1488,18 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 // 如果窗口已被销毁，从映射中移除
                 openWindows.delete(windowUrl);
             }
+        }
+
+        if (windowUrl === SETTINGS_WINDOW_URL) {
+            pendingSettingsOpenData = data;
+            if (!settingsWarmWindow || settingsWarmWindow.isDestroyed()) {
+                settingsWarmWindow = null;
+                createSettingsWarmWindow();
+            }
+            if (settingsWarmWindowReady) {
+                revealSettingsWarmWindow(data);
+            }
+            return;
         }
 
         let subWindow = null;
@@ -1341,14 +1598,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
         subWindow.webContents.once('did-navigate-in-page', revealAfterRendererPaint);
         revealFallbackTimer = setTimeout(revealAfterRendererPaint, 3000);
 
-        if (isDevServeSubWindow()) {
-            subWindow.loadURL(`http://localhost:4200/#/${data.path}`);
-        } else {
-            if (!resolveRendererUrl) {
-                throw new Error('Packaged renderer URL resolver is unavailable.');
-            }
-            subWindow.loadURL(resolveRendererUrl(`#/${data.path}`));
-        }
+        subWindow.loadURL(resolveSubWindowRouteUrl(data.path));
     });
 
     ipcMain.handle("window-focus-by-url", (_event, windowUrl) => {
@@ -1421,14 +1671,36 @@ function registerWindowHandlers(mainWindow, options = {}) {
         const existing = childToolSessions.get(toolId);
         const ownerId = trackChildToolSessionOwner(event.sender);
         const leaseId = String(payload.leaseId || 'legacy-renderer');
-        if (existing && existing.streamId === payload.streamId) {
+        const registration = classifyChildToolSessionRegistration(
+            existing,
+            payload.streamId,
+            isChildToolSessionAlive(existing),
+        );
+        if (registration === 'same-stream') {
             cancelChildToolRelease(existing);
             const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
             return acquired.success
                 ? { success: true, session: cloneChildToolSession(existing) }
                 : { success: false, reason: acquired.reason };
         }
-        if (existing && existing.streamId && existing.streamId !== payload.streamId) {
+        if (registration === 'reuse-existing') {
+            cancelChildToolRelease(existing);
+            const acquired = acquireChildToolOwner(existing, ownerId, leaseId);
+            if (!acquired.success) {
+                return { success: false, reason: acquired.reason };
+            }
+            console.info('[ChildToolSession] Concurrent Runtime start reused existing process', {
+                toolId,
+                existingStreamId: existing.streamId,
+                candidateStreamId: payload.streamId,
+                ownerId,
+                leaseId,
+                refCount: childToolOwnerCount(existing),
+            });
+            notifyChildToolSessionStateChanged();
+            return { success: true, reused: true, session: cloneChildToolSession(existing) };
+        }
+        if (registration === 'replace-stale' && existing?.streamId) {
             cancelChildToolRelease(existing);
             await stopChildToolSessionProcess(existing);
             pendingChildToolProcessMessages.delete(existing.streamId);
@@ -1509,7 +1781,10 @@ function registerWindowHandlers(mainWindow, options = {}) {
             return { success: false, reason: 'not-found' };
         }
         cancelChildToolRelease(session);
-        await stopChildToolSessionProcess(session);
+        const stopped = await stopChildToolSessionProcess(session);
+        if (!stopped) {
+            return { success: false, reason: 'process-still-running' };
+        }
         pendingChildToolProcessMessages.delete(session.streamId);
         childToolSessions.delete(normalizedToolId);
         notifyChildToolSessionStateChanged();
@@ -1665,6 +1940,18 @@ function registerWindowHandlers(mainWindow, options = {}) {
                     data: data.data,
                     messageId: messageId
                 });
+                if (data?.data?.action === 'request-login'
+                    || data?.data?.action === 'switch-service-region'
+                    || data?.data?.action === 'auth-token-invalid') {
+                    if (mainWindow.isMinimized()) {
+                        mainWindow.restore();
+                    }
+                    mainWindow.show();
+                    if (typeof mainWindow.moveTop === 'function') {
+                        mainWindow.moveTop();
+                    }
+                    mainWindow.focus();
+                }
                 // 自定义超时或默认9秒超�?
                 setTimeout(() => {
                     ipcMain.removeListener('main-window-response', responseListener);
@@ -1697,6 +1984,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 
 module.exports = {
-    prepareChildToolPackageMutation,
     registerWindowHandlers,
+    forceStopChildToolByCatalogId,
+    listChildToolHoldersForCatalogId,
 };

@@ -4,6 +4,11 @@ const { spawnSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
 const runtimeModule = path.join(repoRoot, 'electron', 'chat-runtime-lex-execution-runtime.mjs');
+const concurrentlyPackageJsonPath = require.resolve('concurrently/package.json');
+const concurrentlyBin = path.join(
+  path.dirname(concurrentlyPackageJsonPath),
+  require(concurrentlyPackageJsonPath).bin.concurrently,
+);
 
 const args = process.argv.slice(2);
 const modeIndex = args.findIndex((arg) => arg === '--mode' || arg === '-Mode');
@@ -47,8 +52,11 @@ console.log('');
 console.log('If those markers are absent, the run is still on the renderer fallback chain.');
 console.log('');
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const result = spawnSync(npmCommand, ['run', 'electron'], {
+const result = spawnSync(process.execPath, [
+  concurrentlyBin,
+  'npm start',
+  'wait-on tcp:4200 && node ./scripts/run-electron-dev.js --serve',
+], {
   cwd: repoRoot,
   stdio: 'inherit',
   env,

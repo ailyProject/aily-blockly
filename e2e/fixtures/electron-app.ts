@@ -14,7 +14,7 @@ import path from 'node:path';
  *    加载 global-setup 暂存好的生产渲染层。
  *  - 传入临时 --user-data-dir：main.js 的 setupPooledUserDataPath() 会在该目录下
  *    创建 instances/instance-N 隔离实例，从而不污染真实用户数据、也不触碰真实实例锁。
- *  - main.js 会预缓冲若干「子窗口」（about:blank，opacity 0）。因此必须用
+ *  - main.js 会预缓冲若干隐藏子窗口（通用池为 about:blank，另有设置专用预热窗）。因此必须用
  *    getMainWindow() 按 <app-main-window> 是否存在来识别真正的主窗口，
  *    而不能直接用 firstWindow()。
  */

@@ -1,6 +1,6 @@
 import { Injectable, inject, ApplicationRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, Observable, Subject, throwError, from, firstValueFrom } from 'rxjs';
+import { BehaviorSubject, Observable, ReplaySubject, Subject, throwError, from, firstValueFrom } from 'rxjs';
 import { catchError, map, switchMap, timeout } from 'rxjs/operators';
 import { API } from '../configs/api.config';
 import { ElectronService } from './electron.service';
@@ -93,6 +93,18 @@ export type AuthInitializationState =
   | 'signed_out'
   | 'unavailable';
 
+export interface LoginDialogRequestState {
+  requestId: number;
+  reason: string;
+  allowSkip: boolean;
+}
+
+export interface AuthSessionInvalidationRequest {
+  errorCode: 'AUTH_TOKEN_INVALID';
+  source: 'http-401' | 'sub-window';
+  requestedAt: number;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -141,14 +153,76 @@ export class AuthService {
   private readonly authInitializationStateSubject = new BehaviorSubject<AuthInitializationState>('idle');
   readonly authInitializationState$ = this.authInitializationStateSubject.asObservable();
 
+  private loginDialogRequestId = 0;
+  private readonly loginDialogRequestSubject = new BehaviorSubject<LoginDialogRequestState | null>(null);
+  readonly loginDialogRequest$ = this.loginDialogRequestSubject.asObservable();
+  private readonly authSessionInvalidationRequestSubject = new ReplaySubject<AuthSessionInvalidationRequest>(1);
+  readonly authSessionInvalidationRequest$ = this.authSessionInvalidationRequestSubject.asObservable();
+  private authSessionInvalidating = false;
+  private authSessionInvalidationHandled = false;
+  private authCredentialGeneration = 0;
+
   // 登录弹窗显示状态
   showUser = new BehaviorSubject<any>(null);
 
   constructor() {
     // 登录状态变化后强制触发全局变更检测
-    this.isLoggedInSubject.subscribe(() => {
+    this.isLoggedInSubject.subscribe((isLoggedIn) => {
+      if (isLoggedIn) {
+        this.dismissLoginDialog();
+      }
       setTimeout(() => this.appRef.tick());
     });
+  }
+
+  requestLogin(reason = 'auth-required', options: { allowSkip?: boolean } = {}): void {
+    if (this.isLoggedIn || this.authSessionInvalidating) {
+      return;
+    }
+
+    const current = this.loginDialogRequestSubject.value;
+    this.loginDialogRequestSubject.next({
+      requestId: ++this.loginDialogRequestId,
+      reason,
+      allowSkip: options.allowSkip === true || current?.allowSkip === true,
+    });
+  }
+
+  dismissLoginDialog(): void {
+    if (this.loginDialogRequestSubject.value !== null) {
+      this.loginDialogRequestSubject.next(null);
+    }
+  }
+
+  get isSessionInvalidating(): boolean {
+    return this.authSessionInvalidating;
+  }
+
+  requestSessionInvalidation(
+    errorCode: 'AUTH_TOKEN_INVALID',
+    source: AuthSessionInvalidationRequest['source'] = 'http-401',
+  ): boolean {
+    if (this.authSessionInvalidating || this.authSessionInvalidationHandled) {
+      return false;
+    }
+
+    this.authSessionInvalidating = true;
+    this.authSessionInvalidationHandled = true;
+    this.authCredentialGeneration += 1;
+    // Gate protected entry points immediately. Credentials remain available
+    // until the host has prepared and closed protected child applications.
+    this.isLoggedInSubject.next(false);
+    this.authInitializationStateSubject.next('signed_out');
+    this.authSessionInvalidationRequestSubject.next({
+      errorCode,
+      source,
+      requestedAt: Date.now(),
+    });
+    return true;
+  }
+
+  completeSessionInvalidation(): void {
+    this.authSessionInvalidating = false;
   }
 
   /**
@@ -309,6 +383,11 @@ export class AuthService {
       // 清理当前实例的认证数据
       await this.clearAuthData();
     }
+  }
+
+  /** Clear only this renderer/install's auth state without notifying logout. */
+  async clearLocalAuthSession(): Promise<void> {
+    await this.clearAuthData(true);
   }
 
   /**
@@ -753,7 +832,7 @@ export class AuthService {
    * 移除.aily文件和localStorage中的认证数据
    */
 
-  async clearAuthDataFile(): Promise<void> {
+  async clearAuthDataFile(throwOnError = false): Promise<void> {
     try {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const appDataPath = (window as any).electronAPI.path.getAppDataPath();
@@ -771,6 +850,9 @@ export class AuthService {
       }
     } catch (error) {
       console.error('清除认证数据失败:', error);
+      if (throwOnError) {
+        throw error;
+      }
     }
   }
 
@@ -824,16 +906,16 @@ export class AuthService {
   /**
    * 清除所有认证数据
    */
-  private async clearAuthData(): Promise<void> {
+  private async clearAuthData(requireCredentialRemoval = false): Promise<void> {
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.REFRESH_TOKEN_KEY);
     localStorage.removeItem(this.USER_INFO_KEY);
     this.clearPendingAuthQuotaInfoSnapshotRetry();
     this.clearPendingAuthHydrationRetry();
-    this.clearAuthDataFile();
     this.isLoggedInSubject.next(false);
     this.setCurrentUserInfo(null);
     this.authInitializationStateSubject.next('signed_out');
+    await this.clearAuthDataFile(requireCredentialRemoval);
   }
 
   /**
@@ -859,6 +941,10 @@ export class AuthService {
   }
 
   async refreshAuthToken(): Promise<boolean> {
+    if (this.authSessionInvalidating) {
+      return false;
+    }
+    const credentialGeneration = this.authCredentialGeneration;
     const refreshToken = await this.getRefreshToken();
     if (!refreshToken) {
       return false;
@@ -873,7 +959,12 @@ export class AuthService {
       );
 
       const accessToken = response.data?.access_token;
-      if (response.status !== 200 || !accessToken) {
+      if (
+        response.status !== 200
+        || !accessToken
+        || this.authSessionInvalidating
+        || credentialGeneration !== this.authCredentialGeneration
+      ) {
         return false;
       }
 
@@ -1075,6 +1166,10 @@ export class AuthService {
     return this.hydrateAuthStateFromToken(token, fallbackUser ?? null)
       .then((user) => {
         const isLoggedIn = !!user;
+        if (isLoggedIn) {
+          this.authSessionInvalidating = false;
+          this.authSessionInvalidationHandled = false;
+        }
         this.isLoggedInSubject.next(isLoggedIn);
         this.authInitializationStateSubject.next(isLoggedIn ? 'authenticated' : 'unavailable');
         return isLoggedIn;

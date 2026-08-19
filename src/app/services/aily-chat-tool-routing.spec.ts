@@ -4,6 +4,10 @@ import {
   resolveAilyChatMountDelay,
   resolvePreferredAilyChatTool,
 } from './aily-chat-tool-routing';
+import {
+  HOST_EXIT_REQUIRES_USER_REASON,
+  mainMenuAutomationRejection,
+} from './main-menu-automation-policy';
 
 describe('resolvePreferredAilyChatTool', () => {
   it('selects the React child chat when it is above the legacy chat', () => {
@@ -21,9 +25,9 @@ describe('resolvePreferredAilyChatTool', () => {
       .toBe('aily-chat-react');
   });
 
-  it('falls back to the legacy chat when no chat is open', () => {
+  it('falls back to the React child chat when no chat is open', () => {
     expect(resolvePreferredAilyChatTool(['serial-monitor']))
-      .toBe('aily-chat');
+      .toBe('aily-chat-react');
   });
 
   it('reports no active chat when neither chat is open', () => {
@@ -57,5 +61,25 @@ describe('Aily Chat external input timing', () => {
       { autoSend: true, newChatFirst: true },
       'legacy-session',
     )).toEqual({ autoSend: true, newChatFirst: true });
+  });
+});
+
+describe('Aily Chat host lifecycle boundary', () => {
+  it('blocks in-process host exit with an explicit user-action contract', () => {
+    const result = mainMenuAutomationRejection('app-exit', 'header/app-exit~12');
+
+    expect(result).toEqual(jasmine.objectContaining({
+      ok: false,
+      action: 'app-exit',
+      reason: HOST_EXIT_REQUIRES_USER_REASON,
+      requiresUserAction: true,
+      retryable: false,
+    }));
+    expect(result?.message).toContain('用户从主软件界面手动退出');
+  });
+
+  it('allows every non-exit menu action to continue through the real menu handler', () => {
+    expect(mainMenuAutomationRejection('project-save', 'header/project-save~2')).toBeNull();
+    expect(mainMenuAutomationRejection(undefined, 'header/item~0')).toBeNull();
   });
 });

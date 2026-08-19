@@ -916,7 +916,11 @@ function handleProtocol(url) {
 
 // ipc handlers模块
 const { registerTerminalHandlers, killAllTerminals, getActiveTerminals } = require("./terminal");
-const { prepareChildToolPackageMutation, registerWindowHandlers } = require("./window");
+const {
+  registerWindowHandlers,
+  forceStopChildToolByCatalogId,
+  listChildToolHoldersForCatalogId,
+} = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
 const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
@@ -924,7 +928,9 @@ const { registerAilyServicesStreamHandlers, cancelAllAilyServicesStreams, getAct
 const {
   executeWebviewFetch,
   executeWebviewSearch,
+  getWebviewBridgeStatus,
   registerWebviewBridgeHandlers,
+  wakeWebviewBridge,
 } = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
 const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks } = require("./appdata-resource-lock");
@@ -935,7 +941,10 @@ const { registerToolsHandlers } = require("./tools");
 const { registerNotificationHandlers } = require("./notification");
 const { registerProbeRsHandlers } = require("./probe-rs");
 const { registerBleHandlers, registerWebBluetoothChooser } = require("./ble");
-const { registerSubappManagerHandlers } = require("./subapp-manager");
+const {
+  buildSubappIndexUrl,
+  registerSubappManagerHandlers,
+} = require("./subapp-manager");
 const {
   loadBundledSubappReleaseTrustRoot,
 } = require("./subapp-release-trust-root");
@@ -946,10 +955,68 @@ let mainWindow;
 let userConf;
 let isProcessCleanupInProgress = false;
 let hasProcessCleanupCompleted = false;
+let processHealthDiagnosticsRegistered = false;
 let projectContextState = {
   workspace: null,
   version: 0,
 };
+
+function registerProcessHealthDiagnostics() {
+  if (processHealthDiagnosticsRegistered) return;
+  processHealthDiagnosticsRegistered = true;
+
+  app.on('render-process-gone', (_event, webContents, details) => {
+    console.error('[ProcessHealth][RendererGone]', JSON.stringify({
+      reason: details.reason,
+      exitCode: details.exitCode,
+      webContentsId: webContents?.id,
+      url: sanitizeDiagnosticUrl(webContents),
+      gpuFeatureStatus: app.getGPUFeatureStatus(),
+      processes: summarizeAppProcessMetrics()
+    }));
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    console.error('[ProcessHealth][ChildGone]', JSON.stringify({
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      serviceName: details.serviceName,
+      name: details.name,
+      gpuFeatureStatus: app.getGPUFeatureStatus(),
+      processes: summarizeAppProcessMetrics()
+    }));
+  });
+
+  console.info('[ProcessHealth][GPUFeatureStatus]', JSON.stringify(app.getGPUFeatureStatus()));
+  void app.getGPUInfo('basic')
+    .then(info => console.info('[ProcessHealth][GPUInfo]', JSON.stringify(info)))
+    .catch(error => console.warn('[ProcessHealth][GPUInfoFailed]', error));
+}
+
+function sanitizeDiagnosticUrl(webContents) {
+  try {
+    const rawUrl = webContents?.getURL?.() || '';
+    if (!rawUrl) return '';
+    const parsed = new URL(rawUrl);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
+function summarizeAppProcessMetrics() {
+  return app.getAppMetrics().map(metric => ({
+    pid: metric.pid,
+    type: metric.type,
+    name: metric.name,
+    serviceName: metric.serviceName,
+    cpuPercent: metric.cpu?.percentCPUUsage,
+    workingSetSize: metric.memory?.workingSetSize,
+    peakWorkingSetSize: metric.memory?.peakWorkingSetSize,
+    privateBytes: metric.memory?.privateBytes
+  }));
+}
 
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
@@ -1047,8 +1114,15 @@ async function handleCliBridgeCommand(action, payload) {
       if (!requestedPath) return { ok: false, message: '缺少 path 参数' };
       if (!fs.existsSync(requestedPath)) return { ok: false, message: `项目目录不存在: ${requestedPath}` };
       const dir = path.resolve(requestedPath);
-      const ok = navigateMainWindowHash(`#/main/blockly-editor?path=${encodeURIComponent(dir)}`);
-      return { ok, message: ok ? `已打开项目: ${dir}` : '主窗口不可用', project: ok ? dir : null };
+      const result = await requestMainWindow(
+        'cli-bridge:blockly-live-operation',
+        'cli-bridge:blockly-live-operation:response',
+        { path: dir, operation: 'project_open', params: {} },
+        130000,
+      );
+      return result && typeof result === 'object'
+        ? result
+        : { ok: false, message: '渲染进程返回了无效的项目加载结果', project: dir };
     }
     case 'reload':
     case 'refresh': {
@@ -1067,16 +1141,33 @@ async function handleCliBridgeCommand(action, payload) {
           },
           120000,
         );
-        if (result && typeof result === 'object' && result.ok === true) {
-          return { ok: true, message: `已重载项目(刷新库/积木): ${dir}`, project: dir };
+        if (result && typeof result === 'object') {
+          return result.ok === true
+            ? { ...result, message: `已重载项目(刷新库/积木): ${dir}`, project: dir }
+            : result;
         }
       }
-      const ok = navigateMainWindowHash(`#/main/blockly-editor?path=${encodeURIComponent(dir)}`);
-      return { ok, message: ok ? `已重载项目(刷新库/积木): ${dir}` : '主窗口不可用', project: ok ? dir : null };
+      const result = await requestMainWindow(
+        'cli-bridge:blockly-live-operation',
+        'cli-bridge:blockly-live-operation:response',
+        { path: dir, operation: 'project_open', params: {} },
+        130000,
+      );
+      return result && typeof result === 'object'
+        ? result
+        : { ok: false, message: '渲染进程返回了无效的项目加载结果', project: dir };
     }
     case 'close': {
-      const ok = navigateMainWindowHash(`#/main/guide`);
-      return { ok, message: ok ? '已关闭当前项目' : '主窗口不可用', project: null };
+      const dir = requestedPath ? path.resolve(requestedPath) : getOpenedProjectPathFromWindow();
+      const result = await requestMainWindow(
+        'cli-bridge:blockly-live-operation',
+        'cli-bridge:blockly-live-operation:response',
+        { path: dir || '', operation: 'project_close', params: {} },
+        30000,
+      );
+      return result && typeof result === 'object'
+        ? result
+        : { ok: false, message: '渲染进程返回了无效的项目关闭结果' };
     }
     case 'blockly-live-operation': {
       const dir = requestedPath ? path.resolve(requestedPath) : getOpenedProjectPathFromWindow();
@@ -1084,6 +1175,9 @@ async function handleCliBridgeCommand(action, payload) {
       const projectOptionalOperations = new Set([
         'search_boards_libraries',
         'project_create',
+        'project_open',
+        'project_close',
+        'project_load_status',
         'app_info',
         'main_menu_list',
         'main_menu_execute',
@@ -1103,6 +1197,8 @@ async function handleCliBridgeCommand(action, payload) {
           ? 920000
         : operation === 'project_create'
           ? 300000
+          : operation === 'project_open'
+            ? 130000
           : operation === 'abs_apply'
             ? 120000
             : operation === 'subapp_agent_call'
@@ -1124,6 +1220,26 @@ async function handleCliBridgeCommand(action, payload) {
         liveOperationTimeoutMs,
       );
       return result && typeof result === 'object' ? result : { ok: false, message: '渲染进程返回了无效结果' };
+    }
+    case 'webview-bridge-status': {
+      const sessionId = typeof payload?.sessionId === 'string'
+        ? payload.sessionId.trim()
+        : '';
+      if (!sessionId) {
+        return { ok: false, error: '缺少 sessionId 参数' };
+      }
+
+      return getWebviewBridgeStatus();
+    }
+    case 'webview-bridge-wake': {
+      const sessionId = typeof payload?.sessionId === 'string'
+        ? payload.sessionId.trim()
+        : '';
+      if (!sessionId) {
+        return { ok: false, error: '缺少 sessionId 参数' };
+      }
+
+      return await wakeWebviewBridge();
     }
     case 'webview-bridge-fetch': {
       const sessionId = typeof payload?.sessionId === 'string'
@@ -2082,6 +2198,7 @@ function loadEnv() {
   try {
     initLogger(process.env.AILY_APPDATA_PATH);
     registerLoggerHandlers();
+    registerProcessHealthDiagnostics();
   } catch (error) {
     console.error("initLogger error: ", error);
   }
@@ -2194,6 +2311,8 @@ function loadEnv() {
   process.env.AILY_OFFICIAL_REGION = officialRegion;
   // npm registry
   process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
+  // 子应用目录与当前服务区域共用 regions.<region>.resource 配置。
+  process.env.AILY_SUBAPP_INDEX_URL = buildSubappIndexUrl(regionConfig.resource);
   // 设置 npm 使用应用数据目录下的配置文件，忽略系统 .npmrc
   const appNpmrcPath = path.join(process.env.AILY_APPDATA_PATH, ".npmrc");
   // 如果不存在则创建
@@ -2571,10 +2690,9 @@ function createWindow() {
   registerBleHandlers();
   const subappReleaseTrustRoot = loadBundledSubappReleaseTrustRoot();
   registerSubappManagerHandlers(() => mainWindow, {
-    beforePackageMutation: ({ action, toolId }) => (
-      prepareChildToolPackageMutation(toolId, action)
-    ),
     releaseTrustPolicies: subappReleaseTrustRoot.policies,
+    forceStopChildToolByCatalogId,
+    listChildToolHoldersForCatalogId,
   });
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);

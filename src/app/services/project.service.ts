@@ -51,7 +51,13 @@ interface ProjectPackageData {
   blocklyToolboxOrder?: string[];
 }
 
-export type ProjectActivationReason = 'new' | 'open' | 'reload' | 'chat-tool-create';
+export type ProjectActivationReason =
+  | 'new'
+  | 'open'
+  | 'reload'
+  | 'chat-tool-create'
+  | 'chat-tool-open'
+  | 'chat-tool-reload';
 
 export interface ProjectActivationEvent {
   path: string;
@@ -71,6 +77,13 @@ interface ProjectCreationOptions {
   deferActivation?: boolean;
 }
 
+export interface BlocklyProjectLoadStatus {
+  project: string;
+  state: 'default' | 'loading' | 'loaded' | 'saving' | 'saved' | 'error';
+  ready: boolean;
+  error?: string;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -88,13 +101,16 @@ export class ProjectService {
 
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
-  private projectOpenTask: { path: string; promise: Promise<void> } | null = null;
+  private projectOpenTask: { path: string; promise: Promise<boolean> } | null = null;
+  private loadingBlocklyProjectPath = '';
+  private loadedBlocklyProjectPath = '';
+  private blocklyProjectLoadFailure: { path: string; error: string } | null = null;
   private blocklyLibraryRuntimeRebuildTask: {
     path: string;
-    packageSignature: string;
+    runtimeSignature: string;
     promise: Promise<boolean>;
   } | null = null;
-  private blocklyLibraryRuntimePackageSignatures = new Map<string, string>();
+  private blocklyLibraryRuntimeSignatures = new Map<string, string>();
 
   currentPackageData: ProjectPackageData = {
     name: 'aily blockly',
@@ -114,6 +130,59 @@ export class ProjectService {
 
   get isProjectOpening(): boolean {
     return !!this.projectOpenTask || this.stateSubject.value === 'loading';
+  }
+
+  beginBlocklyProjectLoad(projectPath: string): void {
+    if (
+      this.stateSubject.value === 'loading'
+      && this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath)
+    ) {
+      return;
+    }
+    this.loadingBlocklyProjectPath = projectPath;
+    this.loadedBlocklyProjectPath = '';
+    this.blocklyProjectLoadFailure = null;
+    this.stateSubject.next('loading');
+  }
+
+  markBlocklyProjectLoaded(projectPath: string): void {
+    if (!this.isSameProjectPath(projectPath, this.currentProjectPath)) {
+      return;
+    }
+    this.loadingBlocklyProjectPath = '';
+    this.loadedBlocklyProjectPath = projectPath;
+    this.blocklyProjectLoadFailure = null;
+    this.stateSubject.next('loaded');
+  }
+
+  markBlocklyProjectLoadFailed(projectPath: string, error: string): void {
+    if (this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath)) {
+      this.loadingBlocklyProjectPath = '';
+    }
+    this.loadedBlocklyProjectPath = '';
+    this.blocklyProjectLoadFailure = {
+      path: projectPath,
+      error: String(error || '未知项目加载错误'),
+    };
+    this.stateSubject.next('error');
+  }
+
+  getBlocklyProjectLoadStatus(projectPath = this.currentProjectPath): BlocklyProjectLoadStatus {
+    const failure = this.blocklyProjectLoadFailure;
+    const sameCurrentProject = this.isSameProjectPath(projectPath, this.currentProjectPath);
+    const ready = sameCurrentProject
+      && this.isSameProjectPath(projectPath, this.loadedBlocklyProjectPath)
+      && !failure
+      && projectDataRuntime.isConfigured();
+    const error = failure && this.isSameProjectPath(projectPath, failure.path)
+      ? failure.error
+      : undefined;
+    return {
+      project: projectPath,
+      state: this.stateSubject.value,
+      ready,
+      ...(error ? { error } : {}),
+    };
   }
 
 
@@ -228,7 +297,7 @@ export class ProjectService {
   }
 
   private shouldBlockForChatRequest(reason?: ProjectActivationReason): boolean {
-    return reason !== 'chat-tool-create' && this.hasBlockingChatRequest();
+    return !reason?.startsWith('chat-tool-') && this.hasBlockingChatRequest();
   }
 
   private warnBlockingChatRequest(): void {
@@ -426,6 +495,8 @@ export class ProjectService {
       || reason === 'open'
       || reason === 'reload'
       || reason === 'chat-tool-create'
+      || reason === 'chat-tool-open'
+      || reason === 'chat-tool-reload'
       ? reason
       : undefined;
   }
@@ -628,7 +699,7 @@ export class ProjectService {
     const promise = this.projectOpenInternal(projectPath, options);
     this.projectOpenTask = { path: projectPath, promise };
     try {
-      await promise;
+      return await promise;
     } finally {
       if (this.projectOpenTask?.promise === promise) {
         this.projectOpenTask = null;
@@ -647,23 +718,24 @@ export class ProjectService {
 
     const packageJsonPath = window['path'].join(projectPath, 'package.json');
     const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+    const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
     const activeTask = this.blocklyLibraryRuntimeRebuildTask;
-    if (activeTask?.path === projectPath && activeTask.packageSignature === packageContent) {
+    if (activeTask?.path === projectPath && activeTask.runtimeSignature === runtimeSignature) {
       await activeTask.promise;
       return;
     }
 
     // This is deliberately an in-place library-layer rebuild. It must not call
     // projectOpen(), Router navigation, location.reload(), or webContents.reload().
-    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent);
+    const promise = this.rebuildActiveBlocklyLibraryRuntime(projectPath, packageContent, runtimeSignature);
     this.blocklyLibraryRuntimeRebuildTask = {
       path: projectPath,
-      packageSignature: packageContent,
+      runtimeSignature,
       promise,
     };
     try {
       if (await promise) {
-        this.blocklyLibraryRuntimePackageSignatures.set(projectPath, packageContent);
+        this.blocklyLibraryRuntimeSignatures.set(projectPath, runtimeSignature);
       }
     } finally {
       if (this.blocklyLibraryRuntimeRebuildTask?.promise === promise) {
@@ -672,7 +744,51 @@ export class ProjectService {
     }
   }
 
-  private async rebuildActiveBlocklyLibraryRuntime(projectPath: string, packageContent: string): Promise<boolean> {
+  /** Record the installed library files represented by the loaded Blockly runtime. */
+  markBlocklyLibraryRuntimeReady(projectPath = this.currentProjectPath): void {
+    if (!projectPath || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
+      return;
+    }
+
+    try {
+      const packageJsonPath = window['path'].join(projectPath, 'package.json');
+      const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+      this.blocklyLibraryRuntimeSignatures.set(
+        projectPath,
+        this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent),
+      );
+    } catch (error) {
+      console.warn('[ProjectService] failed to snapshot the Blockly library runtime:', error);
+    }
+  }
+
+  /** Keep Agent save/build/tidy/upload away from a partially rebuilt workspace. */
+  async ensureBlocklyLibraryRuntimeReady(projectPath = this.currentProjectPath): Promise<void> {
+    if (!projectPath || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
+      return;
+    }
+
+    const packageJsonPath = window['path'].join(projectPath, 'package.json');
+    const packageContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
+    const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
+    const activeTask = this.blocklyLibraryRuntimeRebuildTask;
+    if (activeTask?.path === projectPath && activeTask.runtimeSignature === runtimeSignature) {
+      await activeTask.promise;
+      return;
+    }
+
+    if (this.blocklyLibraryRuntimeSignatures.get(projectPath) === runtimeSignature) {
+      return;
+    }
+
+    await this.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+  }
+
+  private async rebuildActiveBlocklyLibraryRuntime(
+    projectPath: string,
+    packageContent: string,
+    runtimeSignature: string,
+  ): Promise<boolean> {
     const { BlocklyGeneratorRuntimeService } = await import('../editors/blockly-editor/services/blockly-generator-runtime.service');
     const generatorRuntime = this.injector.get(BlocklyGeneratorRuntimeService);
     if (!generatorRuntime.isActive() || !this.isSameProjectPath(projectPath, this.currentProjectPath)) {
@@ -692,6 +808,23 @@ export class ProjectService {
       .map((item) => item.name);
     const loadedLibraryNames = Array.from(blocklyService.loadedLibraryInfos.values())
       .map((item) => item.packageName);
+    const declaredLibraryNames = new Set(
+      Object.keys({
+        ...(packageJson?.dependencies || {}),
+        ...(packageJson?.devDependencies || {}),
+        ...(packageJson?.optionalDependencies || {}),
+      }).filter((name) => name.startsWith('@aily-project/lib-')),
+    );
+    const scannedLibraryNames = new Set(libraryNames);
+    const missingRetainedLibraryNames = [...new Set(loadedLibraryNames)]
+      .filter((name) => declaredLibraryNames.has(name) && !scannedLibraryNames.has(name))
+      .sort((a, b) => a.localeCompare(b));
+    if (missingRetainedLibraryNames.length > 0) {
+      throw new Error(
+        '[BlocklyLibraryRuntime] retained dependencies are not ready: '
+        + missingRetainedLibraryNames.join(', '),
+      );
+    }
     // getAllInstalledLibraries() already returns the toolbox's canonical order
     // (core libraries first). Keep that order for the runtime rebuild; sorting
     // here made the remaining libraries jump to plain alphabetical order after
@@ -700,7 +833,7 @@ export class ProjectService {
     const normalizedLibraryNames = [...orderedLibraryNames].sort((a, b) => a.localeCompare(b));
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
-      this.blocklyLibraryRuntimePackageSignatures.get(projectPath) === packageContent
+      this.blocklyLibraryRuntimeSignatures.get(projectPath) === runtimeSignature
       && JSON.stringify(normalizedLoadedLibraryNames) === JSON.stringify(normalizedLibraryNames)
     ) {
       return false;
@@ -719,7 +852,54 @@ export class ProjectService {
     return true;
   }
 
-  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}): Promise<any> {
+  // A file: dependency can keep the same spec and version while its Blockly
+  // runtime files change, so dependency metadata alone is not a valid identity.
+  private getBlocklyLibraryRuntimeSignature(projectPath: string, packageContent: string): string {
+    const packageJson = JSON.parse(packageContent);
+    const dependencyEntries = Object.entries({
+      ...(packageJson?.dependencies || {}),
+      ...(packageJson?.devDependencies || {}),
+      ...(packageJson?.optionalDependencies || {}),
+    })
+      .filter(([name]) => name.startsWith('@aily-project/lib-'))
+      .map(([name, version]) => [name, String(version ?? '')] as const)
+      .sort(([a], [b]) => a.localeCompare(b));
+    const language = this.translate.currentLang || this.translate.defaultLang || 'en';
+    const runtimeFileNames = [
+      'package.json',
+      'block.json',
+      'toolbox.json',
+      'generator.js',
+      window['path'].join('i18n', `${language}.json`),
+    ];
+    const scopePath = window['path'].join(projectPath, 'node_modules', '@aily-project');
+    const libraryFileSignatures: Array<[string, string, string]> = [];
+
+    if (window['fs'].existsSync(scopePath)) {
+      const libraryDirectoryNames = window['fs'].readdirSync(scopePath)
+        .filter((name: string) => name.startsWith('lib-'))
+        .sort((a: string, b: string) => a.localeCompare(b));
+
+      for (const directoryName of libraryDirectoryNames) {
+        for (const fileName of runtimeFileNames) {
+          const filePath = window['path'].join(scopePath, directoryName, fileName);
+          const fileSignature = window['fs'].existsSync(filePath)
+            ? window['fs'].md5Buffer(window['fs'].readFileSync(filePath))
+            : 'missing';
+          libraryFileSignatures.push([directoryName, fileName, fileSignature]);
+        }
+      }
+    }
+
+    return JSON.stringify({
+      dependencyEntries,
+      toolboxOrder: packageJson?.blocklyToolboxOrder || [],
+      language,
+      libraryFileSignatures,
+    });
+  }
+
+  private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
 
@@ -732,7 +912,7 @@ export class ProjectService {
     if (!this.electronService.exists(projectPath)) {
       this.removeRecentlyProject({ path: projectPath })
       this.message.error(this.translate.instant('PROJECT.PATH_NOT_EXIST'));
-      return;
+      return false;
     }
 
     if (this.electronService.isElectron && window['projectLock']) {
@@ -741,23 +921,23 @@ export class ProjectService {
         const action = await this.promptProjectLockConflict(r.holder);
         if (action === 'cancel') {
           this.stateSubject.next('default');
-          return;
+          return false;
         }
         if (action === 'focus') {
           await window['projectLock'].focusProcess(r.holder.pid);
           this.stateSubject.next('default');
-          return;
+          return false;
         }
         r = await window['projectLock'].tryAcquire(projectPath, { force: true });
         if (!r.ok) {
           this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
           this.stateSubject.next('default');
-          return;
+          return false;
         }
       } else if (!r.ok) {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
         this.stateSubject.next('default');
-        return;
+        return false;
       }
     }
 
@@ -772,7 +952,7 @@ export class ProjectService {
       }
     }
 
-    this.stateSubject.next('loading');
+    this.beginBlocklyProjectLoad(projectPath);
 
     const abiIsExist = window['path'].isExists(projectPath + '/project.abi');
     const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
@@ -793,7 +973,7 @@ export class ProjectService {
       sessionResource: options.sessionResource ?? null,
     });
 
-    if (activationReason === 'reload') {
+    if (activationReason === 'reload' || activationReason === 'chat-tool-reload') {
       // Angular ignores navigation to the exact same route and query params. Move off the
       // editor first so its services/workspace are destroyed and the project is really
       // rebuilt from disk instead of remaining in the loading state until the timeout.
@@ -825,28 +1005,47 @@ export class ProjectService {
     }
 
     await this.waitForProjectOpenCompletion(projectPath);
+    return true;
   }
 
   private waitForProjectOpenCompletion(projectPath: string): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false;
       let subscription: { unsubscribe: () => void } | null = null;
-      const finish = () => {
+      const finish = (error?: Error) => {
         if (settled) {
           return;
         }
         settled = true;
         clearTimeout(timeoutId);
         subscription?.unsubscribe();
-        resolve();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
       };
       const timeoutId = setTimeout(() => {
-        finish();
+        const error = new Error(`项目加载超时: ${projectPath}`);
+        this.markBlocklyProjectLoadFailed(projectPath, error.message);
+        finish(error);
         console.warn('[ProjectService] project open completion timed out:', projectPath);
-      }, 60000);
+      }, 120000);
 
       subscription = this.stateSubject.subscribe((state) => {
-        if (state !== 'loaded' && state !== 'error') {
+        const isBlocklyProject = window['path']?.isExists?.(
+          window['path'].join(projectPath, 'project.abi'),
+        );
+        if (!isBlocklyProject && state === 'loaded') {
+          finish();
+          return;
+        }
+        const status = this.getBlocklyProjectLoadStatus(projectPath);
+        if (state === 'error' && status.error) {
+          finish(new Error(status.error));
+          return;
+        }
+        if (!status.ready) {
           return;
         }
         finish();
@@ -859,13 +1058,26 @@ export class ProjectService {
   }
 
   // 保存项目
-  save(path = this.currentProjectPath) {
+  save(path = this.currentProjectPath, feedbackTimeoutMs = 5000) {
     if (this.isProjectOpening) {
       return Promise.resolve({
         success: false,
         error: 'project is loading',
         path,
       });
+    }
+
+    if (window['path']?.isExists?.(window['path'].join(path, 'project.abi'))) {
+      const loadStatus = this.getBlocklyProjectLoadStatus(path);
+      if (!loadStatus.ready) {
+        return Promise.resolve({
+          success: false,
+          error: loadStatus.error
+            ? `project load failed: ${loadStatus.error}`
+            : `project is not ready for save (state=${loadStatus.state})`,
+          path,
+        });
+      }
     }
 
     return new Promise<{ success: boolean; error?: string; path?: string }>((resolve) => {
@@ -881,7 +1093,7 @@ export class ProjectService {
           this.stateSubject.next('error');
           resolve({ success: false, error: result.error, path });
         }
-      });
+      }, feedbackTimeoutMs);
     });
   }
 
@@ -932,8 +1144,8 @@ export class ProjectService {
     this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
   }
 
-  async close() {
-    if (this.shouldBlockForChatRequest()) {
+  async close(options: { allowDuringChatTool?: boolean } = {}) {
+    if (!options.allowDuringChatTool && this.shouldBlockForChatRequest()) {
       this.warnBlockingChatRequest();
       return false;
     }
@@ -947,6 +1159,9 @@ export class ProjectService {
     }
     this.uiService.closeTerminal();
     this.currentProjectPath = '';
+    this.loadingBlocklyProjectPath = '';
+    this.loadedBlocklyProjectPath = '';
+    this.blocklyProjectLoadFailure = null;
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', '').catch(() => undefined);
     this.currentPackageData = {
       name: 'aily blockly',
@@ -1806,6 +2021,7 @@ export class ProjectService {
       }
 
       const currentValue = currentProjectConfig[menuItem.key];
+      let hasSelectedChild = false;
       for (const child of children) {
         child.key = child.key || menuItem.key;
         child.extra = {
@@ -1813,12 +2029,19 @@ export class ProjectService {
           ...(child.extra || {}),
         };
         child.check = currentValue !== undefined && this.compareConfigs(child.data, currentValue);
+        hasSelectedChild ||= child.check;
 
         if (child.check && child.extra?.syncPinConfig) {
           this.currentBoardPinConfig.board = child.data;
           this.currentBoardPinConfig.variant = child.extra?.build?.variant || null;
           this.currentBoardPinConfig.variant_h = child.extra?.build?.variant_h || null;
         }
+      }
+
+      // boards.txt treats the first option as the effective default. Keep the
+      // menu aligned with that behavior when the project has no matching value.
+      if (!hasSelectedChild && children.length > 0) {
+        children[0].check = true;
       }
 
       if (

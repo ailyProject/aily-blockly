@@ -18,7 +18,7 @@ interface DiskCompileOptions {
 }
 
 @Injectable({ providedIn: 'root' })
-export class AilyCodeProCompileService {
+export class CompileService {
   private cancelled = false;
   private activeSub: Subscription | null = null;
   private activeStreamId: string | null = null;
@@ -95,7 +95,6 @@ export class AilyCodeProCompileService {
       const appDataPath = window['path'].getAppDataPath();
       const ailyChildPath = window['path'].getAilyChildPath();
       const tempPath = this.electronService.pathJoin(root, '.temp');
-      const preprocessCachePath = this.electronService.pathJoin(tempPath, 'preprocess.json');
 
       if (!ailyBuilderPath || !ailyChildPath) {
         this.workflowService.finishBuild(false, 'Missing builder paths');
@@ -127,24 +126,23 @@ export class AilyCodeProCompileService {
       }
       window['fs'].writeFileSync(configFilePath, JSON.stringify(buildConfig, null, 2));
 
-      if (!window['path'].isExists(preprocessCachePath)) {
-        const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
-        const preprocessCmd = `node "${preprocessScriptPath}" "${configFilePath}"`;
-        const pre = await this.runOneShotCommand(preprocessCmd);
-        if (this.cancelled) {
-          this.workflowService.finishBuild(false, 'Cancelled');
-          const sec = ((Date.now() - started) / 1000).toFixed(2);
-          return { success: false, result: { state: 'warn', text: `Build cancelled (${sec}s)` } };
-        }
-        if (pre.exitCode !== 0) {
-          const detail = pre.stderr + pre.stdout;
-          this.workflowService.finishBuild(false, 'Preprocess failed');
-          this.handleFailNotice(detail);
-          return {
-            success: false,
-            result: { state: 'error', text: `Preprocess failed (${((Date.now() - started) / 1000).toFixed(2)}s)`, fullStdErr: detail },
-          };
-        }
+      // 每次构建都进入预处理：该阶段会校验本地库内容指纹，内容未变时再安全复用库缓存。
+      const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
+      const preprocessCmd = `node "${preprocessScriptPath}" "${configFilePath}"`;
+      const pre = await this.runOneShotCommand(preprocessCmd);
+      if (this.cancelled) {
+        this.workflowService.finishBuild(false, 'Cancelled');
+        const sec = ((Date.now() - started) / 1000).toFixed(2);
+        return { success: false, result: { state: 'warn', text: `Build cancelled (${sec}s)` } };
+      }
+      if (pre.exitCode !== 0) {
+        const detail = pre.stderr + pre.stdout;
+        this.workflowService.finishBuild(false, 'Preprocess failed');
+        this.handleFailNotice(detail);
+        return {
+          success: false,
+          result: { state: 'error', text: `Preprocess failed (${((Date.now() - started) / 1000).toFixed(2)}s)`, fullStdErr: detail },
+        };
       }
 
       const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');

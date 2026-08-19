@@ -59,7 +59,6 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
   downloadSourceStatusSubscription: Subscription;
 
   ngOnInit() {
-    this.loadChangelog();
     // 订阅更新状态
     this.updateStatusSubscription = this.updateService.updateStatus.subscribe((status) => {
       // console.log('更新状态:', status);
@@ -78,6 +77,7 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
       this.downloadSourceStatus = status;
       this.cd.detectChanges();
     });
+    this.loadChangelog();
   }
 
   ngOnDestroy() {
@@ -96,6 +96,7 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
         ];
       case 'downloading':
         return [
+          { text: 'UPDATE_DIALOG.DOWNLOAD_IN_BACKGROUND', type: 'default', action: 'background' },
           { text: 'UPDATE_DIALOG.CANCEL_DOWNLOAD', type: 'default', danger: true, action: 'download_stop' }
         ];
       case 'downloaded':
@@ -114,28 +115,52 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
   }
 
   onClose(result: string = ''): void {
-    this.modal.close(result);
+    this.modal.close(result || 'background');
   }
 
-  onButtonClick(action: string): void {
+  get installPreparationMessageKey(): string {
+    return this.updateService.hasOpenProject
+      ? 'UPDATE_DIALOG.SAVING_BEFORE_INSTALL'
+      : 'UPDATE_DIALOG.PREPARING_BEFORE_INSTALL';
+  }
+
+  onMinimize(): void {
+    this.modal.close('background');
+  }
+
+  async onButtonClick(action: string): Promise<void> {
     if (action === 'download') {
       this.download();
+    } else if (action === 'install') {
+      await this.updateService.prepareAndInstall();
+    } else if (action === 'background') {
+      this.modal.close('background');
     } else {
       this.modal.close(action);
     }
   }
 
   download() {
-    this.updateService.dialogAction.next('download');
     this.mode = 'downloading';
     this.cd.detectChanges();
+    this.updateService.downloadUpdate();
   }
 
   private loadChangelog() {
     const lang = this.translate.currentLang || this.translate.defaultLang || '';
     const isChinese = lang.toLowerCase().startsWith('zh');
     const filename = isChinese ? 'CHANGELOG_ZH.md' : 'CHANGELOG.md';
-    const url = this.configService.getCurrentUpdaterUrl() + '/' + filename;
+    let updaterUrl = '';
+    try {
+      updaterUrl = this.configService.getCurrentUpdaterUrl();
+    } catch (error) {
+      console.warn('[Updater] Changelog URL is not available:', error);
+      return;
+    }
+    if (!updaterUrl) {
+      return;
+    }
+    const url = updaterUrl + '/' + filename;
     this.http.get(url, { responseType: 'text' }).subscribe({
       next: async (md) => {
         const html = await marked(md);

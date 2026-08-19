@@ -8,6 +8,7 @@ export type AilyBuilderProgressStage =
   | 'core'
   | 'linking'
   | 'objcopy'
+  | 'resources'
   | 'finalizing'
   | 'complete';
 
@@ -60,6 +61,7 @@ const VALID_STAGES = new Set<AilyBuilderProgressStage>([
   'core',
   'linking',
   'objcopy',
+  'resources',
   'finalizing',
   'complete'
 ]);

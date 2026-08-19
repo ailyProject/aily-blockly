@@ -227,17 +227,18 @@ export const APP_LIST: AppItem[] = [
     enabled: true,
     lock: true
   },
-  {
-    id: 'aily-chat',
-    name: 'MENU.AI',
-    description: 'APP_STORE.AI_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'aily-chat' },
-    icon: 'fa-light fa-star-christmas',
-    more: 'AI',
-    enabled: true,
-    lock: true
-  },
+  // 暂时隐藏旧 Angular Aily Chat 入口，保留完整配置便于后续恢复。
+  // {
+  //   id: 'aily-chat',
+  //   name: 'MENU.AI',
+  //   description: 'APP_STORE.AI_DESC',
+  //   action: 'tool-open',
+  //   data: { type: 'tool', data: 'aily-chat' },
+  //   icon: 'fa-light fa-star-christmas',
+  //   more: 'AI',
+  //   enabled: true,
+  //   lock: true
+  // },
   {
     id: 'cloud-space',
     name: 'MENU.USER_SPACE',
@@ -264,7 +265,7 @@ export const APP_LIST: AppItem[] = [
 export const AVAILABLE_APP_IDS: string[] = [
   'code-viewer',
   'serial-monitor',
-  'aily-chat',
+  // 'aily-chat', // 暂时隐藏旧 Angular Aily Chat 入口
   'cloud-space',
   'user-center',
 ];
@@ -273,7 +274,7 @@ export const AVAILABLE_APP_IDS: string[] = [
 export const DEFAULT_TOOLBAR_APP_IDS: string[] = [
   'code-viewer',
   'serial-monitor',
-  'aily-chat',
+  // 'aily-chat', // 暂时隐藏旧 Angular Aily Chat 入口
   'cloud-space',
   'user-center'
 ];

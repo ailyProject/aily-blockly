@@ -11,6 +11,8 @@ export interface UiAutomationMenuItem {
   visible: boolean;
   dangerous?: boolean;
   mayPrompt?: boolean;
+  automationBlocked?: boolean;
+  automationBlockedReason?: string;
   children?: UiAutomationMenuItem[];
 }
 

@@ -123,7 +123,8 @@
                 <div>{{ 'SETTINGS.FIELDS.REGION' | translate }}:</div>
                 <div class="region-buttons">
                   @for (region of regionList; track region.key) {
-                  <button nz-button nzSize="small" [nzType]="selectedRegion === region.key ? 'primary' : 'default'"
+                  <button nz-button nzSize="small" [disabled]="regionSwitching"
+                    [nzType]="selectedRegion === region.key ? 'primary' : 'default'"
                     (click)="onRegionChange(region.key)">
                     {{ region.name }}
                   </button>

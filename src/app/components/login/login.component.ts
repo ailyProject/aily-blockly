@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, ViewChild, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { Component, ViewChild, OnDestroy, OnInit, ChangeDetectorRef, Input } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
@@ -31,8 +31,11 @@ import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss',
 })
-export class LoginComponent implements OnDestroy {
+export class LoginComponent implements OnInit, OnDestroy {
   private destroy$ = new Subject<void>();
+  private initialized = false;
+
+  @Input() presentation: 'request' | 'dialog' = 'request';
 
   @ViewChild(AltchaComponent) altchaComponent!: AltchaComponent;
 
@@ -70,16 +73,17 @@ export class LoginComponent implements OnDestroy {
   private emailBindCountdownTimer: ReturnType<typeof setInterval> | null = null;
 
 
-  // 协议文档路径：中文(zh_cn/zh_hk)用 zh 版本，其他语言用英文
+  // 协议所属版本跟随 CN/海外官方区域，文档语言再跟随界面语言。
+  // 不能使用可自动切换的当前资源镜像，否则 CN 版会读到海外协议。
   private getUserAgreementUrl(): string {
-    const base = this.configService.getCurrentResourceUrl();
+    const base = this.configService.getOfficialRegionResourceUrl();
     const lang = this.translate.currentLang || this.translate.defaultLang || 'en';
     const isZh = lang === 'zh_cn' || lang === 'zh_hk' || lang === 'zh-CN' || lang === 'zh-HK';
     const file = isZh ? 'agreement/TERMS-zh.md' : 'agreement/TERMS.md';
     return `${base}/${file}`;
   }
   private getPrivacyPolicyUrl(): string {
-    const base = this.configService.getCurrentResourceUrl();
+    const base = this.configService.getOfficialRegionResourceUrl();
     const lang = this.translate.currentLang || this.translate.defaultLang || 'en';
     const isZh = lang === 'zh_cn' || lang === 'zh_hk' || lang === 'zh-CN' || lang === 'zh-HK';
     const file = isZh ? 'agreement/PRIVACY-zh.md' : 'agreement/PRIVACY.md';
@@ -111,6 +115,9 @@ export class LoginComponent implements OnDestroy {
       .subscribe((isLoggedIn) => {
         const wasHidden = !this.showLogin;
         this.showLogin = !isLoggedIn;
+        if (this.initialized && !isLoggedIn && this.presentation === 'request') {
+          this.authService.requestLogin('auth-required');
+        }
         // 退出登录后组件重新显示时，若当前在微信扫码模式则刷新二维码
         if (this.showLogin && wasHidden && this.mode === 'wechat') {
           this.refreshWeChatQrcode();
@@ -128,6 +135,13 @@ export class LoginComponent implements OnDestroy {
           this.cdr.detectChanges();
         });
       });
+  }
+
+  ngOnInit(): void {
+    this.initialized = true;
+    if (!this.authService.isLoggedIn && this.presentation === 'request') {
+      this.authService.requestLogin('auth-required');
+    }
   }
 
   get showWeChatLogin(): boolean {
@@ -355,6 +369,7 @@ export class LoginComponent implements OnDestroy {
       nzBodyStyle: { padding: '0' },
       nzContent: MarkdownDialogComponent,
       nzWidth: '500px',
+      nzWrapClassName: 'login-agreement-modal',
       nzData: {
         title: this.translate.instant('LOGIN.USER_AGREEMENT'),
         docUrl: this.getUserAgreementUrl(),
@@ -376,6 +391,7 @@ export class LoginComponent implements OnDestroy {
       nzClosable: false,
       nzBodyStyle: { padding: '0' },
       nzWidth: '500px',
+      nzWrapClassName: 'login-agreement-modal',
       nzContent: MarkdownDialogComponent,
       nzData: {
         title: this.translate.instant('LOGIN.PRIVACY_POLICY'),

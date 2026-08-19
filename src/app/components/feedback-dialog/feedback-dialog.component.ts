@@ -17,6 +17,7 @@ import { AuthService } from '../../services/auth.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { stripAnsi } from 'fancy-ansi';
 import { Subscription } from 'rxjs';
+import { resolveFeedbackContentOnTypeChange } from './feedback-dialog-state';
 
 import packageJson from '../../../../package.json';
 
@@ -166,12 +167,11 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   onFeedbackTypeChange(type: string): void {
-    if (type === 'library') {
-      this.feedbackContent = this.getLibraryIssueContent();
-      return;
-    }
-
-    this.feedbackContent = '';
+    this.feedbackContent = resolveFeedbackContentOnTypeChange(
+      type,
+      this.feedbackContent,
+      () => this.getLibraryIssueContent(),
+    );
   }
 
   private getLibraryIssueContent(): string {

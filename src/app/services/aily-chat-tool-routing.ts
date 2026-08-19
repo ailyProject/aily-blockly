@@ -1,7 +1,8 @@
-export const DEFAULT_AILY_CHAT_TOOL_ID = 'aily-chat';
+export const DEFAULT_AILY_CHAT_TOOL_ID = 'aily-chat-react';
+export const LEGACY_AILY_CHAT_TOOL_ID = 'aily-chat';
 export const LEGACY_AILY_CHAT_MOUNT_DELAY_MS = 400;
 
-const AILY_CHAT_TOOL_IDS = new Set([DEFAULT_AILY_CHAT_TOOL_ID, 'aily-chat-react']);
+const AILY_CHAT_TOOL_IDS = new Set([LEGACY_AILY_CHAT_TOOL_ID, DEFAULT_AILY_CHAT_TOOL_ID]);
 
 /**
  * The embedded tool stack is ordered from lowest to highest z-index. Select
@@ -37,7 +38,7 @@ export function resolveAilyChatMountDelay(
   legacyReadyAt: number,
   now: number,
 ): number {
-  return toolId === DEFAULT_AILY_CHAT_TOOL_ID
+  return toolId === LEGACY_AILY_CHAT_TOOL_ID
     ? Math.max(0, legacyReadyAt - now)
     : 0;
 }
@@ -47,7 +48,7 @@ export function resolveAilyChatExternalInputOptions(
   options: Record<string, any> | undefined,
   currentLegacySessionId: string | null | undefined,
 ): Record<string, any> | undefined {
-  if (toolId !== DEFAULT_AILY_CHAT_TOOL_ID || options?.['newChatFirst'] !== true) {
+  if (toolId !== LEGACY_AILY_CHAT_TOOL_ID || options?.['newChatFirst'] !== true) {
     return options;
   }
 
