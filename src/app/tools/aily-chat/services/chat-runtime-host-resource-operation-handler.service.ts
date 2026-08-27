@@ -37,11 +37,6 @@ import { ChatRuntimeOwnerSubmittedTurnTitleService } from './chat-runtime-owner-
 import { ChatRuntimeOwnerToolApprovalService } from './chat-runtime-owner-tool-approval.service';
 import { normalizeToolApprovalArgs } from '../core/tool-approval-input';
 import { waitForWorkspaceRevisionQuiescence } from '../core/agent-project-mutation-tool';
-import {
-  createProjectSceneGenerationHandlers,
-  GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-  SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
-} from '../core/blockly-project-scene-tools';
 
 type HostResourceOperationPayload = {
   readonly adapter?: unknown;
@@ -100,6 +95,7 @@ type HostResourceOperationPayload = {
   readonly name?: unknown;
   readonly path?: unknown;
   readonly board?: unknown;
+  readonly boardVersion?: unknown;
   readonly config?: unknown;
   readonly configKey?: unknown;
   readonly configValue?: unknown;
@@ -212,8 +208,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
         return this.runBlocklyWorkspaceOperation(request);
       case 'subapp-agent':
         return this.runSubappAgentOperation(request);
-      case 'project-scene-proposal':
-        return this.runProjectSceneProposalOperation(request);
       case 'board-search':
         return this.runBoardSearchOperation(request);
       case 'library-analysis':
@@ -231,71 +225,6 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
           'resource_operation_unsupported',
           false,
         );
-    }
-  }
-
-  private async runProjectSceneProposalOperation(
-    request: ChatRuntimeHostResourceOperationRequest,
-  ): Promise<Record<string, unknown>> {
-    this.requireSessionId(request, 'Project Scene proposal');
-    const payload = this.requirePayloadAdapter(
-      request.payload,
-      'projectSceneProposal',
-      'Project Scene proposal',
-    );
-    const toolName = payload.action === 'readContext'
-      ? GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL
-      : payload.action === 'submitWiringIntent'
-        ? SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL
-        : '';
-    if (!toolName) {
-      throw new HostResourceOperationError(
-        `[AilyChat][RuntimeHost] Unsupported Project Scene proposal action: ${String(payload.action || '<missing>')}.`,
-        'resource_operation_payload_invalid',
-        false,
-      );
-    }
-    const input = payload.input;
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      throw new HostResourceOperationError(
-        '[AilyChat][RuntimeHost] Project Scene proposal tool requires an input object.',
-        'resource_operation_payload_invalid',
-        false,
-      );
-    }
-    const handler = createProjectSceneGenerationHandlers()[toolName];
-    const result = await handler(
-      input as Record<string, unknown>,
-      {} as never,
-      {
-        toolCallId: this.normalizeSessionId(request.toolCallId),
-        trace: { turnId: this.normalizeSessionId(request.turnId) },
-      },
-    );
-    const text = result.content
-      .filter(item => item.type === 'text')
-      .map(item => item.type === 'text' ? item.text : '')
-      .join('\n')
-      .trim();
-    if (result.isError) {
-      throw new HostResourceOperationError(
-        text || 'Project Scene proposal tool failed.',
-        'project_scene_proposal_tool_failed',
-        false,
-      );
-    }
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('result is not an object');
-      }
-      return parsed as Record<string, unknown>;
-    } catch (error) {
-      throw new HostResourceOperationError(
-        `[AilyChat][RuntimeHost] Project Scene proposal tool returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-        'project_scene_proposal_tool_result_invalid',
-        false,
-      );
     }
   }
 
@@ -474,6 +403,7 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
         return await reloadProjectTool(this.projectService, {});
       case 'switchBoard': {
         const board = this.normalizeSessionId(payload.board);
+        const boardVersion = this.normalizeSessionId(payload.boardVersion);
         if (!board) {
           throw new HostResourceOperationError(
             '[AilyChat][RuntimeHost] switchBoard requires board.',
@@ -485,7 +415,10 @@ export class ChatRuntimeHostResourceOperationHandlerService implements OnDestroy
           'package.json',
           '.temp/package.json',
           'project.aci',
-        ], () => switchBoardTool(this.projectService, { board_name: board }));
+        ], () => switchBoardTool(this.projectService, {
+          board_name: board,
+          ...(boardVersion ? { board_version: boardVersion } : {}),
+        }));
       }
       case 'setBoardConfig': {
         const configEntry = this.readBoardConfigEntry(payload);

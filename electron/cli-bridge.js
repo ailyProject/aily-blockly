@@ -47,7 +47,7 @@ function safeWriteDiscoveryFile(filePath, data) {
  * 启动 CLI bridge。
  *
  * @param {object} deps
- * @param {(action: string, payload: object) => Promise<object>|object} deps.handleCommand
+ * @param {(action: string, payload: object, signal: AbortSignal) => Promise<object>|object} deps.handleCommand
  *        处理 open/close/reload/refresh 等动作,返回 { ok, message, project? }。
  * @param {() => object} deps.getStatus 返回当前状态 { pid, project, serve }。
  * @param {object} [deps.logger]
@@ -73,6 +73,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
 
   const server = http.createServer((req, res) => {
     const sendJson = (statusCode, obj) => {
+      if (res.destroyed || res.writableEnded) return;
       const body = JSON.stringify(obj);
       res.writeHead(statusCode, {
         'Content-Type': 'application/json; charset=utf-8',
@@ -101,6 +102,7 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
     const chunks = [];
     let size = 0;
     let aborted = false;
+    let commandAbortController = null;
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > 1024 * 1024) {
@@ -143,8 +145,16 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
         return;
       }
 
+      commandAbortController = new AbortController();
+      const abortDisconnectedCommand = () => {
+        if (!res.writableEnded) {
+          commandAbortController.abort(new Error('CLI bridge client disconnected.'));
+        }
+      };
+      res.once('close', abortDisconnectedCommand);
+
       Promise.resolve()
-        .then(() => handleCommand(action, payload))
+        .then(() => handleCommand(action, payload, commandAbortController.signal))
         .then((result) => {
           const out = result || { ok: false, message: 'No result' };
           if (Object.prototype.hasOwnProperty.call(out, 'project')) {
@@ -156,9 +166,17 @@ function startCliBridge({ handleCommand, getStatus, logger = console }) {
         .catch((err) => {
           logger.error('[cli-bridge] 命令处理异常:', err);
           sendJson(500, { ok: false, message: err && err.message ? err.message : String(err) });
+        })
+        .finally(() => {
+          res.removeListener('close', abortDisconnectedCommand);
         });
     });
+    req.on('aborted', () => {
+      aborted = true;
+      commandAbortController?.abort(new Error('CLI bridge request was aborted.'));
+    });
     req.on('error', () => {
+      commandAbortController?.abort(new Error('CLI bridge request failed.'));
       if (!aborted) sendJson(400, { ok: false, message: 'Request error' });
     });
   });

@@ -63,8 +63,6 @@ export interface SubagentProgressEvent {
 interface SubagentSession {
   sessionId: string;
   agentName: string;
-  /** schematicAgent 会话创建时使用的 LLM 路由配置签名 */
-  llmRoutingSignature?: string;
   /** 该 subagent 的对话历史（支持多轮内会话复用） */
   messages: any[];
   /** 是否正在执行中 */
@@ -199,7 +197,7 @@ export class SubagentSessionService implements OnDestroy {
    * - 使用虚拟 toolId 标识本次对话
    * - 复用相同的 chatWithSubagent 循环
    *
-   * @param agentName subagent 名称，如 "schematicAgent"
+   * @param agentName subagent 名称
    * @param userText 用户输入的文本（已去除 @agentName 前缀）
    * @returns subagent 完整回复文本
    */
@@ -399,62 +397,13 @@ export class SubagentSessionService implements OnDestroy {
   // =========================================================================
 
   /**
-   * schematicAgent 沿用主对话当前选择的模型凭证。
-   * 其他 subagent 保持原行为，避免扩大兼容修复范围。
-   */
-  private getSchematicLLMRouting(agentName: string): {
-    llmConfig: { apiKey: string; baseUrl: string } | null;
-    selectModel: string | null;
-    signature: string;
-  } | null {
-    if (agentName !== 'schematicAgent') return null;
-
-    const currentModel = this.chatService.currentModel;
-    let llmConfig: { apiKey: string; baseUrl: string } | null = null;
-    if (currentModel?.apiKey && currentModel?.baseUrl) {
-      llmConfig = { apiKey: currentModel.apiKey, baseUrl: currentModel.baseUrl };
-    } else if (
-      this.ailyChatConfigService.useCustomApiKey &&
-      this.ailyChatConfigService.apiKey &&
-      this.ailyChatConfigService.baseUrl
-    ) {
-      llmConfig = {
-        apiKey: this.ailyChatConfigService.apiKey,
-        baseUrl: this.ailyChatConfigService.baseUrl,
-      };
-    }
-
-    const selectModel = currentModel?.model || null;
-    return {
-      llmConfig,
-      selectModel,
-      signature: JSON.stringify({ llmConfig, selectModel }),
-    };
-  }
-
-  /**
    * 获取或创建 subagent 会话
    * 同名 subagent 会复用已有会话（避免每次 tool call 都重建）
    */
   private async getOrCreateSession(agentName: string): Promise<SubagentSession> {
     const existing = this.sessions.get(agentName);
-    const llmRouting = this.getSchematicLLMRouting(agentName);
-    if (
-      existing &&
-      !existing.needsServerSession &&
-      (!llmRouting || existing.llmRoutingSignature === llmRouting.signature)
-    ) {
+    if (existing && !existing.needsServerSession) {
       return existing;
-    }
-
-    if (
-      existing &&
-      !existing.needsServerSession &&
-      llmRouting &&
-      existing.llmRoutingSignature !== llmRouting.signature
-    ) {
-      this.closeServerSession(existing.sessionId);
-      existing.needsServerSession = true;
     }
 
     // 创建新的服务端会话（新建 or 从持久化恢复后首次使用）
@@ -468,13 +417,6 @@ export class SubagentSessionService implements OnDestroy {
       tools: agentTools,
       mode: 'agent',
     };
-    if (llmRouting?.llmConfig) {
-      payload.llm_config = llmRouting.llmConfig;
-    }
-    if (llmRouting?.selectModel) {
-      payload.select_model = llmRouting.selectModel;
-    }
-
     try {
       const result: any = await this.http.post(ChatAPI.startSession, payload).toPromise();
       if (result?.status !== 'success') {
@@ -487,7 +429,6 @@ export class SubagentSessionService implements OnDestroy {
     if (existing && existing.needsServerSession) {
       // 恢复场景：保留历史 messages，更新 sessionId
       existing.sessionId = sessionId;
-      existing.llmRoutingSignature = llmRouting?.signature;
       existing.needsServerSession = false;
       return existing;
     }
@@ -495,7 +436,6 @@ export class SubagentSessionService implements OnDestroy {
     const session: SubagentSession = {
       sessionId,
       agentName,
-      llmRoutingSignature: llmRouting?.signature,
       messages: [],
       running: false,
       createdAt: Date.now(),
@@ -657,16 +597,14 @@ export class SubagentSessionService implements OnDestroy {
       };
 
       const agentTools = this.getToolsForAgent(session.agentName);
-      const llmRouting = this.getSchematicLLMRouting(session.agentName);
-
       // 复用 ChatService.chatRequest()，与 mainAgent 完全一致的流处理
       const source$ = this.chatService.chatRequest(
         session.sessionId,
         session.messages,
         agentTools,
         'agent',
-        llmRouting?.llmConfig || undefined,
-        llmRouting?.selectModel || undefined,
+        undefined,
+        undefined,
         undefined,
         session.agentName,
       );

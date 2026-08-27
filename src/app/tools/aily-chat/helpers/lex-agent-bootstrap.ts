@@ -19,7 +19,6 @@ import {
 import type { ProviderContextManagementSupport } from '../services/aily-chat-config.service';
 import {
   MAIN_AGENT_TYPE,
-  PROJECT_SCENE_AGENT_TYPE,
   normalizeAgentIdentifier,
 } from '../core/agent-identifiers';
 import {
@@ -47,7 +46,6 @@ import {
   type BlocklyContextSnapshotService,
 } from '../core/blockly-context-snapshot-service';
 import { BLOCKLY_LEX_DEFERRED_GROUPS, createBlocklyToolProvider } from '../core/blockly-contributed-tools';
-import { createBlocklyAgentProvider } from '../core/blockly-agent-provider';
 import { createBlocklyAgentFileProvider } from '../core/blockly-agent-file-provider';
 import { createBlocklyInstructionFileProvider } from '../core/blockly-instruction-file-provider';
 import { createBlocklyHookCustomizationProvider } from '../core/blockly-hook-customization-provider';
@@ -716,7 +714,6 @@ function toAskUserBridgeResponse(
 
 const TOOL_CONFIG_AGENTS = [
   MAIN_AGENT_TYPE,
-  PROJECT_SCENE_AGENT_TYPE,
 ] as const;
 
 type ToolConfigAgent = typeof TOOL_CONFIG_AGENTS[number];
@@ -1414,8 +1411,8 @@ export function buildExternalHostAPI(
         }
       : undefined,
     switchBoard: typeof (host.project as any)?.switchBoard === 'function'
-      ? async (board: string) => {
-          const result = await (host.project as any).switchBoard(board);
+      ? async (board: string, boardVersion?: string) => {
+          const result = await (host.project as any).switchBoard(board, boardVersion);
           contextSnapshotService.invalidate([
             'boardInfo',
             'libraryIndex',
@@ -2249,14 +2246,11 @@ export function bootstrapBlocklyLexAgent(
   const pluginCustomizationProvider = createBlocklyPluginCustomizationProvider({
     getAgent: () => agent,
   });
-  const runtimeAgentProvider = createBlocklyAgentProvider(ctx.ailyChatConfigService);
   const sessionCustomizationProviderBindings = [
     createBlocklySessionCustomizationProviderBinding([
       { source: 'project', provider: projectAgentFileProvider },
       { source: 'user', provider: userAgentFileProvider },
-    ], [
-      { source: 'host', provider: runtimeAgentProvider },
-    ], [
+    ], [], [
       { source: 'project', provider: projectInstructionFileProvider },
       { source: 'user', provider: userInstructionFileProvider },
     ], [
@@ -2269,9 +2263,7 @@ export function bootstrapBlocklyLexAgent(
     createBlocklySessionCustomizationProviderBinding([
       { source: 'project', provider: projectAgentFileProvider },
       { source: 'user', provider: userAgentFileProvider },
-    ], [
-      { source: 'host', provider: runtimeAgentProvider },
-    ], [
+    ], [], [
       { source: 'project', provider: projectInstructionFileProvider },
       { source: 'user', provider: userInstructionFileProvider },
     ], [
@@ -2282,9 +2274,7 @@ export function bootstrapBlocklyLexAgent(
       { provider: pluginCustomizationProvider },
     ], 'aily-agent'),
   ] as const;
-  const sessionCustomizationContentProvider = createBlocklySessionCustomizationContentProvider([
-    { source: 'host', provider: runtimeAgentProvider },
-  ], [
+  const sessionCustomizationContentProvider = createBlocklySessionCustomizationContentProvider([], [
     { provider: hookCustomizationProvider },
   ], [
     { provider: pluginCustomizationProvider },
@@ -2378,7 +2368,6 @@ export function bootstrapBlocklyLexAgent(
     })),
     toolProvider,
     skillProvider: new BlocklySkillProvider(),
-    agentProvider: runtimeAgentProvider,
     slashCommandProvider: createBlocklySlashCommandProvider(sessionId),
     approvalHandler: async request => {
       logApprovalBridge('handler-enter', request);

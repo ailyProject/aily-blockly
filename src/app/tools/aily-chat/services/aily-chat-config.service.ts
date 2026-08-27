@@ -17,8 +17,6 @@ import {
     MAIN_AGENT_TYPE,
     normalizeAgentIdentifier,
     normalizeAgentIdentifiers,
-    SCHEMATIC_AGENT_LEGACY_ALIAS,
-    SCHEMATIC_AGENT_TYPE,
 } from '../core/agent-identifiers';
 import { normalizeGovernanceToolName } from '../core/tool-name-normalizer';
 
@@ -298,9 +296,7 @@ export interface AilyChatConfig {
     /** 按Agent分类的工具配置 */
     agentTools?: {
         main?: AgentToolsConfig;
-        SchematicAgent?: AgentToolsConfig;
         mainAgent?: AgentToolsConfig;
-        schematicAgent?: AgentToolsConfig;
         [agentName: string]: AgentToolsConfig | undefined;
     };
     /** 是否启用本地 memory tool（对齐 chat.tools.memory.enabled）。 */
@@ -1240,15 +1236,13 @@ export class AilyChatConfigService implements OnDestroy {
 
     /**
      * 获取指定Agent的工具配置
-     * @param agentName Agent名称（如 'main' / 'SchematicAgent'，兼容旧别名）
+     * @param agentName Agent 名称
      */
     getAgentToolsConfig(agentName: string): AgentToolsConfig {
         const canonicalAgentName = normalizeAgentIdentifier(agentName);
         const legacyAgentName = canonicalAgentName === MAIN_AGENT_TYPE
             ? MAIN_AGENT_LEGACY_ALIAS
-            : canonicalAgentName === SCHEMATIC_AGENT_TYPE
-                ? SCHEMATIC_AGENT_LEGACY_ALIAS
-                : canonicalAgentName;
+            : canonicalAgentName;
 
         // 优先从 agentTools 获取
         const agentConfig = this.config.agentTools?.[canonicalAgentName]
@@ -1287,9 +1281,6 @@ export class AilyChatConfigService implements OnDestroy {
         this.config.agentTools[canonicalAgentName] = normalizedConfig;
         if (canonicalAgentName === MAIN_AGENT_TYPE && this.config.agentTools[MAIN_AGENT_LEGACY_ALIAS]) {
             delete this.config.agentTools[MAIN_AGENT_LEGACY_ALIAS];
-        }
-        if (canonicalAgentName === SCHEMATIC_AGENT_TYPE && this.config.agentTools[SCHEMATIC_AGENT_LEGACY_ALIAS]) {
-            delete this.config.agentTools[SCHEMATIC_AGENT_LEGACY_ALIAS];
         }
         // 同步更新顶层配置（兼容旧版本）
         if (canonicalAgentName === MAIN_AGENT_TYPE) {

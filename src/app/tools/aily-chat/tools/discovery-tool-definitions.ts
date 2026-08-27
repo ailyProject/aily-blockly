@@ -281,7 +281,7 @@ export const DISCOVERY_TOOL_DEFINITIONS = [
             },
             required: []
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: "grep_tool",
@@ -357,7 +357,7 @@ Query and return specific content (for detailed info)
             },
             required: ['pattern']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: "glob_tool",
@@ -412,7 +412,7 @@ Query and return specific content (for detailed info)
             },
             required: ['pattern']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: "fetch",
@@ -462,7 +462,7 @@ Query and return specific content (for detailed info)
             },
             required: ['url']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: 'clone_repository',

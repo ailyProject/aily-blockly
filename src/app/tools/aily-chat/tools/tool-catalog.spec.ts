@@ -62,7 +62,7 @@ describe('tool-catalog', () => {
   });
 
   it('filters out agent-incompatible deferred tools', () => {
-    const matches = searchDeferredTools('create_project', TOOL_CATALOG, 'schematicAgent');
+    const matches = searchDeferredTools('create_project', TOOL_CATALOG, 'mainAgent');
 
     expect(matches).toEqual([]);
   });

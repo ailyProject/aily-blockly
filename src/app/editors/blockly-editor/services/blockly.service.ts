@@ -383,6 +383,47 @@ export class BlocklyService {
     return this.latestGeneratedCode;
   }
 
+  waitForReusableGeneratedCode(options: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {}): Promise<string> {
+    const current = this.getReusableGeneratedCode();
+    if (current !== null) return Promise.resolve(current);
+
+    const signal = options.signal;
+    if (signal?.aborted) return Promise.reject(blocklyCodeAbortReason(signal));
+    const timeoutMs = Math.max(100, Math.min(60_000, options.timeoutMs ?? 30_000));
+
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      let subscription: { unsubscribe(): void } | null = null;
+      const finish = (result: { code: string } | { error: Error }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
+        subscription?.unsubscribe();
+        if ('code' in result) resolve(result.code);
+        else reject(result.error);
+      };
+      const onAbort = () => finish({ error: blocklyCodeAbortReason(signal!) });
+      const timeout = setTimeout(() => finish({
+        error: new Error(`Blockly code generation did not finish within ${timeoutMs}ms.`),
+      }), timeoutMs);
+
+      signal?.addEventListener('abort', onAbort, { once: true });
+      subscription = this.codeSubject.subscribe(() => {
+        const code = this.getReusableGeneratedCode();
+        if (code !== null) finish({ code });
+      });
+      if (settled) {
+        subscription.unsubscribe();
+        return;
+      }
+      this.requestCodeViewerRefresh(true);
+    });
+  }
+
   requestCodeViewerRefresh(forceGenerate = false): void {
     this.codeViewerRefreshRequestSubject.next(forceGenerate);
   }
@@ -3071,6 +3112,12 @@ export class BlocklyService {
   getSelectedBlockContextLabel(): BlockContextLabel | null {
     return this.getSelectedBlockContextLabels()[0] ?? null;
   }
+}
+
+function blocklyCodeAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Blockly code generation was cancelled.');
 }
 
 export interface LibData {

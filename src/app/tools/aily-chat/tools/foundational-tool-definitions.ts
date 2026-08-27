@@ -49,7 +49,7 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
             },
             required: ['questions']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: 'search_available_tools',
@@ -58,7 +58,7 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
 成功后工具会被加载，可在后续对话中直接调用。
 
 搜索示例：
-- search_available_tools({query: "schematic"}) — 加载接线图相关工具
+- search_available_tools({query: "serial"}) — 加载串口相关工具
 - search_available_tools({query: "grep"}) — 加载代码搜索工具
 - search_available_tools({query: "fetch"}) — 加载网络请求工具
 - search_available_tools({query: "abs"}) — 加载 ABS/Blockly 工具`,
@@ -72,7 +72,7 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
             },
             required: ['query']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: 'load_skill',
@@ -107,7 +107,7 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
             },
             required: ['action']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: 'register_agent',
@@ -224,7 +224,7 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
             },
             required: ['info_type']
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
     {
         name: 'get_project_info',
@@ -240,6 +240,6 @@ export const FOUNDATIONAL_TOOL_DEFINITIONS = [
             },
             required: []
         },
-        agents: ["mainAgent", "schematicAgent"]
+        agents: ["mainAgent"]
     },
 ];

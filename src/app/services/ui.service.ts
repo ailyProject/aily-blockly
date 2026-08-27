@@ -18,6 +18,7 @@ import { getChildToolConfig } from '../configs/tool.config';
 import { ConfigService } from './config.service';
 import { BoardSelectorDialogComponent } from '../main-window/components/board-selector-dialog/board-selector-dialog.component';
 import {
+  DEFAULT_AILY_CHAT_TOOL_ID,
   findPreferredAilyChatTool,
   LEGACY_AILY_CHAT_MOUNT_DELAY_MS,
   resolveAilyChatExternalInputOptions,
@@ -35,6 +36,9 @@ import {
 import { ChildAppSafetyService } from './child-app-safety.service';
 import { ChildToolProcessService } from './child-tool-process.service';
 import { DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID } from './default-aily-chat-bootstrap';
+
+const STANDARD_CHAT_READY_TIMEOUT_MS = 30_000;
+const STANDARD_CHAT_READY_POLL_MS = 100;
 
 @Injectable({
   providedIn: 'root',
@@ -508,7 +512,38 @@ export class UiService {
 
   // 发送工具信号，格式为 "toolname:action"，如 "serial-monitor:disconnect"
   sendToolSignal(signal: string, payload?: unknown) {
+    if (signal === `${DEFAULT_AILY_CHAT_TOOL_ID}:external-input-receipt`) {
+      void this.handleExternalInputReceipt(payload);
+    }
     this.actionSubject.next({ action: 'signal', type: 'tool', data: signal, payload });
+  }
+
+  private async handleExternalInputReceipt(payload: unknown): Promise<void> {
+    if (!payload || typeof payload !== 'object') return;
+    const receipt = payload as Record<string, unknown>;
+    const receiptId = typeof receipt['receiptId'] === 'string'
+      ? receipt['receiptId'].trim()
+      : '';
+    if (!receiptId) return;
+
+    if (receipt['status'] === 'failed') {
+      const errorCode = typeof receipt['errorCode'] === 'string'
+        ? receipt['errorCode']
+        : 'submission-failed';
+      this.chatService.failExternalInputExecution(
+        receiptId,
+        new Error(`Lex Pro external input failed: ${errorCode}`),
+      );
+      return;
+    }
+    if (receipt['status'] !== 'submitted' && receipt['status'] !== 'completed') return;
+    const sessionId = typeof receipt['sessionId'] === 'string'
+      ? receipt['sessionId'].trim()
+      : '';
+    this.chatService.markExternalInputExecutionSubmitted(receiptId, sessionId);
+    if (receipt['status'] === 'completed' && sessionId) {
+      this.chatService.completeExternalInputExecution(receiptId, sessionId);
+    }
   }
 
   /**
@@ -574,42 +609,54 @@ export class UiService {
     return targetToolId;
   }
 
-  /**
-   * Open the canonical Angular/Lex Chat and run one ordinary visible turn.
-   * The receipt observes that existing pipeline; it does not create a second
-   * session type or a headless presentation projection.
-   */
+  /** Run one ordinary visible turn in the installed Lex Pro main Agent. */
   openAndRunStandardChatTurn(
     text: string,
     receiptId: string,
     options?: Record<string, any>,
   ): ChatExternalInputExecution {
     const execution = this.chatService.beginExternalInputExecution(receiptId);
-    const targetToolId = 'aily-chat';
-    if (!this.openToolList.includes(targetToolId)) {
-      this.legacyAilyChatReadyAt = Date.now() + LEGACY_AILY_CHAT_MOUNT_DELAY_MS;
-    }
+    const targetToolId = DEFAULT_AILY_CHAT_TOOL_ID;
     this.openTool(targetToolId);
-    const deliver = () => {
-      const deliveryOptions = resolveAilyChatExternalInputOptions(
-        targetToolId,
-        {
-          ...options,
-          autoSend: true,
-          externalInputReceiptId: execution.receiptId,
-        },
-        this.chatService.currentSessionId,
-      );
-      this.chatService.sendTextToChat(text, deliveryOptions);
-    };
-    const mountDelay = resolveAilyChatMountDelay(
-      targetToolId,
-      this.legacyAilyChatReadyAt,
-      Date.now(),
-    );
-    if (mountDelay > 0) setTimeout(deliver, mountDelay);
-    else deliver();
+    void this.deliverStandardChatTurn(targetToolId, text, {
+      ...options,
+      autoSend: true,
+      externalInputReceiptId: execution.receiptId,
+    }).catch(error => {
+      this.chatService.failExternalInputExecution(execution.receiptId, error);
+    });
     return execution;
+  }
+
+  private async deliverStandardChatTurn(
+    targetToolId: string,
+    text: string,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    const deadline = Date.now() + STANDARD_CHAT_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const status = this.childHostRegistry.getStatus(targetToolId);
+      if (
+        status?.['status'] === 'ready'
+        && status['frameLoaded'] === true
+        && status['penpalState'] === 'connected'
+      ) {
+        const waitFor: Promise<void>[] = [];
+        this.sendToolSignal(`${targetToolId}:external-input`, {
+          targetToolId,
+          text,
+          options,
+          waitFor,
+        });
+        await Promise.all(waitFor);
+        return;
+      }
+      await new Promise<void>(resolve => setTimeout(
+        resolve,
+        STANDARD_CHAT_READY_POLL_MS,
+      ));
+    }
+    throw new Error('Lex Pro main Agent surface did not become ready.');
   }
 
   /** The highest currently open Aily Chat, or null when neither chat is open. */

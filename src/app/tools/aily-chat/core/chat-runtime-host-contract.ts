@@ -662,7 +662,6 @@ export type ChatRuntimeHostResourceRequestKind =
   | 'diagnostics'
   | 'blockly-workspace'
   | 'subapp-agent'
-  | 'project-scene-proposal'
   | 'session-title'
   | 'save-current-session'
   | 'history-persistence';
@@ -735,6 +734,7 @@ export interface ChatRuntimeHostProjectInfoPayload {
   readonly name?: string;
   readonly path?: string;
   readonly board?: string;
+  readonly boardVersion?: string;
   readonly config?: Readonly<Record<string, unknown>>;
   readonly configKey?: string;
   readonly configValue?: string;

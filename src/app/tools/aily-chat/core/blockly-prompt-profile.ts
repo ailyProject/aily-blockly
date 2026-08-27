@@ -109,8 +109,8 @@ Library evidence routing:
 
 Hardware evidence routing:
 - For development-board capabilities and defaults, including GPIO, ADC, PWM, UART, I2C, SPI, builtin LEDs, and board configuration, use \`get_board_parameters\`; its board.json data is authoritative.
-- A pinmap describes schematic package terminals and connection geometry. Do not use pinmap data as the authoritative source for MCU capabilities or board defaults.
-- Use library \`readme_ai.md\` for component usage and wiring guidance. Use schematic/pinmap capabilities only when the task actually requires a wiring or connection diagram.
+- A pinmap describes component package terminals and connection geometry. Do not use pinmap data as the authoritative source for MCU capabilities or board defaults.
+- Use library \`readme_ai.md\` for component usage and wiring guidance. Scene generation is owned by the Simulator subapp and its ProjectSceneAgent contract.
 
 Reading & editing the program:
 - Treat \`{projectPath}/project.abs\` as the canonical editable source. Read and modify it first for Blockly program work.

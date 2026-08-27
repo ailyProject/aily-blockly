@@ -1,6 +1,5 @@
 ﻿import { parseAgentDefinition, type AgentSource, type IAgentContribution, type IHostAgentFileProvider, type IHostAgentProvider } from 'aily-lex/browser';
 
-import { BLOCKLY_HOST_AGENT_URI_SCHEME, createBlocklyHostAgentUri } from './blockly-agent-provider';
 import {
   BLOCKLY_HOST_HOOK_URI_SCHEME,
   type BlocklyHookCustomizationProvider,
@@ -11,6 +10,8 @@ import {
   type BlocklyPluginCustomizationProvider,
 } from './blockly-plugin-customization-provider';
 import type { BlocklySkillCustomizationProvider } from './blockly-skill-customization-provider';
+
+const BLOCKLY_HOST_AGENT_URI_SCHEME = 'aily-chat-agent';
 
 type SessionCustomizationChangeSubscription =
   | { dispose?: () => void; unsubscribe?: () => void }
@@ -426,6 +427,11 @@ function normalizeRuntimeAgentContributionUri(contribution: IAgentContribution):
   }
 
   return createBlocklyHostAgentUri(contribution.agentType);
+}
+
+function createBlocklyHostAgentUri(agentType: string): string {
+  const normalized = typeof agentType === 'string' ? agentType.trim() : '';
+  return `${BLOCKLY_HOST_AGENT_URI_SCHEME}:/agents/${encodeURIComponent(normalized || 'unknown')}.agent.md`;
 }
 
 function normalizeSkillContributionUri(skillPath: string): string {

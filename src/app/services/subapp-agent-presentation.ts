@@ -24,6 +24,9 @@ export function resolveSubappAgentPresentation(
 
   if (Object.prototype.hasOwnProperty.call(params, 'presentUi')) {
     const explicitMode = params['presentUi'];
+    if (explicitMode === true && presentation) {
+      return resolveDeclaredPresentation(presentation);
+    }
     if (explicitMode === 'window') {
       return {
         uiMode: 'window',
@@ -51,6 +54,12 @@ export function resolveSubappAgentPresentation(
 
   if (!presentation) return { uiMode: 'none' };
 
+  return resolveDeclaredPresentation(presentation);
+}
+
+function resolveDeclaredPresentation(
+  presentation: NonNullable<ChildToolAgentDefinition['presentation']>,
+): ResolvedSubappAgentPresentation {
   if (presentation.mode === 'window') {
     return {
       uiMode: 'window',

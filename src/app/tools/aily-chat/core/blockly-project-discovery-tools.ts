@@ -301,7 +301,7 @@ Search results expose packageName as the canonical npm identity. Once the requir
     },
     annotations: { readOnly: true },
     runtimeModes: ['unbound', 'coder', 'blockly'],
-    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+    agentScope: ['main', 'Plan', 'Explore'],
     deferred: createDeferred('blockly-library-discovery', '开发板与库搜索只在特定查询场景下需要'),
   };
 }
@@ -317,7 +317,7 @@ Each result exposes packageName as the canonical npm identity. Once the required
     inputSchema: searchBoardsLibrariesTool.parameters,
     annotations: { readOnly: true },
     runtimeModes: ['unbound', 'coder', 'blockly'],
-    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+    agentScope: ['main', 'Plan', 'Explore'],
   };
 }
 
@@ -330,7 +330,7 @@ function makeGetHardwareCategoriesContribution(): RuntimeScopedToolContribution 
     inputSchema: getHardwareCategoriesTool.parameters,
     annotations: { readOnly: true },
     runtimeModes: ['unbound', 'coder', 'blockly'],
-    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+    agentScope: ['main', 'Plan', 'Explore'],
   };
 }
 
@@ -354,7 +354,7 @@ function makeGetBoardParametersContribution(): RuntimeScopedToolContribution {
     },
     annotations: { readOnly: true },
     runtimeModes: ['unbound', 'coder', 'blockly'],
-    agentScope: ['main', 'Plan', 'Explore', 'SchematicAgent'],
+    agentScope: ['main', 'Plan', 'Explore'],
   };
 }
 

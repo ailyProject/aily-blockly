@@ -49,6 +49,25 @@ describe('resolveSubappAgentPresentation', () => {
     )).toEqual({ uiMode: 'none' });
   });
 
+  it('uses manifest-owned placement for an explicit visibility request', () => {
+    expect(resolveSubappAgentPresentation(
+      { presentUi: true },
+      definition({
+        mode: 'window',
+        surface: 'full',
+        autoOpen: 'always',
+        when: { param: 'presentUi', values: [true] },
+      }),
+    )).toEqual({
+      uiMode: 'window',
+      activityPresentation: {
+        mode: 'window',
+        surface: 'full',
+        autoOpen: 'always',
+      },
+    });
+  });
+
   it('keeps native Dock conditions and auto-open behavior unchanged', () => {
     const tool = definition({
       mode: 'dock',

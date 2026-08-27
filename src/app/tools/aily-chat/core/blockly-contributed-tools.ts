@@ -48,10 +48,6 @@ import {
   collectSubappAgentToolBindings,
   createSubappAgentHandlers,
 } from './blockly-subapp-agent-tools';
-import {
-  appendProjectSceneGenerationContributions,
-  createProjectSceneGenerationHandlers,
-} from './blockly-project-scene-tools';
 
 export const BLOCKLY_LEX_DEFERRED_GROUPS = [
   { id: 'blockly-library-discovery', label: '硬件/库工具', description: '开发板、库搜索与库定义分析' },
@@ -63,11 +59,11 @@ function createDeferred(group: typeof BLOCKLY_LEX_DEFERRED_GROUPS[number]['id'],
   return { group, reason };
 }
 
-// makeSchematicContribution removed — schematic tools are now individual external tools
+// Project Scene tools are provided exclusively by the Simulator subapp.
 // with per-tool agentScope (from tools.ts 'agents' field), managed by lex runtime resolution.
 
 // ---------------------------------------------------------------------------
-// Schematic / External Tools — Phase 1.3: unified into contributed provider
+// External tools — Phase 1.3: unified into contributed provider
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -113,11 +109,7 @@ function createHandlers(runtimeMode: ChatAgentRuntimeMode, options?: BlocklyTool
   }
 
   if (runtimeMode === 'blockly') {
-    Object.assign(
-      handlers,
-      createBlocklyWorkspaceHandlers(options),
-      createProjectSceneGenerationHandlers(),
-    );
+    Object.assign(handlers, createBlocklyWorkspaceHandlers(options));
   }
 
   return handlers;
@@ -140,7 +132,6 @@ function collectBlocklyContributions(hostAPI: IExternalHostAPI, runtimeMode: Cha
 
   if (runtimeMode === 'blockly') {
     appendBlocklyWorkspaceContributions(contributions, hostAPI, createDeferred);
-    appendProjectSceneGenerationContributions(contributions);
   }
 
   return contributions;

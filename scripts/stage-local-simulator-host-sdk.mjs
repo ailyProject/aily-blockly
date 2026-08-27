@@ -22,6 +22,7 @@ const simulatorRoot = path.resolve(
     || path.join(blocklyRoot, '..', 'aily-simulator'),
 );
 const stageRoot = path.join(blocklyRoot, 'node_modules', '@aily-project');
+const angularCacheRoot = path.join(blocklyRoot, '.angular', 'cache');
 const reportPath = path.join(
   blocklyRoot,
   '.temp',
@@ -89,6 +90,8 @@ try {
     }));
   }
 
+  await rm(angularCacheRoot, { recursive: true, force: true });
+
   const sdkTarget = packageTarget('@aily-project/simulator-host-sdk');
   const imported = await import(
     `${pathToFileURL(path.join(sdkTarget, 'dist', 'index.js')).href}?stage=${Date.now()}`
@@ -98,6 +101,7 @@ try {
     kind: 'aily-blockly-local-simulator-host-sdk-stage',
     sourceRoot: simulatorRoot,
     packageManagerMutation: false,
+    angularCacheInvalidated: true,
     packages: staged,
     import: {
       status: 'imported',

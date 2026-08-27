@@ -11,7 +11,7 @@ const platform = `${process.platform}-${process.arch}`;
 
 // Simulator runtime is no longer vendored from a sibling aily-simulator
 // checkout. It will ship/install via the subapp package channel
-// (@aily-project/subapp-aily-simulator), same as other child apps.
+// (@aily-project/aily-simulator), same as other child apps.
 // Keep a staged marker so electron-builder extraResources still has a
 // stable source directory.
 replaceOutput((stagingRoot) => {

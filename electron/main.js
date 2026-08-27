@@ -1061,9 +1061,22 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
 
     const requestGeneration = rendererGeneration;
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const cancelRendererRequest = () => {
+      if (channel !== 'cli-bridge:blockly-live-operation'
+        || !mainWindow
+        || !mainWindow.webContents
+        || mainWindow.isDestroyed()) {
+        return;
+      }
+      mainWindow.webContents.send('cli-bridge:blockly-live-operation:cancel', {
+        requestId,
+        rendererGeneration: requestGeneration,
+      });
+    };
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       ipcMain.removeListener(responseChannel, listener);
+      cancelRendererRequest();
       resolve({ ok: false, message: '等待渲染进程响应超时' });
     }, timeoutMs);
 
@@ -1085,6 +1098,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
     const onAbort = () => {
       clearTimeout(timer);
       ipcMain.removeListener(responseChannel, listener);
+      cancelRendererRequest();
       resolve({
         ok: false,
         errorCode: 'RENDERER_REQUEST_CANCELLED',
@@ -1107,7 +1121,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
 }
 
 /** 处理来自 CLI 的命令（open/close/reload/refresh） */
-async function handleCliBridgeCommand(action, payload) {
+async function handleCliBridgeCommand(action, payload, signal) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
   switch (action) {
     case 'open': {
@@ -1195,20 +1209,22 @@ async function handleCliBridgeCommand(action, payload) {
         ? 620000
         : operation === 'project_upload'
           ? 920000
-        : operation === 'project_create'
-          ? 300000
-          : operation === 'project_open'
-            ? 130000
-          : operation === 'abs_apply'
-            ? 120000
-            : operation === 'subapp_agent_call'
-              ? 620000
-              : operation === 'child_app_control'
-              || operation === 'child_app_open'
-              || operation === 'child_app_window_set_bounds'
-              || operation === 'child_app_window_arrange'
-                ? 120000
-                : 12000;
+          : operation === 'switch_board'
+            ? 300000
+            : operation === 'project_create'
+              ? 300000
+              : operation === 'project_open'
+                ? 130000
+                : operation === 'abs_apply'
+                  ? 120000
+                  : operation === 'subapp_agent_call'
+                    ? 620000
+                    : operation === 'child_app_control'
+                    || operation === 'child_app_open'
+                    || operation === 'child_app_window_set_bounds'
+                    || operation === 'child_app_window_arrange'
+                      ? 120000
+                      : 12000;
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
@@ -1218,6 +1234,7 @@ async function handleCliBridgeCommand(action, payload) {
           params: payload && payload.params,
         },
         liveOperationTimeoutMs,
+        signal,
       );
       return result && typeof result === 'object' ? result : { ok: false, message: '渲染进程返回了无效结果' };
     }
@@ -2312,7 +2329,8 @@ function loadEnv() {
   // npm registry
   process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
   // 子应用目录与当前服务区域共用 regions.<region>.resource 配置。
-  process.env.AILY_SUBAPP_INDEX_URL = buildSubappIndexUrl(regionConfig.resource);
+  process.env.AILY_SUBAPP_INDEX_URL = process.env.AILY_SUBAPP_INDEX_URL
+    || buildSubappIndexUrl(regionConfig.resource);
   // 设置 npm 使用应用数据目录下的配置文件，忽略系统 .npmrc
   const appNpmrcPath = path.join(process.env.AILY_APPDATA_PATH, ".npmrc");
   // 如果不存在则创建

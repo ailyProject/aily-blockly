@@ -1,7 +1,7 @@
 import {
   inferArduinoHardwareHints,
-  type HardwareHint,
-} from '../../tools/simulator/project-hardware-intent';
+  type ProjectHardwareIntentHintV1,
+} from '@aily-project/simulator-host-sdk';
 
 export interface SimulatorSceneGpioBuildMetadata {
   readonly directions: Readonly<Record<string, 'input' | 'output'>>;
@@ -123,7 +123,9 @@ function resolveComponentConfig(
   return {};
 }
 
-function gpioDirection(hint: HardwareHint): 'input' | 'output' | null {
+function gpioDirection(
+  hint: ProjectHardwareIntentHintV1,
+): 'input' | 'output' | null {
   if (
     hint.kind === 'gpio-digital-output'
     || hint.kind === 'gpio-pwm-output'

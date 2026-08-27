@@ -1625,7 +1625,7 @@ describe('RenderEventPartAdapter', () => {
       type: 'subagent_begin',
       toolCallId: 'sa-parent',
       subAgentInvocationId: 'sa-parent',
-      agentName: 'SchematicAgent',
+      agentName: 'ProjectSceneAgent',
       description: 'Generate wiring diagram',
       timestamp: 1,
     } as any);
@@ -1654,7 +1654,7 @@ describe('RenderEventPartAdapter', () => {
       type: 'subagent_end',
       toolCallId: 'sa-parent',
       subAgentInvocationId: 'sa-parent',
-      agentName: 'SchematicAgent',
+      agentName: 'ProjectSceneAgent',
       resultText: 'Wiring diagram generated.',
       state: 'done',
       timestamp: 4,

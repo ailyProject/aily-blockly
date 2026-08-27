@@ -1,12 +1,19 @@
 import { Injectable } from '@angular/core';
+import {
+  buildProjectHardwareIntentSnapshot,
+  type ProjectHardwareIntentSnapshotV1,
+} from '@aily-project/simulator-host-sdk';
 
 import { BlocklyService } from '../editors/blockly-editor/services/blockly.service';
 import { ProjectService } from './project.service';
-import { buildProjectHardwareIntentSnapshot } from '../tools/simulator/project-hardware-intent';
+import {
+  createAlignedSimulatorProjectFirmwareEvidenceSource,
+} from '../integrations/simulator/simulator-project-firmware-evidence-source';
 
 interface SceneGenerationIdentity {
   readonly requestId: string;
   readonly projectIdentity: string;
+  readonly instruction?: string | null;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -19,17 +26,29 @@ export class ProjectHardwareIntentProviderService {
   async resolve(
     request: SceneGenerationIdentity,
     signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<ProjectHardwareIntentSnapshotV1> {
     throwIfAborted(signal);
     if (!this.projectService.currentProjectPath) {
       throw new Error('Project hardware intent requires an open project.');
     }
-    const sourceText = this.blocklyService.getReusableGeneratedCode();
-    if (sourceText === null || sourceText.trim().length === 0) {
+    const generatedSource = await this.blocklyService.waitForReusableGeneratedCode({
+      signal,
+      timeoutMs: 30_000,
+    });
+    if (generatedSource.trim().length === 0) {
       throw new Error(
-        'Generated Arduino source is missing or stale; regenerate the Blockly code before creating a Scene.',
+        'Generated Arduino source is empty; add executable Blockly content before creating a Scene.',
       );
     }
+    const sourceText = await createAlignedSimulatorProjectFirmwareEvidenceSource({
+      projectRoot: this.projectService.currentProjectPath,
+      sourceText: generatedSource,
+      files: {
+        exists: filePath => window['fs'].existsSync(filePath),
+        readText: filePath => window['fs'].readFileSync(filePath, 'utf8'),
+        join: (...segments) => window['path'].join(...segments),
+      },
+    });
     const boardConfig = this.projectService.currentBoardConfig
       ?? await this.projectService.getBoardJson();
     throwIfAborted(signal);
@@ -43,7 +62,7 @@ export class ProjectHardwareIntentProviderService {
       board: resolveBoard(boardConfig),
       sourceText,
       libraries: resolveLibraries(packageJson),
-      userIntent: null,
+      userIntent: request.instruction ?? null,
     });
   }
 }

@@ -17,9 +17,6 @@ import './project-tools';
 // Blockly 块操作类
 import './blockly-tools';
 
-// 连线图 / Schematic 类
-import './schematic-tools';
-
 // ABS / ABI / 工具类
 import './abs-tools';
 

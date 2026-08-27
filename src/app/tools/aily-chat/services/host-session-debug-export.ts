@@ -31,14 +31,7 @@ const ABS_ONLY_TOOL_NAMES = new Set([
   'syncAbs',
   'lint',
   'analyzeLibrary',
-  'generate_schematic',
-  'get_pinmap_summary',
-  'get_component_catalog',
   'get_project_context',
-  'validate_schematic',
-  'get_current_schematic',
-  'generate_pinmap',
-  'save_pinmap',
   'save_arch',
 ]);
 

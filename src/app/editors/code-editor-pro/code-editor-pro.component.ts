@@ -22,6 +22,7 @@ import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-p
 import { UiService } from '../../services/ui.service';
 import { AiCoderDiffBridgeService } from '../../services/ai-coder-diff-bridge.service';
 import { CmdService, type CmdOutput } from '../../services/cmd.service';
+import { CodeCompletionHostBridgeService } from './services/code-completion-host-bridge.service';
 
 /** 与 child/aily-coder/src/hostEmbedContext.ts 中 channel 常量一致 */
 const AILY_CODER_HOST_CONTEXT_CHANNEL = 'aily-coder-host-context';
@@ -57,6 +58,7 @@ const CODER_GIT_PATHSPECS = [
   imports: [CommonModule, NotificationComponent],
   templateUrl: './code-editor-pro.component.html',
   styleUrl: './code-editor-pro.component.scss',
+  providers: [CodeCompletionHostBridgeService],
 })
 export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit {
   @ViewChild('coderEmbedFrame') coderEmbedFrame?: ElementRef<HTMLIFrameElement>;
@@ -125,6 +127,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     private uiService: UiService,
     private aiCoderDiffBridge: AiCoderDiffBridgeService,
     private cmdService: CmdService,
+    private codeCompletionHostBridge: CodeCompletionHostBridgeService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -276,6 +279,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.buildFinishedSub = undefined;
     this.stopAllCoderEmbedFsWatchers();
     this.stopBuildOutputsWatch();
+    this.codeCompletionHostBridge.dispose();
     this.aiCoderDiffBridge.registerEmbed(null);
     this.aiCoderDiffBridge.setWorkspaceRoot(null);
     this.coderEmbedWorkspaceRoot = null;
@@ -1177,6 +1181,14 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   }
 
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
+    if (
+      this.codeCompletionHostBridge.handleMessage(
+        ev,
+        this.coderEmbedFrame?.nativeElement?.contentWindow,
+      )
+    ) {
+      return;
+    }
     const msg = ev.data as {
       channel?: string;
       id?: number;

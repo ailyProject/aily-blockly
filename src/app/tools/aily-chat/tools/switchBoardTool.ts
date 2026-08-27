@@ -45,12 +45,19 @@ export async function switchBoardTool(
             currentBoard = await projectService.getBoardModule();
         } catch { /* 忽略 */ }
 
-        if (currentBoard === board_name) {
+        let currentBoardVersion = '';
+        if (currentBoard === board_name && board_version && typeof projectService.getBoardPackageJson === 'function') {
+            try {
+                currentBoardVersion = String((await projectService.getBoardPackageJson())?.version || '').trim();
+            } catch { /* 版本未知时继续执行精确切换 */ }
+        }
+
+        if (currentBoard === board_name && (!board_version || currentBoardVersion === board_version)) {
             return {
                 is_error: false,
                 content: JSON.stringify({
                     success: true,
-                    message: `当前项目已在使用开发板 "${board_name}"，无需切换`
+                    message: `当前项目已在使用开发板 "${board_name}"${board_version ? `@${board_version}` : ''}，无需切换`
                 })
             };
         }

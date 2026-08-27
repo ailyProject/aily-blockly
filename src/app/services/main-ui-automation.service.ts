@@ -138,6 +138,44 @@ export class MainUiAutomationService {
     return (await this.readWindowState(this.routePath(config))).open === true;
   }
 
+  async waitForChildAppHostReady(
+    toolIdValue: string,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>> {
+    const toolId = String(toolIdValue || '').trim();
+    const config = getChildToolConfig(toolId);
+    if (!config) return { ok: false, toolId, message: `未找到子应用: ${toolId || '(空)'}` };
+
+    const effectiveTimeoutMs = Math.max(100, Math.min(
+      180_000,
+      Math.round(timeoutMs ?? config.startupTimeoutMs ?? 15_000),
+    ));
+    const deadline = Date.now() + effectiveTimeoutMs;
+    let lastStatus: Record<string, unknown> | null = null;
+    while (Date.now() < deadline) {
+      lastStatus = await this.readChildAppHostStatus(config);
+      if (lastStatus?.['status'] === 'ready') {
+        return { ok: true, toolId, host: lastStatus };
+      }
+      if (lastStatus?.['status'] === 'error') {
+        return {
+          ok: false,
+          toolId,
+          host: lastStatus,
+          message: String(lastStatus['error'] || `${toolId} 子应用宿主启动失败。`),
+        };
+      }
+      await delay(100);
+    }
+
+    return {
+      ok: false,
+      toolId,
+      ...(lastStatus ? { host: lastStatus } : {}),
+      message: `${toolId} 子应用宿主未在 ${effectiveTimeoutMs}ms 内就绪。`,
+    };
+  }
+
   async openChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
     const mode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;
@@ -490,6 +528,28 @@ export class MainUiAutomationService {
     }
   }
 
+  private async readChildAppHostStatus(
+    config: ChildToolConfig,
+  ): Promise<Record<string, unknown> | null> {
+    const embeddedStatus = this.uiService.openToolList.includes(config.id)
+      ? this.childHostRegistry.getStatus(config.id)
+      : null;
+    if (embeddedStatus) return embeddedStatus;
+
+    const routePath = this.routePath(config);
+    // Electron is the authority for detached Child Hosts. Query that host
+    // directly: the renderer-side window-state projection can lag behind a
+    // newly opened window and must not turn an already-ready host into a
+    // presentation timeout.
+    const detachedStatus = await this.sendHostCommand(
+      routePath,
+      config.id,
+      'status',
+      { timeoutMs: 1_000 },
+    );
+    return detachedStatus['ok'] === true ? detachedStatus : null;
+  }
+
   private async controlWindow(
     routePath: string,
     action: Exclude<ChildAppControlAction, 'restart' | 'detach' | 'embed'>,
@@ -510,14 +570,16 @@ export class MainUiAutomationService {
     routePath: string,
     toolId: string,
     action: ChildAppHostAction,
-    options: { strictLifecycle?: boolean } = {},
+    options: { strictLifecycle?: boolean; timeoutMs?: number } = {},
   ): Promise<Record<string, unknown>> {
     try {
       const result = await (window as any)['subWindow']?.command?.(routePath, {
         toolId,
         action,
-        ...options,
-      });
+        ...(options.strictLifecycle !== undefined
+          ? { strictLifecycle: options.strictLifecycle }
+          : {}),
+      }, options.timeoutMs);
       return result && typeof result === 'object'
         ? result as Record<string, unknown>
         : { ok: false, message: `子应用宿主未返回有效结果: ${toolId}` };
@@ -571,4 +633,8 @@ export class MainUiAutomationService {
     const value = Number(params[key]);
     return Number.isFinite(value) ? value : undefined;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

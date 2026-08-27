@@ -185,9 +185,16 @@ export class SimulatorBuildCallbackAuthority {
     const requestDigest = stableJson(request);
     const remembered = this.jobs.get(request.requestId);
     if (remembered) {
-      return remembered.requestDigest === requestDigest
-        ? rebuildAck(request, 'accepted', null)
-        : rebuildAck(request, 'conflict', 'request-superseded');
+      if (remembered.requestDigest !== requestDigest) {
+        return rebuildAck(request, 'conflict', 'request-superseded');
+      }
+      if (!remembered.terminal || currentStage(remembered) === 'completed') {
+        return rebuildAck(request, 'accepted', null);
+      }
+      // A failed or cancelled immutable build may be retried with the same
+      // request identity. Replace only its terminal job; completed results
+      // remain idempotent and conflicting payloads remain rejected above.
+      this.jobs.delete(request.requestId);
     }
     if (this.activeRequestId) {
       const active = this.jobs.get(this.activeRequestId);
@@ -302,14 +309,6 @@ export class SimulatorBuildCallbackAuthority {
         return;
       }
       const errorCode = mapBuildFailure(error);
-      console.error('[SimulatorBuild] Artifact rebuild failed.', JSON.stringify({
-        requestId: job.request.requestId,
-        projectIdentity: job.request.projectIdentity,
-        sceneId: job.request.sceneId,
-        sceneRevision: job.request.sceneRevision,
-        errorCode,
-        message: error instanceof Error ? error.message : String(error),
-      }));
       this.publishTerminal(
         job,
         'failed',
@@ -317,7 +316,10 @@ export class SimulatorBuildCallbackAuthority {
         errorCode,
       );
     } finally {
-      if (this.activeRequestId === job.request.requestId) {
+      if (
+        this.activeRequestId === job.request.requestId
+        && this.jobs.get(job.request.requestId) === job
+      ) {
         this.activeRequestId = null;
       }
     }
@@ -367,7 +369,7 @@ export class SimulatorBuildCallbackAuthority {
       sessionId: job.request.sessionId,
       sceneId: job.request.sceneId,
       sceneRevision: job.request.sceneRevision,
-      baseArtifactRevision: job.request.artifactRevision,
+      baseArtifactRevision: job.request.baseArtifactRevision,
       stage,
       progressPermille,
       artifact: artifact ? structuredClone(artifact) : null,
@@ -450,7 +452,7 @@ function sameProgressScope(
     && request.sessionId === subscription.sessionId
     && request.sceneId === subscription.sceneId
     && request.sceneRevision === subscription.sceneRevision
-    && request.artifactRevision === subscription.baseArtifactRevision;
+    && request.baseArtifactRevision === subscription.baseArtifactRevision;
 }
 
 function currentStage(

@@ -12,8 +12,6 @@ import { ThemeService } from './theme.service';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { SubappAgentBridgeService } from './subapp-agent-bridge.service';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
-import { ProjectSceneProposalProviderService } from './project-scene-proposal-provider.service';
-import type { ProjectSceneProposalInvocationInput } from '../tools/aily-chat/core/project-scene-proposal-invocation';
 import { SerialService, type PortItem } from './serial.service';
 import { UploaderService } from './uploader.service';
 import { selectSerialPort } from './serial-port-selection';
@@ -26,6 +24,8 @@ import {
   type CreateSingleBlockArgs,
 } from '../tools/aily-chat/tools/atomicBlockTools';
 import { searchBoardsLibrariesTool } from '../tools/aily-chat/tools/searchBoardsLibrariesTool';
+import { getBoardConfigTool, setBoardConfigTool } from '../tools/aily-chat/tools/boardConfigTool';
+import { switchBoardTool } from '../tools/aily-chat/tools/switchBoardTool';
 import { buildProjectTool } from '../tools/aily-chat/tools/buildProjectTool';
 import { runSyncAbsFileConcreteHandler } from '../tools/aily-chat/tools/syncAbsFileTool';
 import { deleteBlockTool } from '../tools/aily-chat/tools/editBlockTool';
@@ -49,6 +49,7 @@ type BlocklyLiveOperationPayload = {
 export class BlocklyLiveOperationBridgeService {
   private initialized = false;
   private aiWritingDepth = 0;
+  private readonly pendingRequests = new Map<string, AbortController>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -62,7 +63,6 @@ export class BlocklyLiveOperationBridgeService {
     private readonly mainUiAutomationService: MainUiAutomationService,
     private readonly subappAgentBridgeService: SubappAgentBridgeService,
     private readonly projectHardwareIntentProvider: ProjectHardwareIntentProviderService,
-    private readonly projectSceneProposalProvider: ProjectSceneProposalProviderService,
     private readonly serialService: SerialService,
     private readonly uploaderService: UploaderService,
     private readonly ngZone: NgZone,
@@ -82,6 +82,13 @@ export class BlocklyLiveOperationBridgeService {
     ipcRenderer.on('cli-bridge:blockly-live-operation', (_event: unknown, payload: BlocklyLiveOperationPayload) => {
       void this.handleIpcPayload(ipcRenderer, payload);
     });
+    ipcRenderer.on(
+      'cli-bridge:blockly-live-operation:cancel',
+      (_event: unknown, payload: BlocklyLiveOperationPayload) => {
+        const requestId = String(payload?.requestId || '').trim();
+        if (requestId) this.pendingRequests.get(requestId)?.abort();
+      },
+    );
     this.initialized = true;
   }
 
@@ -100,18 +107,28 @@ export class BlocklyLiveOperationBridgeService {
       return;
     }
 
+    const abortController = new AbortController();
+    this.pendingRequests.set(requestId, abortController);
+
     try {
-      const result = await this.ngZone.run(() => this.execute(payload));
+      const result = await this.ngZone.run(() => this.execute(payload, abortController.signal));
       respond(result);
     } catch (error) {
       respond({
         ok: false,
         message: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      if (this.pendingRequests.get(requestId) === abortController) {
+        this.pendingRequests.delete(requestId);
+      }
     }
   }
 
-  private async execute(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
+  private async execute(
+    payload: BlocklyLiveOperationPayload,
+    signal?: AbortSignal,
+  ): Promise<Record<string, any>> {
     if (payload.operation === 'project_open') {
       return this.executeProjectOpen(payload.path || '');
     }
@@ -163,7 +180,7 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (payload.operation === 'subapp_agent_call') {
       const params = payload.params || {};
-      return this.subappAgentBridgeService.execute(params, undefined, {
+      return this.subappAgentBridgeService.execute(params, signal, {
         sessionId: String(params['sessionId'] || '').trim(),
         toolCallId: String(params['requestId'] || '').trim(),
       });
@@ -179,19 +196,6 @@ export class BlocklyLiveOperationBridgeService {
       });
       return { ok: true, snapshot };
     }
-    if (payload.operation === 'project_scene_proposal_request') {
-      const proposal = await this.projectSceneProposalProvider.request(
-        (payload.params || {}) as unknown as ProjectSceneProposalInvocationInput,
-      );
-      return { ok: true, proposal };
-    }
-    if (payload.operation === 'project_scene_proposal_cancel') {
-      return {
-        ok: true,
-        cancelled: this.projectSceneProposalProvider.cancel(payload.params?.['requestId']),
-      };
-    }
-
     const requestedProject = this.normalizePath(payload.path);
     const currentProject = this.normalizePath(this.projectService.currentProjectPath);
     if (!currentProject) {
@@ -254,6 +258,33 @@ export class BlocklyLiveOperationBridgeService {
         return this.runBlockWritingOperation(() => this.executeProjectSave());
       case 'project_reload':
         return this.runBlockWritingOperation(() => this.executeProjectReload());
+      case 'switch_board':
+        return this.executeProjectTool(
+          'switch_board',
+          await switchBoardTool(this.projectService, {
+            board_name: String(payload.params?.['board_name'] || '').trim(),
+            ...(payload.params?.['board_version']
+              ? { board_version: String(payload.params['board_version']).trim() }
+              : {}),
+          }),
+        );
+      case 'get_board_config':
+        return this.executeProjectTool(
+          'get_board_config',
+          await getBoardConfigTool(this.projectService, {}),
+        );
+      case 'set_board_config':
+        return this.executeProjectTool(
+          'set_board_config',
+          await setBoardConfigTool(
+            this.projectService,
+            this.builderService,
+            {
+              config_key: String(payload.params?.['config_key'] || '').trim(),
+              config_value: String(payload.params?.['config_value'] ?? ''),
+            },
+          ),
+        );
       default:
         return { ok: false, message: `不支持的 live Blockly 操作: ${payload.operation || ''}` };
     }
@@ -270,6 +301,20 @@ export class BlocklyLiveOperationBridgeService {
     return {
       ok: true,
       operation: payload.operation,
+      project: this.projectService.currentProjectPath,
+      message: this.extractToolContent(toolResult),
+      metadata: toolResult.metadata,
+      toolResult,
+    };
+  }
+
+  private executeProjectTool(
+    operation: string,
+    toolResult: ToolUseResult,
+  ): Record<string, any> {
+    return {
+      ok: !toolResult.is_error,
+      operation,
       project: this.projectService.currentProjectPath,
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,

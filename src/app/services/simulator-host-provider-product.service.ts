@@ -10,7 +10,6 @@ import { BuilderService } from './builder.service';
 import { ProjectDebugConfigurationService } from './project-debug-configuration.service';
 import { ProjectService } from './project.service';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
-import { ProjectSceneProposalProviderService } from './project-scene-proposal-provider.service';
 import { SimulatorEntitlementAccountService } from './simulator-entitlement-account.service';
 import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-scene-change.service';
 import {
@@ -23,9 +22,6 @@ import {
   type SubappHostProviderProductSession,
 } from './subapp-host-provider-product-registry.service';
 import { SimulatorBuildProductComposition } from '../integrations/simulator/simulator-build-product-composition';
-import {
-  SimulatorBlocklyAgentCallbackAuthority,
-} from '../integrations/simulator/simulator-blockly-agent-callback-authority';
 import {
   SimulatorBlocklyEditorCallbackAuthority,
 } from '../integrations/simulator/simulator-blockly-editor-callback-authority';
@@ -42,7 +38,7 @@ const SIMULATOR_TOOL_ID = 'simulator';
 const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
 
 /**
- * Registers Blockly's Project/Build/Editor/Agent/Entitlement callbacks for the independently
+ * Registers Blockly's Project/Build/Editor/Entitlement callbacks for the independently
  * installed Simulator Subapp. It never acquires or controls the Child Tool
  * process; the generic Child Tool Host supplies and owns that lifecycle.
  */
@@ -56,7 +52,6 @@ export class SimulatorHostProviderProductService {
     private readonly builder: BuilderService,
     private readonly simulatorMainAgent: SimulatorMainAgentSceneChangeService,
     private readonly hardwareIntent: ProjectHardwareIntentProviderService,
-    private readonly sceneProposals: ProjectSceneProposalProviderService,
     private readonly entitlementAccount: SimulatorEntitlementAccountService,
     private readonly blockly: BlocklyService,
     private readonly projectDebug: ProjectDebugConfigurationService,
@@ -169,27 +164,6 @@ export class SimulatorHostProviderProductService {
         },
       },
     });
-    const agent = new SimulatorBlocklyAgentCallbackAuthority({
-      projectRoot,
-      projectIdentity,
-      sceneId: 'main',
-      activeProject,
-      hardwareIntent: {
-        resolve: (request, signal) => (
-          this.hardwareIntent.resolve(request, signal)
-        ),
-      },
-      wiringIntents: {
-        request: (input, signal) => this.sceneProposals.request({
-          request: structuredClone(
-            input.request as unknown as Record<string, unknown>,
-          ),
-          hardwareIntent: structuredClone(
-            input.hardwareIntent as unknown as Record<string, unknown>,
-          ),
-        }, signal),
-      },
-    });
     const entitlement = new SimulatorEntitlementCallbackAuthority({
       account: this.entitlementAccount,
     });
@@ -198,7 +172,6 @@ export class SimulatorHostProviderProductService {
         const activeRoot = this.project.currentProjectPath;
         if (!activeRoot || !sameProjectRoot(activeRoot, projectRoot)) {
           editor.clearDebugMarker();
-          agent.cancelPending();
         }
       });
     let bundle: ReturnType<
@@ -209,6 +182,9 @@ export class SimulatorHostProviderProductService {
         createSimulatorHostProviderDispatcherAdapterBundle({
           project: {
             ...composition.projectCallbacks,
+            readHardwareIntent: (request, signal) => (
+              this.hardwareIntent.resolve(request, signal)
+            ),
             readDebugConfiguration: (request, signal) => (
               this.readProjectDebugConfiguration({
                 request,
@@ -222,13 +198,11 @@ export class SimulatorHostProviderProductService {
           },
           build: composition.buildCallbacks,
           editor: editor.callbacks,
-          agent: agent.callbacks,
           entitlement: entitlement.callbacks,
         });
     } catch (error) {
       projectActivationSubscription.unsubscribe();
       entitlement.close();
-      agent.close();
       editor.close();
       composition.close();
       throw error;
@@ -240,7 +214,6 @@ export class SimulatorHostProviderProductService {
         projectActivationSubscription.unsubscribe();
         bundle.close();
         entitlement.close();
-        agent.close();
         editor.close();
         composition.close();
       },

@@ -105,126 +105,6 @@ const SESSION_STORE_SQL_BLOCKED_PATTERNS = [
   /\bLOAD_EXTENSION\b/i,
   /\b(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i,
 ];
-const PROJECT_SCENE_AGENT_TYPE = 'ProjectSceneAgent';
-const GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL = 'get_project_scene_generation_context';
-const SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL = 'submit_project_scene_wiring_intent';
-const PROJECT_SCENE_AGENT_TOOLS = [
-  GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-  SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
-];
-const PROJECT_SCENE_AGENT_REQUIRED_CONTEXT = {
-  scopes: ['workspaceIdentity', 'projectInfo', 'boardInfo', 'libraryIndex', 'workspaceArtifacts'],
-  strict: true,
-  hydrateBeforeFirstModelCall: true,
-};
-const PROJECT_SCENE_AGENT_PROMPT = `You are the bounded native v2 Project Scene proposal Agent.
-
-You run as the named Agent selected by a normal visible Blockly Chat turn. The provider prompt contains one requestId and no project data.
-
-Required workflow:
-1. Call get_project_scene_generation_context exactly once with that requestId.
-2. Infer the physical components and electrical connections only from the returned bounded context and Component Package guide.
-3. Call submit_project_scene_wiring_intent exactly once with the same requestId.
-
-Authority boundaries:
-- Submit semantic part refs and multi-terminal nets only. Simulator owns package versions, persistent IDs, layout, routing, diagnostics and Scene CAS.
-- Never call legacy SchematicAgent/AWS/connection_output tools.
-- Never read or write workspace files and never control Simulator, QEMU, GDB, build, upload, or Blockly.
-- Do not invent package IDs, pin IDs, or pin functions outside the returned guide. Never submit package versions, instance/segment IDs, coordinates, colors, or routing.
-- LED and button components have two electrical terminals. Add explicit resistor components when current limiting or external pull-up/pull-down is required.
-- If the bounded context is insufficient, fail without using another tool or data source.`;
-const PROJECT_SCENE_TOOL_DEFINITIONS = [
-  {
-    name: GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-    description: 'Read the bounded hardware intent and revision baseline for one active native v2 Project Scene generation request.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        requestId: { type: 'string', description: 'Exact requestId supplied in the provider prompt.' },
-      },
-      required: ['requestId'],
-      additionalProperties: false,
-    },
-    readOnly: true,
-  },
-  {
-    name: SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
-    description: 'Submit a bounded semantic wiring intent without saving or editing a Scene document.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        requestId: { type: 'string' },
-        summary: { type: 'string', minLength: 1, maxLength: 512 },
-        parts: {
-          type: 'array',
-          minItems: 1,
-          maxItems: 64,
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              ref: { type: 'string' },
-              packageId: { type: 'string' },
-              properties: {
-                type: 'object',
-                maxProperties: 16,
-                additionalProperties: {
-                  anyOf: [
-                    { type: 'string', maxLength: 256 },
-                    { type: 'number' },
-                    { type: 'boolean' },
-                  ],
-                },
-              },
-            },
-            required: ['ref', 'packageId'],
-          },
-        },
-        nets: {
-          type: 'array',
-          maxItems: 64,
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              ref: { type: 'string' },
-              signal: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: { type: 'string', enum: ['ground', 'power', 'gpio', 'analog', 'pwm', 'i2c', 'spi', 'uart'] },
-                },
-                required: ['kind'],
-              },
-              endpoints: {
-                type: 'array',
-                minItems: 2,
-                maxItems: 32,
-                items: { $ref: '#/$defs/endpoint' },
-              },
-            },
-            required: ['ref', 'signal', 'endpoints'],
-          },
-        },
-      },
-      $defs: {
-        endpoint: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            part: { type: 'string' },
-            pin: { type: 'string' },
-            function: { type: 'string' },
-          },
-          required: ['part', 'pin', 'function'],
-        },
-      },
-      required: ['requestId', 'summary', 'parts', 'nets'],
-      additionalProperties: false,
-    },
-    readOnly: false,
-  },
-];
 const BLOCKLY_SLASH_COMMANDS = [
   {
     name: 'fix',
@@ -1420,7 +1300,6 @@ class LexExecutionRuntimeOwner {
       cwd: resolvedCwd,
       toolProvider: createElectronBlocklyToolProvider(hostAPI),
       skillProvider: createElectronSkillProvider(skillRegistry),
-      agentProvider: createElectronBlocklyAgentProvider(),
       slashCommandProvider: createElectronBlocklySlashCommandProvider(skillRegistry),
       extensions: {
         syncFs: createSyncFsExtension(),
@@ -1931,7 +1810,6 @@ class LexExecutionRuntimeOwner {
       ),
       builder: createExternalBuilder(sessionId, this.requestResourceOperation, projectInfo, readCwd, session),
       blockly: createExternalBlockly(sessionId, this.requestResourceOperation),
-      projectSceneProposal: createExternalProjectSceneProposal(sessionId, this.requestResourceOperation),
       boardSearch: createExternalBoardSearch(sessionId, this.requestResourceOperation),
       subappAgent: createExternalSubappAgent(sessionId, this.requestResourceOperation, this.env),
       chronicle: {
@@ -5799,38 +5677,6 @@ function createElectronWorkspaceReadAccess(registry) {
   };
 }
 
-export function createElectronBlocklyAgentProvider() {
-  return {
-    contributeAgents() {
-      return [
-        {
-          agentType: PROJECT_SCENE_AGENT_TYPE,
-          name: 'Project Scene Agent',
-          description: 'Generate one bounded native v2 Project Scene candidate for an active execution-host invocation.',
-          argumentHint: 'Use the requestId in the current visible Agent request',
-          target: 'aily',
-          whenToUse: 'Use only when the independent Project Scene proposal provider starts this Agent with an active requestId.',
-          whenNotToUse: 'Do not invoke from normal Chat, legacy schematic workflows, Scene editing, build, simulation, or debugging tasks.',
-          uri: `aily-chat-agent:/agents/${PROJECT_SCENE_AGENT_TYPE}.agent.md`,
-          modeInstructions: {
-            content: PROJECT_SCENE_AGENT_PROMPT,
-            toolReferences: [],
-          },
-          requiredContext: PROJECT_SCENE_AGENT_REQUIRED_CONTEXT,
-          systemPrompt: PROJECT_SCENE_AGENT_PROMPT,
-          tools: [...PROJECT_SCENE_AGENT_TOOLS],
-          commands: [],
-          excludeTools: [],
-          maxTurns: 12,
-          model: 'inherit',
-          messageInheritance: 'none',
-          agents: [],
-        },
-      ];
-    },
-  };
-}
-
 function createElectronBlocklySlashCommandProvider(registry) {
   return {
     contributeSlashCommands() {
@@ -7321,9 +7167,6 @@ Prefer flowchart TD or flowchart LR. After this tool succeeds, do not repeat the
     agentScope: ['main'],
     deferred: { group: 'blockly-architecture', reason: 'Architecture diagram persistence is used on demand.' },
   });
-  if (hostAPI.projectSceneProposal) {
-    appendElectronProjectSceneToolContributions(contributions);
-  }
   appendElectronSubappAgentToolContributions(contributions, hostAPI.subappAgent?.bindings);
   return contributions;
 }
@@ -7351,24 +7194,6 @@ function appendElectronSubappAgentToolContributions(contributions, bindings) {
       annotations: { readOnly: definition.permission !== 'change' },
       runtimeModes: ['blockly', 'coder'],
       agentScope: ['main'],
-    });
-  }
-}
-
-function appendElectronProjectSceneToolContributions(contributions) {
-  for (const definition of PROJECT_SCENE_TOOL_DEFINITIONS) {
-    contributions.push({
-      name: definition.name,
-      toolSet: 'blockly-project-scene',
-      description: definition.description,
-      prompt: definition.description,
-      inputSchema: definition.inputSchema,
-      annotations: definition.readOnly
-        ? { readOnly: true, idempotent: true }
-        : { readOnly: false, destructive: false, idempotent: true },
-      runtimeModes: ['blockly'],
-      requiredCapabilities: ['runtime:blockly'],
-      agentScope: [PROJECT_SCENE_AGENT_TYPE],
     });
   }
 }
@@ -7424,22 +7249,9 @@ export async function invokeElectronBlocklyTool(toolName, input, hostAPI, contex
       return invokeElectronLintTool(input, hostAPI, context);
     case 'save_arch':
       return invokeElectronSaveArchTool(input, hostAPI, context);
-    case GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL:
-    case SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL:
-      return invokeElectronProjectSceneTool(toolName, input, hostAPI, context);
     default:
       return toolError(`Unknown contributed tool: ${toolName}`);
   }
-}
-
-async function invokeElectronProjectSceneTool(toolName, input, hostAPI, context = {}) {
-  if (!hostAPI.projectSceneProposal) {
-    return toolError('Project Scene proposal service is not available in this environment.');
-  }
-  return normalizeHostToolUseResult(
-    await hostAPI.projectSceneProposal.invoke(toolName, input, context),
-    { env: hostAPI.env },
-  );
 }
 
 export async function normalizeHostToolUseResult(result, options = {}) {
@@ -8530,36 +8342,6 @@ function createExternalBoardSearch(sessionId, requestResourceOperation) {
       categoryType,
       dimension,
     }),
-  };
-}
-
-export function createExternalProjectSceneProposal(sessionId, requestResourceOperation) {
-  return {
-    invoke: async (toolName, input = {}, context = {}) => {
-      if (typeof requestResourceOperation !== 'function') {
-        throw new Error('Project Scene proposal resource bridge is unavailable.');
-      }
-      const action = toolName === GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL
-        ? 'readContext'
-        : toolName === SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL
-          ? 'submitWiringIntent'
-          : '';
-      if (!action) {
-        throw new Error(`Unsupported Project Scene proposal tool: ${String(toolName || '<missing>')}`);
-      }
-      const result = await requestResourceOperation({
-        sessionId,
-        turnId: normalizeString(context?.trace?.turnId || context?.turnId),
-        toolCallId: normalizeString(context?.toolCallId || context?.trace?.toolCallId),
-        kind: 'project-scene-proposal',
-        payload: {
-          adapter: 'projectSceneProposal',
-          action,
-          input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
-        },
-      });
-      return result?.result ?? result;
-    },
   };
 }
 

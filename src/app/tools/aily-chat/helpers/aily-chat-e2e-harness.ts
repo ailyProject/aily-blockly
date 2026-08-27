@@ -10,12 +10,6 @@ import {
 } from '../core/chat-runtime-projection-policy';
 import { getSharedBlocklyEditorOperationQueue } from '../tools/blocklyEditorOperationQueue';
 import { createToolCallProgressEditorOperationSink } from '../tools/editorOperationEvents';
-import {
-  createProjectSceneGenerationHandlers,
-  GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL,
-  SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL,
-} from '../core/blockly-project-scene-tools';
-import { beginProjectSceneProposalInvocation } from '../core/project-scene-proposal-invocation';
 
 interface AilyChatE2eHarnessOptions {
   readonly engine: ChatEngineService;
@@ -96,21 +90,9 @@ interface AilyChatE2eHarnessApi {
   awaitCancellableSubagentTurnSettled(): Promise<AilyChatE2eSnapshot>;
   startCancellableEditorOperationTurn(): Promise<AilyChatE2eSnapshot>;
   awaitCancellableEditorOperationTurnSettled(): Promise<AilyChatE2eSnapshot>;
-  startProjectSceneProposalSubmission(
-    options?: { readonly forceExpired?: boolean },
-  ): Promise<AilyChatE2eProjectSceneProposalProbe>;
-  awaitProjectSceneProposalSubmissionSettled(): Promise<AilyChatE2eProjectSceneProposalProbe>;
   openEmbeddedTool(toolId: string): boolean;
   closeTool(toolId: string): void;
   snapshot(): AilyChatE2eSnapshot;
-}
-
-interface AilyChatE2eProjectSceneProposalProbe {
-  readonly state: 'idle' | 'submitting' | 'settled';
-  readonly toolCallId?: string;
-  readonly requestId?: string;
-  readonly result?: unknown;
-  readonly error?: string;
 }
 
 declare global {
@@ -484,69 +466,6 @@ function cancelLatestTurn(engine: EnginePrivateAccess, sessionId: string): void 
   engine.triggerSyncDetectChanges?.();
 }
 
-function readE2eToolResultJson(value: unknown): Record<string, unknown> {
-  const result = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as { readonly content?: readonly { readonly type?: unknown; readonly text?: unknown }[] }
-    : null;
-  const textPart = result?.content?.find((part) => part?.type === 'text');
-  if (typeof textPart?.text !== 'string') {
-    throw new Error('Project Scene E2E tool did not return a text result.');
-  }
-  const parsed = JSON.parse(textPart.text) as unknown;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Project Scene E2E tool returned an invalid JSON object.');
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function createE2eProjectSceneProposalInput(requestId: string): Record<string, unknown> {
-  return {
-    requestId,
-    summary: 'Generate a native v2 Scene for the Blockly LED and button fixture.',
-    parts: [
-      {
-        ref: 'board',
-        packageId: 'aily.component-package.xiao-esp32s3',
-      },
-      {
-        ref: 'status-led',
-        packageId: 'aily.component-package.gpio-led',
-      },
-      {
-        ref: 'input-button',
-        packageId: 'aily.component-package.gpio-button',
-      },
-    ],
-    nets: [
-      {
-        ref: 'status-led-drive',
-        signal: { kind: 'gpio' },
-        endpoints: [
-          { part: 'board', pin: 'pin_1', function: 'GPIO1' },
-          { part: 'status-led', pin: 'anode', function: 'A(IO)' },
-        ],
-      },
-      {
-        ref: 'button-input',
-        signal: { kind: 'gpio' },
-        endpoints: [
-          { part: 'board', pin: 'pin_2', function: 'GPIO2' },
-          { part: 'input-button', pin: 'terminal_a', function: 'A(IO)' },
-        ],
-      },
-      {
-        ref: 'ground',
-        signal: { kind: 'ground' },
-        endpoints: [
-          { part: 'board', pin: 'pin_9', function: 'GND' },
-          { part: 'status-led', pin: 'cathode', function: 'C(GND)' },
-          { part: 'input-button', pin: 'terminal_b', function: 'B(GND)' },
-        ],
-      },
-    ],
-  };
-}
-
 function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessApi {
   const engine = options.engine as unknown as EnginePrivateAccess;
   let installed = false;
@@ -563,11 +482,6 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
   let cancellableEditorOperationReady: Promise<void> | null = null;
   let resolveCancellableEditorOperationReady: (() => void) | null = null;
   let abortCancellableEditorOperation: (() => void) | null = null;
-  let projectSceneProposalProbe: AilyChatE2eProjectSceneProposalProbe = {
-    state: 'idle',
-  };
-  let pendingProjectSceneProposalSubmission: Promise<void> | null = null;
-
   const countActiveLoadingIndicators = (): number => {
     const root = document.querySelector('app-aily-chat');
     if (!root) {
@@ -1493,154 +1407,6 @@ function createHarness(options: AilyChatE2eHarnessOptions): AilyChatE2eHarnessAp
       abortCancellableEditorOperation = null;
       engine.triggerSyncDetectChanges?.();
       return snapshot();
-    },
-    async startProjectSceneProposalSubmission(probeOptions) {
-      await installDeterministicRuntime();
-      if (pendingProjectSceneProposalSubmission) {
-        throw new Error('A Project Scene proposal E2E probe is already running.');
-      }
-      const sessionId = await engine.ensureSessionReadyForSubmit() ?? getCurrentSessionId(engine);
-      const toolHandlers = createProjectSceneGenerationHandlers();
-      const contextTool = toolHandlers[GET_PROJECT_SCENE_GENERATION_CONTEXT_TOOL];
-      const submitTool = toolHandlers[SUBMIT_PROJECT_SCENE_WIRING_INTENT_TOOL];
-      if (typeof contextTool !== 'function' || typeof submitTool !== 'function') {
-        throw new Error('The Host Runtime owner does not expose the Project Scene proposal tools.');
-      }
-
-      const now = Date.now();
-      const requestId = `scene-generation-v1-${'1'.repeat(64)}`;
-      const expiresAtUnixMs = now + 60_000;
-      const invocation = beginProjectSceneProposalInvocation({
-        request: {
-          schemaVersion: 1,
-          kind: 'aily-project-scene-generation-request',
-          requestId,
-          projectIdentity: 'e2e-project',
-          sceneId: 'main',
-          reason: 'user-regenerate',
-          base: {
-            visualRevision: '2'.repeat(64),
-            graphSemanticRevision: '3'.repeat(64),
-            catalogRevision: '4'.repeat(64),
-          },
-          componentPackages: [
-            {
-              packageId: 'aily.component-package.xiao-esp32s3',
-              version: '1.0.0',
-              name: 'XIAO ESP32-S3',
-              category: 'board',
-              instanceIdPrefix: 'xiao_esp32s3_',
-              maxInstances: 1,
-              pins: [
-                { pinId: 'pin_1', functions: [{ name: 'GPIO1', type: 'gpio' }] },
-                { pinId: 'pin_2', functions: [{ name: 'GPIO2', type: 'gpio' }] },
-                { pinId: 'pin_9', functions: [{ name: 'GND', type: 'gnd' }] },
-              ],
-            },
-            {
-              packageId: 'aily.component-package.gpio-led',
-              version: '1.0.0',
-              name: 'GPIO LED',
-              category: 'output',
-              instanceIdPrefix: 'led_',
-              maxInstances: 16,
-              pins: [
-                { pinId: 'anode', functions: [{ name: 'A(IO)', type: 'digital' }] },
-                { pinId: 'cathode', functions: [{ name: 'C(GND)', type: 'gnd' }] },
-              ],
-            },
-            {
-              packageId: 'aily.component-package.gpio-button',
-              version: '1.0.0',
-              name: 'GPIO Button',
-              category: 'input',
-              instanceIdPrefix: 'button_',
-              maxInstances: 16,
-              pins: [
-                { pinId: 'terminal_a', functions: [{ name: 'A(IO)', type: 'digital' }] },
-                { pinId: 'terminal_b', functions: [{ name: 'B(GND)', type: 'gnd' }] },
-              ],
-            },
-          ],
-          expiresAtUnixMs,
-        },
-        hardwareIntent: {
-          schemaVersion: 1,
-          kind: 'aily-project-hardware-intent-snapshot',
-          requestId,
-          projectIdentity: 'e2e-project',
-          board: {
-            fqbn: 'esp32:esp32:XIAO_ESP32S3',
-            boardId: 'XIAO_ESP32S3',
-            architecture: 'esp32',
-            mcu: 'esp32s3',
-          },
-          source: {
-            language: 'arduino-cpp',
-            revision: '5'.repeat(64),
-            text: 'void setup(){ pinMode(1, OUTPUT); }',
-          },
-          libraries: [],
-          hardwareHints: [],
-          userIntent: null,
-        },
-      });
-      const toolCallId = `e2e-project-scene-proposal-${now}`;
-      const toolContext = {
-        sessionId,
-        toolCallId,
-        trace: { turnId: `e2e-project-scene-turn-${now}` },
-        signal: new AbortController().signal,
-        cwd: '',
-        host: { getExtension: () => undefined },
-        emitEvent: () => undefined,
-      };
-      projectSceneProposalProbe = { state: 'submitting', toolCallId, requestId };
-      engine.triggerSyncDetectChanges?.();
-
-      pendingProjectSceneProposalSubmission = (async () => {
-        const originalDateNow = Date.now;
-        try {
-          const contextResult = await contextTool({ requestId }, {} as never, toolContext);
-          readE2eToolResultJson(contextResult);
-          if (probeOptions?.forceExpired === true) {
-            Date.now = () => expiresAtUnixMs + 1;
-          }
-          const toolResult = await submitTool(
-            createE2eProjectSceneProposalInput(requestId),
-            {} as never,
-            toolContext,
-          );
-          const parsedToolResult = readE2eToolResultJson(toolResult);
-          const proposal = parsedToolResult['state'] === 'submitted'
-            ? await invocation.proposal
-            : null;
-          projectSceneProposalProbe = {
-            state: 'settled',
-            toolCallId,
-            requestId,
-            result: { toolResult, proposal },
-          };
-        } catch (error) {
-          projectSceneProposalProbe = {
-            state: 'settled',
-            toolCallId,
-            requestId,
-            error: error instanceof Error ? error.message : String(error),
-          };
-        } finally {
-          Date.now = originalDateNow;
-          invocation.dispose();
-        }
-      })();
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      return { ...projectSceneProposalProbe };
-    },
-    async awaitProjectSceneProposalSubmissionSettled() {
-      await pendingProjectSceneProposalSubmission;
-      pendingProjectSceneProposalSubmission = null;
-      engine.triggerSyncDetectChanges?.();
-      return { ...projectSceneProposalProbe };
     },
     openEmbeddedTool(toolId: string) {
       return options.openEmbeddedTool?.(toolId) === true;

@@ -1626,7 +1626,14 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.handle("child-app-host-command-by-url", (_event, payload = {}) => {
-        return requestChildAppHostCommand(payload.path, payload.command);
+        const timeoutMs = Number(payload.timeoutMs);
+        return requestChildAppHostCommand(
+            payload.path,
+            payload.command,
+            Number.isFinite(timeoutMs)
+                ? Math.max(100, Math.min(120000, Math.round(timeoutMs)))
+                : 120000
+        );
     });
 
     ipcMain.handle("child-tool-session-acquire", (event, toolIdOrPayload) => {

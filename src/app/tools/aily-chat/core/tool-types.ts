@@ -90,7 +90,7 @@ export interface IAilyTool {
   /**
    * UI 显示模式。
    * - 'toolCall': 使用 startToolCall / completeToolCall 流程 (默认)
-   * - 'appendMessage': 使用 appendMessage + aily-state 块流程 (搜索/硬件/schematic 类工具)
+   * - 'appendMessage': 使用 appendMessage + aily-state 块流程（搜索/硬件类工具）
    * - 'silent': 不显示任何 UI 状态 (ask_approval 等)
    */
   readonly displayMode?: 'toolCall' | 'appendMessage' | 'silent';

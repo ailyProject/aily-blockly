@@ -442,7 +442,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
       control: (path, action) => ipcRenderer.invoke("window-control-by-url", { path, action }),
       setBounds: (path, options) => ipcRenderer.invoke("window-set-bounds-by-url", { path, ...options }),
       arrange: (options) => ipcRenderer.invoke("window-arrange", options),
-      command: (path, command) => ipcRenderer.invoke("child-app-host-command-by-url", { path, command }),
+      command: (path, command, timeoutMs) => ipcRenderer.invoke(
+        "child-app-host-command-by-url",
+        { path, command, timeoutMs },
+      ),
       close: () => ipcRenderer.send("window-close"),
       onInitData: (callback) => {
         _initDataCallback = callback;

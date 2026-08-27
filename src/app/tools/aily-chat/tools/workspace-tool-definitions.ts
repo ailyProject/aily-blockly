@@ -1,4 +1,4 @@
-import { MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE } from '../core/agent-identifiers';
+import { MAIN_AGENT_TYPE } from '../core/agent-identifiers';
 
 export const WORKSPACE_TOOL_DEFINITIONS = [
     {
@@ -73,7 +73,7 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
             },
             required: ['path']
         },
-        agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
+        agents: [MAIN_AGENT_TYPE]
     },
     {
         name: 'create_file',
@@ -233,7 +233,7 @@ editFileTool({
             },
             required: ['path']
         },
-        agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
+        agents: [MAIN_AGENT_TYPE]
     },
     {
         name: 'replace_string_in_file',
@@ -264,7 +264,7 @@ editFileTool({
             },
             required: ['path', 'old_string', 'new_string']
         },
-        agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
+        agents: [MAIN_AGENT_TYPE]
     },
     {
         name: 'multi_replace_string_in_file',
@@ -296,7 +296,7 @@ editFileTool({
             },
             required: ['replacements']
         },
-        agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
+        agents: [MAIN_AGENT_TYPE]
     },
     {
         name: 'delete_file',
@@ -316,6 +316,6 @@ editFileTool({
             },
             required: ['path']
         },
-        agents: [MAIN_AGENT_TYPE, SCHEMATIC_AGENT_TYPE]
+        agents: [MAIN_AGENT_TYPE]
     },
 ];
