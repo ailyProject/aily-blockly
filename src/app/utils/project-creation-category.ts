@@ -8,9 +8,14 @@ export function resolveInitialProjectCategory(
   explicitCategory?: ProjectCreationCategory | null,
   preferredRuntimeMode?: string | null,
   fallbackCategory: ProjectCreationCategory = 'blockly',
+  coderProduct = false,
 ): ProjectCreationCategory {
   if (!coderEnabled) {
     return 'blockly';
+  }
+
+  if (coderProduct) {
+    return 'coder';
   }
 
   if (explicitCategory === 'blockly' || explicitCategory === 'coder') {

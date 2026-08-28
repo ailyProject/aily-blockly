@@ -92,5 +92,8 @@
   "devmode": false,
   "blockly": {
     "renderer": "thrasos"
+  },
+  "coder": {
+    "enabled": false
   }
 }

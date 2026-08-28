@@ -349,6 +349,10 @@ export class SettingsComponent implements OnDestroy {
     return this.configService.isCoderEnabled();
   }
 
+  get coderProduct() {
+    return this.configService.isCoderProduct();
+  }
+
   coderDependencyState: RequiredSubappState = {
     id: AILY_CODER_SUBAPP_ID,
     status: 'loading',

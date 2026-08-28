@@ -24,6 +24,8 @@ export class AppComponent implements OnInit, AfterViewInit {
   async ngOnInit() {
     await this.electronService.init();
     await this.configService.init();
+    this.title = this.configService.getApplicationName();
+    document.title = this.title;
     this.themeService.init();
     await this.translationService.init();
     await this.subappManager.initialize();

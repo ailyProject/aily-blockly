@@ -45,6 +45,25 @@
               <div class="item development-mode-item">
                 <div>{{ 'SETTINGS.FIELDS.DEVELOPMENT_MODE_PREFERENCE' | translate }}:</div>
                 <div class="development-mode-buttons" [class.has-coder]="coderEnabled">
+                  @if (coderProduct) {
+                  <span class="coder-mode-option" nz-tooltip
+                    [nzTooltipTitle]="coderDependencyState.installed
+                      ? null
+                      : ('SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate)">
+                    <button class="development-mode-button coder-mode-button single-mode-button"
+                      nz-button nzSize="small" nzType="primary" [disabled]="true">
+                      @if (coderDependencyState.installing) {
+                      <i class="fa-light fa-spinner-third fa-spin"></i>
+                      <span>{{ coderDependencyState.percent }}%</span>
+                      }
+                      {{ 'PROJECT_NEW.BOARD.MODE_CODER' | translate }}
+                    </button>
+                    @if (!coderDependencyState.installed) {
+                    <span class="coder-install-dot"
+                      [attr.aria-label]="'SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate"></span>
+                    }
+                  </span>
+                  } @else {
                   <button
                     class="development-mode-button blockly-mode-button"
                     nz-button
@@ -73,6 +92,7 @@
                       [attr.aria-label]="'SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate"></span>
                     }
                   </span>
+                  }
                   }
                 </div>
               </div>

@@ -133,3 +133,39 @@ describe('ConfigService project SSH connector settings', () => {
     });
   });
 });
+
+describe('ConfigService Aily Coder product mode', () => {
+  let service: ConfigService;
+
+  beforeEach(() => {
+    service = new ConfigService({} as any, {} as any);
+  });
+
+  it('locks the application to Coder without overwriting the shared preference', async () => {
+    service.data = {
+      coder: { enabled: false },
+      developmentModePreference: 'blockly',
+    };
+    (service as any).runtimeBuildProduct = 'coder';
+
+    expect(service.isCoderEnabled()).toBeTrue();
+    expect(service.isCoderProduct()).toBeTrue();
+    expect(service.getDevelopmentModePreference()).toBe('coder');
+    expect(service.shouldPromptDevelopmentModePreference()).toBeFalse();
+    expect(service.getApplicationName()).toBe('Aily Coder');
+    expect(await service.setDevelopmentModePreference('blockly', 'settings')).toBe('coder');
+    expect(service.data.developmentModePreference).toBe('blockly');
+  });
+
+  it('preserves the existing Blockly fallback for the normal product', () => {
+    service.data = {
+      coder: { enabled: false },
+      developmentModePreference: 'coder',
+    };
+
+    expect(service.isCoderEnabled()).toBeFalse();
+    expect(service.isCoderProduct()).toBeFalse();
+    expect(service.getDevelopmentModePreference()).toBe('blockly');
+    expect(service.getApplicationName()).toBe('aily blockly');
+  });
+});
