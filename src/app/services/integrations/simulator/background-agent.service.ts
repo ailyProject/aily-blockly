@@ -43,9 +43,10 @@ interface SchematicGenerationOptions {
 }
 
 const AILY_CHAT_TOOL_ID = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
-const AILY_CHAT_HOST_SERVICE_CHANNEL = 'aily-chat-host-service-v1';
+const AILY_CHAT_HOST_SERVICE_CHANNEL = 'aily-chat-demand-session-v1';
 const SCHEMATIC_GENERATION_TIMEOUT_MS = 30 * 60 * 1000;
-const DEFAULT_SCHEMATIC_PROMPT = '@SchematicAgent 生成项目连线图';
+const DEFAULT_SCHEMATIC_PROMPT = '[AGENT: SchematicAgent] 生成项目连线图';
+const SCHEMATIC_SESSION_TITLE = '生成电路连接图';
 
 interface SchematicGenerationResponse {
   channel: typeof AILY_CHAT_HOST_SERVICE_CHANNEL;
@@ -135,8 +136,7 @@ export class BackgroundAgentService implements OnDestroy {
     this.status = 'running';
     this.emitProgress('thinking', '正在分析项目...');
     let runtimeAcquired = false;
-    const revealSession = options.revealSession === true
-      && !this.connectionGraphService.hasConnectionGraph(cwd);
+    const revealSession = options.revealSession === true;
 
     try {
       await this.childToolProcess.acquire(AILY_CHAT_TOOL_ID);
@@ -282,10 +282,14 @@ ${(connectionData.connections || []).length} 条连线
           channel: AILY_CHAT_HOST_SERVICE_CHANNEL,
           type: 'request',
           requestId,
-          action: 'schematic.generate',
+          action: 'demand-session.run',
+          kind: 'schematic',
           cwd,
+          title: SCHEMATIC_SESSION_TITLE,
           prompt,
+          mode: 'agent',
           revealSession,
+          resources: [],
         })
         .catch((error) => {
           clearTimeout(timeout);

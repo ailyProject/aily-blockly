@@ -40,7 +40,8 @@ export type ConnectionGraphIpcType =
   | 'save-graph-data'
   | 'save-graph-data-result'
   | 'send-to-chat'
-  | 'generate-graph-code';
+  | 'generate-graph-code'
+  | 'generate-graph-progress';
 
 const IFRAME_CHANNEL_CONNECTION_GRAPH = 'iframe-message-connection-graph';
 const CONNECTION_GRAPH_PENPAL_TIMEOUT_MS = 20_000;
@@ -98,6 +99,12 @@ export class IframeComponent implements OnInit, OnDestroy {
   private noticeSubscription: Subscription | null = null;
   /** 待响应的保存请求：messageId -> resolve */
   private pendingSaveResolvers = new Map<string, (result: { success: boolean }) => void>();
+  /** 首次打开只接收宿主快照，不允许 iframe 将渲染结果回写为用户编辑 */
+  private connectionGraphInitialSyncInProgress = false;
+  /** 当前 iframe 是否已经完成首次宿主快照加载 */
+  private connectionGraphInitialDataPushed = false;
+  /** SchematicAgent 执行期间由 Agent 独占连线图写入，忽略网页端过期的自动保存 */
+  private schematicGenerationInProgress = false;
 
   constructor(
     @Optional() @Inject(NZ_MODAL_DATA) public data: IframeModalData | null,
@@ -195,6 +202,10 @@ export class IframeComponent implements OnInit, OnDestroy {
     }
 
     this.iframeData = initData.data !== undefined ? initData.data : initData;
+
+    if (this.isConnectionGraphWindow && this.remoteApi) {
+      void this.initializeConnectionGraphData();
+    }
   }
 
   /**
@@ -213,6 +224,8 @@ export class IframeComponent implements OnInit, OnDestroy {
       this.penpalConnection = null;
       this.remoteApi = null;
     }
+    this.connectionGraphInitialSyncInProgress = false;
+    this.connectionGraphInitialDataPushed = false;
 
     this.startPenpalConnection(iframe);
   }
@@ -239,9 +252,6 @@ export class IframeComponent implements OnInit, OnDestroy {
           initedComponentViewer: () => {
             this.pushDataToRemote();
           },
-          initedGraph: () => {
-            this.pushDataToRemote();
-          },
           generateGraphData: () => {
             this.noticeService.update({
               title: 'AI生成中',
@@ -249,7 +259,10 @@ export class IframeComponent implements OnInit, OnDestroy {
               state: 'doing',
               showProgress: false,
             });
-            this.generateSchematic('@SchematicAgent 生成项目连线图', true);
+            this.generateSchematic(
+              '[AGENT: SchematicAgent] 生成项目连线图',
+              true,
+            );
           },
           regenerateGraphData: () => {
             this.onRegenerate();
@@ -258,6 +271,10 @@ export class IframeComponent implements OnInit, OnDestroy {
             this.onSyncToCode();
           },
           saveGraphData: async (data) => {
+            if (this.connectionGraphInitialSyncInProgress) {
+              return { success: true };
+            }
+
             this.iframeData = data;
             return this.sendSaveGraphData(this.iframeData);
           },
@@ -286,6 +303,10 @@ export class IframeComponent implements OnInit, OnDestroy {
           // 子页面编辑连线后回调此方法，持久化更新
           onConnectionsChanged: (connections: any) => {
             try {
+              if (this.connectionGraphInitialSyncInProgress) {
+                return;
+              }
+
               if (connections && Array.isArray(connections)) {
                 // 获取当前 payload 数据（包含 componentConfigs, components, connections）
                 const currentPayload = this.iframeData as any;
@@ -370,7 +391,7 @@ export class IframeComponent implements OnInit, OnDestroy {
       this.showEmptyState = false;
 
       if (this.isConnectionGraphWindow && this.iframeData !== undefined) {
-        await this.pushDataToRemote();
+        await this.initializeConnectionGraphData();
       }
 
       // TODO:如果是 component-viewer 窗口，立即推送数据给子页面，新版本为web主动调用，这里临时多推送一次，待web更新后可删除
@@ -390,15 +411,23 @@ export class IframeComponent implements OnInit, OnDestroy {
   /**
    * 向主窗口发送 connection-graph IPC 消息（规范：iframe-message-connection-graph）
    */
-  private sendToMain(type: ConnectionGraphIpcType, data?: unknown): void {
-    if (!this.electronService.isElectron || !window['ipcRenderer']) return;
+  private sendToMain(type: ConnectionGraphIpcType, data?: unknown): boolean {
+    if (!this.electronService.isElectron || !window['ipcRenderer']) return false;
     window['ipcRenderer'].send(IFRAME_CHANNEL_CONNECTION_GRAPH, { type, data });
+    return true;
   }
 
   /**
    * 发送保存请求并等待主窗口返回结果
    */
   private sendSaveGraphData(data: unknown): Promise<{ success: boolean }> {
+    if (
+      this.connectionGraphInitialSyncInProgress ||
+      this.schematicGenerationInProgress
+    ) {
+      return Promise.resolve({ success: true });
+    }
+
     if (!this.electronService.isElectron || !window['ipcRenderer']) {
       return Promise.resolve({ success: false });
     }
@@ -433,6 +462,52 @@ export class IframeComponent implements OnInit, OnDestroy {
     } catch (error) {
       console.warn('推送数据给子页面失败:', error);
       return false;
+    }
+  }
+
+  /**
+   * 首次打开只把宿主快照加载到画布，并记录画布规范化后的连线作为后续编辑基线。
+   */
+  private async initializeConnectionGraphData(): Promise<void> {
+    if (
+      this.connectionGraphInitialDataPushed ||
+      this.connectionGraphInitialSyncInProgress ||
+      !this.remoteApi ||
+      this.iframeData === undefined
+    ) {
+      return;
+    }
+
+    this.connectionGraphInitialSyncInProgress = true;
+
+    try {
+      const applied = await this.pushDataToRemote();
+      if (!applied) {
+        return;
+      }
+      this.connectionGraphInitialDataPushed = true;
+
+      if (typeof this.remoteApi?.['getConnections'] !== 'function') {
+        return;
+      }
+
+      const connections = await this.remoteApi['getConnections']();
+      const currentPayload = this.iframeData;
+      if (
+        !Array.isArray(connections) ||
+        !currentPayload ||
+        typeof currentPayload !== 'object' ||
+        Array.isArray(currentPayload)
+      ) {
+        return;
+      }
+
+      this.iframeData = {
+        ...currentPayload,
+        connections,
+      };
+    } finally {
+      this.connectionGraphInitialSyncInProgress = false;
     }
   }
 
@@ -511,6 +586,13 @@ export class IframeComponent implements OnInit, OnDestroy {
           const resolver = this.pendingSaveResolvers.get(messageId);
           if (resolver) {
             this.ngZone.run(() => resolver({ success }));
+          }
+          break;
+        }
+        case 'generate-graph-progress': {
+          const progress = data as { type?: string } | undefined;
+          if (progress?.type === 'complete' || progress?.type === 'error') {
+            this.endSchematicGeneration();
           }
           break;
         }
@@ -629,11 +711,37 @@ export class IframeComponent implements OnInit, OnDestroy {
    * 直接请求主应用后台创建 aily-chat session 并执行 SchematicAgent。
    */
   private generateSchematic(prompt: string, revealSession = false): void {
+    this.beginSchematicGeneration();
+
     if (this.embedded) {
-      void this.backgroundAgent.generateSchematic(prompt, { revealSession });
+      void this.backgroundAgent
+        .generateSchematic(prompt, { revealSession })
+        .finally(() => this.endSchematicGeneration());
     } else {
-      this.sendToMain('generate-graph-data', { prompt, revealSession });
+      const sent = this.sendToMain('generate-graph-data', {
+        prompt,
+        revealSession,
+      });
+      if (!sent) {
+        this.endSchematicGeneration();
+      }
     }
+  }
+
+  /**
+   * 进入 Agent 生成事务，并将此前仍在等待的网页自动保存标记为已被新事务接管。
+   */
+  private beginSchematicGeneration(): void {
+    this.schematicGenerationInProgress = true;
+
+    for (const resolve of [...this.pendingSaveResolvers.values()]) {
+      resolve({ success: true });
+    }
+  }
+
+  /** 退出 Agent 生成事务，恢复网页端正常保存。 */
+  private endSchematicGeneration(): void {
+    this.schematicGenerationInProgress = false;
   }
 
   /**
@@ -646,7 +754,10 @@ export class IframeComponent implements OnInit, OnDestroy {
       state: 'doing',
       showProgress: false,
     });
-    this.generateSchematic('@SchematicAgent 请根据当前项目的引脚配置和组件信息，重新生成连线图方案。');
+    this.generateSchematic(
+      '[AGENT: SchematicAgent] 请根据当前项目的引脚配置和组件信息，重新生成电路连接图。',
+      true,
+    );
   }
 
   /**
