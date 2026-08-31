@@ -687,7 +687,12 @@ export class _UploaderService {
           return;
         }
 
-        this.cmdService.run(uploadCmd, null, false).subscribe({
+        this.cmdService.spawn(
+          'node',
+          [uploadScriptPath, configFilePath],
+          { shellProfile: false },
+          false,
+        ).subscribe({
           next: async (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -697,7 +702,6 @@ export class _UploaderService {
                 errorText = trailingLine;
                 if (this.isUploadErrorLine(trailingLine)) {
                   fullErrorText += trailingLine + '\n';
-                  this.handleUploadError(trailingLine, this.uploadT('FAILED_TITLE'), fullErrorText);
                 }
                 this.logService.update({
                   detail: trailingLine,
@@ -761,10 +765,10 @@ export class _UploaderService {
                   if (trimmedLine) {
                     errorText = trimmedLine;
 
-                    // 检查是否有错误信息
+                    // 仅收集疑似错误输出作为诊断信息。烧录工具可能输出可恢复的
+                    // failed/error 提示，是否失败应由最终退出码或进程错误决定。
                     if (this.isUploadErrorLine(trimmedLine)) {
                       fullErrorText += trimmedLine + '\n';
-                      this.handleUploadError(trimmedLine, this.uploadT('FAILED_TITLE'), fullErrorText);
                     }
 
                     if (this.isErrored) {

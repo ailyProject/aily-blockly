@@ -136,6 +136,7 @@ export class MainWindowComponent implements OnDestroy {
   private unregisterAilyChatHostAuthRuntimeBridge: (() => void) | null = null;
 
   loginDialogState: LoginDialogRequestState | null = null;
+  requestStatsScope: 'default' | 'eu' | null = null;
 
   // 首次开发模式选择（全屏引导）
   showModeWelcome = false;
@@ -161,6 +162,9 @@ export class MainWindowComponent implements OnDestroy {
   ) { }
 
   async ngOnInit(): Promise<void> {
+    void this.electronService.currentRegion().then(region => {
+      this.requestStatsScope = region.toLowerCase() === 'eu' ? 'eu' : 'default';
+    });
     this.unregisterAilyChatHostAuthRuntimeBridge = registerAilyChatHostAuthRuntimeBridge(
       this.authService,
       window['ipcRenderer'],

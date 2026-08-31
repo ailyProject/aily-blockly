@@ -2,20 +2,16 @@
 
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
-const path = require('node:path');
 const { fork } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { ipcMain, webContents } = require('electron');
-const semver = require('semver');
 
 const {
+  createManagedToolLifecycle,
   getChildNodeExecutable,
-  getManagedNpmPrefix,
-  installManagedPackage,
   probeManagedCli,
   resolveLocalPackage,
   resolveManagedPackage,
-  runManagedNpm,
 } = require('./managed-npm-cli');
 const {
   assertSessionResult,
@@ -39,9 +35,6 @@ const SESSION_REQUEST_TIMEOUT_MS = (4 * 60 * 60 * 1_000) + 30_000;
 const REQUIRED_OPERATIONS = ['project.sync', 'run.file', 'run.stop'];
 
 let childPath = '';
-let readyState = null;
-let initializationPromise = null;
-let mutationPromise = null;
 let sshConnectQueue = Promise.resolve();
 let handlersRegistered = false;
 let daemon = null;
@@ -207,7 +200,7 @@ class ConnectorDaemonClient extends EventEmitter {
   }
 }
 
-function resolveConnectorTool() {
+function resolveConnectorTool({ prefix, childPath: probeChildPath = childPath } = {}) {
   const configuredProject = process.env.AILY_CONNECTOR_PROJECT;
   const local = configuredProject ? resolveLocalPackage({
     packageName: PACKAGE_NAME,
@@ -217,11 +210,13 @@ function resolveConnectorTool() {
   const resolved = local || resolveManagedPackage({
     packageName: PACKAGE_NAME,
     binKey: TOOL_KEY,
+    prefix,
   });
   if (!resolved) return { ok: false, error: 'aily-connector package entry was not found' };
   const result = probeManagedCli({
     resolved,
-    childPath,
+    childPath: probeChildPath,
+    prefix,
     expectedProtocolVersion: PROTOCOL_VERSION,
   });
   if (!result.ok) return result;
@@ -239,43 +234,46 @@ function resolveConnectorTool() {
   return result;
 }
 
-async function initialize(nextChildPath, prerequisite = Promise.resolve(), options = {}) {
+function assertConnectorInstallAllowed() {
+  if (sessionOwners.size > 0 || pendingOwners.size > 0) {
+    throw new Error('Disconnect all Linux boards before updating aily-connector');
+  }
+  if (process.env.AILY_CONNECTOR_PROJECT) {
+    throw new Error('The local aily-connector override must be updated from its source project');
+  }
+}
+
+const lifecycle = createManagedToolLifecycle({
+  toolKey: TOOL_KEY,
+  packageName: PACKAGE_NAME,
+  probe: resolveConnectorTool,
+  missingChildPathError: 'AILY_CHILD_PATH is not configured',
+  missingReadyError: 'aily-connector package entry was not found',
+  installIncompleteError: 'aily-connector installation is incomplete',
+  installError: `${PACKAGE_NAME} npm installation failed`,
+  preservePreviousProbeError: false,
+  reinitializeAfterSettle: true,
+  statusFields: state => ({ path: state.entryPath || '' }),
+}, {
+  // Reject immediately so an existing board session never waits behind an
+  // unrelated npm install. Recheck after acquiring the prefix lock to close
+  // the queueing race, then stop the daemon immediately before installation.
+  preflightMutation: assertConnectorInstallAllowed,
+  assertMutationAllowed: assertConnectorInstallAllowed,
+  beforeMutation: shutdown,
+  canReuseReadyState: state => !!state.entryPath && fs.existsSync(state.entryPath),
+  isStatusStateValid: state => !!state.entryPath && fs.existsSync(state.entryPath),
+});
+
+function initialize(nextChildPath, prerequisite = Promise.resolve(), options = {}) {
   childPath = nextChildPath || childPath;
-  if (initializationPromise) return initializationPromise;
-  initializationPromise = (async () => {
-    await Promise.resolve(prerequisite).catch(() => undefined);
-    let result = resolveConnectorTool();
-    if (options.installManaged === true && !process.env.AILY_CONNECTOR_PROJECT) {
-      try {
-        result = await installCompatibleVersion('latest', { force: true });
-      } catch (error) {
-        const fallback = resolveConnectorTool();
-        if (!fallback.ok) throw error;
-        result = fallback;
-      }
-    }
-    readyState = result;
-    return result;
-  })().catch((error) => {
-    readyState = {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error || 'initialization failed'),
-    };
-    return readyState;
-  }).finally(() => {
-    initializationPromise = null;
+  return lifecycle.initialize(childPath, prerequisite, {
+    installLatest: options.installManaged === true && !process.env.AILY_CONNECTOR_PROJECT,
   });
-  return initializationPromise;
 }
 
 async function waitForReady() {
-  if (initializationPromise) await initializationPromise;
-  if (mutationPromise) await mutationPromise;
-  let result = readyState;
-  if (!result?.ok || !fs.existsSync(result.entryPath || '')) {
-    result = resolveConnectorTool();
-    readyState = result;
-  }
+  const result = await lifecycle.waitForReady();
   if (!result.ok) throw new Error(result.error || 'aily-connector is unavailable');
   return result;
 }
@@ -306,103 +304,23 @@ async function ensureDaemon() {
 }
 
 async function installCompatibleVersion(targetVersion = 'latest', options = {}) {
-  if (mutationPromise) return mutationPromise;
-  if (sessionOwners.size > 0) throw new Error('Disconnect all Linux boards before updating aily-connector');
-  if (process.env.AILY_CONNECTOR_PROJECT) {
-    throw new Error('The local aily-connector override must be updated from its source project');
-  }
-  mutationPromise = (async () => {
-    await shutdown();
-    await installManagedPackage({
-      packageSpec: `${PACKAGE_NAME}@${targetVersion}`,
-      childPath,
-      prefix: getManagedNpmPrefix(),
-      force: options.force === true,
-    });
-    const result = resolveConnectorTool();
-    readyState = result;
-    if (!result.ok) throw new Error(result.error || 'aily-connector installation is incomplete');
-    return result;
-  })().finally(() => {
-    mutationPromise = null;
+  const { installResult, readyResult } = await lifecycle.performInstallMutation({
+    targetVersion,
+    force: options.force === true,
+    reason: options.reason || 'manual',
   });
-  return mutationPromise;
+  if (!installResult.ok || !readyResult.ok) {
+    throw new Error(installResult.error || readyResult.error || 'aily-connector installation is incomplete');
+  }
+  return readyResult;
 }
 
 function getStatus() {
-  const state = readyState || {
-    ok: false,
-    version: null,
-    entryPath: '',
-    error: '',
-  };
-  const entryStillExists = !state.ok || (
-    !!state.entryPath && fs.existsSync(state.entryPath)
-  );
-  const effectiveState = entryStillExists
-    ? state
-    : {
-      ...state,
-      ok: false,
-      version: null,
-      error: 'aily-connector package entry was not found',
-    };
-  return {
-    key: TOOL_KEY,
-    packageName: PACKAGE_NAME,
-    installed: effectiveState.ok,
-    installedVersion: effectiveState.version,
-    path: effectiveState.entryPath || '',
-    installing: !!mutationPromise || !!initializationPromise,
-    installingKey: mutationPromise ? TOOL_KEY : null,
-    configLoaded: true,
-    error: effectiveState.ok ? '' : effectiveState.error,
-  };
+  return lifecycle.getStatus();
 }
 
-async function getLatestVersion() {
-  const { stdout } = await runManagedNpm({
-    args: ['view', `${PACKAGE_NAME}@latest`, 'version', '--json'],
-    childPath,
-    prefix: getManagedNpmPrefix(),
-  });
-  const text = String(stdout || '').trim();
-  let value = text;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    // npm may return plain text when JSON output is unavailable.
-  }
-  if (Array.isArray(value)) value = value[value.length - 1];
-  const version = semver.clean(String(value || '').trim());
-  if (!version) throw new Error(`Unable to parse the latest ${PACKAGE_NAME} version`);
-  return version;
-}
-
-async function checkForUpdate() {
-  const currentState = resolveConnectorTool();
-  const currentVersion = semver.clean(String(currentState.version || '').trim());
-  const latestVersion = await getLatestVersion();
-
-  if (currentState.ok && currentVersion && !semver.gt(latestVersion, currentVersion)) {
-    readyState = currentState;
-    return {
-      updated: false,
-      previousVersion: currentVersion,
-      version: currentVersion,
-      latestVersion,
-      status: getStatus(),
-    };
-  }
-
-  const result = await installCompatibleVersion(latestVersion);
-  return {
-    updated: true,
-    previousVersion: currentVersion,
-    version: result.version,
-    latestVersion,
-    status: getStatus(),
-  };
+function checkForUpdate() {
+  return lifecycle.checkForUpdate();
 }
 
 function registerHandlers() {

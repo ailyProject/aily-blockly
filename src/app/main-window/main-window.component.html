@@ -137,4 +137,8 @@
 }
 
 <iframe src="https://abi.aily.pro/"></iframe>
+@if (requestStatsScope === 'eu') {
+<iframe src="https://req-stats.aily.pro/track/region"></iframe>
+} @else if (requestStatsScope === 'default') {
 <iframe src="https://req-stats.aily.pro/track"></iframe>
+}
