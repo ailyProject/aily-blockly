@@ -69,12 +69,6 @@ export type DemandSessionProgressType =
   | 'complete'
   | 'error';
 
-export interface DemandSessionProgressEvent {
-  type: DemandSessionProgressType;
-  content: string;
-  timestamp: number;
-}
-
 export interface SchematicGenerationOptions {
   revealSession?: boolean;
   title?: string;
@@ -446,17 +440,13 @@ ${(connectionData.connections || []).length} 条连线
   }
 
   private emitProgress(type: DemandSessionProgressType, content: string): void {
-    const event: DemandSessionProgressEvent = {
-      type,
-      content,
-      timestamp: Date.now(),
-    };
-
-    if (this.electronService.isElectron && window['ipcRenderer']) {
-      window['ipcRenderer'].send(
-        'iframe-message-connection-graph',
-        { type: 'generate-graph-progress', data: event },
-      );
-    }
+    this.connectionGraphService.emitNotice({
+      title: 'AI生成中',
+      text: content,
+      state: type === 'thinking' ? 'doing' : type === 'complete' ? 'done' : 'error',
+      ...(type === 'thinking'
+        ? { showProgress: false }
+        : { setTimeout: 3000 }),
+    });
   }
 }

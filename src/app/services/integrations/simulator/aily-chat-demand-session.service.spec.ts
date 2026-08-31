@@ -11,6 +11,7 @@ describe('AilyChatDemandSessionService', () => {
     const processMessageListeners = new Set<(message: Record<string, unknown>) => void>();
     const sentMessages: Record<string, unknown>[] = [];
     const openedSessions: string[] = [];
+    const notices: Record<string, unknown>[] = [];
     const projectPath = new BehaviorSubject('/tmp/project');
     const projectService = {
       currentProjectPath: projectPath.value,
@@ -54,7 +55,10 @@ describe('AilyChatDemandSessionService', () => {
     };
     const service = new AilyChatDemandSessionService(
       projectService as never,
-      { getConnectionGraph: () => null } as never,
+      {
+        getConnectionGraph: () => null,
+        emitNotice: (notice: Record<string, unknown>) => notices.push(notice),
+      } as never,
       { isElectron: false } as never,
       childToolProcess as never,
       {
@@ -69,6 +73,7 @@ describe('AilyChatDemandSessionService', () => {
       projectPath,
       sentMessages,
       openedSessions,
+      notices,
       emitProcessMessage: (message: Record<string, unknown>) => {
         for (const listener of processMessageListeners) listener(message);
       },
@@ -123,6 +128,10 @@ describe('AilyChatDemandSessionService', () => {
       mode: 'agent',
       prompt: '[AGENT: SchematicAgent] 生成项目连线图',
     }));
+    expect(harness.notices).toEqual([
+      jasmine.objectContaining({ state: 'doing', text: '正在分析项目...' }),
+      jasmine.objectContaining({ state: 'done', text: '连线图生成完成' }),
+    ]);
   });
 
   it('publishes architecture generation state until the matching request settles', async () => {
