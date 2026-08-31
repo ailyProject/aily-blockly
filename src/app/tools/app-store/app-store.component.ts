@@ -28,7 +28,7 @@ import {
 } from './app-store.config';
 import { AppStoreService } from './app-store.service';
 import { Subscription } from 'rxjs';
-import { ToolI18nService } from '@core/preferences/public-api';
+import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
@@ -104,6 +104,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     private message: NzMessageService,
     private modal: NzModalService,
     private translate: TranslateService,
+    private configService: ConfigService,
   ) { }
 
   ngOnInit(): void {
@@ -746,10 +747,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private showExtensionClientRestartInfo(app: AppItem): void {
+    const params = { name: app.name, applicationName: this.configService.getApplicationName() };
     this.modal.info({
       nzClassName: 'subapp-service-confirm-modal',
-      nzTitle: this.translate.instant('APP_STORE.RESTART_CLIENT_TITLE'),
-      nzContent: this.translate.instant('APP_STORE.RESTART_CLIENT_HINT', { name: app.name }),
+      nzTitle: this.translate.instant('APP_STORE.RESTART_CLIENT_TITLE', params),
+      nzContent: this.translate.instant('APP_STORE.RESTART_CLIENT_HINT', params),
       nzOkText: this.translate.instant('APP_STORE.GOT_IT'),
       nzMaskClosable: false,
     });

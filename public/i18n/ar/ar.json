@@ -973,6 +973,14 @@
         "NO_TUTORIAL_PROVIDED": "لم يقدم مؤلف المكتبة أي دليل تعليمي"
     },
     "PROJECT": {
+      "MODE_UNKNOWN": "نوع المشروع غير معروف. اختر مشروع Aily Blockly أو Aily Coder صالحًا.",
+      "MODE_CREATE_RESTRICTED": "لا يمكن لوضع {{application}} الحالي إنشاء هذا النوع من المشاريع. استخدم {{targetApplication}}.",
+      "MODE_MISMATCH_TITLE": "وضع المشروع غير متوافق",
+      "MODE_OPEN_OTHER": "يتطلب هذا المشروع {{application}} المثبت بالفعل. هل تريد فتحه في نافذة جديدة من ذلك التطبيق؟ سيبقى المشروع الحالي دون تغيير.",
+      "MODE_DOWNLOAD_OTHER": "يتطلب هذا المشروع {{application}}. لم يتم العثور على تثبيت. قم بتنزيله وتثبيته من الموقع الرسمي لفتح المشروع.",
+      "MODE_OPEN_BUTTON": "فتح باستخدام {{application}}",
+      "MODE_DOWNLOAD_BUTTON": "التنزيل من الموقع الرسمي",
+      "MODE_LAUNCH_FAILED": "تعذر بدء {{application}}. افتحه يدويًا أو ثبّت أحدث إصدار من الموقع الرسمي.",
         "CANNOT_OPEN_PROJECT": "تعذر فتح المشروع: ",
         "CREATING_PROJECT": "جاري إنشاء المشروع...",
         "PROJECT_CREATED": "تم إنشاء المشروع بنجاح",

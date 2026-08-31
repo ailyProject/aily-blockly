@@ -60,6 +60,7 @@ import {
   PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
   resolveConfiguredProjectRootPath,
 } from './project-root-path';
+import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 
 interface ProjectPackageData {
   name: string;
@@ -137,9 +138,11 @@ export class ProjectService {
     promise: Promise<boolean>;
   } | null = null;
   private blocklyLibraryRuntimeSignatures = new Map<string, string>();
+  private recentProjectsCache: { source: RecentProject[]; mode: ProjectMode; time: number; projects: RecentProject[] } | null = null;
 
   currentPackageData: ProjectPackageData = {
-    name: 'aily blockly',
+    // 产品名称由界面显示，不作为空项目的项目名。
+    name: '',
   };
 
   projectRootPath: string;
@@ -359,19 +362,23 @@ export class ProjectService {
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         if (message.data.action == 'open-project') {
-          this.projectOpen(message.data.path, {
-            reason: this.parseProjectActivationReason(message.data.reason),
-            sessionResource: typeof message.data.sessionResource === 'string' ? message.data.sessionResource : null,
-          });
+          let opened = false;
+          try {
+            opened = await this.projectOpen(message.data.path, {
+              reason: this.parseProjectActivationReason(message.data.reason),
+              sessionResource: typeof message.data.sessionResource === 'string' ? message.data.sessionResource : null,
+            });
+          } catch (error) {
+            console.error('Project activation failed:', error);
+          }
+          if (message.messageId) {
+            window['ipcRenderer'].send('main-window-response', {
+              messageId: message.messageId,
+              data: opened ? 'success' : 'failed',
+            });
+          }
         } else {
           return;
-        }
-        // 反馈完成结果
-        if (message.messageId) {
-          window['ipcRenderer'].send('main-window-response', {
-            messageId: message.messageId,
-            result: "success"
-          });
         }
       });
 
@@ -386,6 +393,7 @@ export class ProjectService {
           this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + error.message);
         }
       });
+      window['ipcRenderer'].send('project-open-ready');
 
       await this.ensureProjectRootPath();
       // if (!this.currentProjectPath) {
@@ -596,8 +604,9 @@ export class ProjectService {
 
   private async finishProjectCreation(projectPath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
     this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
-    await window['iWindow'].send({
+    const result = await window['iWindow'].send({
       to: 'main',
+      timeout: 130000,
       data: {
         action: 'open-project',
         path: projectPath,
@@ -605,12 +614,13 @@ export class ProjectService {
         sessionResource: options.sessionResource ?? null,
       }
     });
-    return true;
+    return result === 'success';
   }
 
   // 新建项目
   async projectNew(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<boolean> {
     try {
+      await this.assertProjectCreationMode(options.templateDirectory === CODER_TEMPLATE_DIRECTORY ? 'coder' : 'blockly');
       const separator = this.platformService.getPlatformSeparator();
       // console.log('newProjectData: ', newProjectData);
       const appDataPath = window['path'].getAppDataPath();
@@ -680,6 +690,9 @@ export class ProjectService {
 
   async projectNewFromTemplate(newProjectData: NewProjectData, templatePath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
     try {
+      const mode = this.getProjectMode(templatePath);
+      if (!mode) throw new Error(this.translate.instant('PROJECT.MODE_UNKNOWN'));
+      await this.assertProjectCreationMode(mode);
       const separator = this.platformService.getPlatformSeparator();
       const projectPath = this.buildProjectPath(newProjectData);
 
@@ -946,15 +959,18 @@ export class ProjectService {
     const isSwitchingProject = !!previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath);
 
-    if (this.shouldBlockForAiOperation(activationReason)) {
-      this.warnBlockingAiOperation();
-      return false;
-    }
-
     // 判断路径是否存在
     if (!this.electronService.exists(projectPath)) {
       this.removeRecentlyProject({ path: projectPath })
       this.message.error(this.translate.instant('PROJECT.PATH_NOT_EXIST'));
+      return false;
+    }
+
+    // Reject before acquiring locks, closing windows, changing routes or publishing activation.
+    if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
+
+    if (this.shouldBlockForAiOperation(activationReason)) {
+      this.warnBlockingAiOperation();
       return false;
     }
 
@@ -1010,7 +1026,7 @@ export class ProjectService {
 
     this.beginBlocklyProjectLoad(projectPath);
 
-    const abiIsExist = window['path'].isExists(projectPath + '/project.abi');
+    const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
     const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
     if (blocklyRouteIsBeingReused) {
       // Angular reuses the component when only query params change. Take an
@@ -1089,9 +1105,7 @@ export class ProjectService {
       }, 120000);
 
       subscription = this.stateSubject.subscribe((state) => {
-        const isBlocklyProject = window['path']?.isExists?.(
-          window['path'].join(projectPath, 'project.abi'),
-        );
+        const isBlocklyProject = this.getProjectMode(projectPath) === 'blockly';
         if (!isBlocklyProject && state === 'loaded') {
           finish();
           return;
@@ -1225,7 +1239,7 @@ export class ProjectService {
     this.blocklyProjectLoadFailure = null;
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', '').catch(() => undefined);
     this.currentPackageData = {
-      name: 'aily blockly',
+      name: '',
     };
     this.stateSubject.next('default');
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
@@ -1286,22 +1300,99 @@ export class ProjectService {
     });
   }
 
-  // 通过ConfigService存储最近打开的项目
+  getProjectMode(projectPath: string): ProjectMode | null {
+    if (!projectPath || !this.electronService.isElectron) return null;
+    try {
+      const packagePath = window['path'].join(projectPath, 'package.json');
+      const manifest = window['fs'].existsSync(packagePath)
+        ? JSON.parse(window['fs'].readFileSync(packagePath, 'utf8')) : undefined;
+      return detectProjectMode({
+        manifest,
+        hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
+        hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async assertProjectCreationMode(mode: ProjectMode): Promise<void> {
+    await this.configService.init();
+    if (mode !== this.configService.getPreferredChatAgentRuntimeMode()) {
+      throw new Error(this.translate.instant('PROJECT.MODE_CREATE_RESTRICTED', {
+        application: getProjectApplicationName(this.configService.getPreferredChatAgentRuntimeMode()),
+        targetApplication: getProjectApplicationName(mode),
+      }));
+    }
+  }
+
+  async ensureProjectModeAllowed(projectPath: string): Promise<boolean> {
+    await this.configService.init();
+    const mode = this.getProjectMode(projectPath);
+    if (!mode) {
+      this.message.error(this.translate.instant('PROJECT.MODE_UNKNOWN'));
+      return false;
+    }
+    if (mode === this.configService.getPreferredChatAgentRuntimeMode()) return true;
+
+    const application = getProjectApplicationName(mode);
+    let installed = false;
+    try {
+      const status = await window['ipcRenderer'].invoke('project-companion-status', { mode });
+      installed = status?.installed === true;
+    } catch (error) {
+      console.warn('Companion application lookup failed:', error);
+    }
+    this.modal.confirm({
+      nzClassName: 'project-mode-mismatch-modal',
+      nzCentered: true,
+      nzWidth: 480,
+      nzMaskClosable: false,
+      nzTitle: this.translate.instant('PROJECT.MODE_MISMATCH_TITLE'),
+      nzContent: this.translate.instant(installed ? 'PROJECT.MODE_OPEN_OTHER' : 'PROJECT.MODE_DOWNLOAD_OTHER', { application }),
+      nzOkText: this.translate.instant(installed ? 'PROJECT.MODE_OPEN_BUTTON' : 'PROJECT.MODE_DOWNLOAD_BUTTON', { application }),
+      nzCancelText: this.translate.instant('PROJECT.LOCK_CANCEL'),
+      nzOnOk: async () => {
+        try {
+          const result = await window['ipcRenderer'].invoke(
+            installed ? 'project-companion-open' : 'project-companion-download',
+            { mode, projectPath },
+          );
+          if (result?.ok !== true) throw new Error(result?.error || 'Application launch failed');
+          return true;
+        } catch (error) {
+          console.warn('Companion application action failed:', error);
+          this.message.error(this.translate.instant('PROJECT.MODE_LAUNCH_FAILED', { application }));
+          return false;
+        }
+      },
+    });
+    return false;
+  }
+
+  // Filtering is a view: add/remove must always preserve the other mode's stored history.
   get recentlyProjects(): RecentProject[] {
-    return this.configService.data?.recentlyProjects || [];
+    const source: RecentProject[] = this.configService.data?.recentlyProjects || [];
+    const mode = this.configService.getPreferredChatAgentRuntimeMode();
+    const cache = this.recentProjectsCache;
+    if (cache?.source === source && cache.mode === mode && Date.now() - cache.time < 1000) return cache.projects;
+    const projects = source.filter((project) => this.getProjectMode(project.path) === mode);
+    this.recentProjectsCache = { source, mode, time: Date.now(), projects };
+    return projects;
   }
 
   set recentlyProjects(data: RecentProject[]) {
     this.configService.data.recentlyProjects = data;
+    this.recentProjectsCache = null;
     this.configService.save();
   }
 
   addRecentlyProject(data: RecentProject) {
-    this.recentlyProjects = addRecentProject(this.recentlyProjects, data);
+    this.recentlyProjects = addRecentProject(this.configService.data?.recentlyProjects || [], data);
   }
 
   removeRecentlyProject(data: { path: string }) {
-    this.recentlyProjects = removeRecentProject(this.recentlyProjects, data.path);
+    this.recentlyProjects = removeRecentProject(this.configService.data?.recentlyProjects || [], data.path);
   }
 
   // 检查项目是否未保存

@@ -152,7 +152,7 @@ describe('ConfigService Aily Coder product mode', () => {
     expect(service.isCoderProduct()).toBeTrue();
     expect(service.getDevelopmentModePreference()).toBe('coder');
     expect(service.shouldPromptDevelopmentModePreference()).toBeFalse();
-    expect(service.getApplicationName()).toBe('Aily Coder');
+    expect(service.getApplicationName()).toBe('aily coder');
     expect(await service.setDevelopmentModePreference('blockly', 'settings')).toBe('coder');
     expect(service.data.developmentModePreference).toBe('blockly');
   });
@@ -166,6 +166,13 @@ describe('ConfigService Aily Coder product mode', () => {
     expect(service.isCoderEnabled()).toBeFalse();
     expect(service.isCoderProduct()).toBeFalse();
     expect(service.getDevelopmentModePreference()).toBe('blockly');
+    expect(service.getApplicationName()).toBe('aily blockly');
+  });
+
+  it('keeps the normal product identity when its shared preference is Coder', () => {
+    service.data = { coder: { enabled: true }, developmentModePreference: 'coder' };
+
+    expect(service.getDevelopmentModePreference()).toBe('coder');
     expect(service.getApplicationName()).toBe('aily blockly');
   });
 });

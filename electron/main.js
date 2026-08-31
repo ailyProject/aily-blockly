@@ -87,6 +87,7 @@ function applyAppIdentity(product) {
 }
 
 registerSafeStorageIpc(ipcMain, safeStorage);
+require('./project-companion').registerProjectCompanionIpc(ipcMain, shell);
 
 // 设置应用名称，用于 Windows 系统通知显示
 applyAppIdentity(getBuildProduct());
@@ -417,6 +418,13 @@ if (process.defaultApp) {
 
 // 文件关联处理
 let pendingFileToOpen = null;
+let projectOpenRendererReady = false;
+ipcMain.on('project-open-ready', (event) => {
+  if (mainWindow && event.sender === mainWindow.webContents) {
+    projectOpenRendererReady = true;
+    if (pendingFileToOpen) void updateMainWindowWithPendingData();
+  }
+});
 let pendingRoute = null;
 let pendingQueryParams = null;
 /** 当前主进程已持有的项目锁（规范化路径） */
@@ -518,10 +526,17 @@ async function resolveProjectLockOrPrompt(projectDir, parentWindow) {
   return { proceed: false };
 }
 
-// 处理命令行参数中的 .abi 文件和路由参数
+// File association and companion-app handoff both use the renderer's guarded open entry.
 function handleCommandLineArgs(argv) {
-  // 处理 .abi 文件
-  const abiFile = argv.find(arg => arg.endsWith('.abi') && fs.existsSync(arg));
+  const openProjectArg = argv.find(arg => arg.startsWith('--open-project='));
+  if (openProjectArg) {
+    const projectPath = openProjectArg.slice('--open-project='.length);
+    if (projectPath && path.isAbsolute(projectPath) && fs.existsSync(projectPath) && fs.statSync(projectPath).isDirectory()) {
+      pendingFileToOpen = projectPath;
+      return true;
+    }
+  }
+  const abiFile = argv.find(arg => /\.(abi|aci)$/i.test(arg) && fs.existsSync(arg));
   if (abiFile) {
     const resolvedPath = path.resolve(abiFile);
     pendingFileToOpen = path.dirname(resolvedPath);
@@ -2269,16 +2284,13 @@ async function updateMainWindowWithPendingData() {
   let targetUrl = null;
 
   if (pendingFileToOpen) {
+    if (!projectOpenRendererReady) return;
     const dir = pendingFileToOpen;
-    const { proceed } = await resolveProjectLockOrPrompt(dir, mainWindow);
-    if (!proceed) {
-      pendingFileToOpen = null;
-      return;
-    }
-    const routePath = `main/blockly-editor?path=${encodeURIComponent(dir)}`;
-    console.log('Updating existing window with project path:', routePath);
-    targetUrl = `#/${routePath}`;
     pendingFileToOpen = null;
+    mainWindow.webContents.send('open-project-from-file', dir);
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    return;
   } else if (pendingRoute) {
     // 构建路由URL
     let routePath = pendingRoute;
@@ -2410,6 +2422,9 @@ function createWindow() {
   });
 
   winState.manage(mainWindow);
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) projectOpenRendererReady = false;
+  });
 
   // mainWindow.setMenu(null);
 
@@ -2428,7 +2443,7 @@ function createWindow() {
   let targetUrl = null;
 
   if (pendingFileToOpen) {
-    const routePath = `main/blockly-editor?path=${encodeURIComponent(pendingFileToOpen)}`;
+    const routePath = `main/guide?openProject=${encodeURIComponent(pendingFileToOpen)}`;
     console.log('Loading with project path:', routePath);
     targetUrl = `#/${routePath}`;
     pendingFileToOpen = null;
@@ -2826,13 +2841,6 @@ app.on("ready", async () => {
     }, 1000);
   }
 
-  if (pendingFileToOpen) {
-    const { proceed } = await resolveProjectLockOrPrompt(pendingFileToOpen, null);
-    if (!proceed) {
-      pendingFileToOpen = null;
-    }
-  }
-
   // 创建主窗口
   try {
     await ensurePackagedRendererServerStarted();
@@ -3049,22 +3057,14 @@ app.on('web-contents-created', (event, contents) => {
 // macOS下处理文件打开
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
-  if (filePath.endsWith('.abi') && fs.existsSync(filePath)) {
+  if (/\.(abi|aci)$/i.test(filePath) && fs.existsSync(filePath)) {
     const projectDir = path.dirname(path.resolve(filePath));
     console.log('macOS open-file:', filePath);
     console.log('Project directory:', projectDir);
 
     if (mainWindow && mainWindow.webContents) {
-      void (async () => {
-        const { proceed } = await resolveProjectLockOrPrompt(projectDir, mainWindow);
-        if (!proceed) {
-          return;
-        }
-        const routePath = `main/blockly-editor?path=${encodeURIComponent(projectDir)}`;
-        console.log('Navigating to route:', routePath);
-
-        await loadAppRenderer(mainWindow, `#/${routePath}`);
-      })();
+      pendingFileToOpen = projectDir;
+      void updateMainWindowWithPendingData();
     } else {
       pendingFileToOpen = projectDir;
     }

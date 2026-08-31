@@ -6,6 +6,7 @@ import { ConfigService, ThemeService } from '@core/preferences/public-api';
 import { ElectronService } from '@core/platform/public-api';
 import {
   executeCoderProjectCreateOperation,
+  getProjectCreationModeError,
   ProjectService,
 } from '@domain/project/public-api';
 import { BuilderService } from '@domain/build/public-api';
@@ -335,7 +336,7 @@ export class BlocklyLiveOperationBridgeService {
       ok: true,
       operation: 'app_info',
       app: {
-        name: packageJson.productName || packageJson.name,
+        name: this.configService.getApplicationName(),
         version: packageJson.version,
         buildFlavor,
         edition: buildFlavor === 'global' ? 'international' : 'domestic',
@@ -563,7 +564,13 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeProjectCreate(params: Record<string, any>): Promise<Record<string, any>> {
-    if (this.configService.getDevelopmentModePreference() === 'coder') {
+    await this.configService.init();
+    const mode = this.configService.getPreferredChatAgentRuntimeMode();
+    const modeError = getProjectCreationModeError(mode, params);
+    if (modeError) {
+      return { ok: false, operation: 'project_create', reason: 'project_mode_mismatch', developmentMode: mode, message: modeError };
+    }
+    if (mode === 'coder') {
       return this.executeCoderProjectCreate(params);
     }
 
@@ -601,6 +608,8 @@ export class BlocklyLiveOperationBridgeService {
     return {
       ok,
       operation: 'project_create',
+      developmentMode: mode,
+      projectType: mode,
       project: ok ? projectPath : null,
       message: ok ? `项目已创建并打开: ${projectPath}` : '项目创建失败',
       name: newProjectData.name,

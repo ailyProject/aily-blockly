@@ -51,7 +51,8 @@
                       ? null
                       : ('SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate)">
                     <button class="development-mode-button coder-mode-button single-mode-button"
-                      nz-button nzSize="small" nzType="primary" [disabled]="true">
+                      nz-button nzSize="small" nzType="primary" type="button" aria-pressed="true"
+                      (click)="onDevelopmentModePreferenceChange('coder')">
                       @if (coderDependencyState.installing) {
                       <i class="fa-light fa-spinner-third fa-spin"></i>
                       <span>{{ coderDependencyState.percent }}%</span>

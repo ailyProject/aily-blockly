@@ -973,6 +973,14 @@
         "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
     },
     "PROJECT": {
+      "MODE_UNKNOWN": "プロジェクトの種類を識別できません。有効な Aily Blockly または Aily Coder プロジェクトを選択してください。",
+      "MODE_CREATE_RESTRICTED": "現在の {{application}} モードではこの種類のプロジェクトを作成できません。{{targetApplication}} を使用してください。",
+      "MODE_MISMATCH_TITLE": "プロジェクトモードが一致しません",
+      "MODE_OPEN_OTHER": "このプロジェクトには、インストール済みの {{application}} が必要です。そのアプリの新しいウィンドウで開きますか？現在のプロジェクトは変更されません。",
+      "MODE_DOWNLOAD_OTHER": "このプロジェクトには {{application}} が必要ですが、インストールが見つかりません。公式サイトからダウンロードしてインストールしてください。",
+      "MODE_OPEN_BUTTON": "{{application}} で開く",
+      "MODE_DOWNLOAD_BUTTON": "公式サイトからダウンロード",
+      "MODE_LAUNCH_FAILED": "{{application}} を起動できません。手動で開くか、公式サイトから最新版をインストールしてください。",
         "CANNOT_OPEN_PROJECT": "プロジェクトを開けません: ",
         "CREATING_PROJECT": "プロジェクトを作成中...",
         "PROJECT_CREATED": "プロジェクトが作成されました",

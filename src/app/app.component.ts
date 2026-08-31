@@ -13,7 +13,7 @@ import { SubappManagerService } from '@integration/subapps/public-api';
   styleUrl: './app.component.scss',
 })
 export class AppComponent implements OnInit, AfterViewInit {
-  title = 'aily-blockly';
+  title = 'aily';
 
   private electronService = inject(ElectronService);
   private configService = inject(ConfigService);

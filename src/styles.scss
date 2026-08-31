@@ -73,7 +73,8 @@ img {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
 }
 
-.subapp-service-confirm-modal {
+.subapp-service-confirm-modal,
+.project-mode-mismatch-modal {
   .ant-modal-content {
     overflow: hidden;
     border: 1px solid var(--aily-border-input);

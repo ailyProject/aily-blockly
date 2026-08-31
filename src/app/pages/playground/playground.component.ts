@@ -9,6 +9,7 @@ import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { PlaygroundService } from './playground.service';
 import { ElectronService } from '@core/platform/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 
 @Component({
   selector: 'app-playground',
@@ -37,7 +38,8 @@ export class PlaygroundComponent {
     private location: Location,
     private translate: TranslateService,
     private playgroundService: PlaygroundService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    private configService: ConfigService,
   ) {
 
   }
@@ -68,7 +70,7 @@ export class PlaygroundComponent {
       }
     ];
 
-    this.electronService.setTitle('aily blockly - Playground');
+    this.electronService.setTitle(`${this.configService.getApplicationName()} - Playground`);
   }
 
   keyword: string = '';

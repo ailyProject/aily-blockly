@@ -1053,6 +1053,14 @@
         "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
     },
     "PROJECT": {
+      "MODE_UNKNOWN": "無法識別專案類型，請選擇有效的 Aily Blockly 或 Aily Coder 專案。",
+      "MODE_CREATE_RESTRICTED": "目前 {{application}} 模式無法建立此類專案，請使用 {{targetApplication}} 建立。",
+      "MODE_MISMATCH_TITLE": "專案模式不符",
+      "MODE_OPEN_OTHER": "此專案需要使用 {{application}} 開啟。已偵測到安裝，是否在該軟件的新視窗中開啟？目前專案將保持不變。",
+      "MODE_DOWNLOAD_OTHER": "此專案需要使用 {{application}} 開啟。未偵測到安裝，請前往官網下載並安裝後開啟此專案。",
+      "MODE_OPEN_BUTTON": "使用 {{application}} 開啟",
+      "MODE_DOWNLOAD_BUTTON": "前往官網下載",
+      "MODE_LAUNCH_FAILED": "無法啟動 {{application}}，請手動開啟該軟件，或從官網下載並安裝最新版本。",
         "CANNOT_OPEN_PROJECT": "無法開啟專案: ",
         "CREATING_PROJECT": "正在建立專案...",
         "PROJECT_CREATED": "專案建立成功",

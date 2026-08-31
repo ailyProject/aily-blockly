@@ -179,7 +179,7 @@ export class ConfigService {
   }
 
   getApplicationName(): string {
-    return this.isCoderProduct() ? 'Aily Coder' : 'aily blockly';
+    return this.isCoderProduct() ? 'aily coder' : 'aily blockly';
   }
 
   getDevelopmentModePreference(): DevelopmentModePreference {

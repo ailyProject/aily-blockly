@@ -961,6 +961,14 @@
         "NO_TUTORIAL_PROVIDED": "라이브러리 작성자가 튜토리얼을 제공하지 않았습니다"
     },
     "PROJECT": {
+      "MODE_UNKNOWN": "프로젝트 유형을 확인할 수 없습니다. 유효한 Aily Blockly 또는 Aily Coder 프로젝트를 선택하세요.",
+      "MODE_CREATE_RESTRICTED": "현재 {{application}} 모드에서는 이 유형의 프로젝트를 만들 수 없습니다. {{targetApplication}}을 사용하세요.",
+      "MODE_MISMATCH_TITLE": "프로젝트 모드 불일치",
+      "MODE_OPEN_OTHER": "이 프로젝트는 설치된 {{application}}이 필요합니다. 해당 앱의 새 창에서 여시겠습니까? 현재 프로젝트는 변경되지 않습니다.",
+      "MODE_DOWNLOAD_OTHER": "이 프로젝트에는 {{application}}이 필요하지만 설치된 앱을 찾지 못했습니다. 공식 웹사이트에서 다운로드하여 설치하세요.",
+      "MODE_OPEN_BUTTON": "{{application}}으로 열기",
+      "MODE_DOWNLOAD_BUTTON": "공식 웹사이트에서 다운로드",
+      "MODE_LAUNCH_FAILED": "{{application}}을 시작할 수 없습니다. 직접 열거나 공식 웹사이트에서 최신 버전을 설치하세요.",
         "CANNOT_OPEN_PROJECT": "프로젝트를 열 수 없습니다: ",
         "CREATING_PROJECT": "프로젝트 생성 중...",
         "PROJECT_CREATED": "프로젝트가 생성되었습니다",

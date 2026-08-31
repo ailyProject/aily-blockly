@@ -13,6 +13,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { BuilderService } from '@domain/build/public-api';
 import { UploaderService } from '@domain/device/public-api';
 import { ElectronService } from '@core/platform/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import { ShortcutService, ShortcutAction, ShortcutKeyMapping } from './services/shortcut.service';
 import { Subscription } from 'rxjs';
 import { _ProjectService } from './services/project.service';
@@ -82,6 +83,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     private uploadService: UploaderService,
     private electronService: ElectronService,
     private shortcutService: ShortcutService,
+    private configService: ConfigService,
   ) {
   }
 
@@ -123,7 +125,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.builderService.cancel();
     this.uploadService.cancel();
 
-    this.electronService.setTitle('aily blockly');
+    this.electronService.setTitle(this.configService.getApplicationName());
 
     // 清理快捷键监听器
     this.cleanupShortcutListeners();
@@ -192,7 +194,7 @@ export class CodeEditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-    this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
+    this.electronService.setTitle(`${this.configService.getApplicationName()} - ${packageJson.name}`);
     this.projectService.currentPackageData = packageJson;
     // 添加到最近打开的项目
     this.projectService.addRecentlyProject({ name: packageJson.name, path: projectPath, nickname: packageJson.nickname || packageJson.name });
