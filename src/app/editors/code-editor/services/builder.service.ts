@@ -1,15 +1,11 @@
 import { Injectable } from '@angular/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { NpmService } from '../../../services/npm.service';
-import { ConfigService } from '../../../services/config.service';
-import { LogService } from '../../../services/log.service';
-import { NoticeService } from '../../../services/notice.service';
-import { CmdService } from '../../../services/cmd.service';
-import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
-import { ProjectService } from '../../../services/project.service';
-import { ActionState } from '../../../services/ui.service';
-import { PlatformService } from "../../../services/platform.service";
-import { CompileValidationService } from '../../../services/compile-validation.service';
+import { NpmService } from '@domain/dependencies/public-api';
+import { ConfigService } from '@core/preferences/public-api';
+import { LogService, CmdService, CrossPlatformCmdService, PlatformService } from '@core/platform/public-api';
+import { NoticeService, ActionState } from '@core/app-shell/public-api';
+import { ProjectService } from '@domain/project/public-api';
+import { CompileValidationService } from '@domain/build/public-api';
 
 @Injectable({
   providedIn: 'root'

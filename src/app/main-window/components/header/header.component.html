@@ -23,10 +23,17 @@
       @for (btn of headerBtns; track $index) {
       @if(showInRouter(btn)){
       <app-act-btn [icon]="btn.icon" [color]="btn.color" [(state)]="btn.state" nz-tooltip
-        nzTooltipTitle="{{ btn.name | translate}}({{btn.text}})" (click)="onClick(btn,$event)"
+        nzTooltipTitle="{{ headerButtonLabel(btn) }}({{btn.text}})" (click)="onClick(btn,$event)"
         [attr.data-action]="btn.action">
       </app-act-btn>
       }
+      }
+      <!-- Linux/Python 程序运行时显示停止按钮；Arduino 上传没有持续运行态。 -->
+      @if (connectorState.running) {
+      <app-act-btn [icon]="connectorStopBtn.icon" [color]="connectorStopBtn.color"
+        [(state)]="connectorStopBtn.state" nz-tooltip nzTooltipTitle="停止"
+        (click)="onClick(connectorStopBtn,$event)" data-action="connector-stop">
+      </app-act-btn>
       }
     </div>
     <!-- 动态 App 列表 -->

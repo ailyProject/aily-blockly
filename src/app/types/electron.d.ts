@@ -1,7 +1,68 @@
-// 扩展 Window 接口以包含 electronAPI
+// Electron preload API exposed to the Angular renderer.
+type AilyConnectorTransport = 'ssh' | 'serial';
+
+interface AilyConnectorSshEndpoint {
+  host: string;
+  port?: number;
+  username: string;
+  privateKeyPath?: string;
+  hostKeyPolicy?: 'trust-on-first-use' | 'strict';
+}
+
+interface AilyConnectorSerialEndpoint {
+  port: string;
+  baudRate?: number;
+  allowRawConsole?: boolean;
+}
+
+interface AilyConnectorCredentials {
+  password?: string;
+  hostKey?: string;
+}
+
+interface AilyConnectorSession {
+  sessionId: string;
+  transport: AilyConnectorTransport;
+  status: Record<string, unknown>;
+  capabilities: Record<string, unknown> | null;
+}
+
+interface AilyConnectorEvent {
+  sessionId?: string;
+  transport?: AilyConnectorTransport;
+  sequence?: number;
+  event?: {
+    type: string;
+    text?: string;
+    data?: Uint8Array;
+    [key: string]: unknown;
+  };
+  type?: string;
+  error?: { code: string; message: string };
+}
+
+interface AilyConnectorApi {
+  status(): Promise<Record<string, unknown>>;
+  checkForUpdate(): Promise<Record<string, unknown>>;
+  update(): Promise<Record<string, unknown>>;
+  waitForReady(): Promise<{ version: string; protocolVersion: number }>;
+  connect(options: {
+    transport: AilyConnectorTransport;
+    endpoint: AilyConnectorSshEndpoint | AilyConnectorSerialEndpoint;
+    credentials?: AilyConnectorCredentials;
+  }): Promise<AilyConnectorSession>;
+  request<T = unknown>(options: {
+    sessionId: string;
+    operation: string;
+    payload?: Record<string, unknown>;
+    timeoutMs?: number;
+  }): Promise<T>;
+  disconnect(options: { sessionId: string }): Promise<{ disconnected: boolean }>;
+  onEvent(callback: (event: AilyConnectorEvent) => void): () => void;
+}
+
 declare global {
   interface Window {
-    openAndSendToAilyChat: (text: string, options?: Record<string, any>) => void;
     electronAPI: {
       SerialPort: {
         list: () => Promise<any[]>;
@@ -16,7 +77,6 @@ declare global {
       ipcRenderer: any;
       path: any;
       platform: any;
-      /** 系统文件管理器高亮（如访达、资源管理器） */
       shell?: {
         showItemInFolder: (fullPath: string) => void;
       };
@@ -26,28 +86,34 @@ declare global {
       };
       terminal: any;
       ailyServicesStream?: {
-        start: (data: any) => Promise<{ ok?: boolean; streamId?: string; error?: string }>;
+        start: (data: any) => Promise<{
+          ok?: boolean;
+          streamId?: string;
+          error?: string;
+        }>;
         cancel: (streamId: string) => Promise<any>;
-        onEvent: (streamId: string, callback: (payload: any) => void) => () => void;
-      };
-      chatRuntimeHost?: {
-        registerRuntimeOwner: (runtimeOwnerId: string) => Promise<{ ok?: boolean; runtimeOwnerId?: string }>;
-        unregisterRuntimeOwner: (runtimeOwnerId: string) => Promise<{ ok?: boolean }>;
-        registerResourceOperationHandler: (handlerId: string) => Promise<{ ok?: boolean; handlerId?: string }>;
-        unregisterResourceOperationHandler: (handlerId: string) => Promise<{ ok?: boolean }>;
-        call: (method: string, args: readonly unknown[]) => Promise<unknown>;
-        onRuntimeOwnerCommand: (callback: (payload: unknown) => void) => () => void;
-        onResourceOperationCommand: (callback: (payload: unknown) => void) => () => void;
-        sendRuntimeOwnerResponse: (payload: unknown) => void;
-        sendResourceOperationResponse: (payload: unknown) => void;
-        emitRuntimeOwnerEvent: (payload: unknown) => void;
-        onEvent: (callback: (payload: any) => void) => () => void;
+        onEvent: (
+          streamId: string,
+          callback: (payload: any) => void,
+        ) => () => void;
       };
       subapps?: {
         list: (options?: { refresh?: boolean; locale?: string }) => Promise<any>;
-        install: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
-        update: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
-        uninstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        install: (options: {
+          id: string;
+          locale?: string;
+          forceClose?: boolean;
+        }) => Promise<any>;
+        update: (options: {
+          id: string;
+          locale?: string;
+          forceClose?: boolean;
+        }) => Promise<any>;
+        uninstall: (options: {
+          id: string;
+          locale?: string;
+          forceClose?: boolean;
+        }) => Promise<any>;
         onChanged: (callback: (payload: any) => void) => () => void;
         onProgress: (callback: (payload: {
           id: string;
@@ -65,11 +131,9 @@ declare global {
       };
       iWindow: any;
       subWindow: any;
-      coderEmbed: {
-        getBaseUrl: () => Promise<string>;
-      };
       codeViewer: any;
       builder: any;
+      connector?: AilyConnectorApi;
       linter: any;
       uploader: any;
       fs: any;

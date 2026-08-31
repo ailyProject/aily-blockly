@@ -1,7 +1,6 @@
 import { Component, Input, Output, EventEmitter, ChangeDetectorRef, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
-import { PlatformService } from '../../services/platform.service';
-import { ElectronService } from '../../services/electron.service';
+import { PlatformService, ElectronService } from '@core/platform/public-api';
 
 @Component({
   selector: 'app-sub-window',

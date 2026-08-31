@@ -65,8 +65,11 @@ async function main() {
     }
 
     try {
-        // 1. 路径准备（Aily Code 编译入口见 project.aci.entry，产物输出到 .aily/build/<framework>）
-        const tempPath = path.join(currentProjectPath, '.temp');
+        // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
+        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+        const tempPath = isAilyCode
+            ? ailyCodeProject.resolveCompileWorkspacePath(currentProjectPath)
+            : path.join(currentProjectPath, '.temp');
         const buildPath = path.join(currentProjectPath, '.build');
         const blockSourceMapPath = path.join(
             buildPath,
@@ -76,13 +79,14 @@ async function main() {
             buildPath,
             'aily-builder-compile-report.json'
         );
-        const sketchPath = path.join(tempPath, 'sketch');
+        const sketchPath = isAilyCode ? tempPath : path.join(tempPath, 'sketch');
         const sketchFilePath = path.join(sketchPath, 'sketch.ino');
-        const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
         const compileSourcePath = isAilyCode
             ? ailyCodeProject.resolveCompileSourcePath(currentProjectPath)
             : sketchFilePath;
-        const preprocessCachePath = path.join(tempPath, 'preprocess.json');
+        const preprocessCachePath = isAilyCode
+            ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
+            : path.join(tempPath, 'preprocess.json');
         const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
         const projectPackageJson = fs.existsSync(projectPackageJsonPath)
             ? JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'))
@@ -98,8 +102,16 @@ async function main() {
         mkdirp(sketchPath);
         mkdirp(path.dirname(compileSourcePath));
         fs.writeFileSync(compileSourcePath, code);
-        copyProjectSrcToSketch(currentProjectPath, sketchPath);
-        ensureCustomPartitionFile(projectConfig, currentProjectPath, sketchPath);
+        if (!isAilyCode) {
+            copyProjectSrcToSketch(currentProjectPath, sketchPath);
+        }
+        ensureCustomPartitionFile(
+            projectConfig,
+            currentProjectPath,
+            sketchPath,
+            compileSourcePath,
+            isAilyCode
+        );
 
         // 纯 Blockly 仍会写 sketch.ino，便于与其它工具对齐；Aily Code 仅以 entry 为准
         if (!isAilyCode) {
@@ -555,14 +567,24 @@ function copyProjectSrcToSketch(currentProjectPath, sketchPath) {
     fs.cpSync(projectSrcPath, sketchPath, { recursive: true });
 }
 
-function ensureCustomPartitionFile(projectConfig, currentProjectPath, sketchPath) {
+function ensureCustomPartitionFile(
+    projectConfig,
+    currentProjectPath,
+    sketchPath,
+    compileSourcePath,
+    isAilyCode
+) {
     if (!projectConfig || projectConfig.PartitionScheme !== 'custom') {
         return;
     }
 
-    const sourcePartitionFile = path.join(currentProjectPath, 'src', 'partitions.csv');
+    const sourcePartitionFile = isAilyCode
+        ? path.join(path.dirname(compileSourcePath), 'partitions.csv')
+        : path.join(currentProjectPath, 'src', 'partitions.csv');
     const legacyPartitionFile = path.join(currentProjectPath, 'partitions.csv');
-    const sketchPartitionFile = path.join(sketchPath, 'partitions.csv');
+    const sketchPartitionFile = isAilyCode
+        ? sourcePartitionFile
+        : path.join(sketchPath, 'partitions.csv');
 
     if (fs.existsSync(sketchPartitionFile)) {
         return;

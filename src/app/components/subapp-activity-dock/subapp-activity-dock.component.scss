@@ -1,0 +1,251 @@
+/* Generic host surface shared by Aily Chat and other subapp activities. */
+:host {
+  display: block;
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: flex-basis 0.18s ease, width 0.18s ease, opacity 0.12s ease;
+}
+
+:host(.is-open) {
+  opacity: 1;
+}
+
+.subapp-dock {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border-right: 1px solid var(--aily-border-primary, rgba(127, 127, 127, 0.22));
+  background: var(--aily-bg-secondary);
+}
+
+.subapp-dock > nz-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  width: 8px;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.subapp-dock-resize-handle {
+  width: 1px;
+  margin: 8px 0;
+  background: var(--aily-border-primary, rgba(127, 127, 127, 0.22));
+  opacity: 0.65;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.subapp-dock > nz-resize-handle:hover .subapp-dock-resize-handle,
+.subapp-dock > nz-resize-handle:active .subapp-dock-resize-handle {
+  background: var(--aily-primary, #21a67a);
+  opacity: 1;
+}
+
+.subapp-dock-header {
+  display: flex;
+  flex: 0 0 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--aily-border-primary, rgba(127, 127, 127, 0.2));
+  color: var(--aily-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.subapp-dock-count {
+  min-width: 18px;
+  border-radius: 9px;
+  color: var(--aily-text-secondary);
+  background: var(--aily-bg-tertiary);
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.subapp-dock-cards {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.subapp-dock-card {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 180px;
+  overflow: hidden;
+  border: 1px solid var(--aily-border-primary, rgba(127, 127, 127, 0.22));
+  border-radius: 8px;
+  background: var(--aily-bg-primary);
+
+  &.is-invoking {
+    border-color: color-mix(in srgb, var(--aily-primary, #21a67a) 48%, transparent);
+  }
+
+  &.is-error {
+    border-color: color-mix(in srgb, #ff4d4f 52%, transparent);
+  }
+}
+
+.subapp-dock-cards[data-count='1'] .subapp-dock-card {
+  flex: 0 1 50%;
+  min-height: min(280px, 50%);
+}
+
+.subapp-dock-cards[data-count='2'] .subapp-dock-card,
+.subapp-dock-cards[data-count='3'] .subapp-dock-card {
+  flex: 1 1 0;
+}
+
+.subapp-dock-cards:not([data-count='1']):not([data-count='2']):not([data-count='3']) .subapp-dock-card {
+  flex: 0 0 220px;
+}
+
+.subapp-card-header {
+  display: flex;
+  flex: 0 0 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px 0 9px;
+  border-bottom: 1px solid var(--aily-border-primary, rgba(127, 127, 127, 0.17));
+}
+
+.subapp-card-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--aily-text-secondary);
+  font-size: 13px;
+}
+
+.subapp-card-runtime-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--aily-bg-primary);
+  border-radius: 50%;
+  background: #8c8c8c;
+
+  &.is-ready {
+    background: #21a67a;
+  }
+
+  &.is-starting {
+    background: #faad14;
+  }
+
+  &.is-error {
+    background: #ff4d4f;
+  }
+}
+
+.subapp-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--aily-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subapp-card-action {
+  display: inline-flex;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--aily-text-secondary);
+  background: transparent;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+  }
+}
+
+.subapp-card-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px 0;
+  color: var(--aily-text-secondary);
+  font-size: 10px;
+}
+
+.subapp-card-separator {
+  opacity: 0.5;
+}
+
+.subapp-card-surface {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--aily-bg-secondary);
+}
+
+.subapp-card-footer {
+  display: flex;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  border-top: 1px solid var(--aily-border-primary, rgba(127, 127, 127, 0.15));
+  color: var(--aily-text-secondary);
+  font-size: 9px;
+
+  span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.subapp-card-error {
+  flex: 0 0 auto;
+  max-height: 48px;
+  padding: 5px 9px;
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, #ff4d4f 28%, transparent);
+  color: #ff7875;
+  background: color-mix(in srgb, #ff4d4f 8%, transparent);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host {
+    transition: none;
+  }
+}

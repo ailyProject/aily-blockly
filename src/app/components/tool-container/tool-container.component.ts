@@ -1,6 +1,6 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { NzTabsModule } from 'ng-zorro-antd/tabs';
-import { UiService, WindowOpts } from '../../services/ui.service';
+import { UiService, WindowOpts } from '@core/app-shell/public-api';
 
 @Component({
   selector: 'app-tool-container',

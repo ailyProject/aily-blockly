@@ -1,6 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
-import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
 
 /**
  * 自定义图片选择器字段类

@@ -2,18 +2,17 @@ import { Component, OnDestroy, OnInit, AfterViewInit, ElementRef, ChangeDetector
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { injectVirtualizer } from '@tanstack/angular-virtual';
-import { LogService, LogOptions } from '../../services/log.service';
+import { LogService, LogOptions, ElectronService } from '@core/platform/public-api';
 import { AnsiPipe } from './ansi.pipe';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
 import { NzInputModule } from 'ng-zorro-antd/input';
-import { UiService } from '../../services/ui.service';
-import { ProjectService } from '../../services/project.service';
-import { ElectronService } from '../../services/electron.service';
+import { UiService } from '@core/app-shell/public-api';
+import { ProjectService } from '@domain/project/public-api';
 import { stripAnsi } from 'fancy-ansi';
 import { Subscription } from 'rxjs';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { ToolI18nService } from '../../services/tool-i18n.service';
+import { ToolI18nService } from '@core/preferences/public-api';
 
 @Component({
   selector: 'app-log',

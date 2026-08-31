@@ -5,53 +5,48 @@ import { CommonModule } from '@angular/common';
 import { NzLayoutModule } from 'ng-zorro-antd/layout';
 import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { NzTabsModule } from 'ng-zorro-antd/tabs';
-import { AilyChatComponent } from '../tools/aily-chat/aily-chat.component';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
-import { UiService } from '../services/ui.service';
+import { UiService, UpdateService, OnboardingService } from '@core/app-shell/public-api';
 import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
-import { ProjectService } from '../services/project.service';
+import { ProjectService } from '@domain/project/public-api';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
 import { AppStoreService } from '../tools/app-store/app-store.service';
-import { UpdateService } from '../services/update.service';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
-import { NpmService } from '../services/npm.service';
+import { NpmService } from '@domain/dependencies/public-api';
 import { NavigationEnd, Router, RouterModule } from '@angular/router';
-import { distinctUntilChanged, filter, Subscription, take } from 'rxjs';
-import { ConfigService } from '../services/config.service';
+import { distinctUntilChanged, filter, merge, Subscription, take } from 'rxjs';
+import { ConfigService, ToolI18nService, type DevelopmentModePreference } from '@core/preferences/public-api';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
-import { OnboardingService } from '../services/onboarding.service';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { isChildTool } from '../configs/tool.config';
 import {
   AuthService,
   type AuthSessionInvalidationRequest,
   type LoginDialogRequestState,
-} from '../services/auth.service';
-import { ElectronService } from '../services/electron.service';
-import { SubappManagerService } from '../services/subapp-manager.service';
-import { ChildToolProcessService } from '../services/child-tool-process.service';
-import { LoginComponent } from '../components/login/login.component';
-import { resolveTranslatedApiErrorMessage } from '../utils/api-error.utils';
-import { ToolI18nService } from '../services/tool-i18n.service';
-import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
-import { ModeWelcomeComponent } from '../components/mode-welcome/mode-welcome.component';
-import type { DevelopmentModePreference } from '../services/config.service';
-import { ChatRuntimeHostResourceOperationHandlerService } from '../tools/aily-chat/services/chat-runtime-host-resource-operation-handler.service';
-import { AilyChatChildProtocolService } from '../tools/aily-chat/services/aily-chat-child-protocol.service';
+  runAuthSessionInvalidation,
+  registerAilyChatHostAuthRuntimeBridge,
+} from '@core/auth/public-api';
+import { ElectronService } from '@core/platform/public-api';
 import {
+  SubappManagerService,
+  ChildToolProcessService,
   bootstrapDefaultAilyChatSubapp,
   DEFAULT_AILY_CHAT_SUBAPP_BOOTSTRAP_KEY,
   DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
-} from '../services/default-aily-chat-bootstrap';
-import { runAuthSessionInvalidation } from '../services/auth-session-invalidation';
+} from '@integration/subapps/public-api';
+import { LoginComponent } from '../components/login/login.component';
+import { resolveTranslatedApiErrorMessage } from '../utils/api-error.utils';
+import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
+import { ModeWelcomeComponent } from '../components/mode-welcome/mode-welcome.component';
+import { buildChildAuthStateSnapshot } from '../tools/child-tool-host/child-auth-state';
 
 const RIGHT_SIDER_WIDTH_STORAGE_KEY = 'aily-main-window.right-sider-width';
 const RIGHT_SIDER_DEFAULT_WIDTH = 450;
@@ -67,7 +62,6 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     NzLayoutModule,
     NzResizableModule,
     NzTabsModule,
-    AilyChatComponent,
     TerminalComponent,
     LogComponent,
     SerialMonitorComponent,
@@ -108,7 +102,7 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   isChildTool(toolId: string): boolean {
-    return isChildTool(toolId);
+    return toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID || isChildTool(toolId);
   }
 
   options = {
@@ -128,10 +122,11 @@ export class MainWindowComponent implements OnDestroy {
   private developmentModePreferencePromptOpen = false;
   private loginDialogSubscription: Subscription | null = null;
   private authSessionInvalidationSubscription: Subscription | null = null;
+  private authStateBroadcastSubscription: Subscription | null = null;
   private authSessionInvalidationPromise: Promise<void> | null = null;
-  private unregisterApplicationUpdatePreparation: (() => void) | null = null;
   private cancelAilyChatPrewarm: (() => void) | null = null;
   private ailyChatPrewarmAuthSubscription: Subscription | null = null;
+  private unregisterAilyChatHostAuthRuntimeBridge: (() => void) | null = null;
 
   loginDialogState: LoginDialogRequestState | null = null;
 
@@ -156,23 +151,22 @@ export class MainWindowComponent implements OnDestroy {
     private subappManager: SubappManagerService,
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
-    private readonly chatRuntimeHostResourceOperationHandler: ChatRuntimeHostResourceOperationHandlerService,
-    private readonly ailyChatChildProtocol: AilyChatChildProtocolService
   ) { }
 
   async ngOnInit(): Promise<void> {
-    this.unregisterApplicationUpdatePreparation = this.updateService.registerInstallPreparationHook(
-      'host-aily-chat-session',
-      () => this.ailyChatChildProtocol.prepareForHostInterruption(),
+    this.unregisterAilyChatHostAuthRuntimeBridge = registerAilyChatHostAuthRuntimeBridge(
+      this.authService,
+      window['ipcRenderer'],
     );
     this.loginDialogSubscription = this.authService.loginDialogRequest$.subscribe((state) => {
       this.loginDialogState = state;
     });
     this.authSessionInvalidationSubscription = this.authService.authSessionInvalidationRequest$
       .subscribe((request) => this.handleAuthSessionInvalidation(request));
-    void this.chatRuntimeHostResourceOperationHandler.start().catch(error => {
-        console.error('[AilyChat][RuntimeHostResourceOperationHandler] Failed to start:', error);
-    });
+    this.authStateBroadcastSubscription = merge(
+      this.authService.isLoggedIn$,
+      this.authService.authChanged$,
+    ).subscribe(() => this.broadcastHostAuthState());
     this.watchConfigNotices();
     await Promise.all([
       this.toolI18n.loadChildTools(),
@@ -242,6 +236,19 @@ export class MainWindowComponent implements OnDestroy {
     } catch (error) {
       console.warn('[Auth] Background authentication initialization failed:', error);
     }
+  }
+
+  private broadcastHostAuthState(): void {
+    if (!this.electronService.isElectron) return;
+
+    window['ipcRenderer']?.send?.(
+      'host-auth-state-changed',
+      buildChildAuthStateSnapshot(
+        this.authService.isLoggedIn,
+        this.authService.currentUser,
+        this.authService.getAuthSnapshot(),
+      ),
+    );
   }
 
   private async ensureDefaultAilyChatSubapp(): Promise<void> {
@@ -410,16 +417,18 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.unregisterAilyChatHostAuthRuntimeBridge?.();
+    this.unregisterAilyChatHostAuthRuntimeBridge = null;
     this.cancelAilyChatPrewarm?.();
     this.cancelAilyChatPrewarm = null;
     this.ailyChatPrewarmAuthSubscription?.unsubscribe();
     this.ailyChatPrewarmAuthSubscription = null;
-    this.unregisterApplicationUpdatePreparation?.();
-    this.unregisterApplicationUpdatePreparation = null;
     this.loginDialogSubscription?.unsubscribe();
     this.loginDialogSubscription = null;
     this.authSessionInvalidationSubscription?.unsubscribe();
     this.authSessionInvalidationSubscription = null;
+    this.authStateBroadcastSubscription?.unsubscribe();
+    this.authStateBroadcastSubscription = null;
     this.configNoticeSubscription?.unsubscribe();
     this.configNoticeSubscription = null;
     this.projectContextSubscription?.unsubscribe();

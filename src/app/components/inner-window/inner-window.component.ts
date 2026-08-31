@@ -4,7 +4,7 @@ import {
   AngularDraggableModule,
   AngularResizableDirective,
 } from 'angular2-draggable';
-import { IWindowOpts, IwindowService } from '../../services/iwindow.service';
+import { IWindowOpts, IwindowService } from '@core/app-shell/public-api';
 @Component({
   selector: 'app-inner-window',
   imports: [AngularDraggableModule, CommonModule],

@@ -22,20 +22,16 @@ import {
 import {
   ChildAppHostRegistryService,
   type ChildAppWindowPlacement,
-} from '../../services/child-app-host-registry.service';
-import {
   ChildToolProcessService,
   type ChildToolHostInfo,
   type ChildToolRuntimeSnapshot,
-} from '../../services/child-tool-process.service';
-import { ElectronService } from '../../services/electron.service';
-import { MainUiAutomationService } from '../../services/main-ui-automation.service';
-import { ProjectService } from '../../services/project.service';
-import { ThemeService } from '../../services/theme.service';
-import {
   SubappActivityService,
   type SubappActivitySummaryState,
-} from '../../services/subapp-activity.service';
+} from '@integration/subapps/public-api';
+import { ElectronService } from '@core/platform/public-api';
+import { MainUiAutomationService } from '@integration/automation/public-api';
+import { ProjectService } from '@domain/project/public-api';
+import { ThemeService } from '@core/preferences/public-api';
 import { resolveRuntimeSurfaceEntry } from './child-tool-surface-url';
 
 type CompactHostStatus = 'idle' | 'starting' | 'connecting' | 'ready' | 'stopped' | 'error';

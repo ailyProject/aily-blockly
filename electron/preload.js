@@ -28,6 +28,20 @@ function updateAilyBuilderEnv(result) {
   return result;
 }
 
+async function invokeAilyConnector(channel, payload) {
+  const envelope = await ipcRenderer.invoke(channel, payload);
+  if (!envelope || envelope.ailyConnectorIpc !== 1) {
+    throw new Error('Invalid aily-connector IPC response');
+  }
+  if (!envelope.ok) {
+    const error = new Error(envelope.error?.message || 'Aily Connector request failed');
+    error.code = envelope.error?.code || 'CONNECTOR_ERROR';
+    if (envelope.error?.details) error.details = envelope.error.details;
+    throw error;
+  }
+  return envelope.result;
+}
+
 const pathApi = {
   getUserHome: () => require("os").homedir(),
   getAilyChildPath: () => process.env.AILY_CHILD_PATH,
@@ -327,31 +341,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
       };
     },
   },
-  chatRuntimeHost: {
-    registerRuntimeOwner: (runtimeOwnerId) => ipcRenderer.invoke("aily-chat-runtime-owner-register", { runtimeOwnerId }),
-    unregisterRuntimeOwner: (runtimeOwnerId) => ipcRenderer.invoke("aily-chat-runtime-owner-unregister", { runtimeOwnerId }),
-    registerResourceOperationHandler: (handlerId) => ipcRenderer.invoke("aily-chat-runtime-resource-handler-register", { handlerId }),
-    unregisterResourceOperationHandler: (handlerId) => ipcRenderer.invoke("aily-chat-runtime-resource-handler-unregister", { handlerId }),
-    call: (method, args) => ipcRenderer.invoke("aily-chat-runtime-host-command", { method, args }),
-    onRuntimeOwnerCommand: (callback) => {
-      const listener = (_event, payload) => callback(payload);
-      ipcRenderer.on("aily-chat-runtime-owner-command", listener);
-      return () => ipcRenderer.removeListener("aily-chat-runtime-owner-command", listener);
-    },
-    onResourceOperationCommand: (callback) => {
-      const listener = (_event, payload) => callback(payload);
-      ipcRenderer.on("aily-chat-runtime-resource-handler-command", listener);
-      return () => ipcRenderer.removeListener("aily-chat-runtime-resource-handler-command", listener);
-    },
-    sendRuntimeOwnerResponse: (payload) => ipcRenderer.send("aily-chat-runtime-owner-response", payload),
-    sendResourceOperationResponse: (payload) => ipcRenderer.send("aily-chat-runtime-resource-handler-response", payload),
-    emitRuntimeOwnerEvent: (payload) => ipcRenderer.send("aily-chat-runtime-owner-event", payload),
-    onEvent: (callback) => {
-      const listener = (_event, payload) => callback(payload);
-      ipcRenderer.on("aily-chat-runtime-host-event", listener);
-      return () => ipcRenderer.removeListener("aily-chat-runtime-host-event", listener);
-    },
-  },
   webviewBridge: {
     fetchPage: (data) => ipcRenderer.invoke("webview-bridge-fetch", data),
     searchWeb: (data) => ipcRenderer.invoke("webview-bridge-search", data),
@@ -418,9 +407,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
       }),
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
     focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
-  },
-  coderEmbed: {
-    getBaseUrl: () => ipcRenderer.invoke("coder-embed-get-base-url"),
   },
   subWindow: (() => {
     // 立即监听 window-init-data，缓存数据，避免 Angular 组件注册监听前数据丢失
@@ -517,6 +503,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),
     waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
+  },
+  connector: {
+    status: () => ipcRenderer.invoke("aily-connector-status"),
+    checkForUpdate: () => ipcRenderer.invoke("aily-connector-check-update"),
+    update: () => ipcRenderer.invoke("aily-connector-update"),
+    waitForReady: () => ipcRenderer.invoke("aily-connector-wait-ready"),
+    connect: (options) => invokeAilyConnector("aily-connector-connect", options),
+    request: (options) => invokeAilyConnector("aily-connector-request", options),
+    disconnect: (options) => invokeAilyConnector("aily-connector-disconnect", options),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("aily-connector-event", listener);
+      return () => ipcRenderer.removeListener("aily-connector-event", listener);
+    },
   },
   linter: {
     status: () => ipcRenderer.invoke("aily-linter-status"),

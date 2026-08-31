@@ -5,7 +5,7 @@ import { createChart, IChartApi, ISeriesApi, LineSeries, ColorType, Time } from 
 import { TranslateModule } from '@ngx-translate/core';
 import { Buffer } from 'buffer';
 import { SerialMonitorService, dataItem } from '../../serial-monitor.service';
-import { ElectronService } from '../../../../services/electron.service';
+import { ElectronService } from '@core/platform/public-api';
 
 // 预编译正则，避免在热路径中反复创建
 const LINE_SPLIT_RE = /\r?\n/;

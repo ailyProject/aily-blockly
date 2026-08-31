@@ -10,13 +10,11 @@ const officialRegionKey = buildFlavor === 'global' ? 'eu' : 'cn';
 const workspaceRoot = path.resolve(__dirname, '..');
 const appConfig = require(path.join(workspaceRoot, 'electron', 'config', 'config.json'));
 const updateBaseUrl = appConfig?.regions?.[officialRegionKey]?.updater;
-const workerRuntimeBuildScript = path.join(workspaceRoot, 'scripts', 'build-electron-worker.js');
 const simulatorRuntimePrepareScript = path.join(
   workspaceRoot,
   'scripts',
   'prepare-simulator-runtime.js',
 );
-const packagedWorkerRuntimeModule = 'electron/chat-runtime-lex-execution-runtime.bundle.mjs';
 
 if (!updateBaseUrl) {
   console.error(`Missing updater URL for flavor "${buildFlavor}" (region: ${officialRegionKey})`);
@@ -26,8 +24,6 @@ if (!updateBaseUrl) {
 const builderArgs = [
   'build',
   `-c.extraMetadata.ailyBuildFlavor=${buildFlavor}`,
-  '-c.extraMetadata.ailyChatExecutionHost=worker',
-  `-c.extraMetadata.ailyChatExecutionHostRuntimeModule=${packagedWorkerRuntimeModule}`,
   '-c.publish.provider=generic',
   `-c.publish.url=${updateBaseUrl}`,
   `-c.win.artifactName=${artifactPrefix}-\${version}.\${ext}`,
@@ -61,7 +57,6 @@ function run(commandArgs, extraEnv = {}) {
   }
 }
 
-run([workerRuntimeBuildScript]);
 run([simulatorRuntimePrepareScript]);
 run([ngCliPath, 'build', '--base-href', './']);
 run([electronBuilderCliPath, ...builderArgs]);

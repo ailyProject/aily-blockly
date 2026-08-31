@@ -1,0 +1,1269 @@
+[
+  {
+    "path": "src/app/services/core/app-shell/action.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 392,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/app-shell/iwindow.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 51,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/app-shell/notice.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 41,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/shared/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/app-shell/onboarding.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 130,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/app-shell/ui.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 786,
+    "imports": [
+      "src/app/components/feedback-dialog/feedback-dialog.component.ts",
+      "src/app/components/project-setting-dialog/project-setting-dialog.component.ts",
+      "src/app/configs/tool.config.ts",
+      "src/app/main-window/components/board-selector-dialog/board-selector-dialog.component.ts",
+      "src/app/services/core/auth/public-api.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/integrations/automation/public-api.ts",
+      "src/app/services/integrations/subapps/public-api.ts",
+      "src/app/tools/terminal/terminal.service.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/app-shell/update.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 442,
+    "imports": [
+      "src/app/main-window/components/update-dialog/update-dialog.component.ts",
+      "src/app/services/core/app-shell/ui.service.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/integrations/subapps/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/app-shell/workflow.service.ts",
+    "domain": "core/app-shell",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 116,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/auth.service.ts",
+    "domain": "core/auth",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 2326,
+    "imports": [
+      "src/app/configs/api.config.ts",
+      "src/app/services/core/auth/models/auth-snapshot.ts",
+      "src/app/services/core/auth/models/shared-auth-record.ts",
+      "src/app/services/core/auth/policies/detached-aily-chat-auth.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/utils/api-error.utils.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/auth/bridges/aily-chat-host-auth-runtime-bridge.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 196,
+    "imports": [
+      "src/app/configs/api.config.ts",
+      "src/app/services/core/auth/auth.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/models/auth-quota-info.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 71,
+    "imports": [
+      "src/app/services/core/auth/models/auth-snapshot.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/models/auth-snapshot.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 68,
+    "imports": [],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/core/auth/models/shared-auth-record.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 23,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/auth/operations/auth-required-tool-close.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 40,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/operations/auth-session-invalidation.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 68,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/operations/service-region-switch.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 37,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/policies/auth-required-tool.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 34,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/auth/policies/detached-aily-chat-auth.ts",
+    "domain": "core/auth",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 26,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/platform/appdata-resource-lock.service.ts",
+    "domain": "core/platform",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 124,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/platform/cmd.service.ts",
+    "domain": "core/platform",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 349,
+    "imports": [
+      "src/app/services/core/platform/log.service.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/platform/cross-platform-cmd.service.ts",
+    "domain": "core/platform",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 261,
+    "imports": [
+      "src/app/services/core/platform/cmd.service.ts",
+      "src/app/services/core/platform/platform.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/platform/electron.service.ts",
+    "domain": "core/platform",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 573,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/platform/log.service.ts",
+    "domain": "core/platform",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 63,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/platform/observability/performance-tracer.ts",
+    "domain": "core/platform",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 1236,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/platform/platform.service.ts",
+    "domain": "core/platform",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 139,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/core/preferences/config.service.ts",
+    "domain": "core/preferences",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 1877,
+    "imports": [
+      "src/app/configs/api.config.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/utils/coder-board.mapper.ts",
+      "src/app/utils/fuzzy-search.utils.ts",
+      "src/app/utils/language-code.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/core/preferences/models/development-mode-context.ts",
+    "domain": "core/preferences",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 35,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/preferences/settings.service.ts",
+    "domain": "core/preferences",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 314,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/preferences/theme.service.ts",
+    "domain": "core/preferences",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 127,
+    "imports": [
+      "src/app/services/core/preferences/config.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/preferences/tool-i18n.service.ts",
+    "domain": "core/preferences",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 135,
+    "imports": [
+      "src/app/configs/tool.config.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/core/preferences/translation.service.ts",
+    "domain": "core/preferences",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 108,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/config.service.ts",
+      "src/app/utils/language-code.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/build/builder.service.ts",
+    "domain": "domains/build",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 303,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/build/compile.service.ts",
+      "src/app/services/domains/build/ports/build-action.port.ts",
+      "src/app/services/domains/project/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/build/code-linter.service.ts",
+    "domain": "domains/build",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 740,
+    "imports": [],
+    "importedByCount": 0
+  },
+  {
+    "path": "src/app/services/domains/build/compile-validation.service.ts",
+    "domain": "domains/build",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 209,
+    "imports": [
+      "src/app/configs/api.config.ts",
+      "src/app/services/core/auth/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/build/compile.service.ts",
+    "domain": "domains/build",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 569,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/build/compile-validation.service.ts",
+      "src/app/services/domains/build/ports/build-application.port.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/utils/aily-builder-progress.utils.ts",
+      "src/app/utils/project-log.utils.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/build/ports/build-action.port.ts",
+    "domain": "domains/build",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 28,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/build/ports/build-application.port.ts",
+    "domain": "domains/build",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 24,
+    "imports": [
+      "src/app/services/shared/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/build/probe-rs.service.ts",
+    "domain": "domains/build",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 70,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/dependencies/blockly-library-package.service.ts",
+    "domain": "domains/dependencies",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 1056,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/dependencies/local-library-sync.service.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/domains/dependencies/library-submission.service.ts",
+    "domain": "domains/dependencies",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 298,
+    "imports": [
+      "src/app/configs/api.config.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/dependencies/blockly-library-package.service.ts",
+      "src/app/utils/api-error.utils.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/dependencies/local-library-sync.service.ts",
+    "domain": "domains/dependencies",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 231,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/dependencies/npm.service.ts",
+    "domain": "domains/dependencies",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 1558,
+    "imports": [
+      "src/app/configs/api.config.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/dependencies/blockly-library-package.service.ts",
+      "src/app/services/domains/dependencies/ports/dependency-application.port.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/utils/global-dependency-cleanup.utils.ts",
+      "src/app/utils/platform-packages.utils.ts",
+      "src/app/utils/platform-runtime.utils.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/dependencies/ports/dependency-application.port.ts",
+    "domain": "domains/dependencies",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 15,
+    "imports": [
+      "src/app/services/shared/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/device/at-command.service.ts",
+    "domain": "domains/device",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 226,
+    "imports": [],
+    "importedByCount": 0
+  },
+  {
+    "path": "src/app/services/domains/device/converter.service.ts",
+    "domain": "domains/device",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 194,
+    "imports": [],
+    "importedByCount": 0
+  },
+  {
+    "path": "src/app/services/domains/device/esploader.service.ts",
+    "domain": "domains/device",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 368,
+    "imports": [],
+    "importedByCount": 0
+  },
+  {
+    "path": "src/app/services/domains/device/policies/debugger-upload-policy.ts",
+    "domain": "domains/device",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 13,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/device/policies/upload-dispatch-policy.ts",
+    "domain": "domains/device",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 12,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/device/policies/upload-recovery-policy.ts",
+    "domain": "domains/device",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 301,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/device/ports/device-application.port.ts",
+    "domain": "domains/device",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 28,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/device/serial.service.ts",
+    "domain": "domains/device",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 147,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/device/serial/serial-port-selection.ts",
+    "domain": "domains/device",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 277,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/device/uploader-ble.service.ts",
+    "domain": "domains/device",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 1269,
+    "imports": [
+      "src/app/configs/menu.config.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/device/uploader.service.ts",
+    "domain": "domains/device",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 234,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/device/policies/upload-dispatch-policy.ts",
+      "src/app/services/domains/device/policies/upload-recovery-policy.ts",
+      "src/app/services/domains/device/ports/device-application.port.ts",
+      "src/app/services/domains/device/serial.service.ts",
+      "src/app/services/domains/project/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/project/coder/coder-board-resolution.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 35,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/project/coder/coder-project-create-operation.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 153,
+    "imports": [
+      "src/app/services/domains/project/coder/coder-board-resolution.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/project/coder/coder-project-template.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 103,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/project/ports/project-application.port.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 42,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/blockly-project-data-adapter.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 476,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data-runtime.ts",
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-abs.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 47,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-codec.registry.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 234,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 4
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-container.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 98,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-file-system.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 123,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-generic-values.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 320,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data-codec.registry.ts",
+      "src/app/services/domains/project/project-data/project-data-store.ts",
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-legacy-import.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 300,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data-generic-values.ts",
+      "src/app/services/domains/project/project-data/project-data-policy.ts",
+      "src/app/services/domains/project/project-data/project-data-store.ts",
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-policy.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 112,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-runtime.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 400,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data-codec.registry.ts",
+      "src/app/services/domains/project/project-data/project-data-container.ts",
+      "src/app/services/domains/project/project-data/project-data-file-system.ts",
+      "src/app/services/domains/project/project-data/project-data-store.ts",
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data-store.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 735,
+    "imports": [
+      "src/app/services/domains/project/project-data/project-data-codec.registry.ts",
+      "src/app/services/domains/project/project-data/project-data-container.ts",
+      "src/app/services/domains/project/project-data/project-data-file-system.ts",
+      "src/app/services/domains/project/project-data/project-data.types.ts"
+    ],
+    "importedByCount": 5
+  },
+  {
+    "path": "src/app/services/domains/project/project-data/project-data.types.ts",
+    "domain": "domains/project",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 227,
+    "imports": [],
+    "importedByCount": 11
+  },
+  {
+    "path": "src/app/services/domains/project/project-debug-configuration.service.ts",
+    "domain": "domains/project",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 740,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/project/project.service.ts",
+    "domain": "domains/project",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 2571,
+    "imports": [
+      "src/app/configs/menu.config.ts",
+      "src/app/func/func.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/project/coder/coder-project-template.ts",
+      "src/app/services/domains/project/ports/project-application.port.ts",
+      "src/app/services/domains/project/project-data/project-data-generic-values.ts",
+      "src/app/services/domains/project/project-data/project-data-legacy-import.ts",
+      "src/app/services/domains/project/project-data/project-data-policy.ts",
+      "src/app/services/domains/project/project-data/project-data-runtime.ts",
+      "src/app/services/domains/project/project-data/project-data-store.ts",
+      "src/app/types/project-new.ts",
+      "src/app/utils/platform-runtime.utils.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-aws/aws-converter.ts",
+    "domain": "domains/schematic",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 278,
+    "imports": [
+      "src/app/services/domains/schematic/connection-aws/aws-parser.ts",
+      "src/app/services/domains/schematic/connection-aws/aws-types.ts",
+      "src/app/services/domains/schematic/connection-aws/pin-resolver.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-aws/aws-generator.ts",
+    "domain": "domains/schematic",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 252,
+    "imports": [
+      "src/app/services/domains/schematic/connection-aws/aws-types.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-aws/aws-parser.ts",
+    "domain": "domains/schematic",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 257,
+    "imports": [
+      "src/app/services/domains/schematic/connection-aws/aws-types.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-aws/aws-types.ts",
+    "domain": "domains/schematic",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 431,
+    "imports": [],
+    "importedByCount": 5
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-aws/index.ts",
+    "domain": "domains/schematic",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 20,
+    "imports": [
+      "src/app/services/domains/schematic/connection-aws/aws-converter.ts",
+      "src/app/services/domains/schematic/connection-aws/aws-generator.ts",
+      "src/app/services/domains/schematic/connection-aws/aws-parser.ts",
+      "src/app/services/domains/schematic/connection-aws/aws-types.ts",
+      "src/app/services/domains/schematic/connection-aws/pin-resolver.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-aws/pin-resolver.ts",
+    "domain": "domains/schematic",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 292,
+    "imports": [
+      "src/app/services/domains/schematic/connection-aws/aws-types.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/domains/schematic/connection-graph.service.ts",
+    "domain": "domains/schematic",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 2263,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/shared/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/automation/ai-coder-diff-bridge.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 256,
+    "imports": [
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/integrations/automation/ai-coder-diff-preview-store.service.ts",
+      "src/app/services/integrations/automation/coder-diff/ai-coder-diff-channels.ts",
+      "src/app/services/integrations/automation/coder-diff/ai-edit-summary.types.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/automation/ai-coder-diff-preview-store.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 162,
+    "imports": [
+      "src/app/services/integrations/automation/coder-diff/ai-coder-diff-channels.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/ai-operation-registry.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 67,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/automation/blockly-live-operation-bridge.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 1053,
+    "imports": [
+      "src/app/integrations/blockly/abs/abs-auto-sync.service.ts",
+      "src/app/integrations/blockly/blockly-host-operations.ts",
+      "src/app/integrations/blockly/board-library-search.ts",
+      "src/app/integrations/blockly/editor-operation-event.ts",
+      "src/app/integrations/blockly/host-tool-result.ts",
+      "src/app/integrations/blockly/project-build-operation.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/build/public-api.ts",
+      "src/app/services/domains/device/public-api.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/integrations/automation/main-ui-automation.service.ts",
+      "src/app/services/integrations/automation/ports/blockly-live-editor.port.ts",
+      "src/app/services/integrations/subapps/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/automation/coder-diff/ai-coder-diff-channels.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 30,
+    "imports": [],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/integrations/automation/coder-diff/ai-edit-summary.types.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 17,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/main-ui-automation.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 579,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/integrations/automation/ports/automation-ui.port.ts",
+      "src/app/services/integrations/automation/ui-automation-registry.service.ts",
+      "src/app/services/integrations/subapps/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/mcp-bridge.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 112,
+    "imports": [
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/integrations/automation/schematic-mcp-runtime.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/automation/policies/main-menu-automation-policy.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 26,
+    "imports": [
+      "src/app/services/integrations/automation/ui-automation-registry.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/automation/ports/automation-ui.port.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 29,
+    "imports": [],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/integrations/automation/ports/blockly-generated-code.port.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 10,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/ports/blockly-live-editor.port.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 28,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/ports/schematic-presentation.port.ts",
+    "domain": "integrations/automation",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 16,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/schematic-mcp-runtime.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 409,
+    "imports": [
+      "src/app/integrations/schematic/connection-graph-operations.ts",
+      "src/app/services/core/auth/public-api.ts",
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/domains/schematic/public-api.ts",
+      "src/app/services/integrations/automation/ports/automation-ui.port.ts",
+      "src/app/services/integrations/automation/ports/blockly-generated-code.port.ts",
+      "src/app/services/integrations/automation/ports/schematic-presentation.port.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/automation/ui-automation-registry.service.ts",
+    "domain": "integrations/automation",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 97,
+    "imports": [],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/integrations/simulator/background-agent.service.ts",
+    "domain": "integrations/simulator",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 185,
+    "imports": [
+      "src/app/services/core/platform/public-api.ts",
+      "src/app/services/domains/schematic/public-api.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/simulator/simulator-iframe-bridge.service.ts",
+    "domain": "integrations/simulator",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 776,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/adapters/subapp-resource-lifecycle-adapter.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 75,
+    "imports": [
+      "src/app/services/domains/device/policies/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/bootstrap/default-aily-chat-bootstrap.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 48,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/child-app-host-registry.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 249,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/child-app-safety.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 182,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/integrations/subapps/child-app-host-registry.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/child-tool-process.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 1256,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/core/preferences/public-api.ts",
+      "src/app/services/domains/project/public-api.ts",
+      "src/app/services/integrations/subapps/models/child-tool-runtime-entry.ts",
+      "src/app/utils/project-log.utils.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/host-provider/subapp-host-provider-child-tool-transport.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 43,
+    "imports": [
+      "src/app/services/integrations/subapps/host-provider/subapp-host-provider-dispatcher.ts"
+    ],
+    "importedByCount": 0
+  },
+  {
+    "path": "src/app/services/integrations/subapps/host-provider/subapp-host-provider-dispatcher.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 1038,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/models/child-tool-runtime-entry.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 37,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/models/subapp-agent-presentation.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 97,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/integrations/subapps/subapp-activity.service.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/models/subapp-runtime-presentation-lease.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 24,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/operations/child-tool-close-lifecycle.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 16,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/policies/aily-chat-tool-routing.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 31,
+    "imports": [],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/ports/subapp-automation.port.ts",
+    "domain": "integrations/subapps",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 12,
+    "imports": [],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/required-subapp.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 226,
+    "imports": [
+      "src/app/services/integrations/subapps/subapp-manager.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/subapp-activity.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 386,
+    "imports": [],
+    "importedByCount": 3
+  },
+  {
+    "path": "src/app/services/integrations/subapps/subapp-agent-bridge.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 783,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/integrations/subapps/child-tool-process.service.ts",
+      "src/app/services/integrations/subapps/models/subapp-agent-presentation.ts",
+      "src/app/services/integrations/subapps/models/subapp-runtime-presentation-lease.ts",
+      "src/app/services/integrations/subapps/ports/subapp-automation.port.ts",
+      "src/app/services/integrations/subapps/subapp-activity.service.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/integrations/subapps/subapp-manager.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 310,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/core/preferences/public-api.ts"
+    ],
+    "importedByCount": 2
+  },
+  {
+    "path": "src/app/services/integrations/subapps/subapp-resource-lifecycle.service.ts",
+    "domain": "integrations/subapps",
+    "kind": "injectable",
+    "providedInRoot": true,
+    "lines": 196,
+    "imports": [
+      "src/app/configs/tool.config.ts",
+      "src/app/services/integrations/subapps/adapters/subapp-resource-lifecycle-adapter.ts"
+    ],
+    "importedByCount": 1
+  },
+  {
+    "path": "src/app/services/shared/models/notice.ts",
+    "domain": "shared",
+    "kind": "module",
+    "providedInRoot": false,
+    "lines": 25,
+    "imports": [],
+    "importedByCount": 1
+  }
+]

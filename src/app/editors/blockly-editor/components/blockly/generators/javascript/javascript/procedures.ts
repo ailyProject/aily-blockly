@@ -12,8 +12,7 @@
 
 import type {IfReturnBlock} from '../../blocks/procedures.js';
 import type {Block} from '../../core/block.js';
-import type {JavascriptGenerator} from './javascript_generator.js';
-import {Order} from './javascript_generator.js';
+import { type JavascriptGenerator, Order } from './javascript_generator.js';
 
 export function procedures_defreturn(
   block: Block,

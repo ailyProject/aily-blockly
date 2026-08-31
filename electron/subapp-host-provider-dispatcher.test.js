@@ -551,14 +551,14 @@ async function flushAsync() {
 
 async function loadDispatcherModule() {
   return await loadTypeScriptModule(
-    '../src/app/services/subapp-host-provider-dispatcher.ts',
+    '../src/app/services/integrations/subapps/host-provider/subapp-host-provider-dispatcher.ts',
     'aily-subapp-provider-dispatcher',
   );
 }
 
 async function loadChildToolTransportModule() {
   return await loadTypeScriptModule(
-    '../src/app/services/subapp-host-provider-child-tool-transport.ts',
+    '../src/app/services/integrations/subapps/host-provider/subapp-host-provider-child-tool-transport.ts',
     'aily-subapp-provider-child-tool-transport',
   );
 }

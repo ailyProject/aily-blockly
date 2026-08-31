@@ -96,7 +96,6 @@ npm run test:e2e -- smoke.spec.ts <affected.spec.ts>
 | 指南主页、入口菜单、版本显示 | `guide.spec.ts` |
 | 新建项目向导、开发板选择 | `project-new.spec.ts` |
 | 串口监视器、终端、底部面板布局 | `tools.spec.ts` |
-| AI 聊天离线 UI | `aily-chat.spec.ts` |
 
 受影响 spec 通过后，合并前至少运行一次默认集合：
 

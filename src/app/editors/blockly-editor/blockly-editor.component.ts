@@ -1,15 +1,14 @@
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
-import { UiService } from '../../services/ui.service';
+import { UiService, OnboardingService, NoticeService } from '@core/app-shell/public-api';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { ActivatedRoute } from '@angular/router';
-import { ElectronService } from '../../services/electron.service';
+import { ElectronService, CmdService, CrossPlatformCmdService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
-import { ConfigService } from '../../services/config.service';
-import { NpmService } from '../../services/npm.service';
-import { CmdService } from '../../services/cmd.service';
+import { ConfigService } from '@core/preferences/public-api';
+import { NpmService, LocalLibrarySyncService, BlocklyLibraryPackageService } from '@domain/dependencies/public-api';
 import {
   AILY_BLOCKLY_USED_LIBRARIES_FIELD,
   BlocklyProjectDocument,
@@ -22,23 +21,19 @@ import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
-import { ProjectService } from '../../services/project.service';
+import { ProjectService, projectDataRuntime, ProjectDataError } from '@domain/project/public-api';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
-import { OnboardingService } from '../../services/onboarding.service';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
-import { NoticeService } from '../../services/notice.service';
-import { LocalLibrarySyncService } from '../../services/local-library-sync.service';
 import { CodeViewerIpcService } from './services/code-viewer-ipc.service';
-import { CrossPlatformCmdService } from '../../services/cross-platform-cmd.service';
 import { MissingLibInfo, PasteInstallDialogComponent } from './components/paste-install-dialog/paste-install-dialog.component';
 import { Subscription } from 'rxjs';
-import { BlocklyLibraryPackageService } from '../../services/blockly-library-package.service';
-import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
 import { projectResourceGc } from './services/project-resource-gc.service';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
-import { ProjectDataError } from '../../services/project-data/project-data.types';
-import { AuthService } from '../../services/auth.service';
+import { AuthService } from '@core/auth/public-api';
 import { boardRequiresCloudAuth } from './board-auth-gate';
+import {
+  normalizeProjectMode,
+} from '@shared/public-api';
 
 @Component({
   selector: 'app-blockly-editor',
@@ -234,8 +229,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     let packageJson = JSON.parse(
       this.electronService.readFile(`${projectPath}/package.json`),
     );
-    // 加载项目开发框架
-    this.devmode = packageJson.devmode || 'arduino'; // 可选项: 'arduino', 'micropython'
+    // package.json.devmode 是项目模式的唯一来源；旧项目缺失时保持 Arduino 兼容。
+    this.devmode = normalizeProjectMode(packageJson) || 'arduino';
+    // Python 项目在库管理器使用前按需加载 Linux 目录；Arduino 继续使用启动时的默认目录。
+    await this.configService.ensureLibraryListForProject(packageJson);
 
     this.electronService.setTitle(`aily blockly - ${packageJson.nickname || packageJson.name}`);
     // 添加到最近打开的项目
@@ -266,7 +263,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         });
       }, 0);
       try {
-        await this.cmdService.runAsyncChecked(`npm install`, projectPath);
+        // 项目依赖安装随 devmode 选择 Linux 仓库；Arduino 项目不附加专用 registry。
+        await this.cmdService.runAsyncChecked(
+          this.configService.withProjectNpmRegistry('npm install', packageJson),
+          projectPath,
+        );
       } catch (error) {
         dependencyInstallError = (error as Error)?.message || String(error);
         console.warn('[ProjectLoad] npm install failed:', error);
@@ -415,10 +416,14 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this.startPackageJsonDependencyWatch(projectPath);
     this.localLibrarySyncService.start(projectPath);
-    // 项目加载完成后自动生成 sketch.ino，供 AI 工具和代码预览使用（无需触发完整编译）
+    // 当前生成器与项目 devmode 一致：Python 写 main.py，其他模式保留 Arduino sketch.ino。
     setTimeout(() => {
-      this._builderService.generateAndWriteSketchIno().catch(e => {
-        console.warn('[loadProject] 自动生成 sketch.ino 失败:', e);
+      if (this.projectService.currentProjectPath !== projectPath) return;
+      const generateSource = this.devmode === 'python'
+        ? this._builderService.generateAndWritePythonEntry()
+        : this._builderService.generateAndWriteSketchIno();
+      generateSource.catch(e => {
+        console.warn('[loadProject] Failed to generate the project source artifact:', e);
       });
     }, 600); // 等待 Blockly 渲染完成（debounce 500ms + 余量）
 
@@ -738,6 +743,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       return;
     }
 
+    // 监视 package.json 时按与首次加载相同的规则比较模式，缺失值仍视为 Arduino。
+    const previousProjectMode = normalizeProjectMode(
+      this.projectService.currentPackageData,
+    ) || 'arduino';
     let nextPackageJson: any;
     try {
       const packageJsonPath = this.electronService.pathJoin(projectPath, 'package.json');
@@ -753,6 +762,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       return;
     }
 
+    const nextProjectMode = normalizeProjectMode(nextPackageJson) || 'arduino';
+    const projectModeChanged = previousProjectMode !== nextProjectMode;
     this.applyProjectPackageJson(nextPackageJson);
 
     const nextBoardDependencies = this.getDeclaredBoardDependencies(nextPackageJson);
@@ -772,6 +783,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     if (addedBoardNames.length > 0) {
       this.handleAddedBoardDependencies(projectPath, addedBoardNames, previousBoardDependencies);
+      return;
+    }
+
+    // 生成器按单一模式隔离创建；devmode 改变时重载项目，使生成、构建和上传同时切换。
+    if (projectModeChanged) {
+      await this.reloadProjectAfterDevelopmentModeChange(projectPath, nextProjectMode);
       return;
     }
 
@@ -983,6 +1000,31 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       this.pendingBoardReloadTimer = null;
       void this.reloadProjectAfterBoardDependencyChange(projectPath);
     }, delayMs);
+  }
+
+  private async reloadProjectAfterDevelopmentModeChange(
+    projectPath: string,
+    nextProjectMode: string,
+  ): Promise<void> {
+    if (this.watchedPackageJsonProjectPath !== projectPath) {
+      return;
+    }
+
+    this.stopPackageJsonDependencyWatch();
+    try {
+      this.copyProjectPackageJsonToTemp(projectPath);
+      const reopened = await this.projectService.projectOpen(projectPath, { reason: 'reload' });
+      if (!reopened) {
+        throw new Error('Project reload was not started');
+      }
+    } catch (error) {
+      console.error('[PackageJsonWatch] reload after devmode change failed:', error);
+      this.message.error(
+        `切换开发模式为 ${nextProjectMode} 后重新加载项目失败: `
+        + `${(error as Error)?.message || String(error)}`,
+      );
+      this.startPackageJsonDependencyWatch(projectPath);
+    }
   }
 
   /** 在新开发板包就绪后，移除旧开发板、同步 temp/package.json，并重新打开项目。 */
@@ -1348,7 +1390,14 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     if (npmLibraries.length > 0) {
       const packageSpecs = npmLibraries.map((lib) => this.getNpmInstallSpec(lib)).join(' ');
-      await this.cmdService.runAsyncChecked(`npm install ${packageSpecs}`, projectPath);
+      // 补装项目库时继续服从项目 devmode，避免 Python 库误从 Arduino 仓库查询。
+      await this.cmdService.runAsyncChecked(
+        this.configService.withProjectNpmRegistry(
+          `npm install ${packageSpecs}`,
+          this.projectService.currentPackageData,
+        ),
+        projectPath,
+      );
     }
 
     for (const lib of libraries) {
@@ -1404,12 +1453,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private isBlocklyLibraryPackageName(packageName: string): boolean {
-    return /^@aily-project\/lib-[a-zA-Z0-9._-]+$/.test(packageName);
+    return this.blocklyLibraryPackageService.isLibraryPackageName(packageName);
   }
 
   /** 判断包名是否为 Aily 开发板包。 */
   private isBoardPackageName(packageName: string): boolean {
-    return /^@aily-project\/board-[a-zA-Z0-9._-]+$/.test(packageName);
+    return /^@aily-project(?:-linux)?\/board-[a-zA-Z0-9._-]+$/.test(packageName);
   }
 
   openProjectManager(event?: MouseEvent) {

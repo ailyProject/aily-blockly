@@ -5,7 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
-import { UiService } from '../../services/ui.service';
+import { UiService } from '@core/app-shell/public-api';
 import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
@@ -13,12 +13,11 @@ import { Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { DataItemComponent } from './components/data-item/data-item.component';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
-import { PortItem, SerialService } from '../../services/serial.service';
-import { ProjectService } from '../../services/project.service';
+import { PortItem, SerialService } from '@domain/device/public-api';
+import { ProjectService } from '@domain/project/public-api';
 import { MenuComponent } from '../../components/menu/menu.component';
-import { SerialMonitorService } from './serial-monitor.service';
+import { SerialMonitorService, dataItem } from './serial-monitor.service';
 import { injectVirtualizer } from '@tanstack/angular-virtual';
-import { dataItem } from './serial-monitor.service';
 import { RIGHT_MENU } from './right-menu.config';
 import { HistoryMessageListComponent } from './components/history-message-list/history-message-list.component';
 import { QuickSendListComponent } from './components/quick-send-list/quick-send-list.component';
@@ -30,9 +29,8 @@ import { SearchBoxComponent } from './components/search-box/search-box.component
 import { SerialChartComponent } from './components/serial-chart/serial-chart.component';
 import { Buffer } from 'buffer';
 import { TranslateService, TranslateModule } from '@ngx-translate/core';
-import { ConfigService } from '../../services/config.service';
-import { ElectronService } from '../../services/electron.service';
-import { ToolI18nService } from '../../services/tool-i18n.service';
+import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
+import { ElectronService } from '@core/platform/public-api';
 
 interface UploadRestoreContext {
   port: string;

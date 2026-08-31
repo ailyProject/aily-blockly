@@ -8,7 +8,7 @@ import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { PlaygroundService } from './playground.service';
-import { ElectronService } from '../../services/electron.service';
+import { ElectronService } from '@core/platform/public-api';
 
 @Component({
   selector: 'app-playground',

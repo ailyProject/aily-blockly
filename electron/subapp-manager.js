@@ -20,15 +20,14 @@ const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 const TOOL_ID_ALIASES = Object.freeze({
-  'aily-chat': 'aily-chat-react',
   'ffs-manager': 'ffs-manager-child',
   'aily-simulator': 'simulator',
 });
 const STARTUP_TIMEOUTS = Object.freeze({
-  'aily-chat-react': 30000,
+  'aily-chat': 30000,
   'ffs-manager-child': 10000,
 });
-const DEFAULT_TOOLBAR_IDS = new Set(['aily-chat-react']);
+const DEFAULT_TOOLBAR_IDS = new Set(['aily-chat']);
 const mutationQueues = new Map();
 const SUBAPP_HEALTH_OUTPUT_LIMIT = 64 * 1024;
 const SUBAPP_HEALTH_STARTUP_TIMEOUT_MS = 30000;
@@ -160,6 +159,7 @@ function validateIndex(rawIndex) {
           rawEntry.enabled,
           rawEntry.enable,
         ),
+        extension: app.extension === true,
       },
       i18n: {
         ...i18n,
@@ -613,6 +613,9 @@ function readInstalledState(rootDir, entry) {
     const runnable = resolveRunnablePackage(packagePath, entry.id, packageJson);
     const runnablePackagePath = runnable.packagePath;
     const runnablePackageJson = runnable.packageJson;
+    const packageApp = isObject(runnablePackageJson?.ailySubapp?.app)
+      ? runnablePackageJson.ailySubapp.app
+      : {};
     const mainEntry = runnable.mainEntry;
     const uiIndex = runnable.uiIndex;
     const rejectsDistLayout = isDistRelativePath(mainEntry) || isDistRelativePath(uiIndex);
@@ -671,8 +674,9 @@ function readInstalledState(rootDir, entry) {
         app: {
           ...entry.app,
           id: toolId,
+          extension: entry.app.extension === true || packageApp.extension === true,
           ...(DEFAULT_TOOLBAR_IDS.has(toolId) ? { defaultToolbar: true } : {}),
-          ...(toolId === 'aily-chat-react' ? { more: 'v2' } : {}),
+          ...(toolId === 'aily-chat' ? { more: 'v2' } : {}),
         },
       } : null,
       ...(rejectsDistLayout
@@ -764,6 +768,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           icon: entry.app.icon,
           ai: entry.app.ai === true,
           enabled: true,
+          extension: localizedConfig?.app?.extension === true || entry.app.extension === true,
           config: localizedConfig,
           ...(installedState.installError ? { installError: installedState.installError } : {}),
         };

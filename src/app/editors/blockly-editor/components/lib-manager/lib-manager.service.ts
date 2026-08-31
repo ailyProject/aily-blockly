@@ -37,6 +37,7 @@ export interface PackageInfo {
   brand?: string;
   compatibility?: {
     core?: string[];
+    type?: string[];
     [key: string]: any;
   };
   spec?: boolean;
@@ -194,9 +195,15 @@ export class LibManagerService {
         return true;
       }
 
+      // Linux 库使用具体 board type；旧 Arduino 库没有 type 时继续兼容 compatibility.core。
+      const compatibleBoardTypes = Array.isArray(lib.compatibility?.type)
+        ? lib.compatibility.type
+        : Array.isArray(lib.compatibility?.core)
+          ? lib.compatibility.core
+          : [];
+
       return normalizedBoardType !== ''
-        && Array.isArray(lib.compatibility?.core)
-        && lib.compatibility.core.includes(normalizedBoardType);
+        && compatibleBoardTypes.includes(normalizedBoardType);
     });
   }
 

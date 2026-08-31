@@ -11,11 +11,17 @@ const DEFAULT_IGNORED_DIRS = [
     '__pycache__',
     '.aily',
     '.aily_checkpoints',
+    '.build',
+    '.log',
+    '.workspace-history',
     '.cache'
 ];
 const DEFAULT_SEARCH_TIMEOUT_MS = 15000;
 const MAX_FILE_RESULTS = 2000;
-const MAX_TEXT_RESULTS = 200;
+const MAX_TEXT_RESULTS = 1000;
+const MAX_SEARCH_GLOBS = 128;
+const MAX_SEARCH_GLOB_LENGTH = 1000;
+const MAX_SEARCH_FILE_SIZE = 20 * 1024 * 1024;
 
 /**
  * 查找 ripgrep 可执行文件路径
@@ -167,6 +173,20 @@ function createAbortError() {
     return error;
 }
 
+function normalizeGlobList(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    const normalized = [];
+    for (const item of value) {
+        if (normalized.length >= MAX_SEARCH_GLOBS) break;
+        const glob = typeof item === 'string' ? item.trim() : '';
+        if (!glob || glob.length > MAX_SEARCH_GLOB_LENGTH || glob.includes('\0')) continue;
+        if (!normalized.includes(glob)) normalized.push(glob);
+    }
+    return normalized;
+}
+
 function appendSearchScopeArgs(args, options = {}) {
     if (options.includeHidden !== false) {
         args.push('--hidden');
@@ -180,6 +200,13 @@ function appendSearchScopeArgs(args, options = {}) {
         : DEFAULT_IGNORED_DIRS;
     for (const directory of ignoredDirs) {
         args.push('--glob', `!**/${directory}/**`);
+    }
+
+    for (const includeGlob of normalizeGlobList(options.includeGlobs)) {
+        args.push('--glob', includeGlob);
+    }
+    for (const excludeGlob of normalizeGlobList(options.excludeGlobs)) {
+        args.push('--glob', excludeGlob.startsWith('!') ? excludeGlob : `!${excludeGlob}`);
     }
 }
 
@@ -245,14 +272,16 @@ function streamRipgrep(args, searchPath, options) {
             if (!line) {
                 return;
             }
-            const mapped = mapLine(line);
-            if (mapped === null || mapped === undefined) {
-                return;
-            }
-            results.push(mapped);
-            if (results.length >= maxResults) {
-                limitHit = true;
-                stopChild();
+            const mapped = mapLine(line, Math.max(0, maxResults - results.length));
+            const mappedItems = Array.isArray(mapped) ? mapped : [mapped];
+            for (const item of mappedItems) {
+                if (item === null || item === undefined) continue;
+                results.push(item);
+                if (results.length >= maxResults) {
+                    limitHit = true;
+                    stopChild();
+                    break;
+                }
             }
         };
 
@@ -358,7 +387,75 @@ async function listFiles(params, options = {}) {
     }
 }
 
-function parseRipgrepJsonMatch(line, maxLineLength) {
+function characterOffsetToPosition(content, characterOffset, baseLineNumber = 0) {
+    const prefix = content.slice(0, Math.max(0, characterOffset));
+    const lastNewline = prefix.lastIndexOf('\n');
+    let lineNumber = baseLineNumber;
+    for (let index = prefix.indexOf('\n'); index >= 0; index = prefix.indexOf('\n', index + 1)) {
+        lineNumber += 1;
+    }
+    return {
+        lineNumber,
+        column: lastNewline >= 0 ? prefix.length - lastNewline - 1 : prefix.length
+    };
+}
+
+function createSearchPreview(content, startOffset, endOffset, maxPreviewLength) {
+    const matchLength = Math.max(0, endOffset - startOffset);
+    const previewBudget = Math.max(1, Math.min(
+        MAX_SEARCH_FILE_SIZE,
+        Math.max(maxPreviewLength, matchLength)
+    ));
+    let windowStart = 0;
+    let windowEnd = content.length;
+    if (content.length > previewBudget) {
+        const leadingCharacters = Math.floor(previewBudget / 5);
+        windowStart = Math.max(0, startOffset - leadingCharacters);
+        windowEnd = Math.min(content.length, windowStart + previewBudget);
+        if (endOffset > windowEnd) {
+            windowEnd = Math.min(content.length, endOffset);
+            windowStart = Math.max(0, windowEnd - previewBudget);
+        }
+    }
+
+    // JavaScript slice 使用 UTF-16 索引，不能从代理对中间截断 emoji。
+    if (
+        windowStart > 0
+        && windowStart < content.length
+        && content.charCodeAt(windowStart) >= 0xDC00
+        && content.charCodeAt(windowStart) <= 0xDFFF
+    ) {
+        windowStart -= 1;
+    }
+    if (
+        windowEnd > 0
+        && windowEnd < content.length
+        && content.charCodeAt(windowEnd) >= 0xDC00
+        && content.charCodeAt(windowEnd) <= 0xDFFF
+    ) {
+        windowEnd += 1;
+    }
+
+    const prefix = windowStart > 0 ? '…' : '';
+    const suffix = windowEnd < content.length ? '…' : '';
+    const visibleContent = content.slice(windowStart, windowEnd);
+    const previewText = `${prefix}${visibleContent}${suffix}`;
+    const previewStartOffset = prefix.length + Math.max(0, startOffset - windowStart);
+    const previewEndOffset = prefix.length + Math.max(
+        previewStartOffset - prefix.length,
+        Math.min(visibleContent.length, endOffset - windowStart)
+    );
+
+    return {
+        previewText,
+        previewRange: {
+            start: characterOffsetToPosition(previewText, previewStartOffset),
+            end: characterOffsetToPosition(previewText, previewEndOffset)
+        }
+    };
+}
+
+function parseRipgrepJsonMatches(line, maxLineLength, maxMatches = Number.POSITIVE_INFINITY) {
     let message;
     try {
         message = JSON.parse(line);
@@ -366,21 +463,77 @@ function parseRipgrepJsonMatch(line, maxLineLength) {
         return null;
     }
     if (message?.type !== 'match' || !message.data) {
-        return null;
+        return [];
     }
 
     const file = message.data.path?.text;
     const lineNumber = Number(message.data.line_number || 0);
     const content = message.data.lines?.text;
     if (!file || !lineNumber || typeof content !== 'string') {
-        return null;
+        return [];
     }
 
-    return {
-        file: String(file).replace(/\\/g, '/'),
-        line: lineNumber,
-        content: content.replace(/\r?\n$/, '').slice(0, maxLineLength)
+    const contentBuffer = Buffer.from(content, 'utf8');
+    const submatches = (Array.isArray(message.data.submatches) ? message.data.submatches : [])
+        .filter(submatch => Number.isFinite(Number(submatch?.start)) && Number.isFinite(Number(submatch?.end)))
+        .sort((left, right) => Number(left.start) - Number(right.start))
+        .slice(0, Math.max(0, maxMatches));
+    let byteCursor = 0;
+    let characterCursor = 0;
+    let positionCursor = 0;
+    let sourceLineCursor = lineNumber - 1;
+    let sourceColumnCursor = 0;
+    const characterOffsetAtByte = (byteOffset) => {
+        const target = Math.max(byteCursor, Math.min(contentBuffer.length, Number(byteOffset) || 0));
+        characterCursor += contentBuffer.subarray(byteCursor, target).toString('utf8').length;
+        byteCursor = target;
+        return characterCursor;
     };
+    const sourcePositionAt = (characterOffset) => {
+        const target = Math.max(positionCursor, Math.min(content.length, characterOffset));
+        const segment = content.slice(positionCursor, target);
+        const lastNewline = segment.lastIndexOf('\n');
+        if (lastNewline >= 0) {
+            let newlineCount = 0;
+            for (let index = segment.indexOf('\n'); index >= 0; index = segment.indexOf('\n', index + 1)) {
+                newlineCount += 1;
+            }
+            sourceLineCursor += newlineCount;
+            sourceColumnCursor = segment.length - lastNewline - 1;
+        } else {
+            sourceColumnCursor += segment.length;
+        }
+        positionCursor = target;
+        return { lineNumber: sourceLineCursor, column: sourceColumnCursor };
+    };
+    return submatches.flatMap((submatch) => {
+        const startOffset = characterOffsetAtByte(submatch.start);
+        const endOffset = characterOffsetAtByte(submatch.end);
+        if (endOffset < startOffset) return [];
+
+        const sourceStart = sourcePositionAt(startOffset);
+        const sourceEnd = sourcePositionAt(endOffset);
+        const preview = createSearchPreview(content, startOffset, endOffset, maxLineLength);
+        return [{
+            file: String(file).replace(/\\/g, '/'),
+            line: sourceStart.lineNumber + 1,
+            column: sourceStart.column + 1,
+            content: preview.previewText,
+            previewText: preview.previewText,
+            sourceRange: {
+                startLineNumber: sourceStart.lineNumber,
+                startColumn: sourceStart.column,
+                endLineNumber: sourceEnd.lineNumber,
+                endColumn: sourceEnd.column
+            },
+            previewRange: {
+                startLineNumber: preview.previewRange.start.lineNumber,
+                startColumn: preview.previewRange.start.column,
+                endLineNumber: preview.previewRange.end.lineNumber,
+                endColumn: preview.previewRange.end.column
+            }
+        }];
+    });
 }
 
 /**
@@ -391,13 +544,24 @@ async function searchText(params, options = {}) {
         pattern,
         path: searchPath,
         include,
+        includeGlobs,
+        excludeGlobs,
         isRegex = false,
         ignoreCase = true,
+        isCaseSensitive,
+        isWordMatch = false,
+        isMultiline = false,
+        usePCRE2 = false,
         includeIgnoredFiles = false,
         includeHidden = true
     } = params || {};
     const maxResults = normalizeResultLimit(params?.maxResults, 100, MAX_TEXT_RESULTS);
     const maxLineLength = normalizeResultLimit(params?.maxLineLength, 500, 2000);
+    const maxFileSize = normalizeResultLimit(
+        params?.maxFileSize,
+        10 * 1024 * 1024,
+        MAX_SEARCH_FILE_SIZE
+    );
 
     if (!searchPath) {
         return { success: false, matches: [], numMatches: 0, error: 'Search path is required' };
@@ -411,20 +575,30 @@ async function searchText(params, options = {}) {
         '--line-number',
         '--color=never',
         '--no-messages',
-        '--max-filesize', '10M'
+        '--max-filesize', String(maxFileSize)
     ];
-    if (ignoreCase) args.push('-i');
+    const shouldIgnoreCase = typeof isCaseSensitive === 'boolean'
+        ? !isCaseSensitive
+        : !!ignoreCase;
+    if (shouldIgnoreCase) args.push('-i');
     if (!isRegex) args.push('-F');
-    if (include) args.push('--glob', include);
-    appendSearchScopeArgs(args, { includeIgnoredFiles, includeHidden });
-    args.push('-e', pattern);
+    if (isWordMatch) args.push('-w');
+    if (isMultiline) args.push('--multiline');
+    if (usePCRE2) args.push('--pcre2');
+    appendSearchScopeArgs(args, {
+        includeIgnoredFiles,
+        includeHidden,
+        includeGlobs: [include, ...normalizeGlobList(includeGlobs)].filter(Boolean),
+        excludeGlobs
+    });
+    args.push('-e', pattern, '.');
 
     try {
         const result = await streamRipgrep(args, searchPath, {
             maxResults,
             signal: options.signal,
             timeout: options.timeout,
-            mapLine: line => parseRipgrepJsonMatch(line, maxLineLength)
+            mapLine: (line, remaining) => parseRipgrepJsonMatches(line, maxLineLength, remaining)
         });
         return {
             success: true,
@@ -1133,5 +1307,10 @@ module.exports = {
     searchFiles,
     listAllContentFiles,
     searchContent,
-    findRipgrepPath
+    findRipgrepPath,
+    _test: {
+        appendSearchScopeArgs,
+        createSearchPreview,
+        parseRipgrepJsonMatches
+    }
 };

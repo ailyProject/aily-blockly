@@ -510,7 +510,7 @@ test('Simulator Scene request becomes an ordinary main-Agent message with bounde
   assert.match(message, new RegExp(rebuild.sceneRevision, 'u'));
   assert.match(message, /不要调用任何 subagent/u);
   assert.equal(message.includes('@SceneCodeReconciliationAgent'), false);
-  assert.equal(message.includes('connection_output.json'), true);
+  assert.equal(message.includes('connection_output.json'), false);
 });
 
 test('product composition delivers the main-Agent Scene change through normal Builder and Project Artifact callbacks', async t => {

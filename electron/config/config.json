@@ -24,9 +24,15 @@
       "enabled": true
     }
   ],
+  "linux": {
+    "npm_registry": ""
+  },
   "update_download_strategy": {
     "enabled": true,
-    "mirror_region_order": ["eu", "cn"],
+    "mirror_region_order": [
+      "eu",
+      "cn"
+    ],
     "fallback_on_error": true,
     "first_byte_timeout_ms": 15000,
     "stall_timeout_ms": 20000,
@@ -43,6 +49,7 @@
       "ucenter_web": "https://c.yiyu.pro",
       "tool_web": "https://tool.yiyu.pro",
       "npm_registry": "https://registry.yiyu.pro",
+      "npm_registry_linux": "https://lregistry.yiyu.pro",
       "resource": "https://blockly.yiyu.pro",
       "updater": "https://dl.yiyu.pro/blockly"
     },
@@ -55,6 +62,7 @@
       "ucenter_web": "https://c.aily.pro",
       "tool_web": "https://tool.aily.pro",
       "npm_registry": "https://registry.aily.pro",
+      "npm_registry_linux": "https://lregistry.aily.pro",
       "resource": "https://rs1.aily.pro",
       "updater": "https://dl.aily.pro/blockly"
     },
@@ -67,6 +75,7 @@
       "ucenter_web": "https://c.yiyu.pro",
       "tool_web": "https://tool.yiyu.pro",
       "npm_registry": "http://localhost:4873",
+      "npm_registry_linux": "https://lregistry.yiyu.pro",
       "resource": "http://localhost:4874",
       "updater": ""
     }

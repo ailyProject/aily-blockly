@@ -73,7 +73,7 @@ async function loadRegistryModule() {
   const result = await build({
     entryPoints: [path.join(
       workspaceRoot,
-      'src/app/services/subapp-host-provider-product-registry.service.ts',
+      'src/app/services/integrations/subapps/host-provider/subapp-host-provider-product-registry.service.ts',
     )],
     bundle: true,
     write: false,

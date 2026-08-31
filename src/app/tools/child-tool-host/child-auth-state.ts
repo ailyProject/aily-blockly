@@ -2,7 +2,7 @@ import type {
   AuthQuotaInfoSnapshotItem,
   AuthSnapshot,
   AuthUserInfo,
-} from '../aily-chat/core/auth-snapshot';
+} from '@core/auth/public-api';
 
 export interface ChildAuthUserIdentity {
   readonly id?: string;
@@ -29,6 +29,14 @@ export interface ChildAuthStateSnapshot {
   };
 }
 
+export interface ChildAuthStateSource {
+  readonly detached: boolean;
+  readonly detachedSnapshot: ChildAuthStateSnapshot | null;
+  readonly authenticated: boolean;
+  readonly user: AuthUserInfo | null | undefined;
+  readonly authSnapshot: AuthSnapshot | null | undefined;
+}
+
 /**
  * Build the small, token-free auth payload exposed to child applications.
  * The main process has already hydrated this data, so forwarding it must not
@@ -49,6 +57,33 @@ export function buildChildAuthStateSnapshot(
   return {
     authenticated: true,
     ...(identity ? { user: identity } : {}),
+    ...(quotaSnapshots ? { quotaSnapshot: { quotaSnapshots } } : {}),
+  };
+}
+
+/**
+ * A detached tool host is a separate Angular renderer. Its local AuthService
+ * starts at `false`, so it must never overwrite the main window's login state
+ * before the authoritative IPC snapshot arrives.
+ */
+export function resolveChildAuthStateSnapshot(source: ChildAuthStateSource): ChildAuthStateSnapshot | null {
+  if (source.detached) {
+    return source.detachedSnapshot;
+  }
+  return buildChildAuthStateSnapshot(source.authenticated, source.user, source.authSnapshot);
+}
+
+/** Keep the Electron auth broadcast token-free even if a malformed payload is received. */
+export function normalizeChildAuthStateSnapshot(value: unknown): ChildAuthStateSnapshot | null {
+  const record = asRecord(value);
+  if (!record || typeof record['authenticated'] !== 'boolean') return null;
+  if (record['authenticated'] === false) return { authenticated: false };
+
+  const user = pickChildAuthUserIdentity(asRecord(record['user']) as AuthUserInfo | undefined);
+  const quotaSnapshots = normalizeChildQuotaSnapshots(record['quotaSnapshot']);
+  return {
+    authenticated: true,
+    ...(user ? { user } : {}),
     ...(quotaSnapshots ? { quotaSnapshot: { quotaSnapshots } } : {}),
   };
 }
@@ -124,4 +159,47 @@ function pickNonEmptyString<K extends keyof ChildAuthUserIdentity>(
 ): Pick<ChildAuthUserIdentity, K> | Record<string, never> {
   const value = user[key];
   return typeof value === 'string' && value.trim() ? { [key]: value.trim() } as Pick<ChildAuthUserIdentity, K> : {};
+}
+
+function normalizeChildQuotaSnapshots(
+  value: unknown,
+): Readonly<Record<string, ChildAuthQuotaUsageSnapshot>> | undefined {
+  const quotaSnapshots = asRecord(asRecord(value)?.['quotaSnapshots']);
+  if (!quotaSnapshots) return undefined;
+
+  const normalized = Object.fromEntries(
+    Object.entries(quotaSnapshots).flatMap(([key, rawSnapshot]) => {
+      const snapshot = asRecord(rawSnapshot);
+      const remaining = finiteNumber(snapshot?.['remaining']);
+      if (!snapshot || remaining === undefined) return [];
+
+      const entitlement = finiteNumber(snapshot['entitlement']);
+      const percentRemaining = finiteNumber(snapshot['percentRemaining']);
+      const overageCount = finiteNumber(snapshot['overageCount']);
+      const resetAt = typeof snapshot['resetAt'] === 'string' ? snapshot['resetAt'] : undefined;
+      const next: ChildAuthQuotaUsageSnapshot = {
+        remaining,
+        ...(entitlement !== undefined ? { entitlement } : {}),
+        ...(percentRemaining !== undefined ? { percentRemaining } : {}),
+        ...(typeof snapshot['unlimited'] === 'boolean' ? { unlimited: snapshot['unlimited'] } : {}),
+        ...(overageCount !== undefined ? { overageCount } : {}),
+        ...(typeof snapshot['overagePermitted'] === 'boolean'
+          ? { overagePermitted: snapshot['overagePermitted'] }
+          : {}),
+        ...(resetAt ? { resetAt } : {}),
+      };
+      return [[key, next] as const];
+    }),
+  );
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

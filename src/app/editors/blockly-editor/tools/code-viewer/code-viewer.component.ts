@@ -1,6 +1,6 @@
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, effect } from '@angular/core';
 import { ToolContainerComponent } from '../../../../components/tool-container/tool-container.component';
-import { UiService } from '../../../../services/ui.service';
+import { UiService } from '@core/app-shell/public-api';
 import { SubWindowComponent } from '../../../../components/sub-window/sub-window.component';
 import { Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
@@ -10,7 +10,7 @@ import { BlocklyService } from '../../services/blockly.service';
 import { Subject, combineLatest } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { BlockCodeMapping } from '../../components/blockly/generators/arduino/arduino';
-import { ThemeService } from '../../../../services/theme.service';
+import { ThemeService } from '@core/preferences/public-api';
 import {
   CodeViewerIpcService,
   CodeViewerIpcState,

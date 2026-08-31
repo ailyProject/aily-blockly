@@ -2,11 +2,11 @@ import { Component, ElementRef, ViewChild, effect, inject } from '@angular/core'
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
-import { ElectronService } from '../../services/electron.service';
-import { UiService } from '../../services/ui.service';
-import { ProjectService } from '../../services/project.service';
+import { ElectronService } from '@core/platform/public-api';
+import { UiService } from '@core/app-shell/public-api';
+import { ProjectService } from '@domain/project/public-api';
 import { TerminalService } from './terminal.service';
-import { ThemeService } from '../../services/theme.service';
+import { ThemeService } from '@core/preferences/public-api';
 import { CommonModule } from '@angular/common';
 
 @Component({

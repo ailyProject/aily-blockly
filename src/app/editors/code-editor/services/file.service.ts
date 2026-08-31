@@ -3,7 +3,7 @@ import { NzTreeNodeOptions } from 'ng-zorro-antd/tree';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { DeleteDialogComponent } from '../components/delete-dialog/delete-dialog.component';
-import { PlatformService } from '../../../services/platform.service';
+import { PlatformService } from '@core/platform/public-api';
 
 // 文件节点接口
 interface FileNode {

@@ -32,7 +32,7 @@ test.describe('新版 Aily Chat 的 Blockly AI 操作提示', () => {
     await chat.locator('button.send-action').click();
 
     await expect(chat.locator('button.stop-action')).toBeVisible({ timeout: 30_000 });
-    // 与旧版 Angular 一致：遮罩/「AI正在操作」仅在积木写入工具执行期间出现，而非整轮思考。
+    // 遮罩/「AI正在操作」仅在新版 Agent 的积木写入工具执行期间出现，而非整轮思考。
     await expect(win.locator('.blockly-spin.show')).toBeVisible({ timeout: 120_000 });
     const operationNotice = win.locator('app-notification .notification-box', {
       hasText: 'AI正在操作',

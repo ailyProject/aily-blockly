@@ -66,7 +66,7 @@ child/tools/<tool-id>/
 
 ```text
 src/app/tools/child-tool-host/
-src/app/services/child-tool-process.service.ts
+src/app/services/integrations/subapps/child-tool-process.service.ts
 ```
 
 `child-tool-host` 只负责启动 child 服务、加载 iframe、建立 Penpal 宿主连接、关闭进程；具体工具能力必须留在 `child/tools/<tool-id>`。
@@ -543,7 +543,7 @@ child/tools/<tool-id>/i18n/
 
 child 语言包不进入 Angular assets。宿主通过 `window.path.getAilyChildPath()` 在运行时读取 `child/tools/<tool-id>/i18n/<lang>.json`，并由 `ToolI18nService` 合并到 `TranslateService`。
 
-新增 Angular 内置工具命名空间时，需要在 `src/app/services/tool-i18n.service.ts` 的 `TOOL_I18N_NAMESPACES` 中登记，例如：
+新增 Angular 内置工具命名空间时，需要在 `src/app/services/core/preferences/tool-i18n.service.ts` 的 `TOOL_I18N_NAMESPACES` 中登记，例如：
 
 ```ts
 '<tool-id>': ['TOOL_NAMESPACE']

@@ -15,8 +15,8 @@ import {
 import {
   getChildToolDefaultToolbarAppIds
 } from '../../configs/tool.config';
-import { ConfigService } from '../../services/config.service';
-import { SubappManagerService } from '../../services/subapp-manager.service';
+import { ConfigService } from '@core/preferences/public-api';
+import { SubappManagerService } from '@integration/subapps/public-api';
 
 export interface AppVisibilityContext {
   routeUrl?: string;
@@ -339,7 +339,10 @@ export class AppStoreService {
 
   private canRegisterApp(appId: string): boolean {
     const app = this.appMap.get(appId);
-    return !!app && app.enabled !== false && (app.subapp?.installed !== false);
+    return !!app
+      && app.enabled !== false
+      && app.extension !== true
+      && (app.subapp?.installed !== false);
   }
 
   private cloneLayout(layout: AppStoreLayout): AppStoreLayout {

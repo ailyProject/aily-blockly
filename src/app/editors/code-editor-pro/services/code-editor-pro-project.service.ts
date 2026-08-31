@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
-import { ActionService } from '../../../services/action.service';
-import { ProjectService } from '../../../services/project.service';
+import { ActionService } from '@core/app-shell/public-api';
+import { ProjectService } from '@domain/project/public-api';
 
 export interface CodeEditorProPersistenceBridge {
   saveAll(): Promise<{ ok: boolean; message?: string }>;

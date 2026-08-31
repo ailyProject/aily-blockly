@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyProjectDocument, BlocklyService } from './blockly.service';
-import { ActionService } from '../../../services/action.service';
+import { ActionService } from '@core/app-shell/public-api';
 import {
   normalizeArduinoGeneratedCode,
 } from '../components/blockly/generators/arduino/arduino';
@@ -8,13 +8,14 @@ import {
   getActiveProjectGenerator,
   runWithPreparedActiveProjectGenerator,
 } from './blockly-generator-runtime.service';
-import { ElectronService } from '../../../services/electron.service';
-import { projectDataRuntime } from '../../../services/project-data/project-data-runtime';
-import { assertNoOversizedInlineValues } from '../../../services/project-data/project-data-policy';
+import { ElectronService } from '@core/platform/public-api';
 import {
+  projectDataRuntime,
+  assertNoOversizedInlineValues,
   externalizeGenericProjectDataValues,
   materializePreparedGenericProjectDataValues,
-} from '../../../services/project-data/project-data-generic-values';
+} from '@domain/project/public-api';
+import { sha256Hex } from '../../../utils/crypto.utils';
 import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
 
 
@@ -62,30 +63,55 @@ export class _ProjectService {
 
   hasUnsavedChanges(): boolean {
     try {
-      // 获取当前实际会保存到 project.abi 的数据；单页会保持旧版 workspace JSON 格式。
-      const currentProjectAbi = this.blocklyService.getProjectAbiForSave();
-
-      // 读取并解析已保存的 JSON 数据
-      const savedJsonStr = window['fs'].readFileSync(`${this.currentProjectPath}/project.abi`, 'utf8');
-      const savedExternalJson = JSON.parse(savedJsonStr);
-      const savedJson = this.blocklyService.normalizeProjectAbi(
-        materializePreparedGenericProjectDataValues(
-          savedExternalJson,
-          (ref) => projectDataRuntime.getPrepared(ref),
-        ),
-      );
-
-      // 将当前工作区 JSON 和保存的 JSON 转为字符串进行比较
-      const currentJsonStr = JSON.stringify(this.blocklyService.normalizeProjectAbi(currentProjectAbi));
-      const normalizedSavedJsonStr = JSON.stringify(savedJson);
-
-      // 比较两个 JSON 字符串是否相同
-      return currentJsonStr !== normalizedSavedJsonStr;
+      const abi = this.getComparableAbiJson();
+      return abi.memory !== abi.disk;
     } catch (error) {
       console.error('检查未保存更改时出错:', error);
       // 出错时，保守地返回 true，表示可能有未保存的更改
       return true;
     }
+  }
+
+  async getAbiRevisionSnapshot(): Promise<{
+    algorithm: 'sha256';
+    scope: 'normalized-materialized-project-abi';
+    memoryHash: string;
+    diskHash: string;
+    changed: boolean;
+  }> {
+    const abi = this.getComparableAbiJson();
+    const [memoryHash, diskHash] = await Promise.all([
+      sha256Hex(abi.memory),
+      sha256Hex(abi.disk),
+    ]);
+
+    return {
+      algorithm: 'sha256',
+      scope: 'normalized-materialized-project-abi',
+      memoryHash,
+      diskHash,
+      changed: memoryHash !== diskHash,
+    };
+  }
+
+  private getComparableAbiJson(): { memory: string; disk: string } {
+    const memoryAbi = this.blocklyService.normalizeProjectAbi(
+      this.blocklyService.getProjectAbiForSave(),
+    );
+    const diskExternalAbi = JSON.parse(
+      window['fs'].readFileSync(`${this.currentProjectPath}/project.abi`, 'utf8'),
+    );
+    const diskAbi = this.blocklyService.normalizeProjectAbi(
+      materializePreparedGenericProjectDataValues(
+        diskExternalAbi,
+        (ref) => projectDataRuntime.getPrepared(ref),
+      ),
+    );
+
+    return {
+      memory: JSON.stringify(memoryAbi),
+      disk: JSON.stringify(diskAbi),
+    };
   }
 
   async save(path: string, createHistory: boolean = true) {

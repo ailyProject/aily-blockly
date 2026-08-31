@@ -1,12 +1,11 @@
 import { Component, OnInit } from '@angular/core';
-import { RouterModule } from '@angular/router';
+import { RouterModule, ActivatedRoute } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { ConfigService } from '../../../services/config.service';
-import { ActivatedRoute } from '@angular/router';
+import { ConfigService } from '@core/preferences/public-api';
 import { PlaygroundService } from '../playground.service';
 import { NzPaginationModule } from 'ng-zorro-antd/pagination';
 

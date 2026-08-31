@@ -345,6 +345,10 @@
   padding: 0;
   cursor: pointer;
 
+  &.extension {
+    cursor: default;
+  }
+
   &.installing {
     cursor: progress;
   }
@@ -458,6 +462,40 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.extension-process-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+}
+
+.extension-process-dot {
+  width: 8px;
+  height: 8px;
+  border: 1px solid color-mix(in srgb, var(--aily-text-tertiary) 55%, transparent);
+  border-radius: 50%;
+  background: var(--aily-bg-tertiary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--aily-text-tertiary) 8%, transparent);
+}
+
+.extension-process-indicator.running .extension-process-dot {
+  border-color: color-mix(in srgb, #39c477 78%, #fff);
+  background: #39c477;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #39c477 14%, transparent);
+}
+
+.extension-process-tooltip {
+  display: grid;
+  gap: 3px;
+  font-size: 11px;
+
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
 }
 
 .action-progress {

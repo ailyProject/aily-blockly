@@ -2,7 +2,7 @@ import { Component } from '@angular/core';
 import { TranslateModule } from '@ngx-translate/core';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { LibManagerComponent } from '../../editors/blockly-editor/components/lib-manager/lib-manager.component';
-import { UiService } from '../../services/ui.service';
+import { UiService } from '@core/app-shell/public-api';
 
 /** 主窗口右侧工具栏：复用 Blockly 库管理页面 */
 @Component({

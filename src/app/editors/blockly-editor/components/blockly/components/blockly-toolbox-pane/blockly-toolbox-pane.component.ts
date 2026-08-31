@@ -7,17 +7,19 @@ import {
   BlocklyService,
   BlocklyToolboxFacadeItem,
 } from '../../../../services/blockly.service';
-import { BlocklyLibraryMetadataUpdateResult, BlocklyLibraryPackageService } from '../../../../../../services/blockly-library-package.service';
+import {
+  BlocklyLibraryMetadataUpdateResult,
+  BlocklyLibraryPackageService,
+  LibrarySubmissionApiError,
+  LibrarySubmissionService,
+} from '@domain/dependencies/public-api';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MenuComponent } from '../../../../../../components/menu/menu.component';
 import { IMenuItem } from '../../../../../../configs/menu.config';
-import { ElectronService } from '../../../../../../services/electron.service';
-import { ProjectService } from '../../../../../../services/project.service';
-import { CmdService } from '../../../../../../services/cmd.service';
-import { WorkflowService } from '../../../../../../services/workflow.service';
-import { UiService } from '../../../../../../services/ui.service';
-import { LibrarySubmissionApiError, LibrarySubmissionService } from '../../../../../../services/library-submission.service';
-import { AuthService } from '../../../../../../services/auth.service';
+import { ElectronService, CmdService } from '@core/platform/public-api';
+import { ProjectService } from '@domain/project/public-api';
+import { WorkflowService, UiService } from '@core/app-shell/public-api';
+import { AuthService } from '@core/auth/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import {

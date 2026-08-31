@@ -115,3 +115,27 @@ export function parseAilyBuilderProgressLine(line: string): AilyBuilderProgressE
     return null;
   }
 }
+
+/**
+ * Compatibility parser for aily-builder <= 1.2.10 output. Newer builders
+ * should use the structured protocol above because raw Ninja counters are
+ * local to one stage rather than global build progress.
+ */
+export function parseLegacyAilyBuilderProgressLine(line: string): number | null {
+  const normalizedLine = removeAnsiColors(line).trim();
+  const barMatch = normalizedLine.match(/\[.*?\]\s*(\d+)%/);
+  if (barMatch) {
+    return Math.max(0, Math.min(100, Number.parseInt(barMatch[1], 10)));
+  }
+
+  const fractionMatch = normalizedLine.match(/\[(\d+)\/(\d+)\]/);
+  if (!fractionMatch) {
+    return null;
+  }
+  const current = Number.parseInt(fractionMatch[1], 10);
+  const total = Number.parseInt(fractionMatch[2], 10);
+  if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.floor((current / total) * 100)));
+}

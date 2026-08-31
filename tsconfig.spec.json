@@ -1,4 +1,4 @@
-/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about TypeScript configuration: https://www.typescriptlang.org/tsconfig. */
 /* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
 {
   "extends": "./tsconfig.json",
@@ -9,23 +9,9 @@
       "node"
     ]
   },
-  "files": [
-    "src/test.ts"
-  ],
   "include": [
-    "src/test.ts",
     "src/**/*.spec.ts",
     "src/**/*.d.ts"
   ],
-  "exclude": [
-    "archive/**/*",
-    "child",
-    "electron",
-    "dist",
-    "node_modules",
-    "src/environments/*.ts",
-    "temp/**/*",
-    "src/app/tools/aily-chat/tools/editBlockTool.spec.ts",
-    "src/app/tools/aily-chat/tools/claude_code/**/*"
-  ]
+  "exclude": []
 }

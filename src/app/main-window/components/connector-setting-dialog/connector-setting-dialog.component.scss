@@ -1,0 +1,77 @@
+.connector-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+
+  label {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 5px;
+
+    > span {
+      color: var(--aily-text-secondary);
+      font-size: 12px;
+    }
+  }
+
+  input {
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+    border-color: var(--aily-border-tertiary);
+  }
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.path-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+
+  button {
+    padding: 0 12px;
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+    border: 1px solid var(--aily-border-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      border-color: #1677ff;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  }
+}
+
+.hint {
+  margin: 0;
+  color: var(--aily-text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.host-key-confirmation {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #d9a300;
+  border-radius: 4px;
+  background: rgb(255 193 7 / 10%);
+  font-size: 12px;
+}
+
+.host-key-confirmation code {
+  overflow-wrap: anywhere;
+  user-select: text;
+}

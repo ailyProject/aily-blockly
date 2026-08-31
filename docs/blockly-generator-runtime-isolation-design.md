@@ -1197,9 +1197,9 @@ interface RuntimeDiagnostics {
 | `src/app/editors/blockly-editor/components/blockly/blockly.component.ts` | `initDevMode()` 设置父 `window.Arduino/MPY`、workspace 生命周期 |
 | `src/app/editors/blockly-editor/components/blockly/generators/arduino/arduino.ts` | `ArduinoGenerator`、`getValue()`、模块单例导出 |
 | `src/app/editors/blockly-editor/components/blockly/generators/micropython/micropython.ts` | `MicroPythonGenerator`、`getValue()`、模块单例导出 |
-| `src/app/services/project.service.ts` | `projectOpenInternal()`、`close()`、固定 100ms 等待、路由切换 |
-| `src/app/services/blockly-library-package.service.ts` | `scanInstalledLibraries()`、声明依赖和物理库存扫描 |
-| `src/app/services/npm.service.ts` | `getAllInstalledLibraries()` 当前同时服务运行时和库管理器 |
+| `src/app/services/domains/project/project.service.ts` | `projectOpenInternal()`、`close()`、固定 100ms 等待、路由切换 |
+| `src/app/services/domains/dependencies/blockly-library-package.service.ts` | `scanInstalledLibraries()`、声明依赖和物理库存扫描 |
+| `src/app/services/domains/dependencies/npm.service.ts` | `getAllInstalledLibraries()` 当前同时服务运行时和库管理器 |
 | `src/app/editors/blockly-editor/services/builder.service.ts` | 多处直接调用模块单例 `workspaceToCode()` |
 | `src/app/editors/blockly-editor/services/uploader.service.ts` | 直接调用模块单例生成代码 |
 | `src/app/editors/blockly-editor/services/project.service.ts` | 保存/读取代码时直接调用模块单例 |

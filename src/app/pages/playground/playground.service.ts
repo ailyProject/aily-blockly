@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { ConfigService } from '../../services/config.service';
+import { ConfigService } from '@core/preferences/public-api';
 import { BehaviorSubject } from 'rxjs';
 
 @Injectable({

@@ -57,6 +57,18 @@ export const BRAND_LIST = [
         selected: "brands\\chipintelli-selected.svg"
     },
     {
+        name: '01Studio',
+        value: '01studio',
+        img: 'brands\\01studio.webp',
+        imgLight: 'brands\\01studio.webp',
+    },
+    {
+        name: 'Nvidia',
+        value: 'nvidia',
+        img: 'brands\\nvidia.webp',
+        imgLight: 'brands\\nvidia.webp',
+    },
+    {
         name: 'Nordic Semiconductor',
         value: 'Nordic Semiconductor',
         img: 'brands\\nordic.webp',

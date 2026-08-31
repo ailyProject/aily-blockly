@@ -11,16 +11,15 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
-import { TranslateService } from '@ngx-translate/core';
 import Sortable from 'sortablejs';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
-import { UiService } from '../../services/ui.service';
-import { ProjectService } from '../../services/project.service';
+import { UiService } from '@core/app-shell/public-api';
+import { ProjectService } from '@domain/project/public-api';
 import {
   APP_STORE_ZONES,
   AppItem,
@@ -29,11 +28,13 @@ import {
 } from './app-store.config';
 import { AppStoreService } from './app-store.service';
 import { Subscription } from 'rxjs';
-import { ToolI18nService } from '../../services/tool-i18n.service';
-import { SubappManagerService } from '../../services/subapp-manager.service';
-import { ChildToolProcessService } from '../../services/child-tool-process.service';
-import { MainUiAutomationService } from '../../services/main-ui-automation.service';
-import { ChildAppHostRegistryService } from '../../services/child-app-host-registry.service';
+import { ToolI18nService } from '@core/preferences/public-api';
+import {
+  SubappManagerService,
+  ChildToolProcessService,
+  ChildAppHostRegistryService,
+} from '@integration/subapps/public-api';
+import { MainUiAutomationService } from '@integration/automation/public-api';
 
 const SUBAPP_MORE_MENU_VIEWPORT_MARGIN = 8;
 const SUBAPP_MORE_MENU_GAP = 3;
@@ -82,6 +83,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   private layoutSubscription?: Subscription;
   private catalogSubscription?: Subscription;
   private progressSubscription?: Subscription;
+  private runtimeSubscription?: Subscription;
   private confirmUninstallTimer?: ReturnType<typeof setTimeout>;
   private isDraggingToolbarApp = false;
   private activeSubappVersions = new Map<string, string>();
@@ -134,6 +136,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.pendingProgress = Math.max(this.pendingProgress, Math.round(progress.percent || 0));
       this.cdr.markForCheck();
     });
+    this.runtimeSubscription = this.childToolProcess.runtimeStates$.subscribe(() => {
+      this.cdr.markForCheck();
+    });
   }
 
   ngAfterViewInit(): void {
@@ -144,6 +149,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     this.layoutSubscription?.unsubscribe();
     this.catalogSubscription?.unsubscribe();
     this.progressSubscription?.unsubscribe();
+    this.runtimeSubscription?.unsubscribe();
     this.sortables.forEach(sortable => sortable.destroy());
     this.sortables = [];
     this.closeSubappMore();
@@ -171,7 +177,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   toggleZone(app: AppItem, zone: AppPlacementZone): void {
-    if (app.lock) {
+    if (app.lock || app.extension) {
       return;
     }
 
@@ -184,7 +190,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   removeFromZone(app: AppItem, zone: AppPlacementZone): void {
-    if (app.lock) {
+    if (app.lock || app.extension) {
       return;
     }
 
@@ -194,6 +200,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   openApp(app: AppItem): void {
     if (app.subapp && !app.subapp.installed) {
       this.installSubapp(app);
+      return;
+    }
+    if (app.extension) {
       return;
     }
     const toolName = app.data?.data;
@@ -246,7 +255,34 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   isSubappActive(app: AppItem): boolean {
-    return !!app.subapp?.installed && this.uiService.isToolOpen(app.id);
+    if (!app.subapp?.installed) {
+      return false;
+    }
+    return app.extension
+      ? this.isExtensionProcessRunning(app)
+      : this.uiService.isToolOpen(app.id);
+  }
+
+  isExtensionOpenDisabled(app: AppItem): boolean {
+    return app.extension === true && app.subapp?.installed !== false;
+  }
+
+  isExtensionProcessRunning(app: AppItem): boolean {
+    return app.extension === true
+      && this.childToolProcess.getRuntimeSnapshot(app.id).running;
+  }
+
+  getExtensionProcessInfo(app: AppItem): { port?: number; pid?: number } | null {
+    return app.extension === true
+      ? this.childToolProcess.getRuntimeSnapshot(app.id).hostInfo
+      : null;
+  }
+
+  getExtensionProcessVersion(app: AppItem): string {
+    const runtime = this.childToolProcess.getRuntimeSnapshot(app.id);
+    return runtime.running && runtime.version
+      ? runtime.version
+      : String(app.subapp?.installedVersion || '');
   }
 
   isSubappRestartRequired(app: AppItem): boolean {
@@ -441,6 +477,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private confirmSubappRestart(app: AppItem): void {
+    if (app.extension) {
+      this.showExtensionClientRestartInfo(app);
+      return;
+    }
+
     this.modal.confirm({
       nzClassName: 'subapp-service-confirm-modal',
       nzTitle: this.translate.instant('APP_STORE.RESTART_CONFIRM', { name: app.name }),
@@ -459,6 +500,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const wasActive = await this.isSubappUiOpen(app);
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
     let restartTarget: AppItem | null = null;
+    let extensionClientRestartRequired = false;
     let forceClose = false;
 
     if (wasActive) {
@@ -466,14 +508,16 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       if (!confirmed) return;
       forceClose = true;
       // 保持子应用界面打开，便于显示「正在更新」遮罩
-      this.uiService.openTool(app.id);
+      if (!app.extension) {
+        this.uiService.openTool(app.id);
+      }
     }
 
     this.pendingCatalogId = subapp.catalogId;
     this.pendingProgress = 1;
     this.cdr.markForCheck();
     try {
-      if (wasActive) {
+      if (wasActive && !app.extension) {
         const preparation = await this.mainUiAutomation.controlChildApp({
           toolId: app.id,
           action: 'prepareUpdate',
@@ -483,7 +527,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       }
       await this.childToolProcess.forceStop(app.id);
-      if (!wasActive) {
+      if (!wasActive && !app.extension) {
         this.uiService.closeTool(app.id);
       }
       await this.runSubappMutationWithBusyRetry('update', app, { forceClose });
@@ -491,7 +535,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       const updatedApp = this.subappManager.getCatalogApps()
         .find((item) => item.subapp?.catalogId === subapp.catalogId);
       const updatedInstalledVersion = String(updatedApp?.subapp?.installedVersion || '').trim();
-      if (wasActive && updatedApp?.subapp?.installed) {
+      if (wasActive && updatedApp?.subapp?.installed && app.extension) {
+        extensionClientRestartRequired = true;
+      } else if (wasActive && updatedApp?.subapp?.installed) {
         // 使用中强制更新：完成后自动重启服务（不再弹二次确认）
         restartTarget = updatedApp;
       } else if (
@@ -518,6 +564,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       // 强制更新前已确认关闭进程，更新完成后自动重启，不再二次确认
       await this.restartSubapp(restartTarget);
     }
+    if (extensionClientRestartRequired) {
+      this.showExtensionClientRestartInfo(app);
+    }
   }
 
   private async runSubappMutationWithBusyRetry(
@@ -541,7 +590,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         throw cancelled;
       }
       if (action === 'update') {
-        this.uiService.openTool(app.id);
+        if (!app.extension) {
+          this.uiService.openTool(app.id);
+        }
       }
       await this.childToolProcess.forceStop(app.id);
       await this.subappManager[action](catalogId, { forceClose: true });
@@ -588,6 +639,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async restartSubapp(app: AppItem): Promise<void> {
+    if (app.extension) {
+      this.showExtensionClientRestartInfo(app);
+      return;
+    }
     const catalogId = app.subapp?.catalogId;
     if (!catalogId || this.pendingCatalogId) return;
 
@@ -660,6 +715,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private getSubappActiveVersion(app: AppItem): string {
+    const runtime = this.childToolProcess.getRuntimeSnapshot(app.id);
+    if (app.extension && runtime.running && runtime.version) {
+      return runtime.version;
+    }
     const localVersion = this.childHostRegistry.getStatus(app.id)?.['version'];
     if (typeof localVersion === 'string' && localVersion.trim()) {
       return localVersion.trim();
@@ -668,6 +727,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async refreshSubappActiveVersion(app: AppItem): Promise<void> {
+    if (app.extension) {
+      this.cdr.markForCheck();
+      return;
+    }
     const result = await this.mainUiAutomation.getChildApp({ toolId: app.id });
     const describedApp = result['app'] as Record<string, any> | undefined;
     const mode = String(describedApp?.['mode'] || 'closed');
@@ -680,6 +743,16 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.activeSubappVersions.set(app.id, version.trim());
       this.cdr.markForCheck();
     }
+  }
+
+  private showExtensionClientRestartInfo(app: AppItem): void {
+    this.modal.info({
+      nzClassName: 'subapp-service-confirm-modal',
+      nzTitle: this.translate.instant('APP_STORE.RESTART_CLIENT_TITLE'),
+      nzContent: this.translate.instant('APP_STORE.RESTART_CLIENT_HINT', { name: app.name }),
+      nzOkText: this.translate.instant('APP_STORE.GOT_IT'),
+      nzMaskClosable: false,
+    });
   }
 
   private async isSubappUiOpen(app: AppItem): Promise<boolean> {

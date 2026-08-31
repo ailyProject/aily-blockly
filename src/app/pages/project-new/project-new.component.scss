@@ -206,6 +206,7 @@
   border-radius: 5px 0 0 5px;
 
   .board {
+    position: relative;
     min-width: 180px;
     max-width: 210px;
     height: 110px;
@@ -230,10 +231,17 @@
 
     .name {
       white-space: nowrap;
+    }
 
-      span {
-        color: rgb(154, 154, 255);
-      }
+    .state-tag {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      z-index: 1;
+      margin: 0;
+      border-radius: 10px;
+      font-size: 11px;
+      line-height: 18px;
     }
 
     &.disabled {
@@ -417,20 +425,15 @@
   position: relative;
 }
 
-.platform-row {
-  .platform-select-box {
+.project-category-row {
+  nz-radio-group {
+    display: flex;
     flex: 1;
-    min-width: 0;
   }
 
-  nz-select {
-    width: 100% !important;
-    margin-left: 0 !important;
-    background: var(--aily-bg-input);
-
-    ::ng-deep nz-select-top-control {
-      border-radius: 2px;
-    }
+  label[nz-radio-button] {
+    flex: 1;
+    text-align: center;
   }
 }
 

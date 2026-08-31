@@ -55,11 +55,6 @@
                 "output": "/assets/vs"
               },
               {
-                "glob": "*.json",
-                "input": "src/app/tools/aily-chat/assets/tiktoken",
-                "output": "aily-chat/tiktoken"
-              },
-              {
                 "glob": "ng-zorro-antd.dark.css",
                 "input": "node_modules/ng-zorro-antd",
                 "output": "/"
@@ -169,29 +164,19 @@
         "test": {
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
-            "main": "src/test.ts",
+            "tsConfig": "tsconfig.spec.json",
             "polyfills": [
               "zone.js",
               "zone.js/testing"
             ],
-            "main": "src/test.ts",
-            "tsConfig": "tsconfig.spec.json",
             "inlineStyleLanguage": "scss",
-            "assets": [
-              {
-                "glob": "**/*",
-                "input": "public"
-              },
-              {
-                "glob": "*/i18n/*.json",
-                "input": "src/app/tools",
-                "output": "tools"
-              }
+            "preserveSymlinks": true,
+            "builderMode": "application",
+            "include": [
+              "**/*.spec.ts"
             ],
-            "styles": [
-              "./node_modules/ng-zorro-antd/ng-zorro-antd.min.css",
-              "src/styles.scss"
-            ],
+            "assets": [],
+            "styles": [],
             "scripts": []
           }
         }

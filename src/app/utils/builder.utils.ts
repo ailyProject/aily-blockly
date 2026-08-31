@@ -223,7 +223,7 @@ async function resolveEffectiveBuildDirectory(
   const globalRoot = pathApi?.getAilyBuilderBuildPath?.();
   if (globalRoot && fsApi?.existsSync?.(globalRoot) && pathApi) {
     const sketchCandidates = [
-      pathApi.join(projectRoot, 'src', 'main.cpp'),
+      pathApi.join(projectRoot, 'sketch', 'src', 'main.cpp'),
       pathApi.join(projectRoot, '.temp', 'sketch', 'sketch.ino'),
     ];
     for (const sketchPath of sketchCandidates) {
@@ -264,7 +264,7 @@ export async function resolveActualBuildOutputs(
 
 /**
  * 工程层面解析 main.hex 真实落点：优先项目预期 buildPath，否则按 aily-builder 实际命名回探缓存子目录。
- * 候选 sketch 入口与 compile.js 一致：Aily Code -> `src/main.cpp`；纯 Blockly -> `.temp/sketch/sketch.ino`。
+ * 候选 sketch 入口与 compile.js 一致：Coder -> `sketch/src/main.cpp`；Blockly -> `.temp/sketch/sketch.ino`。
  */
 export async function resolveActualMainHexLocation(
   projectRoot: string,

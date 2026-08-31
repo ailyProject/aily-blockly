@@ -14,8 +14,7 @@ import type {ControlFlowInLoopBlock} from '../../blocks/loops.js';
 import type {Block} from '../../core/block.js';
 import {NameType} from '../../core/names.js';
 import * as stringUtils from '../../core/utils/string.js';
-import type {JavascriptGenerator} from './javascript_generator.js';
-import {Order} from './javascript_generator.js';
+import { type JavascriptGenerator, Order } from './javascript_generator.js';
 
 export function controls_repeat_ext(
   block: Block,

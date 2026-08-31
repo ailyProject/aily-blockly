@@ -1,10 +1,10 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { Buffer } from 'buffer';
-import { ProjectService } from '../../services/project.service';
-import { ElectronService } from '../../services/electron.service';
+import { ProjectService } from '@domain/project/public-api';
+import { ElectronService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { ConfigService } from '../../services/config.service';
+import { ConfigService } from '@core/preferences/public-api';
 
 // 声明Electron API全局接口
 declare global {

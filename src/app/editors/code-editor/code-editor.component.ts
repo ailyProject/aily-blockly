@@ -1,21 +1,20 @@
-import { Component } from '@angular/core';
+import { Component, ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { FileTreeComponent } from './components/file-tree/file-tree.component';
 import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
-import { ProjectService } from '../../services/project.service';
+import { ProjectService } from '@domain/project/public-api';
 import { MonacoEditorComponent } from './components/monaco-editor/monaco-editor.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
 import { ActivatedRoute } from '@angular/router';
 import { NzLayoutComponent, NzLayoutModule } from "ng-zorro-antd/layout";
 import { NzResizableModule, NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { BuilderService } from '../../services/builder.service';
-import { UploaderService } from '../../services/uploader.service';
-import { ElectronService } from '../../services/electron.service';
+import { BuilderService } from '@domain/build/public-api';
+import { UploaderService } from '@domain/device/public-api';
+import { ElectronService } from '@core/platform/public-api';
 import { ShortcutService, ShortcutAction, ShortcutKeyMapping } from './services/shortcut.service';
 import { Subscription } from 'rxjs';
-import { ViewChild, AfterViewInit, OnInit, OnDestroy } from '@angular/core';
 import { _ProjectService } from './services/project.service';
 
 export interface OpenedFile {

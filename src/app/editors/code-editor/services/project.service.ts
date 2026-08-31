@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { ActionService } from '../../../services/action.service';
+import { ActionService } from '@core/app-shell/public-api';
 import { OpenedFile } from '../code-editor.component';
 
 interface CodeEditorComponent {

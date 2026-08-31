@@ -15,7 +15,7 @@ import { TranslateModule } from '@ngx-translate/core';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { IMenuItem } from '../../configs/menu.config';
 import { Router } from '@angular/router';
-import { PlatformService } from '../../services/platform.service';
+import { PlatformService } from '@core/platform/public-api';
 
 const MENU_ANCHOR_ALIGNMENT_EPSILON = 4;
 const CHAT_MODEL_SUBMENU_OPEN_BODY_CLASS = 'aily-chat-model-submenu-open';

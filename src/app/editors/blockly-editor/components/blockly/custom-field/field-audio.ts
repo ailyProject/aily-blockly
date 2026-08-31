@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
+import { projectDataRuntime } from '@domain/project/public-api';
 import { projectResourceGc } from '../../../services/project-resource-gc.service';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 

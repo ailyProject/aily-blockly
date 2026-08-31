@@ -1,6 +1,6 @@
 // --- Interfaces for Type Safety ---
 
-import { assertNoOversizedInlineValues } from '../services/project-data/project-data-policy';
+import { assertNoOversizedInlineValues } from '@domain/project/public-api';
 
 export interface BlocklyField {
     [key: string]: string | number | boolean;

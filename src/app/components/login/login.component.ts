@@ -9,10 +9,10 @@ import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MarkdownDialogComponent } from '../../main-window/components/markdown-dialog/markdown-dialog.component';
 import { Subject, takeUntil, interval, Subscription } from 'rxjs';
-import { AuthService } from '../../services/auth.service';
-import { ConfigService } from '../../services/config.service';
+import { AuthService } from '@core/auth/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { ElectronService } from '../../services/electron.service';
+import { ElectronService } from '@core/platform/public-api';
 import { AltchaComponent } from './altcha/altcha.component';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 

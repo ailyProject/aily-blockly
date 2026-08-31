@@ -1,8 +1,7 @@
 import { ChangeDetectorRef, Component, ElementRef } from '@angular/core';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { CommonModule } from '@angular/common';
-import { NoticeOptions, NoticeService } from '../../services/notice.service';
-import { UiService } from '../../services/ui.service';
+import { NoticeOptions, NoticeService, UiService } from '@core/app-shell/public-api';
 import { TranslateModule } from '@ngx-translate/core';
 
 @Component({

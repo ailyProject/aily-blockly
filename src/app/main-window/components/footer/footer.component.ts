@@ -1,13 +1,9 @@
 import { Component, ChangeDetectorRef, OnDestroy } from '@angular/core';
-import { ActionState, UiService } from '../../../services/ui.service';
+import { ActionState, UiService, ApplicationUpdateStatus, UpdateService } from '@core/app-shell/public-api';
 import { FOOTER_BTNS, IMenuItem } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
-import {
-  ApplicationUpdateStatus,
-  UpdateService,
-} from '../../../services/update.service';
 
 @Component({
   selector: 'app-footer',

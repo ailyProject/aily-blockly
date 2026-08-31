@@ -1,0 +1,53 @@
+@if (visible) {
+<div class="coder-loader" [class.is-revealing]="revealing" [class.has-error]="!!error"
+  [attr.data-stage]="stage" role="status" aria-live="polite" [attr.aria-busy]="error ? 'false' : 'true'">
+  <div class="loader-grid" aria-hidden="true"></div>
+
+  @if (error) {
+  <section class="loader-error" role="alert">
+    <span class="error-code">ERR / CODER</span>
+    <i class="fa-light fa-triangle-exclamation"></i>
+    <h2>{{ 'AILY_CODE_LOADING.FAILED' | translate }}</h2>
+    <p>{{ error }}</p>
+    <button type="button" (click)="retry.emit()">
+      <i class="fa-light fa-arrow-rotate-right"></i>
+      <span>{{ 'AILY_CODE_LOADING.RETRY' | translate }}</span>
+    </button>
+  </section>
+  } @else {
+  <section class="boot-console">
+    <header class="console-header" aria-hidden="true">
+      <span class="console-mark">&lt;/&gt;</span>
+      <span class="console-title">AILY CODE</span>
+      <span class="console-signal"><i></i> BOOT</span>
+    </header>
+
+    <div class="workbench-ghost" aria-hidden="true">
+      <aside class="ghost-rail">
+        <i></i><i></i><i></i><i></i>
+      </aside>
+      <aside class="ghost-tree">
+        <span class="tree-title"></span>
+        <span></span><span class="nested"></span><span class="nested short"></span><span></span>
+      </aside>
+      <main class="ghost-editor">
+        <div class="editor-tab"><span></span><b>main.cpp</b></div>
+        <div class="code-line"><em>01</em><i class="token-a"></i><i class="token-b"></i></div>
+        <div class="code-line"><em>02</em><i class="indent"></i><i class="token-c"></i></div>
+        <div class="code-line"><em>03</em><i class="indent"></i><i class="token-comment"></i></div>
+        <div class="code-line"><em>04</em><i class="indent"></i><i class="token-b"></i><i class="caret"></i></div>
+        <span class="editor-scan"></span>
+      </main>
+    </div>
+
+    <footer class="boot-status">
+      <span class="stage-index">{{ stageNumber }}</span>
+      <span class="stage-divider"></span>
+      <span class="stage-copy">{{ stageKey | translate }}</span>
+      <span class="stage-caret" aria-hidden="true"></span>
+    </footer>
+    <div class="boot-track" aria-hidden="true"><span></span></div>
+  </section>
+  }
+</div>
+}

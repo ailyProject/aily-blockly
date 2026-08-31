@@ -3,7 +3,7 @@ import * as Blockly from 'blockly';
 import * as zhHans from 'blockly/msg/zh-hans';
 import { browserEvents } from 'blockly';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
-import { PlatformService } from '../../services/platform.service';
+import { PlatformService } from '@core/platform/public-api';
 import { applyWindowsBlocklyScrollbarThickness } from '../../editors/blockly-editor/utils/apply-windows-blockly-scrollbar-thickness';
 
 @Component({

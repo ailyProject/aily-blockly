@@ -13,7 +13,7 @@ import { NZ_MODAL_DATA } from 'ng-zorro-antd/modal';
 import { Connection, connect, WindowMessenger } from 'penpal';
 
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
-import { ElectronService } from '../../services/electron.service';
+import { ElectronService } from '@core/platform/public-api';
 
 export interface IframeModalData {
   /** URL loaded by this generic iframe window. */

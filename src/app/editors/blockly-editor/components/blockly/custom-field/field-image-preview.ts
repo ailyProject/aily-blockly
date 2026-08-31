@@ -6,8 +6,7 @@
 
 import * as Blockly from 'blockly/core';
 import { GlobalServiceManager } from '../../../services/bitmap-upload.service';
-import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
-import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
 
 Blockly.Msg['BUTTON_LABEL_BROWSE'] = '打开';
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = '清除';

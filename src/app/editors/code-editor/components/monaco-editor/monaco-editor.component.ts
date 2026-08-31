@@ -3,7 +3,7 @@ import { Component, EventEmitter, Input, Output, SimpleChanges, ViewChild, effec
 import { FormsModule } from '@angular/forms';
 import { NzCodeEditorModule, NzCodeEditorComponent } from 'ng-zorro-antd/code-editor';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { ThemeService } from '../../../../services/theme.service';
+import { ThemeService } from '@core/preferences/public-api';
 
 @Component({
   selector: 'app-monaco-editor',

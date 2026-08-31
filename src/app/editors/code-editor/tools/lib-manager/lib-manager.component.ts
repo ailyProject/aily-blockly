@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { ToolContainerComponent } from '../../../../components/tool-container/tool-container.component';
 import { SubWindowComponent } from '../../../../components/sub-window/sub-window.component';
-import { UiService } from '../../../../services/ui.service';
+import { UiService } from '@core/app-shell/public-api';
 
 @Component({
   selector: 'app-lib-manager-src',

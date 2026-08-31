@@ -12,9 +12,9 @@ import {
   BlocklyLibraryPackageRef,
   BlocklyLibraryPackageService,
   BlocklyLibrarySubmissionPackage,
-} from '../../services/blockly-library-package.service';
-import { ElectronService } from '../../services/electron.service';
-import { ConfigService } from '../../services/config.service';
+} from '@domain/dependencies/public-api';
+import { ElectronService } from '@core/platform/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 
 export interface LibraryPublishDialogResult {
   packageJsonPatch: Record<string, unknown>;

@@ -1,5 +1,7 @@
 # 上传参数选择逻辑
 
+> Coder 路径更新（2026-08-21）：下文的 `.temp/*.json` 表示 Blockly 路径；Coder 对应文件位于持久化 `sketch/*.json`。`upload.js` 会按根 `package.json` 的 `type: "coder"` 自动选择 `sketch/preprocess.json`，应用层也会把 Coder 的 upload/network OTA 配置写入 `sketch/`。
+
 本文描述 Aily Blockly 当前的固件上传参数选择逻辑。最终使用哪类上传命令，由用户选择的设备类型决定；`linkUploadParam` 是否存在不会自动把上传方式切换为调试器。
 
 ## 结论

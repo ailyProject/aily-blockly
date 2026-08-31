@@ -2,26 +2,25 @@ import { Component } from '@angular/core';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
-import { UiService } from '../../services/ui.service';
+import { UiService } from '@core/app-shell/public-api';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { EditorComponent } from './editor/editor.component';
 import { CloudService } from './services/cloud.service';
-import { ProjectService } from '../../services/project.service';
-import { CmdService } from '../../services/cmd.service';
+import {
+  ProjectService,
+  projectDataRuntime,
+  assertNoOversizedInlineValues,
+  extractStructuredAbsValues,
+} from '@domain/project/public-api';
+import { CmdService, ElectronService, PlatformService, CrossPlatformCmdService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { AuthService } from '../../services/auth.service';
+import { AuthService } from '@core/auth/public-api';
 import { LoginDialogComponent } from '../../main-window/components/login-dialog/login-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
-import { ElectronService } from '../../services/electron.service';
 import { distinctUntilChanged } from 'rxjs/operators';
-import { PlatformService } from "../../services/platform.service";
-import { CrossPlatformCmdService } from "../../services/cross-platform-cmd.service";
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
-import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '../../services/local-library-sync.service';
+import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { TranslateService } from '@ngx-translate/core';
-import { projectDataRuntime } from '../../services/project-data/project-data-runtime';
-import { assertNoOversizedInlineValues } from '../../services/project-data/project-data-policy';
-import { extractStructuredAbsValues } from '../../services/project-data/project-data-abs';
 
 @Component({
   selector: 'app-cloud-space',

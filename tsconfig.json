@@ -15,9 +15,10 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "ngx-x-markdown": [
-        "packages/ngx-x-markdown/src/public-api.ts"
-      ]
+      "@core/*": ["src/app/services/core/*"],
+      "@domain/*": ["src/app/services/domains/*"],
+      "@integration/*": ["src/app/services/integrations/*"],
+      "@shared/*": ["src/app/services/shared/*"]
     },
     "importHelpers": true,
     "target": "ES2022",

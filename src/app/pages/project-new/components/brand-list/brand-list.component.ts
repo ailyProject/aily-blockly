@@ -1,6 +1,6 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { BRAND_LIST, CORE_LIST } from '../../../../configs/board.config';
-import { ThemeService } from '../../../../services/theme.service';
+import { ThemeService } from '@core/preferences/public-api';
 
 @Component({
   selector: 'app-brand-list',

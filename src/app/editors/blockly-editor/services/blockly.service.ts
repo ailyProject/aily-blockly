@@ -3,27 +3,30 @@ import { BehaviorSubject, Subject, debounceTime, filter, firstValueFrom, map, sw
 import * as Blockly from 'blockly';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
-import { ElectronService } from '../../../services/electron.service';
-import { LogService } from '../../../services/log.service';
-import { NoticeService } from '../../../services/notice.service';
-import { BlocklyLibraryDiagnostics, BlocklyLibraryPackageService, BlocklyLibraryPackageSnapshot } from '../../../services/blockly-library-package.service';
+import { ElectronService, LogService } from '@core/platform/public-api';
+import { NoticeService } from '@core/app-shell/public-api';
+import { BlocklyLibraryDiagnostics, BlocklyLibraryPackageService, BlocklyLibraryPackageSnapshot } from '@domain/dependencies/public-api';
 import {
   BlockCodeMapping,
   CodeLineRange,
   normalizeArduinoGeneratedCode,
 } from '../components/blockly/generators/arduino/arduino';
-import { convertBlockTreeToAbs, convertAbiToAbsWithLineMap } from '../../../tools/aily-chat/public-api';
+import {
+  convertBlockTreeToAbs,
+  convertAbiToAbsWithLineMap,
+} from '../../../integrations/blockly/abs/abi-abs-converter';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
   dragSelectionWeakMap,
   registerFieldInputIncrementPolicy,
 } from '../components/blockly/plugins/workspace-multiselect/index.js';
 import { exportWorkspaceToSvg } from './workspace-svg-exporter';
-import { createProjectDataMarker, isAilyProjectDataMarker } from '../../../services/project-data/project-data.types';
 import {
+  createProjectDataMarker,
+  isAilyProjectDataMarker,
   decorateLibraryBlockDefinitionForProjectData,
   unregisterProjectDataFieldSlots,
-} from '../../../services/project-data/blockly-project-data-adapter';
+} from '@domain/project/public-api';
 import { BlocklyGeneratorRuntimeService } from './blockly-generator-runtime.service';
 import {
   changedRuntimeBlockTypes,
@@ -1815,10 +1818,13 @@ export class BlocklyService {
 
     try {
       const source = this.electronService.readFile(filePath);
+      // Runtime 已按项目模式隔离全局；这里统一登记当前 Python 或 Arduino 脚本实际注册的块。
       const result = this.generatorRuntime.loadGenerator(filePath, source);
-      const registered = result.arduinoBlockTypes.length > 0
-        ? result.arduinoBlockTypes
-        : result.micropythonBlockTypes;
+      const registered = Array.from(new Set([
+        ...result.arduinoBlockTypes,
+        ...result.micropythonBlockTypes,
+        ...result.pythonBlockTypes,
+      ]));
       this.loadedGenerators.set(filePath, new Set(registered));
       return Promise.resolve(true);
     } catch (error) {

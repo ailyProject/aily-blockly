@@ -4,9 +4,8 @@ import { HttpClient, HttpHeaders, HttpErrorResponse, HttpParams } from '@angular
 import { Observable, throwError, from, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
-import { CmdService, CmdOutput } from '../../../services/cmd.service';
-import { PlatformService } from "../../../services/platform.service";
-import { AuthService } from '../../../services/auth.service';
+import { CmdService, CmdOutput, PlatformService } from '@core/platform/public-api';
+import { AuthService } from '@core/auth/public-api';
 
 declare global {
   interface Window {

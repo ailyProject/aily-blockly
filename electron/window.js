@@ -10,6 +10,10 @@ const {
 } = require('./cmd');
 const { killRegisteredProcessTree } = require('./process-tree');
 const {
+    buildDevSubWindowRouteUrl,
+    normalizeSubWindowRoutePath,
+} = require('./sub-window-route');
+const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
     classifyRegistration: classifyChildToolSessionRegistration,
@@ -23,14 +27,17 @@ const {
     stopChildToolSessionProcess: stopChildToolSessionProcessWithDependencies,
 } = require('./child-tool-session-process');
 const {
-    registerChatRuntimeHostIpc,
-} = require('./chat-runtime-host');
+    AILY_HOST_AUTH_CHANNEL,
+    normalizeAilyHostAuthResult,
+    parseAilyHostAuthRequest,
+} = require('./aily-host-auth-process-bridge');
 const {
     CHILD_WINDOW_LAYOUTS,
     calculateChildWindowLayout,
     clampBoundsToWorkArea,
 } = require('./child-window-layout');
 const { exec, execSync } = require('child_process');
+const { randomUUID } = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
@@ -48,11 +55,15 @@ const CHILD_TOOL_RELEASE_GRACE_MS = 15000;
 const CHILD_TOOL_PENDING_MESSAGE_LIMIT = 16;
 const CHILD_TOOL_PENDING_STREAM_LIMIT = 16;
 const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
+const AILY_HOST_AUTH_REQUEST_TIMEOUT_MS = 15000;
+const AILY_HOST_AUTH_MAX_PENDING_REQUESTS = 128;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
 const childToolOwnerCleanupRegistrations = new Set();
 const pendingChildToolProcessMessages = new Map();
+const pendingAilyHostAuthRequests = new Map();
+let ailyHostAuthMainWindow = null;
 const SUB_WINDOW_DARK_BACKGROUND_COLOR = '#2b2d30';
 const SUB_WINDOW_LIGHT_BACKGROUND_COLOR = '#e8e8e8';
 
@@ -208,10 +219,86 @@ function routeChildToolProcessMessage(event) {
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
     if (sessionEntry) {
+        if (relayAilyHostAuthRequest(sessionEntry[0], sessionEntry[1], event.message)) {
+            return;
+        }
         deliverChildToolProcessMessage(sessionEntry[0], sessionEntry[1], event.message);
         return;
     }
     bufferPendingChildToolProcessMessage(streamId, event);
+}
+
+function relayAilyHostAuthRequest(toolId, session, message) {
+    const parsed = parseAilyHostAuthRequest(toolId, message);
+    if (!parsed.handled) return false;
+    if (!parsed.valid) {
+        void sendAilyHostAuthProcessResponse(session.streamId, parsed.requestId, parsed.result);
+        return true;
+    }
+
+    if (
+        !ailyHostAuthMainWindow
+        || ailyHostAuthMainWindow.isDestroyed()
+        || ailyHostAuthMainWindow.webContents.isDestroyed()
+    ) {
+        void sendAilyHostAuthProcessResponse(session.streamId, parsed.requestId, {
+            ok: false,
+            errorCode: 'HOST_AUTH_UNAVAILABLE',
+            message: 'The main-window authentication service is unavailable',
+        });
+        return true;
+    }
+
+    while (pendingAilyHostAuthRequests.size >= AILY_HOST_AUTH_MAX_PENDING_REQUESTS) {
+        const oldestRelayId = pendingAilyHostAuthRequests.keys().next().value;
+        completeAilyHostAuthRequest(oldestRelayId, {
+            ok: false,
+            errorCode: 'HOST_AUTH_BUSY',
+            message: 'The host authentication bridge is busy',
+        });
+    }
+
+    const relayId = randomUUID();
+    const timer = setTimeout(() => {
+        completeAilyHostAuthRequest(relayId, {
+            ok: false,
+            errorCode: 'HOST_AUTH_TIMEOUT',
+            message: 'The host authentication request timed out',
+        });
+    }, AILY_HOST_AUTH_REQUEST_TIMEOUT_MS);
+    pendingAilyHostAuthRequests.set(relayId, {
+        streamId: session.streamId,
+        requestId: parsed.requestId,
+        timer,
+    });
+
+    ailyHostAuthMainWindow.webContents.send('child-tool-host-auth-request', {
+        relayId,
+        operation: parsed.operation,
+        ...(parsed.rejectedGeneration !== undefined
+            ? { rejectedGeneration: parsed.rejectedGeneration }
+            : {}),
+    });
+    return true;
+}
+
+function completeAilyHostAuthRequest(relayId, rawResult) {
+    const pending = pendingAilyHostAuthRequests.get(relayId);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    pendingAilyHostAuthRequests.delete(relayId);
+    const result = normalizeAilyHostAuthResult(rawResult);
+    void sendAilyHostAuthProcessResponse(pending.streamId, pending.requestId, result);
+    return true;
+}
+
+function sendAilyHostAuthProcessResponse(streamId, requestId, result) {
+    return sendCmdProcessMessage(streamId, {
+        channel: AILY_HOST_AUTH_CHANNEL,
+        type: 'response',
+        requestId,
+        result,
+    });
 }
 
 function bufferPendingChildToolProcessMessage(streamId, event) {
@@ -711,10 +798,26 @@ function terminateAilyProcess() {
 }
 
 function registerWindowHandlers(mainWindow, options = {}) {
+    ailyHostAuthMainWindow = mainWindow;
     const resolveRendererUrl = typeof options.resolveRendererUrl === 'function'
         ? options.resolveRendererUrl
         : null;
-    registerChatRuntimeHostIpc(mainWindow);
+    ipcMain.on('child-tool-host-auth-response', (event, payload = {}) => {
+        if (event.sender !== mainWindow.webContents) return;
+        const relayId = typeof payload.relayId === 'string' ? payload.relayId.trim() : '';
+        if (!relayId) return;
+        completeAilyHostAuthRequest(relayId, payload.result);
+    });
+    mainWindow.once('closed', () => {
+        if (ailyHostAuthMainWindow === mainWindow) ailyHostAuthMainWindow = null;
+        for (const relayId of Array.from(pendingAilyHostAuthRequests.keys())) {
+            completeAilyHostAuthRequest(relayId, {
+                ok: false,
+                errorCode: 'HOST_AUTH_UNAVAILABLE',
+                message: 'The main-window authentication service is unavailable',
+            });
+        }
+    });
 
     // 添加一个映射来存储已打开的窗�?
     const openWindows = new Map();
@@ -1151,12 +1254,12 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     const resolveSubWindowRouteUrl = (routePath) => {
         if (isDevServeSubWindow()) {
-            return `http://localhost:4200/#/${routePath}`;
+            return buildDevSubWindowRouteUrl(routePath);
         }
         if (!resolveRendererUrl) {
             throw new Error('Packaged renderer URL resolver is unavailable.');
         }
-        return resolveRendererUrl(`#/${routePath}`);
+        return resolveRendererUrl(`#/${normalizeSubWindowRoutePath(routePath)}`);
     };
 
     /**

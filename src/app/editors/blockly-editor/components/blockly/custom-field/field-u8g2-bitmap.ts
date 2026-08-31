@@ -6,8 +6,7 @@
 
 import * as Blockly from 'blockly/core';
 import { BitmapUploadRequest, GlobalServiceManager } from '../../../services/bitmap-upload.service';
-import { projectDataRuntime } from '../../../../../services/project-data/project-data-runtime';
-import { AilyDataRef, isAilyDataRef } from '../../../../../services/project-data/project-data.types';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = 'Clear';

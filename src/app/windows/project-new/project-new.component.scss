@@ -214,20 +214,15 @@
 
 }
 
-.platform-row {
-  .platform-select-box {
+.project-category-row {
+  nz-radio-group {
+    display: flex;
     flex: 1;
-    min-width: 0;
   }
 
-  nz-select {
-    width: 100% !important;
-    margin-left: 0 !important;
-    background: var(--aily-bg-input);
-
-    ::ng-deep nz-select-top-control {
-      border-radius: 2px;
-    }
+  label[nz-radio-button] {
+    flex: 1;
+    text-align: center;
   }
 }
 

@@ -2,9 +2,7 @@
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
-const http = require("http");
-const { spawn, exec } = require("child_process");
-const url = require("url");
+const { spawn } = require("child_process");
 const WinState = require('electron-win-state').default;
 const { app, BrowserWindow, ipcMain, dialog, screen, shell, Menu, powerMonitor } = require("electron");
 
@@ -13,11 +11,13 @@ const projectLock = require("./project-lock");
 const { startCliBridge } = require("./cli-bridge");
 const builder = require("./builder");
 const linter = require("./linter");
+const connector = require("./connector");
 const { createPackagedRendererServer } = require("./packaged-renderer-server");
 const {
   markInstalledForAppVersion,
   shouldInstallForAppVersion,
 } = require("./aily-tools-install-state");
+const { mergeConfigChanges } = require("./config-persistence");
 const ORIGINAL_PROCESS_PATH = process.env.PATH || process.env.Path || "";
 
 // 设置应用名称，用于 Windows 系统通知显示
@@ -359,276 +359,6 @@ let pendingQueryParams = null;
 /** 当前主进程已持有的项目锁（规范化路径） */
 let heldProjectLockNormalized = null;
 
-/** 内嵌 coder：开发态挂 child/coder 的 Vite；生产态本地静态 child/coder/dist */
-let coderEmbedHttpServer = null;
-/** 防止并发多次进入启动逻辑（重复 spawn Vite） */
-let coderEmbedEnsureInFlight = null;
-
-const CODER_EMBED_VITE_PORT_MIN = 5174;
-const CODER_EMBED_VITE_PORT_RANGE = 24;
-
-function getCoderEmbedPackageDir() {
-  const childRoot = serve
-    ? path.join(__dirname, "..", "child")
-    : path.join(process.resourcesPath, "child");
-  return path.join(childRoot, "aily-coder");
-}
-
-function getCoderEmbedDistPath() {
-  return path.join(getCoderEmbedPackageDir(), "dist");
-}
-
-function probeCoderEmbedViteListening(port) {
-  return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/`, { timeout: 800 }, (res) => {
-      res.resume();
-      resolve(true);
-    });
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(false);
-    });
-  });
-}
-
-async function findListeningCoderEmbedDevPort() {
-  for (let i = 0; i < CODER_EMBED_VITE_PORT_RANGE; i++) {
-    const port = CODER_EMBED_VITE_PORT_MIN + i;
-    if (await probeCoderEmbedViteListening(port)) {
-      return port;
-    }
-  }
-  return null;
-}
-
-function spawnCoderEmbedViteDevServer(coderDir) {
-  // Windows 上直接 spawn npm.cmd 会 EINVAL（Node 22+）；与 electron/npm.js 一致需 shell: true
-  if (isWin32) {
-    return spawn("npm run start", {
-      cwd: coderDir,
-      env: process.env,
-      stdio: "inherit",
-      shell: true,
-      windowsHide: true,
-    });
-  }
-  return spawn("npm", ["run", "start"], {
-    cwd: coderDir,
-    env: process.env,
-    stdio: "inherit",
-  });
-}
-
-function killCoderEmbedSpawnedDevProcess(devProcess) {
-  if (!devProcess || typeof devProcess.pid !== "number") {
-    return;
-  }
-  try {
-    if (isWin32) {
-      exec(`taskkill /pid ${devProcess.pid} /T /F`, () => {});
-    } else {
-      devProcess.kill("SIGTERM");
-    }
-  } catch (e) {
-    console.warn("kill coder vite dev:", e.message);
-  }
-}
-
-function coderEmbedMimeType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  const map = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".mjs": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".ico": "image/x-icon",
-    ".svg": "image/svg+xml",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".ttf": "font/ttf",
-    ".wasm": "application/wasm",
-    ".map": "application/json; charset=utf-8",
-  };
-  return map[ext] || "application/octet-stream";
-}
-
-function ensureCoderEmbedServerStartedImpl() {
-  if (serve) {
-    const coderDir = getCoderEmbedPackageDir();
-    const pkgJson = path.join(coderDir, "package.json");
-    if (!fs.existsSync(pkgJson)) {
-      return Promise.reject(new Error(`Coder 开发目录无效，缺少 package.json: ${coderDir}`));
-    }
-    return findListeningCoderEmbedDevPort().then((existingPort) => {
-      if (existingPort != null) {
-        coderEmbedHttpServer = {
-          kind: "dev",
-          port: existingPort,
-          devProcess: null,
-          spawned: false,
-        };
-        return existingPort;
-      }
-      return new Promise((resolve, reject) => {
-        let settled = false;
-        const devProcess = spawnCoderEmbedViteDevServer(coderDir);
-        const deadline = Date.now() + 120000;
-        const fail = (err) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          killCoderEmbedSpawnedDevProcess(devProcess);
-          reject(err);
-        };
-        devProcess.on("error", (err) => {
-          fail(new Error(`无法启动 child/coder 开发服务器: ${err.message}`));
-        });
-        devProcess.once("exit", (code) => {
-          if (!settled) {
-            fail(new Error(`child/coder Vite 异常退出，代码: ${code}`));
-          }
-        });
-        const poll = () => {
-          if (settled) {
-            return;
-          }
-          findListeningCoderEmbedDevPort()
-            .then((port) => {
-              if (port != null) {
-                if (settled) {
-                  return;
-                }
-                settled = true;
-                coderEmbedHttpServer = {
-                  kind: "dev",
-                  port,
-                  devProcess,
-                  spawned: true,
-                };
-                resolve(port);
-                return;
-              }
-              if (Date.now() > deadline) {
-                fail(new Error("等待 child/coder Vite 就绪超时"));
-                return;
-              }
-              setTimeout(poll, 400);
-            })
-            .catch((e) => fail(e || new Error(String(e))));
-        };
-        devProcess.once("spawn", () => poll());
-      });
-    });
-  }
-  const dist = getCoderEmbedDistPath();
-  if (!fs.existsSync(dist)) {
-    return Promise.reject(new Error(`Coder 静态资源未找到: ${dist}`));
-  }
-  const distResolved = path.resolve(dist);
-  const distPrefix = distResolved.endsWith(path.sep) ? distResolved : distResolved + path.sep;
-
-  const server = http.createServer((req, res) => {
-    res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
-    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      res.writeHead(405);
-      res.end();
-      return;
-    }
-    const parsed = url.parse(req.url);
-    let pathname = decodeURIComponent(parsed.pathname || "/");
-    if (pathname.includes("\0")) {
-      res.writeHead(400);
-      res.end();
-      return;
-    }
-    pathname = path.posix.normalize("/" + pathname.replace(/\\/g, "/"));
-    if (pathname.includes("..")) {
-      res.writeHead(403);
-      res.end();
-      return;
-    }
-    let rel = pathname.replace(/^\//, "");
-    if (!rel || rel.endsWith("/")) {
-      rel = path.posix.join(rel || ".", "index.html");
-    }
-    const filePath = path.join(distResolved, rel);
-    const fileResolved = path.resolve(filePath);
-    if (fileResolved !== distResolved && !fileResolved.startsWith(distPrefix)) {
-      res.writeHead(403);
-      res.end();
-      return;
-    }
-    fs.stat(fileResolved, (err, st) => {
-      if (!err && st.isFile()) {
-        if (req.method === "HEAD") {
-          res.writeHead(200, { "Content-Type": coderEmbedMimeType(fileResolved) });
-          res.end();
-          return;
-        }
-        fs.readFile(fileResolved, (e2, data) => {
-          if (e2) {
-            res.writeHead(500);
-            res.end();
-            return;
-          }
-          res.writeHead(200, { "Content-Type": coderEmbedMimeType(fileResolved) });
-          res.end(data);
-        });
-        return;
-      }
-      const indexPath = path.join(distResolved, "index.html");
-      if (req.method === "HEAD") {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end();
-        return;
-      }
-      fs.readFile(indexPath, (e3, data) => {
-        if (e3) {
-          res.writeHead(404);
-          res.end();
-          return;
-        }
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(data);
-      });
-    });
-  });
-
-  return new Promise((resolve, reject) => {
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : null;
-      if (!port) {
-        try {
-          server.close();
-        } catch (_) {}
-        reject(new Error("无法为 Coder 嵌入服务分配端口"));
-        return;
-      }
-      coderEmbedHttpServer = { kind: "static", server, port };
-      resolve(port);
-    });
-    server.on("error", reject);
-  });
-}
-
-function ensureCoderEmbedServerStarted() {
-  if (coderEmbedHttpServer) {
-    return Promise.resolve(coderEmbedHttpServer.port);
-  }
-  if (coderEmbedEnsureInFlight) {
-    return coderEmbedEnsureInFlight;
-  }
-  coderEmbedEnsureInFlight = ensureCoderEmbedServerStartedImpl().finally(() => {
-    coderEmbedEnsureInFlight = null;
-  });
-  return coderEmbedEnsureInFlight;
-}
-
 /** 主进程读取 i18n JSON：开发态在仓库 public；打包后 Angular 资源在 app.asar/renderer */
 function getMainProcessI18nJsonPath(pack) {
   const file = path.join(pack, `${pack}.json`);
@@ -958,6 +688,10 @@ let hasProcessCleanupCompleted = false;
 let processHealthDiagnosticsRegistered = false;
 let projectContextState = {
   workspace: null,
+  version: 0,
+};
+let hostAuthState = {
+  authenticated: false,
   version: 0,
 };
 
@@ -1385,29 +1119,6 @@ function getPackagedMetadata() {
 function getPackagedBuildFlavor() {
   return getPackagedMetadata()?.ailyBuildFlavor;
 }
-
-function configurePackagedChatExecutionHost() {
-  const packageMetadata = getPackagedMetadata();
-  const configuredMode = typeof packageMetadata?.ailyChatExecutionHost === 'string'
-    ? packageMetadata.ailyChatExecutionHost.trim()
-    : '';
-  const configuredRuntimeModule = typeof packageMetadata?.ailyChatExecutionHostRuntimeModule === 'string'
-    ? packageMetadata.ailyChatExecutionHostRuntimeModule.trim()
-    : '';
-
-  if (!configuredMode || !configuredRuntimeModule) {
-    return;
-  }
-
-  if (!process.env.AILY_CHAT_EXECUTION_HOST) {
-    process.env.AILY_CHAT_EXECUTION_HOST = configuredMode;
-  }
-  if (!process.env.AILY_CHAT_EXECUTION_HOST_RUNTIME_MODULE) {
-    process.env.AILY_CHAT_EXECUTION_HOST_RUNTIME_MODULE = path.resolve(app.getAppPath(), configuredRuntimeModule);
-  }
-}
-
-configurePackagedChatExecutionHost();
 
 function getBuildFlavor(conf) {
   return normalizeBuildFlavor(process.env.AILY_BUILD_FLAVOR || getPackagedBuildFlavor() || conf?.build_flavor);
@@ -2202,6 +1913,10 @@ function loadEnv() {
     config: conf,
   });
   builder.configureCacheEnvironment();
+  process.env.AILY_CONNECTOR_DATA_PATH = path.join(
+    process.env.AILY_APPDATA_PATH,
+    "connector",
+  );
 
   // 确保应用数据目录存在
   if (!fs.existsSync(process.env.AILY_APPDATA_PATH)) {
@@ -2241,9 +1956,11 @@ function loadEnv() {
     "ucenter_web",
     "tool_web",
     "npm_registry",
+    "npm_registry_linux",
     "resource",
     "updater",
   ];
+  const defaultRegions = conf.regions || {};
   const defaultCnRegion = (conf.regions && conf.regions.cn) || {};
   const forcedCnRegionUrls = cnRegionUrlKeys.reduce((urls, key) => {
     if (typeof defaultCnRegion[key] === 'string') {
@@ -2284,7 +2001,24 @@ function loadEnv() {
     }
 
     // 合并配置文件
-    Object.assign(conf, userConf);
+    const userRegions = userConf.regions || {};
+    const mergedRegions = Object.fromEntries(
+      [...new Set([...Object.keys(defaultRegions), ...Object.keys(userRegions)])]
+        .map((regionKey) => [
+          regionKey,
+          {
+            ...(defaultRegions[regionKey] || {}),
+            ...(userRegions[regionKey] || {}),
+          },
+        ]),
+    );
+    Object.assign(conf, userConf, {
+      linux: {
+        ...(conf.linux || {}),
+        ...(userConf.linux || {}),
+      },
+      regions: mergedRegions,
+    });
 
     const buildFlavor = getBuildFlavor(conf);
     const officialRegion = getOfficialRegionForFlavor(buildFlavor);
@@ -2328,18 +2062,28 @@ function loadEnv() {
   process.env.AILY_OFFICIAL_REGION = officialRegion;
   // npm registry
   process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
+  process.env.AILY_NPM_REGISTRY_LINUX = regionConfig.npm_registry_linux || conf.linux?.npm_registry || "";
   // 子应用目录与当前服务区域共用 regions.<region>.resource 配置。
   process.env.AILY_SUBAPP_INDEX_URL = process.env.AILY_SUBAPP_INDEX_URL
     || buildSubappIndexUrl(regionConfig.resource);
   // 设置 npm 使用应用数据目录下的配置文件，忽略系统 .npmrc
   const appNpmrcPath = path.join(process.env.AILY_APPDATA_PATH, ".npmrc");
-  // 如果不存在则创建
-  if (!fs.existsSync(appNpmrcPath)) {
-    try {
-      fs.writeFileSync(appNpmrcPath, `@aily-project:registry=\${AILY_NPM_REGISTRY}\naudit=false\nfund=false\n`);
-    } catch (error) {
-      console.error("创建 .npmrc 文件失败:", error);
+  try {
+    const linuxRegistryLine = "@aily-project-linux:registry=${AILY_NPM_REGISTRY_LINUX}";
+    if (!fs.existsSync(appNpmrcPath)) {
+      fs.writeFileSync(
+        appNpmrcPath,
+        `@aily-project:registry=\${AILY_NPM_REGISTRY}\n${linuxRegistryLine}\naudit=false\nfund=false\n`,
+      );
+    } else {
+      const existingNpmrc = fs.readFileSync(appNpmrcPath, "utf8");
+      if (!/^@aily-project-linux:registry=/m.test(existingNpmrc)) {
+        const separator = existingNpmrc.endsWith("\n") ? "" : "\n";
+        fs.appendFileSync(appNpmrcPath, `${separator}${linuxRegistryLine}\n`);
+      }
     }
+  } catch (error) {
+    console.error("创建或升级 .npmrc 文件失败:", error);
   }
   process.env.NPM_CONFIG_USERCONFIG = appNpmrcPath;
   // 清理可能来自系统/终端的代理相关环境变量，避免 npm 在 app 内部使用系统代理
@@ -2361,7 +2105,7 @@ function loadEnv() {
   } catch (e) {
     console.error('清理代理环境变量失败:', e);
   }
-  // aily-builder / aily-linter 使用独立的 npm 全局 prefix。
+  // aily-builder / aily-linter / aily-connector 使用独立的 npm 全局 prefix。
   // AppData 根目录本身是开发板、SDK 和工具包的普通 npm 项目；两者共用
   // node_modules 时，开发板依赖的 npm install/uninstall 会清理掉全局工具。
   process.env.AILY_NPM_PREFIX = path.join(process.env.AILY_APPDATA_PATH, "npm-global");
@@ -2387,7 +2131,7 @@ function loadEnv() {
 
   process.env.AILY_PROJECT_PATH = conf["project_path"];
   // child 目录只管理 Node、7z、probe-rs 等随应用分发的工具；
-  // aily-builder 与 aily-linter 由 npm 安装到应用专用的全局 prefix。
+  // aily-builder、aily-linter 与 aily-connector 由 npm 安装到应用专用的全局 prefix。
 
   // 必须先让 child Node 可用。首次启动和应用版本变化时安装 latest，
   // 同一应用版本复用现有工具；两个 npm 全局安装串行执行。
@@ -2400,13 +2144,13 @@ function loadEnv() {
     allowE2ERefresh,
   });
   if (isE2E && !allowE2ERefresh) {
-    console.log("E2E mode: skipping automatic aily-builder and aily-linter latest refresh");
+    console.log("E2E mode: skipping automatic aily-builder, aily-linter and aily-connector latest refresh");
   }
   if (installLatest) {
     try {
       markInstalledForAppVersion(userConfigPath, appVersion);
       userConf.installed = appVersion;
-      console.log(`aily blockly ${appVersion} will refresh aily-builder and aily-linter to latest`);
+      console.log(`aily blockly ${appVersion} will refresh aily-builder, aily-linter and aily-connector to latest`);
     } catch (error) {
       console.error("Failed to save aily tools refresh marker:", error);
     }
@@ -2426,6 +2170,20 @@ function loadEnv() {
   const linterInitialization = linter.initialize(childPath, builderInitialization, {
     installLatest,
   });
+  const connectorInitialization = connector.initialize(
+    childPath,
+    linterInitialization,
+    {
+      // Install the latest protocol-compatible connector. Local development uses
+      // setup:local-connector or an explicit AILY_CONNECTOR_PROJECT override.
+      installManaged: installLatest,
+    },
+  );
+  connectorInitialization.then((result) => {
+    if (!result.ok) {
+      console.warn(`aily-connector is not ready: ${result.error || "unknown error"}`);
+    }
+  }).catch((error) => console.warn("aily-connector initialization failed:", error));
   linterInitialization.then((result) => {
     if (installLatest && !result.startupInstallSucceeded) {
       console.error(`aily-linter@latest startup install failed: ${result.startupInstallError || result.error || "unknown error"}`);
@@ -2714,7 +2472,7 @@ function createWindow() {
   });
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);
-
+  connector.registerHandlers();
   // 在多实例模式下，监听OAuth回调文件的变化
   if (shouldUseMultiInstance()) {
     const callbackFilePath = path.join(app.getPath('userData'), 'oauth-callback.json');
@@ -3128,6 +2886,7 @@ function cleanupRegisteredChildProcesses() {
     killAllNpmProcesses(),
     killAllTerminals(),
     cancelAllAilyServicesStreams(),
+    connector.shutdown(),
     packagedRendererServer.close(),
   ]).then((results) => {
     // console.info('[PROC_TRACE][APP_CLEANUP_DONE]', { results });
@@ -3183,19 +2942,6 @@ app.on("will-quit", () => {
     }
     heldInstanceLockPath = null;
   }
-  if (coderEmbedHttpServer) {
-    if (coderEmbedHttpServer.kind === "static") {
-      try {
-        coderEmbedHttpServer.server.close();
-      } catch (e) {
-        console.warn("will-quit coder embed server:", e.message);
-      }
-    } else if (coderEmbedHttpServer.spawned && coderEmbedHttpServer.devProcess) {
-      killCoderEmbedSpawnedDevProcess(coderEmbedHttpServer.devProcess);
-    }
-    coderEmbedHttpServer = null;
-  }
-  coderEmbedEnsureInFlight = null;
 });
 
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
@@ -3258,12 +3004,6 @@ app.on('open-url', (event, url) => {
   event.preventDefault();
   console.log('macOS open-url:', url);
   handleProtocol(url);
-});
-
-// 内嵌 Coder（开发: child/coder Vite；生产: child/coder/dist）服务根地址
-ipcMain.handle("coder-embed-get-base-url", async () => {
-  const port = await ensureCoderEmbedServerStarted();
-  return `http://127.0.0.1:${port}/`;
 });
 
 // 文件选择
@@ -3384,6 +3124,32 @@ ipcMain.handle("env-set", (event, data) => {
 ipcMain.handle("env-get", (event, key) => {
   return process.env[key];
 })
+
+let configSaveQueue = Promise.resolve();
+process.env.AILY_CONFIG_MERGED_SAVE = '1';
+
+ipcMain.handle("config-save-merged", (_event, payload = {}) => {
+  const operation = configSaveQueue.then(() => {
+    if (!process.env.AILY_APPDATA_PATH) {
+      throw new Error('AILY_APPDATA_PATH is not initialized');
+    }
+
+    const configPath = path.join(process.env.AILY_APPDATA_PATH, 'config.json');
+    const latest = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      : {};
+    const merged = mergeConfigChanges(payload.base || {}, payload.next || {}, latest);
+    fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
+    userConf = merged;
+    if (typeof merged.project_path === 'string' && merged.project_path.trim()) {
+      process.env.AILY_PROJECT_PATH = merged.project_path.trim();
+    }
+    return { success: true };
+  });
+
+  configSaveQueue = operation.catch(() => undefined);
+  return operation;
+});
 
 // 移动文件到回收站
 ipcMain.handle("move-to-trash", async (event, filePath) => {
@@ -3515,6 +3281,32 @@ ipcMain.on("host-project-context-changed", (event, data = {}) => {
 });
 
 ipcMain.handle("host-project-context-get", () => ({ ...projectContextState }));
+
+ipcMain.on("host-auth-state-changed", (event, data = {}) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!mainWindow || senderWindow !== mainWindow || typeof data.authenticated !== "boolean") {
+    return;
+  }
+
+  hostAuthState = {
+    authenticated: data.authenticated,
+    ...(data.authenticated && data.user ? { user: data.user } : {}),
+    ...(data.authenticated && data.quotaSnapshot ? { quotaSnapshot: data.quotaSnapshot } : {}),
+    version: hostAuthState.version + 1,
+  };
+
+  BrowserWindow.getAllWindows().forEach((win) => {
+    try {
+      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+        win.webContents.send("host-auth-state-changed", hostAuthState);
+      }
+    } catch (error) {
+      console.error("host-auth-state-changed broadcast failed:", error.message);
+    }
+  });
+});
+
+ipcMain.handle("host-auth-state-get", () => ({ ...hostAuthState }));
 
 // OAuth状态管理的IPC处理器
 ipcMain.handle("oauth-register-state", (event, state) => {

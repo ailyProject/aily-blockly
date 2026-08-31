@@ -1,4 +1,4 @@
-import { OnboardingConfig } from '../services/onboarding.service';
+import { OnboardingConfig } from '@core/app-shell/public-api';
 
 /**
  * Guide 页面的新手引导配置
@@ -85,37 +85,5 @@ export const BLOCKLY_ONBOARDING_CONFIG: OnboardingConfig = {
       descKey: 'BLOCKLY.ONBOARDING.UPLOAD_DESC',
       position: 'bottom'
     },
-  ]
-};
-
-/**
- * Aily Chat 的新手引导配置
- */
-export const AILY_CHAT_ONBOARDING_CONFIG: OnboardingConfig = {
-  steps: [
-    {
-      target: '.input-box textarea',
-      titleKey: 'AILY_CHAT.ONBOARDING.STEP1_TITLE',
-      descKey: 'AILY_CHAT.ONBOARDING.STEP1_DESC',
-      position: 'top'
-    },
-    {
-      target: '.input-box .btns .btn:first-child',
-      titleKey: 'AILY_CHAT.ONBOARDING.STEP2_TITLE',
-      descKey: 'AILY_CHAT.ONBOARDING.STEP2_DESC',
-      position: 'top'
-    },
-    {
-      target: '.input-box .btns .btn.mode',
-      titleKey: 'AILY_CHAT.ONBOARDING.STEP3_TITLE',
-      descKey: 'AILY_CHAT.ONBOARDING.STEP3_DESC',
-      position: 'top'
-    },
-    {
-      target: '.input-box .btns .btn.right',
-      titleKey: 'AILY_CHAT.ONBOARDING.STEP4_TITLE',
-      descKey: 'AILY_CHAT.ONBOARDING.STEP4_DESC',
-      position: 'top'
-    }
   ]
 };

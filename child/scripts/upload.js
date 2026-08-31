@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const os = require('os');
 const platformRuntime = require('./platform-runtime');
+const ailyCodeProject = require('./aily-code-project');
 
 // 简单的日志工具
 const logger = {
@@ -166,7 +167,9 @@ function normalizeUploadParam(value) {
 }
 
 function readUploadCommandFromPreprocess(currentProjectPath) {
-    const preprocessPath = path.join(currentProjectPath, '.temp', 'preprocess.json');
+    const preprocessPath = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath)
+        ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
+        : path.join(currentProjectPath, '.temp', 'preprocess.json');
 
     if (!fs.existsSync(preprocessPath)) {
         return { success: false, reason: 'preprocess.json 不存在' };
@@ -346,7 +349,7 @@ async function main() {
             throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
         }
         const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
-        const platformRef = platformRuntime.readPlatformRefFromProjectAci(currentProjectPath);
+        const platformRef = platformRuntime.readPlatformRefFromProjectPackage(currentProjectPath);
         const boardDependencies = platformRuntime.resolveEffectiveBoardDependencies(
             boardPackageJson.boardDependencies,
             appDataPath,

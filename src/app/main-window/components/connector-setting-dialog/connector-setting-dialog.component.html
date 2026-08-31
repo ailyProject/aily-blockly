@@ -1,0 +1,78 @@
+<app-base-dialog
+  title="Linux 开发板连接设置"
+  [buttons]="buttons"
+  [loading]="connecting"
+  [showCloseButton]="!connecting"
+  (closeDialog)="close()"
+  (buttonClick)="onButtonClick($event)">
+  <form class="connector-form" (submit)="$event.preventDefault()">
+    <label class="wide">
+      <span>SSH 地址</span>
+      <input
+        nz-input
+        name="sshHost"
+        [(ngModel)]="settings.host"
+        autocomplete="off"
+        [disabled]="connecting"
+        placeholder="例如：192.168.1.100" />
+    </label>
+
+    <div class="row">
+      <label>
+        <span>端口</span>
+        <input
+          nz-input
+          type="number"
+          name="sshPort"
+          min="1"
+          max="65535"
+          [(ngModel)]="settings.port"
+          [disabled]="connecting" />
+      </label>
+      <label>
+        <span>用户名</span>
+        <input
+          nz-input
+          name="sshUsername"
+          [(ngModel)]="settings.username"
+          autocomplete="username"
+          [disabled]="connecting" />
+      </label>
+    </div>
+
+    <label class="wide">
+      <span>密码</span>
+      <input
+        nz-input
+        type="password"
+        name="sshPassword"
+        [(ngModel)]="settings.password"
+        autocomplete="current-password"
+        [disabled]="connecting" />
+    </label>
+
+    <label class="wide">
+      <span>私钥文件</span>
+      <div class="path-input">
+        <input
+          nz-input
+          name="sshPrivateKeyPath"
+          [(ngModel)]="settings.privateKeyPath"
+          autocomplete="off"
+          [disabled]="connecting"
+          placeholder="可选" />
+        <button type="button" (click)="selectPrivateKey()" [disabled]="connecting">浏览</button>
+      </div>
+    </label>
+
+    @if (pendingHostKey) {
+      <div class="host-key-confirmation">
+        <strong>首次连接，请核对 SSH 主机密钥</strong>
+        <code>{{ pendingHostKey }}</code>
+        <span>确认该指纹属于目标开发板后，再次点击连接。</span>
+      </div>
+    }
+
+    <p class="hint">密码仅用于本次连接，不写入项目文件或连接状态。</p>
+  </form>
+</app-base-dialog>

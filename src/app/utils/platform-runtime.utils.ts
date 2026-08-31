@@ -69,22 +69,24 @@ export function readPlatformManifestFromAppData(platformPackageName: string): Pl
   }
 }
 
-/** 从 project.aci target 解析 platform npm 包名与可选版本 */
-export function readPlatformRefFromProjectAci(projectPath: string): PlatformPackageRef | null {
+/** 从 Coder 工程 package.json 解析 platform npm 包名与可选版本。 */
+export function readPlatformRefFromProjectPackage(projectPath: string): PlatformPackageRef | null {
   const pathApi = window['path'] as { join: (...p: string[]) => string; isExists: (p: string) => boolean };
   const fsApi = window['fs'] as { readFileSync: (p: string, enc: string) => string };
-  const aciPath = pathApi.join(projectPath, 'project.aci');
-  if (!pathApi.isExists(aciPath)) {
+  const packagePath = pathApi.join(projectPath, 'package.json');
+  if (!pathApi.isExists(packagePath)) {
     return null;
   }
   try {
-    const aci = JSON.parse(fsApi.readFileSync(aciPath, 'utf8'));
-    const target = aci?.target;
-    const packageName = String(target?.platform ?? '').trim();
+    const manifest = JSON.parse(fsApi.readFileSync(packagePath, 'utf8'));
+    if (manifest?.type !== 'coder') {
+      return null;
+    }
+    const packageName = String(manifest?.platform ?? '').trim();
     if (!packageName) {
       return null;
     }
-    const version = String(target?.platformVersion ?? '').trim();
+    const version = String(manifest?.platformVersion ?? '').trim();
     return { packageName, ...(version ? { version } : {}) };
   } catch {
     return null;

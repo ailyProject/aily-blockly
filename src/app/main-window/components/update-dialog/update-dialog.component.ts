@@ -4,10 +4,10 @@ import { CommonModule } from '@angular/common';
 import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { NzIconModule } from 'ng-zorro-antd/icon';
 import { Observable, Subscription } from 'rxjs';
-import { UpdateService } from '../../../services/update.service';
+import { UpdateService } from '@core/app-shell/public-api';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
-import { ConfigService } from '../../../services/config.service';
+import { ConfigService } from '@core/preferences/public-api';
 import { HttpClient } from '@angular/common/http';
 import { marked } from 'marked';
 

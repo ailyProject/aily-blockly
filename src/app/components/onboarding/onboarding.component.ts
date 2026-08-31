@@ -1,7 +1,7 @@
 import { Component, Input, Output, EventEmitter, OnInit, OnDestroy, OnChanges, SimpleChanges, ViewChild, ElementRef, AfterViewChecked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
-import { OnboardingConfig, OnboardingStep } from '../../services/onboarding.service';
+import { OnboardingConfig, OnboardingStep } from '@core/app-shell/public-api';
 
 @Component({
   selector: 'app-onboarding',

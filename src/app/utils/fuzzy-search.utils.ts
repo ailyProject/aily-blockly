@@ -59,7 +59,7 @@ export function extractKeywords(query: string): string[] {
 
   // 移除常见的前缀/后缀
   let cleaned = query
-    .replace(/@aily-project\//gi, '')  // 移除包前缀
+    .replace(/@aily-project(?:-linux)?\//gi, '')  // 移除包前缀
     .replace(/^lib-/gi, '')             // 移除lib-前缀
     .replace(/\s+/g, ' ')               // 合并空格
     .trim();
@@ -111,7 +111,7 @@ const LIBRARY_FIELD_WEIGHTS: Array<[keyof LibrarySearchDoc, number]> = [
 function normalizeSearchText(value: string): string {
   return (value || '')
     .toLowerCase()
-    .replace(/@aily-project\//g, '')
+    .replace(/@aily-project(?:-linux)?\//g, '')
     .replace(/ailyproject|aily|blockly/g, '')
     .replace(/[\s_\-/]+/g, '');
 }

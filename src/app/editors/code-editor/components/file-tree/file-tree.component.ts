@@ -1,7 +1,6 @@
 import { Component, EventEmitter, Input, Output, OnInit } from '@angular/core';
-import { CollectionViewer, DataSource, SelectionChange } from '@angular/cdk/collections';
+import { CollectionViewer, DataSource, SelectionChange, SelectionModel } from '@angular/cdk/collections';
 import { FlatTreeControl } from '@angular/cdk/tree';
-import { SelectionModel } from '@angular/cdk/collections';
 import { NzTreeViewModule } from 'ng-zorro-antd/tree-view';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { FileService } from '../../services/file.service';

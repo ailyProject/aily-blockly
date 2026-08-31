@@ -28,7 +28,7 @@ export function createSimulatorMainAgentSceneMessage(
 
   return `请根据 Aily Simulator 当前连线场景，直接修改当前已打开项目中的开发板、库和 Blockly 程序，使代码与连线一致。
 
-这是主 Agent 的普通项目变更任务；不要调用 subagent，使用当前 Simulator Scene v2 工作流。
+这是主 Agent 的普通项目变更任务；不要调用任何 subagent，使用当前 Simulator Scene v2 工作流。
 
 执行顺序（必须遵守）：
 1. 如所需工具处于 deferred，只能用一次 tool_load 精确加载 switch_board、set_board_config、lib_add、abs_export、abs_validate、abs_apply；不要加载项目搜索、状态、文件、应用或子应用工具。第一项 Blockly 工作区操作必须调用 abs_export，以当前内存中的 Blockly 工作区为准。不要先用 list_dir 或反复 read_file 清点整个项目。

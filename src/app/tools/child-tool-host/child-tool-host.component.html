@@ -89,7 +89,7 @@
 <ng-template #contentTpl>
   <div class="child-tool-host">
     @if (isAilyChat) {
-    <aily-chat-subapp-dock [sessionId]="ailyChatSessionId"></aily-chat-subapp-dock>
+    <app-subapp-activity-dock [sessionId]="ailyChatSessionId"></app-subapp-activity-dock>
     }
     <div class="iframe-shell">
       @if (iframeSrc) {

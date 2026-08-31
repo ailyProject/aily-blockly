@@ -193,56 +193,11 @@ nz-modal-container {
   z-index: 100200 !important;
 }
 
-// 登录中打开的协议必须高于全局登录遮罩，否则 modal 会被其覆盖。
-.cdk-overlay-container:has(.login-agreement-modal) {
+// 登录流程中的协议、账号绑定/合并确认必须高于全局登录遮罩，
+// 否则 modal 会被父级 overlay 容器的堆叠上下文限制。
+.cdk-overlay-container:has(.login-agreement-modal),
+.cdk-overlay-container:has(.merge-confirm-modal) {
   z-index: 100200 !important;
-}
-
-.aily-chat-menu-left-tooltip.ant-tooltip {
-  max-width: min(180px, calc(100vw - 24px));
-  z-index: 1000040;
-
-  .ant-tooltip-inner {
-    max-width: min(180px, calc(100vw - 24px));
-    max-height: min(240px, calc(100vh - 24px));
-    min-height: 0;
-    overflow-y: auto;
-    padding: 6px 9px;
-    border-radius: 6px;
-    font-size: 11px;
-    line-height: 16px;
-    white-space: pre-line;
-    word-break: break-word;
-    scrollbar-width: thin;
-  }
-
-  .ant-tooltip-inner::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .ant-tooltip-inner::-webkit-scrollbar-thumb {
-    background: var(--aily-scrollbar-thumb);
-    border-radius: 4px;
-  }
-}
-
-body.aily-chat-model-submenu-open {
-  nz-resize-handle.layout-resize-handle {
-    z-index: 0 !important;
-    pointer-events: none !important;
-  }
-
-  nz-resize-handle.layout-resize-handle .toolbox-pane__resize-handle::after {
-    background: transparent !important;
-    opacity: 0 !important;
-  }
-
-  // Model submenu lives inside tool-panel (z-index 100). Temporarily demote
-  // floating editor chrome so hover flyouts remain interactive over the seam.
-  .devtool-box {
-    z-index: 0 !important;
-    pointer-events: none !important;
-  }
 }
 
 .cdk-global-scrollblock {

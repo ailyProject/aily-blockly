@@ -5,7 +5,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { FormsModule } from '@angular/forms';
 import { NzCodeEditorModule } from 'ng-zorro-antd/code-editor';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { ThemeService } from '../../../../services/theme.service';
+import { ThemeService } from '@core/preferences/public-api';
 
 @Component({
   selector: 'app-quick-send-editor',

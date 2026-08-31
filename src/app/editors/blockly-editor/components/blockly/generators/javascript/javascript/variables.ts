@@ -11,8 +11,7 @@
 // Former goog.module ID: Blockly.JavaScript.variables
 
 import type {Block} from '../../core/block.js';
-import type {JavascriptGenerator} from './javascript_generator.js';
-import {Order} from './javascript_generator.js';
+import { type JavascriptGenerator, Order } from './javascript_generator.js';
 
 export function variables_get(
   block: Block,

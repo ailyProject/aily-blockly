@@ -26,8 +26,6 @@ const onboardingDismissalPages = new WeakSet<Page>();
 type AilyFixtures = {
   electronApp: ElectronApplication;
   mainWindow: Page;
-  executionHostMode: 'off' | 'worker';
-  executionHostRuntimeModule: string;
 };
 
 type LaunchedAilyElectron = {
@@ -37,8 +35,6 @@ type LaunchedAilyElectron = {
 };
 
 export async function launchAilyElectron(options: {
-  executionHostMode?: 'off' | 'worker';
-  executionHostRuntimeModule?: string;
   environment?: Readonly<Record<string, string>>;
   appDataPath?: string;
   logConsole?: boolean;
@@ -59,10 +55,6 @@ export async function launchAilyElectron(options: {
         ...options.environment,
         // 标记测试环境，便于后续在应用内按需关闭自动更新 / 引导等。
         AILY_E2E: '1',
-        AILY_CHAT_EXECUTION_HOST: options.executionHostMode || 'off',
-        ...(options.executionHostRuntimeModule
-          ? { AILY_CHAT_EXECUTION_HOST_RUNTIME_MODULE: options.executionHostRuntimeModule }
-          : {}),
         AILY_APPDATA_PATH: options.appDataPath || userDataDir,
       },
     });
@@ -292,13 +284,8 @@ export async function openBlocklyProject(win: Page, projectPath: string): Promis
 }
 
 export const test = base.extend<AilyFixtures>({
-  executionHostMode: ['off', { option: true }],
-  executionHostRuntimeModule: ['', { option: true }],
-
-  electronApp: async ({ executionHostMode, executionHostRuntimeModule }, use) => {
+  electronApp: async ({}, use) => {
     const launched = await launchAilyElectron({
-      executionHostMode,
-      executionHostRuntimeModule,
       appDataPath: process.env['AILY_E2E_APPDATA_PATH'] || undefined,
     });
 

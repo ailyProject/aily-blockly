@@ -7,7 +7,7 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { BaseDialogComponent, DialogButton } from '../base-dialog/base-dialog.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { ProjectService } from '../../services/project.service';
+import { ProjectService } from '@domain/project/public-api';
 
 interface ProjectSettings {
   name: string;

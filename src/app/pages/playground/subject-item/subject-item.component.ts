@@ -4,15 +4,17 @@ import { NzButtonModule } from 'ng-zorro-antd/button';
 import { ActivatedRoute } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { ProjectService } from '../../../services/project.service';
-import { ConfigService } from '../../../services/config.service';
-import { ElectronService } from '../../../services/electron.service';
-import { CmdService } from '../../../services/cmd.service';
-import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
+import { ProjectService } from '@domain/project/public-api';
+import { ConfigService } from '@core/preferences/public-api';
+import {
+  ElectronService,
+  CmdService,
+  CrossPlatformCmdService,
+  PlatformService,
+  AppDataResourceLockService,
+} from '@core/platform/public-api';
 import { PlaygroundService } from '../playground.service';
-import { UiService } from '../../../services/ui.service';
-import { PlatformService } from '../../../services/platform.service';
-import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
+import { UiService } from '@core/app-shell/public-api';
 
 @Component({
   selector: 'app-subject-item',

@@ -33,7 +33,7 @@
 
 ```powershell
 # 只运行无需额外环境变量的应用 UI 回归
-npm run test:e2e -- smoke.spec.ts guide.spec.ts project-new.spec.ts tools.spec.ts aily-chat.spec.ts
+npm run test:e2e -- smoke.spec.ts guide.spec.ts project-new.spec.ts tools.spec.ts
 
 # 只运行编译诊断、错误决策与断点逻辑回归
 npm run test:e2e:fast -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
@@ -303,7 +303,6 @@ e2e/.artifacts/simulator-debug-report.json
 | [tests/guide.spec.ts](tests/guide.spec.ts) | 指南主页与入口菜单 | ✅ |
 | [tests/project-new.spec.ts](tests/project-new.spec.ts) | 新建项目向导渲染（含已装开发板时的选择） | ✅ |
 | [tests/tools.spec.ts](tests/tools.spec.ts) | 串口监视器 / 终端面板（无需真实设备） | ✅ |
-| [tests/aily-chat.spec.ts](tests/aily-chat.spec.ts) | AI 聊天工具离线 UI | ✅ |
 | [tests/compile-diagnostic.spec.ts](tests/compile-diagnostic.spec.ts) | 编译器根因诊断提取 | ✅ |
 | [tests/electron-app-cleanup.spec.ts](tests/electron-app-cleanup.spec.ts) | Electron 退出清理生命周期 | ✅ |
 | [tests/error-decision.spec.ts](tests/error-decision.spec.ts) | 失败后继续/中止决策逻辑 | ✅ |

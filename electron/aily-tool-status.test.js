@@ -62,17 +62,23 @@ test("Windows settings status handlers do not synchronously spawn tool probes", 
 
   const builderPath = path.resolve(__dirname, "builder.js");
   const linterPath = path.resolve(__dirname, "linter.js");
+  const connectorPath = path.resolve(__dirname, "connector.js");
   delete require.cache[builderPath];
   delete require.cache[linterPath];
+  delete require.cache[connectorPath];
   const builder = require(builderPath);
   const linter = require(linterPath);
+  const connector = require(connectorPath);
   builder.registerHandlers(() => null);
   linter.registerHandlers(() => null);
+  connector.registerHandlers();
 
   const builderStatus = await handlers.get("aily-builder-status")();
   const linterStatus = await handlers.get("aily-linter-status")();
+  const connectorStatus = await handlers.get("aily-connector-status")();
 
   assert.equal(spawnSyncCalls, 0);
   assert.equal(builderStatus.key, "aily-builder");
   assert.equal(linterStatus.key, "aily-linter");
+  assert.equal(connectorStatus.key, "aily-connector");
 });

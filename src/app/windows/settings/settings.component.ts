@@ -1,29 +1,35 @@
-import { Component, OnDestroy, ViewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, ViewChild } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
-import { UiService } from '../../services/ui.service';
+import { UiService } from '@core/app-shell/public-api';
 import { NzRadioModule } from 'ng-zorro-antd/radio';
-import { SettingsService } from '../../services/settings.service';
-import { TranslationService } from '../../services/translation.service';
-import { ConfigService } from '../../services/config.service';
+import {
+  SettingsService,
+  TranslationService,
+  ConfigService,
+  ThemeService,
+  ThemeMode,
+} from '@core/preferences/public-api';
 import { SimplebarAngularComponent, SimplebarAngularModule } from 'simplebar-angular';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
 import { NzSelectModule } from 'ng-zorro-antd/select';
-import { AuthService } from '../../services/auth.service';
+import { AuthService, switchServiceRegionAndRequestLogin } from '@core/auth/public-api';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { ThemeService, ThemeMode } from '../../services/theme.service';
-import { CmdService } from '../../services/cmd.service';
-import { ElectronService } from '../../services/electron.service';
+import { CmdService, ElectronService } from '@core/platform/public-api';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
-import { NpmService } from '../../services/npm.service';
-import { switchServiceRegionAndRequestLogin } from '../../services/service-region-switch';
-import { ChildAppSafetyService } from '../../services/child-app-safety.service';
+import { NpmService } from '@domain/dependencies/public-api';
+import { AILY_CODER_SUBAPP_ID } from '../../configs/required-subapp.config';
+import { RequiredSubappService, RequiredSubappState, ChildAppSafetyService } from '@integration/subapps/public-api';
+import {
+  PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
+  resolveConfiguredProjectRootPath,
+} from '@domain/project/public-api';
 
 type CacheClearOption = 'all' | 'unused-7' | 'unused-30';
 type DependencyRemovalOption = 'all' | 'unused-30' | 'unused-90';
@@ -127,11 +133,13 @@ export class SettingsComponent implements OnDestroy {
   boardOperations = {};
   ailyBuilderStatus: any = null;
   ailyLinterStatus: any = null;
+  ailyConnectorStatus: any = null;
   ailyToolsCheckingUpdates = false;
   applying = false;
   regionSwitching = false;
   private ailyBuilderStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private ailyLinterStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  private ailyConnectorStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private settingsReadyObserver: MutationObserver | null = null;
 
   // 搜索关键字
@@ -341,8 +349,37 @@ export class SettingsComponent implements OnDestroy {
     return this.configService.isCoderEnabled();
   }
 
-  onDevelopmentModePreferenceChange(value: string) {
-    void this.configService.setDevelopmentModePreference(value, 'settings');
+  coderDependencyState: RequiredSubappState = {
+    id: AILY_CODER_SUBAPP_ID,
+    status: 'loading',
+    installed: false,
+    installing: false,
+    percent: 0,
+  };
+  private readonly coderDependencySubscription: Subscription;
+  private readonly configReloadSubscription: Subscription;
+
+  async onDevelopmentModePreferenceChange(value: string) {
+    if (value !== 'coder') {
+      await this.configService.setDevelopmentModePreference(value, 'settings');
+      return;
+    }
+    if (this.coderDependencyState.installing) {
+      return;
+    }
+    try {
+      const { installedNow } = await this.requiredSubapps.ensureInstalled(AILY_CODER_SUBAPP_ID);
+      await this.configService.setDevelopmentModePreference('coder', 'settings');
+      if (installedNow) {
+        this.message.success(this.translateService.instant('SETTINGS.FIELDS.CODER_EXTENSION_INSTALLED'));
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error || '');
+      this.message.error(
+        this.translateService.instant('SETTINGS.FIELDS.CODER_EXTENSION_INSTALL_FAILED')
+        + (detail ? `: ${detail}` : ''),
+      );
+    }
   }
 
   appdata_path: string
@@ -362,8 +399,18 @@ export class SettingsComponent implements OnDestroy {
     private cmdService: CmdService,
     private electronService: ElectronService,
     private npmService: NpmService,
+    private readonly requiredSubapps: RequiredSubappService,
+    private readonly cdr: ChangeDetectorRef,
     private childAppSafety: ChildAppSafetyService,
   ) {
+    this.coderDependencySubscription = this.requiredSubapps.observe(AILY_CODER_SUBAPP_ID)
+      .subscribe((state) => {
+        this.coderDependencyState = state;
+        this.cdr.markForCheck();
+      });
+    this.configReloadSubscription = this.configService.configReloaded$.subscribe(() => {
+      this.cdr.markForCheck();
+    });
   }
 
   ngOnDestroy() {
@@ -374,7 +421,10 @@ export class SettingsComponent implements OnDestroy {
     this.clearScrollEndTimer();
     this.clearAilyBuilderStatusTimer();
     this.clearAilyLinterStatusTimer();
+    this.clearAilyConnectorStatusTimer();
     this._clearCacheSubscription?.unsubscribe();
+    this.coderDependencySubscription.unsubscribe();
+    this.configReloadSubscription.unsubscribe();
     if (this._clearCacheLoadingRef) {
       this.message.remove(this._clearCacheLoadingRef);
       this._clearCacheLoadingRef = null;
@@ -391,6 +441,7 @@ export class SettingsComponent implements OnDestroy {
     this.updateBoardList();
     void this.loadAilyBuilderStatus();
     void this.loadAilyLinterStatus();
+    void this.loadAilyConnectorStatus();
     void this.loadCacheStats();
     this.notifySettingsWindowReady();
   }
@@ -461,6 +512,21 @@ export class SettingsComponent implements OnDestroy {
     }
   }
 
+  async loadAilyConnectorStatus() {
+    if (!window['connector']?.status) {
+      return;
+    }
+    try {
+      this.ailyConnectorStatus = await window['connector'].status();
+      if (this.ailyConnectorStatus?.installing) {
+        this.scheduleAilyConnectorStatusReload();
+      }
+    } catch (error) {
+      console.warn('加载 aily-connector 状态失败:', error);
+      this.ailyConnectorStatus = null;
+    }
+  }
+
   getAilyToolVersion(status: any) {
     return status?.installedVersion || this.translateService.instant('SETTINGS.FIELDS.AILY_TOOL_UNKNOWN');
   }
@@ -500,12 +566,14 @@ export class SettingsComponent implements OnDestroy {
   isAilyToolsUpdateLoading() {
     return this.ailyToolsCheckingUpdates ||
       !!this.ailyBuilderStatus?.installing ||
-      !!this.ailyLinterStatus?.installing;
+      !!this.ailyLinterStatus?.installing ||
+      !!this.ailyConnectorStatus?.installing;
   }
 
   canCheckAilyToolsUpdates() {
     return !!window['builder']?.checkForUpdate &&
       !!window['linter']?.checkForUpdate &&
+      !!window['connector']?.checkForUpdate &&
       !this.isAilyToolsUpdateLoading();
   }
 
@@ -527,6 +595,11 @@ export class SettingsComponent implements OnDestroy {
         name: 'aily-linter',
         api: window['linter'],
         setStatus: (status: any) => this.ailyLinterStatus = status
+      },
+      {
+        name: 'aily-connector',
+        api: window['connector'],
+        setStatus: (status: any) => this.ailyConnectorStatus = status
       }
     ];
 
@@ -548,7 +621,8 @@ export class SettingsComponent implements OnDestroy {
     try {
       await Promise.all([
         this.loadAilyBuilderStatus(),
-        this.loadAilyLinterStatus()
+        this.loadAilyLinterStatus(),
+        this.loadAilyConnectorStatus()
       ]);
 
       if (updatedTools.length) {
@@ -603,9 +677,42 @@ export class SettingsComponent implements OnDestroy {
     }
   }
 
+  private scheduleAilyConnectorStatusReload() {
+    this.clearAilyConnectorStatusTimer();
+    this.ailyConnectorStatusTimer = setTimeout(() => {
+      this.ailyConnectorStatusTimer = null;
+      this.loadAilyConnectorStatus();
+    }, 2000);
+  }
+
+  private clearAilyConnectorStatusTimer() {
+    if (this.ailyConnectorStatusTimer) {
+      clearTimeout(this.ailyConnectorStatusTimer);
+      this.ailyConnectorStatusTimer = null;
+    }
+  }
+
   selectLang(lang) {
     this.translationService.setLanguage(lang.code);
     window['ipcRenderer'].send('setting-changed', { action: 'language-changed', data: lang.code });
+  }
+
+  async selectProjectFolder(): Promise<void> {
+    const pathApi = window['path'];
+    const currentPath = resolveConfiguredProjectRootPath(this.configData.project_path, {
+      userDocuments: pathApi.getUserDocuments(),
+      userHome: pathApi.getUserHome(),
+      separator: window['platform'].type === 'win32' ? '\\' : '/',
+    });
+    const result = await window['ipcRenderer'].invoke('dialog-select-files', {
+      title: this.translateService.instant('SETTINGS.FIELDS.PROJECT_FOLDER'),
+      defaultPath: currentPath,
+      properties: ['openDirectory'],
+    });
+    if (result?.canceled || !result?.filePaths?.[0]) {
+      return;
+    }
+    this.configData.project_path = result.filePaths[0];
   }
 
   // 使用锚点滚动到指定部分
@@ -685,6 +792,14 @@ export class SettingsComponent implements OnDestroy {
       await this.configService.applyResourceSourceRuntimeSelection();
       // 保存到config.json，如有需要立即加载的，再加载
       await this.configService.save();
+      await window['env']?.set?.({
+        key: 'AILY_PROJECT_PATH',
+        value: this.configData.project_path,
+      });
+      window['ipcRenderer'].send('setting-changed', {
+        action: PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
+        data: { path: this.configData.project_path },
+      });
       window['ipcRenderer'].send('setting-changed', { action: 'devmode-changed', data: this.configData.devmode });
       // 保存完毕后关闭窗口
       this.uiService.closeWindow();
@@ -746,12 +861,12 @@ export class SettingsComponent implements OnDestroy {
     try {
       const unusedDays = option === 'all' ? null : option === 'unused-30' ? 30 : 90;
       const removed = await this.npmService.removeGlobalDependencies(unusedDays);
-      if (removed.length === 0) {
+      if (removed.packageNames.length === 0 && removed.resourcePaths.length === 0) {
         this.message.info(this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_NONE_REMOVED'));
         return;
       }
 
-      const removedNames = new Set(removed);
+      const removedNames = new Set(removed.packageNames);
       for (const dependency of this.boardList) {
         if (removedNames.has(dependency.name)) {
           dependency.installed = false;

@@ -1,14 +1,19 @@
 import { Injectable, NgZone } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
-import { CmdOutput, CmdService } from '../../../services/cmd.service';
-import { CrossPlatformCmdService } from '../../../services/cross-platform-cmd.service';
+import {
+  CmdOutput,
+  CmdService,
+  CrossPlatformCmdService,
+  LogService,
+  PlatformService,
+  ElectronService,
+  AppDataResourceLockService,
+  ChatPerformanceTracer,
+} from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { NoticeService } from '../../../services/notice.service';
-import { ProjectService } from '../../../services/project.service';
-import { LogService } from '../../../services/log.service';
-import { ConfigService } from '../../../services/config.service';
-import { ActionState } from '../../../services/ui.service';
-import { ActionService } from '../../../services/action.service';
+import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
+import { ProjectService, ProjectDebugConfigurationService } from '@domain/project/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import {
   normalizeArduinoGeneratedCode,
   type BlockCodeMapping,
@@ -21,26 +26,25 @@ import {
   type BlocklyBuildSourceMapping,
 } from './blockly-build-source-mappings';
 
-import { BlocklyService as BlocklyService } from './blockly.service';
+import { BlocklyService } from './blockly.service';
 
-import { PlatformService } from "../../../services/platform.service";
-import { ElectronService } from '../../../services/electron.service';
 import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { WorkflowService, ProcessState } from '../../../services/workflow.service';
-import { CompileValidationService } from '../../../services/compile-validation.service';
-import { AppDataResourceLockService } from '../../../services/appdata-resource-lock.service';
-import { NpmService } from '../../../services/npm.service';
+import { CompileValidationService } from '@domain/build/public-api';
+import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
   AilyBuilderOutputLineBuffer,
   AilyBuilderProgressEvent,
   isAilyBuilderProgressLine,
-  parseAilyBuilderProgressLine
+  parseAilyBuilderProgressLine,
+  parseLegacyAilyBuilderProgressLine
 } from '../../../utils/aily-builder-progress.utils';
-import { ChatPerformanceTracer } from '../../../tools/aily-chat/services/chat-perf-tracer';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
-import { ProjectDebugConfigurationService } from '../../../services/project-debug-configuration.service';
 import { createSimulatorSceneGpioBuildMetadata } from '../../../integrations/simulator/simulator-scene-gpio-build-metadata';
+import {
+  PYTHON_PROJECT_ENTRY,
+  resolveLinuxBoardProjectRoute,
+} from '@shared/public-api';
 
 const AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY = '__AILY_CHAT_LEX_COMPLETION_PENDING_COUNT__';
 const AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY = '__AILY_CHAT_AGENT_LOOP_PENDING_COUNT__';
@@ -52,7 +56,7 @@ const PREPROCESS_POST_CHAT_QUIET_MS = 1500;
 const PREPROCESS_SLOW_PHASE_MS = 32;
 const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
 
-@Injectable()
+@Injectable({ providedIn: 'root' })
 export class _BuilderService {
 
   constructor(
@@ -1036,6 +1040,45 @@ export class _BuilderService {
         }
     }
 
+  private async writeTextFileAtomic(filePath: string, content: string): Promise<void> {
+    const writeAtomic = window['fs']?.writeFileBufferAtomicAsync;
+    if (typeof writeAtomic !== 'function') {
+      throw new Error('Atomic file writing is unavailable');
+    }
+    await writeAtomic(filePath, new TextEncoder().encode(content));
+  }
+
+  async generateAndWritePythonEntry(): Promise<ActionState> {
+    const workspace = this.blocklyService.workspace;
+    const currentProjectPath = this.projectService.currentProjectPath;
+    const workspaceRevision = this.blocklyService.getWorkspaceContentRevision();
+    // 生成目标由项目 devmode 决定，不要求板卡在线或已选择连接方式。
+    const route = resolveLinuxBoardProjectRoute(
+      this.projectService.currentPackageData,
+    );
+    if (!workspace || !currentProjectPath || !route) {
+      throw new Error('Python project is not ready');
+    }
+
+    const code = await this.generateWorkspaceCodeForPreprocess(workspace, 'python_main');
+    if (
+      this.projectService.currentProjectPath !== currentProjectPath
+      || this.blocklyService.workspace !== workspace
+      || this.blocklyService.getWorkspaceContentRevision() !== workspaceRevision
+    ) {
+      throw new Error('Project changed while Python code was being generated');
+    }
+    const mainFilePath = this.electronService.pathJoin(currentProjectPath, PYTHON_PROJECT_ENTRY);
+    await this.writeTextFileAtomic(mainFilePath, code);
+    this.lastCode = code;
+    console.log('[Builder] main.py generated:', mainFilePath);
+    return {
+      state: 'done',
+      text: `${PYTHON_PROJECT_ENTRY} generated`,
+      desc: mainFilePath,
+    };
+  }
+
     private async ensureAilyBuilderReady(): Promise<void> {
         if (window['builder']?.ensure) {
             await window['builder'].ensure();
@@ -1333,6 +1376,8 @@ export class _BuilderService {
         text: 'Provider Build request id is invalid.',
       });
     }
+    // Python 的“构建”只生成 main.py；没有 Python 路由时继续执行原 Arduino 编译流程。
+    const pythonRoute = resolveLinuxBoardProjectRoute(this.projectService.currentPackageData);
     if (!this.workflowService.startBuild()) {
       const state = this.workflowService.currentState;
       let msg = this.t('BUSY_SYSTEM');
@@ -1342,6 +1387,21 @@ export class _BuilderService {
       
       this.message.warning(this.t('BUSY_RETRY_LATER', { message: msg }));
       return Promise.reject({ state: 'warn', text: this.t('BUSY_WAIT', { message: msg }) });
+    }
+
+    if (pythonRoute) {
+      try {
+        const result = await this.appDataResourceLock.runShared(
+          'build:python-artifact',
+          () => this.generateAndWritePythonEntry(),
+        );
+        this.workflowService.finishBuild(true);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || 'Python build failed');
+        this.workflowService.finishBuild(false, message);
+        throw error;
+      }
     }
 
     this.activeBuildRequestId = requestId ?? null;
@@ -1579,7 +1639,7 @@ export class _BuilderService {
           const configFilePath = this.electronService.pathJoin(tempPath, 'build-config.json');
           await this.waitForAilyBuilderReady();
 
-          // 更新配置文件中的 code（compile.js：Blockly 写入 sketch.ino；Aily Code 写入 project.aci.entry）
+          // 更新配置文件中的 code（compile.js：Blockly 写入 sketch.ino；Coder 写入 package.json.entry）
           let buildConfig: any = {};
           if (window['path'].isExists(configFilePath)) {
             buildConfig = JSON.parse(window['fs'].readFileSync(configFilePath, 'utf8'));
@@ -1739,26 +1799,7 @@ export class _BuilderService {
                     // Legacy parser retained for aily-builder <= 1.2.10.
                     // Newer builders also emit raw Ninja counters, but those counters are
                     // local to a stage and must not be treated as global progress.
-                    const progressInfo = trimmedLine.trim();
-                    let progressValue = 0;
-                    const barProgressMatch = progressInfo.match(/\[.*?\]\s*(\d+)%/);
-                    const fractionProgressMatch = progressInfo.match(/\[(\d+)\/(\d+)\]/);
-
-                    if (barProgressMatch) {
-                      try {
-                        progressValue = parseInt(barProgressMatch[1], 10);
-                      } catch (error) {
-                        progressValue = 0;
-                      }
-                    } else if (fractionProgressMatch) {
-                      try {
-                        const current = parseInt(fractionProgressMatch[1], 10);
-                        const total = parseInt(fractionProgressMatch[2], 10);
-                        progressValue = Math.floor((current / total) * 100);
-                      } catch (error) {
-                        progressValue = 0;
-                      }
-                    }
+                    const progressValue = parseLegacyAilyBuilderProgressLine(trimmedLine) ?? 0;
 
                     if (!hasStructuredBuilderProgress && progressValue > lastProgress) {
                       lastProgress = progressValue;

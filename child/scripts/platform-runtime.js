@@ -36,19 +36,22 @@ function readPlatformManifestFromAppData(appDataPath, platformPackageName) {
     }
 }
 
-/** 从 project.aci target 解析 platform npm 包名与可选版本 */
-function readPlatformRefFromProjectAci(projectPath) {
-    const aciPath = path.join(projectPath, 'project.aci');
-    if (!fs.existsSync(aciPath)) {
+/** 从 Coder 工程 package.json 解析 platform npm 包名与可选版本。 */
+function readPlatformRefFromProjectPackage(projectPath) {
+    const packagePath = path.join(projectPath, 'package.json');
+    if (!fs.existsSync(packagePath)) {
         return null;
     }
     try {
-        const aci = JSON.parse(fs.readFileSync(aciPath, 'utf8'));
-        const packageName = String(aci?.target?.platform ?? '').trim();
+        const manifest = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+        if (manifest?.type !== 'coder') {
+            return null;
+        }
+        const packageName = String(manifest?.platform ?? '').trim();
         if (!packageName) {
             return null;
         }
-        const version = String(aci?.target?.platformVersion ?? '').trim();
+        const version = String(manifest?.platformVersion ?? '').trim();
         return { packageName, ...(version ? { version } : {}) };
     } catch {
         return null;
@@ -81,7 +84,7 @@ function resolveEffectiveBoardDependencies(boardDependencies, appDataPath, platf
 module.exports = {
     runtimeDependenciesToBoardDependencies,
     readPlatformManifestFromAppData,
-    readPlatformRefFromProjectAci,
+    readPlatformRefFromProjectPackage,
     mergeBoardDependencies,
     resolveEffectiveBoardDependencies,
 };

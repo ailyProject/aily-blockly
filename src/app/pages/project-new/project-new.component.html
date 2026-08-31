@@ -54,21 +54,22 @@
             @for (board of boardList; track board.name) {
             <div class="board ccenter btn" [ngClass]="{ selected: currentBoard == board, disabled: board.disabled }"
               (click)="selectBoard(board)">
+              @if(board.state){
+              <nz-tag class="state-tag" [nzColor]="board.state === 'todo' ? 'warning' : 'processing'">
+                {{board.state}}
+              </nz-tag>
+              }
               <div class="img-box">
                 <img [sequentialSrc]="resourceUrl+'/imgs/boards/'+board.img" />
               </div>
-              <div class="name">{{ board._nickname }}
-                @if(board.state){
-                <span>({{board.state}})</span>
-                }
-              </div>
+              <div class="name">{{ board._nickname }}</div>
             </div>
             }
           </div>
         </div>
         @if(currentBoard){
         <div class="desc-box">
-          <div class="img-box ccenter">
+          <div class="img-box ccenter" (click)="onCurrentBoardImageClick()">
             <img [src]="resourceUrl+'/imgs/boards/'+currentBoard.img" />
           </div>
           <div class="content">
@@ -124,8 +125,23 @@
       </div>
       } @else {
       <!-- 基本设定页面 -->
-      <div class="right-inner">
+        <div class="right-inner">
         <div class="right-content">
+          @if (coderEnabled) {
+          <div class="item project-category-row">
+            <div>{{ 'PROJECT_NEW.PROJECT_CATEGORY.TITLE' | translate }}:</div>
+            <nz-radio-group
+              [(ngModel)]="selectedProjectCategory"
+              (ngModelChange)="onProjectCategoryChange()">
+              <label nz-radio-button nzValue="blockly">
+                {{ 'PROJECT_NEW.PROJECT_CATEGORY.BLOCKLY' | translate }}
+              </label>
+              <label nz-radio-button nzValue="coder">
+                {{ 'PROJECT_NEW.PROJECT_CATEGORY.CODER' | translate }}
+              </label>
+            </nz-radio-group>
+          </div>
+          }
           <!-- <div class="item">
             <div>{{ 'PROJECT_NEW.FORM.DEVMODE' | translate }}:</div>
             <nz-radio-group [(ngModel)]="newProjectData.devmode">
@@ -205,18 +221,6 @@
               translate }}</div>
             }
           </div>
-          @if (selectedProjectCategory === 'coder') {
-          <div class="item platform-row">
-            <div>{{ 'PROJECT_NEW.FORM.PLATFORM' | translate }}:</div>
-            <div class="platform-select-box">
-              <nz-select [(ngModel)]="selectedCoderPlatform" (ngModelChange)="onCoderPlatformChange()">
-                @for (opt of coderPlatformOptions; track opt.value) {
-                <nz-option [nzValue]="opt.value" [nzLabel]="opt.label"></nz-option>
-                }
-              </nz-select>
-            </div>
-          </div>
-          }
           <div class="step-btns">
             <button nz-button nzType="default" (click)="currentStep = 0">
               {{ 'PROJECT_NEW.BUTTONS.PREV' | translate }}
