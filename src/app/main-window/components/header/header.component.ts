@@ -123,6 +123,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
     return this.projectService.currentPackageData || { path: '', name: '' };
   }
 
+  get projectTitle(): string {
+    const applicationName = this.configService.getApplicationName();
+    return this.projectService.currentProjectPath
+      ? this.projectData.nickname || this.projectData.name || applicationName
+      : applicationName;
+  }
+
   get openToolList() {
     return this.uiService.openToolList;
   }

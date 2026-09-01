@@ -13,7 +13,7 @@ import { SubappManagerService } from '@integration/subapps/public-api';
   styleUrl: './app.component.scss',
 })
 export class AppComponent implements OnInit, AfterViewInit {
-  title = 'aily-blockly';
+  title = 'aily';
 
   private electronService = inject(ElectronService);
   private configService = inject(ConfigService);
@@ -24,6 +24,8 @@ export class AppComponent implements OnInit, AfterViewInit {
   async ngOnInit() {
     await this.electronService.init();
     await this.configService.init();
+    this.title = this.configService.getApplicationName();
+    document.title = this.title;
     this.themeService.init();
     await this.translationService.init();
     await this.subappManager.initialize();

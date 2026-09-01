@@ -442,7 +442,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.proProject.destroy();
     this.builderService.cancel();
     this.uploadService.cancel();
-    this.electronService.setTitle('aily blockly');
+    this.electronService.setTitle(this.configService.getApplicationName());
   }
 
   private requestCoderLifecycle(
@@ -532,7 +532,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
    */
   async loadProject(projectPath: string): Promise<void> {
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
-    this.electronService.setTitle(`aily blockly - ${packageJson.name}`);
+    this.electronService.setTitle(`${this.configService.getApplicationName()} - ${packageJson.name}`);
     this.projectService.currentPackageData = packageJson;
     this.projectService.addRecentlyProject({
       name: packageJson.name,

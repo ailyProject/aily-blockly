@@ -1,18 +1,48 @@
 const { spawn } = require('child_process');
 
-const electronPath = require('electron');
-const env = { ...process.env };
-delete env.ELECTRON_RUN_AS_NODE;
+function isCoderDevMode(args = []) {
+  return args.includes('--coder');
+}
 
-const child = spawn(electronPath, ['./electron/main.js', ...process.argv.slice(2)], {
-  stdio: 'inherit',
-  env,
-});
+function createElectronDevLaunchOptions(args = [], environment = {}) {
+  const coderMode = isCoderDevMode(args);
+  const env = {
+    ...environment,
+    AILY_BUILD_PRODUCT: coderMode ? 'coder' : 'blockly',
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
 
-child.on('exit', (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
-});
+  return {
+    coderMode,
+    electronArgs: args.filter((arg) => arg !== '--coder'),
+    env,
+  };
+}
+
+function main() {
+  const electronPath = require('electron');
+  const launch = createElectronDevLaunchOptions(process.argv.slice(2), process.env);
+
+  console.log(`[electron-dev] product=${launch.env.AILY_BUILD_PRODUCT}`);
+  const child = spawn(electronPath, ['./electron/main.js', ...launch.electronArgs], {
+    stdio: 'inherit',
+    env: launch.env,
+  });
+
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code ?? 0);
+  });
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  createElectronDevLaunchOptions,
+  isCoderDevMode,
+};

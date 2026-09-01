@@ -1018,6 +1018,14 @@
         "NO_TUTORIAL_PROVIDED": "Der Bibliotheksautor hat kein Tutorial bereitgestellt"
     },
     "PROJECT": {
+      "MODE_UNKNOWN": "Unbekannter Projekttyp. Wählen Sie ein gültiges Aily Blockly- oder Aily Coder-Projekt.",
+      "MODE_CREATE_RESTRICTED": "Der aktuelle Modus {{application}} kann diesen Projekttyp nicht erstellen. Verwenden Sie {{targetApplication}}.",
+      "MODE_MISMATCH_TITLE": "Projektmodus stimmt nicht überein",
+      "MODE_OPEN_OTHER": "Dieses Projekt benötigt {{application}}, das bereits installiert ist. In einem neuen Fenster dieser Anwendung öffnen? Ihr aktuelles Projekt bleibt unverändert.",
+      "MODE_DOWNLOAD_OTHER": "Dieses Projekt benötigt {{application}}. Keine Installation gefunden. Laden Sie die Anwendung von der offiziellen Website herunter und installieren Sie sie.",
+      "MODE_OPEN_BUTTON": "Mit {{application}} öffnen",
+      "MODE_DOWNLOAD_BUTTON": "Von offizieller Website herunterladen",
+      "MODE_LAUNCH_FAILED": "{{application}} konnte nicht gestartet werden. Öffnen Sie die Anwendung manuell oder installieren Sie die neueste Version von der offiziellen Website.",
         "CANNOT_OPEN_PROJECT": "Projekt kann nicht geöffnet werden: ",
         "CREATING_PROJECT": "Projekt wird erstellt...",
         "PROJECT_CREATED": "Projekt erfolgreich erstellt",

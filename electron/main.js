@@ -31,22 +31,71 @@ const {
 } = require("./tools/aily-tools-install-state");
 const { mergeConfigChanges } = require("./config-persistence");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
+const {
+  normalizeBuildProduct,
+} = require('./build-product');
 const ORIGINAL_PROCESS_PATH = process.env.PATH || process.env.Path || "";
+let cachedPackagedMetadata;
+
+function getPackagedMetadata() {
+  if (cachedPackagedMetadata !== undefined) {
+    return cachedPackagedMetadata;
+  }
+
+  const candidatePaths = [];
+  try {
+    candidatePaths.push(path.join(app.getAppPath(), 'package.json'));
+  } catch (error) {
+    // ignore before app is fully ready
+  }
+  candidatePaths.push(path.join(__dirname, '..', 'package.json'));
+
+  for (const packageJsonPath of candidatePaths) {
+    try {
+      if (!packageJsonPath || !fs.existsSync(packageJsonPath)) {
+        continue;
+      }
+
+      cachedPackagedMetadata = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      return cachedPackagedMetadata;
+    } catch (error) {
+      console.warn('读取打包元数据失败:', error.message || error);
+    }
+  }
+
+  cachedPackagedMetadata = null;
+  return cachedPackagedMetadata;
+}
+
+function getPackagedBuildProduct() {
+  return getPackagedMetadata()?.ailyBuildProduct;
+}
+
+function getBuildProduct() {
+  return normalizeBuildProduct(process.env.AILY_BUILD_PRODUCT || getPackagedBuildProduct());
+}
+
+function applyAppIdentity(product) {
+  const isCoderProduct = normalizeBuildProduct(product) === 'coder';
+  app.setName(isCoderProduct ? 'Aily Coder' : 'aily blockly');
+  if (isWin32) {
+    const configuredAppUserModelId = getPackagedMetadata()?.ailyAppUserModelId;
+    app.setAppUserModelId(
+      configuredAppUserModelId || (isCoderProduct ? 'pro.aily.coder' : 'pro.aily.blockly'),
+    );
+  }
+}
 
 registerSafeStorageIpc(ipcMain, safeStorage);
+require('./project-companion').registerProjectCompanionIpc(ipcMain, shell);
 
 // 设置应用名称，用于 Windows 系统通知显示
-app.setName("aily blockly");
+applyAppIdentity(getBuildProduct());
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
 // 禁用 GPU 着色器磁盘缓存，避免 GPUCache 累积导致启动变慢
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 // 限制 HTTP 磁盘缓存为 100MB，防止无限增长
 app.commandLine.appendSwitch('disk-cache-size', '104857600');
-// Windows 系统中设置 AppUserModelID，用于通知分组和显示
-if (isWin32) {
-  app.setAppUserModelId("pro.aily.blockly");
-}
-
 const PROTOCOL = "abis";
 
 // OAuth实例管理
@@ -369,6 +418,13 @@ if (process.defaultApp) {
 
 // 文件关联处理
 let pendingFileToOpen = null;
+let projectOpenRendererReady = false;
+ipcMain.on('project-open-ready', (event) => {
+  if (mainWindow && event.sender === mainWindow.webContents) {
+    projectOpenRendererReady = true;
+    if (pendingFileToOpen) void updateMainWindowWithPendingData();
+  }
+});
 let pendingRoute = null;
 let pendingQueryParams = null;
 /** 当前主进程已持有的项目锁（规范化路径） */
@@ -470,10 +526,17 @@ async function resolveProjectLockOrPrompt(projectDir, parentWindow) {
   return { proceed: false };
 }
 
-// 处理命令行参数中的 .abi 文件和路由参数
+// File association and companion-app handoff both use the renderer's guarded open entry.
 function handleCommandLineArgs(argv) {
-  // 处理 .abi 文件
-  const abiFile = argv.find(arg => arg.endsWith('.abi') && fs.existsSync(arg));
+  const openProjectArg = argv.find(arg => arg.startsWith('--open-project='));
+  if (openProjectArg) {
+    const projectPath = openProjectArg.slice('--open-project='.length);
+    if (projectPath && path.isAbsolute(projectPath) && fs.existsSync(projectPath) && fs.statSync(projectPath).isDirectory()) {
+      pendingFileToOpen = projectPath;
+      return true;
+    }
+  }
+  const abiFile = argv.find(arg => /\.(abi|aci)$/i.test(arg) && fs.existsSync(arg));
   if (abiFile) {
     const resolvedPath = path.resolve(abiFile);
     pendingFileToOpen = path.dirname(resolvedPath);
@@ -1111,39 +1174,6 @@ function normalizeBuildFlavor(flavor) {
   return Object.prototype.hasOwnProperty.call(BUILD_FLAVOR_TO_OFFICIAL_REGION, normalizedFlavor)
     ? normalizedFlavor
     : DEFAULT_BUILD_FLAVOR;
-}
-
-let cachedPackagedMetadata;
-
-function getPackagedMetadata() {
-  if (cachedPackagedMetadata !== undefined) {
-    return cachedPackagedMetadata;
-  }
-
-  const candidatePaths = [];
-  try {
-    candidatePaths.push(path.join(app.getAppPath(), 'package.json'));
-  } catch (error) {
-    // ignore before app is fully ready
-  }
-  candidatePaths.push(path.join(__dirname, '..', 'package.json'));
-
-  for (const packageJsonPath of candidatePaths) {
-    try {
-      if (!packageJsonPath || !fs.existsSync(packageJsonPath)) {
-        continue;
-      }
-
-      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-      cachedPackagedMetadata = packageJson;
-      return cachedPackagedMetadata;
-    } catch (error) {
-      console.warn('读取打包元数据失败:', error.message || error);
-    }
-  }
-
-  cachedPackagedMetadata = null;
-  return cachedPackagedMetadata;
 }
 
 function getPackagedBuildFlavor() {
@@ -1933,6 +1963,10 @@ function loadEnv() {
   // 读取config.json文件
   const configPath = path.join(__dirname, 'config', "config.json");
   const conf = JSON.parse(fs.readFileSync(configPath));
+  const defaultCoderConfig = conf.coder && typeof conf.coder === 'object'
+    ? conf.coder
+    : {};
+  const buildProduct = getBuildProduct();
 
   // 设置系统默认的应用数据目录
   if (isWin32) {
@@ -2035,6 +2069,9 @@ function loadEnv() {
 
     // 合并配置文件
     const userRegions = userConf.regions || {};
+    const userCoderConfig = userConf.coder && typeof userConf.coder === 'object'
+      ? userConf.coder
+      : {};
     const mergedRegions = Object.fromEntries(
       [...new Set([...Object.keys(defaultRegions), ...Object.keys(userRegions)])]
         .map((regionKey) => [
@@ -2049,6 +2086,10 @@ function loadEnv() {
       linux: {
         ...(conf.linux || {}),
         ...(userConf.linux || {}),
+      },
+      coder: {
+        ...defaultCoderConfig,
+        ...userCoderConfig,
       },
       regions: mergedRegions,
     });
@@ -2092,6 +2133,7 @@ function loadEnv() {
   // 当前区域
   process.env.AILY_REGION = currentRegion;
   process.env.AILY_BUILD_FLAVOR = buildFlavor;
+  process.env.AILY_BUILD_PRODUCT = buildProduct;
   process.env.AILY_OFFICIAL_REGION = officialRegion;
   // npm registry
   process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
@@ -2190,7 +2232,7 @@ function loadEnv() {
     try {
       markInstalledForAppVersion(userConfigPath, appVersion);
       userConf.installed = appVersion;
-      console.log(`aily blockly ${appVersion} will refresh aily-builder, aily-linter and aily-connector to latest`);
+      console.log(`${app.getName()} ${appVersion} will refresh aily-builder, aily-linter and aily-connector to latest`);
     } catch (error) {
       console.error("Failed to save aily tools refresh marker:", error);
     }
@@ -2253,16 +2295,13 @@ async function updateMainWindowWithPendingData() {
   let targetUrl = null;
 
   if (pendingFileToOpen) {
+    if (!projectOpenRendererReady) return;
     const dir = pendingFileToOpen;
-    const { proceed } = await resolveProjectLockOrPrompt(dir, mainWindow);
-    if (!proceed) {
-      pendingFileToOpen = null;
-      return;
-    }
-    const routePath = `main/blockly-editor?path=${encodeURIComponent(dir)}`;
-    console.log('Updating existing window with project path:', routePath);
-    targetUrl = `#/${routePath}`;
     pendingFileToOpen = null;
+    mainWindow.webContents.send('open-project-from-file', dir);
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    return;
   } else if (pendingRoute) {
     // 构建路由URL
     let routePath = pendingRoute;
@@ -2394,6 +2433,9 @@ function createWindow() {
   });
 
   winState.manage(mainWindow);
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) projectOpenRendererReady = false;
+  });
 
   // mainWindow.setMenu(null);
 
@@ -2412,7 +2454,7 @@ function createWindow() {
   let targetUrl = null;
 
   if (pendingFileToOpen) {
-    const routePath = `main/blockly-editor?path=${encodeURIComponent(pendingFileToOpen)}`;
+    const routePath = `main/guide?openProject=${encodeURIComponent(pendingFileToOpen)}`;
     console.log('Loading with project path:', routePath);
     targetUrl = `#/${routePath}`;
     pendingFileToOpen = null;
@@ -2790,6 +2832,7 @@ app.on("ready", async () => {
   try {
     ensureRosettaIfNeededOnDarwin();
     loadEnv();
+    applyAppIdentity(process.env.AILY_BUILD_PRODUCT);
   } catch (error) {
     console.error("loadEnv error: ", error);
   }
@@ -2809,20 +2852,13 @@ app.on("ready", async () => {
     }, 1000);
   }
 
-  if (pendingFileToOpen) {
-    const { proceed } = await resolveProjectLockOrPrompt(pendingFileToOpen, null);
-    if (!proceed) {
-      pendingFileToOpen = null;
-    }
-  }
-
   // 创建主窗口
   try {
     await ensurePackagedRendererServerStarted();
   } catch (error) {
     console.error("Failed to start packaged renderer server:", error);
     dialog.showErrorBox(
-      "Unable to start aily blockly",
+      `Unable to start ${app.getName()}`,
       `The application interface could not be loaded: ${error.message}`,
     );
     app.quit();
@@ -3015,7 +3051,7 @@ app.on("activate", async () => {
     } catch (error) {
       console.error("Failed to restart packaged renderer server:", error);
       dialog.showErrorBox(
-        "Unable to start aily blockly",
+        `Unable to start ${app.getName()}`,
         `The application interface could not be loaded: ${error.message}`,
       );
     }
@@ -3032,22 +3068,14 @@ app.on('web-contents-created', (event, contents) => {
 // macOS下处理文件打开
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
-  if (filePath.endsWith('.abi') && fs.existsSync(filePath)) {
+  if (/\.(abi|aci)$/i.test(filePath) && fs.existsSync(filePath)) {
     const projectDir = path.dirname(path.resolve(filePath));
     console.log('macOS open-file:', filePath);
     console.log('Project directory:', projectDir);
 
     if (mainWindow && mainWindow.webContents) {
-      void (async () => {
-        const { proceed } = await resolveProjectLockOrPrompt(projectDir, mainWindow);
-        if (!proceed) {
-          return;
-        }
-        const routePath = `main/blockly-editor?path=${encodeURIComponent(projectDir)}`;
-        console.log('Navigating to route:', routePath);
-
-        await loadAppRenderer(mainWindow, `#/${routePath}`);
-      })();
+      pendingFileToOpen = projectDir;
+      void updateMainWindowWithPendingData();
     } else {
       pendingFileToOpen = projectDir;
     }

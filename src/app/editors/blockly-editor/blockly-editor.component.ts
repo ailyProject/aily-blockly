@@ -215,7 +215,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this._uploadService.cancel();
     this._uploadService.destroy();
     this.codeViewerIpcService.clear();
-    this.electronService.setTitle('aily blockly');
+    this.electronService.setTitle(this.configService.getApplicationName());
     this.blocklyService.reset();
     projectDataRuntime.reset();
   }
@@ -234,7 +234,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // Python 项目在库管理器使用前按需加载 Linux 目录；Arduino 继续使用启动时的默认目录。
     await this.configService.ensureLibraryListForProject(packageJson);
 
-    this.electronService.setTitle(`aily blockly - ${packageJson.nickname || packageJson.name}`);
+    this.electronService.setTitle(`${this.configService.getApplicationName()} - ${packageJson.nickname || packageJson.name}`);
     // 添加到最近打开的项目
     this.projectService.addRecentlyProject({
       name: packageJson.name,

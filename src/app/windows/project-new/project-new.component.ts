@@ -109,6 +109,10 @@ export class ProjectNewComponent implements OnDestroy {
     return this.configService.isCoderEnabled();
   }
 
+  get coderProduct(): boolean {
+    return this.configService.isCoderProduct();
+  }
+
   @HostListener('document:keydown', ['$event'])
   onGlobalKeydown(event: KeyboardEvent): void {
     if (this.currentStep !== 0) {
@@ -170,6 +174,8 @@ export class ProjectNewComponent implements OnDestroy {
       this.coderEnabled,
       undefined,
       this.configService.getPreferredChatAgentRuntimeMode(),
+      'blockly',
+      this.coderProduct,
     );
     this.syncActiveBoardList();
 
@@ -219,6 +225,9 @@ export class ProjectNewComponent implements OnDestroy {
     this.selectedProjectCategory = resolveInitialProjectCategory(
       this.coderEnabled,
       this.selectedProjectCategory,
+      undefined,
+      'blockly',
+      this.coderProduct,
     );
     this.applyRecommendedProjectName();
     this.refreshBoardListForCurrentFilters();

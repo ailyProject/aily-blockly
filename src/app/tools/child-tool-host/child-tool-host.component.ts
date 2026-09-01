@@ -1561,7 +1561,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         aiOperationState: isAilyChat,
         subappDock: isAilyChat,
         runtimeRecovery: isAilyChat,
-        developmentModeControl: isAilyChat && this.configService.isCoderEnabled()
+        developmentModeControl: isAilyChat
+          && this.configService.isCoderEnabled()
+          && !this.configService.isCoderProduct()
       }
     };
   }
@@ -1570,6 +1572,16 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const mode = payload.mode === 'coder' ? 'coder' : payload.mode === 'blockly' ? 'blockly' : null;
     if (!mode) {
       return { ok: false, code: 'INVALID_DEVELOPMENT_MODE', message: 'Development mode must be blockly or coder.' };
+    }
+    if (this.configService.isCoderProduct()) {
+      return mode === 'coder'
+        ? { ok: true, context: this.createHostContext() }
+        : {
+          ok: false,
+          code: 'DEVELOPMENT_MODE_LOCKED',
+          message: 'Aily Coder is locked to Coder mode.',
+          context: this.createHostContext(),
+        };
     }
     if (!this.configService.isCoderEnabled()) {
       return {

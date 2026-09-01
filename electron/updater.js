@@ -2,6 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require("electron");
+const { normalizeBuildProduct } = require('./build-product');
 // 添加autoUpdater引入
 const { autoUpdater, CancellationToken } = require('electron-updater');
 const { GenericProvider } = require('electron-updater/out/providers/GenericProvider');
@@ -12,6 +13,7 @@ let downloadMirrorFallbackInProgress = false;
 let activeDownloadAttempt = null;
 let forcedUpdateManifestSourceApplied = false;
 let cachedPackagedBuildFlavor;
+let cachedPackagedBuildProduct;
 const LEGACY_MIN_AVERAGE_SPEED_BYTES_PER_SECOND = 65536;
 const DEFAULT_MIN_AVERAGE_SPEED_BYTES_PER_SECOND = 262144;
 const UPDATE_REQUEST_TRACKER_INSTALLED = Symbol('updateRequestTrackerInstalled');
@@ -69,6 +71,14 @@ function normalizeBuildFlavor(flavor) {
   return String(flavor || '').trim().toLowerCase() === 'global' ? 'global' : 'cn';
 }
 
+function resolveProductUpdaterUrl(baseUrl, product) {
+  const normalized = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!normalized || normalizeBuildProduct(product) !== 'coder') return normalized;
+  return /\/blockly$/i.test(normalized)
+    ? normalized.replace(/\/blockly$/i, '/coder')
+    : `${normalized}/coder`;
+}
+
 function getPackagedBuildFlavor() {
   if (cachedPackagedBuildFlavor !== undefined) {
     return cachedPackagedBuildFlavor;
@@ -100,8 +110,46 @@ function getPackagedBuildFlavor() {
   return cachedPackagedBuildFlavor;
 }
 
+function getPackagedBuildProduct() {
+  if (cachedPackagedBuildProduct !== undefined) {
+    return cachedPackagedBuildProduct;
+  }
+
+  const candidatePaths = [];
+  try {
+    candidatePaths.push(path.join(app.getAppPath(), 'package.json'));
+  } catch (error) {
+    // ignore before app is fully ready
+  }
+  candidatePaths.push(path.join(__dirname, '..', 'package.json'));
+
+  for (const packageJsonPath of candidatePaths) {
+    try {
+      if (!packageJsonPath || !fs.existsSync(packageJsonPath)) {
+        continue;
+      }
+
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      cachedPackagedBuildProduct = packageJson.ailyBuildProduct;
+      return cachedPackagedBuildProduct;
+    } catch (error) {
+      console.warn('读取构建产品失败:', error.message || error);
+    }
+  }
+
+  cachedPackagedBuildProduct = null;
+  return cachedPackagedBuildProduct;
+}
+
 function getCurrentBuildFlavor(config) {
   return normalizeBuildFlavor(process.env.AILY_BUILD_FLAVOR || getPackagedBuildFlavor() || config.build_flavor);
+}
+
+function getCurrentBuildProduct(config) {
+  return normalizeBuildProduct(
+    process.env.AILY_BUILD_PRODUCT
+    || getPackagedBuildProduct(),
+  );
 }
 
 function isChinaTimezone() {
@@ -141,7 +189,10 @@ function getForcedUpdateManifestSource() {
     return null;
   }
 
-  const updaterUrl = config.regions && config.regions.cn && config.regions.cn.updater;
+  const updaterUrl = resolveProductUpdaterUrl(
+    config.regions && config.regions.cn && config.regions.cn.updater,
+    getCurrentBuildProduct(config),
+  );
   if (typeof updaterUrl !== 'string' || updaterUrl.trim() === '') {
     return null;
   }
@@ -233,6 +284,7 @@ function getDownloadMirrorSources(updateInfo) {
   }
 
   const config = loadMergedConfig();
+  const buildProduct = getCurrentBuildProduct(config);
   const strategy = config.update_download_strategy || {};
 
   if (strategy.enabled === false) {
@@ -247,7 +299,10 @@ function getDownloadMirrorSources(updateInfo) {
   const seenUrls = new Set();
   return regionOrder
     .map((regionKey) => {
-      const updaterUrl = regions[regionKey] && regions[regionKey].updater;
+      const updaterUrl = resolveProductUpdaterUrl(
+        regions[regionKey] && regions[regionKey].updater,
+        buildProduct,
+      );
       if (typeof updaterUrl !== 'string' || updaterUrl.trim() === '') {
         return null;
       }
@@ -900,6 +955,7 @@ module.exports = {
     getDownloadGuardConfig,
     getDownloadMirrorSources,
     getTargetUpdateBuildFlavor,
+    resolveProductUpdaterUrl,
     isCancellationError,
     isStrategyCancellationError,
   },

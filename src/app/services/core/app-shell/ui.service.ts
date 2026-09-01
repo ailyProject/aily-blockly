@@ -89,6 +89,8 @@ export class UiService {
       });
 
       window['ipcRenderer'].on('window-receive', async (event, message) => {
+        // ProjectService replies only after activation or mode rejection completes.
+        if (message.data?.action === 'open-project') return;
         // console.log('window-receive', message);
         let data;
         if (message.data?.action === 'get-auth-state') {
