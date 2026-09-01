@@ -1,13 +1,13 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
-import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { TranslateModule } from '@ngx-translate/core';
+import { BaseDialogComponent, DialogButton } from '../../../../components/base-dialog/base-dialog.component';
 
 @Component({
   selector: 'app-compatible-dialog',
-  imports: [NzButtonModule, NzTagModule, CommonModule, TranslateModule],
+  imports: [NzTagModule, CommonModule, TranslateModule, BaseDialogComponent],
   templateUrl: './compatible-dialog.component.html',
   styleUrl: './compatible-dialog.component.scss'
 })
@@ -24,6 +24,22 @@ export class CompatibleDialogComponent {
     return this.data.boardCore;
   }
 
+  get buttons(): DialogButton[] {
+    return [
+      {
+        text: 'COMPATIBILITY_DIALOG.CANCEL',
+        type: 'default',
+        action: 'cancel',
+      },
+      {
+        text: 'COMPATIBILITY_DIALOG.CONTINUE_INSTALL',
+        type: 'primary',
+        danger: true,
+        action: 'continue',
+      },
+    ];
+  }
+
   constructor(
   ) {
   }
@@ -37,5 +53,13 @@ export class CompatibleDialogComponent {
 
   continue(): void {
     this.modal.close({ result: 'continue' });
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'continue') {
+      this.continue();
+    } else {
+      this.cancel();
+    }
   }
 }

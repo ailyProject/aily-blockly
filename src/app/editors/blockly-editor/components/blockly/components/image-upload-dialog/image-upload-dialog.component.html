@@ -1,16 +1,7 @@
-<div class="prompt-box bborder">
-  <div class="header">
-    <div class="title">{{ title }}</div>
-    <div class="win-btns">
-      <div class="btn ccenter close" (click)="onClose()">
-        <i class="fa-light fa-xmark"></i>
-      </div>
-    </div>
-  </div>
-  <div class="content">
-    <div class="inner">
-      <!-- 图片容器或拖拽区域 -->
-      <div class="image-container left" [class.drag-over]="isDragOver" (click)="!imageUrl && reSelectInput.click()">
+<app-base-dialog [title]="title" [showFooter]="true" (closeDialog)="onClose()">
+  <div class="inner">
+    <!-- 图片容器或拖拽区域 -->
+    <div class="image-container left" [class.drag-over]="isDragOver" (click)="!imageUrl && reSelectInput.click()">
         <!-- 加载状态 -->
         @if (isLoading) {
         <div class="loading">
@@ -56,40 +47,39 @@
           }
         </div>
         }
-      </div>
-      <div class="right ccenter">
-        <canvas #myCanvas result></canvas>
-        <div class="right-text ccenter">{{ currentCropSize.width }} × {{ currentCropSize.height }}</div>
-      </div>
     </div>
+    <div class="right ccenter">
+      <canvas #myCanvas result></canvas>
+      <div class="right-text ccenter">{{ currentCropSize.width }} × {{ currentCropSize.height }}</div>
+    </div>
+  </div>
 
-    <div class="footer">
-      <button nz-button [nzSize]="'small'" nzType="default" (click)="onClose()">取消</button>
-      <!-- 重选图片按钮 -->
-      <input #reSelectInput type="file" accept="image/*" (change)="onFileSelected($event)" style="display: none;" />
-      @if (imageUrl && !isLoading) {
-      <button nz-button [nzSize]="'small'" nzType="default" (click)="reSelectInput.click()">
-        重选图片
-      </button>
-      }
-      <!-- 重置位置按钮 -->
-      @if (imageUrl && !isLoading && cropper) {
-      <button nz-button [nzSize]="'small'" nzType="default" (click)="centerCropBox()" title="重置图片位置和缩放">
-        <i class="fa-light fa-arrows-rotate"></i>
-        重置
-      </button>
-      }
-      <!-- 调试按钮 -->
-      <!-- @if (imageUrl && !isLoading) {
+  <div footer class="footer">
+    <button nz-button [nzSize]="'small'" nzType="default" (click)="onClose()">取消</button>
+    <!-- 重选图片按钮 -->
+    <input #reSelectInput type="file" accept="image/*" (change)="onFileSelected($event)" style="display: none;" />
+    @if (imageUrl && !isLoading) {
+    <button nz-button [nzSize]="'small'" nzType="default" (click)="reSelectInput.click()">
+      重选图片
+    </button>
+    }
+    <!-- 重置位置按钮 -->
+    @if (imageUrl && !isLoading && cropper) {
+    <button nz-button [nzSize]="'small'" nzType="default" (click)="centerCropBox()" title="重置图片位置和缩放">
+      <i class="fa-light fa-arrows-rotate"></i>
+      重置
+    </button>
+    }
+    <!-- 调试按钮 -->
+    <!-- @if (imageUrl && !isLoading) {
       <button nz-button [nzSize]="'small'" nzType="default" (click)="testCropper()" title="查看调试信息">
         调试
       </button>
       } -->
-      <!-- 确定按钮 -->
-      <button nz-button [nzSize]="'small'" nzType="primary" [disabled]="!imageUrl || isLoading" [nzLoading]="isLoading"
-        (click)="onConfirm()">
-        确定
-      </button>
-    </div>
+    <!-- 确定按钮 -->
+    <button nz-button [nzSize]="'small'" nzType="primary" [disabled]="!imageUrl || isLoading" [nzLoading]="isLoading"
+      (click)="onConfirm()">
+      确定
+    </button>
   </div>
-</div>
+</app-base-dialog>

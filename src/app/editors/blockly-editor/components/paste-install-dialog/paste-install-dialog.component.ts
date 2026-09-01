@@ -1,10 +1,9 @@
 import { Component, inject } from '@angular/core';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
-import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzTagModule } from 'ng-zorro-antd/tag';
-import { NzSpinModule } from 'ng-zorro-antd/spin';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { BaseDialogComponent, DialogButton } from '../../../../components/base-dialog/base-dialog.component';
 
 export interface MissingLibInfo {
   blockType: string;
@@ -15,7 +14,7 @@ export interface MissingLibInfo {
 
 @Component({
   selector: 'app-paste-install-dialog',
-  imports: [NzButtonModule, NzTagModule, NzSpinModule, CommonModule, TranslateModule],
+  imports: [NzTagModule, CommonModule, TranslateModule, BaseDialogComponent],
   templateUrl: './paste-install-dialog.component.html',
   styleUrl: './paste-install-dialog.component.scss'
 })
@@ -51,6 +50,23 @@ export class PasteInstallDialogComponent {
     return this.data.confirmText || this.translate.instant('PASTE_INSTALL.INSTALL_AND_PASTE');
   }
 
+  get buttons(): DialogButton[] {
+    return [
+      {
+        text: 'PASTE_INSTALL.CANCEL',
+        type: 'default',
+        disabled: this.installing,
+        action: 'cancel',
+      },
+      {
+        text: this.confirmText,
+        type: 'primary',
+        loading: this.installing,
+        action: 'install',
+      },
+    ];
+  }
+
   getVersionDisplay(lib: MissingLibInfo): string {
     if (lib.localPath) {
       const folderName = lib.localPath.split(/[/\\]/).pop() || '';
@@ -73,6 +89,14 @@ export class PasteInstallDialogComponent {
     } catch (error) {
       this.installing = false;
       this.installLog = String(error);
+    }
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'install') {
+      void this.installAndPaste();
+    } else {
+      this.cancel();
     }
   }
 }
