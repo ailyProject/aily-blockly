@@ -4,68 +4,6 @@ iframe {
   display: none;
 }
 
-.global-login-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100100;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: var(--aily-overlay-bg);
-  backdrop-filter: blur(4px);
-}
-
-.global-login-dialog {
-  position: relative;
-  width: min(390px, calc(100vw - 32px));
-  max-height: calc(100vh - 48px);
-  overflow: auto;
-  border: 1px solid var(--aily-border-secondary);
-  border-radius: 12px;
-  background: var(--aily-bg-elevated);
-  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.36);
-}
-
-.global-login-close {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  z-index: 2;
-  display: grid;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  place-items: center;
-  color: var(--aily-text-tertiary);
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
-
-  &:hover {
-    color: var(--aily-text-primary);
-    background: var(--aily-bg-tertiary);
-  }
-}
-
-.global-login-skip {
-  display: block;
-  margin: -6px auto 14px;
-  padding: 5px 10px;
-  color: var(--aily-text-tertiary);
-  background: transparent;
-  border: 0;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
-
-  &:hover {
-    color: var(--aily-text-primary);
-    background: var(--aily-bg-tertiary);
-  }
-}
-
 .main-window-box {
   height: 100vh;
   width: 100vw;

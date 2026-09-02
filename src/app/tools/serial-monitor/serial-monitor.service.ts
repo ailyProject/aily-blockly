@@ -653,7 +653,7 @@ export class SerialMonitorService {
       this.quickSendList = [
         { name: 'DTR', type: 'signal', data: 'DTR' },
         { name: 'RTS', type: 'signal', data: 'RTS' },
-        { name: '发送文本', type: 'text', data: 'This is aily blockly' },
+        { name: '发送文本', type: 'text', data: `This is ${this.configService.getApplicationName()}` },
         { name: '发送Hex', type: 'hex', data: 'FF FF A1 A2 A3 A4 A5' }
       ];
     }

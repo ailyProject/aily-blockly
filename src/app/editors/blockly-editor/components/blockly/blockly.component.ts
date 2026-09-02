@@ -4,7 +4,7 @@ import { Subject, combineLatest } from 'rxjs';
 
 import { debounceTime, takeUntil, map, distinctUntilChanged, pairwise, startWith } from 'rxjs/operators';
 import { TranslateService } from '@ngx-translate/core';
-import { UiService, NoticeService } from '@core/app-shell/public-api';
+import { NoticeService } from '@core/app-shell/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { normalizeLanguageCode, type SupportedLanguageCode } from '../../../../utils/language-code';
@@ -111,6 +111,7 @@ import { BlocklyWorkspacePagesComponent } from './components/blockly-workspace-p
 import { BlocklyConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
 import { writeArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
+import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 
 type BlocklyWorkspaceEvent = { type?: string } | null | undefined;
 
@@ -480,7 +481,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     private themeService: ThemeService,
     private platformService: PlatformService,
     private codeViewerIpcService: CodeViewerIpcService,
-    private uiService: UiService,
+    private ailyChatDemandSession: AilyChatDemandSessionService,
     private authService: AuthService,
     private message: NzMessageService,
     private generatorRuntime: BlocklyGeneratorRuntimeService,
@@ -517,6 +518,10 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngOnInit(): void {
     this.initAiWritingSubscription();
+    // Establish the host-owned locale before the generator runtime snapshots
+    // Blockly.Msg. Otherwise the initial checkpoint contains Blockly's default
+    // English messages and an AI-triggered library rebuild restores them.
+    this.initLanguage();
     this.initDevMode();
     this.initBlocklyDialogs();
     this.initCodeGenerationDebounce();
@@ -708,7 +713,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private initAiWritingSubscription(): void {
-    // 与旧版 Angular 一致：遮罩只在 aiWriting（积木工具执行）或短暂 aiWaitWriting 时显示，
+    // 遮罩只在 aiWriting（新版 Agent 积木写入）或短暂 aiWaitWriting 时显示，
     // 不随整轮 request/aiWaiting 常亮。
     combineLatest([
       this.blocklyService.aiWriting$,
@@ -810,10 +815,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         };
       })(console.error);
 
-      // 根据当前语言设置 Blockly locale
-      const currentLang = this.translateService.currentLang || 'zh_cn';
-      this.updateBlocklyLocale(currentLang);
-
       // 在工作区创建前设置 block registry 拦截
       this.setupBlockRegistryInterception();
       // 获取当前blockly渲染器
@@ -890,8 +891,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
                 // Handle npm libs: batch npm install
                 if (npmLibs.length > 0) {
                   const pkgs = npmLibs.map(l => l.version ? `${l.name}@${l.version}` : l.name).join(' ');
+                  // 动态补装库时由项目 devmode 选择 Linux 或默认 Arduino npm 来源。
                   const { code, stderr } = await this.cmdService.runAsync(
-                    `npm install ${pkgs}`, projectPath
+                    this.configService.withProjectNpmRegistry(
+                      `npm install ${pkgs}`,
+                      this.projectService.currentPackageData,
+                    ),
+                    projectPath,
                   );
                   if (code !== 0) throw new Error(stderr || `Exit code: ${code}`);
                 }
@@ -1435,7 +1441,12 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
   initDevMode() {
     console.log('DEV MODE: ', this.devmode);
-    const mode = this.devmode === 'micropython' ? 'micropython' : 'arduino';
+    // 每个项目只激活一种生成器；Python/Linux 与 Arduino 库脚本在独立运行域中互不混用。
+    const mode = this.devmode === 'python'
+      ? 'python'
+      : this.devmode === 'micropython'
+        ? 'micropython'
+        : 'arduino';
     this.generatorRuntime.activate({
       mode,
       boardConfig: this.blocklyService.boardConfig,
@@ -2072,17 +2083,18 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     );
 
     const prompt = this.translateService.instant('BLOCKLY_EDITOR.EXPLAIN_BLOCK_PROMPT');
-    this.uiService.openAndSendToChat(prompt, {
-      sender: 'BlocklyComponent',
-      type: 'block-explain',
-      autoSend: true,
-      resources: this.blocklyService.getSelectedBlockContextLabels().map(item => ({
-        type: 'block',
-        name: item.label,
-        blockId: item.blockId,
-        blockContext: item.formatted,
-      })),
-    });
+    const resources = this.blocklyService.getSelectedBlockContextLabels().map(item => ({
+      type: 'block',
+      name: item.label,
+      blockId: item.blockId,
+      blockContext: item.formatted,
+    } as const));
+    void this.ailyChatDemandSession
+      .explainBlocks(prompt, resources)
+      .catch(error => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.message.error(message);
+      });
   }
 
   updateBlocklyLocale(lang: string) {
@@ -2106,6 +2118,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     setTftEsPiAnimationFieldTranslator((key, params) => this.translateService.instant(key, params));
     setTftEsPiImageFieldTranslator((key, params) => this.translateService.instant(key, params));
     setAudioFieldTranslator((key, params) => this.translateService.instant(key, params));
+    this.generatorRuntime.refreshBlocklyMessageSnapshot();
     this.queueProjectBreakpointMarkerSync();
 
     // 如果工作区已存在，刷新工具箱以应用新语言

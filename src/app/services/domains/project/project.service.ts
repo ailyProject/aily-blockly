@@ -33,12 +33,34 @@ import {
 } from './project-data/project-data-legacy-import';
 import { materializeGenericProjectDataValues } from './project-data/project-data-generic-values';
 import {
+  isBoardCompatibleWithProjectMode,
+  normalizeProjectMode,
+  AILY_LINUX_NPM_SCOPE,
+  AILY_NPM_SCOPE,
+  AILY_PACKAGE_SCOPES,
+  isAilyBoardPackageName,
+  isAilyCoreLibraryPackageName,
+  isAilyLibraryPackageName,
+  isAilyScopedPackageName,
+} from '@shared/public-api';
+import {
   CODER_TEMPLATE_DIRECTORY,
   applyCoderProjectPackageConfig,
   copyCoderArduinoTemplate,
   isCoderProjectPackage,
+  resolveCoderProjectCreationTemplate,
   resolveCoderTemplatePath,
 } from './coder/coder-project-template';
+import {
+  RecentProject,
+  addRecentProject,
+  removeRecentProject,
+} from './recent-projects';
+import {
+  PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
+  resolveConfiguredProjectRootPath,
+} from './project-root-path';
+import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 
 interface ProjectPackageData {
   name: string;
@@ -116,13 +138,16 @@ export class ProjectService {
     promise: Promise<boolean>;
   } | null = null;
   private blocklyLibraryRuntimeSignatures = new Map<string, string>();
+  private recentProjectsCache: { source: RecentProject[]; mode: ProjectMode; time: number; projects: RecentProject[] } | null = null;
 
   currentPackageData: ProjectPackageData = {
-    name: 'aily blockly',
+    // 产品名称由界面显示，不作为空项目的项目名。
+    name: '',
   };
 
   projectRootPath: string;
   private projectRootPathInitPromise: Promise<void> | null = null;
+  private projectRootPathSettingListenerRegistered = false;
 
   // 当前项目路径的 getter 和 setter
   get currentProjectPath(): string {
@@ -227,10 +252,10 @@ export class ProjectService {
   ): Record<string, string> {
     return Object.fromEntries(
       Object.entries(deps || {}).filter(([key]) => {
-        if (key.startsWith('@aily-project/board-') || key.startsWith('@aily-project/coder-')) {
+        if (isAilyBoardPackageName(key) || key.startsWith('@aily-project/coder-')) {
           return false;
         }
-        if (key.startsWith('@aily-project/lib-core-')) {
+        if (isAilyCoreLibraryPackageName(key)) {
           return false;
         }
         return true;
@@ -305,6 +330,10 @@ export class ProjectService {
     this.message.warning('AI 对话正在处理中，请先停止当前请求后再切换或关闭项目。');
   }
 
+  private warnConnectionGraphWindowCloseFailure(): void {
+    this.message.warning('连线图窗口未能关闭，请手动关闭窗口后重试。');
+  }
+
   private get message(): NzMessageService {
     if (!this.messageService) {
       this.messageService = this.injector.get(NzMessageService);
@@ -329,22 +358,27 @@ export class ProjectService {
   // 初始化UI服务，这个init函数仅供main-window使用
   async init() {
     if (this.electronService.isElectron) {
+      this.registerProjectRootPathSettingListener();
       window['ipcRenderer'].on('window-receive', async (event, message) => {
         // console.log('window-receive', message);
         if (message.data.action == 'open-project') {
-          this.projectOpen(message.data.path, {
-            reason: this.parseProjectActivationReason(message.data.reason),
-            sessionResource: typeof message.data.sessionResource === 'string' ? message.data.sessionResource : null,
-          });
+          let opened = false;
+          try {
+            opened = await this.projectOpen(message.data.path, {
+              reason: this.parseProjectActivationReason(message.data.reason),
+              sessionResource: typeof message.data.sessionResource === 'string' ? message.data.sessionResource : null,
+            });
+          } catch (error) {
+            console.error('Project activation failed:', error);
+          }
+          if (message.messageId) {
+            window['ipcRenderer'].send('main-window-response', {
+              messageId: message.messageId,
+              data: opened ? 'success' : 'failed',
+            });
+          }
         } else {
           return;
-        }
-        // 反馈完成结果
-        if (message.messageId) {
-          window['ipcRenderer'].send('main-window-response', {
-            messageId: message.messageId,
-            result: "success"
-          });
         }
       });
 
@@ -359,6 +393,7 @@ export class ProjectService {
           this.message.error(this.translate.instant('PROJECT.CANNOT_OPEN_PROJECT') + error.message);
         }
       });
+      window['ipcRenderer'].send('project-open-ready');
 
       await this.ensureProjectRootPath();
       // if (!this.currentProjectPath) {
@@ -390,7 +425,33 @@ export class ProjectService {
     }
 
     const rawAilyProjectPath = await window['env'].get("AILY_PROJECT_PATH");
-    this.projectRootPath = rawAilyProjectPath.replace('%HOMEPATH%\\Documents\\', window['path'].getUserDocuments() + this.platformService.getPlatformSeparator());
+    this.setProjectRootPath(rawAilyProjectPath);
+  }
+
+  setProjectRootPath(rawPath: unknown): void {
+    const pathApi = window['path'];
+    const separator = this.platformService.getPlatformSeparator();
+    const projectRootPath = resolveConfiguredProjectRootPath(rawPath, {
+      userDocuments: pathApi?.getUserDocuments?.() || '',
+      userHome: pathApi?.getUserHome?.() || '',
+      separator,
+    });
+    this.projectRootPath = projectRootPath
+      || (pathApi?.getUserDocuments?.() ? pathApi.join(pathApi.getUserDocuments(), 'aily-project') : `.${separator}`);
+  }
+
+  private registerProjectRootPathSettingListener(): void {
+    if (this.projectRootPathSettingListenerRegistered || !window['ipcRenderer']?.on) {
+      return;
+    }
+
+    window['ipcRenderer'].on('setting-changed', (_event, message) => {
+      if (message?.action !== PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION) {
+        return;
+      }
+      this.setProjectRootPath(message.data?.path ?? message.data);
+    });
+    this.projectRootPathSettingListenerRegistered = true;
   }
 
   async getDefaultProjectParentPath(): Promise<string> {
@@ -426,7 +487,7 @@ export class ProjectService {
     if (!normalized) {
       return normalized;
     }
-    if (normalized.startsWith('@aily-project/')) {
+    if (isAilyScopedPackageName(normalized)) {
       return normalized;
     }
     if (normalized.startsWith('board-')) {
@@ -446,7 +507,7 @@ export class ProjectService {
 
   private async buildNpmInstallCommand(
     packageSpec: string,
-    options: string | { prefixPath?: string; noSave?: boolean } = {}
+    options: string | { prefixPath?: string; noSave?: boolean; registry?: string } = {}
   ): Promise<string> {
     const installOptions = typeof options === 'string' ? { prefixPath: options } : options;
     const args = [`npm install ${packageSpec}`];
@@ -459,14 +520,22 @@ export class ProjectService {
     const userConfig = this.electronService.isElectron && window['env']?.get
       ? String(await window['env'].get('NPM_CONFIG_USERCONFIG') || '').trim()
       : '';
-    const registry = this.electronService.isElectron && window['env']?.get
-      ? String(await window['env'].get('AILY_NPM_REGISTRY') || '').trim()
-      : '';
+    // 调用方为 Python/Linux 显式传专用仓库；Arduino 未传时保持原 AILY_NPM_REGISTRY 行为。
+    const isLinuxPackage = packageSpec.startsWith(`${AILY_LINUX_NPM_SCOPE}/`);
+    const registryEnvName = isLinuxPackage ? 'AILY_NPM_REGISTRY_LINUX' : 'AILY_NPM_REGISTRY';
+    const registry = String(installOptions.registry || '').trim() || (
+      this.electronService.isElectron && window['env']?.get
+        ? String(await window['env'].get(registryEnvName) || '').trim()
+        : ''
+    );
     if (userConfig) {
       args.push(`--userconfig "${userConfig}"`);
     }
     if (registry) {
-      args.push(`--@aily-project:registry="${registry}"`);
+      const registryScope = isLinuxPackage
+        ? AILY_LINUX_NPM_SCOPE
+        : AILY_NPM_SCOPE;
+      args.push(`--${registryScope}:registry="${registry}"`);
     }
     return args.join(' ');
   }
@@ -535,8 +604,9 @@ export class ProjectService {
 
   private async finishProjectCreation(projectPath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
     this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
-    await window['iWindow'].send({
+    const result = await window['iWindow'].send({
       to: 'main',
+      timeout: 130000,
       data: {
         action: 'open-project',
         path: projectPath,
@@ -544,19 +614,24 @@ export class ProjectService {
         sessionResource: options.sessionResource ?? null,
       }
     });
-    return true;
+    return result === 'success';
   }
 
   // 新建项目
   async projectNew(newProjectData: NewProjectData, options: ProjectCreationOptions = {}): Promise<boolean> {
     try {
+      await this.assertProjectCreationMode(options.templateDirectory === CODER_TEMPLATE_DIRECTORY ? 'coder' : 'blockly');
       const separator = this.platformService.getPlatformSeparator();
       // console.log('newProjectData: ', newProjectData);
       const appDataPath = window['path'].getAppDataPath();
       const projectPath = this.buildProjectPath(newProjectData);
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
       const boardPackage = this.buildNpmPackageSpec(boardPackageName, newProjectData.board.version);
-      const installCommand = await this.buildNpmInstallCommand(boardPackage, appDataPath);
+      // 创建前还没有 package.json，用向导选定的 devmode 决定板包仓库。
+      const installCommand = await this.buildNpmInstallCommand(boardPackage, {
+        prefixPath: appDataPath,
+        registry: this.configService.getNpmRegistryForProject({ devmode: newProjectData.devmode }),
+      });
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
       const npmInstallResult = await this.appDataResourceLock.runExclusive(`project:new:install-board:${boardPackage}`, () =>
@@ -572,16 +647,20 @@ export class ProjectService {
         boardPackageName,
       );
       const isCoderTemplate = templateDirectory === CODER_TEMPLATE_DIRECTORY;
-      const templatePath = isCoderTemplate
-        ? resolveCoderTemplatePath(boardPackagePath, window['path'])
-        : window['path'].join(boardPackagePath, templateDirectory);
+      const coderTemplate = isCoderTemplate
+        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path'])
+        : null;
+      const templatePath = coderTemplate?.templatePath
+        ?? window['path'].join(boardPackagePath, templateDirectory);
       if (!window['fs'].existsSync(templatePath)) {
         throw new Error(`板卡模板目录不存在，可能是板卡包安装失败或模板缺失: ${templatePath}`);
       }
       // 创建项目目录
       await this.crossPlatformCmdService.createDirectory(projectPath, true);
       if (isCoderTemplate) {
-        copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs']);
+        copyCoderArduinoTemplate(templatePath, projectPath, window['path'], window['fs'], {
+          useDefaultSource: coderTemplate?.useDefaultSource === true,
+        });
       } else {
         // 复制 Blockly 模板文件到项目目录
         await this.crossPlatformCmdService.copyItem(`${templatePath}${separator}*`, projectPath, true, true);
@@ -611,6 +690,9 @@ export class ProjectService {
 
   async projectNewFromTemplate(newProjectData: NewProjectData, templatePath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
     try {
+      const mode = this.getProjectMode(templatePath);
+      if (!mode) throw new Error(this.translate.instant('PROJECT.MODE_UNKNOWN'));
+      await this.assertProjectCreationMode(mode);
       const separator = this.platformService.getPlatformSeparator();
       const projectPath = this.buildProjectPath(newProjectData);
 
@@ -831,7 +913,7 @@ export class ProjectService {
       ...(packageJson?.devDependencies || {}),
       ...(packageJson?.optionalDependencies || {}),
     })
-      .filter(([name]) => name.startsWith('@aily-project/lib-'))
+      .filter(([name]) => isAilyLibraryPackageName(name))
       .map(([name, version]) => [name, String(version ?? '')] as const)
       .sort(([a], [b]) => a.localeCompare(b));
     const language = this.translate.currentLang || this.translate.defaultLang || 'en';
@@ -842,21 +924,23 @@ export class ProjectService {
       'generator.js',
       window['path'].join('i18n', `${language}.json`),
     ];
-    const scopePath = window['path'].join(projectPath, 'node_modules', '@aily-project');
     const libraryFileSignatures: Array<[string, string, string]> = [];
 
-    if (window['fs'].existsSync(scopePath)) {
-      const libraryDirectoryNames = window['fs'].readdirSync(scopePath)
-        .filter((name: string) => name.startsWith('lib-'))
-        .sort((a: string, b: string) => a.localeCompare(b));
+    for (const scope of AILY_PACKAGE_SCOPES) {
+      const scopePath = window['path'].join(projectPath, 'node_modules', scope);
+      if (window['fs'].existsSync(scopePath)) {
+        const libraryDirectoryNames = window['fs'].readdirSync(scopePath)
+          .filter((name: string) => name.startsWith('lib-'))
+          .sort((a: string, b: string) => a.localeCompare(b));
 
-      for (const directoryName of libraryDirectoryNames) {
-        for (const fileName of runtimeFileNames) {
-          const filePath = window['path'].join(scopePath, directoryName, fileName);
-          const fileSignature = window['fs'].existsSync(filePath)
-            ? window['fs'].md5Buffer(window['fs'].readFileSync(filePath))
-            : 'missing';
-          libraryFileSignatures.push([directoryName, fileName, fileSignature]);
+        for (const directoryName of libraryDirectoryNames) {
+          for (const fileName of runtimeFileNames) {
+            const filePath = window['path'].join(scopePath, directoryName, fileName);
+            const fileSignature = window['fs'].existsSync(filePath)
+              ? window['fs'].md5Buffer(window['fs'].readFileSync(filePath))
+              : 'missing';
+            libraryFileSignatures.push([`${scope}/${directoryName}`, fileName, fileSignature]);
+          }
         }
       }
     }
@@ -872,16 +956,21 @@ export class ProjectService {
   private async projectOpenInternal(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}): Promise<boolean> {
     const previousProjectPath = this.currentProjectPath;
     const activationReason = options.reason || (this.isSameProjectPath(previousProjectPath, projectPath) ? 'reload' : 'open');
-
-    if (this.shouldBlockForAiOperation(activationReason)) {
-      this.warnBlockingAiOperation();
-      return false;
-    }
+    const isSwitchingProject = !!previousProjectPath
+      && !this.isSameProjectPath(previousProjectPath, projectPath);
 
     // 判断路径是否存在
     if (!this.electronService.exists(projectPath)) {
       this.removeRecentlyProject({ path: projectPath })
       this.message.error(this.translate.instant('PROJECT.PATH_NOT_EXIST'));
+      return false;
+    }
+
+    // Reject before acquiring locks, closing windows, changing routes or publishing activation.
+    if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
+
+    if (this.shouldBlockForAiOperation(activationReason)) {
+      this.warnBlockingAiOperation();
       return false;
     }
 
@@ -911,6 +1000,19 @@ export class ProjectService {
       }
     }
 
+    if (isSwitchingProject && !(await this.application.closeConnectionGraphWindows())) {
+      if (this.electronService.isElectron && window['projectLock']) {
+        try {
+          await window['projectLock'].release(projectPath);
+        } catch (e) {
+          console.warn('project-lock release after window close failure:', e);
+        }
+      }
+      this.warnConnectionGraphWindowCloseFailure();
+      this.stateSubject.next('default');
+      return false;
+    }
+
     if (this.electronService.isElectron
       && previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath)
@@ -924,7 +1026,7 @@ export class ProjectService {
 
     this.beginBlocklyProjectLoad(projectPath);
 
-    const abiIsExist = window['path'].isExists(projectPath + '/project.abi');
+    const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
     const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
     if (blocklyRouteIsBeingReused) {
       // Angular reuses the component when only query params change. Take an
@@ -1003,9 +1105,7 @@ export class ProjectService {
       }, 120000);
 
       subscription = this.stateSubject.subscribe((state) => {
-        const isBlocklyProject = window['path']?.isExists?.(
-          window['path'].join(projectPath, 'project.abi'),
-        );
+        const isBlocklyProject = this.getProjectMode(projectPath) === 'blockly';
         if (!isBlocklyProject && state === 'loaded') {
           finish();
           return;
@@ -1120,6 +1220,11 @@ export class ProjectService {
       return false;
     }
 
+    if (this.currentProjectPath && !(await this.application.closeConnectionGraphWindows())) {
+      this.warnConnectionGraphWindowCloseFailure();
+      return false;
+    }
+
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
       try {
         await window['projectLock'].release(this.currentProjectPath);
@@ -1134,7 +1239,7 @@ export class ProjectService {
     this.blocklyProjectLoadFailure = null;
     void window['ipcRenderer']?.invoke?.('logger-set-project-path', '').catch(() => undefined);
     this.currentPackageData = {
-      name: 'aily blockly',
+      name: '',
     };
     this.stateSubject.next('default');
     // this.currentProjectPath = (await window['env'].get("AILY_PROJECT_PATH")).replace('%HOMEPATH%\\Documents', window['path'].getUserDocuments());
@@ -1195,34 +1300,99 @@ export class ProjectService {
     });
   }
 
-  // 通过ConfigService存储最近打开的项目
-  get recentlyProjects(): any[] {
-    return this.configService.data?.recentlyProjects || [];
+  getProjectMode(projectPath: string): ProjectMode | null {
+    if (!projectPath || !this.electronService.isElectron) return null;
+    try {
+      const packagePath = window['path'].join(projectPath, 'package.json');
+      const manifest = window['fs'].existsSync(packagePath)
+        ? JSON.parse(window['fs'].readFileSync(packagePath, 'utf8')) : undefined;
+      return detectProjectMode({
+        manifest,
+        hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
+        hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
+      });
+    } catch {
+      return null;
+    }
   }
 
-  set recentlyProjects(data) {
+  private async assertProjectCreationMode(mode: ProjectMode): Promise<void> {
+    await this.configService.init();
+    if (mode !== this.configService.getPreferredChatAgentRuntimeMode()) {
+      throw new Error(this.translate.instant('PROJECT.MODE_CREATE_RESTRICTED', {
+        application: getProjectApplicationName(this.configService.getPreferredChatAgentRuntimeMode()),
+        targetApplication: getProjectApplicationName(mode),
+      }));
+    }
+  }
+
+  async ensureProjectModeAllowed(projectPath: string): Promise<boolean> {
+    await this.configService.init();
+    const mode = this.getProjectMode(projectPath);
+    if (!mode) {
+      this.message.error(this.translate.instant('PROJECT.MODE_UNKNOWN'));
+      return false;
+    }
+    if (mode === this.configService.getPreferredChatAgentRuntimeMode()) return true;
+
+    const application = getProjectApplicationName(mode);
+    let installed = false;
+    try {
+      const status = await window['ipcRenderer'].invoke('project-companion-status', { mode });
+      installed = status?.installed === true;
+    } catch (error) {
+      console.warn('Companion application lookup failed:', error);
+    }
+    this.modal.confirm({
+      nzClassName: 'project-mode-mismatch-modal',
+      nzCentered: true,
+      nzWidth: 480,
+      nzMaskClosable: false,
+      nzTitle: this.translate.instant('PROJECT.MODE_MISMATCH_TITLE'),
+      nzContent: this.translate.instant(installed ? 'PROJECT.MODE_OPEN_OTHER' : 'PROJECT.MODE_DOWNLOAD_OTHER', { application }),
+      nzOkText: this.translate.instant(installed ? 'PROJECT.MODE_OPEN_BUTTON' : 'PROJECT.MODE_DOWNLOAD_BUTTON', { application }),
+      nzCancelText: this.translate.instant('PROJECT.LOCK_CANCEL'),
+      nzOnOk: async () => {
+        try {
+          const result = await window['ipcRenderer'].invoke(
+            installed ? 'project-companion-open' : 'project-companion-download',
+            { mode, projectPath },
+          );
+          if (result?.ok !== true) throw new Error(result?.error || 'Application launch failed');
+          return true;
+        } catch (error) {
+          console.warn('Companion application action failed:', error);
+          this.message.error(this.translate.instant('PROJECT.MODE_LAUNCH_FAILED', { application }));
+          return false;
+        }
+      },
+    });
+    return false;
+  }
+
+  // Filtering is a view: add/remove must always preserve the other mode's stored history.
+  get recentlyProjects(): RecentProject[] {
+    const source: RecentProject[] = this.configService.data?.recentlyProjects || [];
+    const mode = this.configService.getPreferredChatAgentRuntimeMode();
+    const cache = this.recentProjectsCache;
+    if (cache?.source === source && cache.mode === mode && Date.now() - cache.time < 1000) return cache.projects;
+    const projects = source.filter((project) => this.getProjectMode(project.path) === mode);
+    this.recentProjectsCache = { source, mode, time: Date.now(), projects };
+    return projects;
+  }
+
+  set recentlyProjects(data: RecentProject[]) {
     this.configService.data.recentlyProjects = data;
+    this.recentProjectsCache = null;
     this.configService.save();
   }
 
-  addRecentlyProject(data: { name: string, path: string, nickname?: string }) {
-    let temp: any[] = this.recentlyProjects
-    temp.unshift(data);
-    temp = temp.filter((item, index) => {
-      return temp.findIndex((item2) => item2.path === item.path) === index;
-    });
-    if (temp.length > 6) {
-      temp.pop();
-    }
-    this.recentlyProjects = temp;
+  addRecentlyProject(data: RecentProject) {
+    this.recentlyProjects = addRecentProject(this.configService.data?.recentlyProjects || [], data);
   }
 
   removeRecentlyProject(data: { path: string }) {
-    let temp: any[] = this.recentlyProjects
-    temp = temp.filter((item) => {
-      return item.path !== data.path;
-    });
-    this.recentlyProjects = temp;
+    this.recentlyProjects = removeRecentProject(this.configService.data?.recentlyProjects || [], data.path);
   }
 
   // 检查项目是否未保存
@@ -1460,17 +1630,35 @@ export class ProjectService {
     const prjPackageJson = await this.getPackageJson();
     const deps = Object.keys(prjPackageJson.dependencies || {});
     const fromDeps =
-      deps.find((dep) => dep.startsWith('@aily-project/board-'))
+      deps.find((dep) => isAilyBoardPackageName(dep))
       ?? deps.find((dep) => dep.startsWith('@aily-project/coder-'));
     if (fromDeps) {
       return fromDeps;
     }
     const boardDeps = Object.keys(prjPackageJson.boardDependencies || {});
     const fromBoardDeps =
-      boardDeps.find((dep) => dep.startsWith('@aily-project/board-'))
+      boardDeps.find((dep) => isAilyBoardPackageName(dep))
       ?? boardDeps.find((dep) => dep.startsWith('@aily-project/coder-'));
     if (fromBoardDeps) {
       return fromBoardDeps;
+    }
+    if (this.currentProjectPath) {
+      const aciPath = `${this.currentProjectPath}/project.aci`;
+      if (window['fs'].existsSync(aciPath)) {
+        try {
+          const aci = JSON.parse(this.electronService.readFile(aciPath));
+          const boardPackage = String(aci?.target?.boardPackage ?? '').trim();
+          if (boardPackage) {
+            return boardPackage;
+          }
+          const board = String(aci?.target?.board ?? '').trim();
+          if (isAilyScopedPackageName(board)) {
+            return board;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
     }
     return undefined;
   }
@@ -1521,6 +1709,7 @@ export class ProjectService {
       const boardJson = await this.getBoardJson();
       this.currentBoardConfig = boardJson;
       window['boardConfig'] = boardJson;
+      this.boardConfigUpdatedSubject.next(boardJson);
       return true;
     } catch (e) {
       console.warn('同步开发板配置失败:', e);
@@ -2330,7 +2519,12 @@ export class ProjectService {
     }
   }
 
-  async changeBoard(boardInfo: { "name": string, "version": string }) {
+  async changeBoard(boardInfo: {
+    name: string;
+    version: string;
+    mode?: string[];
+    selectedFramework?: string;
+  }) {
     this.isBoardSwitchInProgress = true;
     let reloadPromise: Promise<void> | null = null;
     try {
@@ -2338,31 +2532,52 @@ export class ProjectService {
       if (!this.currentProjectPath) {
         throw new Error('当前项目路径未设置');
       }
+      const currentPackageJson = await this.getPackageJson();
+      const currentProjectMode = normalizeProjectMode(currentPackageJson) || 'arduino';
+      const isAilyCode = this.isAilyCodeProject();
+      const requestedBoardInfo = {
+        ...boardInfo,
+        name: this.normalizeAilyBoardPackageName(boardInfo.name),
+      };
+      let normalizedBoardInfo = requestedBoardInfo;
+      if (!isAilyCode) {
+        const catalogBoard = this.configService.boardDict[requestedBoardInfo.name];
+        if (!catalogBoard) {
+          throw new Error(`开发板 ${requestedBoardInfo.name} 不在当前开发板目录中`);
+        }
+        normalizedBoardInfo = { ...catalogBoard, ...requestedBoardInfo };
+        if (!isBoardCompatibleWithProjectMode(normalizedBoardInfo, currentPackageJson)) {
+          throw new Error(
+            `当前 ${currentProjectMode} 项目不能切换到其他开发模式的开发板`,
+          );
+        }
+      }
       // 0. 保存当前项目
       await this.save();
       this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 5000 });
 
       // 记录开发板使用次数
-      const normalizedBoardInfo = {
-        ...boardInfo,
-        name: this.normalizeAilyBoardPackageName(boardInfo.name),
-      };
       this.configService.recordBoardUsage(normalizedBoardInfo.name);
       const currentBoardModule = await this.getBoardModule();
 
       // 1. npm install 安装boardInfo.name@boardInfo.version 到 appDataPath（与 projectNew 一致）
       const appDataPath = window['path'].getAppDataPath();
       const newBoardPackage = this.buildNpmPackageSpec(normalizedBoardInfo.name, normalizedBoardInfo.version);
+      // 切板先按目标 boards.json.mode 选择仓库，不能继续沿用旧项目的 devmode。
+      const boardRegistry = this.configService.getNpmRegistryForBoard(normalizedBoardInfo);
       console.log('安装新开发板模块:', newBoardPackage);
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.INSTALLING_NEW_BOARD') });
-      const appDataInstallCommand = await this.buildNpmInstallCommand(newBoardPackage, appDataPath);
+      const appDataInstallCommand = await this.buildNpmInstallCommand(newBoardPackage, {
+        prefixPath: appDataPath,
+        registry: boardRegistry,
+      });
       await this.appDataResourceLock.runExclusive(`project:switch-board:install-appdata:${newBoardPackage}`, () =>
         this.cmdService.runAsyncChecked(appDataInstallCommand)
       );
 
       // 2. 预安装到当前项目的 node_modules，但不写 package.json；最终 package.json 变更交给 watcher 处理。
       await this.cmdService.runAsyncChecked(
-        await this.buildNpmInstallCommand(newBoardPackage, { noSave: true }),
+        await this.buildNpmInstallCommand(newBoardPackage, { noSave: true, registry: boardRegistry }),
         this.currentProjectPath,
       );
 
@@ -2371,9 +2586,6 @@ export class ProjectService {
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.UPDATING_PROJECT_CONFIG') });
 
       // 读取当前package.json保留项目基本信息
-      const currentPackageJson = await this.getPackageJson();
-
-      const isAilyCode = this.isAilyCodeProject();
       // 两种工程共用主板源，仅模板目录不同。
       const boardPackagePath = window['path'].join(
         appDataPath,
@@ -2392,6 +2604,7 @@ export class ProjectService {
         const templatePackageJson = JSON.parse(window['fs'].readFileSync(templatePackageJsonPath, 'utf8'));
 
         // 合并配置：保留当前项目的基本信息，使用新开发板的依赖和配置
+        // Blockly 切板保留当前 devmode；Aily Code 继续使用 Arduino 模板语义。
         const newPackageJson: Record<string, unknown> = {
           ...templatePackageJson,
           name: currentPackageJson.name, // 保留项目名称
@@ -2413,12 +2626,14 @@ export class ProjectService {
             currentPackageJson,
           );
         } else {
+          // 同模式切板只替换板包和模板配置，不改变当前项目的开发模式。
+          newPackageJson['devmode'] = currentProjectMode;
           newPackageJson['dependencies'] = {
             // 从模板获取新的开发板依赖和基础库
             ...templatePackageJson.dependencies,
             ...Object.fromEntries(
               Object.entries(currentPackageJson.dependencies || {})
-                .filter(([key]) => !key.startsWith('@aily-project/board-')),
+                .filter(([key]) => !isAilyBoardPackageName(key)),
             ),
           };
         }

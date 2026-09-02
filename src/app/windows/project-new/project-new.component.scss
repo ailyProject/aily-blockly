@@ -140,6 +140,7 @@
   padding-bottom: 110px;
 
   .board {
+    position: relative;
     width: 180px;
     height: 110px;
     background: var(--aily-bg-tertiary);
@@ -157,9 +158,17 @@
 
     .name {
       white-space: nowrap;
-      span{
-        color: var(--aily-color-accent);
-      }
+    }
+
+    .state-tag {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      z-index: 1;
+      margin: 0;
+      border-radius: 10px;
+      font-size: 11px;
+      line-height: 18px;
     }
 
     &.disabled {
@@ -175,6 +184,7 @@
   min-height: 100px;
   width: 100%;
   position: absolute;
+  z-index: 2;
   bottom: 0;
   border-radius: 10px;
   padding: 8px 12px 10px;

@@ -146,9 +146,10 @@ textarea {
 
 .tool-item {
   flex-wrap: nowrap;
+  margin-bottom: 0 !important;
 
-  &:first-child {
-    margin-bottom: 0 !important;
+  &:last-child {
+    margin-bottom: 15px !important;
   }
 }
 
@@ -349,6 +350,10 @@ ngx-simplebar {
 
   .coder-mode-button {
     border-radius: 0 2px 2px 0;
+  }
+
+  .single-mode-button {
+    border-radius: 2px;
   }
 }
 

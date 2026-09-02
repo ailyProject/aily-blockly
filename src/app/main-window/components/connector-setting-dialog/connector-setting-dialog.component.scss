@@ -1,0 +1,67 @@
+.connector-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 24px;
+
+  label {
+    gap: 5px;
+
+    >span {
+      color: var(--aily-text-secondary);
+      font-size: 12px;
+    }
+  }
+
+  input {
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+    border-color: var(--aily-border-tertiary);
+  }
+}
+
+.row {
+  display: grid;
+  gap: 10px;
+}
+
+.host-port-row {
+  grid-template-columns: minmax(0, 1fr) 100px;
+}
+
+.credentials-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.password-input {
+  letter-spacing: -5px;
+}
+
+.path-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+
+  button {
+    padding: 0 12px;
+    color: var(--aily-text-primary);
+    background: var(--aily-bg-tertiary);
+    border: 1px solid var(--aily-border-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      border-color: #1677ff;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  }
+}
+
+[nz-checkbox]{
+  margin-left: 0;
+}

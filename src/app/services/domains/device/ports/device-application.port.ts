@@ -1,4 +1,5 @@
 import { InjectionToken } from '@angular/core';
+import type { LinuxBoardConnector } from '@shared/public-api';
 
 export interface DeviceActionFeedback {
   success: boolean;
@@ -20,6 +21,14 @@ export interface DeviceApplicationPort {
   handleSubappSignal(signal: string, payload: Record<string, unknown>): Promise<void> | null;
   uploadFromBlocklyEditor(): Promise<any>;
   cancelBlocklyEditorUpload(): void;
+  getLinuxBoardSelectedTransport(): LinuxBoardConnector | null;
+  syncAndRunLinuxBoardSource(
+    source: string,
+    projectPath: string,
+    expectedTransport: LinuxBoardConnector,
+    entry: string,
+  ): Promise<Record<string, unknown>>;
+  stopLinuxBoardProject(): Promise<Record<string, unknown>>;
 }
 
 export const DEVICE_APPLICATION_PORT = new InjectionToken<DeviceApplicationPort>(

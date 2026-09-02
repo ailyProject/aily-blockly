@@ -49,6 +49,7 @@
     }
 
     .btn {
+        position: relative;
         background: var(--aily-bg-tertiary);
         border-radius: 5px;
         padding: 5px;
@@ -67,8 +68,11 @@
 
         &.disabled {
             cursor: wait;
-            opacity: 0.55;
             pointer-events: none;
+
+            > i:not(.ai-generation-loading) {
+                opacity: 0.42;
+            }
         }
 
         i {
@@ -77,6 +81,15 @@
 
         i.reloading {
             animation: devtool-reload-spin 0.8s linear infinite;
+        }
+
+        i.ai-generation-loading {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            color: var(--aily-color-primary);
+            -webkit-text-stroke: 0.45px color-mix(in srgb, var(--aily-color-primary) 60%, #00264d);
+            font-size: 9px;
         }
 
         i.fa-xmark {

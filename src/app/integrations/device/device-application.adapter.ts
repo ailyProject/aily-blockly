@@ -6,6 +6,8 @@ import {
   DeviceApplicationPort,
 } from '@domain/device/public-api';
 import { SubappResourceLifecycleService } from '@integration/subapps/public-api';
+import { LinuxBoardConnectorService } from '@integration/device/public-api';
+import type { LinuxBoardConnector } from '@shared/public-api';
 import { _UploaderService as BlocklyUploaderService } from '../../editors/blockly-editor/services/uploader.service';
 
 @Injectable({ providedIn: 'root' })
@@ -15,6 +17,7 @@ export class DeviceApplicationAdapter implements DeviceApplicationPort {
     private readonly uiService: UiService,
     private readonly subappResourceLifecycle: SubappResourceLifecycleService,
     private readonly blocklyUploaderService: BlocklyUploaderService,
+    private readonly linuxBoardConnector: LinuxBoardConnectorService,
   ) {}
 
   hasActionListener(listenerId: string): boolean {
@@ -52,5 +55,27 @@ export class DeviceApplicationAdapter implements DeviceApplicationPort {
 
   cancelBlocklyEditorUpload(): void {
     this.blocklyUploaderService.cancel();
+  }
+
+  getLinuxBoardSelectedTransport(): LinuxBoardConnector | null {
+    return this.linuxBoardConnector.snapshot.selectedTransport;
+  }
+
+  syncAndRunLinuxBoardSource(
+    source: string,
+    projectPath: string,
+    expectedTransport: LinuxBoardConnector,
+    entry: string,
+  ): Promise<Record<string, unknown>> {
+    return this.linuxBoardConnector.syncAndRunSource(
+      source,
+      projectPath,
+      expectedTransport,
+      entry,
+    );
+  }
+
+  stopLinuxBoardProject(): Promise<Record<string, unknown>> {
+    return this.linuxBoardConnector.stop();
   }
 }

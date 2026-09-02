@@ -11,9 +11,9 @@ import { FormsModule } from '@angular/forms';
 export class ActBtnComponent {
   @Input() icon: string;
   @Input() color: string = '#FFF';
-  @Input() state: 'default' | 'doing' | 'done' | 'error' | 'warn' = 'default';
+  @Input() state: 'default' | 'doing' | 'done' | 'error' | 'warn' | 'running' | 'stopping' = 'default';
 
-  @Output() stateChange = new EventEmitter<'default' | 'doing' | 'done' | 'error' | 'warn'>();
+  @Output() stateChange = new EventEmitter<'default' | 'doing' | 'done' | 'error' | 'warn' | 'running' | 'stopping'>();
 
   constructor() {
   }
@@ -23,10 +23,17 @@ export class ActBtnComponent {
   }
 
   toWink = false;
+  private resetStateTimer: ReturnType<typeof setTimeout> | null = null;
+
   ngOnChanges(changes: SimpleChanges) {
     if (changes['state']) {
-      if (this.state != 'doing' && this.state != 'default') {
-        setTimeout(() => {
+      if (this.resetStateTimer) {
+        clearTimeout(this.resetStateTimer);
+        this.resetStateTimer = null;
+      }
+      if (this.state != 'doing' && this.state != 'default' && this.state != 'running' && this.state != 'stopping') {
+        this.resetStateTimer = setTimeout(() => {
+          this.resetStateTimer = null;
           this.stateChange.emit('default');
           this.toWink = false;
         }, 6000);

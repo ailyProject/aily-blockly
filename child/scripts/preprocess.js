@@ -154,28 +154,37 @@ async function main() {
             : collectComponentLibraries(currentProjectPath);
 
         logger.log(`开始处理 ${libsPath.length} 个库文件`);
-        const copiedLibraries = await processLibrariesParallel(
-            libsPath,
-            librariesPath,
-            currentProjectPath,
-            za7Path,
-            developmentMode,
-            libraryCache
-        );
-        const copiedComponents = isAilyCode
+        const packageLibraryPaths = isAilyCode
+            ? await prepareCoderPackageLibraries(libsPath, currentProjectPath, za7Path)
+            : [];
+        const copiedLibraries = isAilyCode
             ? componentLibraries.map(component => component.name)
-            : await processComponentLibraries(componentLibraries, librariesPath);
-        copiedLibraries.push(...copiedComponents);
+            : await processLibrariesParallel(
+                libsPath,
+                librariesPath,
+                currentProjectPath,
+                za7Path,
+                developmentMode,
+                libraryCache
+            );
+        if (!isAilyCode) {
+            copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath));
+        }
+        const librarySearchPaths = isAilyCode
+            ? [librariesPath, ...packageLibraryPaths]
+            : [librariesPath];
         
         // 保存缓存
-        try {
-            fs.writeFileSync(cacheFilePath, JSON.stringify(libraryCache, null, 2));
-        } catch (e) {
-            logger.warn('保存库缓存失败:', e);
+        if (!isAilyCode) {
+            try {
+                fs.writeFileSync(cacheFilePath, JSON.stringify(libraryCache, null, 2));
+            } catch (e) {
+                logger.warn('保存库缓存失败:', e);
+            }
         }
 
         // 4. 清理未使用的库
-        if (fs.existsSync(librariesPath)) {
+        if (!isAilyCode && fs.existsSync(librariesPath)) {
             const librariesItems = fs.readdirSync(librariesPath);
             const existingFolders = librariesItems
                 .filter(item => fs.statSync(path.join(librariesPath, item)).isDirectory());
@@ -309,13 +318,15 @@ async function main() {
             // `...parseArgs(compilerParam)`,
             `"${compileSourcePath}"`,
             '--board', `"${boardType}"`,
-            '--libraries-path', `"${librariesPath}"`,
             '--sdk-path', `"${fullSdkPath}"`,
             '--tools-path', `"${toolsPath}"`,
             '--build-path', `"${buildPath}"`,
             '--tool-versions', `"${toolVersions.join(',')}"`,
             '--save-result', `"${preprocessCachePath}"`
         ];
+        for (const librarySearchPath of librarySearchPaths) {
+            pre_args.push('--libraries-path', `"${librarySearchPath}"`);
+        }
 
         // 添加项目配置参数（如 UploadSpeed, FlashMode, FlashSize, PartitionScheme, PSRAM 等）
         if (projectConfig) {
@@ -600,6 +611,36 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
         }
     });
     return copiedLibraries;
+}
+
+/**
+ * Coder keeps installed @aily-project/lib-* packages intact under node_modules.
+ * src.7z is expanded in-place to <package>/src and each package src directory is
+ * passed to aily-builder as an independent library search root. sketch/libraries
+ * remains reserved for intentional project-local source libraries.
+ */
+async function prepareCoderPackageLibraries(libsPath, currentProjectPath, za7Path) {
+    const results = await Promise.all(libsPath.map(async lib => {
+        const packageRoot = path.join(currentProjectPath, 'node_modules', lib);
+        const sourcePathBase = path.join(packageRoot, 'src');
+        if (!fs.existsSync(sourcePathBase)) {
+            const sourceZipPath = path.join(packageRoot, 'src.7z');
+            if (!fs.existsSync(sourceZipPath)) {
+                logger.warn(`Coder library package has no src or src.7z: ${lib}`);
+                return '';
+            }
+            try {
+                extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePathBase);
+            } catch (error) {
+                throw new Error(`Coder library ${lib} extraction failed: ${error.message}`);
+            }
+        }
+
+        const sourcePath = resolveNestedSrcPath(sourcePathBase);
+        createLibrarySourceFingerprint(sourcePath);
+        return sourcePath;
+    }));
+    return results.filter(Boolean);
 }
 
 async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
@@ -889,6 +930,7 @@ module.exports = {
     createLibrarySourceFingerprint,
     isCompilableLibraryPackage,
     normalizeExtractedSourceDirectory,
+    prepareCoderPackageLibraries,
     processComponentLibraries,
     processLibrariesParallel,
 };

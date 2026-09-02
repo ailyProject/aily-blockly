@@ -16,11 +16,11 @@ import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
 import { AppStoreService } from '../tools/app-store/app-store.service';
-import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
+import { NzModalModule, NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '@domain/dependencies/public-api';
 import { NavigationEnd, Router, RouterModule } from '@angular/router';
 import { distinctUntilChanged, filter, merge, Subscription, take } from 'rxjs';
-import { ConfigService, ToolI18nService, type DevelopmentModePreference } from '@core/preferences/public-api';
+import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
@@ -34,6 +34,7 @@ import {
   runAuthSessionInvalidation,
   registerAilyChatHostAuthRuntimeBridge,
 } from '@core/auth/public-api';
+import { extractApiErrorDetails } from '../utils/api-error.utils';
 import { ElectronService } from '@core/platform/public-api';
 import {
   SubappManagerService,
@@ -43,9 +44,7 @@ import {
   DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
 } from '@integration/subapps/public-api';
 import { LoginComponent } from '../components/login/login.component';
-import { resolveTranslatedApiErrorMessage } from '../utils/api-error.utils';
 import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
-import { ModeWelcomeComponent } from '../components/mode-welcome/mode-welcome.component';
 import { SimulatorSubappHostComponent } from '../tools/simulator/simulator-subapp-host.component';
 import { buildChildAuthStateSnapshot } from '../tools/child-tool-host/child-auth-state';
 
@@ -73,15 +72,12 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     NzModalModule,
     RouterModule,
     NzToolTipModule,
-    NzModalModule,
     CloudSpaceComponent,
     UserCenterComponent,
     OnboardingComponent,
     TranslateModule,
     LibManagerToolComponent,
-    ModeWelcomeComponent,
     SimulatorSubappHostComponent,
-    LoginComponent,
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',
@@ -126,8 +122,8 @@ export class MainWindowComponent implements OnDestroy {
   private configNoticeSubscription: Subscription | null = null;
   private projectContextSubscription: Subscription | null = null;
   private projectStateSubscription: Subscription | null = null;
-  private developmentModePreferencePromptOpen = false;
   private loginDialogSubscription: Subscription | null = null;
+  private loginModalRef: NzModalRef<LoginComponent> | null = null;
   private authSessionInvalidationSubscription: Subscription | null = null;
   private authStateBroadcastSubscription: Subscription | null = null;
   private authSessionInvalidationPromise: Promise<void> | null = null;
@@ -135,10 +131,7 @@ export class MainWindowComponent implements OnDestroy {
   private ailyChatPrewarmAuthSubscription: Subscription | null = null;
   private unregisterAilyChatHostAuthRuntimeBridge: (() => void) | null = null;
 
-  loginDialogState: LoginDialogRequestState | null = null;
-
-  // 首次开发模式选择（全屏引导）
-  showModeWelcome = false;
+  requestStatsScope: 'default' | 'eu' | null = null;
 
   constructor(
     private uiService: UiService,
@@ -161,12 +154,15 @@ export class MainWindowComponent implements OnDestroy {
   ) { }
 
   async ngOnInit(): Promise<void> {
+    void this.electronService.currentRegion().then(region => {
+      this.requestStatsScope = region.toLowerCase() === 'eu' ? 'eu' : 'default';
+    });
     this.unregisterAilyChatHostAuthRuntimeBridge = registerAilyChatHostAuthRuntimeBridge(
       this.authService,
       window['ipcRenderer'],
     );
     this.loginDialogSubscription = this.authService.loginDialogRequest$.subscribe((state) => {
-      this.loginDialogState = state;
+      this.handleLoginDialogRequest(state);
     });
     this.authSessionInvalidationSubscription = this.authService.authSessionInvalidationRequest$
       .subscribe((request) => this.handleAuthSessionInvalidation(request));
@@ -224,14 +220,52 @@ export class MainWindowComponent implements OnDestroy {
         }, 100);
       }
     });
-
-    setTimeout(() => {
-      void this.promptDevelopmentModePreferenceIfNeeded();
-    }, 0);
   }
 
-  closeLoginDialog(): void {
-    this.authService.dismissLoginDialog();
+  private handleLoginDialogRequest(state: LoginDialogRequestState | null): void {
+    if (!state) {
+      this.destroyLoginModal();
+      return;
+    }
+
+    if (this.loginModalRef) {
+      return;
+    }
+
+    const lang = (this.translate.currentLang || this.translate.defaultLang || 'en').toLowerCase();
+    const modalRef = this.modal.create<LoginComponent, LoginDialogRequestState, void>({
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzMaskClosable: false,
+      nzKeyboard: false,
+      nzCentered: true,
+      nzWrapClassName: 'login-modal-wrap',
+      nzBodyStyle: { padding: '0' },
+      nzMaskStyle: {
+        background: 'var(--aily-bg-overlay)',
+        backdropFilter: 'blur(6px)',
+      },
+      nzContent: LoginComponent,
+      nzWidth: '900px',
+      nzDirection: lang.startsWith('ar') ? 'rtl' : 'ltr',
+      nzData: state,
+    });
+
+    this.loginModalRef = modalRef;
+    modalRef.afterClose.pipe(take(1)).subscribe(() => {
+      if (this.loginModalRef !== modalRef) {
+        return;
+      }
+      this.loginModalRef = null;
+      this.authService.dismissLoginDialog();
+    });
+  }
+
+  private destroyLoginModal(): void {
+    const modalRef = this.loginModalRef;
+    this.loginModalRef = null;
+    modalRef?.destroy();
   }
 
   private async initializeAuthAndPromptIfNeeded(): Promise<void> {
@@ -387,42 +421,6 @@ export class MainWindowComponent implements OnDestroy {
     this.cancelAilyChatPrewarm = () => clearTimeout(timer);
   }
 
-  private async promptDevelopmentModePreferenceIfNeeded(): Promise<void> {
-    if (this.developmentModePreferencePromptOpen || this.showModeWelcome) {
-      return;
-    }
-
-    if (!this.configService.data || Object.keys(this.configService.data).length === 0) {
-      await this.configService.init();
-    }
-
-    if (!this.configService.shouldPromptDevelopmentModePreference()) {
-      return;
-    }
-
-    this.developmentModePreferencePromptOpen = true;
-    this.showModeWelcome = true;
-    this.cd.detectChanges();
-  }
-
-  // 用户在全屏引导中选择了某个开发模式
-  async onModeWelcomeSelect(preference: DevelopmentModePreference): Promise<void> {
-    await this.configService.setDevelopmentModePreference(preference, 'onboarding');
-    this.closeModeWelcome();
-  }
-
-  // 用户选择「稍后再说」
-  async onModeWelcomeSkip(): Promise<void> {
-    await this.configService.markDevelopmentModePreferencePrompted();
-    this.closeModeWelcome();
-  }
-
-  private closeModeWelcome(): void {
-    this.showModeWelcome = false;
-    this.developmentModePreferencePromptOpen = false;
-    this.cd.detectChanges();
-  }
-
   ngOnDestroy(): void {
     this.unregisterAilyChatHostAuthRuntimeBridge?.();
     this.unregisterAilyChatHostAuthRuntimeBridge = null;
@@ -432,6 +430,7 @@ export class MainWindowComponent implements OnDestroy {
     this.ailyChatPrewarmAuthSubscription = null;
     this.loginDialogSubscription?.unsubscribe();
     this.loginDialogSubscription = null;
+    this.destroyLoginModal();
     this.authSessionInvalidationSubscription?.unsubscribe();
     this.authSessionInvalidationSubscription = null;
     this.authStateBroadcastSubscription?.unsubscribe();
@@ -456,6 +455,19 @@ export class MainWindowComponent implements OnDestroy {
     });
   }
 
+  private resolveOAuthErrorMessage(source: unknown, fallbackKey: string): string {
+    const { errorCode, errorArgs } = extractApiErrorDetails(source);
+    if (errorCode) {
+      const translationKey = `AUTH_ERRORS.${errorCode}`;
+      const translated = this.translate.instant(translationKey, errorArgs);
+      if (typeof translated === 'string' && translated.trim() && translated !== translationKey) {
+        return translated;
+      }
+    }
+
+    return this.translate.instant(fallbackKey);
+  }
+
   private setupGlobalOAuthListener() {
     if (window['oauth'] && window['oauth'].onCallback) {
       this.oauthResultListener = window['oauth'].onCallback(async (callbackData: any) => {
@@ -463,47 +475,41 @@ export class MainWindowComponent implements OnDestroy {
           const result = await this.authService.handleOAuthCallback(callbackData);
 
           if (result.success) {
-            const successMessage = result.purpose === 'bind'
-              ? 'GitHub 绑定成功'
+            const successMessageKey = result.purpose === 'bind'
+              ? 'LOGIN.GITHUB_BIND_SUCCESS'
               : result.purpose === 'library_pr_submit'
-                ? 'GitHub PR 提交授权成功'
-                : 'GitHub 登录成功';
-            this.message.success(successMessage);
+                ? 'LOGIN.GITHUB_PR_AUTH_SUCCESS'
+                : 'LOGIN.GITHUB_LOGIN_SUCCESS';
+            this.message.success(this.translate.instant(successMessageKey));
           } else {
-            let errorMessage = 'GitHub 登录超时，请重试';
+            let errorMessage = this.resolveOAuthErrorMessage(result, 'LOGIN.GITHUB_ERROR');
 
             switch (result.error) {
               case 'needs_wechat_bind':
                 this.authService.emitNeedsWechatBind(result.data?.pending_ticket);
                 return;
               case 'timeout':
+                errorMessage = this.translate.instant('LOGIN.GITHUB_LOGIN_TIMEOUT');
+                break;
               case 'invalid_state':
-                errorMessage = '登录状态无效或已超时，请重试';
+                errorMessage = this.translate.instant('LOGIN.GITHUB_LOGIN_STATE_INVALID');
                 break;
               case 'missing_parameters':
-                errorMessage = '授权参数缺失，请重试';
+                errorMessage = this.translate.instant('LOGIN.GITHUB_AUTH_PARAMETERS_MISSING');
                 break;
               case 'access_denied':
-                errorMessage = '您取消了授权';
+                errorMessage = this.translate.instant('LOGIN.GITHUB_AUTH_CANCELLED');
                 break;
               case 'callback_processing_failed':
-                errorMessage = resolveTranslatedApiErrorMessage(result, this.translate, {
-                  fallbackMessage: result.message || '处理授权回调失败',
-                });
+                errorMessage = this.resolveOAuthErrorMessage(result, 'LOGIN.GITHUB_CALLBACK_FAILED');
                 break;
-              default:
-                errorMessage = resolveTranslatedApiErrorMessage(result, this.translate, {
-                  fallbackMessage: result.message || 'GitHub 登录超时，请重试',
-                });
             }
 
             this.message.error(errorMessage);
           }
         } catch (error) {
           console.error('处理OAuth回调异常:', error);
-          this.message.error(resolveTranslatedApiErrorMessage(error, this.translate, {
-            fallbackMessage: '登录处理失败，请重试',
-          }));
+          this.message.error(this.translate.instant('LOGIN.LOGIN_PROCESSING_FAILED'));
         }
       });
     }

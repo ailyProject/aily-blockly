@@ -17,13 +17,13 @@
   </div>
   }
   <div class="null-box drag" (dblclick)="maximize()"></div>
-  <div class="project-box ccenter">{{ projectData?.nickname || projectData?.name}}</div>
+  <div class="project-box ccenter">{{ projectTitle }}</div>
   <div class="toolbox">
     <div class="zone ccenter">
       @for (btn of headerBtns; track $index) {
       @if(showInRouter(btn)){
       <app-act-btn [icon]="btn.icon" [color]="btn.color" [(state)]="btn.state" nz-tooltip
-        nzTooltipTitle="{{ btn.name | translate}}({{btn.text}})" (click)="onClick(btn,$event)"
+        nzTooltipTitle="{{ headerButtonLabel(btn) }}({{btn.text}})" (click)="onClick(btn,$event)"
         [attr.data-action]="btn.action">
       </app-act-btn>
       }
@@ -72,7 +72,7 @@
 <!-- menu -->
 @if (showMenu) {
 <app-menu class="main-menu-parity" [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"
-  (subItemClickEvent)="onHeaderMenuSubItemClick($event)"></app-menu>
+ (subItemClickEvent)="onHeaderMenuSubItemClick($event)"></app-menu>
 }
 <!-- device port list -->
 @if (showPortList) {

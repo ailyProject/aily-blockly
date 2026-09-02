@@ -25,9 +25,8 @@ import {
   ChildToolProcessService,
   closeToolThroughLifecycle,
   DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
-  findPreferredAilyChatTool,
-  resolvePreferredAilyChatTool,
 } from '@integration/subapps/public-api';
+import { closeConnectionGraphSubWindows } from './project-window-lifecycle';
 
 @Injectable({
   providedIn: 'root',
@@ -79,10 +78,6 @@ export class UiService {
 
   // 初始化UI服务，这个init函数仅供main-window使用
   init(): void {
-    // 注册 window 全局方法，供非 Angular 环境调用
-    (window as any).openAndSendToAilyChat = (text: string, options?: Record<string, any>) => {
-      this.openAndSendToChat(text, options);
-    };
     if (this.electronService.isElectron) {
       this.isMainWindow = true;
       window['ipcRenderer'].on('window-go-main', (event, toolName) => {
@@ -94,6 +89,8 @@ export class UiService {
       });
 
       window['ipcRenderer'].on('window-receive', async (event, message) => {
+        // ProjectService replies only after activation or mode rejection completes.
+        if (message.data?.action === 'open-project') return;
         // console.log('window-receive', message);
         let data;
         if (message.data?.action === 'get-auth-state') {
@@ -241,6 +238,11 @@ export class UiService {
   }
 
   openToolWindow(name: string, options?: Omit<WindowOpts, 'path'>) {
+    const subappConfig = getChildToolConfig(name);
+    const isSubappWindow = !!subappConfig;
+    const defaultSurface = subappConfig?.ui?.surfaces?.['default'];
+    const minWidth = options?.minWidth ?? defaultSurface?.minWidth;
+    const minHeight = options?.minHeight ?? defaultSurface?.minHeight;
     const toolWindowPath = this.getToolWindowPath(name);
     if (!toolWindowPath) {
       return false;
@@ -251,6 +253,9 @@ export class UiService {
       title: options?.title || name,
       width: options?.width ?? 1200,
       height: options?.height ?? 800,
+      windowClass: isSubappWindow ? 'subapp' : 'builtin',
+      ...(minWidth !== undefined ? { minWidth } : {}),
+      ...(minHeight !== undefined ? { minHeight } : {}),
       ...(options?.x !== undefined ? { x: options.x } : {}),
       ...(options?.y !== undefined ? { y: options.y } : {}),
       ...(options?.displayId !== undefined ? { displayId: options.displayId } : {}),
@@ -507,6 +512,17 @@ export class UiService {
     }
   }
 
+  async closeConnectionGraphWindows(): Promise<boolean> {
+    if (!this.electronService.isElectron) return true;
+
+    try {
+      return await closeConnectionGraphSubWindows(window['subWindow']);
+    } catch (error) {
+      console.warn('关闭项目连线图独立窗口失败:', error);
+      return false;
+    }
+  }
+
   // 发送工具信号，格式为 "toolname:action"，如 "serial-monitor:disconnect"
   sendToolSignal(signal: string, payload?: unknown) {
     this.actionSubject.next({ action: 'signal', type: 'tool', data: signal, payload });
@@ -514,16 +530,21 @@ export class UiService {
 
   /**
    * 打开 aily-chat 面板并发送消息。
-   * 标准接口：任何需要「代为向大模型发送消息」的场景，统一调用此方法。
-   * 输入通过 ChatService 的单一路径缓冲，聊天面板挂载后由
-   * ChatExternalInputCoordinator 进入统一提交管线。
+   * 仅供普通“带入输入框/自动发送”场景使用。需要独立执行的宿主任务应调用
+   * AilyChatDemandSessionService，直接由新版 Runtime 创建需求会话。
    *
    * @param text 要发送的文本内容
    * @param options 发送选项，如 { autoSend: true, cover: true }
    */
   openAndSendToChat(text: string, options?: Record<string, any>): void {
     const targetToolId = this.openPreferredAilyChat();
-    const deliver = () => {
+    void this.waitForChildToolReady(targetToolId).then(ready => {
+      if (!ready) {
+        console.warn('[AilyChat][ExternalInputDelivery] child tool did not become ready', {
+          target: targetToolId,
+        });
+        return;
+      }
       console.info('[AilyChat][ExternalInputDelivery]', {
         phase: 'deliver',
         target: targetToolId,
@@ -535,8 +556,7 @@ export class UiService {
         text,
         options: options || {},
       });
-    };
-    deliver();
+    });
   }
 
   /**
@@ -545,7 +565,7 @@ export class UiService {
    * canonical `aily-chat` tool id.
    */
   openPreferredAilyChat(): string {
-    const targetToolId = resolvePreferredAilyChatTool(this.openToolList);
+    const targetToolId = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
     this.openTool(targetToolId);
     return targetToolId;
   }
@@ -559,34 +579,25 @@ export class UiService {
 
     const targetToolId = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
     this.openTool(targetToolId);
-    const deadline = Date.now() + 10_000;
+    if (!await this.waitForChildToolReady(targetToolId)) return false;
+    this.sendToolSignal(`${targetToolId}:session-select`, {
+      targetToolId,
+      sessionId: targetSessionId,
+    });
+    return true;
+  }
 
+  private async waitForChildToolReady(toolId: string, timeoutMs = 10_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const status = this.childHostRegistry.getStatus(targetToolId);
+      const status = this.childHostRegistry.getStatus(toolId);
       if (status?.['penpalState'] === 'connected' && status?.['frameLoaded'] === true) {
-        this.sendToolSignal(`${targetToolId}:session-select`, {
-          targetToolId,
-          sessionId: targetSessionId,
-        });
         return true;
       }
-      if (status?.['status'] === 'error') {
-        return false;
-      }
-
+      if (status?.['status'] === 'error') return false;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-
     return false;
-  }
-
-  /** The currently open Aily Chat, or null when it is closed. */
-  getActiveAilyChatToolId(): string | null {
-    return findPreferredAilyChatTool(this.openToolList);
-  }
-
-  isActiveAilyChatTool(toolId: string): boolean {
-    return this.getActiveAilyChatToolId() === toolId;
   }
 
   openCodeEditorFile(
@@ -787,9 +798,15 @@ export interface WindowOpts {
   path: string;
   data?: any;
   title?: string;
+  /** 全局置顶；普通独立窗口应保持 false，由用户焦点决定窗口层级。 */
   alwaysOnTop?: boolean;
   width?: number;
   height?: number;
+  /** 窗口可缩放下限；内置窗口和子应用窗口仍受宿主基础下限保护。 */
+  minWidth?: number;
+  minHeight?: number;
+  /** 窗口来源类型，用于宿主尺寸和行为策略；两类独立窗均保持正常顶层窗口语义。 */
+  windowClass?: 'builtin' | 'subapp';
   x?: number;
   y?: number;
   displayId?: string | number;

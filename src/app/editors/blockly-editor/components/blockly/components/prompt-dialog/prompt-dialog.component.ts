@@ -1,16 +1,16 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Inject, Input } from '@angular/core';
+import { Component, Inject, Input } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { BlocklyService } from '../../../../services/blockly.service';
 import * as Blockly from 'blockly';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { BaseDialogComponent, DialogButton } from '../../../../../../components/base-dialog/base-dialog.component';
 
 @Component({
   selector: 'app-prompt-dialog',
-  imports: [FormsModule, CommonModule, NzButtonModule, NzInputModule],
+  imports: [FormsModule, CommonModule, NzInputModule, BaseDialogComponent],
   templateUrl: './prompt-dialog.component.html',
   styleUrl: './prompt-dialog.component.scss'
 })
@@ -31,6 +31,12 @@ export class PromptDialogComponent {
     this.title = this.data.title
   }
 
+  get buttons(): DialogButton[] {
+    return [
+      { text: '确定', type: 'primary', action: 'confirm' },
+    ];
+  }
+
   onConfirm() {
     const isNameUsed = Blockly.Variables.nameUsedWithAnyType(this.value, this.blocklyService.workspace);
     const cVariableFormatRegex = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -49,5 +55,11 @@ export class PromptDialogComponent {
 
   onClose() {
     this.modal.triggerCancel()
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'confirm') {
+      this.onConfirm();
+    }
   }
 }

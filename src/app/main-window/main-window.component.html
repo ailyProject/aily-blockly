@@ -111,30 +111,9 @@
 </app-onboarding>
 }
 
-<!-- 首次开发模式选择（全屏引导） -->
-<app-mode-welcome [show]="showModeWelcome" (select)="onModeWelcomeSelect($event)" (skip)="onModeWelcomeSkip()">
-</app-mode-welcome>
-
-@if (loginDialogState) {
-<div class="global-login-backdrop">
-  <section class="global-login-dialog" role="dialog" aria-modal="true" [attr.aria-label]="'LOGIN.HEADER' | translate">
-    <button
-      type="button"
-      class="global-login-close"
-      [attr.aria-label]="'LOGIN.MODAL_CLOSE' | translate"
-      [title]="'LOGIN.MODAL_CLOSE' | translate"
-      (click)="closeLoginDialog()">
-      <i class="fa-light fa-xmark"></i>
-    </button>
-    <app-login presentation="dialog"></app-login>
-    @if (loginDialogState.allowSkip) {
-    <button type="button" class="global-login-skip" (click)="closeLoginDialog()">
-      {{ 'MODE_WELCOME.SKIP' | translate }}
-    </button>
-    }
-  </section>
-</div>
-}
-
 <iframe src="https://abi.aily.pro/"></iframe>
+@if (requestStatsScope === 'eu') {
+<iframe src="https://req-stats.aily.pro/track/region"></iframe>
+} @else if (requestStatsScope === 'default') {
 <iframe src="https://req-stats.aily.pro/track"></iframe>
+}

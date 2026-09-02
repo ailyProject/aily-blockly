@@ -162,6 +162,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private ailyChatOperationActive = false;
   private ailyChatOperationSessionId = '';
   private aiOperationNoticeShown = false;
+  private readonly pendingExternalInputSignals: Array<Record<string, unknown>> = [];
   ailyChatSessionId = '';
 
   constructor(
@@ -387,6 +388,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.authContextListenerRegistered = false;
     this.unregisterHostController?.();
     this.unregisterHostController = null;
+    this.pendingExternalInputSignals.length = 0;
     const releaseToolId = this.acquired ? this.resolvedToolId : '';
     this.acquired = false;
     this.destroyPenpalConnection();
@@ -1041,6 +1043,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         this.log('penpal connected');
         this.remoteApi = remote;
         this.penpalState = 'connected';
+        this.flushPendingExternalInputSignals();
         this.syncHostContext();
         this.pushChildAuthState();
         this.pushChatSubappActivities();
@@ -1419,19 +1422,42 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     // Resource handoff is delivered directly to every compatible running
     // Runtime by SubappResourceLifecycleService. Keeping it out of the iframe
     // path makes the handoff independent of full/compact UI lifecycle.
-    if (resourceRequest || typeof this.remoteApi?.handleToolSignal !== 'function') return;
-    const task = Promise.resolve(this.remoteApi.handleToolSignal({
+    if (resourceRequest) return;
+    const forwardedSignal = {
       action: action.action,
       type: action.type,
       data: action.data,
       payload
-    })).then(() => undefined).catch(() => undefined);
+    };
+    if (typeof this.remoteApi?.handleToolSignal !== 'function') {
+      if (String(action.data || '') === `${this.resolvedToolId}:external-input`) {
+        if (this.pendingExternalInputSignals.length >= 8) {
+          this.pendingExternalInputSignals.shift();
+        }
+        this.pendingExternalInputSignals.push(forwardedSignal);
+      }
+      return;
+    }
+    const task = Promise.resolve(this.remoteApi.handleToolSignal(forwardedSignal))
+      .then(() => undefined)
+      .catch(() => undefined);
 
     if (Array.isArray(action?.payload?.waitFor)) {
       action.payload.waitFor.push(task);
     } else {
       void task.catch(() => undefined);
     }
+  }
+
+  private flushPendingExternalInputSignals(): void {
+    if (typeof this.remoteApi?.handleToolSignal !== 'function') return;
+    const pending = this.pendingExternalInputSignals.splice(0);
+    void pending.reduce(
+      (previous, signal) => previous.then(() =>
+        Promise.resolve(this.remoteApi?.handleToolSignal(signal)).then(() => undefined),
+      ),
+      Promise.resolve(),
+    ).catch(() => undefined);
   }
 
   private async sendToolSignalFromChild(signal: string, payload: any = {}): Promise<{ ok: boolean; waitFor: number }> {
@@ -1535,7 +1561,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         aiOperationState: isAilyChat,
         subappDock: isAilyChat,
         runtimeRecovery: isAilyChat,
-        developmentModeControl: isAilyChat && this.configService.isCoderEnabled()
+        developmentModeControl: isAilyChat
+          && this.configService.isCoderEnabled()
+          && !this.configService.isCoderProduct()
       }
     };
   }
@@ -1544,6 +1572,16 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const mode = payload.mode === 'coder' ? 'coder' : payload.mode === 'blockly' ? 'blockly' : null;
     if (!mode) {
       return { ok: false, code: 'INVALID_DEVELOPMENT_MODE', message: 'Development mode must be blockly or coder.' };
+    }
+    if (this.configService.isCoderProduct()) {
+      return mode === 'coder'
+        ? { ok: true, context: this.createHostContext() }
+        : {
+          ok: false,
+          code: 'DEVELOPMENT_MODE_LOCKED',
+          message: 'Aily Coder is locked to Coder mode.',
+          context: this.createHostContext(),
+        };
     }
     if (!this.configService.isCoderEnabled()) {
       return {
@@ -1618,13 +1656,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     const query = new URLSearchParams({ surface, launch: JSON.stringify(params) });
     const path = `${this.config.routePath || `/child-tool/${this.config.id}`}?${query.toString()}`;
-    const width = Math.max(surfaceConfig.minWidth || 400, Math.min(1800, Number(payload.width) || 1020));
-    const height = Math.max(surfaceConfig.minHeight || 300, Math.min(1200, Number(payload.height) || surfaceConfig.preferredHeight || 720));
+    const minWidth = Math.max(400, surfaceConfig.minWidth || 0);
+    const minHeight = Math.max(500, surfaceConfig.minHeight || 0);
+    const width = Math.max(minWidth, Math.min(1800, Number(payload.width) || 1020));
+    const height = Math.max(minHeight, Math.min(1200, Number(payload.height) || surfaceConfig.preferredHeight || 720));
     this.uiService.openWindow({
       path: path.replace(/^\/+/, ''),
       title: typeof payload.title === 'string' ? payload.title.slice(0, 160) : this.titleKey,
       width,
       height,
+      minWidth,
+      minHeight,
+      windowClass: 'subapp',
       alwaysOnTop: payload.alwaysOnTop === true,
       relativeToDisplay: true,
       clampToWorkArea: true,

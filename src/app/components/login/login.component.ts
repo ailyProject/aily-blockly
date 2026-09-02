@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, ViewChild, OnDestroy, OnInit, ChangeDetectorRef, Input } from '@angular/core';
+import { Component, ViewChild, OnDestroy, OnInit, ChangeDetectorRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { NzButtonModule } from 'ng-zorro-antd/button';
@@ -12,6 +12,7 @@ import { Subject, takeUntil, interval, Subscription } from 'rxjs';
 import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzConfigService } from 'ng-zorro-antd/core/config';
 import { ElectronService } from '@core/platform/public-api';
 import { AltchaComponent } from './altcha/altcha.component';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
@@ -33,9 +34,6 @@ import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 })
 export class LoginComponent implements OnInit, OnDestroy {
   private destroy$ = new Subject<void>();
-  private initialized = false;
-
-  @Input() presentation: 'request' | 'dialog' = 'request';
 
   @ViewChild(AltchaComponent) altchaComponent!: AltchaComponent;
 
@@ -108,6 +106,7 @@ export class LoginComponent implements OnInit, OnDestroy {
     private http: HttpClient,
     private cdr: ChangeDetectorRef,
     private modal: NzModalService,
+    private nzConfigService: NzConfigService,
   ) {
     // 监听登录状态，控制组件显隐
     this.authService.isLoggedIn$
@@ -115,9 +114,6 @@ export class LoginComponent implements OnInit, OnDestroy {
       .subscribe((isLoggedIn) => {
         const wasHidden = !this.showLogin;
         this.showLogin = !isLoggedIn;
-        if (this.initialized && !isLoggedIn && this.presentation === 'request') {
-          this.authService.requestLogin('auth-required');
-        }
         // 退出登录后组件重新显示时，若当前在微信扫码模式则刷新二维码
         if (this.showLogin && wasHidden && this.mode === 'wechat') {
           this.refreshWeChatQrcode();
@@ -130,33 +126,63 @@ export class LoginComponent implements OnInit, OnDestroy {
       .pipe(takeUntil(this.destroy$))
       .subscribe((pendingTicket) => {
         setTimeout(() => {
-          this.message.info('请先绑定微信后再继续登录');
+          this.message.info(this.loginText('WECHAT_BIND_REQUIRED_CONTINUE'));
           this.enterLoginBindMode(pendingTicket);
           this.cdr.detectChanges();
         });
       });
+
+    this.translate.onLangChange
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        this.syncOverlayDirection();
+        this.cdr.markForCheck();
+      });
   }
 
   ngOnInit(): void {
-    this.initialized = true;
-    if (!this.authService.isLoggedIn && this.presentation === 'request') {
-      this.authService.requestLogin('auth-required');
-    }
+    this.syncOverlayDirection();
+  }
+
+  dismissLoginDialog(): void {
+    this.authService.dismissLoginDialog();
   }
 
   get showWeChatLogin(): boolean {
     return this.configService.isCnRegion;
   }
 
-  get isZhLang(): boolean {
-    const lang = this.translate.currentLang || this.translate.defaultLang || 'en';
-    return lang === 'zh_cn' || lang === 'zh_hk' || lang === 'zh-CN' || lang === 'zh-HK';
+  private loginText(key: string, params?: Record<string, unknown>): string {
+    return this.translate.instant(`LOGIN.${key}`, params);
+  }
+
+  get loginDirection(): 'ltr' | 'rtl' {
+    const lang = (this.translate.currentLang || this.translate.defaultLang || 'en').toLowerCase();
+    return lang.startsWith('ar') ? 'rtl' : 'ltr';
+  }
+
+  private syncOverlayDirection(): void {
+    const nzDirection = this.loginDirection;
+    this.nzConfigService.set('message', { nzDirection });
+    this.nzConfigService.set('modal', { nzDirection });
+  }
+
+  private isolateBidi(value: unknown): string {
+    return `\u2068${String(value)}\u2069`;
   }
 
   private getLoginErrorMessage(error: any, fallback?: string): string {
-    const defaultMessage = fallback || this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败';
+    const defaultMessage = fallback || this.loginText('LOGIN_FAILED');
     return resolveTranslatedApiErrorMessage(error, this.translate, {
       fallbackMessage: defaultMessage,
+    });
+  }
+
+  private getAccountMergeContent(mergeInfo: any): string {
+    const unknown = this.loginText('ACCOUNT_UNKNOWN');
+    return this.loginText('ACCOUNT_MERGE_CONTENT', {
+      wechatNickname: this.isolateBidi(mergeInfo?.wechat_nickname || unknown),
+      email: this.isolateBidi(mergeInfo?.email || unknown),
     });
   }
 
@@ -188,7 +214,7 @@ export class LoginComponent implements OnInit, OnDestroy {
           this.wechatTicket = response.data.ticket;
           this.wechatQrcodeUrl = response.data.qrcode_url;
           this.wechatStatus = 'pending';
-          this.wechatStatusMessage = this.translate.instant('LOGIN.WECHAT_SCAN') || '请使用微信扫码登录';
+          this.wechatStatusMessage = this.loginText('WECHAT_SCAN');
 
           this.cdr.detectChanges();
           
@@ -200,7 +226,7 @@ export class LoginComponent implements OnInit, OnDestroy {
           this.wechatStatus = 'error';
           this.wechatStatusMessage = this.getLoginErrorMessage(
             response,
-            this.translate.instant('LOGIN.WECHAT_QRCODE_FAILED') || '获取二维码失败',
+            this.loginText('WECHAT_QRCODE_FAILED'),
           );
           this.message.error(this.wechatStatusMessage);
         }
@@ -209,7 +235,7 @@ export class LoginComponent implements OnInit, OnDestroy {
       error: (error) => {
         console.error('获取微信二维码失败:', error);
         this.wechatStatus = 'error';
-        this.wechatStatusMessage = this.translate.instant('LOGIN.WECHAT_QRCODE_FAILED') || '获取二维码失败';
+        this.wechatStatusMessage = this.loginText('WECHAT_QRCODE_FAILED');
         this.message.error(this.wechatStatusMessage);
         this.cdr.detectChanges();
       }
@@ -243,7 +269,7 @@ export class LoginComponent implements OnInit, OnDestroy {
             if (status === 'pending') {
               // 等待扫码
               this.wechatStatus = 'pending';
-              // this.wechatStatusMessage = response.data.message || this.translate.instant('LOGIN.WECHAT_WAITING') || '等待扫码';
+              // this.wechatStatusMessage = response.data.message || this.loginText('WECHAT_WAITING');
             } else if (status === 'confirmed') {
               // 扫码成功，登录成功
               this.wechatStatus = 'confirmed';
@@ -259,12 +285,12 @@ export class LoginComponent implements OnInit, OnDestroy {
                 }).then(() => {
                   this.message.success(
                     response.data.is_new_user 
-                      ? (this.translate.instant('LOGIN.WECHAT_REGISTER_SUCCESS') || '注册成功')
-                      : (this.translate.instant('LOGIN.LOGIN_SUCCESS') || '登录成功')
+                      ? this.loginText('WECHAT_REGISTER_SUCCESS')
+                      : this.loginText('LOGIN_SUCCESS')
                   );
                 }).catch((error) => {
                   console.error('处理微信登录成功数据失败:', error);
-                  this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败');
+                  this.message.error(this.loginText('LOGIN_FAILED'));
                 });
               }
             } else if (status === 'needs_email_bind' || status === 'unbound') {
@@ -276,12 +302,12 @@ export class LoginComponent implements OnInit, OnDestroy {
               this.wechatStatus = 'pending';
               this.cdr.detectChanges();
               setTimeout(() => {
-                this.message.info(response.data.message || '当前微信需要补全邮箱后继续登录。');
+                this.message.info(this.loginText('EMAIL_BIND_DESCRIPTION'));
               });
             } else if (status === 'expired') {
               // 二维码已过期
               this.wechatStatus = 'expired';
-              this.wechatStatusMessage = response.data.message || this.translate.instant('LOGIN.WECHAT_EXPIRED') || '二维码已过期，请刷新';
+              this.wechatStatusMessage = this.loginText('WECHAT_EXPIRED');
               this.clearWeChatQrcodeTimer();
               this.cleanupWeChatStatusCheck();
               this.message.warning(this.wechatStatusMessage);
@@ -293,7 +319,7 @@ export class LoginComponent implements OnInit, OnDestroy {
           // 如果是404错误，说明ticket不存在或已过期
           if (error.status === 404) {
             this.wechatStatus = 'expired';
-            this.wechatStatusMessage = this.translate.instant('LOGIN.WECHAT_EXPIRED') || '二维码已过期，请刷新';
+            this.wechatStatusMessage = this.loginText('WECHAT_EXPIRED');
             this.clearWeChatQrcodeTimer();
             this.cleanupWeChatStatusCheck();
             this.message.warning(this.wechatStatusMessage);
@@ -420,8 +446,7 @@ export class LoginComponent implements OnInit, OnDestroy {
     } catch (error) {
       console.error('Altcha 验证失败:', error);
       this.message.error(
-        this.translate.instant('LOGIN.VERIFICATION_FAILED') ||
-          '验证失败，请重试',
+        this.loginText('VERIFICATION_FAILED'),
       );
       return null;
     }
@@ -471,6 +496,10 @@ export class LoginComponent implements OnInit, OnDestroy {
    * 发送邮箱验证码
    */
   async sendVerificationCode() {
+    if (this.isSendingCode || this.countdown > 0) {
+      return;
+    }
+
     if (!this.inputEmail) {
       this.message.warning(this.translate.instant('LOGIN.ENTER_EMAIL'));
       return;
@@ -483,39 +512,50 @@ export class LoginComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const altchaToken = await this.verifyAltcha();
-    if (altchaToken === null) {
-      return;
-    }
+    this.isSendingCode = true;
+    this.cdr.detectChanges();
 
     try {
+      const altchaToken = await this.verifyAltcha();
+      if (altchaToken === null) {
+        this.isSendingCode = false;
+        this.cdr.detectChanges();
+        return;
+      }
+
       this.authService.sendEmailCode(this.inputEmail, altchaToken).subscribe({
         next: (response) => {
+          this.isSendingCode = false;
           if (response.status === 200) {
-            this.isSendingCode = true;
             this.codeSent = true;
-            this.cdr.detectChanges();
             this.message.success(this.translate.instant('LOGIN.CODE_SENT'));
             this.startCountdown();
           } else {
             this.message.error(
               this.getLoginErrorMessage(
                 response,
-                this.translate.instant('LOGIN.CODE_SEND_FAILED') || '验证码发送失败',
+                this.loginText('CODE_SEND_FAILED'),
               ),
             );
           }
+          this.cdr.detectChanges();
         },
         error: (error) => {
           console.error('发送验证码错误:', error);
           this.message.error(this.translate.instant('LOGIN.CODE_SEND_FAILED'));
+          this.isSendingCode = false;
+          this.cdr.detectChanges();
         },
         complete: () => {
+          this.isSendingCode = false;
+          this.cdr.detectChanges();
         },
       });
     } catch (error) {
       console.error('发送验证码过程中出错:', error);
       this.message.error(this.translate.instant('LOGIN.CODE_SEND_FAILED'));
+      this.isSendingCode = false;
+      this.cdr.detectChanges();
     }
   }
 
@@ -543,7 +583,6 @@ export class LoginComponent implements OnInit, OnDestroy {
       this.countdownTimer = null;
     }
     this.countdown = 0;
-    this.isSendingCode = false;
   }
 
   /**
@@ -573,7 +612,9 @@ export class LoginComponent implements OnInit, OnDestroy {
           if (response.status === 200 && response.data) {
             // 检查是否需要绑定微信
             if ((response.data as any).status === 'needs_wechat_bind' && (response.data as any).pending_ticket) {
-              this.message.info(this.getLoginErrorMessage(response, '请先绑定微信后再继续登录'));
+              this.message.info(
+                this.getLoginErrorMessage(response, this.loginText('WECHAT_BIND_REQUIRED_CONTINUE')),
+              );
               this.enterLoginBindMode((response.data as any).pending_ticket);
               this.isWaiting = false;
               this.cdr.detectChanges();
@@ -594,7 +635,7 @@ export class LoginComponent implements OnInit, OnDestroy {
           this.message.error(
             this.getLoginErrorMessage(
               error,
-              this.translate.instant('LOGIN.LOGIN_NETWORK_ERROR') || '登录失败，请检查网络连接',
+              this.loginText('LOGIN_NETWORK_ERROR'),
             ),
           );
         },
@@ -660,11 +701,14 @@ export class LoginComponent implements OnInit, OnDestroy {
           this.loginBindQrTicket = response.data.ticket;
           this.loginBindQrcodeUrl = response.data.qrcode_url;
           this.loginBindStatus = 'pending';
-          this.loginBindStatusMessage = this.translate.instant('LOGIN.WECHAT_BIND_SCAN') || '请使用微信扫码绑定';
+          this.loginBindStatusMessage = this.loginText('WECHAT_BIND_SCAN');
           this.startWeChatLoginBindCheck();
         } else {
           this.loginBindStatus = 'error';
-          this.loginBindStatusMessage = this.getLoginErrorMessage(response, '获取二维码失败');
+          this.loginBindStatusMessage = this.getLoginErrorMessage(
+            response,
+            this.loginText('WECHAT_QRCODE_FAILED'),
+          );
           this.message.error(this.loginBindStatusMessage);
         }
         this.cdr.detectChanges();
@@ -672,7 +716,7 @@ export class LoginComponent implements OnInit, OnDestroy {
       error: (error) => {
         console.error('获取登录绑定二维码失败:', error);
         this.loginBindStatus = 'error';
-        this.loginBindStatusMessage = '获取二维码失败';
+        this.loginBindStatusMessage = this.loginText('WECHAT_QRCODE_FAILED');
         this.message.error(this.loginBindStatusMessage);
         this.cdr.detectChanges();
       },
@@ -700,7 +744,7 @@ export class LoginComponent implements OnInit, OnDestroy {
               // still waiting
             } else if (data.status === 'scanned') {
               this.loginBindStatus = 'scanned';
-              this.loginBindStatusMessage = '已扫码，正在处理...';
+              this.loginBindStatusMessage = this.loginText('WECHAT_BIND_SCANNED');
               this.cdr.detectChanges();
             } else if (data.status === 'confirmed') {
               this.loginBindStatus = 'confirmed';
@@ -713,14 +757,14 @@ export class LoginComponent implements OnInit, OnDestroy {
               }).then(() => {
                 this.message.success(
                   data.is_new_user
-                    ? (this.translate.instant('LOGIN.WECHAT_REGISTER_SUCCESS') || '注册成功')
-                    : (this.translate.instant('LOGIN.LOGIN_SUCCESS') || '登录成功')
+                    ? this.loginText('WECHAT_REGISTER_SUCCESS')
+                    : this.loginText('LOGIN_SUCCESS')
                 );
                 this.loginBindMode = false;
                 this.cdr.detectChanges();
               }).catch((err) => {
                 console.error('处理微信绑定登录成功数据失败:', err);
-                this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败');
+                this.message.error(this.loginText('LOGIN_FAILED'));
               });
             } else if (data.status === 'needs_merge_confirm') {
               // 暂停轮询，等待用户确认合并
@@ -729,10 +773,11 @@ export class LoginComponent implements OnInit, OnDestroy {
               const ticket = this.loginBindQrTicket!;
               this.modal.confirm({
                 nzClassName: 'merge-confirm-modal',
-                nzTitle: '发现已有账号',
-                nzContent: `检测到微信账号「${mergeInfo?.wechat_nickname || '未知'}」与邮箱账号「${mergeInfo?.email || '未知'}」可以合并。合并后微信将绑定到邮箱账号，原微信账号将被停用。是否确认合并？`,
-                nzOkText: '确认合并',
-                nzCancelText: '取消',
+                nzDirection: this.loginDirection,
+                nzTitle: this.loginText('ACCOUNT_MERGE_TITLE'),
+                nzContent: this.getAccountMergeContent(mergeInfo),
+                nzOkText: this.loginText('ACCOUNT_MERGE_CONFIRM'),
+                nzCancelText: this.translate.instant('COMMON.CANCEL'),
                 nzOnOk: () => {
                   this.authService.confirmWechatMerge(ticket, 'login_bind').subscribe({
                     next: (mergeResponse) => {
@@ -744,20 +789,24 @@ export class LoginComponent implements OnInit, OnDestroy {
                           refresh_token: mergeResponse.data.refresh_token,
                           user: mergeResponse.data.user,
                         }).then(() => {
-                          this.message.success(this.translate.instant('LOGIN.LOGIN_SUCCESS') || '登录成功');
+                          this.message.success(this.loginText('LOGIN_SUCCESS'));
                           this.loginBindMode = false;
                           this.cdr.detectChanges();
                         }).catch(() => {
-                          this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败');
+                          this.message.error(this.loginText('LOGIN_FAILED'));
                         });
                       } else {
-                          this.message.error(this.getLoginErrorMessage(mergeResponse, '合并失败，请重试'));
+                        this.message.error(
+                          this.getLoginErrorMessage(mergeResponse, this.loginText('ACCOUNT_MERGE_FAILED')),
+                        );
                         // 恢复轮询以便用户重试
                         this.startWeChatLoginBindCheck();
                       }
                     },
                     error: (err) => {
-                        this.message.error(this.getLoginErrorMessage(err, '合并失败，请重试'));
+                      this.message.error(
+                        this.getLoginErrorMessage(err, this.loginText('ACCOUNT_MERGE_FAILED')),
+                      );
                       this.startWeChatLoginBindCheck();
                     },
                   });
@@ -770,7 +819,7 @@ export class LoginComponent implements OnInit, OnDestroy {
               this.cdr.detectChanges();
             } else if (data.status === 'error') {
               this.loginBindStatus = 'error';
-              this.loginBindStatusMessage = data.message || '绑定失败';
+              this.loginBindStatusMessage = this.loginText('BIND_FAILED');
               this.cleanupLoginBind();
               this.message.error(this.loginBindStatusMessage);
               this.cdr.detectChanges();
@@ -779,7 +828,7 @@ export class LoginComponent implements OnInit, OnDestroy {
           error: (error) => {
             if (error.status === 404) {
               this.loginBindStatus = 'expired';
-              this.loginBindStatusMessage = '二维码已过期，请重试';
+              this.loginBindStatusMessage = this.loginText('WECHAT_BIND_EXPIRED');
               this.cleanupLoginBind();
               this.cdr.detectChanges();
             }
@@ -855,7 +904,7 @@ export class LoginComponent implements OnInit, OnDestroy {
           this.message.error(
             this.getLoginErrorMessage(
               response,
-              this.translate.instant('LOGIN.CODE_SEND_FAILED') || '验证码发送失败',
+              this.loginText('CODE_SEND_FAILED'),
             ),
           );
         }
@@ -864,7 +913,7 @@ export class LoginComponent implements OnInit, OnDestroy {
         this.message.error(
           this.getLoginErrorMessage(
             error,
-            this.translate.instant('LOGIN.CODE_SEND_FAILED') || '验证码发送失败',
+            this.loginText('CODE_SEND_FAILED'),
           ),
         );
       },
@@ -876,7 +925,7 @@ export class LoginComponent implements OnInit, OnDestroy {
    */
   submitEmailBind(): void {
     if (!this.emailBindEmail || !this.emailBindCode || !this.emailBindTicket) {
-      this.message.warning('请填写邮箱和验证码');
+      this.message.warning(this.loginText('EMAIL_BIND_FIELDS_REQUIRED'));
       return;
     }
 
@@ -898,10 +947,11 @@ export class LoginComponent implements OnInit, OnDestroy {
             const mergeInfo = (response.data as any).merge_info;
             this.modal.confirm({
               nzClassName: 'merge-confirm-modal',
-              nzTitle: '发现已有账号',
-              nzContent: `检测到微信账号「${mergeInfo?.wechat_nickname || '未知'}」与邮箱账号「${mergeInfo?.email || '未知'}」可以合并。合并后微信将绑定到邮箱账号，原微信账号将被停用。是否确认合并？`,
-              nzOkText: '确认合并',
-              nzCancelText: '取消',
+              nzDirection: this.loginDirection,
+              nzTitle: this.loginText('ACCOUNT_MERGE_TITLE'),
+              nzContent: this.getAccountMergeContent(mergeInfo),
+              nzOkText: this.loginText('ACCOUNT_MERGE_CONFIRM'),
+              nzCancelText: this.translate.instant('COMMON.CANCEL'),
               nzOnOk: () => {
                 this.emailBindIsSubmitting = true;
                 this.cdr.detectChanges();
@@ -919,24 +969,28 @@ export class LoginComponent implements OnInit, OnDestroy {
                         refresh_token: mergeResponse.data.refresh_token,
                         user: mergeResponse.data.user,
                       }).then(() => {
-                        this.message.success(this.translate.instant('LOGIN.LOGIN_SUCCESS') || '登录成功');
+                        this.message.success(this.loginText('LOGIN_SUCCESS'));
                         this.cleanupEmailBind();
                         this.emailBindMode = false;
                         this.emailBindCountdown = 0;
                         this.cdr.detectChanges();
                       }).catch(() => {
-                        this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败');
+                        this.message.error(this.loginText('LOGIN_FAILED'));
                         this.emailBindIsSubmitting = false;
                         this.cdr.detectChanges();
                       });
                     } else {
-                      this.message.error(this.getLoginErrorMessage(mergeResponse, '合并失败，请重试'));
+                      this.message.error(
+                        this.getLoginErrorMessage(mergeResponse, this.loginText('ACCOUNT_MERGE_FAILED')),
+                      );
                       this.emailBindIsSubmitting = false;
                       this.cdr.detectChanges();
                     }
                   },
                   error: (err) => {
-                    this.message.error(this.getLoginErrorMessage(err, '合并失败，请重试'));
+                    this.message.error(
+                      this.getLoginErrorMessage(err, this.loginText('ACCOUNT_MERGE_FAILED')),
+                    );
                     this.emailBindIsSubmitting = false;
                     this.cdr.detectChanges();
                   },
@@ -953,8 +1007,8 @@ export class LoginComponent implements OnInit, OnDestroy {
           }).then(() => {
             this.message.success(
               response.data.is_new_user
-                ? (this.translate.instant('LOGIN.WECHAT_REGISTER_SUCCESS') || '注册成功')
-                : (this.translate.instant('LOGIN.LOGIN_SUCCESS') || '登录成功')
+                ? this.loginText('WECHAT_REGISTER_SUCCESS')
+                : this.loginText('LOGIN_SUCCESS')
             );
             this.cleanupEmailBind();
             this.emailBindMode = false;
@@ -962,19 +1016,19 @@ export class LoginComponent implements OnInit, OnDestroy {
             this.cdr.detectChanges();
           }).catch((err) => {
             console.error('处理邮箱绑定登录成功数据失败:', err);
-            this.message.error(this.translate.instant('LOGIN.LOGIN_FAILED') || '登录失败');
+            this.message.error(this.loginText('LOGIN_FAILED'));
             this.emailBindIsSubmitting = false;
             this.cdr.detectChanges();
           });
         } else {
-          this.message.error(this.getLoginErrorMessage(response, '绑定失败'));
+          this.message.error(this.getLoginErrorMessage(response, this.loginText('BIND_FAILED')));
           this.emailBindIsSubmitting = false;
           this.cdr.detectChanges();
         }
       },
       error: (error) => {
         console.error('邮箱绑定登录失败:', error);
-        this.message.error(this.getLoginErrorMessage(error, '绑定失败，请重试'));
+        this.message.error(this.getLoginErrorMessage(error, this.loginText('BIND_FAILED_RETRY')));
         this.emailBindIsSubmitting = false;
         this.cdr.detectChanges();
       },

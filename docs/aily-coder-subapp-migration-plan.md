@@ -159,14 +159,14 @@ type AilyCoderReadyMessage =
 
 ### 4.5 模式入口
 
-首次模式选择和 Settings 共用同一 required-subapp 状态：
+Settings 的默认开发模式入口使用统一 required-subapp 状态：
 
 - Blockly：立即可进入，不等待 Coder；
 - Coder 已安装：立即进入；
 - Coder 未安装：点击后安装，按钮显示真实进度，成功后进入；
 - 安装失败：保持在当前页面，展示可重试错误；
 - “安装成功”提示只在本次操作确实安装了新包时显示；
-- 两个入口不得各自维护一套安装布尔值。
+- 入口不单独维护安装布尔值。
 
 ## 5. 来源文件迁移矩阵
 
@@ -175,8 +175,8 @@ type AilyCoderReadyMessage =
 | `electron/main.js` Coder 专用 server 删除 | 当前 `electron/main.js` | 在统一 Runtime 接入完成后删除专用 IPC、server、退出清理 |
 | `electron/preload.js` / `electron.d.ts` coderEmbed | 当前 preload/type | 删除 Coder 专用 API |
 | `coder-dependency.service.ts` | 新通用 required-subapp service | 重写，不直接复制 |
-| `mode-welcome/*` | 当前 mode-welcome | 只迁移状态和交互，保留当前 DOM/CSS 结构 |
-| `settings/*` | 当前 Settings | 与 mode-welcome 共享服务 |
+| `mode-welcome/*` | 无（已移除） | 首次模式欢迎页已退役，不再迁移 |
+| `settings/*` | 当前 Settings | 使用通用 required-subapp 服务 |
 | `electron/subapp-manager.js` builtin Coder/extension | 当前目录验证和远端目录 | 迁移 extension 解析；正式 Coder 条目最终放远端目录，不长期硬编码 builtin 版本 |
 | `tool.config.ts` / `subapp-manager.service.ts` | 当前 DTO | 增加通用 `extension` 投影 |
 | `app-store/*` | 当前 App Store | 迁移通用 extension 行为与 runtime dot |
@@ -222,10 +222,9 @@ npm run dev:unlink
 
 ### P2：入口门禁
 
-1. mode-welcome 接入统一状态；
-2. Settings 接入同一状态；
-3. 三套主 UI 语言补齐安装、失败、重试和提示；
-4. 验证 Blockly 不受 Coder 安装影响。
+1. Settings 接入统一状态；
+2. 三套主 UI 语言补齐安装、失败、重试和提示；
+3. 验证 Blockly 不受 Coder 安装影响。
 
 ### P3：显式 Ready 与加载 UI
 

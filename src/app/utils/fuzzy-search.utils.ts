@@ -59,7 +59,7 @@ export function extractKeywords(query: string): string[] {
 
   // 移除常见的前缀/后缀
   let cleaned = query
-    .replace(/@aily-project\//gi, '')  // 移除包前缀
+    .replace(/@aily-project(?:-linux)?\//gi, '')  // 移除包前缀
     .replace(/^lib-/gi, '')             // 移除lib-前缀
     .replace(/\s+/g, ' ')               // 合并空格
     .trim();
@@ -111,7 +111,7 @@ const LIBRARY_FIELD_WEIGHTS: Array<[keyof LibrarySearchDoc, number]> = [
 function normalizeSearchText(value: string): string {
   return (value || '')
     .toLowerCase()
-    .replace(/@aily-project\//g, '')
+    .replace(/@aily-project(?:-linux)?\//g, '')
     .replace(/ailyproject|aily|blockly/g, '')
     .replace(/[\s_\-/]+/g, '');
 }
@@ -423,4 +423,26 @@ export function searchBoards(db: AnyOrama, term: string, limit: number = 500): s
   }) as any;
 
   return rerankBoardHits(results.hits, term).map((hit: any) => hit.document.name as string);
+}
+
+/**
+ * Searches and relevance-sorts a board list while preserving the original
+ * board objects. Both project-creation presentations use this adapter so their
+ * search behavior cannot drift while UI layout remains independent.
+ */
+export function filterAndRankBoards(boards: any[], term: string): any[] {
+  if (!term) {
+    return boards;
+  }
+
+  const matchedNames = searchBoards(createBoardSearchIndex(boards), term);
+  const nameIndexMap = new Map<string, number>();
+  matchedNames.forEach((name, index) => nameIndexMap.set(name, index));
+
+  return boards
+    .filter(board => nameIndexMap.has(board.name))
+    .sort((left, right) => (
+      (nameIndexMap.get(left.name) ?? Number.MAX_SAFE_INTEGER)
+      - (nameIndexMap.get(right.name) ?? Number.MAX_SAFE_INTEGER)
+    ));
 }

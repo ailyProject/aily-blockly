@@ -73,7 +73,8 @@ img {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
 }
 
-.subapp-service-confirm-modal {
+.subapp-service-confirm-modal,
+.project-mode-mismatch-modal {
   .ant-modal-content {
     overflow: hidden;
     border: 1px solid var(--aily-border-input);
@@ -130,34 +131,6 @@ img {
   }
 }
 
-.development-mode-preference-modal {
-  .ant-modal-content {
-    background: #161616 !important;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.8) !important;
-    border-radius: 8px !important;
-    overflow: hidden;
-  }
-
-  .ant-modal-header,
-  .ant-modal-footer {
-    background: transparent;
-    padding: 12px 16px;
-    border-color: rgba(255, 255, 255, 0.06);
-  }
-
-  .ant-modal-title,
-  .ant-modal-close:hover {
-    color: #ffffff;
-  }
-
-  .ant-modal-body {
-    padding: 16px;
-    background: transparent !important;
-    color: #e6e6e6;
-    line-height: 1.6;
-  }
-}
-
 nz-modal-container {
   overflow: hidden !important;
 }
@@ -183,18 +156,52 @@ nz-modal-container {
   }
 }
 
+.login-modal-wrap {
+  overflow: hidden;
+  text-align: initial;
+
+  .ant-modal {
+    max-width: calc(100vw - 48px);
+    padding-bottom: 0;
+  }
+
+  .ant-modal-content {
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+    border: 1px solid var(--aily-border-secondary);
+    border-radius: 16px !important;
+    background: var(--aily-bg-elevated) !important;
+    box-shadow: 0 20px 64px rgba(0, 0, 0, 0.36) !important;
+  }
+
+  .ant-modal-body {
+    padding: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .login-modal-wrap {
+    .ant-modal {
+      max-width: calc(100vw - 32px);
+    }
+
+    .ant-modal-content {
+      max-height: calc(100vh - 32px);
+      border-radius: 12px !important;
+    }
+  }
+}
+
 .cdk-overlay-container {
   z-index: 10000 !important;
 }
 
-// 登录遮罩位于 100100；消息出现时提升其外层堆叠上下文，
-// 否则仅提高 .ant-message 自身仍会被父级 overlay 容器限制。
+// 登录弹窗中显示消息时提升其外层堆叠上下文，确保消息位于 modal 上方。
 .cdk-overlay-container:has(.ant-message) {
   z-index: 100200 !important;
 }
 
-// 登录流程中的协议、账号绑定/合并确认必须高于全局登录遮罩，
-// 否则 modal 会被父级 overlay 容器的堆叠上下文限制。
+// 登录流程中的协议、账号绑定/合并确认属于嵌套 modal，需要高于主登录弹窗。
 .cdk-overlay-container:has(.login-agreement-modal),
 .cdk-overlay-container:has(.merge-confirm-modal) {
   z-index: 100200 !important;

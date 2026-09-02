@@ -22,6 +22,12 @@ import {
   runtimeDependenciesToBoardDependencies,
 } from '../../../utils/platform-runtime.utils';
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
+import { ConfigService } from '@core/preferences/public-api';
+import {
+  appendScopedNpmRegistry,
+  isAilyBoardPackageName,
+  isAilyLibraryPackageName,
+} from '@shared/public-api';
 import {
   clearGlobalDependencyResources,
   clearGlobalDependencyResourceDirectories,
@@ -57,7 +63,8 @@ export class NpmService {
     private translate: TranslateService,
     private logService: LogService,
     private appDataResourceLock: AppDataResourceLockService,
-    private blocklyLibraryPackageService: BlocklyLibraryPackageService
+    private blocklyLibraryPackageService: BlocklyLibraryPackageService,
+    private configService: ConfigService,
   ) {
     this.logService.stateSubject.subscribe((log) => {
       this.handleBoardDependencyProgressLog(log);
@@ -234,7 +241,11 @@ export class NpmService {
     this.application.startInstall();
     // const appDataPath = this.configService.data.appdata_path[this.configService.data.platform].replace('%HOMEPATH%', window['path'].getUserHome());
     const appDataPath = window['path'].getAppDataPath();
-    const cmd = `npm install ${board.name}@${board.version} --prefix "${appDataPath}"`;
+    // 独立安装板包时尚无项目清单，按 boards.json.mode 选择 Linux 或默认 Arduino npm 来源。
+    const cmd = this.configService.withBoardNpmRegistry(
+      `npm install ${board.name}@${board.version} --prefix "${appDataPath}"`,
+      board,
+    );
     // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('NPM.INSTALLING', { name: board.name }), timeout: 300000 });
     this.application.updateNotice({ 
       title: this.translate.instant('NPM.INSTALLING_TITLE'), 
@@ -298,7 +309,11 @@ export class NpmService {
       window['fs'].writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2));
     }
 
-    await this.cmdService.runAsyncChecked(`npm install ${boardModule}@${boardRange}`, projectPath);
+    // Aily Code 项目补装板包时使用项目 devmode 对应的仓库。
+    await this.cmdService.runAsyncChecked(
+      this.configService.withProjectNpmRegistry(`npm install ${boardModule}@${boardRange}`, pkg),
+      projectPath,
+    );
   }
 
   /**
@@ -328,7 +343,12 @@ export class NpmService {
       //   text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
       // });
 
-      await this.cmdService.runAsyncChecked(`npm install`, projectPath);
+      const projectPackageJson = await this.prjService.getPackageJson() || {};
+      // 切板后的整项目依赖恢复继续服从 package.json.devmode。
+      await this.cmdService.runAsyncChecked(
+        this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
+        projectPath,
+      );
       await this.ensureAilyCodeBoardPackageInProjectNodeModules(projectPath);
 
       const installed = await this.installedOk(projectPath);
@@ -944,6 +964,8 @@ export class NpmService {
       this.boardDependencyInstallProgress = undefined;
       console.log('开始安装开发板依赖...');
       const appDataPath = window['path'].getAppDataPath();
+      // Python 项目的板依赖从 Linux 仓库安装；Arduino 留空并沿用既有 managed npm 配置。
+      const registry = this.configService.getNpmRegistryForProject(packageJson);
       const platformBases = await this.getPlatformPathBases();
       const dependenciesToInstall: BoardDependencyToInstall[] = [];
       this.traceToAppLog('DEPS_START', {
@@ -1041,7 +1063,10 @@ export class NpmService {
           }
 
           // --save-exact：与开发板声明版本一致写入 prefix 下 package.json，避免 ^ 导致再次解析到更高版
-          const npmCmd = `npm install ${dependency.name}@${dependency.version} --save-exact --prefix "${appDataPath}"`;
+          const npmCmd = appendScopedNpmRegistry(
+            `npm install ${dependency.name}@${dependency.version} --save-exact --prefix "${appDataPath}"`,
+            registry,
+          );
           console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
           this.traceToAppLog('DEP_INSTALL_START', { name: dependency.name, version: dependency.version });
 
@@ -1109,7 +1134,7 @@ export class NpmService {
         }
 
         // 检查包名是否以board-开头
-        if (packageName.startsWith('@aily-project/board-')) {
+        if (isAilyBoardPackageName(packageName)) {
           const boardPath = `${appDataPath}/node_modules/${packageName}`;
           const packageJsonPath = `${boardPath}/template/package.json`;
 
@@ -1371,8 +1396,12 @@ export class NpmService {
   }
 
   // 指定获取packageName的可用版本列表
-  async getPackageVersionList(packageName: string): Promise<string[]> {
-    let data = JSON.parse(await window['npm'].run({ cmd: `npm view ${packageName} versions --json` }))
+  async getPackageVersionList(packageName: string, registry = ''): Promise<string[]> {
+    const command = appendScopedNpmRegistry(
+      `npm view ${packageName} versions --json`,
+      registry,
+    );
+    let data = JSON.parse(await window['npm'].run({ cmd: command }))
     let packageVersionList = [];
     if (typeof data === 'string') {
       packageVersionList.push(data);
@@ -1424,10 +1453,10 @@ export class NpmService {
           return false;
         }
 
-        if (name.startsWith('@aily-project/lib-')) {
+        if (isAilyLibraryPackageName(name)) {
           const dependencyPackageJson = JSON.parse(window['fs'].readFileSync(dependencyPackageJsonPath, 'utf8'));
           for (const childName of Object.keys(dependencyPackageJson.dependencies || {})) {
-            if (childName.startsWith('@aily-project/lib-')) {
+            if (isAilyLibraryPackageName(childName)) {
               pending.push(childName);
             }
           }
@@ -1470,7 +1499,19 @@ export class NpmService {
       });
     }, 0);
 
-    const npmResult = await this.cmdService.runAsync(`npm install`, projectPath);
+    let projectPackageJson: Record<string, unknown> = {};
+    try {
+      projectPackageJson = JSON.parse(
+        window['fs'].readFileSync(window['path'].join(projectPath, 'package.json'), 'utf8'),
+      );
+    } catch {
+      // installedOk() will report the missing or invalid manifest below.
+    }
+    // 修复项目依赖时仍按当前项目 devmode 选择仓库，避免混装两类板包。
+    const npmResult = await this.cmdService.runAsync(
+      this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
+      projectPath,
+    );
 
     if (!(await this.installedOk(projectPath))) {
       setTimeout(() => {

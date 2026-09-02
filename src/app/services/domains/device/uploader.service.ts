@@ -1,5 +1,7 @@
 import { Inject, Injectable } from '@angular/core';
+import { TranslateService } from '@ngx-translate/core';
 import { ElectronService } from '@core/platform/public-api';
+import { BuilderService } from '@domain/build/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
 import { ProjectService } from '@domain/project/public-api';
@@ -8,6 +10,13 @@ import {
   DEVICE_APPLICATION_PORT,
   type DeviceApplicationPort,
 } from './ports/device-application.port';
+import {
+  type LinuxBoardConnector,
+  type LinuxBoardExecutionRoute,
+  normalizeProjectMode,
+  resolveLinuxBoardConnectorSelection,
+  resolveLinuxBoardExecutionRoute,
+} from '@shared/public-api';
 
 @Injectable({
   providedIn: 'root'
@@ -23,7 +32,75 @@ export class UploaderService {
     private electronService: ElectronService,
     private serialService: SerialService,
     private projectService: ProjectService,
+    private builderService: BuilderService,
+    private translate: TranslateService,
   ) { }
+
+  requiresLocalPort(): boolean {
+    // Arduino 始终使用本地端口；Python 仅在所选 Linux 连接方式为 serial 时需要端口。
+    if (!this.isPythonProject()) return true;
+    const route = this.currentLinuxBoardRoute();
+    return route ? this.currentLinuxBoardTransport(route) === 'serial' : false;
+  }
+
+  private isPythonProject(): boolean {
+    // 上传模式与生成器保持同源，只由项目 package.json.devmode 决定。
+    return normalizeProjectMode(this.projectService.currentPackageData) === 'python';
+  }
+
+  private currentLinuxBoardRoute(): LinuxBoardExecutionRoute | null {
+    // Python 项目还必须匹配 board.json.mode/connector 才能进入 Linux 执行路径。
+    return resolveLinuxBoardExecutionRoute(
+      this.projectService.currentPackageData,
+      this.projectService.currentBoardConfig,
+    );
+  }
+
+  private currentLinuxBoardTransport(
+    route: LinuxBoardExecutionRoute,
+  ): LinuxBoardConnector | null {
+    return resolveLinuxBoardConnectorSelection(
+      route.connectors,
+      this.application.getLinuxBoardSelectedTransport(),
+    );
+  }
+
+  private async uploadPythonProject(route: LinuxBoardExecutionRoute): Promise<any> {
+    const transport = this.currentLinuxBoardTransport(route);
+    if (!transport) throw new Error(this.t('SELECT_CONNECTION'));
+    const prepared = await this.preparePythonProject(route);
+    return this.application.syncAndRunLinuxBoardSource(
+      prepared.source,
+      prepared.projectPath,
+      transport,
+      prepared.entry,
+    );
+  }
+
+  stopPythonProject(): Promise<Record<string, unknown>> {
+    return this.application.stopLinuxBoardProject();
+  }
+
+  private async preparePythonProject(route: LinuxBoardExecutionRoute): Promise<{
+    source: string;
+    projectPath: string;
+    entry: string;
+  }> {
+    const projectPath = this.projectService.currentProjectPath;
+    if (!projectPath) throw new Error(this.t('INVALID_PROJECT_PATH'));
+    await this.builderService.build();
+    const currentRoute = this.currentLinuxBoardRoute();
+    if (
+      this.projectService.currentProjectPath !== projectPath
+      || currentRoute?.entry !== route.entry
+      || currentRoute?.connectors.join(',') !== route.connectors.join(',')
+    ) {
+      throw new Error(this.t('PROJECT_CHANGED_DURING_BUILD'));
+    }
+    const entryPath = this.electronService.pathJoin(projectPath, ...route.entry.split('/'));
+    const source = window['fs'].readFileSync(entryPath, 'utf8');
+    return { source, projectPath, entry: route.entry };
+  }
 
   /** 未标记类型的历史端口按串口处理。 */
   private isSerialPortType(type: string | null | undefined): boolean {
@@ -96,6 +173,14 @@ export class UploaderService {
   }
 
   async upload() {
+    // Python 将 main.py 交给 Linux connector 同步并运行；其余项目保留原 Arduino 固件上传流程。
+    if (this.isPythonProject()) {
+      const pythonRoute = this.currentLinuxBoardRoute();
+      if (!pythonRoute) {
+        throw new Error(this.t('INVALID_BOARD_CONFIG'));
+      }
+      return this.uploadPythonProject(pythonRoute);
+    }
     const uploadPort = this.serialService.currentPort;
     const uploadPortType = this.serialService.currentPortInfo?.type;
     const operationId = this.createUploadOperationId('firmware-upload', uploadPort);
@@ -170,6 +255,10 @@ export class UploaderService {
         },
       );
     }
+  }
+
+  private t(key: string, params?: Record<string, unknown>): string {
+    return this.translate.instant(`AILY_CONNECTOR.${key}`, params);
   }
 
   /**

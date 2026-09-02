@@ -36,14 +36,15 @@
             @for (board of boardList; track board.name) {
             <div class="board ccenter btn" [ngClass]="{ selected: currentBoard == board, disabled: board.disabled }"
               (click)="selectBoard(board)">
+              @if(board.state){
+              <nz-tag class="state-tag" [nzColor]="board.state === 'todo' ? 'warning' : 'processing'">
+                {{board.state}}
+              </nz-tag>
+              }
               <div class="img-box">
                 <img [src]="resourceUrl+board.img" />
               </div>
-              <div class="name">{{ board._nickname }}
-                @if(board.state){
-                <span>({{board.state}})</span>
-                }
-              </div>
+              <div class="name">{{ board._nickname }}</div>
             </div>
             }
           </div>
@@ -65,7 +66,7 @@
         <!-- 基本设定页面 -->
         <div class="right-inner">
           <div class="right-content">
-            @if (coderEnabled) {
+            @if (coderEnabled && !coderProduct) {
             <div class="item project-category-row">
               <div>{{ 'PROJECT_NEW.PROJECT_CATEGORY.TITLE' | translate }}:</div>
               <nz-radio-group

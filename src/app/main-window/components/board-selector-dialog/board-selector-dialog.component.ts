@@ -8,6 +8,7 @@ import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { BaseDialogComponent, DialogButton } from '../../../components/base-dialog/base-dialog.component';
+import { isBoardCompatibleWithProjectMode } from '@shared/public-api';
 
 @Component({
   selector: 'app-board-selector-dialog',
@@ -49,7 +50,12 @@ export class BoardSelectorDialogComponent implements OnInit {
 
   async ngOnInit(): Promise<void> {
     this.loadingText = this.translate.instant('BOARD_SELECTOR.LOADING');
-    this.boardList = (this.data.boardList || []).filter(board => board.state !== 'todo');
+    const availableBoards = (this.data.boardList || []).filter(board => board.state !== 'todo');
+    // Coder 固定使用 Arduino 模板；Blockly/Python 也只能切换到同开发模式的板卡。
+    this.boardList = availableBoards.filter(board => isBoardCompatibleWithProjectMode(
+        board,
+        this.projectService.currentPackageData,
+      ));
     this.filteredBoardList = [...this.boardList];
     if (this.data.isAilyCode) {
       await this.initAilyCodeSelection();

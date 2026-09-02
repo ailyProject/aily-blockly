@@ -1,0 +1,87 @@
+<app-base-dialog
+  [title]="'SSH_CONNECTION_DIALOG.TITLE' | translate"
+  [buttons]="buttons"
+  [showCloseButton]="!connecting"
+  (closeDialog)="close()"
+  (buttonClick)="onButtonClick($event)">
+  <form class="connector-form" (submit)="$event.preventDefault()">
+    <div class="row host-port-row">
+      <label>
+        <span>{{ 'SSH_CONNECTION_DIALOG.HOST' | translate }}</span>
+        <input
+          nz-input
+          name="sshHost"
+          [(ngModel)]="settings.host"
+          autocomplete="off"
+          [disabled]="connecting"
+          [placeholder]="'SSH_CONNECTION_DIALOG.HOST_PLACEHOLDER' | translate" />
+      </label>
+      <label>
+        <span>{{ 'SSH_CONNECTION_DIALOG.PORT' | translate }}</span>
+        <input
+          nz-input
+          type="number"
+          name="sshPort"
+          min="1"
+          max="65535"
+          [(ngModel)]="settings.port"
+          [disabled]="connecting" />
+      </label>
+    </div>
+
+    <div class="row credentials-row">
+      <label>
+        <span>{{ 'SSH_CONNECTION_DIALOG.USERNAME' | translate }}</span>
+        <input
+          nz-input
+          name="sshUsername"
+          [(ngModel)]="settings.username"
+          autocomplete="username"
+          [disabled]="connecting" />
+      </label>
+      <label>
+        <span>{{ 'SSH_CONNECTION_DIALOG.PASSWORD' | translate }}</span>
+        <input
+          nz-input
+          class="password-input"
+          type="password"
+          name="sshPassword"
+          [(ngModel)]="settings.password"
+          autocomplete="current-password"
+          [disabled]="connecting" />
+      </label>
+    </div>
+
+    <label class="wide">
+      <span>{{ 'SSH_CONNECTION_DIALOG.PRIVATE_KEY_FILE' | translate }}</span>
+      <div class="path-input">
+        <input
+          nz-input
+          name="sshPrivateKeyPath"
+          [(ngModel)]="settings.privateKeyPath"
+          autocomplete="off"
+          [disabled]="connecting"
+          [placeholder]="'SSH_CONNECTION_DIALOG.OPTIONAL' | translate" />
+        <button type="button" (click)="selectPrivateKey()" [disabled]="connecting">
+          {{ 'SSH_CONNECTION_DIALOG.BROWSE' | translate }}
+        </button>
+      </div>
+    </label>
+
+    <label
+      nz-checkbox
+      name="sshAutoTrustHostKey"
+      [(ngModel)]="settings.autoTrustHostKey"
+      [disabled]="connecting">
+      {{ 'SSH_CONNECTION_DIALOG.AUTO_TRUST_HOST_KEY' | translate }}
+    </label>
+
+    <label
+      nz-checkbox
+      name="sshRememberCredentials"
+      [(ngModel)]="settings.rememberCredentials"
+      [disabled]="connecting">
+      {{ 'SSH_CONNECTION_DIALOG.REMEMBER_CREDENTIALS' | translate }}
+    </label>
+  </form>
+</app-base-dialog>

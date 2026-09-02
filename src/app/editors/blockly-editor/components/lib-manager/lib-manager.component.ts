@@ -119,9 +119,11 @@ export class LibManagerComponent implements OnDestroy {
   private async initializeLibraryData() {
     const loadToken = ++this.initialDataLoadToken;
     let loadedAnyChunk = false;
-    const availableLibraryList = this.getAvailableLibraryList();
 
     try {
+      // Python 项目先加载独立 libraries-linux.json；Arduino 项目复用已加载的默认目录。
+      await this.configService.ensureLibraryListForProject(this.projectService.currentPackageData);
+      const availableLibraryList = this.getAvailableLibraryList();
       for await (const state of this.libManagerService.buildInitialStateChunks(
         availableLibraryList,
         this.configService.tagList,
@@ -177,8 +179,9 @@ export class LibManagerComponent implements OnDestroy {
   }
 
   private getAvailableLibraryList(): PackageInfo[] {
+    // 目录选择以 package.json.devmode 为准，再按当前板型过滤兼容库。
     return this.libManagerService.filterByBoardType(
-      this.configService.libraryList,
+      this.configService.getLibraryListForProject(this.projectService.currentPackageData),
       this.getCurrentBoardType(),
     );
   }
@@ -289,7 +292,11 @@ export class LibManagerComponent implements OnDestroy {
 
   async getVerisons(lib) {
     this.loading = true;
-    lib.versionList = this.npmService.getPackageVersionList(lib.name);
+    // Python 库版本从 Linux npm 仓库查询；Arduino 沿用默认 npm 配置。
+    lib.versionList = this.npmService.getPackageVersionList(
+      lib.name,
+      this.configService.getNpmRegistryForProject(this.projectService.currentPackageData),
+    );
     this.loading = false;
   }
 
@@ -311,8 +318,18 @@ export class LibManagerComponent implements OnDestroy {
     //   return;
     // }
     // 处理 core 字符串，去掉第一个以 ':' 分割的部分
-    const boardCore = this.projectService.currentBoardConfig.core.split(':').slice(1).join(':');
-    if (!await this.checkCompatibility(lib.compatibility.core, boardCore)) {
+    const boardConfig = this.projectService.currentBoardConfig;
+    const boardType = typeof boardConfig?.type === 'string' ? boardConfig.type.trim() : '';
+    const boardCore = typeof boardConfig?.core === 'string'
+      ? boardConfig.core.split(':').slice(1).join(':')
+      : '';
+    // Linux 库按 board.type 校验；旧 Arduino 库未声明 type 时继续按 core 校验。
+    const hasBoardTypeCompatibility = Array.isArray(lib.compatibility?.type);
+    const compatibility = hasBoardTypeCompatibility
+      ? lib.compatibility?.type
+      : lib.compatibility?.core;
+    const compatibilityTarget = hasBoardTypeCompatibility ? boardType : boardCore;
+    if (!await this.checkCompatibility(compatibility, compatibilityTarget)) {
       return;
     }
 
@@ -392,7 +409,12 @@ export class LibManagerComponent implements OnDestroy {
     this.output = '';
     try {
       const packageSpec = lib.version ? `${lib.name}@${lib.version}` : lib.name;
-      const { code, stderr } = await this.cmdService.runAsync(`npm install ${packageSpec}`, this.projectService.currentProjectPath);
+      // 安装来源跟随项目 devmode，和当前展示的 libraries.json 保持一致。
+      const command = this.configService.withProjectNpmRegistry(
+        `npm install ${packageSpec}`,
+        this.projectService.currentPackageData,
+      );
+      const { code, stderr } = await this.cmdService.runAsync(command, this.projectService.currentProjectPath);
 
       if (code !== 0) {
         throw new Error(stderr || `退出码: ${code}`);
@@ -566,7 +588,7 @@ export class LibManagerComponent implements OnDestroy {
   }
 
   openExample(packageName) {
-    this.electronService.openNewInStance('/main/playground/s/' + packageName.replace('@aily-project/', ''))
+    this.electronService.openNewInStance('/main/playground/s/' + packageName.replace(/^@aily-project(?:-linux)?\//, ''))
   }
 
   private getImportedLibraryBasePath() {
@@ -658,8 +680,12 @@ export class LibManagerComponent implements OnDestroy {
 
       const fileDep = this.fileDependencyFromProject(importedLibraryPath);
       const installSpec = `${packageName}@file:${fileDep}`;
+      // 本地包仍通过统一命令构造器执行；只有 Python 项目会附加 Linux 作用域仓库。
       const { code, stderr } = await this.cmdService.runAsync(
-        `npm install "${installSpec}"`,
+        this.configService.withProjectNpmRegistry(
+          `npm install "${installSpec}"`,
+          this.projectService.currentPackageData,
+        ),
         this.projectService.currentProjectPath,
       );
 

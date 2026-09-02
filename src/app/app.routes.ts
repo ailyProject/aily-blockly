@@ -1,4 +1,5 @@
 import { Routes } from '@angular/router';
+import { projectEntryGuard } from './guards/project-entry.guard';
 
 export const routes: Routes = [
     {
@@ -44,14 +45,17 @@ export const routes: Routes = [
             },
             {
                 path: 'blockly-editor',
+                canActivate: [projectEntryGuard],
                 loadComponent: () => import('./editors/blockly-editor/blockly-editor.component').then(m => m.BlocklyEditorComponent)
             },
             {
                 path: 'code-editor',
+                canActivate: [projectEntryGuard],
                 loadComponent: () => import('./editors/code-editor/code-editor.component').then(m => m.CodeEditorComponent)
             },
             {
                 path: 'code-editor-pro',
+                canActivate: [projectEntryGuard],
                 loadComponent: () => import('./editors/code-editor-pro/code-editor-pro.component').then(m => m.CodeEditorProComponent)
             }
         ]
@@ -112,11 +116,6 @@ export const routes: Routes = [
     {
         path: "ffs-manager-child",
         redirectTo: "child-tool/ffs-manager-child",
-        pathMatch: "full"
-    },
-    {
-        path: "aily-chat",
-        redirectTo: "child-tool/aily-chat",
         pathMatch: "full"
     },
     {

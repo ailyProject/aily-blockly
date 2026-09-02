@@ -7,6 +7,7 @@ import {
   ProjectService,
 } from '@domain/project/public-api';
 import { AiOperationRegistryService } from '@integration/automation/public-api';
+import { isAilyLibraryPackageName } from '@shared/public-api';
 import { applyCdcSerialPortOverrides } from '../../editors/blockly-editor/components/blockly/abf';
 import { BlocklyGeneratorRuntimeService } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
@@ -31,6 +32,10 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
 
   closeTerminal(): void {
     this.uiService.closeTerminal();
+  }
+
+  closeConnectionGraphWindows(): Promise<boolean> {
+    return this.uiService.closeConnectionGraphWindows();
   }
 
   hasActiveAiOperation(projectPath: string): boolean {
@@ -84,7 +89,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         ...(packageJson?.dependencies || {}),
         ...(packageJson?.devDependencies || {}),
         ...(packageJson?.optionalDependencies || {}),
-      }).filter((name) => name.startsWith('@aily-project/lib-')),
+      }).filter((name) => isAilyLibraryPackageName(name)),
     );
     const scannedLibraryNames = new Set(libraryNames);
     const missingRetainedLibraryNames = [...new Set(loadedLibraryNames)]

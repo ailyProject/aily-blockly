@@ -26,6 +26,10 @@ import { NzToolTipModule } from "ng-zorro-antd/tooltip";
 import { NpmService } from '@domain/dependencies/public-api';
 import { AILY_CODER_SUBAPP_ID } from '../../configs/required-subapp.config';
 import { RequiredSubappService, RequiredSubappState, ChildAppSafetyService } from '@integration/subapps/public-api';
+import {
+  PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
+  resolveConfiguredProjectRootPath,
+} from '@domain/project/public-api';
 
 type CacheClearOption = 'all' | 'unused-7' | 'unused-30';
 type DependencyRemovalOption = 'all' | 'unused-30' | 'unused-90';
@@ -129,11 +133,13 @@ export class SettingsComponent implements OnDestroy {
   boardOperations = {};
   ailyBuilderStatus: any = null;
   ailyLinterStatus: any = null;
+  ailyConnectorStatus: any = null;
   ailyToolsCheckingUpdates = false;
   applying = false;
   regionSwitching = false;
   private ailyBuilderStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private ailyLinterStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  private ailyConnectorStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private settingsReadyObserver: MutationObserver | null = null;
 
   // 搜索关键字
@@ -343,6 +349,10 @@ export class SettingsComponent implements OnDestroy {
     return this.configService.isCoderEnabled();
   }
 
+  get coderProduct() {
+    return this.configService.isCoderProduct();
+  }
+
   coderDependencyState: RequiredSubappState = {
     id: AILY_CODER_SUBAPP_ID,
     status: 'loading',
@@ -415,6 +425,7 @@ export class SettingsComponent implements OnDestroy {
     this.clearScrollEndTimer();
     this.clearAilyBuilderStatusTimer();
     this.clearAilyLinterStatusTimer();
+    this.clearAilyConnectorStatusTimer();
     this._clearCacheSubscription?.unsubscribe();
     this.coderDependencySubscription.unsubscribe();
     this.configReloadSubscription.unsubscribe();
@@ -434,6 +445,7 @@ export class SettingsComponent implements OnDestroy {
     this.updateBoardList();
     void this.loadAilyBuilderStatus();
     void this.loadAilyLinterStatus();
+    void this.loadAilyConnectorStatus();
     void this.loadCacheStats();
     this.notifySettingsWindowReady();
   }
@@ -504,6 +516,21 @@ export class SettingsComponent implements OnDestroy {
     }
   }
 
+  async loadAilyConnectorStatus() {
+    if (!window['connector']?.status) {
+      return;
+    }
+    try {
+      this.ailyConnectorStatus = await window['connector'].status();
+      if (this.ailyConnectorStatus?.installing) {
+        this.scheduleAilyConnectorStatusReload();
+      }
+    } catch (error) {
+      console.warn('加载 aily-connector 状态失败:', error);
+      this.ailyConnectorStatus = null;
+    }
+  }
+
   getAilyToolVersion(status: any) {
     return status?.installedVersion || this.translateService.instant('SETTINGS.FIELDS.AILY_TOOL_UNKNOWN');
   }
@@ -526,6 +553,17 @@ export class SettingsComponent implements OnDestroy {
 
   private getAilyToolErrorText(error: unknown) {
     const text = String(error || '').trim();
+    const ailyConnectorErrorKeys: Record<string, string> = {
+      'aily-connector package entry was not found': 'PACKAGE_NOT_FOUND',
+      'aily-connector does not provide the required Linux board capabilities': 'CAPABILITIES_MISSING',
+      'aily-connector installation is incomplete': 'INSTALLATION_INCOMPLETE',
+      'aily-connector is unavailable': 'CONNECTOR_UNAVAILABLE',
+    };
+    const connectorErrorKey = ailyConnectorErrorKeys[text];
+    if (connectorErrorKey) {
+      return this.translateService.instant(`AILY_CONNECTOR.${connectorErrorKey}`);
+    }
+
     const statusMatch = text.match(/(?:^|\r?\n)\s*npm (?:error|ERR!)\s+(\d{3})\b/im);
     if (statusMatch) {
       return `npm error ${statusMatch[1]}`;
@@ -543,12 +581,14 @@ export class SettingsComponent implements OnDestroy {
   isAilyToolsUpdateLoading() {
     return this.ailyToolsCheckingUpdates ||
       !!this.ailyBuilderStatus?.installing ||
-      !!this.ailyLinterStatus?.installing;
+      !!this.ailyLinterStatus?.installing ||
+      !!this.ailyConnectorStatus?.installing;
   }
 
   canCheckAilyToolsUpdates() {
     return !!window['builder']?.checkForUpdate &&
       !!window['linter']?.checkForUpdate &&
+      !!window['connector']?.checkForUpdate &&
       !this.isAilyToolsUpdateLoading();
   }
 
@@ -570,6 +610,11 @@ export class SettingsComponent implements OnDestroy {
         name: 'aily-linter',
         api: window['linter'],
         setStatus: (status: any) => this.ailyLinterStatus = status
+      },
+      {
+        name: 'aily-connector',
+        api: window['connector'],
+        setStatus: (status: any) => this.ailyConnectorStatus = status
       }
     ];
 
@@ -591,7 +636,8 @@ export class SettingsComponent implements OnDestroy {
     try {
       await Promise.all([
         this.loadAilyBuilderStatus(),
-        this.loadAilyLinterStatus()
+        this.loadAilyLinterStatus(),
+        this.loadAilyConnectorStatus()
       ]);
 
       if (updatedTools.length) {
@@ -646,9 +692,42 @@ export class SettingsComponent implements OnDestroy {
     }
   }
 
+  private scheduleAilyConnectorStatusReload() {
+    this.clearAilyConnectorStatusTimer();
+    this.ailyConnectorStatusTimer = setTimeout(() => {
+      this.ailyConnectorStatusTimer = null;
+      this.loadAilyConnectorStatus();
+    }, 2000);
+  }
+
+  private clearAilyConnectorStatusTimer() {
+    if (this.ailyConnectorStatusTimer) {
+      clearTimeout(this.ailyConnectorStatusTimer);
+      this.ailyConnectorStatusTimer = null;
+    }
+  }
+
   selectLang(lang) {
     this.translationService.setLanguage(lang.code);
     window['ipcRenderer'].send('setting-changed', { action: 'language-changed', data: lang.code });
+  }
+
+  async selectProjectFolder(): Promise<void> {
+    const pathApi = window['path'];
+    const currentPath = resolveConfiguredProjectRootPath(this.configData.project_path, {
+      userDocuments: pathApi.getUserDocuments(),
+      userHome: pathApi.getUserHome(),
+      separator: window['platform'].type === 'win32' ? '\\' : '/',
+    });
+    const result = await window['ipcRenderer'].invoke('dialog-select-files', {
+      title: this.translateService.instant('SETTINGS.FIELDS.PROJECT_FOLDER'),
+      defaultPath: currentPath,
+      properties: ['openDirectory'],
+    });
+    if (result?.canceled || !result?.filePaths?.[0]) {
+      return;
+    }
+    this.configData.project_path = result.filePaths[0];
   }
 
   // 使用锚点滚动到指定部分
@@ -728,6 +807,14 @@ export class SettingsComponent implements OnDestroy {
       await this.configService.applyResourceSourceRuntimeSelection();
       // 保存到config.json，如有需要立即加载的，再加载
       await this.configService.save();
+      await window['env']?.set?.({
+        key: 'AILY_PROJECT_PATH',
+        value: this.configData.project_path,
+      });
+      window['ipcRenderer'].send('setting-changed', {
+        action: PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
+        data: { path: this.configData.project_path },
+      });
       window['ipcRenderer'].send('setting-changed', { action: 'devmode-changed', data: this.configData.devmode });
       // 保存完毕后关闭窗口
       this.uiService.closeWindow();

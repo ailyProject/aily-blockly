@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.94",
+  "version": "0.9.96",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -161,12 +161,14 @@
     "smoke:simulator-gateway": "node scripts/smoke-simulator-gateway-bridge.mjs",
     "smoke:simulator-gateway-crash": "node scripts/smoke-simulator-gateway-crash.mjs",
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && node ./scripts/run-electron-dev.js --serve\"",
+    "electron:coder": "node ./scripts/run-electron-coder-dev.js",
     "prepare:simulator-runtime": "node scripts/prepare-simulator-runtime.js",
     "prepare:simulator-runtime:release": "node scripts/prepare-simulator-runtime.js",
     "prepare:electron-runtime": "npm run prepare:simulator-runtime",
     "build": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder build",
     "build:cn": "node ./scripts/build-electron.js --flavor cn",
     "build:global": "node ./scripts/build-electron.js --flavor global",
+    "build:coder": "node ./scripts/build-electron.js --product coder",
     "build:mac": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder --mac --arm64 --x64",
     "build:mac:universal": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder --mac --universal",
     "test:e2e": "node ./scripts/run-e2e.mjs test",
@@ -179,7 +181,8 @@
     "test:e2e:simulator-subapp-mainline": "node ./scripts/run-simulator-subapp-mainline-e2e.mjs",
     "validate:e2e:simulator-debug": "node ./scripts/validate-simulator-debug-e2e-report.mjs",
     "setup:external-tools": "node scripts/install-external-tools.js",
-    "setup:local-builder": "node scripts/use-local-builder.mjs"
+    "setup:local-builder": "node scripts/use-local-builder.mjs",
+    "setup:local-connector": "node scripts/use-local-connector.mjs"
   },
   "private": true,
   "dependencies": {

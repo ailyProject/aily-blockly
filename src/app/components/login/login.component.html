@@ -1,204 +1,247 @@
-@if(showLogin && presentation === 'dialog') {
-<div class="login-box ccenter">
-    <div class="inner">
+@if (showLogin) {
+<div class="login-box" [attr.dir]="loginDirection">
+    <button type="button" class="login-close" [attr.aria-label]="'LOGIN.MODAL_CLOSE' | translate"
+        [title]="'LOGIN.MODAL_CLOSE' | translate" (click)="dismissLoginDialog()">
+        <i class="fa-light fa-xmark"></i>
+    </button>
+    <div class="inner" [class.special-flow]="loginBindMode || emailBindMode">
         <!-- 隐藏的 altcha 组件用于隐式验证 -->
-        <app-altcha style="display: none;"></app-altcha>
-        @if (loginBindMode) {
-        <div class="header">{{ 'LOGIN.WECHAT_BIND_REQUIRED' | translate }}</div>
-        <div class="line"></div>
-        <div class="mail-login-box">
-            <div class="wechat ccenter">
-                @if (loginBindStatus === 'loading') {
-                <div class="qrcode ccenter">
-                    <div class="loading-icon lloading ccenter">
-                        <i class="fa-light fa-spinner-third"></i>
+        <app-altcha class="altcha-verification"></app-altcha>
+
+        <div class="login-stage">
+            <div class="brand-panel" aria-hidden="true">
+                <div class="brand-glow"></div>
+                <img class="brand-icon" src="icon-512.ico" alt="" draggable="false" />
+            </div>
+
+            <section class="login-content" [class.standard-login]="!loginBindMode && !emailBindMode"
+                [attr.aria-labelledby]="loginBindMode || emailBindMode ? 'login-flow-title' : 'login-welcome-title'">
+                @if (loginBindMode) {
+                <header class="flow-heading">
+                    <span class="flow-icon"><i class="fa-brands fa-weixin"></i></span>
+                    <h1 id="login-flow-title">{{ 'LOGIN.WECHAT_BIND_REQUIRED' | translate }}</h1>
+                </header>
+                <div class="auth-panel bind-panel">
+                    <div class="wechat">
+                        @if (loginBindStatus === 'loading') {
+                        <div class="qrcode qr-placeholder" aria-live="polite">
+                            <div class="loading-icon lloading">
+                                <i class="fa-light fa-spinner-third"></i>
+                            </div>
+                        </div>
+                        } @else if (loginBindQrcodeUrl && loginBindStatus !== 'expired' && loginBindStatus !== 'error') {
+                        <div class="qrcode">
+                            <img [src]="loginBindQrcodeUrl" [alt]="'LOGIN.WECHAT_BIND_SCAN' | translate" />
+                        </div>
+                        } @else {
+                        <div class="qrcode qr-placeholder" aria-live="polite">
+                            <div class="error-text">{{ loginBindStatusMessage }}</div>
+                            @if (loginBindStatus === 'expired') {
+                            <button type="button" class="inline-action" (click)="refreshLoginBindQrcode()">
+                                {{ 'LOGIN.WECHAT_REFRESH' | translate }}
+                            </button>
+                            } @else if (loginBindStatus === 'error') {
+                            <button type="button" class="inline-action" (click)="refreshLoginBindQrcode()">
+                                {{ 'LOGIN.WECHAT_RETRY' | translate }}
+                            </button>
+                            }
+                        </div>
+                        }
+                        <div class="wechat-status" aria-live="polite">
+                            @if (loginBindStatus === 'pending' || loginBindStatus === 'scanned') {
+                            <div class="status-message">{{ loginBindStatusMessage }}</div>
+                            }
+                        </div>
+                    </div>
+                    <div class="compliance-notice">
+                        <i class="fa-solid fa-shield-halved"></i>
+                        <span>{{ 'LOGIN.WECHAT_BIND_COMPLIANCE_NOTICE' | translate }}</span>
+                    </div>
+                    <div class="actions secondary-actions">
+                        <button type="button" nz-button nzType="default" (click)="exitLoginBindMode()">
+                            <i class="fa-light fa-arrow-left"></i>
+                            {{ 'LOGIN.BACK_TO_LOGIN' | translate }}
+                        </button>
                     </div>
                 </div>
-                } @else if (loginBindQrcodeUrl && loginBindStatus !== 'expired' && loginBindStatus !== 'error') {
-                <div class="qrcode">
-                    <img [src]="loginBindQrcodeUrl" alt="微信扫码绑定二维码" />
+                } @else if (emailBindMode) {
+                <header class="flow-heading">
+                    <span class="flow-icon"><i class="fa-light fa-envelope"></i></span>
+                    <h1 id="login-flow-title">{{ 'LOGIN.EMAIL_BIND_TITLE' | translate }}</h1>
+                    <p>{{ 'LOGIN.EMAIL_BIND_DESCRIPTION' | translate }}</p>
+                </header>
+                <div class="auth-panel mail-login-box">
+                    <div class="form-row">
+                        <span class="field-icon"><i class="fa-light fa-envelope"></i></span>
+                        <label class="sr-only" for="email-bind-email">{{ 'LOGIN.EMAIL_PLACEHOLDER' | translate }}</label>
+                        <input id="email-bind-email" nz-input type="email" [maxLength]="50"
+                            [placeholder]="'LOGIN.EMAIL_PLACEHOLDER' | translate"
+                            autocomplete="email" [(ngModel)]="emailBindEmail" />
+                    </div>
+                    <div class="form-row">
+                        <span class="field-icon"><i class="fa-light fa-lock"></i></span>
+                        <label class="sr-only" for="email-bind-code">{{ 'LOGIN.CODE_PLACEHOLDER' | translate }}</label>
+                        <input id="email-bind-code" nz-input type="text" [maxLength]="8"
+                            [placeholder]="'LOGIN.CODE_PLACEHOLDER' | translate"
+                            inputmode="numeric" autocomplete="one-time-code" [(ngModel)]="emailBindCode" />
+                        <button type="button" nz-button nzType="default" class="send-code-btn"
+                            [disabled]="emailBindIsSendingCode || emailBindCountdown > 0"
+                            (click)="sendEmailBindCode()">
+                            {{ emailBindCountdown > 0
+                                ? ('LOGIN.CODE_COUNTDOWN' | translate: { seconds: emailBindCountdown })
+                                : ('LOGIN.SEND_CODE' | translate) }}
+                        </button>
+                    </div>
+                    <div class="actions">
+                        <button type="button" nz-button nzType="primary" [nzLoading]="emailBindIsSubmitting"
+                            (click)="submitEmailBind()">{{ 'LOGIN.CONFIRM_BIND' | translate }}</button>
+                    </div>
+                    <div class="actions secondary-actions">
+                        <button type="button" nz-button nzType="default" (click)="exitEmailBindMode()">
+                            <i class="fa-light fa-arrow-left"></i>
+                            {{ 'LOGIN.BACK_TO_LOGIN' | translate }}
+                        </button>
+                    </div>
                 </div>
                 } @else {
-                <div class="qrcode ccenter">
-                    <div class="error-text">{{ loginBindStatusMessage }}</div>
-                    @if (loginBindStatus === 'expired') {
-                    <div class="refresh-btn btn link" (click)="refreshLoginBindQrcode()" style="margin-top: 10px;">
-                        刷新二维码
+                <header class="welcome-heading">
+                    <h1 id="login-welcome-title" class="welcome-title">
+                        @if ('LOGIN.WELCOME_BEFORE' | translate; as welcomeBefore) {
+                        <span>{{ welcomeBefore }}</span>
+                        }
+                        <span class="title-brand">
+                            <img class="title-logo" src="imgs/logo.webp" alt="Aily Blockly" draggable="false" />
+                            <img class="title-chevron" src="imgs/chevron-right.svg" alt="" aria-hidden="true"
+                                draggable="false" />
+                        </span>
+                        @if ('LOGIN.WELCOME_AFTER' | translate; as welcomeAfter) {
+                        <span>{{ welcomeAfter }}</span>
+                        }
+                    </h1>
+                    <p>{{ 'LOGIN.HEADER' | translate }}</p>
+                </header>
+
+                <div class="auth-panel">
+                    @if (mode === 'wechat') {
+                    <div class="wechat">
+                        @if (wechatStatus === 'loading') {
+                        <div class="qrcode qr-placeholder" aria-live="polite">
+                            <div class="loading-icon lloading">
+                                <i class="fa-light fa-spinner-third"></i>
+                            </div>
+                        </div>
+                        } @else if (wechatQrcodeUrl) {
+                        <div class="qrcode">
+                            <img [src]="wechatQrcodeUrl" [alt]="'LOGIN.WECHAT_SCAN' | translate" />
+                        </div>
+                        } @else {
+                        <div class="qrcode qr-placeholder" aria-live="polite">
+                            <div class="error-text">{{ 'LOGIN.WECHAT_QRCODE_FAILED' | translate }}</div>
+                            @if (wechatStatus === 'expired') {
+                            <button type="button" class="inline-action" (click)="refreshWeChatQrcode()">
+                                {{ 'LOGIN.WECHAT_REFRESH' | translate }}
+                            </button>
+                            } @else if (wechatStatus === 'error') {
+                            <button type="button" class="inline-action" (click)="refreshWeChatQrcode()">
+                                {{ 'LOGIN.WECHAT_RETRY' | translate }}
+                            </button>
+                            }
+                        </div>
+                        }
+                        <div class="wechat-status" aria-live="polite">
+                            @if (wechatStatus === 'pending') {
+                            <div class="status-message">{{ 'LOGIN.WECHAT_SCAN' | translate }}</div>
+                            }
+                        </div>
                     </div>
-                    } @else if (loginBindStatus === 'error') {
-                    <div class="refresh-btn btn link" (click)="refreshLoginBindQrcode()" style="margin-top: 10px;">
-                        重试
+                    } @else if (mode === 'github') {
+                    <div class="oauth-progress" aria-live="polite">
+                        <div class="oauth-icon-wrap lloading">
+                            <i class="fa-light fa-spinner-third"></i>
+                            <i class="fa-brands fa-github-alt"></i>
+                        </div>
+                        <p>{{ 'LOGIN.GITHUB_CONTINUE' | translate }}</p>
+                    </div>
+                    } @else {
+                    <div class="mail-login-box">
+                        <div class="form-row">
+                            <span class="field-icon"><i class="fa-light fa-envelope"></i></span>
+                            <label class="sr-only" for="login-email">{{ 'LOGIN.EMAIL_PLACEHOLDER' | translate }}</label>
+                            <input id="login-email" nz-input type="email" [maxLength]="50"
+                                [placeholder]="'LOGIN.EMAIL_PLACEHOLDER' | translate" autocomplete="email"
+                                [(ngModel)]="inputEmail" />
+                        </div>
+                        <div class="form-row">
+                            <span class="field-icon"><i class="fa-light fa-lock"></i></span>
+                            <label class="sr-only" for="login-code">{{ 'LOGIN.CODE_PLACEHOLDER' | translate }}</label>
+                            <input id="login-code" nz-input type="text" [maxLength]="8"
+                                [placeholder]="'LOGIN.CODE_PLACEHOLDER' | translate" inputmode="numeric"
+                                autocomplete="one-time-code" [(ngModel)]="inputCode" />
+                            <button type="button" nz-button nzType="default" class="send-code-btn"
+                                [nzLoading]="isSendingCode" [disabled]="isSendingCode || countdown > 0"
+                                (click)="sendVerificationCode()">
+                                {{ countdown > 0
+                                    ? ('LOGIN.CODE_COUNTDOWN' | translate: { seconds: countdown })
+                                    : ('LOGIN.SEND_CODE' | translate) }}
+                            </button>
+                        </div>
+                        <div class="form-row">
+                            <span class="field-icon"><i class="fa-light fa-user-group"></i></span>
+                            <label class="sr-only" for="login-invite">{{ 'LOGIN.INVITE_CODE_PLACEHOLDER' | translate }}</label>
+                            <input id="login-invite" nz-input type="text" [maxLength]="11"
+                                [placeholder]="'LOGIN.INVITE_CODE_PLACEHOLDER' | translate"
+                                [(ngModel)]="inviteCode" />
+                        </div>
+                        <div class="actions">
+                            <button type="button" nz-button nzType="primary" [nzLoading]="isWaiting"
+                                (click)="loginByEmail()">
+                                {{ isWaiting ? ('LOGIN.LOGGING_IN' | translate) : ('LOGIN.LOGIN' | translate) + ' / ' +
+                                ('LOGIN.REGISTER' | translate) }}
+                            </button>
+                        </div>
                     </div>
                     }
+                </div>
+
+                <div class="agreement-section">
+                    <span>{{ 'LOGIN.AGREEMENT_BY_LOGIN' | translate }}</span>
+                    <button type="button" class="agreement-link" (click)="showUserAgreement()">
+                        {{ 'LOGIN.TERMS_OF_USE' | translate }}
+                    </button>
+                    <span class="agreement-and">{{ 'LOGIN.AGREEMENT_AND' | translate }}</span>
+                    <button type="button" class="agreement-link" (click)="showPrivacyPolicy()">
+                        {{ 'LOGIN.PRIVACY_POLICY' | translate }}
+                    </button>
+                </div>
+
+                <div class="login-methods" role="group" [attr.aria-label]="'LOGIN.SELECT_METHOD' | translate">
+                    <button type="button" class="method-button method-button-icon"
+                        [class.active]="mode === 'mail'" [attr.aria-pressed]="mode === 'mail'"
+                        [attr.aria-label]="'LOGIN.EMAIL_LOGIN' | translate"
+                        [title]="'LOGIN.EMAIL_LOGIN' | translate" (click)="select('mail')">
+                        <i class="fa-solid fa-circle-envelope" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="method-button method-button-icon method-button-wechat"
+                        [class.active]="mode === 'wechat'" [attr.aria-pressed]="mode === 'wechat'"
+                        [attr.aria-label]="'LOGIN.WECHAT_LOGIN' | translate"
+                        [title]="'LOGIN.WECHAT_LOGIN' | translate" (click)="select('wechat')">
+                        <i class="fa-brands fa-weixin" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="method-button method-button-icon"
+                        [class.active]="mode === 'github'" [attr.aria-pressed]="mode === 'github'"
+                        [attr.aria-label]="'LOGIN.GITHUB_LOGIN' | translate"
+                        [title]="'LOGIN.GITHUB_LOGIN' | translate" (click)="select('github'); loginByGithub()">
+                        <i class="fa-brands fa-github" aria-hidden="true"></i>
+                    </button>
                 </div>
                 }
-                <div class="wechat-status">
-                    @if (loginBindStatus === 'pending') {
-                    <div class="status-message">{{ loginBindStatusMessage }}</div>
-                    } @else if (loginBindStatus === 'scanned') {
-                    <div class="status-message">{{ loginBindStatusMessage }}</div>
-                    }
-                </div>
-            </div>
-            <div class="compliance-notice">
-                <i class="fa-solid fa-shield-halved"></i>
-                <span>根据法律法规，您需要绑定微信进行实名，才能使用AI服务</span>
-            </div>
-            <div class="actions" style="margin-top: 10px;">
-                <button nz-button nzType="default" (click)="exitLoginBindMode()">
-                    <i class="fa-light fa-arrow-left"></i> {{ 'LOGIN.BACK_TO_LOGIN' | translate }}
-                </button>
-            </div>
+            </section>
         </div>
-        } @else if (emailBindMode) {
-        <div class="header">补全邮箱</div>
-        <div class="line"></div>
-        <div class="mail-login-box">
-            <div class="email-bind-tip" style="text-align: center; margin-bottom: 12px; color: #666; font-size: 13px;">
-                当前微信需要补全邮箱后继续登录
-            </div>
-            <div class="item">
-                <div class="ccenter">
-                    <i class="fa-light fa-envelope"></i>
-                </div>
-                <input nz-input type="email" [maxLength]="50" placeholder="请输入邮箱"
-                    [(ngModel)]="emailBindEmail" />
-            </div>
-            <div class="item">
-                <div class="ccenter">
-                    <i class="fa-light fa-lock"></i>
-                </div>
-                <input nz-input type="text" [maxLength]="8" placeholder="请输入验证码"
-                    [(ngModel)]="emailBindCode" />
-                <button nz-button nzType="default" class="send-code-btn"
-                    [disabled]="emailBindIsSendingCode || emailBindCountdown > 0"
-                    (click)="sendEmailBindCode()">
-                    {{ emailBindCountdown > 0 ? (emailBindCountdown + 's') : ('LOGIN.SEND_CODE' | translate) }}
-                </button>
-            </div>
-            <div class="actions">
-                <button nz-button nzType="primary" [nzLoading]="emailBindIsSubmitting" (click)="submitEmailBind()">
-                    确认绑定
-                </button>
-            </div>
-            <div class="actions" style="margin-top: 10px;">
-                <button nz-button nzType="default" (click)="exitEmailBindMode()">
-                    <i class="fa-light fa-arrow-left"></i> {{ 'LOGIN.BACK_TO_LOGIN' | translate }}
-                </button>
-            </div>
-        </div>
-        } @else {
-        <div class="header">{{ 'LOGIN.HEADER' | translate }}</div>
-        <div class="line"></div>
-        @if (mode === 'wechat') {
-        <div class="mail-login-box">
-            <div class="wechat ccenter">
-                @if (wechatStatus === 'loading') {
-                <div class="qrcode ccenter">
-                    <div class="loading-icon lloading ccenter">
-                        <i class="fa-light fa-spinner-third"></i>
-                    </div>
-                </div>
-                } @else if (wechatQrcodeUrl) {
-                <div class="qrcode">
-                    <img [src]="wechatQrcodeUrl" />
-                </div>
-                } @else {
-                <div class="qrcode ccenter">
-                    <div class="error-text">{{ 'LOGIN.WECHAT_QRCODE_FAILED' | translate }}</div>
-                    @if (wechatStatus === 'expired') {
-                    <div class="refresh-btn btn link" (click)="refreshWeChatQrcode()" style="margin-top: 10px;">
-                        {{ 'LOGIN.WECHAT_REFRESH' | translate }}
-                    </div>
-                    } @else if (wechatStatus === 'error') {
-                    <div class="refresh-btn btn link" (click)="refreshWeChatQrcode()" style="margin-top: 10px;">
-                        {{ 'LOGIN.WECHAT_RETRY' | translate }}
-                    </div>
-                    }
-                </div>
-                }
-                <div class="wechat-status">
-                    @if (wechatStatus === 'pending') {
-                    <div class="status-message">{{ 'LOGIN.WECHAT_SCAN' | translate }}</div>
-                    } @else if (wechatStatus === 'confirmed') {
-                    }
-                </div>
-            </div>
-        </div>
-        } @else if (mode === 'github') {
-        <div class="mail-login-box">
-            <div class="wechat ccenter">
-                <div class="qrcode ccenter">
-                    <div class="loading-icon lloading ccenter" style="position: relative;">
-                        <i class="fa-light fa-spinner-third"></i>
-                        <i class="fa-brands fa-github-alt" style="position: absolute; font-size: 24px;"></i>
-                    </div>
-                </div>
-                <div class="wechat-status">
-                    <div class="status-message">{{ 'LOGIN.GITHUB_CONTINUE' | translate }}</div>
-                </div>
-            </div>
-        </div>
-        } @else {
-        <div class="mail-login-box">
-            <div class="item">
-                <div class="ccenter">
-                    <i class="fa-light fa-envelope"></i>
-                </div>
-                <input nz-input type="email" [maxLength]="50" [placeholder]="'LOGIN.EMAIL_PLACEHOLDER' | translate"
-                    [(ngModel)]="inputEmail" />
-            </div>
-            <div class="item">
-                <div class="ccenter">
-                    <i class="fa-light fa-lock"></i>
-                </div>
-                <input nz-input type="text" [maxLength]="8" [placeholder]="'LOGIN.CODE_PLACEHOLDER' | translate"
-                    [(ngModel)]="inputCode" />
-                <button nz-button nzType="default" class="send-code-btn" [disabled]="isSendingCode || countdown > 0"
-                    (click)="sendVerificationCode()">
-                    {{ countdown > 0 ? (countdown + 's') : ('LOGIN.SEND_CODE' | translate) }}
-                </button>
-            </div>
-            <div class="item">
-                <div class="ccenter">
-                    <i class="fa-light fa-user-group"></i>
-                </div>
-                <input nz-input type="email" [maxLength]="11" [placeholder]="'LOGIN.INVITE_CODE_PLACEHOLDER' | translate"
-                    [(ngModel)]="inviteCode" />
-            </div>
-            <div class="actions">
-                <button nz-button nzType="primary" [nzLoading]="isWaiting" (click)="loginByEmail()">
-                    {{ isWaiting ? ('LOGIN.LOGGING_IN' | translate) : ('LOGIN.LOGIN' | translate) + ' / ' +
-                    ('LOGIN.REGISTER' | translate) }}
-                </button>
-            </div>
-        </div>
-        }
-        <div class="agreement-section">
-            <span>{{ 'LOGIN.AGREEMENT_BY_LOGIN' | translate }}</span>@if (!isZhLang) {<br>}
-            <a class="agreement-link" (click)="showUserAgreement()">{{ 'LOGIN.TERMS_OF_USE' | translate }}</a>
-            <span style="margin: 0 2px;">{{ 'LOGIN.AGREEMENT_AND' | translate }}</span>
-            <a class="agreement-link" (click)="showPrivacyPolicy()">{{ 'LOGIN.PRIVACY_POLICY' | translate }}</a>
-        </div>
-        <div class="line" style="margin-top: 13px;"></div>
-        <div style="text-align: center;margin-top: 10px;">
-            {{ 'LOGIN.OTHER_LOGIN_METHODS' | translate }}
-        </div>
-        <div class="btns">
-            <div class="item ccenter" (click)="select('mail')" [ngClass]="{'active':mode=='mail'}">
-                <div class="icon ccenter"><i class="fa-solid fa-circle-envelope"></i></div>
-                Mail
-            </div>
-            <div class="item ccenter" (click)="select('wechat')" [ngClass]="{'wechat-active':mode=='wechat'}">
-                <div class="icon ccenter"><i class="fa-brands fa-weixin"></i></div>
-                WeChat
-            </div>
-            <div class="item ccenter" (click)="select('github');loginByGithub()" [ngClass]="{'active':mode=='github'}">
-                <div class="icon ccenter"><i class="fa-brands fa-github"></i></div>
-                Github
-            </div>
-        </div>
-        }
     </div>
+    <footer class="login-footer">
+        <button type="button" class="login-skip" [attr.dir]="loginDirection" (click)="dismissLoginDialog()">
+            {{ 'LOGIN.LOGIN_LATER' | translate }}
+        </button>
+    </footer>
 </div>
 }

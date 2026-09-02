@@ -1746,10 +1746,13 @@ export class BlocklyService {
 
     try {
       const source = this.electronService.readFile(filePath);
+      // Runtime 已按项目模式隔离全局；这里统一登记当前 Python 或 Arduino 脚本实际注册的块。
       const result = this.generatorRuntime.loadGenerator(filePath, source);
-      const registered = result.arduinoBlockTypes.length > 0
-        ? result.arduinoBlockTypes
-        : result.micropythonBlockTypes;
+      const registered = Array.from(new Set([
+        ...result.arduinoBlockTypes,
+        ...result.micropythonBlockTypes,
+        ...result.pythonBlockTypes,
+      ]));
       this.loadedGenerators.set(filePath, new Set(registered));
       return Promise.resolve(true);
     } catch (error) {

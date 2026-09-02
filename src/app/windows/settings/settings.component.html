@@ -15,12 +15,21 @@
       <ngx-simplebar class="right" #scrollContainer [options]="options">
         <div class="right-inner-container">
           <!-- 基础设置 -->
-          <div id="SETTINGS.SECTIONS.BASIC" class="section" style="padding-bottom: 100px;">
+          <div id="SETTINGS.SECTIONS.BASIC" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.BASIC' | translate }}</h2>
             <div class="right-inner">
               <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.PROJECT_FOLDER' | translate }}:</div>
-                <input nz-input [(ngModel)]="configData.project_path" [disabled]="true" />
+                <nz-input-group [nzAddOnAfter]="projectFolderButton">
+                  <input nz-input [(ngModel)]="configData.project_path" [disabled]="true" />
+                </nz-input-group>
+                <ng-template #projectFolderButton>
+                  <div class="btn ccenter ffull" (click)="selectProjectFolder()"
+                    [attr.aria-label]="'SETTINGS.FIELDS.PROJECT_FOLDER' | translate"
+                    [attr.title]="'SETTINGS.FIELDS.PROJECT_FOLDER' | translate">
+                    <i class="fa-light fa-folder"></i>
+                  </div>
+                </ng-template>
               </div>
               <div class="item lang-item">
                 <div>{{ 'SETTINGS.FIELDS.LANGUAGE' | translate }}:</div>
@@ -36,6 +45,26 @@
               <div class="item development-mode-item">
                 <div>{{ 'SETTINGS.FIELDS.DEVELOPMENT_MODE_PREFERENCE' | translate }}:</div>
                 <div class="development-mode-buttons" [class.has-coder]="coderEnabled">
+                  @if (coderProduct) {
+                  <span class="coder-mode-option" nz-tooltip
+                    [nzTooltipTitle]="coderDependencyState.installed
+                      ? null
+                      : ('SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate)">
+                    <button class="development-mode-button coder-mode-button single-mode-button"
+                      nz-button nzSize="small" nzType="primary" type="button" aria-pressed="true"
+                      (click)="onDevelopmentModePreferenceChange('coder')">
+                      @if (coderDependencyState.installing) {
+                      <i class="fa-light fa-spinner-third fa-spin"></i>
+                      <span>{{ coderDependencyState.percent }}%</span>
+                      }
+                      {{ 'PROJECT_NEW.BOARD.MODE_CODER' | translate }}
+                    </button>
+                    @if (!coderDependencyState.installed) {
+                    <span class="coder-install-dot"
+                      [attr.aria-label]="'SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate"></span>
+                    }
+                  </span>
+                  } @else {
                   <button
                     class="development-mode-button blockly-mode-button"
                     nz-button
@@ -64,6 +93,7 @@
                       [attr.aria-label]="'SETTINGS.FIELDS.CODER_EXTENSION_HINT' | translate"></span>
                     }
                   </span>
+                  }
                   }
                 </div>
               </div>
@@ -258,6 +288,20 @@
                   <span class="tool-status" [class.warning]="!ailyLinterStatus?.installed"
                     [class.error]="!!ailyLinterStatus?.error">
                     {{ getAilyToolStatusText(ailyLinterStatus) }}
+                  </span>
+                  }
+                </div>
+              </div>
+              <div class="item tool-item">
+                <div>aily-connector</div>
+                <div class="tool-setting-inline">
+                  <div class="tool-version">
+                    <strong>&#64; {{ getAilyToolVersion(ailyConnectorStatus) }}</strong>
+                  </div>
+                  @if (getAilyToolStatusText(ailyConnectorStatus)) {
+                  <span class="tool-status" [class.warning]="!ailyConnectorStatus?.installed"
+                    [class.error]="!!ailyConnectorStatus?.error">
+                    {{ getAilyToolStatusText(ailyConnectorStatus) }}
                   </span>
                   }
                 </div>

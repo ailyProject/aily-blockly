@@ -28,6 +28,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
 export interface ProjectApplicationPort {
   updateFooterState(state: ProjectFooterState): void;
   closeTerminal(): void;
+  closeConnectionGraphWindows(): Promise<boolean>;
   hasActiveAiOperation(projectPath: string): boolean;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;

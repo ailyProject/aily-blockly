@@ -1,6 +1,16 @@
 export const CODER_TEMPLATE_DIRECTORY = 'template_arduino';
 export const LEGACY_CODER_TEMPLATE_DIRECTORY = 'template_arrduino';
 export const CODER_SOURCE_ENTRY = 'src/main.cpp';
+export const DEFAULT_CODER_ARDUINO_SOURCE = `#include <Arduino.h>
+
+void setup() {
+  // put your setup code here, to run once:
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+}
+`;
 
 export interface CoderProjectPackageManifest {
   type?: string;
@@ -52,6 +62,7 @@ interface CoderTemplatePathApi {
 interface CoderTemplateFsApi {
   copySync(source: string, destination: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;
+  writeFileSync(path: string, content: string): void;
 }
 
 /**
@@ -71,26 +82,41 @@ export function resolveCoderTemplatePath(
   return pathApi.isExists(legacyPath) ? legacyPath : canonicalPath;
 }
 
+export function resolveCoderProjectCreationTemplate(
+  boardPackagePath: string,
+  pathApi: CoderTemplatePathApi,
+): { templatePath: string; useDefaultSource: boolean } {
+  const coderTemplatePath = resolveCoderTemplatePath(boardPackagePath, pathApi);
+  if (pathApi.isExists(coderTemplatePath)) {
+    return { templatePath: coderTemplatePath, useDefaultSource: false };
+  }
+  return {
+    templatePath: pathApi.join(boardPackagePath, 'template'),
+    useDefaultSource: true,
+  };
+}
+
 /**
  * `template_arduino/project.aci` is Arduino source text, not the Coder project
  * configuration. Copy it to the persistent Coder source workspace as main.cpp;
- * all project configuration remains in the copied package.json.
+ * all project configuration remains in the copied package.json. When the board
+ * package has no Coder template directory, the caller may use its Blockly
+ * package.json as the configuration base and request the default Arduino source.
  */
 export function copyCoderArduinoTemplate(
   templatePath: string,
   projectPath: string,
   pathApi: CoderTemplatePathApi,
   fsApi: CoderTemplateFsApi,
+  options: { useDefaultSource?: boolean } = {},
 ): void {
   const templatePackagePath = pathApi.join(templatePath, 'package.json');
   const templateSourcePath = pathApi.join(templatePath, 'project.aci');
-  for (const [label, requiredPath] of [
-    ['package.json', templatePackagePath],
-    ['project.aci', templateSourcePath],
-  ] as const) {
-    if (!pathApi.isExists(requiredPath)) {
-      throw new Error(`Coder 板卡模板缺少 ${label}: ${requiredPath}`);
-    }
+  if (!pathApi.isExists(templatePackagePath)) {
+    throw new Error(`Coder 板卡模板缺少 package.json: ${templatePackagePath}`);
+  }
+  if (!options.useDefaultSource && !pathApi.isExists(templateSourcePath)) {
+    throw new Error(`Coder 板卡模板缺少 project.aci: ${templateSourcePath}`);
   }
 
   const sketchRoot = pathApi.join(projectPath, 'sketch');
@@ -98,5 +124,9 @@ export function copyCoderArduinoTemplate(
   fsApi.mkdirSync(pathApi.join(sketchRoot, 'src'), { recursive: true });
   fsApi.mkdirSync(pathApi.join(sketchRoot, 'libraries'), { recursive: true });
   fsApi.copySync(templatePackagePath, pathApi.join(projectPath, 'package.json'));
-  fsApi.copySync(templateSourcePath, sourcePath);
+  if (options.useDefaultSource) {
+    fsApi.writeFileSync(sourcePath, DEFAULT_CODER_ARDUINO_SOURCE);
+  } else {
+    fsApi.copySync(templateSourcePath, sourcePath);
+  }
 }

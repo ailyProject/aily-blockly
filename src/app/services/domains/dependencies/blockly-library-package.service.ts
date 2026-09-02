@@ -2,8 +2,14 @@ import { Injectable } from '@angular/core';
 import { parse as parseJavaScript } from 'acorn';
 import { ElectronService } from '@core/platform/public-api';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from './local-library-sync.service';
+import {
+  AILY_LINUX_NPM_SCOPE,
+  AILY_NPM_SCOPE,
+  AILY_PACKAGE_SCOPES,
+  isAilyCoreLibraryPackageName,
+  isAilyLibraryPackageName,
+} from '@shared/public-api';
 
-export const AILY_BLOCKLY_LIBRARY_PACKAGE_PREFIX = '@aily-project/lib-';
 export const AILY_BLOCKLY_LIBRARY_REQUIRED_FILES = ['package.json', 'block.json', 'toolbox.json', 'generator.js'] as const;
 
 const AILY_BLOCKLY_LIBRARY_TOOLBOX_ITEM_KINDS = new Set(['category', 'block', 'label', 'sep', 'separator', 'button']);
@@ -96,12 +102,12 @@ export class BlocklyLibraryPackageService {
   constructor(private electronService: ElectronService) { }
 
   isLibraryPackageName(packageName: string): boolean {
-    return typeof packageName === 'string' && packageName.startsWith(AILY_BLOCKLY_LIBRARY_PACKAGE_PREFIX);
+    return isAilyLibraryPackageName(packageName);
   }
 
   compareLibraryNames(a: string, b: string): number {
-    const aIsCore = a.startsWith('@aily-project/lib-core-');
-    const bIsCore = b.startsWith('@aily-project/lib-core-');
+    const aIsCore = isAilyCoreLibraryPackageName(a);
+    const bIsCore = isAilyCoreLibraryPackageName(b);
     if (aIsCore && !bIsCore) {
       return -1;
     }
@@ -189,25 +195,27 @@ export class BlocklyLibraryPackageService {
       }
     }
 
-    const scopePath = this.electronService.pathJoin(nodeModulesPath, '@aily-project');
-    if (this.isDirectory(scopePath)) {
-      for (const dirName of this.readDirectoryNames(scopePath)) {
-        if (!dirName.startsWith('lib-')) {
-          continue;
-        }
+    for (const scope of AILY_PACKAGE_SCOPES) {
+      const scopePath = this.electronService.pathJoin(nodeModulesPath, scope);
+      if (this.isDirectory(scopePath)) {
+        for (const dirName of this.readDirectoryNames(scopePath)) {
+          if (!dirName.startsWith('lib-')) {
+            continue;
+          }
 
-        const packageName = `@aily-project/${dirName}`;
-        if (libraries.has(packageName)) {
-          continue;
-        }
+          const packageName = `${scope}/${dirName}`;
+          if (libraries.has(packageName)) {
+            continue;
+          }
 
-        const packageInfo = this.scanSingleLibraryPackage(
-          this.electronService.pathJoin(scopePath, dirName),
-          packageName,
-          'node_modules',
-        );
-        if (packageInfo) {
-          libraries.set(packageInfo.name, packageInfo);
+          const packageInfo = this.scanSingleLibraryPackage(
+            this.electronService.pathJoin(scopePath, dirName),
+            packageName,
+            'node_modules',
+          );
+          if (packageInfo) {
+            libraries.set(packageInfo.name, packageInfo);
+          }
         }
       }
     }
@@ -861,8 +869,10 @@ export class BlocklyLibraryPackageService {
       errors.push(`package.json 不合规: 缺少字符串字段 name (${filePath})`);
     } else {
       const packageName = packageNameValue.trim();
-      if (!packageName.startsWith(AILY_BLOCKLY_LIBRARY_PACKAGE_PREFIX)) {
-        errors.push(`package.json 不合规: name 必须以 ${AILY_BLOCKLY_LIBRARY_PACKAGE_PREFIX} 开头，当前为 ${packageName} (${filePath})`);
+      if (!this.isLibraryPackageName(packageName)) {
+        errors.push(
+          `package.json 不合规: name 必须以 ${AILY_NPM_SCOPE}/lib- 或 ${AILY_LINUX_NPM_SCOPE}/lib- 开头，当前为 ${packageName} (${filePath})`,
+        );
       }
       if (expectedPackageName && packageName !== expectedPackageName) {
         errors.push(`package.json 不合规: name 与待加载库名不一致，期望 ${expectedPackageName}，当前为 ${packageName} (${filePath})`);

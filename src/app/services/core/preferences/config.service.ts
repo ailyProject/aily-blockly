@@ -1,11 +1,19 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { lastValueFrom, Subject, timeout } from 'rxjs';
+import { lastValueFrom, ReplaySubject, Subject, timeout } from 'rxjs';
 import { ElectronService } from '@core/platform/public-api';
 import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../../../configs/api.config';
 import { calculateSimilarity, extractKeywords } from '../../../utils/fuzzy-search.utils';
 import { mapCoderBoardIndexToBoardList, type CoderBoardIndexEntry } from '../../../utils/coder-board.mapper';
 import { normalizeLanguageCode } from '../../../utils/language-code';
+import {
+  appendScopedNpmRegistry,
+  isPythonBoard,
+  isPythonProject,
+  type LinuxDevelopmentSources,
+  mergeBoardCatalogs,
+  selectLibraryCatalog,
+} from '@shared/public-api';
 
 export const DEVELOPMENT_MODE_PREFERENCES = ['coder', 'blockly'] as const;
 export type DevelopmentModePreference = typeof DEVELOPMENT_MODE_PREFERENCES[number];
@@ -24,6 +32,22 @@ export interface ConfigServiceNotice {
   message: string;
 }
 
+export const PROJECT_CONNECTOR_SETTINGS_KEY = 'connectorSettings';
+
+export interface ProjectSshConnectorSettings {
+  host: string;
+  port: number;
+  username: string;
+  privateKeyPath: string;
+  autoTrustHostKey: boolean;
+  rememberCredentials: boolean;
+}
+
+export interface ProjectPackageConfigStore {
+  getPackageJson(): Promise<any>;
+  setPackageJson(packageJson: any): Promise<void>;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -39,15 +63,20 @@ export class ConfigService {
 
   /** 配置重新加载完成时发出，供 blockly 等组件实时应用新配置 */
   configReloaded$ = new Subject<void>();
+  /** libraries.json 首次缓存命中、远端刷新或恢复完成后发出；晚订阅者可拿到最后一次目录。 */
+  readonly libraryListChanged$ = new ReplaySubject<readonly any[]>(1);
   readonly configNotice$ = new Subject<ConfigServiceNotice>();
   
   // 数据加载状态标识
   private _isDataReady = false;
+  private initializationPromise: Promise<void> | null = null;
+  private boardListLoadPromise: Promise<void> | null = null;
   private activeResourceSourceKey: string | null = null;
   private developmentModeSyncListenerRegistered = false;
   private persistedDataSnapshot: AppConfig | any | null = null;
   private configSaveQueue: Promise<void> = Promise.resolve();
   private mergedConfigIpcAvailable: boolean | null = null;
+  private runtimeBuildProduct: 'blockly' | 'coder' = 'blockly';
   
   // 测试用：模拟慢速加载（毫秒），设为0禁用
   private readonly SIMULATE_SLOW_LOADING = 0; // 改为2000可以看到loading效果
@@ -141,10 +170,22 @@ export class ConfigService {
   }
 
   isCoderEnabled(): boolean {
-    return this.data?.coder?.enabled === true;
+    return this.isCoderProduct() || this.data?.coder?.enabled === true;
+  }
+
+  /** 当前启动/构建产品是否为独立 Aily Coder；该状态不读写用户配置。 */
+  isCoderProduct(): boolean {
+    return this.runtimeBuildProduct === 'coder';
+  }
+
+  getApplicationName(): string {
+    return this.isCoderProduct() ? 'aily coder' : 'aily blockly';
   }
 
   getDevelopmentModePreference(): DevelopmentModePreference {
+    if (this.isCoderProduct()) {
+      return 'coder';
+    }
     if (!this.isCoderEnabled()) {
       return 'blockly';
     }
@@ -156,6 +197,10 @@ export class ConfigService {
     source: DevelopmentModePreferenceSource = 'settings',
     options: { save?: boolean } = {},
   ): Promise<DevelopmentModePreference> {
+    if (this.isCoderProduct()) {
+      return 'coder';
+    }
+
     const normalized = this.isCoderEnabled()
       ? this.normalizeDevelopmentModePreference(preference)
       : 'blockly';
@@ -188,7 +233,7 @@ export class ConfigService {
   }
 
   shouldPromptDevelopmentModePreference(): boolean {
-    if (!this.isCoderEnabled()) {
+    if (this.isCoderProduct() || !this.isCoderEnabled()) {
       return false;
     }
     return !this.data?.developmentModePreferenceSource && !this.data?.developmentModePreferencePromptedAt;
@@ -198,7 +243,17 @@ export class ConfigService {
     return this.getDevelopmentModePreference() === 'coder' ? 'coder' : 'blockly';
   }
 
-  async init() {
+  init(): Promise<void> {
+    if (!this.initializationPromise) {
+      this.initializationPromise = this.initialize().catch(error => {
+        this.initializationPromise = null;
+        throw error;
+      });
+    }
+    return this.initializationPromise;
+  }
+
+  private async initialize(): Promise<void> {
     if (!this.electronService.isElectron) {
       //console.log('[ConfigService] 非Electron环境，跳过数据加载，直接标记就绪');
       // 非 Electron 环境下，跳过 loading 状态（没有数据源）
@@ -219,6 +274,9 @@ export class ConfigService {
 
     ipcRenderer.on('setting-changed', (_event: unknown, message: any) => {
       if (message?.action !== DEVELOPMENT_MODE_SETTING_CHANGED_ACTION) {
+        return;
+      }
+      if (this.isCoderProduct()) {
         return;
       }
 
@@ -280,22 +338,49 @@ export class ConfigService {
     }
 
     // 合并用户配置和默认配置
-    this.data = { ...this.data, ...userConfData };
+    const defaultData = this.data;
+    const defaultRegions = defaultData?.regions || {};
+    const userRegions = userConfData?.regions || {};
+    const defaultCoder = defaultData?.coder || {};
+    const userCoder = userConfData?.coder || {};
+    const mergedRegions = Object.fromEntries(
+      [...new Set([...Object.keys(defaultRegions), ...Object.keys(userRegions)])]
+        .map((regionKey) => [
+          regionKey,
+          {
+            ...(defaultRegions[regionKey] || {}),
+            ...(userRegions[regionKey] || {}),
+          },
+        ]),
+    );
+    this.data = {
+      ...defaultData,
+      ...userConfData,
+      linux: {
+        ...(defaultData?.linux || {}),
+        ...(userConfData?.linux || {}),
+      },
+      coder: {
+        ...defaultCoder,
+        ...userCoder,
+      },
+      regions: mergedRegions,
+    };
     this.data.selectedLanguage = normalizeLanguageCode(this.data.selectedLanguage);
-    this.data.developmentModePreference = this.isCoderEnabled()
-      ? this.normalizeDevelopmentModePreference(this.data.developmentModePreference)
-      : 'blockly';
     this.data.build_flavor = this.normalizeBuildFlavor(this.data.build_flavor);
     this.data.official_region = this.resolveOfficialRegionKey();
 
     // 使用主进程已确定的 region 与官方 region 覆盖配置
     if (this.electronService.isElectron) {
       try {
-        const [region, officialRegion, buildFlavor] = await Promise.all([
+        const [region, officialRegion, buildFlavor, buildProduct] = await Promise.all([
           this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_REGION'),
           this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_OFFICIAL_REGION'),
-          this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_BUILD_FLAVOR')
+          this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_BUILD_FLAVOR'),
+          this.electronService.electron.ipcRenderer.invoke('env-get', 'AILY_BUILD_PRODUCT'),
         ]);
+
+        this.runtimeBuildProduct = buildProduct === 'coder' ? 'coder' : 'blockly';
 
         this.data.build_flavor = this.normalizeBuildFlavor(buildFlavor || this.data.build_flavor);
         this.data.official_region = officialRegion || this.resolveOfficialRegionKey();
@@ -313,6 +398,10 @@ export class ConfigService {
       this.applyRegionRuntimeConfig(this.data.region || this.resolveOfficialRegionKey());
     }
 
+    if (!this.isCoderProduct()) {
+      this.data.developmentModePreference = this.getDevelopmentModePreference();
+    }
+
     await this.applyResourceSourceRuntimeSelection();
 
     // 添加当前系统类型到data中
@@ -323,7 +412,7 @@ export class ConfigService {
 
     // 并行加载缓存的boards.json、libraries.json和tags.json（旧格式，用于基础功能）
     // await Promise.all([
-    this.loadAndCacheBoardList(configFilePath);
+    this.boardListLoadPromise = this.loadAndCacheBoardList(configFilePath);
     this.loadAndCacheLibraryList(configFilePath);
     this.loadAndCacheTagList(configFilePath);
     this.loadAndCacheCoderBoardIndex(configFilePath);
@@ -336,25 +425,18 @@ export class ConfigService {
 
   private async loadAndCacheBoardList(configFilePath: string): Promise<void> {
     const localPath = `${configFilePath}/boards.json`;
-
-    try {
-      if (this.electronService.exists(localPath)) {
-        this.boardList = this.parseBoardList(this.electronService.readFile(localPath));
-        const boardList = await this.loadBoardList();
-        if (boardList.length > 0) {
-          this.boardList = boardList;
-          this.electronService.writeFile(localPath, JSON.stringify(boardList));
-        }
-      } else {
-        // 首次启动软件，创建boards.json
-        const boardList = await this.fetchBoardListOrThrow();
-        this.boardList = boardList;
-        this.electronService.writeFile(localPath, JSON.stringify(boardList));
-      }
-    } catch (error) {
-      console.error('[ConfigService] boards.json 加载失败，尝试从线上恢复:', error);
-      await this.reloadBoardListFromRemote(localPath, error);
-    }
+    const linuxBoardsUrl = this.getLinuxBoardsUrl();
+    // Arduino 与 Linux 板目录独立加载和缓存，完成后再合并成统一的选择列表。
+    const [arduinoBoardList, linuxBoardList] = await Promise.all([
+      this.loadAndCacheArduinoBoardList(localPath),
+      this.loadConfiguredCatalog(
+        `${configFilePath}/boards-linux.json`,
+        linuxBoardsUrl,
+        'Linux 开发板列表',
+        'boards',
+      ),
+    ]);
+    this.boardList = mergeBoardCatalogs(arduinoBoardList, linuxBoardList);
 
     this.boardDict = {};
     // 创建一个boardDict，方便通过name快速查找board信息
@@ -364,21 +446,49 @@ export class ConfigService {
     // console.log(`[ConfigService] boardDict创建完成，共 ${Object.keys(this.boardDict).length} 个开发板`);
   }
 
+  private async loadAndCacheArduinoBoardList(localPath: string): Promise<any[]> {
+    let arduinoBoardList: any[] = [];
+
+    try {
+      if (this.electronService.exists(localPath)) {
+        arduinoBoardList = this.parseBoardList(this.electronService.readFile(localPath));
+        const boardList = await this.loadBoardList();
+        if (boardList.length > 0) {
+          arduinoBoardList = boardList;
+          this.electronService.writeFile(localPath, JSON.stringify(boardList));
+        }
+      } else {
+        // 首次启动软件，创建boards.json
+        const boardList = await this.fetchBoardListOrThrow();
+        arduinoBoardList = boardList;
+        this.electronService.writeFile(localPath, JSON.stringify(boardList));
+      }
+    } catch (error) {
+      console.error('[ConfigService] boards.json 加载失败，尝试从线上恢复:', error);
+      await this.reloadBoardListFromRemote(localPath, error);
+      arduinoBoardList = this.boardList;
+    }
+    return arduinoBoardList;
+  }
+
   private async loadAndCacheLibraryList(configFilePath: string): Promise<void> {
     const localPath = `${configFilePath}/libraries.json`;
 
     try {
       if (this.electronService.exists(localPath)) {
         this.libraryList = this.parseLibraryList(this.electronService.readFile(localPath));
+        this.libraryListChanged$.next(this.libraryList);
         const libraryList = await this.loadLibraryList();
         if (libraryList.length > 0) {
           this.libraryList = libraryList;
+          this.libraryListChanged$.next(this.libraryList);
           this.electronService.writeFile(localPath, JSON.stringify(libraryList));
         }
       } else {
         // 首次启动软件，创建libraries.json
         const libraryList = await this.fetchLibraryListOrThrow();
         this.libraryList = libraryList;
+        this.libraryListChanged$.next(this.libraryList);
         this.electronService.writeFile(localPath, JSON.stringify(libraryList));
       }
     } catch (error) {
@@ -400,6 +510,45 @@ export class ConfigService {
     const operation = this.configSaveQueue.then(() => this.persistCurrentData());
     this.configSaveQueue = operation.catch(() => undefined);
     return operation;
+  }
+
+  /** Read credential-free SSH connection settings stored in a project package.json. */
+  getProjectSshConnectorSettings(packageJson: unknown): ProjectSshConnectorSettings | null {
+    const packageRecord = asConfigRecord(packageJson);
+    const connectorSettings = asConfigRecord(packageRecord?.[PROJECT_CONNECTOR_SETTINGS_KEY]);
+    return normalizeProjectSshConnectorSettings(connectorSettings?.['ssh']);
+  }
+
+  /**
+   * Persist SSH connection settings through the project's package store. Usernames and
+   * passwords are deliberately omitted so credentials never become part of the manifest.
+   */
+  async saveProjectSshConnectorSettings(
+    store: ProjectPackageConfigStore,
+    settings: ProjectSshConnectorSettings,
+  ): Promise<ProjectSshConnectorSettings> {
+    const normalized = normalizeProjectSshConnectorSettings(settings);
+    if (!normalized) {
+      throw new Error('Invalid SSH connector settings');
+    }
+
+    const packageJson = await store.getPackageJson();
+    const packageRecord = asConfigRecord(packageJson);
+    if (!packageRecord) {
+      throw new Error('Current project package.json is unavailable');
+    }
+
+    const currentConnectorSettings = asConfigRecord(
+      packageRecord[PROJECT_CONNECTOR_SETTINGS_KEY],
+    ) || {};
+    await store.setPackageJson({
+      ...packageRecord,
+      [PROJECT_CONNECTOR_SETTINGS_KEY]: {
+        ...currentConnectorSettings,
+        ssh: { ...normalized, username: '' },
+      },
+    });
+    return { ...normalized, username: '' };
   }
 
   private async persistCurrentData(): Promise<void> {
@@ -746,6 +895,44 @@ export class ConfigService {
     return this.getCurrentRegionConfig()?.npm_registry || '';
   }
 
+  getLinuxBoardsUrl(): string {
+    const resourceUrl = this.normalizeResourceSourceUrl(this.getCurrentResourceUrl());
+    return resourceUrl ? `${resourceUrl}/boards-linux.json` : '';
+  }
+
+  getLinuxLibrariesUrl(): string {
+    const resourceUrl = this.normalizeResourceSourceUrl(this.getCurrentResourceUrl());
+    return resourceUrl ? `${resourceUrl}/libraries-linux.json` : '';
+  }
+
+  getLinuxNpmRegistry(): string {
+    return this.normalizeResourceSourceUrl(
+      this.data?.linux?.npm_registry
+      || this.getCurrentRegionConfig()?.npm_registry_linux
+      || '',
+    );
+  }
+
+  getNpmRegistryForProject(packageData: unknown): string {
+    // 已存在项目以 devmode 为准：Python 使用 Linux 仓库，Arduino 返回空值沿用原 npm 配置。
+    return isPythonProject(packageData) ? this.getLinuxNpmRegistry() : '';
+  }
+
+  getNpmRegistryForBoard(boardData: unknown): string {
+    // 新建或切换开发板时项目模式尚未落盘，因此改由 boards.json.mode 选择仓库。
+    return isPythonBoard(boardData) ? this.getLinuxNpmRegistry() : '';
+  }
+
+  withProjectNpmRegistry(command: string, packageData: unknown): string {
+    // 项目内 npm 命令统一在此按 devmode 注入 Linux 作用域仓库。
+    return appendScopedNpmRegistry(command, this.getNpmRegistryForProject(packageData));
+  }
+
+  withBoardNpmRegistry(command: string, boardData: unknown): string {
+    // 项目外的板包命令统一在此按 boards.json.mode 注入 Linux 作用域仓库。
+    return appendScopedNpmRegistry(command, this.getNpmRegistryForBoard(boardData));
+  }
+
   /**
    * 获取当前区域的API Server URL
    */
@@ -913,6 +1100,17 @@ export class ConfigService {
     return this.sortBoardsByUsage([...this.boardList]);
   }
 
+  /**
+   * Waits for the startup board catalog load before taking a snapshot.
+   * Independent BrowserWindows bootstrap their own Angular injector, so their
+   * route components can otherwise observe the initial empty array forever.
+   */
+  async getBoardListWhenReady(): Promise<any[]> {
+    await this.init();
+    await this.boardListLoadPromise;
+    return [...this.boardList];
+  }
+
   /** Coder 新建项目使用的开发板索引（由 coder_board_index.json 映射而来） */
   coderBoardList: any[] = [];
 
@@ -1038,6 +1236,9 @@ export class ConfigService {
 
   libraryList = [];
   libraryDict = {};
+  private linuxLibraryList: any[] = [];
+  private linuxLibrarySourceUrl: string | null = null;
+  private linuxLibraryLoadPromise: Promise<void> | null = null;
 
   tagList: any = {};
 
@@ -1053,10 +1254,12 @@ export class ConfigService {
     try {
       const latestLibraryList = await this.fetchLibraryListOrThrow();
       this.libraryList = latestLibraryList;
+      this.libraryListChanged$.next(this.libraryList);
       this.electronService.writeFile(localPath, JSON.stringify(latestLibraryList));
       //console.log('[ConfigService] 已使用线上最新 libraries.json 覆盖本地缓存');
     } catch (remoteError) {
       this.libraryList = [];
+      this.libraryListChanged$.next(this.libraryList);
       const message = this.getLibraryReloadFailureMessage(remoteError, originalError);
       console.error('[ConfigService] 从线上恢复 libraries.json 失败:', remoteError);
       this.emitLibraryLoadError(message);
@@ -1425,6 +1628,97 @@ export class ConfigService {
     this.emitDedupedError('library-index', message);
   }
 
+  async ensureLibraryListForProject(packageData: unknown): Promise<void> {
+    // Arduino 库目录已在启动阶段加载；只有 Python 项目需要按需加载独立 libraries-linux.json。
+    if (!isPythonProject(packageData) || !this.electronService.isElectron) {
+      return;
+    }
+
+    const sourceUrl = this.getLinuxLibrariesUrl();
+    if (this.linuxLibrarySourceUrl === sourceUrl) {
+      return;
+    }
+    if (this.linuxLibraryLoadPromise) {
+      return this.linuxLibraryLoadPromise;
+    }
+
+    this.linuxLibraryLoadPromise = (async () => {
+      const configFilePath = window['path'].getAppDataPath();
+      const libraries = await this.loadConfiguredCatalog(
+        `${configFilePath}/libraries-linux.json`,
+        sourceUrl,
+        'Linux 扩展库列表',
+        'libraries',
+      );
+      this.linuxLibraryList = libraries;
+      this.linuxLibrarySourceUrl = libraries.length > 0 || !sourceUrl ? sourceUrl : null;
+    })().finally(() => {
+      this.linuxLibraryLoadPromise = null;
+    });
+
+    return this.linuxLibraryLoadPromise;
+  }
+
+  getLibraryListForProject(packageData: unknown): any[] {
+    // 库管理器只读取当前模式对应的目录，避免 Arduino 与 Linux 同名库相互污染。
+    return selectLibraryCatalog(packageData, this.libraryList, this.linuxLibraryList);
+  }
+
+  private async loadConfiguredCatalog(
+    localPath: string,
+    sourceUrl: string,
+    resourceLabel: string,
+    wrapperKey: string,
+  ): Promise<any[]> {
+    if (!sourceUrl) {
+      return [];
+    }
+
+    let cachedItems: any[] = [];
+    if (this.electronService.exists(localPath)) {
+      try {
+        const cache = JSON.parse(this.electronService.readFile(localPath));
+        if (cache?.sourceUrl === sourceUrl && Array.isArray(cache.items)) {
+          cachedItems = cache.items;
+        }
+      } catch (error) {
+        console.warn(`[ConfigService] ignored invalid ${resourceLabel} cache:`, error);
+      }
+    }
+
+    try {
+      const response: any = await lastValueFrom(
+        this.http.get(sourceUrl, { responseType: 'json' })
+          .pipe(timeout(ConfigService.RESOURCE_REQUEST_TIMEOUT_MS)),
+      );
+      const items = Array.isArray(response)
+        ? response
+        : response && Array.isArray(response[wrapperKey])
+          ? response[wrapperKey]
+          : null;
+      if (!items) {
+        throw new Error(`${resourceLabel} JSON 格式无效`);
+      }
+      if (items.length > 0) {
+        this.electronService.writeFile(localPath, JSON.stringify({ sourceUrl, items }));
+        return items;
+      }
+      return cachedItems;
+    } catch (error) {
+      if (cachedItems.length > 0) {
+        console.warn(`[ConfigService] ${resourceLabel} refresh failed; using cache:`, error);
+        return cachedItems;
+      }
+
+      console.error(`[ConfigService] ${resourceLabel} load failed:`, error);
+      this.emitDedupedError(
+        `configured-catalog:${wrapperKey}`,
+        this.buildReloadFailureMessage(resourceLabel, sourceUrl, error, error),
+      );
+      return [];
+    }
+  }
+
   private parseArrayPayload(raw: string, invalidMessage: string, wrapperKey?: string): any[] {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -1717,6 +2011,41 @@ export class ConfigService {
 
 }
 
+function asConfigRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, any>
+    : null;
+}
+
+function normalizeProjectSshConnectorSettings(
+  value: unknown,
+): ProjectSshConnectorSettings | null {
+  const settings = asConfigRecord(value);
+  if (!settings) return null;
+
+  const host = String(settings['host'] || '').trim();
+  const username = String(settings['username'] || '').trim();
+  const port = Number(settings['port']);
+  const rememberCredentials = settings['rememberCredentials'] !== false;
+  if (
+    !host
+    || !Number.isInteger(port)
+    || port < 1
+    || port > 65_535
+  ) {
+    return null;
+  }
+
+  return {
+    host,
+    port,
+    username: rememberCredentials ? username : '',
+    privateKeyPath: String(settings['privateKeyPath'] || '').trim(),
+    autoTrustHostKey: settings['autoTrustHostKey'] !== false,
+    rememberCredentials,
+  };
+}
+
 interface ResourceSourceConfig {
   key: string;
   name?: string;
@@ -1759,9 +2088,6 @@ interface AppConfig {
   /** 开发模式偏好更新时间 */
   developmentModePreferenceUpdatedAt?: number;
 
-  /** 开发模式偏好首次提示时间 */
-  developmentModePreferencePromptedAt?: number;
-
   /** 打包版型 */
   build_flavor?: string;
 
@@ -1777,6 +2103,9 @@ interface AppConfig {
   /** 资源源列表 */
   resource_sources?: ResourceSourceConfig[];
 
+  /** Python-mode npm source. Catalogs continue to use the current resource base URL. */
+  linux?: LinuxDevelopmentSources;
+
   /** 区域配置 */
   regions: {
     [key: string]: {
@@ -1788,6 +2117,7 @@ interface AppConfig {
       ucenter_web?: string;
       tool_web: string;
       npm_registry: string;
+      npm_registry_linux?: string;
       resource: string;
       updater: string;
     }
@@ -1838,7 +2168,7 @@ interface AppConfig {
   quickSendList?: Array<{ name: string, type: "signal" | "text" | "hex", data: string }>;
 
   /** 最近打开的项目列表 */
-  recentlyProjects?: Array<{ name: string, path: string }>;
+  recentlyProjects?: Array<{ name: string, path: string, nickname?: string }>;
 
   /** 当前选择的语言 */
   selectedLanguage?: string;

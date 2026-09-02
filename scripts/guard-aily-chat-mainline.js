@@ -18,8 +18,12 @@ const mainWindowTemplate = read('src/app/main-window/main-window.component.html'
 const childHostTemplate = read('src/app/tools/child-tool-host/child-tool-host.component.html');
 const packageJson = JSON.parse(read('package.json'));
 
-if (!/path:\s*["']aily-chat["'][\s\S]*?redirectTo:\s*["']child-tool\/aily-chat["']/u.test(routes)) {
-  fail('the legacy /aily-chat route must redirect to /child-tool/aily-chat');
+if (!/path:\s*["']child-tool\/aily-chat["'][\s\S]*?childToolId:\s*["']aily-chat["']/u.test(routes)) {
+  fail('the canonical /child-tool/aily-chat route must use the generic child-tool host');
+}
+
+if (/path:\s*["']aily-chat["']/u.test(routes)) {
+  fail('the retired standalone /aily-chat route must not be restored');
 }
 
 for (const retiredSymbol of ['AilyChatComponent', 'AilyChatChildProtocolService', 'AILY_CHAT_VIEW_PROVIDERS']) {

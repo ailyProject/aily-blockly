@@ -40,6 +40,15 @@
       height: 32px;
     }
 
+    .application-name {
+      color: var(--aily-text-primary);
+      font-size: 32px;
+      font-weight: 600;
+      line-height: 32px;
+      letter-spacing: -0.5px;
+      white-space: nowrap;
+    }
+
     .version {
       color: var(--aily-text-hint);
       font-size: 12px;

@@ -9,6 +9,9 @@ const CHILD_WINDOW_LAYOUTS = Object.freeze([
     'main_stack',
 ]);
 
+const BUILTIN_SUB_WINDOW_MINIMUM_SIZE = Object.freeze({ width: 640, height: 480 });
+const SUBAPP_SUB_WINDOW_MINIMUM_SIZE = Object.freeze({ width: 400, height: 500 });
+
 function positiveInteger(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
     const number = Math.round(Number(value));
     return Number.isFinite(number)
@@ -22,6 +25,41 @@ function normalizeWorkArea(workArea) {
         y: Math.round(Number(workArea?.y) || 0),
         width: positiveInteger(workArea?.width, 1),
         height: positiveInteger(workArea?.height, 1),
+    };
+}
+
+function isSubappWindowPath(routePath) {
+    const rawPath = String(routePath || '').trim();
+    const hashRouteIndex = rawPath.indexOf('#/');
+    const normalizedPath = hashRouteIndex >= 0 ? rawPath.slice(hashRouteIndex + 2) : rawPath;
+    return /^\/?child-tool\/[^/?#]+/.test(normalizedPath);
+}
+
+function resolveChildWindowClass(routePath, windowClass = '') {
+    if (windowClass === 'subapp' || windowClass === 'builtin') {
+        return windowClass;
+    }
+    return isSubappWindowPath(routePath) ? 'subapp' : 'builtin';
+}
+
+function resolveChildWindowMinimumSize(routePath, requestedMinimumSize = {}, windowClass = '') {
+    const resolvedWindowClass = resolveChildWindowClass(routePath, windowClass);
+    const baseline = resolvedWindowClass === 'subapp'
+        ? SUBAPP_SUB_WINDOW_MINIMUM_SIZE
+        : BUILTIN_SUB_WINDOW_MINIMUM_SIZE;
+    return {
+        width: positiveInteger(
+            requestedMinimumSize.width,
+            baseline.width,
+            baseline.width,
+            4096,
+        ),
+        height: positiveInteger(
+            requestedMinimumSize.height,
+            baseline.height,
+            baseline.height,
+            8192,
+        ),
     };
 }
 
@@ -181,8 +219,13 @@ function clampBoundsToWorkArea(bounds, workArea, minimumSize = {}) {
 }
 
 module.exports = {
+    BUILTIN_SUB_WINDOW_MINIMUM_SIZE,
     CHILD_WINDOW_LAYOUTS,
+    SUBAPP_SUB_WINDOW_MINIMUM_SIZE,
     calculateChildWindowLayout,
     chooseAutoLayout,
     clampBoundsToWorkArea,
+    isSubappWindowPath,
+    resolveChildWindowClass,
+    resolveChildWindowMinimumSize,
 };

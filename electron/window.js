@@ -32,9 +32,13 @@ const {
     parseAilyHostAuthRequest,
 } = require('./aily-host-auth-process-bridge');
 const {
+    BUILTIN_SUB_WINDOW_MINIMUM_SIZE,
     CHILD_WINDOW_LAYOUTS,
+    SUBAPP_SUB_WINDOW_MINIMUM_SIZE,
     calculateChildWindowLayout,
     clampBoundsToWorkArea,
+    resolveChildWindowClass,
+    resolveChildWindowMinimumSize,
 } = require('./child-window-layout');
 const { exec, execSync } = require('child_process');
 const { randomUUID } = require('crypto');
@@ -48,9 +52,6 @@ const CODE_VIEWER_STATE_GET_CHANNEL = 'blockly-code-viewer-state-get';
 /** 后台预缓冲子窗口数量�? 个待�?+ 1 个备�?*/
 const SUB_WINDOW_POOL_SIZE = 2;
 
-/** 子窗口最小尺寸；兼顾内容可用性与多窗口平铺。 */
-const SUB_WINDOW_MIN_WIDTH = 400;
-const SUB_WINDOW_MIN_HEIGHT = 300;
 const CHILD_TOOL_RELEASE_GRACE_MS = 15000;
 const CHILD_TOOL_PENDING_MESSAGE_LIMIT = 16;
 const CHILD_TOOL_PENDING_STREAM_LIMIT = 16;
@@ -90,14 +91,26 @@ function getSubWindowBackgroundColor() {
         : SUB_WINDOW_DARK_BACKGROUND_COLOR;
 }
 
-function applySubWindowMinimumSize(win) {
+function applySubWindowMinimumSize(win, minimumSize = BUILTIN_SUB_WINDOW_MINIMUM_SIZE) {
     if (!win || win.isDestroyed()) {
         return;
     }
     try {
-        win.setMinimumSize(SUB_WINDOW_MIN_WIDTH, SUB_WINDOW_MIN_HEIGHT);
+        win.setMinimumSize(minimumSize.width, minimumSize.height);
     } catch (e) {
         console.warn('[SubWindowPool] 子窗口最小尺寸设置失�?', e.message);
+    }
+}
+
+function readSubWindowMinimumSize(win) {
+    try {
+        const [width, height] = win.getMinimumSize();
+        return {
+            width: Math.max(1, Math.round(Number(width) || 1)),
+            height: Math.max(1, Math.round(Number(height) || 1)),
+        };
+    } catch (_error) {
+        return BUILTIN_SUB_WINDOW_MINIMUM_SIZE;
     }
 }
 
@@ -603,8 +616,8 @@ function pushPooledSubWindow(loadBasePage) {
             alwaysOnTop: false,
             width: 800,
             height: 600,
-            minWidth: SUB_WINDOW_MIN_WIDTH,
-            minHeight: SUB_WINDOW_MIN_HEIGHT,
+            minWidth: SUBAPP_SUB_WINDOW_MINIMUM_SIZE.width,
+            minHeight: SUBAPP_SUB_WINDOW_MINIMUM_SIZE.height,
             webPreferences: getSubWindowWebPreferences(),
         });
 
@@ -661,7 +674,13 @@ function removePoolHandlersFromWin(win, loadBasePage) {
  * @param {number} width
  * @param {number} height
  */
-function centerSubWindowOnMainDisplay(subWindow, mainWin, width, height) {
+function centerSubWindowOnMainDisplay(
+    subWindow,
+    mainWin,
+    width,
+    height,
+    minimumSize = BUILTIN_SUB_WINDOW_MINIMUM_SIZE,
+) {
     try {
         if (!subWindow || subWindow.isDestroyed()) {
             return;
@@ -670,8 +689,8 @@ function centerSubWindowOnMainDisplay(subWindow, mainWin, width, height) {
             mainWin && !mainWin.isDestroyed()
                 ? screen.getDisplayMatching(mainWin.getBounds()).workArea
                 : screen.getPrimaryDisplay().workArea;
-        const w = Math.min(Math.max(SUB_WINDOW_MIN_WIDTH, width), wa.width);
-        const h = Math.min(Math.max(SUB_WINDOW_MIN_HEIGHT, height), wa.height);
+        const w = Math.min(Math.max(minimumSize.width, width), wa.width);
+        const h = Math.min(Math.max(minimumSize.height, height), wa.height);
         const x = Math.round(wa.x + Math.max(0, (wa.width - w) / 2));
         const y = Math.round(wa.y + Math.max(0, (wa.height - h) / 2));
         subWindow.setBounds({ x, y, width: w, height: h });
@@ -683,7 +702,14 @@ function centerSubWindowOnMainDisplay(subWindow, mainWin, width, height) {
 /**
  * 在窗口展示前一次性确定显示器、位置和尺寸；未提供显式位置时保持主窗口所在屏居中。
  */
-function placeSubWindowBeforeReveal(subWindow, mainWin, options, width, height) {
+function placeSubWindowBeforeReveal(
+    subWindow,
+    mainWin,
+    options,
+    width,
+    height,
+    minimumSize = BUILTIN_SUB_WINDOW_MINIMUM_SIZE,
+) {
     try {
         if (!subWindow || subWindow.isDestroyed()) return;
         const displays = screen.getAllDisplays();
@@ -697,8 +723,8 @@ function placeSubWindowBeforeReveal(subWindow, mainWin, options, width, height) 
         const workArea = targetDisplay.workArea;
         const requestedWidth = Number.isFinite(Number(width)) ? Math.round(Number(width)) : 800;
         const requestedHeight = Number.isFinite(Number(height)) ? Math.round(Number(height)) : 600;
-        const nextWidth = clampNumber(requestedWidth, SUB_WINDOW_MIN_WIDTH, workArea.width);
-        const nextHeight = clampNumber(requestedHeight, SUB_WINDOW_MIN_HEIGHT, workArea.height);
+        const nextWidth = clampNumber(requestedWidth, minimumSize.width, workArea.width);
+        const nextHeight = clampNumber(requestedHeight, minimumSize.height, workArea.height);
         const relativeToDisplay = requestedDisplayId !== undefined
             && requestedDisplayId !== null
             && options.relativeToDisplay !== false;
@@ -715,8 +741,8 @@ function placeSubWindowBeforeReveal(subWindow, mainWin, options, width, height) 
         const bounds = options && options.clampToWorkArea === false
             ? candidate
             : clampBoundsToWorkArea(candidate, workArea, {
-                width: SUB_WINDOW_MIN_WIDTH,
-                height: SUB_WINDOW_MIN_HEIGHT,
+                width: minimumSize.width,
+                height: minimumSize.height,
             });
         if (subWindow.isFullScreen()) subWindow.setFullScreen(false);
         if (subWindow.isMinimized()) subWindow.restore();
@@ -724,7 +750,7 @@ function placeSubWindowBeforeReveal(subWindow, mainWin, options, width, height) 
         subWindow.setBounds(bounds);
     } catch (e) {
         console.warn('[SubWindowPool] 子窗口初始定位失败:', e.message);
-        centerSubWindowOnMainDisplay(subWindow, mainWin, width, height);
+        centerSubWindowOnMainDisplay(subWindow, mainWin, width, height, minimumSize);
     }
 }
 
@@ -869,6 +895,32 @@ function registerWindowHandlers(mainWindow, options = {}) {
         broadcastChildToolSessionStateChanged();
     };
 
+    const applySubWindowClass = (targetWindow, windowUrl, requestedWindowClass = '') => {
+        const windowClass = resolveChildWindowClass(windowUrl, requestedWindowClass);
+        if (!targetWindow || targetWindow.isDestroyed()) {
+            return windowClass;
+        }
+        targetWindow.__ailyWindowClass = windowClass;
+        return windowClass;
+    };
+
+    /** Windows 普通顶层窗按用户最后选择的窗口调整 Z-order，不建立 Win32 owner 关系。 */
+    const moveFocusedWindowToTop = (targetWindow) => {
+        try {
+            if (process.platform === 'win32'
+                && targetWindow
+                && !targetWindow.isDestroyed()
+                && targetWindow.isVisible()
+                && !targetWindow.isMinimized()
+                && !targetWindow.isAlwaysOnTop()
+                && typeof targetWindow.moveTop === 'function') {
+                targetWindow.moveTop();
+            }
+        } catch (error) {
+            console.warn('[WindowLayer] 聚焦窗口层级调整失败:', error.message);
+        }
+    };
+
     const focusSubWindow = (targetWindow) => {
         if (!targetWindow || targetWindow.isDestroyed()) {
             return false;
@@ -916,12 +968,17 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 minimized: false,
                 maximized: false,
                 fullScreen: false,
+                alwaysOnTop: false,
+                windowClass: resolveChildWindowClass(normalizedWindowUrl),
+                parentWindowId: null,
+                ownedByMainWindow: false,
                 bounds: null,
             };
         }
 
         const display = screen.getDisplayMatching(targetWindow.getBounds());
         const primaryDisplay = screen.getPrimaryDisplay();
+        const parentWindow = targetWindow.getParentWindow();
         return {
             path: normalizedWindowUrl,
             open: true,
@@ -930,6 +987,11 @@ function registerWindowHandlers(mainWindow, options = {}) {
             minimized: targetWindow.isMinimized(),
             maximized: targetWindow.isMaximized(),
             fullScreen: targetWindow.isFullScreen(),
+            alwaysOnTop: targetWindow.isAlwaysOnTop(),
+            windowClass: targetWindow.__ailyWindowClass
+                || resolveChildWindowClass(normalizedWindowUrl),
+            parentWindowId: parentWindow?.id ?? null,
+            ownedByMainWindow: parentWindow === mainWindow,
             bounds: targetWindow.getBounds(),
             display: {
                 id: display.id,
@@ -979,6 +1041,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
                     minimized: mainWindow.isMinimized(),
                     maximized: mainWindow.isMaximized(),
                     fullScreen: mainWindow.isFullScreen(),
+                    alwaysOnTop: mainWindow.isAlwaysOnTop(),
+                    childWindowIds: mainWindow.getChildWindows().map(childWindow => childWindow.id),
                     bounds: mainWindow.getBounds(),
                     display: listDisplaySnapshots().find(display =>
                         display.id === screen.getDisplayMatching(mainWindow.getBounds()).id) || null,
@@ -1036,7 +1100,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             width: numberOr(requestedBounds.width, currentBounds.width),
             height: numberOr(requestedBounds.height, currentBounds.height),
         };
-        const minimum = { width: SUB_WINDOW_MIN_WIDTH, height: SUB_WINDOW_MIN_HEIGHT };
+        const minimum = readSubWindowMinimumSize(targetWindow);
         const sizeClamped = clampBoundsToWorkArea(candidate, targetDisplay.workArea, minimum);
         const nextBounds = options.clampToWorkArea === false
             ? { ...sizeClamped, x: candidate.x, y: candidate.y }
@@ -1147,7 +1211,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             });
             group.forEach((entry, index) => {
                 prepareWindowForBoundsChange(entry.window);
-                const minimum = { width: SUB_WINDOW_MIN_WIDTH, height: SUB_WINDOW_MIN_HEIGHT };
+                const minimum = readSubWindowMinimumSize(entry.window);
                 const bounds = clampBoundsToWorkArea(calculation.bounds[index], display.workArea, minimum);
                 entry.window.setBounds(bounds);
                 entry.window.show();
@@ -1257,6 +1321,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
      * @param {string} windowUrl
      */
     const attachSubWindowLifecycleListeners = (subWindow, windowUrl) => {
+        subWindow.on('focus', () => moveFocusedWindowToTop(subWindow));
+
         subWindow.on('enter-full-screen', () => {
             try {
                 if (subWindow && subWindow.webContents) {
@@ -1341,8 +1407,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 alwaysOnTop: false,
                 width: 700,
                 height: 550,
-                minWidth: SUB_WINDOW_MIN_WIDTH,
-                minHeight: SUB_WINDOW_MIN_HEIGHT,
+                minWidth: BUILTIN_SUB_WINDOW_MINIMUM_SIZE.width,
+                minHeight: BUILTIN_SUB_WINDOW_MINIMUM_SIZE.height,
                 webPreferences: getSubWindowWebPreferences(),
             });
         } catch (error) {
@@ -1411,10 +1477,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         const width = data.width ? data.width : 700;
         const height = data.height ? data.height : 550;
+        const minimumSize = resolveChildWindowMinimumSize(SETTINGS_WINDOW_URL, {
+            width: data.minWidth,
+            height: data.minHeight,
+        }, 'builtin');
         try {
+            applySubWindowClass(win, SETTINGS_WINDOW_URL, 'builtin');
             win.setAlwaysOnTop(!!data.alwaysOnTop);
-            applySubWindowMinimumSize(win);
-            placeSubWindowBeforeReveal(win, mainWindow, data, width, height);
+            applySubWindowMinimumSize(win, minimumSize);
+            placeSubWindowBeforeReveal(win, mainWindow, data, width, height, minimumSize);
 
             if (data.data || data.url || data.title) {
                 win.webContents.send('window-init-data', {
@@ -1477,6 +1548,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
     mainWindow.on('focus', () => {
         try {
+            moveFocusedWindowToTop(mainWindow);
             // 仅清除本功能设置�?Dock 角标，避免覆盖其它模块可能的徽章
             if (process.platform === 'darwin' && app.dock && typeof app.dock.getBadge === 'function') {
                 try {
@@ -1557,21 +1629,33 @@ function registerWindowHandlers(mainWindow, options = {}) {
         const height = data.height ? data.height : 600;
         const alwaysOnTop = data.alwaysOnTop ? data.alwaysOnTop : false;
         const needInitPayload = !!(data.data || data.url || data.title);
+        const windowClass = resolveChildWindowClass(windowUrl, data.windowClass);
+        const minimumSize = resolveChildWindowMinimumSize(windowUrl, {
+            width: data.minWidth,
+            height: data.minHeight,
+        }, windowClass);
 
         // 检查是否已存在该URL的窗�?
         if (openWindows.has(windowUrl)) {
             const existingWindow = openWindows.get(windowUrl);
             // 确保窗口仍然有效
             if (existingWindow && !existingWindow.isDestroyed()) {
+                applySubWindowClass(existingWindow, windowUrl, windowClass);
+                applySubWindowMinimumSize(existingWindow, minimumSize);
                 // 激活已存在的窗�?
-                if (data.applyInitialBounds === true) {
-                    const currentBounds = existingWindow.getBounds();
+                const currentBounds = existingWindow.getBounds();
+                if (
+                    data.applyInitialBounds === true
+                    || currentBounds.width < minimumSize.width
+                    || currentBounds.height < minimumSize.height
+                ) {
                     placeSubWindowBeforeReveal(
                         existingWindow,
                         mainWindow,
                         data,
                         data.width ?? currentBounds.width,
-                        data.height ?? currentBounds.height
+                        data.height ?? currentBounds.height,
+                        minimumSize,
                     );
                 }
                 notifySubWindowState(windowUrl, true);
@@ -1619,8 +1703,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
                 alwaysOnTop,
                 width,
                 height,
-                minWidth: SUB_WINDOW_MIN_WIDTH,
-                minHeight: SUB_WINDOW_MIN_HEIGHT,
+                minWidth: minimumSize.width,
+                minHeight: minimumSize.height,
                 webPreferences: getSubWindowWebPreferences(),
             });
         } else {
@@ -1631,8 +1715,9 @@ function registerWindowHandlers(mainWindow, options = {}) {
             }
         }
 
-        applySubWindowMinimumSize(subWindow);
-        placeSubWindowBeforeReveal(subWindow, mainWindow, data, width, height);
+        applySubWindowClass(subWindow, windowUrl, windowClass);
+        applySubWindowMinimumSize(subWindow, minimumSize);
+        placeSubWindowBeforeReveal(subWindow, mainWindow, data, width, height, minimumSize);
 
         openWindows.set(windowUrl, subWindow);
         notifySubWindowState(windowUrl, true);

@@ -36,6 +36,10 @@ import {
   parseLegacyAilyBuilderProgressLine
 } from '../../../utils/aily-builder-progress.utils';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
+import {
+  PYTHON_PROJECT_ENTRY,
+  resolveLinuxBoardProjectRoute,
+} from '@shared/public-api';
 
 const AILY_CHAT_LEX_COMPLETION_PENDING_COUNT_KEY = '__AILY_CHAT_LEX_COMPLETION_PENDING_COUNT__';
 const AILY_CHAT_AGENT_LOOP_PENDING_COUNT_KEY = '__AILY_CHAT_AGENT_LOOP_PENDING_COUNT__';
@@ -971,6 +975,45 @@ export class _BuilderService {
         }
     }
 
+  private async writeTextFileAtomic(filePath: string, content: string): Promise<void> {
+    const writeAtomic = window['fs']?.writeFileBufferAtomicAsync;
+    if (typeof writeAtomic !== 'function') {
+      throw new Error('Atomic file writing is unavailable');
+    }
+    await writeAtomic(filePath, new TextEncoder().encode(content));
+  }
+
+  async generateAndWritePythonEntry(): Promise<ActionState> {
+    const workspace = this.blocklyService.workspace;
+    const currentProjectPath = this.projectService.currentProjectPath;
+    const workspaceRevision = this.blocklyService.getWorkspaceContentRevision();
+    // 生成目标由项目 devmode 决定，不要求板卡在线或已选择连接方式。
+    const route = resolveLinuxBoardProjectRoute(
+      this.projectService.currentPackageData,
+    );
+    if (!workspace || !currentProjectPath || !route) {
+      throw new Error('Python project is not ready');
+    }
+
+    const code = await this.generateWorkspaceCodeForPreprocess(workspace, 'python_main');
+    if (
+      this.projectService.currentProjectPath !== currentProjectPath
+      || this.blocklyService.workspace !== workspace
+      || this.blocklyService.getWorkspaceContentRevision() !== workspaceRevision
+    ) {
+      throw new Error('Project changed while Python code was being generated');
+    }
+    const mainFilePath = this.electronService.pathJoin(currentProjectPath, PYTHON_PROJECT_ENTRY);
+    await this.writeTextFileAtomic(mainFilePath, code);
+    this.lastCode = code;
+    console.log('[Builder] main.py generated:', mainFilePath);
+    return {
+      state: 'done',
+      text: `${PYTHON_PROJECT_ENTRY} generated`,
+      desc: mainFilePath,
+    };
+  }
+
     private async ensureAilyBuilderReady(): Promise<void> {
         if (window['builder']?.ensure) {
             await window['builder'].ensure();
@@ -1248,6 +1291,8 @@ export class _BuilderService {
         text: 'Provider Build request id is invalid.',
       });
     }
+    // Python 的“构建”只生成 main.py；没有 Python 路由时继续执行原 Arduino 编译流程。
+    const pythonRoute = resolveLinuxBoardProjectRoute(this.projectService.currentPackageData);
     if (!this.workflowService.startBuild()) {
       const state = this.workflowService.currentState;
       let msg = this.t('BUSY_SYSTEM');
@@ -1257,6 +1302,21 @@ export class _BuilderService {
       
       this.message.warning(this.t('BUSY_RETRY_LATER', { message: msg }));
       return Promise.reject({ state: 'warn', text: this.t('BUSY_WAIT', { message: msg }) });
+    }
+
+    if (pythonRoute) {
+      try {
+        const result = await this.appDataResourceLock.runShared(
+          'build:python-artifact',
+          () => this.generateAndWritePythonEntry(),
+        );
+        this.workflowService.finishBuild(true);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || 'Python build failed');
+        this.workflowService.finishBuild(false, message);
+        throw error;
+      }
     }
 
     this.activeBuildRequestId = requestId ?? null;

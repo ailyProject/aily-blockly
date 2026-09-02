@@ -14,14 +14,24 @@
     <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.PROJECT_SETTINGS' | translate" (click)="openSettings()">
         <i class="fa-light fa-folder-bookmark"></i>
     </div>
-    <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.ARCH' | translate" (click)="showArch()">
+    <div class="btn ccenter" [class.disabled]="isArchitectureGenerating"
+        [attr.aria-disabled]="isArchitectureGenerating" nz-tooltip
+        [nzTooltipTitle]="'FLOAT_SIDER.ARCH' | translate" (click)="showArch()">
         <i class="fa-light fa-diagram-project"></i>
+        @if (isArchitectureGenerating) {
+            <i class="ai-generation-loading fa-regular fa-spinner-third fa-spin" aria-hidden="true"></i>
+        }
     </div>
     <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.PINMAP' | translate" (click)="showPinmap()">
         <i class="fa-light fa-microchip"></i>
     </div>
-    <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.CIRCUIT' | translate" (click)="showCircuit()">
+    <div class="btn ccenter" [class.disabled]="isSchematicGenerating"
+        [attr.aria-disabled]="isSchematicGenerating" nz-tooltip
+        [nzTooltipTitle]="'FLOAT_SIDER.CIRCUIT' | translate" (click)="showCircuit()">
         <i class="fa-light fa-code-branch"></i>
+        @if (isSchematicGenerating) {
+            <i class="ai-generation-loading fa-regular fa-spinner-third fa-spin" aria-hidden="true"></i>
+        }
     </div>
     <div class="btn ccenter" nz-tooltip [nzTooltipTitle]="'FLOAT_SIDER.DOCUMENTATION' | translate" (click)="openDocUrl()">
         <i class="fa-light fa-book"></i>
