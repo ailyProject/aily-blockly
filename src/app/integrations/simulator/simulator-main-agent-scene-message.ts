@@ -2,55 +2,78 @@ import type {
   SimulatorMainAgentSceneChangeRequest,
 } from './simulator-main-agent-scene-change-port';
 
-const MAX_SCENE_MESSAGE_CHARACTERS = 2_000_000;
+export const SIMULATOR_SCENE_RESOURCE_PATH = '.aily/simulator/scene-network-v2.json';
+const MAX_SCENE_RESOURCE_BYTES = 48 * 1024;
 
-/**
- * Build the ordinary user message submitted to Blockly's existing main Agent.
- *
- * The independent Simulator supplies one revision-locked Scene document. The
- * message exposes only code-relevant electrical semantics; visual placement,
- * iframe/runtime handles, host paths, and Simulator process authority never
- * enter Chat.
- */
+export interface SimulatorMainAgentSceneResource {
+  readonly type: 'file';
+  readonly name: string;
+  readonly path?: string;
+  readonly content?: string;
+}
+
+/** User-visible request. Structured Scene data stays out of the chat message. */
 export function createSimulatorMainAgentSceneMessage(
   request: SimulatorMainAgentSceneChangeRequest,
 ): string {
-  const scene = createCodeRelevantSceneProjection(request.sceneDocument);
-  const serializedScene = JSON.stringify(scene, null, 2);
-  if (serializedScene.length > MAX_SCENE_MESSAGE_CHARACTERS) {
-    throw new Error('Simulator Scene code context is too large for Chat.');
+  return `请将当前 Simulator 连线场景同步到当前 Blockly 项目代码。
+
+请求：${request.requestId}
+Scene：${request.sceneId}
+Revision：${request.graphSemanticRevision}
+
+场景与执行规则已作为本轮只读资源提供。完成代码核对或必要修改后直接结束，Host 会自动构建。`;
+}
+
+/** Model-only resources: one revision-locked Scene projection plus bounded workflow rules. */
+export function createSimulatorMainAgentSceneResources(
+  request: SimulatorMainAgentSceneChangeRequest,
+): SimulatorMainAgentSceneResource[] {
+  const sceneResource = JSON.stringify({
+    schemaVersion: 1,
+    kind: 'aily-simulator-scene-code-resource',
+    sourcePath: SIMULATOR_SCENE_RESOURCE_PATH,
+    requestId: request.requestId,
+    projectIdentity: request.projectIdentity,
+    sceneId: request.sceneId,
+    graphSemanticRevision: request.graphSemanticRevision,
+    document: createCodeRelevantSceneProjection(request.sceneDocument),
+  });
+  if (new TextEncoder().encode(sceneResource).byteLength > MAX_SCENE_RESOURCE_BYTES) {
+    throw new Error('Simulator Scene code resource is too large for Chat.');
   }
 
-  const topologySummary = [
-    'Trusted library repair rule: deduplicate every component.extensions.ailyProjectRequirements.libraries entry by packageName. Compare each exact packageName and version with the injected current-project library inventory. If a required library is absent or has a different version, call lib_add once from the current project with packages=["<packageName>@<version>"] and exact=true. Do not search for another package name, use a terminal installer, edit package.json directly, or edit node_modules. Library repair never grants Simulator source, build, QEMU, or GDB authority.',
-    createTopologySummary(scene),
-  ].join('\n');
+  return [{
+    type: 'file',
+    name: 'Simulator Scene v2 code resource',
+    content: sceneResource,
+  }, {
+    type: 'file',
+    name: 'Simulator Scene-to-code rules',
+    content: createSceneToCodeRules(request),
+  }];
+}
 
-  return `请根据 Aily Simulator 当前连线场景，直接修改当前已打开项目中的开发板、库和 Blockly 程序，使代码与连线一致。
+function createSceneToCodeRules(
+  request: SimulatorMainAgentSceneChangeRequest,
+): string {
+  return `这是主 Agent 的普通项目变更任务；不要调用任何 subagent、SchematicAgent，也不要修改 Simulator Scene。
 
-这是主 Agent 的普通项目变更任务；不要调用任何 subagent，使用当前 Simulator Scene v2 工作流。
-
-执行顺序（必须遵守）：
-1. 如所需工具处于 deferred，只能用一次 tool_load 精确加载 switch_board、set_board_config、lib_add、abs_export、abs_validate、abs_apply；不要加载项目搜索、状态、文件、应用或子应用工具。第一项 Blockly 工作区操作必须调用 abs_export，以当前内存中的 Blockly 工作区为准。不要先用 list_dir 或反复 read_file 清点整个项目。
-2. 只分析 abs_export 返回的完整 ABS 中与下方 Scene 拓扑有关的块。确定修改后，依次调用 abs_validate(abs=<完整 ABS>) 和 abs_apply(abs=<完整 ABS>) 原子应用；不要直接修改 project.abi，不要操作 Blockly XML，也不要使用离线 abs_import 覆盖已打开的工作区。
-3. Scene component.extensions.ailyProjectRequirements 与 terminal.extensions.ailyComponentPinSemantic 都是已安装 Component Package 的可信投影。前者若声明 board，必须调用 switch_board(project=<当前项目绝对路径>, board_name=<精确包名>, board_version=<精确版本>)，切板后逐项调用 set_board_config(project=<当前项目绝对路径>, config_key=<键>, config_value=<值>) 应用 options；权威 options 已给出时禁止另行查询。若声明 libraries，只对当前项目确实缺失或版本不符的项调用 lib_add(project=<当前项目绝对路径>, packages=["<精确包名>@<精确版本>"], exact=true)。不得调用复合 project 工具处理切板/配置，不得从显示名称猜包名/版本/配置。对于当前 ESP32 Arduino 数字引脚块，直接使用后者 gpio.channel 的十进制值；arduinoAliases（例如 D2）只用于核对丝印/别名。存在权威引脚语义时禁止浏览板卡源码或猜测 pinId，也无需调用 get_board_parameters。只有 Scene 未提供权威语义时才调用 get_board_parameters。
-4. 做最小必要修改，保留与本次硬件连线无关的用户逻辑；正确处理 GPIO、总线、上下拉、LED 源/灌电流极性和外接电阻。必须按数据流穷尽核对所有最终流入引脚参数的值：不仅是硬件块上的直接数字，还包括变量初始值、变量赋值和表达式中间接传入 pin 的值。在 import 前逐项复核每个 pinMode/digitalRead/digitalWrite/总线引脚数据流，不得遗留与 Scene 矛盾的旧引脚值。
-5. 一旦代码与 Scene 一致，立即结束本轮。不要继续浏览库源码，不要修改 Scene，不要控制 Simulator、QEMU、GDB、UART 或仪器，也不要自行编译或创建 Artifact。
-6. Host 会在本轮成功结束后调用正常 Builder，并把 Artifact 返回 Simulator。如果现有代码已经匹配，也必须完成一次 abs_export 检查，然后说明无需修改并结束。
-7. 这是一次有界硬件同步，不是项目文档或架构任务。禁止调用 save_arch，禁止创建或修改 README/arch/方案等文档；禁止用 write_file/edit_file 修改 project.abs、project.abi 或其他项目文件。Blockly 程序只能通过 abs_apply 应用，开发板只能通过 switch_board 切换，库只能通过 lib_add 安装可信 Scene 明确要求的精确包版本。
-8. 完成必需的切板/配置/装库和最终一次 abs_apply（无需修改时为 abs_export 检查）后，不再调用 lint、list/read、构建或其他检查工具，立即用一条简短文本说明已完成并结束本轮；Host 才能在 turn 结束后安全启动 Builder。
-
-请求范围：
+权威范围：
 - requestId: ${request.requestId}
 - projectIdentity: ${request.projectIdentity}
 - sceneId: ${request.sceneId}
 - graphSemanticRevision: ${request.graphSemanticRevision}
+- Scene 持久化位置: ${SIMULATOR_SCENE_RESOURCE_PATH}
 
-权威电气拓扑摘要：
-${topologySummary}
-
-代码相关 Scene 语义：
-${serializedScene}`;
+执行规则：
+1. 使用本轮已内联的「Simulator Scene v2 code resource」；它是 Host 从本次已提交 Scene 快照提取的 revision-locked 只读投影，持久化源仍位于上述路径。不要调用 read_file 读取 .aily，也不要修改 Scene。资源中的 sceneId 与 graphSemanticRevision 必须和权威范围一致，否则停止并报告 Scene 已变化。
+2. 如所需工具处于 deferred，只能用一次 tool_load 精确加载 switch_board、set_board_config、lib_add、abs_export、abs_validate、abs_apply。第一项 Blockly 工作区操作必须是 abs_export，以当前内存工作区为准。
+3. Scene component.extensions.ailyProjectRequirements 是可信的开发板、配置和库要求。按精确 packageName/version 调用 switch_board、set_board_config、lib_add；不得搜索替代包、使用终端安装、直接编辑 package.json 或 node_modules。
+4. terminal.extensions.ailyComponentPinSemantic 是可信引脚语义。ESP32 Arduino 数字引脚使用 gpio.channel 的十进制值，arduinoAliases 只用于核对；只有缺少权威语义时才查询板卡参数。
+5. 只分析与 Scene 拓扑有关的 ABS 块，保留无关用户逻辑；核对 GPIO、总线、上下拉、LED 源/灌电流、电阻，以及最终流入 pinMode、digitalRead、digitalWrite 和总线引脚参数的数据流。
+6. 如需修改，依次调用 abs_validate(abs=<完整 ABS>) 与 abs_apply(abs=<完整 ABS>) 原子应用。不要直接修改 project.abs、project.abi、Blockly XML 或其他项目文件。若现有代码已匹配，只完成 abs_export 核对，不调用 abs_validate/abs_apply。
+7. 完成必要的切板、配置、装库和 ABS 操作后立即用简短文本结束。不要构建、控制 Simulator/QEMU/GDB/UART、创建 Artifact、编写文档或继续浏览源码；Host 会在本轮成功结束后调用正常 Builder。`;
 }
 
 export function createCodeRelevantSceneProjection(
@@ -96,74 +119,15 @@ export function createCodeRelevantSceneProjection(
         'signalKind',
         'terminalIds',
         'danglingTerminalIds',
+        'extensions',
       ],
     )),
     busGroups: projectRecords(
       scene['busGroups'],
       busGroup => structuredClone(busGroup),
     ),
+    extensions: structuredClone(optionalRecord(scene['extensions'])),
   };
-}
-
-function createTopologySummary(scene: Record<string, unknown>): string {
-  const components = new Map<string, Record<string, unknown>>(
-    projectRecords(scene['components'], component => component)
-      .map(component => [String(component['instanceId'] ?? ''), component]),
-  );
-  const terminals = new Map<string, Record<string, unknown>>(
-    projectRecords(scene['terminals'], terminal => terminal)
-      .map(terminal => [String(terminal['terminalId'] ?? ''), terminal]),
-  );
-  const lines = projectRecords(scene['nets'], net => net).map(net => {
-    const terminalIds = Array.isArray(net['terminalIds'])
-      ? net['terminalIds'].filter((value): value is string => typeof value === 'string')
-      : [];
-    const endpoints = terminalIds.map(terminalId => {
-      const terminal = terminals.get(terminalId);
-      if (!terminal) return terminalId;
-      const instanceId = String(terminal['instanceId'] ?? 'unknown-component');
-      const component = components.get(instanceId);
-      const componentName = String(component?.['componentName'] ?? instanceId);
-      const pinId = String(terminal['pinId'] ?? 'unknown-pin');
-      const selectedFunction = typeof terminal['selectedFunction'] === 'string'
-        ? ` / ${terminal['selectedFunction']}`
-        : '';
-      const semantic = optionalRecord(
-        optionalRecord(terminal['extensions'])['ailyComponentPinSemantic'],
-      );
-      const gpio = optionalRecord(semantic['gpio']);
-      const gpioController = typeof gpio['controllerId'] === 'string'
-        ? gpio['controllerId']
-        : '';
-      const gpioChannel = typeof gpio['channel'] === 'string'
-        ? gpio['channel']
-        : '';
-      const physicalPin = typeof semantic['physicalPin'] === 'string'
-        ? semantic['physicalPin']
-        : '';
-      const arduinoAliases = Array.isArray(semantic['arduinoAliases'])
-        ? semantic['arduinoAliases'].filter(
-            (value): value is string => typeof value === 'string',
-          )
-        : [];
-      const semanticDetails = [
-        physicalPin ? `physical=${physicalPin}` : '',
-        gpioController && gpioChannel
-          ? `gpio=${gpioController}:${gpioChannel}`
-          : '',
-        gpioController === 'gpio' && /^\d+$/u.test(gpioChannel)
-          ? `ESP32 Arduino numeric pin=${gpioChannel}`
-          : '',
-        arduinoAliases.length > 0
-          ? `Arduino aliases=${arduinoAliases.join(',')}`
-          : '',
-      ].filter(Boolean);
-      return `${componentName} (${instanceId}).${pinId}${selectedFunction}`
-        + (semanticDetails.length > 0 ? ` [${semanticDetails.join('; ')}]` : '');
-    });
-    return `- ${String(net['signalKind'] ?? 'unknown')} ${String(net['netId'] ?? '')}: ${endpoints.join(' <-> ')}`;
-  });
-  return lines.length > 0 ? lines.join('\n') : '- No connected nets.';
 }
 
 function projectRecords(

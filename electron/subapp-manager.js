@@ -32,6 +32,7 @@ const mutationQueues = new Map();
 const SUBAPP_HEALTH_OUTPUT_LIMIT = 64 * 1024;
 const SUBAPP_HEALTH_STARTUP_TIMEOUT_MS = 30000;
 const SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS = 15000;
+const MAX_SUBAPP_STARTUP_TIMEOUT_MS = 5 * 60 * 1000;
 
 function buildSubappIndexUrl(resourceUrl) {
   const normalizedResourceUrl = String(resourceUrl || '').trim().replace(/\/+$/, '');
@@ -635,7 +636,7 @@ function readInstalledState(rootDir, entry) {
     const startupTimeoutMs = positiveInteger(
       declaredRuntime.startupTimeoutMs,
       STARTUP_TIMEOUTS[toolId] || 0,
-      2 * 60 * 1000,
+      MAX_SUBAPP_STARTUP_TIMEOUT_MS,
     );
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
     const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);

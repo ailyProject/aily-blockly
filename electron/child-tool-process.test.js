@@ -334,7 +334,7 @@ async function loadProcessModule() {
   const result = await esbuild.build({
     stdin: {
       contents: [
-        "export { ChildToolProcessService } from './src/app/services/child-tool-process.service.ts';",
+        "export { ChildToolProcessService } from './src/app/services/integrations/subapps/child-tool-process.service.ts';",
         "export { replaceChildToolConfigs } from './src/app/configs/tool.config.ts';",
       ].join('\n'),
       resolveDir: process.cwd(),

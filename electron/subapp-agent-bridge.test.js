@@ -151,7 +151,8 @@ test('generic Subapp Agent bridge opens requested UI and returns presentation ev
           operation: 'child_app_open',
           requestedMode: input.mode,
         };
-      }
+      },
+      async waitForChildAppHostReady() { return { ok: true }; }
     },
     createActivityService(),
   );
@@ -161,7 +162,7 @@ test('generic Subapp Agent bridge opens requested UI and returns presentation ev
       toolId: 'fixture',
       tool: 'fixture_wait',
       params: {
-        presentUi: 'embedded',
+        presentUi: 'window',
         timeoutMs: 1000,
       }
     });
@@ -169,12 +170,12 @@ test('generic Subapp Agent bridge opens requested UI and returns presentation ev
     assert.equal(result.ok, true);
     assert.deepEqual(presentationCalls, [{
       toolId: 'fixture',
-      mode: 'embedded',
+      mode: 'window',
     }]);
     assert.deepEqual(result.presentation, {
       ok: true,
       operation: 'child_app_open',
-      requestedMode: 'embedded',
+      requestedMode: 'window',
     });
     const request = fakeWebSocket.sent.find(message => message.method === 'fixture.wait');
     assert.equal(request.params.presentUi, undefined);
@@ -191,17 +192,19 @@ test('generic Subapp Agent bridge applies a conditional manifest presentation po
   const fakeWebSocket = createFakeWebSocket([{ open: true, respond: true }]);
   global.WebSocket = fakeWebSocket.WebSocket;
   bridgeModule.replaceChildToolConfigs([fixtureConfig({
-    mode: 'embedded',
+    mode: 'window',
     when: { param: 'action', values: ['open'] },
   })]);
   const presentationCalls = [];
   const service = new bridgeModule.SubappAgentBridgeService(
     createProcessService(),
     {
+      async isChildAppWindowOpen() { return false; },
       async openChildApp(input) {
         presentationCalls.push(input);
         return { ok: true, requestedMode: input.mode };
-      }
+      },
+      async waitForChildAppHostReady() { return { ok: true }; }
     },
     createActivityService(),
   );
@@ -216,7 +219,7 @@ test('generic Subapp Agent bridge applies a conditional manifest presentation po
     assert.equal(result.ok, true);
     assert.deepEqual(presentationCalls, [{
       toolId: 'fixture',
-      mode: 'embedded',
+      mode: 'window',
     }]);
   } finally {
     service.ngOnDestroy();
@@ -237,6 +240,7 @@ test('explicit presentUi none suppresses a manifest presentation policy', async 
   const service = new bridgeModule.SubappAgentBridgeService(
     createProcessService(),
     {
+      async isChildAppWindowOpen() { return false; },
       async openChildApp(input) {
         presentationCalls.push(input);
         return { ok: true };
@@ -377,6 +381,7 @@ test('dock presentation records session activity without opening the full child 
   const service = new bridgeModule.SubappAgentBridgeService(
     createProcessService(),
     {
+      async isChildAppWindowOpen() { return false; },
       async openChildApp(input) {
         presentationCalls.push(input);
         return { ok: true };
@@ -712,8 +717,8 @@ async function loadBridgeModule() {
   const result = await esbuild.build({
     stdin: {
       contents: [
-        "export { SubappAgentBridgeService } from './src/app/services/subapp-agent-bridge.service.ts';",
-        "export { SubappActivityService } from './src/app/services/subapp-activity.service.ts';",
+        "export { SubappAgentBridgeService } from './src/app/services/integrations/subapps/subapp-agent-bridge.service.ts';",
+        "export { SubappActivityService } from './src/app/services/integrations/subapps/subapp-activity.service.ts';",
         "export { replaceChildToolConfigs } from './src/app/configs/tool.config.ts';"
       ].join('\n'),
       resolveDir: process.cwd(),
@@ -734,7 +739,11 @@ async function loadBridgeModule() {
         );
         build.onLoad({ filter: /.*/, namespace: 'stub' }, args => ({
           contents: args.path === 'angular-core'
-            ? 'export function Injectable() { return target => target; }'
+            ? [
+                'export function Injectable() { return target => target; }',
+                'export function Inject() { return () => undefined; }',
+                'export class InjectionToken { constructor(description) { this.description = description; } }'
+              ].join('\n')
             : 'export class StubService {}',
           loader: 'js'
         }));

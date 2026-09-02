@@ -6,6 +6,7 @@ import type {
 } from './simulator-main-agent-scene-change-port';
 import {
   createSimulatorMainAgentSceneMessage,
+  createSimulatorMainAgentSceneResources,
 } from './simulator-main-agent-scene-message';
 
 export interface SimulatorMainAgentExecutionReceipt {
@@ -47,6 +48,7 @@ export class SimulatorMainAgentSceneChangeProviderService {
       const result = await this.demandSessions.requestCodeSync(
         createSimulatorMainAgentSceneMessage(input),
         '同步 Simulator 连线场景到项目代码',
+        createSimulatorMainAgentSceneResources(input),
         controller.signal,
       );
       return Object.freeze({

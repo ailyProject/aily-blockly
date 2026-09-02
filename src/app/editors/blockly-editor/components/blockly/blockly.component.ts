@@ -1568,6 +1568,10 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         if (!this.isProjectBreakpointScopeAvailable(scope.block)) {
           return 'hidden';
         }
+        this.projectDebugState =
+          this.projectDebugConfigurationService.refresh(
+            this.projectService.currentProjectPath,
+          );
         const breakpoint = this.getProjectBreakpoint(scope.block!.id);
         const revision = this.projectDebugState.sourceMapRevision;
         if (

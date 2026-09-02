@@ -32,7 +32,7 @@ export interface ChildAppHostController {
   status(): Record<string, unknown>;
   prepareUpdate(options?: ChildAppLifecycleOptions): Promise<Record<string, unknown>>;
   restart(): Promise<Record<string, unknown>>;
-  close(): Promise<Record<string, unknown>>;
+  close(options?: ChildAppLifecycleOptions): Promise<Record<string, unknown>>;
   detach(options?: ChildAppWindowPlacement): Promise<Record<string, unknown>>;
   embed(): Promise<Record<string, unknown>>;
 }
@@ -202,7 +202,7 @@ export class ChildAppHostRegistryService {
       case 'restart':
         return controller.restart();
       case 'close':
-        return controller.close();
+        return controller.close({ strict: options.strictLifecycle === true });
       case 'detach':
         return controller.detach(options);
       case 'embed':

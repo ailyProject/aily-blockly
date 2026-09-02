@@ -8,7 +8,6 @@ export * from './host-provider/subapp-host-provider-child-tool-transport';
 export * from './host-provider/subapp-host-provider-product-registry.service';
 export * from './models/child-tool-runtime-entry';
 export * from './models/subapp-agent-presentation';
-export * from './models/subapp-runtime-presentation-lease';
 export * from './operations/child-tool-close-lifecycle';
 export * from './ports/subapp-automation.port';
 export * from './required-subapp.service';

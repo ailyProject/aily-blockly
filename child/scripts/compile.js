@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const ailyCodeProject = require('./aily-code-project');
+const { resolveBuilderInvocation } = require('./builder-invocation');
 
 // 简单的日志工具
 const logger = {
@@ -191,7 +192,6 @@ async function main() {
         }
 
         // 5. 执行编译
-        const builderCommand = 'aily-builder';
         const args = [
             'compile',
             `"${compileSourcePath}"`,
@@ -199,20 +199,15 @@ async function main() {
             '--build-path', `"${buildPath}"`,
             '--preprocess-result', `"${preprocessCachePath}"`,
         ];
-        if (supportsArtifactManifest(builderCommand)) {
+        const simulatorArtifactRequested = config.graphSemanticRevision !== undefined;
+        if (simulatorArtifactRequested || supportsArtifactManifest()) {
             args.push(
                 '--emit-artifact-manifest',
                 `"${path.join(buildPath, 'aily-artifact-manifest.json')}"`
             );
-            if (config.graphSemanticRevision !== undefined) {
+            if (simulatorArtifactRequested) {
                 if (!/^[a-f0-9]{64}$/.test(config.graphSemanticRevision)) {
                     throw new Error('graphSemanticRevision 必须是小写 SHA-256。');
-                }
-                if (!supportsSceneGraphProvenance(builderCommand)) {
-                    throw new Error(
-                        '当前 aily-builder 不支持 Scene graph provenance，'
-                        + '不能生成可替换的仿真 Artifact。'
-                    );
                 }
                 args.push(
                     '--graph-semantic-revision',
@@ -275,12 +270,18 @@ async function main() {
             };
         }
 
-        logger.log(`执行编译: ${builderCommand} ${args.join(' ')}`);
+        const builderInvocation = resolveBuilderInvocation(args);
+        logger.log(`执行编译: ${builderInvocation.command} ${builderInvocation.args.join(' ')}`);
 
         const startedAt = new Date();
         const output = [];
         let spawnError = null;
-        const child = spawn(builderCommand, args, spawnOpts);
+        spawnOpts.shell = builderInvocation.shell;
+        const child = spawn(
+            builderInvocation.command,
+            builderInvocation.args,
+            spawnOpts
+        );
         child.stdout.on('data', (chunk) => {
             process.stdout.write(chunk);
             output.push(String(chunk));
@@ -301,8 +302,8 @@ async function main() {
                     status: !spawnError && !signal && code === 0
                         ? 'passed'
                         : 'failed',
-                    builderCommand,
-                    args,
+                    builderCommand: builderInvocation.command,
+                    args: builderInvocation.args,
                     code,
                     signal,
                     spawnError,
@@ -470,13 +471,17 @@ function normalizeBlockSourceRanges(value) {
         ));
 }
 
-function supportsArtifactManifest(builderCommand) {
+function supportsArtifactManifest() {
     try {
+        const capabilitiesInvocation = resolveBuilderInvocation([
+            'capabilities',
+            '--json'
+        ]);
         const capabilitiesResult = spawnSync(
-            builderCommand,
-            ['capabilities', '--json'],
+            capabilitiesInvocation.command,
+            capabilitiesInvocation.args,
             {
-                shell: true,
+                shell: capabilitiesInvocation.shell,
                 encoding: 'utf8',
                 windowsHide: true,
                 timeout: 5000,
@@ -493,11 +498,12 @@ function supportsArtifactManifest(builderCommand) {
             }
         }
 
+        const helpInvocation = resolveBuilderInvocation(['compile', '--help']);
         const result = spawnSync(
-            builderCommand,
-            ['compile', '--help'],
+            helpInvocation.command,
+            helpInvocation.args,
             {
-                shell: true,
+                shell: helpInvocation.shell,
                 encoding: 'utf8',
                 windowsHide: true,
                 timeout: 5000,
@@ -505,34 +511,6 @@ function supportsArtifactManifest(builderCommand) {
         );
         return `${result.stdout || ''}\n${result.stderr || ''}`
             .includes('--emit-artifact-manifest');
-    } catch {
-        return false;
-    }
-}
-
-function supportsSceneGraphProvenance(builderCommand) {
-    try {
-        const capabilitiesResult = spawnSync(
-            builderCommand,
-            ['capabilities', '--json'],
-            {
-                shell: true,
-                encoding: 'utf8',
-                windowsHide: true,
-                timeout: 5000,
-            }
-        );
-        if (capabilitiesResult.status === 0) {
-            const capabilities = JSON.parse(capabilitiesResult.stdout || '{}');
-            return (
-                capabilities?.schemaVersion === 1
-                && capabilities?.capabilities?.sceneGraphProvenance
-                    ?.schemaVersion === 1
-                && capabilities.capabilities.sceneGraphProvenance.cliOption
-                    === '--graph-semantic-revision'
-            );
-        }
-        return false;
     } catch {
         return false;
     }

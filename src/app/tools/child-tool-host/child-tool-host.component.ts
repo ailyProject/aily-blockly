@@ -402,14 +402,20 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     void this.notifyChildBeforeClose('close').then(finishDestroy, finishDestroy);
   }
 
-  async close(): Promise<Record<string, unknown>> {
+  async close(options: ChildAppLifecycleOptions = {}): Promise<Record<string, unknown>> {
     if (this.closing) return { ok: false, message: '子应用正在关闭' };
     this.closing = true;
 
-    const canClose = await this.notifyChildBeforeClose('close');
+    const canClose = await this.notifyChildBeforeClose('close', options.strict === true);
     if (!canClose) {
       this.closing = false;
       return { ok: false, message: '子应用拒绝关闭，可能存在未完成操作。' };
+    }
+
+    if (options.strict === true && this.resolvedToolId) {
+      await this.closeProviderProduct();
+      await this.processService.forceStop(this.resolvedToolId);
+      this.acquired = false;
     }
 
     if (this.isStandalone) {
@@ -845,7 +851,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController = this.childHostRegistry.register(this.resolvedToolId, {
       status: () => this.hostAutomationStatus(),
       restart: () => this.restart(),
-      close: () => this.close(),
+      close: options => this.close(options),
       detach: options => this.detach(options),
       embed: () => this.embed(),
       prepareUpdate: options => this.prepareUpdate(options),

@@ -157,6 +157,7 @@ export class AilyChatDemandSessionService {
   requestCodeSync(
     prompt: string,
     title = '同步仿真连线场景到代码',
+    resources: AilyChatDemandResource[] = [],
     signal?: AbortSignal,
   ): Promise<AilyChatDemandSessionResult> {
     return this.runDemandSession({
@@ -165,6 +166,7 @@ export class AilyChatDemandSessionService {
       prompt,
       mode: 'agent',
       revealSession: true,
+      resources,
     }, signal);
   }
 

@@ -123,6 +123,26 @@ describe('AilyChatDemandSessionService', () => {
     }));
   });
 
+  it('keeps code-sync resources out of the visible prompt body', async () => {
+    const harness = createHarness();
+    const resources = [{
+      type: 'file' as const,
+      name: 'Simulator Scene v2',
+      path: '.aily/simulator/scene-network-v2.json',
+    }];
+
+    await harness.service.requestCodeSync('同步当前 Simulator 连线场景', '同步连线', resources);
+
+    expect(harness.sentMessages[0]).toEqual(jasmine.objectContaining({
+      action: 'demand-session.run',
+      kind: 'code-sync',
+      mode: 'agent',
+      prompt: '同步当前 Simulator 连线场景',
+      resources,
+    }));
+    expect(String(harness.sentMessages[0]['prompt'])).not.toContain('scene-network-v2.json');
+  });
+
   it('publishes architecture generation state until the matching request settles', async () => {
     const harness = createHarness({ autoRespond: false });
     const states: Array<{ architecture: { requestId: string; sessionId?: string } | null }> = [];

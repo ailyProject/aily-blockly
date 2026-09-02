@@ -16,7 +16,6 @@ import {
   type SubappRuntimeState,
 } from './subapp-activity.service';
 import { resolveSubappAgentPresentation } from './models/subapp-agent-presentation';
-import { acquireSubappRuntimePresentationLease } from './models/subapp-runtime-presentation-lease';
 import { createSubappHostProviderChildToolTransport } from './host-provider/subapp-host-provider-child-tool-transport';
 import {
   SubappHostProviderProductRegistryService,
@@ -100,7 +99,6 @@ export class SubappAgentBridgeService implements OnDestroy {
     const tool = String(input['tool'] || '');
     const ownerSessionId = String(context.sessionId || '').trim();
     let resolved: ResolvedAgentTool | null = null;
-    let releasePresentationRuntimeLease: (() => Promise<void>) | null = null;
 
     try {
       resolved = this.resolveAgentTool(requestedToolId, tool);
@@ -128,15 +126,11 @@ export class SubappAgentBridgeService implements OnDestroy {
       let presentation: Record<string, unknown> | undefined;
 
       if (presentationPolicy.uiMode === 'window') {
-        // Opening a detached host is asynchronous. Acquire the shared Runtime
-        // first so the main renderer and the new window cannot both observe an
-        // empty registry and spawn competing processes. The request channel
-        // takes its own long-lived lease below; this temporary lease only spans
-        // presentation startup and the first RPC.
-        releasePresentationRuntimeLease = await acquireSubappRuntimePresentationLease(
-          this.childToolProcessService,
-          resolved.config.id,
-        );
+        // The Agent channel owns the shared Runtime and binds Host Providers
+        // before a detached renderer starts. Otherwise the renderer can finish
+        // standalone bootstrap first, then lose runtime-owned state when the
+        // hosted Agent channel replaces that cold Runtime.
+        await this.prepareRuntime(resolved.config.id, ownerSessionId);
         presentation = await this.automation.openChildApp({
           toolId: resolved.config.id,
           mode: 'window',
@@ -224,8 +218,6 @@ export class SubappAgentBridgeService implements OnDestroy {
       return resolved
         ? this.enforceResponseBudget(response, resolved.config.id, tool, resolved.definition)
         : response;
-    } finally {
-      await releasePresentationRuntimeLease?.().catch(() => undefined);
     }
   }
 
@@ -405,13 +397,7 @@ export class SubappAgentBridgeService implements OnDestroy {
       throw new SubappRpcError('Subapp Agent request was cancelled', 'SUBAPP_RPC_CANCELLED', { method });
     }
     const channel = this.ensureChannel(toolId);
-    if (trackLease) {
-      if (ownerSessionId) {
-        channel.sessionIds.add(ownerSessionId);
-      } else {
-        channel.hasUnscopedOwner = true;
-      }
-    }
+    if (trackLease) this.trackOwner(channel, ownerSessionId);
     const socket = await this.ensureSocket(channel);
     const id = `agent-${Date.now()}-${++channel.requestSeq}`;
     const response = new Promise<unknown>((resolve, reject) => {
@@ -478,6 +464,20 @@ export class SubappAgentBridgeService implements OnDestroy {
       }
     }
     return response;
+  }
+
+  private async prepareRuntime(toolId: string, ownerSessionId: string): Promise<void> {
+    const channel = this.ensureChannel(toolId);
+    this.trackOwner(channel, ownerSessionId);
+    await this.ensureSocket(channel);
+  }
+
+  private trackOwner(channel: SubappRpcChannel, ownerSessionId: string): void {
+    if (ownerSessionId) {
+      channel.sessionIds.add(ownerSessionId);
+    } else {
+      channel.hasUnscopedOwner = true;
+    }
   }
 
   private ensureChannel(toolId: string): SubappRpcChannel {

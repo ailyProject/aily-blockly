@@ -5,6 +5,7 @@ const { spawn, exec, execFileSync } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const platformRuntime = require('./platform-runtime');
+const { resolveBuilderInvocation } = require('./builder-invocation');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 
@@ -312,7 +313,6 @@ async function main() {
             : path.join(tempPath, 'preprocess.json');
         
         logger.log('开始预编译...');
-        const builderCommand = 'aily-builder';
         const pre_args = [
             'preprocess',
             // `...parseArgs(compilerParam)`,
@@ -348,13 +348,14 @@ async function main() {
             });
         }
 
-        logger.log(`执行预编译: ${builderCommand} ${pre_args.join(' ')}`);
+        const builderInvocation = resolveBuilderInvocation(pre_args);
+        logger.log(`执行预编译: ${builderInvocation.command} ${builderInvocation.args.join(' ')}`);
 
         // 使用同步执行预编译，确保完成后再继续
         await new Promise((resolve, reject) => {
-            const preChild = spawn(builderCommand, pre_args, {
+            const preChild = spawn(builderInvocation.command, builderInvocation.args, {
                 cwd: currentProjectPath,
-                shell: true,
+                shell: builderInvocation.shell,
                 stdio: 'inherit'
             });
 
