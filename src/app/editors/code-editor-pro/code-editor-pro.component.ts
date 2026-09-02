@@ -11,7 +11,12 @@ import { NotificationComponent } from '../../components/notification/notificatio
 import { BuilderService } from '../code-editor/services/builder.service';
 import { BuilderService as TopBuilderService } from '@domain/build/public-api';
 import { UploaderService } from '@domain/device/public-api';
-import { ElectronService, CmdService, type CmdOutput } from '@core/platform/public-api';
+import {
+  ElectronService,
+  CmdService,
+  type CmdOutput,
+  type RendererLifecycleEvent,
+} from '@core/platform/public-api';
 import { ConfigService, ThemeService } from '@core/preferences/public-api';
 import {
   CodeEditorProProjectService,
@@ -66,6 +71,7 @@ const AILY_CODER_READY_PROTOCOL_VERSION = 1;
 const CODER_LOADER_DELAY_MS = 150;
 const CODER_LEGACY_READY_FALLBACK_MS = 2400;
 const CODER_READY_TIMEOUT_MS = 30000;
+const CODER_READY_TIMEOUT_DRIFT_GRACE_MS = 5000;
 const CODER_REVEAL_DURATION_MS = 480;
 const CODER_GIT_COMMAND_TIMEOUT_MS = 30000;
 const CODER_GIT_MAX_STDOUT_CHARS = 16 * 1024 * 1024;
@@ -170,6 +176,9 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   private coderLegacyReadyTimer?: ReturnType<typeof setTimeout>;
   private coderReadyTimeoutTimer?: ReturnType<typeof setTimeout>;
   private coderReadyProtocolSupported = false;
+  private coderSystemSuspended = false;
+  private coderScreenLocked = false;
+  private readonly onDocumentVisibilityChange = () => this.syncCoderReadyTimeoutForLifecycle();
   /** Workbench 当前启动时使用的宿主语言；核心语言包只能在初始化前加载。 */
   private coderEmbedHostLanguage: string | null = null;
   private coderLanguageReloadGeneration = 0;
@@ -251,6 +260,14 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   ngOnInit() {
     this.proProject.registerPersistenceBridge(this.coderPersistenceBridge);
     window.addEventListener('message', this.coderNativeFsBridgeListener);
+    document.addEventListener('visibilitychange', this.onDocumentVisibilityChange);
+    this.coderSystemSuspended = this.electronService.isRendererSuspended;
+    this.coderScreenLocked = this.electronService.isRendererScreenLocked;
+    this.componentSubscriptions.add(
+      this.electronService.rendererLifecycle$.subscribe((event) => {
+        this.onCoderRendererLifecycle(event);
+      }),
+    );
     try {
       this.ailyOsRevealBc = new BroadcastChannel(AILY_EMBED_OS_REVEAL_CHANNEL);
       this.ailyOsRevealBc.addEventListener('message', (ev: MessageEvent) => {
@@ -421,6 +438,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.embedHostResizeObserver = undefined;
     window.removeEventListener('resize', this.onEmbedLayoutResize);
     window.removeEventListener('message', this.coderNativeFsBridgeListener);
+    document.removeEventListener('visibilitychange', this.onDocumentVisibilityChange);
     this.ailyOsRevealBc?.close();
     this.ailyOsRevealBc = undefined;
     this.ailyOpenLibManagerBc?.close();
@@ -784,9 +802,19 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
 
   private armCoderReadyTimeout(): void {
     this.clearCoderReadyTimeoutTimer();
+    if (this.isCoderReadyTimeoutPaused()) return;
+    const armedAt = Date.now();
     this.coderReadyTimeoutTimer = setTimeout(() => {
       this.coderReadyTimeoutTimer = undefined;
       if (!this.coderEmbedLoading || !this.coderReadyProtocolSupported) return;
+      if (this.isCoderReadyTimeoutPaused()) return;
+      // Chromium may deliver an expired timer immediately after a long sleep even
+      // when the lifecycle IPC is queued behind it. Give Workbench a fresh active
+      // interval instead of turning scheduler suspension into a startup failure.
+      if (Date.now() - armedAt > CODER_READY_TIMEOUT_MS + CODER_READY_TIMEOUT_DRIFT_GRACE_MS) {
+        this.armCoderReadyTimeout();
+        return;
+      }
       const error = this.translate.instant('AILY_CODE_LOADING.TIMEOUT');
       this.clearCoderEmbedLoadingTimers();
       this.coderEmbedLoading = false;
@@ -798,6 +826,32 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       this.coderEmbedError = error;
       this.message.error(error);
     }, CODER_READY_TIMEOUT_MS);
+  }
+
+  private onCoderRendererLifecycle(event: RendererLifecycleEvent): void {
+    if (event.kind === 'suspend') this.coderSystemSuspended = true;
+    if (event.kind === 'resume') this.coderSystemSuspended = false;
+    if (event.kind === 'lock-screen') this.coderScreenLocked = true;
+    if (event.kind === 'unlock-screen') this.coderScreenLocked = false;
+    this.syncCoderReadyTimeoutForLifecycle();
+  }
+
+  private syncCoderReadyTimeoutForLifecycle(): void {
+    if (this.isCoderReadyTimeoutPaused()) {
+      this.clearCoderReadyTimeoutTimer();
+      return;
+    }
+    if (
+      this.coderEmbedLoading
+      && this.coderReadyProtocolSupported
+      && !this.coderReadyTimeoutTimer
+    ) {
+      this.armCoderReadyTimeout();
+    }
+  }
+
+  private isCoderReadyTimeoutPaused(): boolean {
+    return this.coderSystemSuspended || this.coderScreenLocked || document.hidden;
   }
 
   private clearCoderEmbedLoadingTimers(): void {

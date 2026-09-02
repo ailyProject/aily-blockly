@@ -7,6 +7,7 @@ const WinState = require('electron-win-state').default;
 const {
   app,
   BrowserWindow,
+  WebContentsView,
   ipcMain,
   dialog,
   screen,
@@ -34,6 +35,9 @@ const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const {
   normalizeBuildProduct,
 } = require('./build-product');
+const {
+  registerWebviewDebuggerSurfaceHandlers,
+} = require('./webview-debugger-surface');
 const ORIGINAL_PROCESS_PATH = process.env.PATH || process.env.Path || "";
 let cachedPackagedMetadata;
 
@@ -1281,6 +1285,9 @@ function buildZipUrls(conf = {}) {
 let rendererGeneration = 0;
 let readyRendererGeneration = 0;
 let powerMonitorListenersRegistered = false;
+let webviewDebuggerSurfaceHandlersRegistered = false;
+let rendererSystemSuspended = false;
+let rendererScreenLocked = false;
 
 function isCurrentMainRenderer(sender) {
   return !!mainWindow
@@ -1335,6 +1342,21 @@ ipcMain.on('renderer-ready', (event, payload = {}) => {
   console.log('渲染进程已就绪', { generation: requestedGeneration });
   readyRendererGeneration = requestedGeneration;
   event.sender.send('renderer-ready-ack', { generation: requestedGeneration });
+  // Renderer may have reloaded while the machine was asleep or the screen was locked.
+  // Replay the current pause state after the ack so the new renderer cannot start
+  // foreground-only timers until the matching resume/unlock event arrives.
+  if (rendererSystemSuspended) {
+    event.sender.send('renderer-lifecycle', {
+      kind: 'suspend',
+      generation: rendererGeneration,
+    });
+  }
+  if (rendererScreenLocked) {
+    event.sender.send('renderer-lifecycle', {
+      kind: 'lock-screen',
+      generation: rendererGeneration,
+    });
+  }
 
   // 检查是否有待处理的OAuth回调
   if (global.pendingOAuthCallback) {
@@ -1357,6 +1379,7 @@ function registerPowerMonitorLifecycle() {
   }
   powerMonitorListenersRegistered = true;
   powerMonitor.on('suspend', () => {
+    rendererSystemSuspended = true;
     if (isCurrentRendererGenerationReady()) {
       mainWindow.webContents.send('renderer-lifecycle', {
         kind: 'suspend',
@@ -1365,9 +1388,28 @@ function registerPowerMonitorLifecycle() {
     }
   });
   powerMonitor.on('resume', () => {
+    rendererSystemSuspended = false;
     if (isCurrentRendererGenerationReady()) {
       mainWindow.webContents.send('renderer-lifecycle', {
         kind: 'resume',
+        generation: rendererGeneration,
+      });
+    }
+  });
+  powerMonitor.on('lock-screen', () => {
+    rendererScreenLocked = true;
+    if (isCurrentRendererGenerationReady()) {
+      mainWindow.webContents.send('renderer-lifecycle', {
+        kind: 'lock-screen',
+        generation: rendererGeneration,
+      });
+    }
+  });
+  powerMonitor.on('unlock-screen', () => {
+    rendererScreenLocked = false;
+    if (isCurrentRendererGenerationReady()) {
+      mainWindow.webContents.send('renderer-lifecycle', {
+        kind: 'unlock-screen',
         generation: rendererGeneration,
       });
     }
@@ -2546,6 +2588,10 @@ function createWindow() {
   registerCmdHandlers(mainWindow);
   registerAilyServicesStreamHandlers(mainWindow);
   registerWebviewBridgeHandlers();
+  if (!webviewDebuggerSurfaceHandlersRegistered) {
+    registerWebviewDebuggerSurfaceHandlers({ BrowserWindow, WebContentsView, ipcMain, shell });
+    webviewDebuggerSurfaceHandlersRegistered = true;
+  }
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
   registerNotificationHandlers(mainWindow);

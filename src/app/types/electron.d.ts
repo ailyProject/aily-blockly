@@ -113,6 +113,13 @@ declare global {
         fetchPage: (data: any) => Promise<any>;
         searchWeb: (data: any) => Promise<any>;
       };
+      webviewDebuggerSurface?: {
+        create: (data: any) => Promise<any>;
+        setBounds: (data: any) => Promise<any>;
+        command: (data: any) => Promise<any>;
+        destroy: (data: any) => Promise<any>;
+        onEvent: (callback: (payload: any) => void) => () => void;
+      };
       iWindow: any;
       subWindow: any;
       codeViewer: any;

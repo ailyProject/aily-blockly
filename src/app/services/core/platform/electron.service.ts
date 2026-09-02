@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 
 export interface RendererLifecycleEvent {
-  readonly kind: 'suspend' | 'resume';
+  readonly kind: 'suspend' | 'resume' | 'lock-screen' | 'unlock-screen';
   readonly generation: number;
 }
 
@@ -28,6 +28,8 @@ export class ElectronService {
   private readonly rendererGenerationSubject = new BehaviorSubject<number>(0);
   private readonly rendererLifecycleSubject = new Subject<RendererLifecycleEvent>();
   private rendererLifecycleListenersRegistered = false;
+  private rendererSuspended = false;
+  private rendererScreenLocked = false;
 
   readonly rendererGeneration$ = this.rendererGenerationSubject.asObservable();
   readonly rendererLifecycle$ = this.rendererLifecycleSubject.asObservable();
@@ -503,6 +505,14 @@ export class ElectronService {
     return this.rendererGenerationSubject.value;
   }
 
+  get isRendererSuspended(): boolean {
+    return this.rendererSuspended;
+  }
+
+  get isRendererScreenLocked(): boolean {
+    return this.rendererScreenLocked;
+  }
+
   private registerRendererLifecycleListeners(): void {
     if (this.rendererLifecycleListenersRegistered || !window['ipcRenderer']?.on) {
       return;
@@ -516,9 +526,16 @@ export class ElectronService {
     });
     window['ipcRenderer'].on('renderer-lifecycle', (_event: unknown, payload: RendererLifecycleEvent) => {
       const generation = Number(payload?.generation);
-      if ((payload?.kind === 'suspend' || payload?.kind === 'resume')
+      if ((payload?.kind === 'suspend'
+        || payload?.kind === 'resume'
+        || payload?.kind === 'lock-screen'
+        || payload?.kind === 'unlock-screen')
         && Number.isInteger(generation)
         && generation === this.rendererGenerationSubject.value) {
+        if (payload.kind === 'suspend') this.rendererSuspended = true;
+        if (payload.kind === 'resume') this.rendererSuspended = false;
+        if (payload.kind === 'lock-screen') this.rendererScreenLocked = true;
+        if (payload.kind === 'unlock-screen') this.rendererScreenLocked = false;
         this.rendererLifecycleSubject.next({
           kind: payload.kind,
           generation,

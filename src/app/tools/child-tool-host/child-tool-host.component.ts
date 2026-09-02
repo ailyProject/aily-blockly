@@ -124,6 +124,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private acquired = false;
   private penpalConnection: Connection | null = null;
   private remoteApi: any = null;
+  private childFrameElement: HTMLIFrameElement | null = null;
+  private webviewDebuggerSurfaceId = '';
+  private webviewDebuggerSurfaceEventCleanup: (() => void) | null = null;
+  private webviewDebuggerSurfaceBounds: Record<string, number> | null = null;
   private childReadyTimer: ReturnType<typeof setTimeout> | null = null;
   private childToolUrl = '';
   private penpalRemoteWindow: Window | null = null;
@@ -351,6 +355,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     if (this.initialized && changes['active']) {
       this.syncHostContext(true);
+      void this.syncWebviewDebuggerSurfaceVisibility();
     }
   }
 
@@ -580,6 +585,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   onFrameLoad(event: Event): void {
     const iframe = event.target as HTMLIFrameElement;
+    this.childFrameElement = iframe;
     this.log('iframe load', {
       url: this.sanitizeUrl(this.serverInfo?.url),
       hasContentWindow: !!iframe.contentWindow,
@@ -1012,6 +1018,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         listChildApps: (payload: { limit?: number } = {}) => this.listChatChildApps(payload),
         openChildApp: (payload: { toolId?: string; mode?: 'embedded' | 'window' } = {}) => this.openChatChildApp(payload),
         openChildSurfaceWindow: (payload: ChildSurfaceWindowRequest = {}) => this.openChildSurfaceWindow(payload),
+        openNativeWebviewSurface: (payload: Record<string, unknown> = {}) => this.openNativeWebviewSurface(payload),
+        setNativeWebviewSurfaceBounds: (payload: Record<string, unknown> = {}) => this.setNativeWebviewSurfaceBounds(payload),
+        commandNativeWebviewSurface: (payload: Record<string, unknown> = {}) => this.commandNativeWebviewSurface(payload),
+        closeNativeWebviewSurface: () => this.closeNativeWebviewSurface(),
         focusChildFrame: () => this.focusChildFrame(),
         writeClipboardText: (payload: { text?: string } = {}) => this.writeClipboardText(payload),
         openFile: (payload: { path?: string } = {}) => this.openFile(payload),
@@ -1251,6 +1261,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private destroyPenpalConnection(): void {
     this.clearChildReadyTimer();
     this.setAilyChatOperationActive(false);
+    void this.closeNativeWebviewSurface();
     this.remoteApi = null;
     if (this.penpalConnection) {
       this.penpalConnection.destroy();
@@ -1258,6 +1269,113 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     this.penpalRemoteWindow = null;
     this.penpalState = 'idle';
+  }
+
+  private isWebviewDebuggerTool(): boolean {
+    return this.resolvedToolId === 'webview-debugger';
+  }
+
+  private getWebviewDebuggerSurfaceApi(): any {
+    return (window as any).electronAPI?.webviewDebuggerSurface;
+  }
+
+  private normalizeWebviewDebuggerBounds(payload: Record<string, unknown>): Record<string, number> | null {
+    const iframe = this.childFrameElement;
+    if (!iframe) return null;
+    const frameRect = iframe.getBoundingClientRect();
+    const local = this.isRecord(payload['bounds']) ? payload['bounds'] : payload;
+    const scaleX = frameRect.width / Math.max(1, iframe.clientWidth);
+    const scaleY = frameRect.height / Math.max(1, iframe.clientHeight);
+    const x = Math.max(0, Number(local['x']) || 0);
+    const y = Math.max(0, Number(local['y']) || 0);
+    const width = Math.max(1, Number(local['width']) || 1);
+    const height = Math.max(1, Number(local['height']) || 1);
+    return {
+      x: Math.round(frameRect.left + x * scaleX),
+      y: Math.round(frameRect.top + y * scaleY),
+      width: Math.round(width * scaleX),
+      height: Math.round(height * scaleY),
+    };
+  }
+
+  private async openNativeWebviewSurface(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const api = this.getWebviewDebuggerSurfaceApi();
+    if (!this.isWebviewDebuggerTool() || !api) {
+      return { ok: false, errorCode: 'WEBVIEW_NATIVE_UNAVAILABLE', error: 'Native WebView surface is unavailable' };
+    }
+    const bounds = this.normalizeWebviewDebuggerBounds(payload);
+    if (!bounds) {
+      return { ok: false, errorCode: 'WEBVIEW_FRAME_UNAVAILABLE', error: 'Child frame geometry is unavailable' };
+    }
+    await this.closeNativeWebviewSurface();
+    const result = await api.create({
+      url: String(payload['url'] || 'about:blank'),
+      bounds,
+      visible: this.active,
+    });
+    if (result?.ok !== true || !result?.surfaceId) return result;
+    this.webviewDebuggerSurfaceId = String(result.surfaceId);
+    this.webviewDebuggerSurfaceBounds = bounds;
+    this.webviewDebuggerSurfaceEventCleanup = api.onEvent((event: any) => {
+      if (String(event?.surfaceId || '') !== this.webviewDebuggerSurfaceId) return;
+      void Promise.resolve(this.remoteApi?.setNativeWebviewState?.(event)).catch(error => {
+        this.logError('native WebView event forward failed', error);
+      });
+    });
+    return result;
+  }
+
+  private async setNativeWebviewSurfaceBounds(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const api = this.getWebviewDebuggerSurfaceApi();
+    if (!this.isWebviewDebuggerTool() || !api || !this.webviewDebuggerSurfaceId) {
+      return { ok: false, errorCode: 'WEBVIEW_NATIVE_UNAVAILABLE', error: 'Native WebView surface is unavailable' };
+    }
+    const bounds = this.normalizeWebviewDebuggerBounds(payload);
+    if (!bounds) {
+      return { ok: false, errorCode: 'WEBVIEW_FRAME_UNAVAILABLE', error: 'Child frame geometry is unavailable' };
+    }
+    this.webviewDebuggerSurfaceBounds = bounds;
+    return await api.setBounds({
+      surfaceId: this.webviewDebuggerSurfaceId,
+      bounds,
+      visible: this.active && payload['visible'] !== false,
+    });
+  }
+
+  private async syncWebviewDebuggerSurfaceVisibility(): Promise<void> {
+    const api = this.getWebviewDebuggerSurfaceApi();
+    if (!api || !this.webviewDebuggerSurfaceId || !this.webviewDebuggerSurfaceBounds) return;
+    await api.setBounds({
+      surfaceId: this.webviewDebuggerSurfaceId,
+      bounds: this.webviewDebuggerSurfaceBounds,
+      visible: this.active,
+    }).catch(() => undefined);
+  }
+
+  private async commandNativeWebviewSurface(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const api = this.getWebviewDebuggerSurfaceApi();
+    if (!this.isWebviewDebuggerTool() || !api || !this.webviewDebuggerSurfaceId) {
+      return { ok: false, errorCode: 'WEBVIEW_NATIVE_UNAVAILABLE', error: 'Native WebView surface is unavailable' };
+    }
+    return await api.command({
+      surfaceId: this.webviewDebuggerSurfaceId,
+      action: String(payload['action'] || ''),
+      params: this.isRecord(payload['params']) ? payload['params'] : {},
+    });
+  }
+
+  private async closeNativeWebviewSurface(): Promise<Record<string, unknown>> {
+    const surfaceId = this.webviewDebuggerSurfaceId;
+    this.webviewDebuggerSurfaceId = '';
+    this.webviewDebuggerSurfaceBounds = null;
+    this.webviewDebuggerSurfaceEventCleanup?.();
+    this.webviewDebuggerSurfaceEventCleanup = null;
+    const api = this.getWebviewDebuggerSurfaceApi();
+    if (!surfaceId || !api) return { ok: true, destroyed: false };
+    return await api.destroy({ surfaceId }).catch(error => ({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error || 'Unable to close native WebView surface'),
+    }));
   }
 
   private async reloadChildFrame(reason: 'manual'): Promise<void> {

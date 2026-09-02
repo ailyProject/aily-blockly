@@ -346,6 +346,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     fetchPage: (data) => ipcRenderer.invoke("webview-bridge-fetch", data),
     searchWeb: (data) => ipcRenderer.invoke("webview-bridge-search", data),
   },
+  webviewDebuggerSurface: {
+    create: (data) => ipcRenderer.invoke('webview-debugger-surface-create', data),
+    setBounds: (data) => ipcRenderer.invoke('webview-debugger-surface-bounds', data),
+    command: (data) => ipcRenderer.invoke('webview-debugger-surface-command', data),
+    destroy: (data) => ipcRenderer.invoke('webview-debugger-surface-destroy', data),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('webview-debugger-surface-event', listener);
+      return () => ipcRenderer.removeListener('webview-debugger-surface-event', listener);
+    },
+  },
   iWindow: {
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
