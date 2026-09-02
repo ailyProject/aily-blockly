@@ -71,6 +71,8 @@ export class IframeComponent implements OnInit, OnDestroy {
 
   // Penpal 连接
   private penpalConnection: Connection | null = null;
+  private penpalConnectionGeneration = 0;
+  private currentIframeElement: HTMLIFrameElement | null = null;
   private remoteApi: any = null;
 
   // IPC 初始化数据清理函数
@@ -163,19 +165,28 @@ export class IframeComponent implements OnInit, OnDestroy {
   /**
    * 统一应用 URL：设置 iframeSrc、allowedOrigins、isConnectionGraphWindow
    */
-  private applyUrl(url: string): void {
-    this.currentIframeUrl = url;
-    this.iframeSrc = this.sanitizer.bypassSecurityTrustResourceUrl(url);
+  private applyUrl(url?: string): void {
+    const nextUrl = typeof url === 'string' ? url.trim() : '';
+    if (!nextUrl) return;
+    if (nextUrl === this.currentIframeUrl && this.iframeSrc) return;
+
+    if (this.currentIframeUrl && nextUrl !== this.currentIframeUrl) {
+      this.disposePenpalConnection();
+      this.currentIframeElement = null;
+    }
+
+    this.currentIframeUrl = nextUrl;
+    this.iframeSrc = this.sanitizer.bypassSecurityTrustResourceUrl(nextUrl);
     try {
-      this.allowedOrigins = [new URL(url).origin];
+      this.allowedOrigins = [new URL(nextUrl).origin];
     } catch {
       this.allowedOrigins = ['*'];
     }
-    if (url.includes('connection-graph')) {
+    if (nextUrl.includes('connection-graph')) {
       this.isConnectionGraphWindow = true;
       this.startConnectionGraphIpcListener();
     }
-    if (url.includes('component-viewer')) {
+    if (nextUrl.includes('component-viewer')) {
       this.isComponentViewerWindow = true;
     }
   }
@@ -215,16 +226,12 @@ export class IframeComponent implements OnInit, OnDestroy {
       return;
     }
 
-    // 销毁旧连接，避免连接残留
-    if (this.penpalConnection) {
-      this.penpalConnection.destroy();
-      this.penpalConnection = null;
-      this.remoteApi = null;
-    }
+    this.currentIframeElement = iframe;
+    this.disposePenpalConnection();
     this.connectionGraphInitialSyncInProgress = false;
     this.connectionGraphInitialDataPushed = false;
 
-    this.startPenpalConnection(iframe);
+    void this.startPenpalConnection(iframe);
   }
 
   /**
@@ -233,6 +240,9 @@ export class IframeComponent implements OnInit, OnDestroy {
   private async startPenpalConnection(
     iframe: HTMLIFrameElement,
   ): Promise<void> {
+    const generation = ++this.penpalConnectionGeneration;
+    let connection: Connection | null = null;
+
     try {
       const messenger = new WindowMessenger({
         remoteWindow: iframe.contentWindow!,
@@ -240,7 +250,7 @@ export class IframeComponent implements OnInit, OnDestroy {
       });
 
       // 父窗口暴露给子页面的方法
-      this.penpalConnection = connect({
+      connection = connect({
         messenger,
         ...(this.isConnectionGraphWindow
           ? { timeout: CONNECTION_GRAPH_PENPAL_TIMEOUT_MS }
@@ -361,8 +371,13 @@ export class IframeComponent implements OnInit, OnDestroy {
           },
         },
       });
+      this.penpalConnection = connection;
 
-      const remote = await this.penpalConnection.promise;
+      const remote = await connection.promise;
+      if (!this.isCurrentPenpalConnection(connection, generation)) {
+        connection.destroy();
+        return;
+      }
       this.remoteApi = remote;
 
       if (this.isConnectionGraphWindow) {
@@ -376,9 +391,11 @@ export class IframeComponent implements OnInit, OnDestroy {
       this.connectionGraphService.setIframeApi(remote);
 
       // 订阅连线图工具的进度通知，转发到 noticeService
-      this.noticeSubscription = this.connectionGraphService.noticeUpdate$.subscribe((opts) => {
-        this.ngZone.run(() => this.noticeService.update(opts));
-      });
+      if (!this.noticeSubscription) {
+        this.noticeSubscription = this.connectionGraphService.noticeUpdate$.subscribe((opts) => {
+          this.ngZone.run(() => this.noticeService.update(opts));
+        });
+      }
 
       // 连接成功，结束 loading
       this.isLoading = false;
@@ -395,11 +412,52 @@ export class IframeComponent implements OnInit, OnDestroy {
         }, 10);
       }
     } catch (error) {
+      if (
+        generation !== this.penpalConnectionGeneration ||
+        (connection && this.penpalConnection !== connection)
+      ) {
+        return;
+      }
+
+      connection?.destroy();
+      this.penpalConnection = null;
+      this.remoteApi = null;
+      this.connectionGraphService.clearIframeApi();
       console.error('Penpal 连接失败:', error);
       // 连接失败时降级：使用 postMessage 发送数据
       this.isLoading = false;
       this.showEmptyState = false;
     }
+  }
+
+  private isCurrentPenpalConnection(
+    connection: Connection,
+    generation: number,
+  ): boolean {
+    return (
+      generation === this.penpalConnectionGeneration &&
+      this.penpalConnection === connection
+    );
+  }
+
+  private ensurePenpalConnection(): void {
+    if (
+      this.remoteApi ||
+      this.penpalConnection ||
+      !this.currentIframeElement?.contentWindow
+    ) {
+      return;
+    }
+
+    void this.startPenpalConnection(this.currentIframeElement);
+  }
+
+  private disposePenpalConnection(): void {
+    this.penpalConnectionGeneration += 1;
+    this.penpalConnection?.destroy();
+    this.penpalConnection = null;
+    this.remoteApi = null;
+    this.connectionGraphService.clearIframeApi();
   }
 
   /**
@@ -560,12 +618,15 @@ export class IframeComponent implements OnInit, OnDestroy {
         case 'connection-graph-ready-request': {
           const request = data as { requestId?: string; url?: string } | undefined;
           if (!request?.url || request.url === this.currentIframeUrl) {
+            const ready = !!this.remoteApi
+              && typeof this.remoteApi['receiveData'] === 'function';
+            if (!ready) {
+              this.ensurePenpalConnection();
+            }
             this.sendToMain('connection-graph-ready', {
               requestId: request?.requestId,
               url: this.currentIframeUrl,
-              ready:
-                !!this.remoteApi
-                && typeof this.remoteApi['receiveData'] === 'function',
+              ready,
             });
           }
           break;
@@ -615,11 +676,8 @@ export class IframeComponent implements OnInit, OnDestroy {
       this.connectionGraphIpcCleanup = null;
     }
     // 清除 ConnectionGraphService 中的 iframe API 引用
-    this.connectionGraphService.clearIframeApi();
-    if (this.penpalConnection) {
-      this.penpalConnection.destroy();
-      this.penpalConnection = null;
-    }
+    this.currentIframeElement = null;
+    this.disposePenpalConnection();
     if (this.initDataCleanup) {
       this.initDataCleanup();
       this.initDataCleanup = null;
