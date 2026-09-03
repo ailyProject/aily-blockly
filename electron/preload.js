@@ -486,6 +486,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
     update: (options) => ipcRenderer.invoke("subapp-manager-update", options),
+    downloadUpdate: (options) => ipcRenderer.invoke("subapp-manager-download-update", options),
+    installUpdate: (options) => ipcRenderer.invoke("subapp-manager-install-update", options),
     uninstall: (options) => ipcRenderer.invoke("subapp-manager-uninstall", options),
     onChanged: (callback) => {
       const listener = (_event, payload) => callback(payload);

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@angular/core';
-import { Subject } from 'rxjs';
+import { firstValueFrom, Subject } from 'rxjs';
 import { ProjectService } from '@domain/project/public-api';
 import {
   CmdService,
@@ -112,6 +112,9 @@ export class BuilderService {
     },
   ) {
     try {
+      await this.persistActiveCoderProjectBeforeBuild(
+        this.projectService.currentProjectPath,
+      );
       // Pro / code-editor-pro 路由下 Blockly 未挂载，compile-begin 无监听者会一直等反馈；
       // Coder 工程改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
       let feedback: any;
@@ -176,6 +179,7 @@ export class BuilderService {
   }
 
   private async buildFromProjectPath(projectPath: string) {
+    await this.persistActiveCoderProjectBeforeBuild(projectPath);
     const compileResult = await this.compileService.runCompileFromDisk({ projectPath });
     const buildResult = compileResult.result;
     if (!compileResult.success || buildResult?.state === 'error') {
@@ -190,6 +194,36 @@ export class BuilderService {
 
     this.buildFinishedSubject.next({ success: true, result: buildResult });
     return buildResult;
+  }
+
+  /**
+   * Coder compiles persistent source directly from sketch/. Flush the embedded
+   * editor before the disk read so manual builds, uploads, and Agent builds
+   * cannot compile an older editor revision. Blockly keeps its existing
+   * compile-begin/project-save workflow and never enters this branch.
+   */
+  private async persistActiveCoderProjectBeforeBuild(projectPath: string): Promise<void> {
+    if (
+      !projectPath
+      || !this.projectService.isAilyCodeProject(projectPath)
+      || !this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)
+    ) {
+      return;
+    }
+
+    const feedback = await firstValueFrom(
+      this.actionService.dispatchWithFeedback(
+        'project-save',
+        { path: projectPath },
+        15_000,
+      ),
+    );
+    if (feedback?.success !== true) {
+      throw new Error(
+        feedback?.error
+        || 'Aily Coder source could not be saved to disk before compilation.',
+      );
+    }
   }
 
   /*
@@ -256,6 +290,22 @@ export class BuilderService {
     if (window['fs'].existsSync(libraryCachePath)) {
       console.log('清除本地库指纹缓存:', libraryCachePath);
       await this.crossPlatformCmdService.removeItem(libraryCachePath, false, true);
+    }
+
+    if (isAilyCode) {
+      const preprocessResultPath = this.electronService.pathJoin(
+        projectPath,
+        'sketch',
+        'preprocess.json',
+      );
+      if (window['fs'].existsSync(preprocessResultPath)) {
+        console.log('清除 Coder 预处理结果:', preprocessResultPath);
+        await this.crossPlatformCmdService.removeItem(
+          preprocessResultPath,
+          false,
+          true,
+        );
+      }
     }
   }
 

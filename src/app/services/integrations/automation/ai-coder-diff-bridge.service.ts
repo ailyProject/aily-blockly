@@ -2,8 +2,8 @@ import { Injectable, OnDestroy } from '@angular/core';
 import { Subject } from 'rxjs';
 import type { EditsSummary, EditFileSummary } from './coder-diff/ai-edit-summary.types';
 import {
-  AILY_CODER_AI_EDIT_DIFF_CHANNEL,
-  AILY_CODER_AI_EDIT_DIFF_RESULT_CHANNEL,
+  AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL,
+  AILY_CODER_EDITOR_AI_EDIT_DIFF_RESULT_CHANNEL,
   type AiEditDiffOpenPayload,
   type AiEditDiffResultPayload,
 } from './coder-diff/ai-coder-diff-channels';
@@ -124,7 +124,7 @@ export class AiCoderDiffBridgeService implements OnDestroy {
     try {
       win.postMessage(
         {
-          channel: AILY_CODER_AI_EDIT_DIFF_CHANNEL,
+          channel: AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL,
           op: 'close',
           payload: previewId ? { previewId } : undefined,
         },
@@ -195,7 +195,7 @@ export class AiCoderDiffBridgeService implements OnDestroy {
     try {
       win.postMessage(
         {
-          channel: AILY_CODER_AI_EDIT_DIFF_CHANNEL,
+          channel: AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL,
           op: 'open',
           payload,
         },
@@ -240,7 +240,7 @@ export class AiCoderDiffBridgeService implements OnDestroy {
 
   private handleEmbedMessage(ev: MessageEvent): void {
     const data = ev.data as Partial<AiEditDiffResultPayload> | undefined;
-    if (data?.channel !== AILY_CODER_AI_EDIT_DIFF_RESULT_CHANNEL) {
+    if (data?.channel !== AILY_CODER_EDITOR_AI_EDIT_DIFF_RESULT_CHANNEL) {
       return;
     }
     const source = ev.source as Window | null;
