@@ -94,9 +94,15 @@ declare global {
         onEvent: (streamId: string, callback: (payload: any) => void) => () => void;
       };
       subapps?: {
-        list: (options?: { refresh?: boolean; locale?: string }) => Promise<any>;
+        list: (options?: {
+          strategy?: 'cache-first' | 'network-first' | 'cache-only';
+          refresh?: boolean;
+          locale?: string;
+        }) => Promise<any>;
         install: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         update: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        downloadUpdate: (options: { id: string; locale?: string }) => Promise<any>;
+        installUpdate: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         uninstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         onChanged: (callback: (payload: any) => void) => () => void;
         onProgress: (callback: (payload: {

@@ -4,6 +4,7 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const { createHash, randomUUID } = require('crypto');
 const { exec, spawn } = require('child_process');
 const { URL } = require('url');
 const semver = require('semver');
@@ -11,6 +12,14 @@ const { killRegisteredProcessTree } = require('./process-tree');
 
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
+const UPDATE_STATE_FILE = 'state.json';
+const UPDATE_PACKAGE_FILE = 'package.tgz';
+const UPDATE_LOCK_FILE = 'activate.lock';
+const UPDATE_JOURNAL_FILE = 'activation.json';
+const UPDATE_ROLLBACK_PACKAGE = 'rollback-package';
+const UPDATE_ROLLBACK_MANIFEST = 'rollback-package.json';
+const UPDATE_ROLLBACK_LOCK_MANIFEST = 'rollback-package-lock.json';
+const UPDATE_SCHEMA_VERSION = 1;
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 const TOOL_ID_ALIASES = Object.freeze({
   'ffs-manager': 'ffs-manager-child',
@@ -60,6 +69,27 @@ function resolveSubappRoot(options = {}) {
   );
 }
 
+function resolveSubappUpdateRoot(options = {}) {
+  if (options.updateRootDir) return path.resolve(options.updateRootDir);
+  return path.join(
+    resolveAppDataPath(options.env, options.platform, options.home),
+    'temp',
+    'subapp-updates',
+  );
+}
+
+function updateVersionDirectory(updateRootDir, id, version) {
+  return path.join(updateRootDir, validateId(id), validateVersion(version));
+}
+
+function updateStatePath(updateRootDir, id, version) {
+  return path.join(updateVersionDirectory(updateRootDir, id, version), UPDATE_STATE_FILE);
+}
+
+function updatePackagePath(updateRootDir, id, version) {
+  return path.join(updateVersionDirectory(updateRootDir, id, version), UPDATE_PACKAGE_FILE);
+}
+
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -106,6 +136,32 @@ function validateVersion(value) {
   return version;
 }
 
+function validateUpdatePolicy(value, id) {
+  if (value === undefined) return null;
+  if (!isObject(value)) throw new Error(`${id} update policy must be an object`);
+  if (value.download !== 'background' || value.install !== 'next-launch') {
+    throw new Error(`${id} update policy must use background download and next-launch install`);
+  }
+  return {
+    download: 'background',
+    install: 'next-launch',
+  };
+}
+
+function validateDistribution(value, id) {
+  if (value === undefined) return null;
+  if (!isObject(value)) throw new Error(`${id} dist must be an object`);
+  const tarball = requireText(value.tarball, `${id} dist.tarball`);
+  if (!/^https?:\/\//i.test(tarball)) {
+    throw new Error(`${id} dist.tarball must be an HTTP(S) URL`);
+  }
+  const integrity = requireText(value.integrity, `${id} dist.integrity`);
+  if (!/^(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2}$/.test(integrity)) {
+    throw new Error(`${id} dist.integrity must be a supported SRI digest`);
+  }
+  return { tarball, integrity };
+}
+
 function validateIndex(rawIndex) {
   if (!isObject(rawIndex)) {
     throw new Error('Subapp index must be a JSON object');
@@ -126,6 +182,8 @@ function validateIndex(rawIndex) {
     const i18n = isObject(rawEntry.i18n) ? rawEntry.i18n : {};
     const locales = isObject(i18n.locales) ? i18n.locales : {};
     const defaultLocale = normalizeLocale(i18n.defaultLocale || 'en');
+    const update = validateUpdatePolicy(rawEntry.update, id);
+    const dist = validateDistribution(rawEntry.dist, id);
 
     index[id] = {
       ...rawEntry,
@@ -156,6 +214,8 @@ function validateIndex(rawIndex) {
         defaultLocale,
         locales,
       },
+      ...(update ? { update } : {}),
+      ...(dist ? { dist } : {}),
       ...(isObject(rawEntry.compatibility) ? { compatibility: rawEntry.compatibility } : {}),
     };
   }
@@ -174,6 +234,32 @@ function packagePathFor(rootDir, packageName) {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function writeJsonAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
+function parseIntegrity(value) {
+  const match = String(value || '').trim().match(/^(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})$/);
+  if (!match) throw new Error('Package integrity must be a sha256, sha384, or sha512 SRI digest');
+  return { algorithm: match[1], digest: match[2] };
+}
+
+function verifyFileIntegrity(filePath, integrity) {
+  const expected = parseIntegrity(integrity);
+  const actual = createHash(expected.algorithm).update(fs.readFileSync(filePath)).digest('base64');
+  if (actual !== expected.digest) {
+    throw new Error(`Subapp package integrity mismatch: expected ${integrity}`);
+  }
+  return true;
 }
 
 function isDistRelativePath(value) {
@@ -595,6 +681,7 @@ function readInstalledState(rootDir, entry) {
   }
 
   try {
+    const development = fs.lstatSync(packagePath).isSymbolicLink();
     const packageJson = readJson(packageJsonPath);
     const installedVersion = typeof packageJson.version === 'string' ? packageJson.version : null;
     const runnable = resolveRunnablePackage(packagePath, entry.id, packageJson);
@@ -642,6 +729,7 @@ function readInstalledState(rootDir, entry) {
     return {
       installed: complete,
       installedVersion,
+      development,
       packagePath: runnablePackagePath,
       config: complete ? {
         id: toolId,
@@ -721,6 +809,14 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
       .filter((entry) => entry.app.enabled !== false)
       .map((entry) => {
         const installedState = readInstalledState(rootDir, entry);
+        const updateAvailable = installedState.installed
+          && hasUpdate(installedState.installedVersion, entry.version);
+        const updateStatus = readSubappUpdateStatus(
+          meta.updateRootDir || resolveSubappUpdateRoot(),
+          entry,
+          installedState,
+          meta.updateOperations?.get(`${entry.id}@${entry.version}`) || null,
+        );
         const copy = resolveLocalizedCopy(entry, locale);
         const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
         const localizedConfig = installedState.config
@@ -745,8 +841,9 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           availableVersion: entry.version,
           installedVersion: installedState.installedVersion,
           installed: installedState.installed,
-          updateAvailable: installedState.installed
-            && hasUpdate(installedState.installedVersion, entry.version),
+          updateAvailable,
+          updateStatus,
+          ...(entry.update ? { updatePolicy: entry.update } : {}),
           installPath: installedState.packagePath,
           titleKey: entry.titleKey,
           namespace: entry.namespace,
@@ -960,6 +1057,25 @@ function resolvePackageTarballUrl(entry, npmRunner, options = {}) {
   });
 }
 
+async function resolvePackageDistribution(entry, npmRunner, options = {}) {
+  if (entry.dist) return entry.dist;
+  if (typeof options.resolveDistribution === 'function') {
+    return validateDistribution(await options.resolveDistribution(entry), entry.id);
+  }
+
+  const result = await npmRunner(
+    ['view', `${entry.package}@${entry.version}`, 'dist', '--json'],
+    options,
+  );
+  let dist;
+  try {
+    dist = JSON.parse(String(result?.stdout || '').trim());
+  } catch (error) {
+    throw new Error(`Unable to read package distribution for ${entry.package}@${entry.version}`);
+  }
+  return validateDistribution(dist, entry.id);
+}
+
 function downloadFileWithProgress(fileUrl, destination, onProgress, options = {}) {
   const fetchImpl = options.downloadFetch || ((url, requestOptions) => {
     const parsed = new URL(url);
@@ -1096,6 +1212,271 @@ function readDevelopmentIndexCache(rootDir) {
   return rawIndex?.dev === true ? validateIndex(rawIndex) : null;
 }
 
+function mergeDevelopmentLinkedEntries(rootDir, remoteIndex, developmentIndex) {
+  const merged = { ...remoteIndex };
+  delete merged.dev;
+
+  for (const [id, entry] of Object.entries(developmentIndex || {})) {
+    if (id === 'dev') continue;
+    try {
+      if (fs.lstatSync(packagePathFor(rootDir, entry.package)).isSymbolicLink()) {
+        merged[id] = entry;
+      }
+    } catch {
+      // Ignore stale development catalog entries whose package link no longer exists.
+    }
+  }
+
+  return merged;
+}
+
+function stagedManifestPaths(updateRootDir, id, version) {
+  const directory = updateVersionDirectory(updateRootDir, id, version);
+  return {
+    directory,
+    package: path.join(directory, UPDATE_PACKAGE_FILE),
+    state: path.join(directory, UPDATE_STATE_FILE),
+    journal: path.join(directory, UPDATE_JOURNAL_FILE),
+    rollbackPackage: path.join(directory, UPDATE_ROLLBACK_PACKAGE),
+    rollbackPackageJson: path.join(directory, UPDATE_ROLLBACK_MANIFEST),
+    rollbackPackageLock: path.join(directory, UPDATE_ROLLBACK_LOCK_MANIFEST),
+  };
+}
+
+function readUpdateRecord(updateRootDir, entry) {
+  const statePath = updateStatePath(updateRootDir, entry.id, entry.version);
+  if (!fs.existsSync(statePath)) return null;
+  try {
+    const record = readJson(statePath);
+    if (
+      record?.schemaVersion !== UPDATE_SCHEMA_VERSION
+      || record?.id !== entry.id
+      || record?.packageName !== entry.package
+      || record?.version !== entry.version
+      || !['ready', 'failed'].includes(record?.state)
+    ) {
+      throw new Error('Staged update metadata does not match the catalog entry');
+    }
+    return record;
+  } catch (error) {
+    return {
+      schemaVersion: UPDATE_SCHEMA_VERSION,
+      id: entry.id,
+      packageName: entry.package,
+      version: entry.version,
+      state: 'failed',
+      phase: 'download',
+      error: error.message || String(error),
+    };
+  }
+}
+
+function verifyStagedAssets(updateRootDir, record) {
+  const paths = stagedManifestPaths(updateRootDir, record.id, record.version);
+  if (!record.distribution) {
+    throw new Error('Staged update metadata is incomplete');
+  }
+  const distribution = validateDistribution(record.distribution, record.id);
+  if (!fs.existsSync(paths.package)) throw new Error('Staged update package is missing');
+  verifyFileIntegrity(paths.package, distribution.integrity);
+  return paths;
+}
+
+function readSubappUpdateStatus(updateRootDir, entry, installedState, operation = null) {
+  const targetVersion = entry.version;
+  if (!installedState.installed || !hasUpdate(installedState.installedVersion, targetVersion)) {
+    return { state: 'current', targetVersion };
+  }
+  if (!entry.update || installedState.development) {
+    return { state: 'available', targetVersion };
+  }
+  if (operation && operation.version === targetVersion) {
+    return {
+      state: operation.state,
+      targetVersion,
+      progress: clampProgress(operation.progress),
+      ...(operation.error ? { error: operation.error } : {}),
+    };
+  }
+
+  const record = readUpdateRecord(updateRootDir, entry);
+  if (!record) return { state: 'available', targetVersion };
+  if (record.state === 'failed' && record.phase !== 'install') {
+    return {
+      state: 'failed',
+      targetVersion,
+      ready: false,
+      error: record.error || 'Subapp update download failed',
+    };
+  }
+  try {
+    verifyStagedAssets(updateRootDir, record);
+    if (record.state === 'failed') {
+      return {
+        state: 'failed',
+        targetVersion,
+        ready: record.phase === 'install',
+        error: record.error || 'Subapp update failed',
+      };
+    }
+    return {
+      state: 'ready',
+      targetVersion,
+      ready: true,
+      downloadedAt: record.stagedAt,
+    };
+  } catch (error) {
+    return {
+      state: 'failed',
+      targetVersion,
+      ready: false,
+      error: error.message || String(error),
+    };
+  }
+}
+
+async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
+  if (!entry.update) throw new Error(`Subapp does not support background updates: ${entry.id}`);
+  const installedState = readInstalledState(rootDir, entry);
+  if (installedState.development) throw new Error(`Development-linked subapp cannot be updated: ${entry.id}`);
+  if (!installedState.installed || !hasUpdate(installedState.installedVersion, entry.version)) {
+    throw new Error(`Subapp update is not available: ${entry.id}`);
+  }
+
+  const existing = readUpdateRecord(updateRootDir, entry);
+  if (existing) {
+    try {
+      const existingPaths = verifyStagedAssets(updateRootDir, existing);
+      await prepareUpdateNpmCache(updateRootDir, existingPaths, entry, npmRunner, options);
+      const readyRecord = {
+        ...existing,
+        state: 'ready',
+        phase: 'download',
+        error: undefined,
+      };
+      writeJsonAtomic(updateStatePath(updateRootDir, entry.id, entry.version), readyRecord);
+      return readyRecord;
+    } catch {
+      // Replace an incomplete or corrupt staged update with a fresh download.
+    }
+  }
+
+  const paths = stagedManifestPaths(updateRootDir, entry.id, entry.version);
+  fs.rmSync(paths.directory, { recursive: true, force: true });
+  fs.mkdirSync(paths.directory, { recursive: true });
+  const temporaryPackage = `${paths.package}.${process.pid}.${randomUUID()}.tmp`;
+  const tracker = options.progressTracker;
+  tracker?.start();
+  let distribution = null;
+  try {
+    distribution = await resolvePackageDistribution(entry, npmRunner, options);
+    const download = options.downloadFile || downloadFileWithProgress;
+    await download(
+      distribution.tarball,
+      temporaryPackage,
+      (percent) => tracker?.setDownload(percent),
+      options,
+    );
+    verifyFileIntegrity(temporaryPackage, distribution.integrity);
+    fs.renameSync(temporaryPackage, paths.package);
+    tracker?.setDownload(100);
+
+    await prepareUpdateNpmCache(updateRootDir, paths, entry, npmRunner, options);
+    const record = {
+      schemaVersion: UPDATE_SCHEMA_VERSION,
+      id: entry.id,
+      packageName: entry.package,
+      version: entry.version,
+      state: 'ready',
+      phase: 'download',
+      stagedAt: new Date().toISOString(),
+      entry,
+      distribution,
+    };
+    writeJsonAtomic(paths.state, record);
+    tracker?.complete();
+    return record;
+  } catch (error) {
+    if (fs.existsSync(temporaryPackage)) fs.rmSync(temporaryPackage, { force: true });
+    writeJsonAtomic(paths.state, {
+      schemaVersion: UPDATE_SCHEMA_VERSION,
+      id: entry.id,
+      packageName: entry.package,
+      version: entry.version,
+      state: 'failed',
+      phase: 'download',
+      failedAt: new Date().toISOString(),
+      error: error.message || String(error),
+      entry,
+      ...(distribution ? { distribution } : {}),
+    });
+    throw error;
+  }
+}
+
+async function prepareUpdateNpmCache(updateRootDir, paths, entry, npmRunner, options = {}) {
+  const cacheRoot = path.join(updateRootDir, 'npm-cache');
+  const probeRoot = path.join(paths.directory, '.offline-probe');
+  fs.mkdirSync(cacheRoot, { recursive: true });
+  await npmRunner(['cache', 'add', paths.package, '--cache', cacheRoot], options);
+  await npmRunner(['cache', 'add', `${entry.package}@${entry.version}`, '--cache', cacheRoot], options);
+
+  fs.rmSync(probeRoot, { recursive: true, force: true });
+  fs.mkdirSync(probeRoot, { recursive: true });
+  writeJsonAtomic(path.join(probeRoot, 'package.json'), {
+    name: 'aily-subapp-update-offline-probe',
+    private: true,
+    version: '1.0.0',
+  });
+  try {
+    await npmRunner([
+      'install', '--prefix', probeRoot, '--save-exact', '--package-lock-only', '--offline',
+      '--cache', cacheRoot, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund',
+      `${entry.package}@${entry.version}`,
+    ], options);
+  } finally {
+    fs.rmSync(probeRoot, { recursive: true, force: true });
+  }
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireUpdateLock(updateRootDir) {
+  fs.mkdirSync(updateRootDir, { recursive: true });
+  const lockPath = path.join(updateRootDir, UPDATE_LOCK_FILE);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const descriptor = fs.openSync(lockPath, 'wx', 0o600);
+      fs.writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`);
+      fs.closeSync(descriptor);
+      return () => fs.rmSync(lockPath, { force: true });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      let owner = null;
+      try {
+        owner = readJson(lockPath);
+      } catch {
+        // A malformed lock is stale.
+      }
+      if (isProcessAlive(Number(owner?.pid))) return null;
+      try {
+        fs.rmSync(lockPath, { force: true });
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 function snapshotFile(filePath) {
   return fs.existsSync(filePath)
     ? { exists: true, contents: fs.readFileSync(filePath) }
@@ -1121,6 +1502,14 @@ function packageInstallFromTarballArgs(rootDir, tarballPath) {
   return [
     'install', '--prefix', rootDir, '--save-exact', '--omit=dev', '--no-audit', '--no-fund',
     '--foreground-scripts', tarballPath,
+  ];
+}
+
+function packageActivateFromCacheArgs(rootDir, entry, cacheRoot) {
+  return [
+    'install', '--prefix', rootDir, '--save-exact', '--offline', '--cache', cacheRoot,
+    '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund',
+    `${entry.package}@${entry.version}`,
   ];
 }
 
@@ -1677,8 +2066,206 @@ async function replaceInstalledPackage(rootDir, entry, npmRunner, options = {}) 
   }
 }
 
+function restoreRollbackFile(livePath, rollbackPath, existed) {
+  if (existed && fs.existsSync(rollbackPath)) {
+    fs.copyFileSync(rollbackPath, livePath);
+  } else if (!existed && fs.existsSync(livePath)) {
+    fs.rmSync(livePath, { force: true });
+  }
+}
+
+async function recoverInterruptedActivation(rootDir, updateRootDir, record, options = {}) {
+  const paths = stagedManifestPaths(updateRootDir, record.id, record.version);
+  if (!fs.existsSync(paths.journal)) return false;
+  const journal = readJson(paths.journal);
+  const packagePath = packagePathFor(rootDir, record.packageName);
+  if (fs.existsSync(paths.rollbackPackage)) {
+    if (fs.existsSync(packagePath)) {
+      await rmWithBusyRetry(packagePath, {
+        retries: options.renameRetries,
+        baseDelayMs: options.renameRetryDelayMs,
+        sleep: options.sleep,
+      });
+    }
+    fs.mkdirSync(path.dirname(packagePath), { recursive: true });
+    await renameWithBusyRetry(paths.rollbackPackage, packagePath, {
+      retries: options.renameRetries,
+      baseDelayMs: options.renameRetryDelayMs,
+      sleep: options.sleep,
+    });
+  }
+  restoreRollbackFile(
+    path.join(rootDir, 'package.json'),
+    paths.rollbackPackageJson,
+    journal.packageJsonExisted === true,
+  );
+  restoreRollbackFile(
+    path.join(rootDir, 'package-lock.json'),
+    paths.rollbackPackageLock,
+    journal.packageLockExisted === true,
+  );
+  fs.rmSync(paths.journal, { force: true });
+  fs.rmSync(paths.rollbackPackageJson, { force: true });
+  fs.rmSync(paths.rollbackPackageLock, { force: true });
+  writeJsonAtomic(paths.state, {
+    ...record,
+    state: 'failed',
+    phase: 'install',
+    failedAt: new Date().toISOString(),
+    error: 'A previously interrupted update was rolled back safely',
+  });
+  return true;
+}
+
+function assertCanonicalDependency(rootDir, entry, distribution) {
+  const packageJson = readJson(path.join(rootDir, 'package.json'));
+  const packageLock = readJson(path.join(rootDir, 'package-lock.json'));
+  const lockKey = `node_modules/${entry.package}`;
+  if (packageJson.dependencies?.[entry.package] !== entry.version) {
+    throw new Error(`Installed dependency is not pinned to ${entry.package}@${entry.version}`);
+  }
+  if (packageLock.packages?.['']?.dependencies?.[entry.package] !== entry.version) {
+    throw new Error(`Package lock root is not pinned to ${entry.package}@${entry.version}`);
+  }
+  const locked = packageLock.packages?.[lockKey];
+  if (
+    locked?.version !== entry.version
+    || locked?.resolved !== distribution.tarball
+    || locked?.integrity !== distribution.integrity
+  ) {
+    throw new Error(`Package lock metadata is invalid for ${entry.package}@${entry.version}`);
+  }
+}
+
+async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
+  const record = readUpdateRecord(updateRootDir, entry);
+  if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
+  const paths = verifyStagedAssets(updateRootDir, record);
+  if (record.state === 'failed' && record.phase !== 'install') {
+    throw new Error(record.error || `Downloaded update is not ready: ${entry.id}`);
+  }
+
+  const canActivate = typeof options.canActivateUpdate === 'function'
+    ? await options.canActivateUpdate(entry)
+    : true;
+  if (canActivate === false || canActivate?.ok === false) {
+    const error = new Error(canActivate?.reason || 'Another application window is using subapps');
+    error.code = 'UPDATE_DEFERRED';
+    throw error;
+  }
+
+  const releaseLock = acquireUpdateLock(updateRootDir);
+  if (!releaseLock) {
+    const error = new Error('Another process is installing a subapp update');
+    error.code = 'UPDATE_DEFERRED';
+    throw error;
+  }
+
+  const packagePath = packagePathFor(rootDir, entry.package);
+  const packageJsonPath = path.join(rootDir, 'package.json');
+  const packageLockPath = path.join(rootDir, 'package-lock.json');
+  const tracker = options.progressTracker;
+  let backedUp = false;
+  let journalWritten = false;
+  tracker?.start();
+
+  try {
+    if (await recoverInterruptedActivation(rootDir, updateRootDir, record, options)) {
+      const error = new Error('Interrupted subapp update was rolled back; retry installation');
+      error.code = 'UPDATE_RECOVERED';
+      throw error;
+    }
+
+    const cacheRoot = path.join(updateRootDir, 'npm-cache');
+    await npmRunner(['cache', 'add', paths.package, '--cache', cacheRoot], options);
+
+    const packageJsonSnapshot = snapshotFile(packageJsonPath);
+    const packageLockSnapshot = snapshotFile(packageLockPath);
+    if (packageJsonSnapshot.exists) fs.writeFileSync(paths.rollbackPackageJson, packageJsonSnapshot.contents);
+    if (packageLockSnapshot.exists) fs.writeFileSync(paths.rollbackPackageLock, packageLockSnapshot.contents);
+    writeJsonAtomic(paths.journal, {
+      schemaVersion: UPDATE_SCHEMA_VERSION,
+      id: entry.id,
+      version: entry.version,
+      startedAt: new Date().toISOString(),
+      packageJsonExisted: packageJsonSnapshot.exists,
+      packageLockExisted: packageLockSnapshot.exists,
+    });
+    journalWritten = true;
+
+    if (fs.existsSync(packagePath)) {
+      await renamePackagePathWithForceClose(packagePath, paths.rollbackPackage, entry, {
+        ...options,
+        mutationAction: 'install-update',
+      });
+      backedUp = true;
+    }
+
+    tracker?.setDownload(100);
+    await runNpmWithBusyRetry(
+      npmRunner,
+      packageActivateFromCacheArgs(rootDir, entry, cacheRoot),
+      withProgressOutput(options, tracker),
+      {
+        retries: options.npmBusyRetries,
+        baseDelayMs: options.npmBusyRetryDelayMs,
+        sleep: options.sleep,
+        packagePath,
+      },
+    );
+    const installedState = readInstalledState(rootDir, entry);
+    if (!installedState.installed || installedState.installedVersion !== entry.version) {
+      throw new Error(
+        `Subapp update verification failed: expected ${entry.version}, got ${installedState.installedVersion || 'missing'}`,
+      );
+    }
+
+    assertCanonicalDependency(rootDir, entry, record.distribution);
+    tracker?.setExtract(100);
+
+    if (backedUp && fs.existsSync(paths.rollbackPackage)) {
+      await rmWithBusyRetry(paths.rollbackPackage, {
+        retries: options.renameRetries,
+        baseDelayMs: options.renameRetryDelayMs,
+        sleep: options.sleep,
+      });
+    }
+    fs.rmSync(paths.journal, { force: true });
+    fs.rmSync(paths.rollbackPackageJson, { force: true });
+    fs.rmSync(paths.rollbackPackageLock, { force: true });
+    journalWritten = false;
+    tracker?.complete();
+    fs.rmSync(paths.directory, { recursive: true, force: true });
+    return { id: entry.id, version: entry.version, status: 'installed' };
+  } catch (error) {
+    if (journalWritten) {
+      try {
+        await recoverInterruptedActivation(rootDir, updateRootDir, record, options);
+      } catch (rollbackError) {
+        error.rollbackError = rollbackError;
+      }
+    }
+    if (fs.existsSync(paths.state)) {
+      writeJsonAtomic(paths.state, {
+        ...record,
+        state: 'failed',
+        phase: 'install',
+        failedAt: new Date().toISOString(),
+        error: error.message || String(error),
+      });
+    }
+    throw error;
+  } finally {
+    releaseLock();
+  }
+}
+
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
+  const updateRootDir = resolveSubappUpdateRoot(options);
+  const updateOperations = new Map();
+  const backgroundAttempts = new Set();
+  const backgroundDownloads = new Map();
   let currentIndex = null;
   let currentMeta = null;
   let currentIndexUrl = null;
@@ -1692,6 +2279,10 @@ function createSubappManager(options = {}) {
   }
 
   async function loadIndex(strategy = 'network-first') {
+    if (strategy !== 'network-first' && strategy !== 'cache-first' && strategy !== 'cache-only') {
+      throw new Error(`Unsupported subapp catalog load strategy: ${strategy}`);
+    }
+
     const indexUrl = resolveIndexUrl();
     if (currentIndexUrl !== indexUrl) {
       currentIndex = null;
@@ -1700,6 +2291,11 @@ function createSubappManager(options = {}) {
       indexUrlGeneration += 1;
     }
     const loadGeneration = indexUrlGeneration;
+
+    if (currentIndex && strategy !== 'network-first') {
+      return { index: currentIndex, meta: currentMeta };
+    }
+
     let cacheError = null;
     let localIndex = null;
     try {
@@ -1707,7 +2303,8 @@ function createSubappManager(options = {}) {
     } catch (error) {
       cacheError = error;
     }
-    if (localIndex?.dev === true) {
+
+    if (localIndex?.dev === true && strategy !== 'network-first') {
       currentIndex = localIndex;
       currentMeta = {
         indexUrl,
@@ -1716,17 +2313,6 @@ function createSubappManager(options = {}) {
         warning: null,
       };
       return { index: localIndex, meta: currentMeta };
-    }
-    if (currentIndex?.dev === true) {
-      currentIndex = null;
-      currentMeta = null;
-    }
-
-    if (strategy !== 'network-first' && strategy !== 'cache-first' && strategy !== 'cache-only') {
-      throw new Error(`Unsupported subapp catalog load strategy: ${strategy}`);
-    }
-    if (currentIndex && strategy !== 'network-first') {
-      return { index: currentIndex, meta: currentMeta };
     }
 
     if (strategy !== 'network-first') {
@@ -1751,7 +2337,7 @@ function createSubappManager(options = {}) {
     }
 
     try {
-      const index = await fetchRemoteIndex(indexUrl, options.fetchImpl);
+      const remoteIndex = await fetchRemoteIndex(indexUrl, options.fetchImpl);
       if (
         loadGeneration !== indexUrlGeneration
         || currentIndexUrl !== indexUrl
@@ -1759,7 +2345,13 @@ function createSubappManager(options = {}) {
       ) {
         return loadIndex(strategy);
       }
-      writeIndexCache(rootDir, index, indexUrl);
+
+      const index = localIndex?.dev === true
+        ? mergeDevelopmentLinkedEntries(rootDir, remoteIndex, localIndex)
+        : remoteIndex;
+      if (localIndex?.dev !== true) {
+        writeIndexCache(rootDir, index, indexUrl);
+      }
       currentIndex = index;
       currentMeta = { indexUrl, source: 'network', fetchedAt: new Date().toISOString(), warning: null };
       return { index, meta: currentMeta };
@@ -1771,6 +2363,18 @@ function createSubappManager(options = {}) {
       ) {
         return loadIndex(strategy);
       }
+
+      if (localIndex?.dev === true) {
+        currentIndex = localIndex;
+        currentMeta = {
+          indexUrl,
+          source: 'cache',
+          fetchedAt: new Date().toISOString(),
+          warning: error.message,
+        };
+        return { index: localIndex, meta: currentMeta };
+      }
+
       let cached = null;
       try {
         cached = readIndexCache(rootDir, indexUrl);
@@ -1796,7 +2400,109 @@ function createSubappManager(options = {}) {
         ? 'network-first'
         : 'cache-first';
     const { index, meta } = await loadIndex(strategy);
-    return createCatalogState(rootDir, index, payload.locale || 'en', meta);
+    scheduleBackgroundUpdates(index, meta);
+    return createCatalogState(rootDir, index, payload.locale || 'en', {
+      ...meta,
+      updateRootDir,
+      updateOperations,
+    });
+  }
+
+  function updateKey(entry) {
+    return `${entry.id}@${entry.version}`;
+  }
+
+  function progressHandler(entry, state, externalHandler) {
+    return (progress) => {
+      const percent = progress.action === 'download-update'
+        ? clampProgress(progress.downloadProgress)
+        : clampProgress(progress.percent);
+      updateOperations.set(updateKey(entry), {
+        version: entry.version,
+        state,
+        progress: percent,
+        ...(progress.error ? { error: progress.error } : {}),
+      });
+      if (typeof externalHandler === 'function') {
+        externalHandler({ ...progress, percent });
+      }
+    };
+  }
+
+  function notifyChanged(action, id) {
+    if (typeof options.onChanged === 'function') options.onChanged({ action, id });
+  }
+
+  async function downloadUpdateEntry(entry, payload = {}) {
+    const key = updateKey(entry);
+    const existingDownload = backgroundDownloads.get(key);
+    if (existingDownload) return existingDownload;
+
+    const onProgress = typeof payload.onProgress === 'function'
+      ? payload.onProgress
+      : options.onProgress;
+    const tracker = createMutationProgressTracker({
+      id: entry.id,
+      action: 'download-update',
+      onProgress: progressHandler(entry, 'downloading', onProgress),
+    });
+    const operation = stageSubappUpdate(
+      rootDir,
+      updateRootDir,
+      entry,
+      options.runNpm || runNpm,
+      { ...options, progressTracker: tracker },
+    ).then((record) => {
+      updateOperations.delete(key);
+      notifyChanged('download-update', entry.id);
+      return record;
+    }).catch((error) => {
+      updateOperations.set(key, {
+        version: entry.version,
+        state: 'failed',
+        progress: tracker.percent,
+        error: error.message || String(error),
+      });
+      if (typeof onProgress === 'function') {
+        onProgress({
+          id: entry.id,
+          action: 'download-update',
+          phase: 'error',
+          percent: tracker.percent,
+          error: error.message || String(error),
+        });
+      }
+      notifyChanged('download-update', entry.id);
+      throw error;
+    }).finally(() => {
+      backgroundDownloads.delete(key);
+    });
+    backgroundDownloads.set(key, operation);
+    return operation;
+  }
+
+  function scheduleBackgroundUpdates(index, meta) {
+    if (meta.source !== 'network' || index.dev === true) return;
+    for (const [id, entry] of Object.entries(index)) {
+      if (id === 'dev' || !entry.update || entry.app.enabled === false) continue;
+      const installedState = readInstalledState(rootDir, entry);
+      if (
+        !installedState.installed
+        || installedState.development
+        || !hasUpdate(installedState.installedVersion, entry.version)
+      ) {
+        continue;
+      }
+      const key = updateKey(entry);
+      const status = readSubappUpdateStatus(updateRootDir, entry, installedState);
+      const canDownload = status.state === 'available'
+        || (status.state === 'failed' && status.ready !== true);
+      if (!canDownload || backgroundAttempts.has(key)) continue;
+      backgroundAttempts.add(key);
+      void downloadUpdateEntry(entry).catch((error) => {
+        console.warn('[subapp-manager] background update download failed:', error.message || error);
+      });
+    }
   }
 
   function enqueueMutation(operation) {
@@ -1826,7 +2532,11 @@ function createSubappManager(options = {}) {
       const progressTracker = createMutationProgressTracker({
         id,
         action,
-        onProgress,
+        onProgress: progressHandler(
+          entry,
+          action === 'install-update' ? 'installing' : action,
+          onProgress,
+        ),
       });
       const mutationOptions = {
         ...options,
@@ -1834,15 +2544,35 @@ function createSubappManager(options = {}) {
         forceClose: payload.forceClose === true || options.forceClose === true,
       };
 
+      let releaseLock = null;
       try {
-        if (action === 'uninstall') {
-          await uninstallInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
-        } else if (action === 'update') {
-          await replaceInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+        if (action === 'install-update') {
+          await activateStagedSubappUpdate(
+            rootDir,
+            updateRootDir,
+            entry,
+            options.runNpm || runNpm,
+            mutationOptions,
+          );
         } else {
-          progressTracker.start();
-          await installPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
-          progressTracker.complete();
+          releaseLock = acquireUpdateLock(updateRootDir);
+          if (!releaseLock) {
+            const lockError = new Error('Another process is changing installed subapps');
+            lockError.code = 'UPDATE_DEFERRED';
+            throw lockError;
+          }
+          if (action === 'uninstall') {
+            await uninstallInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+          } else if (action === 'update') {
+            if (entry.update) {
+              throw new Error(`Use installUpdate for staged subapp updates: ${entry.id}`);
+            }
+            await replaceInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+          } else {
+            progressTracker.start();
+            await installPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+            progressTracker.complete();
+          }
         }
       } catch (error) {
         if (typeof onProgress === 'function') {
@@ -1857,9 +2587,23 @@ function createSubappManager(options = {}) {
           });
         }
         throw error;
+      } finally {
+        releaseLock?.();
+        updateOperations.delete(updateKey(entry));
       }
       return list({ locale: payload.locale || 'en' });
     });
+  }
+
+  async function downloadUpdate(payload = {}) {
+    const { index } = await loadIndex('cache-first');
+    if (index.dev === true) throw new Error('Development subapps cannot be updated');
+    const id = validateId(payload.id);
+    const entry = index[id];
+    if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);
+    ensureInstallProject(rootDir);
+    await downloadUpdateEntry(entry, payload);
+    return list({ locale: payload.locale || 'en' });
   }
 
   return {
@@ -1870,6 +2614,8 @@ function createSubappManager(options = {}) {
     list,
     install: (payload) => mutate('install', payload),
     update: (payload) => mutate('update', payload),
+    downloadUpdate,
+    installUpdate: (payload) => mutate('install-update', payload),
     uninstall: (payload) => mutate('uninstall', payload),
   };
 }
@@ -1910,6 +2656,8 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
   const {
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
+    getIndexUrl,
+    canActivateUpdate,
   } = handlerOptions;
 
   const sendProgress = (progress) => {
@@ -1919,10 +2667,20 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     }
   };
 
+  const sendChanged = (payload) => {
+    const mainWindow = getMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('subapp-manager-changed', payload);
+    }
+  };
+
   defaultManager = createSubappManager({
     onProgress: sendProgress,
+    onChanged: sendChanged,
     platform: process.platform,
     getMainWindow,
+    getIndexUrl,
+    canActivateUpdate,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),
     forceStopChildToolByCatalogId,
     listChildToolHolders: listChildToolHoldersForCatalogId,
@@ -1941,6 +2699,8 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
   ipcMain.handle('subapp-manager-update', handleMutation('update'));
+  ipcMain.handle('subapp-manager-download-update', handleMutation('downloadUpdate'));
+  ipcMain.handle('subapp-manager-install-update', handleMutation('installUpdate'));
   ipcMain.handle('subapp-manager-uninstall', handleMutation('uninstall'));
   handlersRegistered = true;
 }
@@ -1949,6 +2709,7 @@ module.exports = {
   DEFAULT_INDEX_URL,
   TOOL_ID_ALIASES,
   buildSubappIndexUrl,
+  activateStagedSubappUpdate,
   clampProgress,
   collectBusyHolders,
   createCatalogState,
@@ -1971,7 +2732,10 @@ module.exports = {
   resolveBusyConflictAndRetry,
   resolveRunnablePackage,
   resolveSubappRoot,
+  resolveSubappUpdateRoot,
   resolveUiIndex,
   rmWithBusyRetry,
+  stageSubappUpdate,
   validateIndex,
+  verifyFileIntegrity,
 };

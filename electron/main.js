@@ -39,6 +39,8 @@ const {
   registerWebviewDebuggerSurfaceHandlers,
 } = require('./webview-debugger-surface');
 const ORIGINAL_PROCESS_PATH = process.env.PATH || process.env.Path || "";
+const ORIGINAL_SUBAPP_INDEX_URL = process.env.AILY_SUBAPP_INDEX_URL || "";
+const ORIGINAL_AILY_NPM_REGISTRY = process.env.AILY_NPM_REGISTRY || "";
 let cachedPackagedMetadata;
 
 function getPackagedMetadata() {
@@ -250,6 +252,30 @@ function isProcessRunning(pid) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function hasOtherRunningInstances() {
+  const currentUserDataPath = app.getPath('userData');
+  const baseUserDataPath = currentUserDataPath.replace(/[/\\]instances[/\\][^/\\]+$/, '');
+  const instancesDirectory = path.join(baseUserDataPath, 'instances');
+  if (!fs.existsSync(instancesDirectory)) return false;
+
+  try {
+    return fs.readdirSync(instancesDirectory, { withFileTypes: true }).some((entry) => {
+      if (!entry.isDirectory() || !/^instance-\d+$/.test(entry.name)) return false;
+      const lockFilePath = path.join(instancesDirectory, entry.name, 'instance.lock');
+      if (!fs.existsSync(lockFilePath)) return false;
+      try {
+        const lock = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'));
+        return lock.pid !== process.pid && isProcessRunning(Number(lock.pid));
+      } catch {
+        return false;
+      }
+    });
+  } catch (error) {
+    console.warn('扫描其他应用实例失败，延后子应用更新:', error.message || error);
+    return true;
   }
 }
 
@@ -2178,32 +2204,45 @@ function loadEnv() {
   process.env.AILY_BUILD_PRODUCT = buildProduct;
   process.env.AILY_OFFICIAL_REGION = officialRegion;
   // npm registry
-  process.env.AILY_NPM_REGISTRY = regionConfig.npm_registry;
+  process.env.AILY_NPM_REGISTRY = ORIGINAL_AILY_NPM_REGISTRY || regionConfig.npm_registry;
   process.env.AILY_NPM_REGISTRY_LINUX = regionConfig.npm_registry_linux || conf.linux?.npm_registry || "";
-  // 子应用目录与当前服务区域共用 regions.<region>.resource 配置。
-  process.env.AILY_SUBAPP_INDEX_URL = buildSubappIndexUrl(regionConfig.resource);
+  // 显式启动环境可临时覆盖子应用源；默认仍跟随当前服务区域。
+  process.env.AILY_SUBAPP_INDEX_URL = ORIGINAL_SUBAPP_INDEX_URL
+    || buildSubappIndexUrl(regionConfig.resource);
   // 设置 npm 使用应用数据目录下的配置文件，忽略系统 .npmrc
   const appNpmrcPath = path.join(process.env.AILY_APPDATA_PATH, ".npmrc");
   try {
+    const registryLine = "@aily-project:registry=${AILY_NPM_REGISTRY}";
     const linuxRegistryLine = "@aily-project-linux:registry=${AILY_NPM_REGISTRY_LINUX}";
     const saveExactLine = "save-exact=true";
     if (!fs.existsSync(appNpmrcPath)) {
       fs.writeFileSync(
         appNpmrcPath,
-        `@aily-project:registry=\${AILY_NPM_REGISTRY}\n${linuxRegistryLine}\naudit=false\nfund=false\n${saveExactLine}\n`,
+        `${registryLine}\n${linuxRegistryLine}\naudit=false\nfund=false\n${saveExactLine}\n`,
       );
     } else {
       const existingNpmrc = fs.readFileSync(appNpmrcPath, "utf8");
-      const missingLines = [];
-      if (!/^@aily-project-linux:registry=/m.test(existingNpmrc)) {
-        missingLines.push(linuxRegistryLine);
+      let nextNpmrc = existingNpmrc;
+      if (/^@aily-project:registry=.*$/m.test(nextNpmrc)) {
+        nextNpmrc = nextNpmrc.replace(/^@aily-project:registry=.*$/m, registryLine);
+      } else {
+        nextNpmrc += `${nextNpmrc.endsWith("\n") ? "" : "\n"}${registryLine}\n`;
       }
-      if (!/^\s*save-exact\s*=/m.test(existingNpmrc)) {
-        missingLines.push(saveExactLine);
+
+      if (/^@aily-project-linux:registry=.*$/m.test(nextNpmrc)) {
+        nextNpmrc = nextNpmrc.replace(
+          /^@aily-project-linux:registry=.*$/m,
+          linuxRegistryLine,
+        );
+      } else {
+        nextNpmrc += `${nextNpmrc.endsWith("\n") ? "" : "\n"}${linuxRegistryLine}\n`;
       }
-      if (missingLines.length > 0) {
-        const separator = existingNpmrc.endsWith("\n") ? "" : "\n";
-        fs.appendFileSync(appNpmrcPath, `${separator}${missingLines.join("\n")}\n`);
+
+      if (!/^\s*save-exact\s*=/m.test(nextNpmrc)) {
+        nextNpmrc += `${nextNpmrc.endsWith("\n") ? "" : "\n"}${saveExactLine}\n`;
+      }
+      if (nextNpmrc !== existingNpmrc) {
+        fs.writeFileSync(appNpmrcPath, nextNpmrc);
       }
     }
   } catch (error) {
@@ -2600,6 +2639,15 @@ function createWindow() {
   registerSubappManagerHandlers(() => mainWindow, {
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
+    canActivateUpdate: (entry) => {
+      if (hasOtherRunningInstances()) {
+        return { ok: false, reason: 'Another aily blockly instance is running' };
+      }
+      if (listChildToolHoldersForCatalogId(entry.id).length > 0) {
+        return { ok: false, reason: `${entry.id} is already running` };
+      }
+      return { ok: true };
+    },
   });
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);

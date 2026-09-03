@@ -14,6 +14,18 @@ export interface AppItem extends IMenuItem {
     installedVersion?: string | null;
     installed: boolean;
     updateAvailable: boolean;
+    updateStatus: {
+      state: 'current' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed';
+      targetVersion: string;
+      progress?: number;
+      ready?: boolean;
+      error?: string;
+      downloadedAt?: string;
+    };
+    updatePolicy?: {
+      download: 'background';
+      install: 'next-launch';
+    };
     installPath?: string;
   };
 }

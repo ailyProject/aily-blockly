@@ -1,7 +1,7 @@
 import { AuthService } from '@core/auth/public-api';
 import {
-  AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL,
-  AILY_CODER_CODE_COMPLETION_REQUEST_CHANNEL,
+  AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL,
+  AILY_CODER_EDITOR_CODE_COMPLETION_REQUEST_CHANNEL,
   CodeCompletionHostBridgeService,
 } from './code-completion-host-bridge.service';
 
@@ -66,7 +66,7 @@ describe('CodeCompletionHostBridgeService', () => {
       context: [],
       capabilities: { stream: true, partialAccept: true },
       client: {
-        name: 'aily-coder',
+        name: 'aily-coder-editor',
         version: '0.1.2',
         sessionId: 'session-1',
       },
@@ -78,7 +78,7 @@ describe('CodeCompletionHostBridgeService', () => {
     payload = completionPayload(requestId),
   ) {
     return {
-      channel: AILY_CODER_CODE_COMPLETION_REQUEST_CHANNEL,
+      channel: AILY_CODER_EDITOR_CODE_COMPLETION_REQUEST_CHANNEL,
       operation: 'complete',
       requestId,
       payload,
@@ -176,7 +176,7 @@ describe('CodeCompletionHostBridgeService', () => {
     ).toBe(rawSse);
     expect(JSON.stringify(posted)).not.toContain('host-token');
     expect(posted.at(-1)?.channel).toBe(
-      AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL,
+      AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL,
     );
   });
 
@@ -263,7 +263,7 @@ describe('CodeCompletionHostBridgeService', () => {
     expect(requestSignal?.aborted).toBeFalse();
 
     dispatch({
-      channel: AILY_CODER_CODE_COMPLETION_REQUEST_CHANNEL,
+      channel: AILY_CODER_EDITOR_CODE_COMPLETION_REQUEST_CHANNEL,
       operation: 'cancel',
       requestId: 'request-4',
     });
@@ -298,7 +298,7 @@ describe('CodeCompletionHostBridgeService', () => {
     fetchSpy.and.resolveTo(new Response(null, { status: 204 }));
 
     dispatch({
-      channel: AILY_CODER_CODE_COMPLETION_REQUEST_CHANNEL,
+      channel: AILY_CODER_EDITOR_CODE_COMPLETION_REQUEST_CHANNEL,
       operation: 'feedback',
       requestId: 'feedback-1',
       completionId: 'completion/one',

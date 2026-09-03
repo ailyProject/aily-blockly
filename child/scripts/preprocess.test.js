@@ -5,26 +5,44 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { prepareCoderPackageLibraries } = require('./preprocess');
+const {
+    collectDependencyLibraryPackages,
+    collectWorkspaceLibraries,
+} = require('./preprocess');
 
-test('Coder builds shared libraries directly from each intact npm package src directory', async t => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-coder-package-library-'));
+test('Coder library inputs come from sketch/libraries and not npm dependencies', t => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-coder-sketch-library-'));
     t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
 
     const packageName = '@aily-project/lib-arduinojson';
     const packageRoot = path.join(projectRoot, 'node_modules', packageName);
-    const packageSourceRoot = path.join(packageRoot, 'src');
-    const libraryRoot = path.join(packageSourceRoot, 'ArduinoJson');
-    fs.mkdirSync(libraryRoot, { recursive: true });
+    const npmLibraryRoot = path.join(packageRoot, 'src', 'ArduinoJson');
+    const sketchLibrariesRoot = path.join(projectRoot, 'sketch', 'libraries');
+    const coderLibraryRoot = path.join(sketchLibrariesRoot, 'CoderDisplay');
+    fs.mkdirSync(npmLibraryRoot, { recursive: true });
+    fs.mkdirSync(coderLibraryRoot, { recursive: true });
     fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
         name: packageName,
         version: '1.0.0'
     }));
-    fs.writeFileSync(path.join(libraryRoot, 'ArduinoJson.h'), '#pragma once\n');
+    fs.writeFileSync(path.join(npmLibraryRoot, 'ArduinoJson.h'), '#pragma once\n');
+    fs.writeFileSync(path.join(coderLibraryRoot, 'CoderDisplay.h'), '#pragma once\n');
 
-    const paths = await prepareCoderPackageLibraries([packageName], projectRoot, '/unused/7zz');
+    const dependencies = { [packageName]: '1.0.0' };
+    assert.deepEqual(
+        collectDependencyLibraryPackages(dependencies, projectRoot, true),
+        [],
+    );
+    // Blockly retains its established dependency-library path.
+    assert.deepEqual(
+        collectDependencyLibraryPackages(dependencies, projectRoot, false),
+        [packageName],
+    );
 
-    assert.deepEqual(paths, [packageSourceRoot]);
-    assert.equal(fs.existsSync(path.join(projectRoot, 'sketch', 'libraries', 'ArduinoJson')), false);
-    assert.equal(fs.readFileSync(path.join(libraryRoot, 'ArduinoJson.h'), 'utf8'), '#pragma once\n');
+    const coderLibraries = collectWorkspaceLibraries(sketchLibrariesRoot);
+    assert.deepEqual(coderLibraries, [{
+        name: 'CoderDisplay',
+        sourcePath: coderLibraryRoot,
+    }]);
+    assert.equal(coderLibraries.some(library => library.sourcePath.startsWith(packageRoot)), false);
 });

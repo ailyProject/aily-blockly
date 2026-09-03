@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | `eab9c305` | Coder 改为可下载子应用依赖；新增 `CoderDependencyService`；模式欢迎页和 Settings 安装门禁；删除 Coder 专用 Electron 服务 | 迁移行为，按当前服务接口重写 |
 | `e50a6c07` | `app.extension` 目录属性；App Store 禁止直接打开/固定 extension；展示进程状态和版本 | 迁移为通用能力，不硬编码 Coder |
-| `f9f49804` | 分阶段加载 UI；显式 `aily-coder-ready-protocol` / `aily-coder-ready`；30 秒 ready 超时和旧版本兜底 | 迁移协议和状态机，不整段复制约 1000 行 SCSS |
+| `f9f49804` | 分阶段加载 UI；显式 `aily-coder-editor-ready-protocol` / `aily-coder-editor-ready`；30 秒 ready 超时和旧版本兜底 | 迁移协议和状态机，不整段复制约 1000 行 SCSS |
 
 来源分支相对共同基线约 `+1807/-800`。当前分支与来源分支整体已经相差 355 个文件，说明文件级合并风险明显高于按职责移植。
 
@@ -61,7 +61,7 @@ flowchart LR
   HostTools --> Host["Angular/Electron 宿主"]
   Host --> Catalog["SubappManagerService\n安装与目录"]
   Host --> Runtime["ChildToolProcessService\n进程租约"]
-  Runtime --> CoderServer["aily-coder index.js serve"]
+  Runtime --> CoderServer["aily-coder-editor index.js serve"]
   Host --> Embed["CodeEditorPro iframe + typed bridge"]
   CoderServer --> Embed
   Embed --> Workbench["Monaco / VS Code Workbench"]
@@ -76,7 +76,7 @@ flowchart LR
 - 打开库管理、切换板卡、OS reveal、剪贴板等桌面行为；
 - 对 Coder iframe 消息来源、路径范围和协议版本的校验。
 
-### `aily-coder` 拥有
+### `aily-coder-editor` 拥有
 
 - Monaco/VS Code Workbench 初始化、编辑器布局和本地视图状态；
 - Aily View、源码编辑、语言服务客户端；
@@ -88,13 +88,13 @@ flowchart LR
 
 来源分支中的 `native-fs`、host-context、打开库管理、切板、剪贴板、Diff 等消息，是“宿主 ↔ 编辑 surface”协议，不是 Aily Chat Agent 协议。
 
-新版 Aily Chat 应继续调用宿主已有的 project/editor/builder/child-app 能力。只有当 Coder 将来出现宿主没有的独立业务能力时，才在 `aily-coder` 声明 `ailySubapp.agent`、`agent/tools.json` 和标准 RPC；不要为了迁移而把已有宿主工具复制成一套 Coder Agent。
+新版 Aily Chat 应继续调用宿主已有的 project/editor/builder/child-app 能力。只有当 Coder 将来出现宿主没有的独立业务能力时，才在 `aily-coder-editor` 声明 `ailySubapp.agent`、`agent/tools.json` 和标准 RPC；不要为了迁移而把已有宿主工具复制成一套 Coder Agent。
 
 ## 4. 建议实现结构
 
 ### 4.1 安装与可用性
 
-不建议原样复制 150 行、固定 `aily-coder` 的 `CoderDependencyService`。建议新增一个按 catalog id 工作的通用 required-subapp 服务：
+不建议原样复制 150 行、固定 `aily-coder-editor` 的 `CoderDependencyService`。建议新增一个按 catalog id 工作的通用 required-subapp 服务：
 
 ```ts
 observe(id: string): Observable<RequiredSubappState>
@@ -104,7 +104,7 @@ ensureInstalled(id: string): Promise<{ installedNow: boolean }>
 它只组合 `SubappManagerService.state$`、`progress$` 和并发安装 Promise，不拥有第二份目录状态。Coder 页面只保留常量：
 
 ```ts
-export const AILY_CODER_SUBAPP_ID = 'aily-coder';
+export const AILY_CODER_EDITOR_SUBAPP_ID = 'aily-coder-editor';
 ```
 
 如果后续 Simulator、模型服务或其它模式也需要依赖门禁，可复用同一服务。
@@ -114,10 +114,10 @@ export const AILY_CODER_SUBAPP_ID = 'aily-coder';
 `CodeEditorProComponent` 的启动链统一为：
 
 1. 解析并登记工程；
-2. `ensureInstalled(AILY_CODER_SUBAPP_ID)`；
-3. `ChildToolProcessService.acquire(AILY_CODER_SUBAPP_ID)`；
+2. `ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID)`；
+3. `ChildToolProcessService.acquire(AILY_CODER_EDITOR_SUBAPP_ID)`；
 4. 使用返回的 `ready.url` 构造 iframe URL；
-5. 销毁时 `release(AILY_CODER_SUBAPP_ID)`。
+5. 销毁时 `release(AILY_CODER_EDITOR_SUBAPP_ID)`。
 
 删除并禁止回退到：
 
@@ -134,8 +134,8 @@ export const AILY_CODER_SUBAPP_ID = 'aily-coder';
 
 ```ts
 type AilyCoderReadyMessage =
-  | { channel: 'aily-coder-ready-protocol'; version: 1 }
-  | { channel: 'aily-coder-ready'; version: 1 };
+  | { channel: 'aily-coder-editor-ready-protocol'; version: 1 }
+  | { channel: 'aily-coder-editor-ready'; version: 1 };
 ```
 
 - `loader.ts` 尽早发送 protocol 消息，表示当前 Coder 支持显式 ready；
@@ -155,7 +155,7 @@ type AilyCoderReadyMessage =
 - `electron/subapp-manager.js` 同时读取目录 `app.extension` 和安装包 `ailySubapp.app.extension`；
 - extension 不允许普通 open/pin/toolbar normalization；
 - App Store 使用 `ChildToolProcessService.runtimeStates$` 显示灰/绿运行点、版本、端口和 PID；
-- 不写 `if (id === 'aily-coder')` 的 UI 分支。
+- 不写 `if (id === 'aily-coder-editor')` 的 UI 分支。
 
 ### 4.5 模式入口
 
@@ -183,13 +183,13 @@ Settings 的默认开发模式入口使用统一 required-subapp 状态：
 | `code-editor-pro.component.ts` ready/Runtime | 当前 CodeEditorPro | 按当前 `ChildToolProcessService` 重写 |
 | `code-editor-pro.component.html/scss` loader | 独立 loading component | 迁移视觉意图，压缩状态和样式 |
 | `public/i18n/*` | 当前三套主 UI 语言 | 仅加入真实可见文案；Coder 目录标题放子应用 `i18n/` |
-| `aily-coder/src/loader.ts` / `main.workbench.ts` | Coder 仓库 | 增加 version 1 ready 消息 |
+| `aily-coder-editor/src/loader.ts` / `main.workbench.ts` | Coder 仓库 | 增加 version 1 ready 消息 |
 
 ## 6. 实施顺序
 
 ### P0：开发链路（本轮已完成）
 
-`/Users/downey/Projects/ZCK/aily-coder` 已调整为当前子应用契约：
+`/Users/downey/Projects/ZCK/aily-coder-editor` 已调整为当前子应用契约：
 
 - 生产 UI 从 `dist/index.html` 改为包根 `ui/index.html`；
 - 补齐 `ailySubapp.id/package/namespace/titleKey/app.extension`；
@@ -202,7 +202,7 @@ Settings 的默认开发模式入口使用统一 required-subapp 状态：
 开发命令：
 
 ```bash
-cd /Users/downey/Projects/ZCK/aily-coder
+cd /Users/downey/Projects/ZCK/aily-coder-editor
 npm run dev
 
 # 一次性链接，不启动 watcher
@@ -238,7 +238,7 @@ npm run dev:unlink
 
 仅在出现明确、不能由宿主已有工具完成的 Coder 独立能力时实施：
 
-1. 在 `aily-coder` 增加 `ailySubapp.agent`；
+1. 在 `aily-coder-editor` 增加 `ailySubapp.agent`；
 2. 增加 `agent/tools.json` 和标准 `aily-child-rpc`；
 3. 使用现有 `SubappAgentBridgeService` 自动投影给新版 Aily Chat；
 4. 不新增 Aily Chat ↔ Coder 私有 RPC。
@@ -249,7 +249,7 @@ npm run dev:unlink
 
 - `npm run build:subapp` 通过；
 - `node --test scripts/link-dev.test.mjs` 通过；
-- 隔离目录 link 后存在包软链、`file:` 依赖、`dev: true` 和 `aily-coder` 目录项；
+- 隔离目录 link 后存在包软链、`file:` 依赖、`dev: true` 和 `aily-coder-editor` 目录项；
 - unlink 后原索引、原依赖、原安装包完整恢复；
 - `npm pack --dry-run` 包含 `index.js`、`ui/index.html`、UI assets 和三套 i18n；
 - `node index.js serve --host 127.0.0.1 --port 0` 输出 ready，首页和静态资源 HTTP 200；
@@ -275,7 +275,7 @@ npm run dev:unlink
 
 ## 8. 发布阻塞与风险
 
-1. `@aily-project/subapp-aily-coder` 必须先发布可安装版本，并把 `aily-coder` 加入远端 `subapp-index.json`；当前远端目录缺少该条目，因此不能宣称新用户在线安装已经可用。
+1. `@aily-project/subapp-aily-coder-editor` 必须先发布可安装版本，并把 `aily-coder-editor` 加入远端 `subapp-index.json`；当前远端目录缺少该条目，因此不能宣称新用户在线安装已经可用。
 2. 远端目录版本必须与 npm 实际版本一致；不要在宿主长期硬编码 `0.1.0` 兜底，否则更新状态会失真。
 3. Coder Workbench 包较大，安装进度必须来自真实下载/解压事件，不能用固定动画伪造完成。
 4. iframe ready、LSP WebSocket 和 Coder Runtime ready 是三个不同状态；LSP 失败不应误判 Workbench 未就绪，反之亦然。
@@ -283,7 +283,7 @@ npm run dev:unlink
 
 ## 9. 实施结果与当前边界
 
-本轮已在宿主实现 P1-P3：通用 required-subapp 门禁、`app.extension` 元数据与 App Store 行为、统一 Runtime 租约、模式入口安装流程、显式 ready 协议及独立加载组件；同时删除了 Coder 专用 Electron server/preload API。`aily-coder` 已补充 version 1 ready 消息和不重启 Runtime 的主题同步。
+本轮已在宿主实现 P1-P3：通用 required-subapp 门禁、`app.extension` 元数据与 App Store 行为、统一 Runtime 租约、模式入口安装流程、显式 ready 协议及独立加载组件；同时删除了 Coder 专用 Electron server/preload API。`aily-coder-editor` 已补充 version 1 ready 消息和不重启 Runtime 的主题同步。
 
 已完成的自动验证包括：
 

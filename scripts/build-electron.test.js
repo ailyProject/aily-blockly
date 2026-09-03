@@ -38,14 +38,15 @@ test('creates a separately named Aily Coder product build profile', () => {
 
   const builderConfig = createBuilderConfig(plan, require('../package.json').build);
   assert.equal(builderConfig.appId, 'coder.aily.pro');
-  assert.equal(builderConfig.productName, 'Aily Coder');
+  assert.equal(builderConfig.productName, 'aily coder');
   assert.equal(builderConfig.extraMetadata.name, 'aily-coder');
-  assert.equal(builderConfig.extraMetadata.productName, 'Aily Coder');
+  assert.equal(builderConfig.extraMetadata.productName, 'aily coder');
   assert.equal(builderConfig.extraMetadata.ailyBuildProduct, 'coder');
   assert.equal(builderConfig.directories.output, 'dist/aily-coder/');
   assert.equal(builderConfig.publish[0].url, 'https://dl.yiyu.pro/coder');
   assert.ok(!builderConfig.extraResources.some((resource) => resource.to === 'app-update.yml'));
   assert.equal(builderConfig.nsis.include, 'build/installer-coder.nsh');
+  assert.equal(builderConfig.nsis.shortcutName, 'aily coder');
   assert.equal(builderConfig.win.fileAssociations, undefined);
   assert.equal(builderConfig.mac.fileAssociations, undefined);
   assert.equal(builderConfig.linux.fileAssociations, undefined);
