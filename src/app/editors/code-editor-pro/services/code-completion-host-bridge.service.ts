@@ -2,10 +2,10 @@ import { Injectable } from '@angular/core';
 import { AuthService } from '@core/auth/public-api';
 import { API } from '../../../configs/api.config';
 
-export const AILY_CODER_CODE_COMPLETION_REQUEST_CHANNEL =
-  'aily-coder-code-completion-request';
-export const AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL =
-  'aily-coder-code-completion-event';
+export const AILY_CODER_EDITOR_CODE_COMPLETION_REQUEST_CHANNEL =
+  'aily-coder-editor-code-completion-request';
+export const AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL =
+  'aily-coder-editor-code-completion-event';
 
 const MAX_COMPLETION_BODY_BYTES = 256 * 1024;
 const MAX_ERROR_BODY_BYTES = 8 * 1024;
@@ -64,7 +64,7 @@ type CompletionPayload = {
     partialAccept: boolean;
   };
   client: {
-    name: 'aily-coder';
+    name: 'aily-coder-editor';
     version: string;
     sessionId: string;
   };
@@ -77,7 +77,7 @@ type FeedbackPayload = {
 };
 
 type CompletionEvent = {
-  channel: typeof AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL;
+  channel: typeof AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL;
   requestId: string;
   type: 'response' | 'chunk' | 'end' | 'error';
   status?: number;
@@ -184,7 +184,7 @@ function sanitizeCompletionPayload(
     suffix == null ||
     capabilities['stream'] !== true ||
     typeof capabilities['partialAccept'] !== 'boolean' ||
-    client['name'] !== 'aily-coder' ||
+    client['name'] !== 'aily-coder-editor' ||
     clientVersion == null ||
     !/^[A-Za-z0-9._+-]+$/u.test(clientVersion) ||
     sessionId == null
@@ -247,7 +247,7 @@ function sanitizeCompletionPayload(
       partialAccept: capabilities['partialAccept'],
     },
     client: {
-      name: 'aily-coder',
+      name: 'aily-coder-editor',
       version: clientVersion,
       sessionId,
     },
@@ -352,7 +352,7 @@ export class CodeCompletionHostBridgeService {
 
   handleMessage(event: MessageEvent): boolean {
     const message = asRecord(event.data);
-    if (message?.['channel'] !== AILY_CODER_CODE_COMPLETION_REQUEST_CHANNEL) {
+    if (message?.['channel'] !== AILY_CODER_EDITOR_CODE_COMPLETION_REQUEST_CHANNEL) {
       return false;
     }
     const target = this.frameWindow;
@@ -524,7 +524,7 @@ export class CodeCompletionHostBridgeService {
       }
 
       this.postEvent(target, {
-        channel: AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL,
+        channel: AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL,
         requestId,
         type: 'response',
         status: response.status,
@@ -548,7 +548,7 @@ export class CodeCompletionHostBridgeService {
 
       if (!controller.signal.aborted) {
         this.postEvent(target, {
-          channel: AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL,
+          channel: AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL,
           requestId,
           type: 'end',
         });
@@ -761,7 +761,7 @@ export class CodeCompletionHostBridgeService {
 
   private postChunk(target: Window, requestId: string, chunk: string): void {
     this.postEvent(target, {
-      channel: AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL,
+      channel: AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL,
       requestId,
       type: 'chunk',
       chunk,
@@ -777,7 +777,7 @@ export class CodeCompletionHostBridgeService {
     headers?: Record<string, string>,
   ): void {
     this.postEvent(target, {
-      channel: AILY_CODER_CODE_COMPLETION_EVENT_CHANNEL,
+      channel: AILY_CODER_EDITOR_CODE_COMPLETION_EVENT_CHANNEL,
       requestId,
       type: 'error',
       status,

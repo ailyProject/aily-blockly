@@ -29,7 +29,7 @@ import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-p
 import { UiService } from '@core/app-shell/public-api';
 import { AiCoderDiffBridgeService } from '@integration/automation/public-api';
 import { ChildToolHostInfo, ChildToolProcessService, RequiredSubappService } from '@integration/subapps/public-api';
-import { AILY_CODER_SUBAPP_ID } from '../../configs/required-subapp.config';
+import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   CoderLoadingComponent,
   CoderLoadingStage,
@@ -39,30 +39,30 @@ import {
   toAilyCoderWorkbenchLocale,
 } from './services/aily-coder-library-context';
 
-/** 与独立 aily-coder 子应用包 src/hostEmbedContext.ts 中 channel 常量一致 */
-const AILY_CODER_HOST_CONTEXT_CHANNEL = 'aily-coder-host-context';
+/** 与独立 aily-coder-editor 子应用包 src/hostEmbedContext.ts 中 channel 常量一致 */
+const AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL = 'aily-coder-editor-host-context';
 /** iframe 已完成监听后主动索要上下文，避免一次性 postMessage 早于子应用监听器。 */
-const AILY_CODER_HOST_CONTEXT_REQUEST_CHANNEL = 'aily-coder-host-context-request';
+const AILY_CODER_EDITOR_HOST_CONTEXT_REQUEST_CHANNEL = 'aily-coder-editor-host-context-request';
 /** 内嵌 Coder 请求在系统文件管理器中显示绝对路径 */
-const AILY_CODER_REVEAL_IN_OS_CHANNEL = 'aily-coder-reveal-in-os';
+const AILY_CODER_EDITOR_REVEAL_IN_OS_CHANNEL = 'aily-coder-editor-reveal-in-os';
 /** Aily View：Installed Libraries 展开/折叠时同步宿主库管理侧栏 */
-const AILY_CODER_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manager';
+const AILY_CODER_EDITOR_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-editor-open-library-manager';
 /** Aily View MCU 单击：请求宿主打开切换开发板弹窗 */
-const AILY_CODER_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-open-board-selector';
+const AILY_CODER_EDITOR_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-editor-open-board-selector';
 /** Aily View：复制路径等写入系统剪贴板（iframe 内 Clipboard API 被 Permissions-Policy 禁用） */
-const AILY_CODER_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-clipboard-write';
+const AILY_CODER_EDITOR_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-editor-clipboard-write';
 /** Extension Host（Worker）无 window，用 BroadcastChannel 与宿主通信；须与 ailyViewExplorer 一致 */
 const AILY_EMBED_OS_REVEAL_CHANNEL = 'aily-embed-os-reveal';
 const AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-embed-open-library-manager';
 const AILY_EMBED_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-embed-open-board-selector';
 const AILY_EMBED_CLIPBOARD_WRITE_CHANNEL = 'aily-embed-clipboard-write';
-/** 与独立 aily-coder 子应用包 src/embedLayoutSync.ts 一致 */
-const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-host-layout-refresh';
+/** 与独立 aily-coder-editor 子应用包 src/embedLayoutSync.ts 一致 */
+const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-editor-host-layout-refresh';
 /** 宿主 → iframe：磁盘 watch 事件（与 parentBackedNativeFs.ts 一致） */
-const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-native-fs-watch-event';
-const AILY_CODER_READY_PROTOCOL_CHANNEL = 'aily-coder-ready-protocol';
-const AILY_CODER_READY_CHANNEL = 'aily-coder-ready';
-const AILY_CODER_READY_PROTOCOL_VERSION = 1;
+const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-editor-native-fs-watch-event';
+const AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL = 'aily-coder-editor-ready-protocol';
+const AILY_CODER_EDITOR_READY_CHANNEL = 'aily-coder-editor-ready';
+const AILY_CODER_EDITOR_READY_PROTOCOL_VERSION = 1;
 const CODER_LOADER_DELAY_MS = 150;
 const CODER_LEGACY_READY_FALLBACK_MS = 2400;
 const CODER_READY_TIMEOUT_MS = 30000;
@@ -71,14 +71,14 @@ const CODER_REVEAL_DURATION_MS = 480;
 const CODER_GIT_COMMAND_TIMEOUT_MS = 30000;
 const CODER_GIT_MAX_STDOUT_CHARS = 16 * 1024 * 1024;
 const CODER_GIT_MAX_STDERR_CHARS = 64 * 1024;
-const AILY_CODER_NATIVE_SEARCH_PROTOCOL_VERSION = 1;
+const AILY_CODER_EDITOR_NATIVE_SEARCH_PROTOCOL_VERSION = 1;
 const CODER_NATIVE_SEARCH_MAX_RESULTS = 1000;
 const CODER_NATIVE_SEARCH_MAX_GLOBS = 128;
 const CODER_NATIVE_SEARCH_MAX_GLOB_LENGTH = 1000;
 const CODER_NATIVE_SEARCH_MAX_PATTERN_LENGTH = 10000;
 const CODER_NATIVE_SEARCH_MAX_FILE_SIZE = 20 * 1024 * 1024;
-const AILY_CODER_HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-host-lifecycle-request';
-const AILY_CODER_HOST_LIFECYCLE_RESPONSE_CHANNEL = 'aily-coder-host-lifecycle-response';
+const AILY_CODER_EDITOR_HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-editor-host-lifecycle-request';
+const AILY_CODER_EDITOR_HOST_LIFECYCLE_RESPONSE_CHANNEL = 'aily-coder-editor-host-lifecycle-response';
 /** Coder 生成或依赖目录不进入默认搜索、Git 状态与提交。 */
 const CODER_GIT_SYSTEM_DIRECTORIES = [
   '.aily',
@@ -449,7 +449,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.coderEmbedWorkspaceRoot = null;
     if (this.coderRuntimeHostInfo) {
       this.coderRuntimeHostInfo = null;
-      void this.childToolProcess.release(AILY_CODER_SUBAPP_ID);
+      void this.childToolProcess.release(AILY_CODER_EDITOR_SUBAPP_ID);
     }
     this.proProject.destroy();
     this.builderService.cancel();
@@ -471,7 +471,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       });
     }
 
-    const requestId = `aily-coder-lifecycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const requestId = `aily-coder-editor-lifecycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     return new Promise(resolve => {
       let settled = false;
       const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }) => {
@@ -492,7 +492,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
           message?: string;
         };
         if (
-          payload?.channel !== AILY_CODER_HOST_LIFECYCLE_RESPONSE_CHANNEL ||
+          payload?.channel !== AILY_CODER_EDITOR_HOST_LIFECYCLE_RESPONSE_CHANNEL ||
           payload.requestId !== requestId
         ) {
           return;
@@ -513,7 +513,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
 
       window.addEventListener('message', listener);
       target.postMessage({
-        channel: AILY_CODER_HOST_LIFECYCLE_REQUEST_CHANNEL,
+        channel: AILY_CODER_EDITOR_HOST_LIFECYCLE_REQUEST_CHANNEL,
         requestId,
         action,
       }, '*');
@@ -599,7 +599,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       this.coderLoadingStage = 'dependency';
       let base: string;
       if (this.electronService.isElectron) {
-        await this.requiredSubapps.ensureInstalled(AILY_CODER_SUBAPP_ID);
+        await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
         if (!this.isCurrentCoderWorkspace(projectPath)) return;
         this.coderLoadingStage = 'runtime';
         base = (await this.acquireCoderRuntime()).url;
@@ -689,10 +689,10 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       return this.coderRuntimeHostInfo;
     }
     if (!this.coderRuntimeAcquirePromise) {
-      const pending = this.childToolProcess.acquire(AILY_CODER_SUBAPP_ID)
+      const pending = this.childToolProcess.acquire(AILY_CODER_EDITOR_SUBAPP_ID)
         .then((hostInfo) => {
           if (this.destroyed) {
-            void this.childToolProcess.release(AILY_CODER_SUBAPP_ID);
+            void this.childToolProcess.release(AILY_CODER_EDITOR_SUBAPP_ID);
             throw new Error('Coder editor was closed before its Runtime finished starting');
           }
           this.coderRuntimeHostInfo = hostInfo;
@@ -709,7 +709,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   }
 
   /**
-   * iframe 每次加载完成后向 aily-coder 同步宿主上下文（构建目录等），避免依赖 ProjectService 竞态。
+   * iframe 每次加载完成后向 aily-coder-editor 同步宿主上下文（构建目录等），避免依赖 ProjectService 竞态。
    */
   onCoderEmbedFrameLoad(): void {
     const frame = this.coderEmbedFrame?.nativeElement;
@@ -962,7 +962,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       && win === this.coderEmbedFrame?.nativeElement?.contentWindow
     ) {
       win.postMessage({
-        channel: AILY_CODER_HOST_CONTEXT_CHANNEL,
+        channel: AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL,
         payload: {
           v: 1 as const,
           workspaceRoot: projectRoot,
@@ -1009,7 +1009,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       ) {
         return;
       }
-      win.postMessage({ channel: AILY_CODER_HOST_CONTEXT_CHANNEL, payload }, '*');
+      win.postMessage({ channel: AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL, payload }, '*');
     } catch (e) {
       console.warn('[CodeEditorPro] postMessage host context 失败', e);
     }
@@ -1266,7 +1266,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     try {
       src?.postMessage(
         {
-          channel: 'aily-coder-native-fs-reply',
+          channel: 'aily-coder-editor-native-fs-reply',
           id,
           ...(error ? { error } : {}),
           ...(result !== undefined ? { result } : {}),
@@ -1757,7 +1757,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       payload?: Record<string, unknown>;
       absPath?: string;
     };
-    if (msg?.channel === AILY_CODER_HOST_CONTEXT_REQUEST_CHANNEL) {
+    if (msg?.channel === AILY_CODER_EDITOR_HOST_CONTEXT_REQUEST_CHANNEL) {
       const frameWindow = this.coderEmbedFrame?.nativeElement?.contentWindow;
       const root = this.coderEmbedWorkspaceRoot;
       if (frameWindow && root && ev.source === frameWindow) {
@@ -1766,8 +1766,8 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       return;
     }
     if (
-      msg?.channel === AILY_CODER_READY_PROTOCOL_CHANNEL
-      || msg?.channel === AILY_CODER_READY_CHANNEL
+      msg?.channel === AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL
+      || msg?.channel === AILY_CODER_EDITOR_READY_CHANNEL
     ) {
       const frameWindow = this.coderEmbedFrame?.nativeElement?.contentWindow;
       if (
@@ -1776,8 +1776,8 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       ) {
         return;
       }
-      if (msg.channel === AILY_CODER_READY_PROTOCOL_CHANNEL) {
-        if (msg.version !== AILY_CODER_READY_PROTOCOL_VERSION) return;
+      if (msg.channel === AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL) {
+        if (msg.version !== AILY_CODER_EDITOR_READY_PROTOCOL_VERSION) return;
         if (!this.coderEmbedLoading) return;
         this.coderReadyProtocolSupported = true;
         this.coderLoadingStage = 'workbench';
@@ -1785,7 +1785,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
         this.armCoderReadyTimeout();
       } else if (
         msg.version === undefined
-        || msg.version === AILY_CODER_READY_PROTOCOL_VERSION
+        || msg.version === AILY_CODER_EDITOR_READY_PROTOCOL_VERSION
       ) {
         this.coderReadyProtocolSupported = true;
         this.coderWorkbenchReady = true;
@@ -1799,28 +1799,28 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       return;
     }
     // 内嵌编辑器：在访达 / 资源管理器中高亮文件（工程根内或当前 getBuildPath 产物目录）
-    if (msg?.channel === AILY_CODER_REVEAL_IN_OS_CHANNEL) {
+    if (msg?.channel === AILY_CODER_EDITOR_REVEAL_IN_OS_CHANNEL) {
       void this.runHostRevealInOs(String(msg.absPath ?? ''));
       return;
     }
-    if (msg?.channel === AILY_CODER_OPEN_LIBRARY_MANAGER_CHANNEL) {
+    if (msg?.channel === AILY_CODER_EDITOR_OPEN_LIBRARY_MANAGER_CHANNEL) {
       const open =
         (msg as { open?: boolean }).open !== false;
       this.syncHostLibraryManager(open);
       return;
     }
-    if (msg?.channel === AILY_CODER_OPEN_BOARD_SELECTOR_CHANNEL) {
+    if (msg?.channel === AILY_CODER_EDITOR_OPEN_BOARD_SELECTOR_CHANNEL) {
       void this.uiService.openBoardSelector();
       return;
     }
-    if (msg?.channel === AILY_CODER_CLIPBOARD_WRITE_CHANNEL) {
+    if (msg?.channel === AILY_CODER_EDITOR_CLIPBOARD_WRITE_CHANNEL) {
       const text = (msg as { text?: string }).text;
       if (typeof text === 'string') {
         this.electronService.clipboardWriteText(text);
       }
       return;
     }
-    if (msg?.channel !== 'aily-coder-native-fs' || typeof msg.id !== 'number' || !msg.op) {
+    if (msg?.channel !== 'aily-coder-editor-native-fs' || typeof msg.id !== 'number' || !msg.op) {
       return;
     }
     if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) {
@@ -1845,7 +1845,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
         case 'nativeSearchCapabilities': {
           const searchApi = this.getCoderNativeSearchApi();
           this.replyCoderNativeFs(ev.source as Window, msg.id!, {
-            protocolVersion: AILY_CODER_NATIVE_SEARCH_PROTOCOL_VERSION,
+            protocolVersion: AILY_CODER_EDITOR_NATIVE_SEARCH_PROTOCOL_VERSION,
             textSearch: typeof searchApi?.searchText === 'function',
             cancellation: typeof searchApi?.cancelSearch === 'function',
           });

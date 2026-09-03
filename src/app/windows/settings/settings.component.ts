@@ -24,7 +24,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { CmdService, ElectronService } from '@core/platform/public-api';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
 import { NpmService } from '@domain/dependencies/public-api';
-import { AILY_CODER_SUBAPP_ID } from '../../configs/required-subapp.config';
+import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import { RequiredSubappService, RequiredSubappState, ChildAppSafetyService } from '@integration/subapps/public-api';
 import {
   PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
@@ -354,7 +354,7 @@ export class SettingsComponent implements OnDestroy {
   }
 
   coderDependencyState: RequiredSubappState = {
-    id: AILY_CODER_SUBAPP_ID,
+    id: AILY_CODER_EDITOR_SUBAPP_ID,
     status: 'loading',
     installed: false,
     installing: false,
@@ -372,7 +372,7 @@ export class SettingsComponent implements OnDestroy {
       return;
     }
     try {
-      const { installedNow } = await this.requiredSubapps.ensureInstalled(AILY_CODER_SUBAPP_ID);
+      const { installedNow } = await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
       await this.configService.setDevelopmentModePreference('coder', 'settings');
       if (installedNow) {
         this.message.success(this.translateService.instant('SETTINGS.FIELDS.CODER_EXTENSION_INSTALLED'));
@@ -407,7 +407,7 @@ export class SettingsComponent implements OnDestroy {
     private readonly cdr: ChangeDetectorRef,
     private childAppSafety: ChildAppSafetyService,
   ) {
-    this.coderDependencySubscription = this.requiredSubapps.observe(AILY_CODER_SUBAPP_ID)
+    this.coderDependencySubscription = this.requiredSubapps.observe(AILY_CODER_EDITOR_SUBAPP_ID)
       .subscribe((state) => {
         this.coderDependencyState = state;
         this.cdr.markForCheck();

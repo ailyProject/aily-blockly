@@ -11,7 +11,7 @@ import { combineLatest, firstValueFrom, merge, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { ChildToolConfig, getChildToolConfig } from '../../configs/tool.config';
-import { AILY_CODER_SUBAPP_ID } from '../../configs/required-subapp.config';
+import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   ChildToolHostInfo,
   ChildToolProcessService,
@@ -1781,7 +1781,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     try {
       if (mode === 'coder') {
-        await this.requiredSubapps.ensureInstalled(AILY_CODER_SUBAPP_ID);
+        await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
       }
       await this.configService.setDevelopmentModePreference(mode, 'settings');
       return { ok: true, context: this.createHostContext() };
