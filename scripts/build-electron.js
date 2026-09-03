@@ -16,13 +16,13 @@ const BUILD_PRODUCTS = Object.freeze({
   coder: Object.freeze({
     id: 'coder',
     appId: 'coder.aily.pro',
-    productName: 'Aily Coder',
+    productName: 'aily coder',
     appUserModelId: 'pro.aily.coder',
     outputDirectory: 'dist/aily-coder/',
     artifactBase: 'aily-coder',
     artifactBaseCn: 'aily-coder-CN',
     installerInclude: 'build/installer-coder.nsh',
-    shortcutName: 'Aily Coder',
+    shortcutName: 'aily coder',
   }),
 });
 
