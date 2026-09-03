@@ -6,7 +6,7 @@
             <label class="form-label">{{ 'FEEDBACK_DIALOG.FEEDBACK_TYPE' | translate }}
                 <span class="required">*</span>
             </label>
-            <nz-radio-group [(ngModel)]="feedbackType" (ngModelChange)="onFeedbackTypeChange($event)">
+            <nz-radio-group [(ngModel)]="feedbackType">
                 @for(type of feedbackTypes; track type.value) {
                 <label nz-radio [nzValue]="type.value">{{ type.label }}</label>
                 }

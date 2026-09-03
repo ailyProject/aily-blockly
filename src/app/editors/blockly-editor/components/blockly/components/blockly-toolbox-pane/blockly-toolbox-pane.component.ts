@@ -487,9 +487,6 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
     this.uiService.openFeedback({
       feedbackType: 'library',
       feedbackLibraryName: libraryName,
-      feedbackContent: this.translate.instant('FEEDBACK_DIALOG.LIBRARY_ISSUE_CONTENT', {
-        name: libraryName,
-      }),
     });
   }
 

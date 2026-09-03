@@ -1,5 +1,27 @@
 export type ProjectLogLevel = 'INFO' | 'DEBUG' | 'ERROR';
 export const DEFAULT_PROCESS_LOG_SUBAPP = 'default';
+export const PROJECT_DIAGNOSTIC_LOG_MAX_BYTES = 32 * 1024;
+
+export interface ProjectDiagnosticLogReadResult {
+  status: 'ok' | 'none' | 'error';
+  content: string | null;
+  truncated: boolean;
+}
+
+export interface ProjectUploadDiagnosticEvidence {
+  latestTimestamp: number | null;
+  latestOtaEntry: { timestamp: number; detail: string } | null;
+}
+
+export interface RecentProjectDiagnosticLogs {
+  compile: ProjectDiagnosticLogReadResult;
+  upload: ProjectDiagnosticLogReadResult;
+  uploadEvidence: ProjectUploadDiagnosticEvidence;
+}
+
+const PROJECT_DIAGNOSTIC_LOG_SOURCES = ['compile', 'upload'] as const;
+const PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER = '[truncated; latest content retained]\n';
+const PROJECT_DIAGNOSTIC_LOG_MAX_LINES = 400;
 
 export function appendProjectLog(
   projectPath: string | undefined,
@@ -184,6 +206,341 @@ export function resolveProjectAssetsRootDir(projectPath: string | undefined, pat
   }
 
   return resolvedPathApi.join(normalizedProjectPath, '.assets');
+}
+
+export async function readRecentProjectDiagnosticLogs(
+  projectPath: string | undefined,
+  sanitizeContent: (content: string) => string | null = (content) => content,
+): Promise<RecentProjectDiagnosticLogs> {
+  const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
+  const pathApi = (window as any)?.path;
+  const fsApi = (window as any)?.fs;
+  if (!normalizedProjectPath || !hasDiagnosticLogReadApis(pathApi, fsApi)) {
+    return diagnosticLogPair('error');
+  }
+
+  try {
+    const logRoot = pathApi.resolve(pathApi.join(normalizedProjectPath, '.log'));
+    const rootStat = lstatIfPresent(logRoot, fsApi);
+    if (!rootStat) {
+      return diagnosticLogPair('none');
+    }
+    if (rootStat?._isSymbolicLink === true || rootStat?._isDirectory !== true) {
+      return diagnosticLogPair('error');
+    }
+    const realLogRoot = await fsApi.realpathAsync(logRoot);
+    if (typeof realLogRoot !== 'string' || !realLogRoot.trim()) {
+      return diagnosticLogPair('error');
+    }
+
+    const [compile, upload] = await Promise.all(PROJECT_DIAGNOSTIC_LOG_SOURCES.map((source) => (
+      readLatestProjectDiagnosticLog(logRoot, realLogRoot, source, pathApi, fsApi, sanitizeContent)
+    )));
+    return applyCombinedDiagnosticLogByteLimit({
+      compile,
+      upload,
+      uploadEvidence: extractProjectUploadDiagnosticEvidence(upload),
+    });
+  } catch {
+    return diagnosticLogPair('error');
+  }
+}
+
+async function readLatestProjectDiagnosticLog(
+  logRoot: string,
+  realLogRoot: string,
+  source: typeof PROJECT_DIAGNOSTIC_LOG_SOURCES[number],
+  pathApi: any,
+  fsApi: any,
+  sanitizeContent: (content: string) => string | null,
+): Promise<ProjectDiagnosticLogReadResult> {
+  try {
+    const sourcePath = pathApi.resolve(pathApi.join(logRoot, source));
+    if (!isPathInside(logRoot, sourcePath, pathApi)) {
+      return diagnosticLogResult('error');
+    }
+    const sourceStat = lstatIfPresent(sourcePath, fsApi);
+    if (!sourceStat) {
+      return diagnosticLogResult('none');
+    }
+    await assertSafeDiagnosticLogPath(sourcePath, realLogRoot, 'directory', pathApi, fsApi, sourceStat);
+
+    const dateSegments = readDirectoryNames(sourcePath, fsApi)
+      .filter((name) => /^\d{8}$/.test(name))
+      .sort((left, right) => right.localeCompare(left));
+
+    for (const dateSegment of dateSegments) {
+      const datePath = pathApi.resolve(pathApi.join(sourcePath, dateSegment));
+      await assertSafeDiagnosticLogPath(datePath, realLogRoot, 'directory', pathApi, fsApi);
+      const logFiles = readDirectoryNames(datePath, fsApi)
+        .filter((name) => /^\d{2}-\d{2}\.log$/.test(name))
+        .sort((left, right) => right.localeCompare(left));
+
+      for (const logFile of logFiles) {
+        const logFilePath = pathApi.resolve(pathApi.join(datePath, logFile));
+        await assertSafeDiagnosticLogPath(logFilePath, realLogRoot, 'file', pathApi, fsApi);
+        const lines = await fsApi.readTailLines(logFilePath, {
+          maxLines: PROJECT_DIAGNOSTIC_LOG_MAX_LINES + 1,
+        });
+        if (!Array.isArray(lines) || lines.some((line) => typeof line !== 'string')) {
+          return diagnosticLogResult('error');
+        }
+        if (lines.some((line) => line.length > 0)) {
+          const lineTruncated = lines.length > PROJECT_DIAGNOSTIC_LOG_MAX_LINES;
+          if (lineTruncated) {
+            return {
+              status: 'ok',
+              content: null,
+              truncated: true,
+            };
+          }
+          const sanitizedContent = sanitizeContent(lines.join('\n'));
+          if (sanitizedContent === null) {
+            return {
+              status: 'ok',
+              content: null,
+              truncated: lineTruncated,
+            };
+          }
+          const content = sanitizedContent;
+          return {
+            status: 'ok',
+            content: lineTruncated
+              ? `${PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER}${content}`
+              : content,
+            truncated: lineTruncated,
+          };
+        }
+      }
+    }
+    return diagnosticLogResult('none');
+  } catch {
+    return diagnosticLogResult('error');
+  }
+}
+
+function hasDiagnosticLogReadApis(pathApi: any, fsApi: any): boolean {
+  return !!pathApi
+    && typeof pathApi.join === 'function'
+    && typeof pathApi.resolve === 'function'
+    && typeof pathApi.relative === 'function'
+    && typeof pathApi.isAbsolute === 'function'
+    && !!fsApi
+    && typeof fsApi.lstatSync === 'function'
+    && typeof fsApi.realpathAsync === 'function'
+    && typeof fsApi.readdirSync === 'function'
+    && typeof fsApi.readTailLines === 'function';
+}
+
+function lstatIfPresent(filePath: string, fsApi: any): any | null {
+  try {
+    return fsApi.lstatSync(filePath);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function readDirectoryNames(directoryPath: string, fsApi: any): string[] {
+  const entries = fsApi.readdirSync(directoryPath);
+  if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string')) {
+    throw new Error('Invalid project log directory listing.');
+  }
+  return entries;
+}
+
+async function assertSafeDiagnosticLogPath(
+  candidatePath: string,
+  realLogRoot: string,
+  expectedType: 'directory' | 'file',
+  pathApi: any,
+  fsApi: any,
+  knownStat?: any,
+): Promise<void> {
+  const stat = knownStat ?? fsApi.lstatSync(candidatePath);
+  const hasExpectedType = expectedType === 'directory' ? stat?._isDirectory === true : stat?._isFile === true;
+  if (stat?._isSymbolicLink === true || !hasExpectedType) {
+    throw new Error('Unsafe project log path.');
+  }
+  const realCandidatePath = await fsApi.realpathAsync(candidatePath);
+  if (typeof realCandidatePath !== 'string' || !isPathInside(realLogRoot, realCandidatePath, pathApi)) {
+    throw new Error('Project log path escaped its root.');
+  }
+}
+
+function isPathInside(rootPath: string, candidatePath: string, pathApi: any): boolean {
+  const relativePath = pathApi.relative(rootPath, candidatePath);
+  return relativePath === '' || (
+    relativePath !== '..'
+    && !relativePath.startsWith('../')
+    && !relativePath.startsWith('..\\')
+    && !pathApi.isAbsolute(relativePath)
+  );
+}
+
+function applyCombinedDiagnosticLogByteLimit(
+  results: RecentProjectDiagnosticLogs,
+): RecentProjectDiagnosticLogs {
+  const limited: RecentProjectDiagnosticLogs = {
+    ...results,
+    compile: { ...results.compile },
+    upload: { ...results.upload },
+  };
+  let totalBytes = diagnosticLogByteLength(limited.compile) + diagnosticLogByteLength(limited.upload);
+  if (totalBytes <= PROJECT_DIAGNOSTIC_LOG_MAX_BYTES) {
+    return limited;
+  }
+
+  const logs = (['compile', 'upload'] as const)
+    .map((source, index) => ({
+      source,
+      index,
+      occurredAt: latestDiagnosticLogTimestamp(limited[source].content),
+    }))
+    .filter(({ source }) => diagnosticLogByteLength(limited[source]) > 0)
+    .sort((left, right) => (
+      (left.occurredAt ?? Number.NEGATIVE_INFINITY)
+      - (right.occurredAt ?? Number.NEGATIVE_INFINITY)
+      || left.index - right.index
+    ));
+
+  for (const { source } of logs.slice(0, -1)) {
+    if (totalBytes <= PROJECT_DIAGNOSTIC_LOG_MAX_BYTES) {
+      break;
+    }
+    const previousBytes = diagnosticLogByteLength(limited[source]);
+    limited[source] = {
+      status: 'ok',
+      content: PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER.trimEnd(),
+      truncated: true,
+    };
+    totalBytes -= previousBytes - diagnosticLogByteLength(limited[source]);
+  }
+
+  const newestSource = logs[logs.length - 1]?.source;
+  if (newestSource && totalBytes > PROJECT_DIAGNOSTIC_LOG_MAX_BYTES) {
+    const otherSource = newestSource === 'compile' ? 'upload' : 'compile';
+    const newestBudget = Math.max(
+      0,
+      PROJECT_DIAGNOSTIC_LOG_MAX_BYTES - diagnosticLogByteLength(limited[otherSource]),
+    );
+    limited[newestSource] = truncateDiagnosticLogResult(limited[newestSource], newestBudget);
+  }
+
+  return limited;
+}
+
+function latestDiagnosticLogTimestamp(content: string | null): number | null {
+  if (!content) {
+    return null;
+  }
+  let latest: number | null = null;
+  for (const match of content.matchAll(/\[(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:Z)?\]/g)) {
+    const timestamp = Date.parse(`${match[1]}T${match[2]}`);
+    if (Number.isFinite(timestamp) && (latest === null || timestamp > latest)) {
+      latest = timestamp;
+    }
+  }
+  return latest;
+}
+
+function extractProjectUploadDiagnosticEvidence(
+  result: ProjectDiagnosticLogReadResult,
+): ProjectUploadDiagnosticEvidence {
+  const evidence: ProjectUploadDiagnosticEvidence = {
+    latestTimestamp: null,
+    latestOtaEntry: null,
+  };
+  if (result.status !== 'ok' || !result.content) {
+    return evidence;
+  }
+
+  for (const line of result.content.split(/\r\n|\n|\r/)) {
+    const match = line.match(
+      /^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]\s+\[[^\]]+\]\s+\[upload\]\s+(.*)$/,
+    );
+    if (!match) {
+      continue;
+    }
+    const timestamp = Date.parse(`${match[1]}T${match[2]}`);
+    const detail = match[3].trim();
+    if (!Number.isFinite(timestamp) || !detail) {
+      continue;
+    }
+    if (evidence.latestTimestamp === null || timestamp >= evidence.latestTimestamp) {
+      evidence.latestTimestamp = timestamp;
+    }
+    if (
+      /^(?:\[WiFi OTA\]|\[BLE OTA\])\s+/i.test(detail)
+      && (!evidence.latestOtaEntry || timestamp >= evidence.latestOtaEntry.timestamp)
+    ) {
+      evidence.latestOtaEntry = { timestamp, detail };
+    }
+  }
+  return evidence;
+}
+
+function diagnosticLogByteLength(result: ProjectDiagnosticLogReadResult): number {
+  return result.status === 'ok' && result.content !== null
+    ? new TextEncoder().encode(result.content).byteLength
+    : 0;
+}
+
+function truncateDiagnosticLogResult(
+  result: ProjectDiagnosticLogReadResult,
+  maxBytes: number,
+): ProjectDiagnosticLogReadResult {
+  if (result.status !== 'ok' || result.content === null) {
+    return result;
+  }
+  const encoder = new TextEncoder();
+  if (encoder.encode(result.content).byteLength <= maxBytes) {
+    return result;
+  }
+
+  const rawContent = result.truncated && result.content.startsWith(PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER)
+    ? result.content.slice(PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER.length)
+    : result.content;
+  const markerBytes = encoder.encode(PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER);
+  const bodyBudget = Math.max(0, maxBytes - markerBytes.byteLength);
+  const lines = rawContent.split('\n');
+  const retainedLines: string[] = [];
+  let retainedBytes = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const lineBytes = encoder.encode(lines[index]).byteLength;
+    const separatorBytes = retainedLines.length > 0 ? 1 : 0;
+    if (retainedBytes + separatorBytes + lineBytes > bodyBudget) {
+      break;
+    }
+    retainedLines.unshift(lines[index]);
+    retainedBytes += separatorBytes + lineBytes;
+  }
+  return {
+    status: 'ok',
+    content: `${PROJECT_DIAGNOSTIC_LOG_TRUNCATION_MARKER}${retainedLines.join('\n')}`,
+    truncated: true,
+  };
+}
+
+function diagnosticLogPair(status: 'none' | 'error'): RecentProjectDiagnosticLogs {
+  return {
+    compile: diagnosticLogResult(status),
+    upload: diagnosticLogResult(status),
+    uploadEvidence: {
+      latestTimestamp: null,
+      latestOtaEntry: null,
+    },
+  };
+}
+
+function diagnosticLogResult(status: 'none' | 'error'): ProjectDiagnosticLogReadResult {
+  return {
+    status,
+    content: null,
+    truncated: false,
+  };
 }
 
 function normalizeLogMessage(message: string): string {
