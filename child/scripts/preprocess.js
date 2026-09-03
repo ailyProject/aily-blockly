@@ -148,15 +148,20 @@ async function main() {
         }
 
         // 3. 处理库文件
-        const libsPath = collectLibraryPackages(dependencies, currentProjectPath);
+        // Coder libraries are persistent sources under sketch/libraries and are
+        // installed only from libraries-coder-index.json (or intentionally
+        // authored locally). Legacy @aily-project/lib-* npm dependencies remain
+        // a Blockly-only input and must never enter the Coder compiler search.
+        const libsPath = collectDependencyLibraryPackages(
+            dependencies,
+            currentProjectPath,
+            isAilyCode
+        );
         const componentLibraries = isAilyCode
             ? collectWorkspaceLibraries(librariesPath)
             : collectComponentLibraries(currentProjectPath);
 
         logger.log(`开始处理 ${libsPath.length} 个库文件`);
-        const packageLibraryPaths = isAilyCode
-            ? await prepareCoderPackageLibraries(libsPath, currentProjectPath, za7Path)
-            : [];
         const copiedLibraries = isAilyCode
             ? componentLibraries.map(component => component.name)
             : await processLibrariesParallel(
@@ -170,9 +175,7 @@ async function main() {
         if (!isAilyCode) {
             copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath));
         }
-        const librarySearchPaths = isAilyCode
-            ? [librariesPath, ...packageLibraryPaths]
-            : [librariesPath];
+        const librarySearchPaths = [librariesPath];
         
         // 保存缓存
         if (!isAilyCode) {
@@ -535,6 +538,12 @@ function collectLibraryPackages(projectDependencies, currentProjectPath) {
     return libraries;
 }
 
+function collectDependencyLibraryPackages(projectDependencies, currentProjectPath, isAilyCode) {
+    return isAilyCode
+        ? []
+        : collectLibraryPackages(projectDependencies, currentProjectPath);
+}
+
 /**
  * Aily Coder local libraries: each immediate directory under project-root
  * components/ is one Arduino-compatible library root. Files and symlinks at
@@ -611,36 +620,6 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
         }
     });
     return copiedLibraries;
-}
-
-/**
- * Coder keeps installed @aily-project/lib-* packages intact under node_modules.
- * src.7z is expanded in-place to <package>/src and each package src directory is
- * passed to aily-builder as an independent library search root. sketch/libraries
- * remains reserved for intentional project-local source libraries.
- */
-async function prepareCoderPackageLibraries(libsPath, currentProjectPath, za7Path) {
-    const results = await Promise.all(libsPath.map(async lib => {
-        const packageRoot = path.join(currentProjectPath, 'node_modules', lib);
-        const sourcePathBase = path.join(packageRoot, 'src');
-        if (!fs.existsSync(sourcePathBase)) {
-            const sourceZipPath = path.join(packageRoot, 'src.7z');
-            if (!fs.existsSync(sourceZipPath)) {
-                logger.warn(`Coder library package has no src or src.7z: ${lib}`);
-                return '';
-            }
-            try {
-                extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePathBase);
-            } catch (error) {
-                throw new Error(`Coder library ${lib} extraction failed: ${error.message}`);
-            }
-        }
-
-        const sourcePath = resolveNestedSrcPath(sourcePathBase);
-        createLibrarySourceFingerprint(sourcePath);
-        return sourcePath;
-    }));
-    return results.filter(Boolean);
 }
 
 async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
@@ -925,12 +904,12 @@ if (require.main === module) {
 
 module.exports = {
     collectComponentLibraries,
+    collectDependencyLibraryPackages,
     collectWorkspaceLibraries,
     collectLibraryPackages,
     createLibrarySourceFingerprint,
     isCompilableLibraryPackage,
     normalizeExtractedSourceDirectory,
-    prepareCoderPackageLibraries,
     processComponentLibraries,
     processLibrariesParallel,
 };
