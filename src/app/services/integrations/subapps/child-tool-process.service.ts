@@ -5,6 +5,7 @@ import { ProjectService } from '@domain/project/public-api';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import { BehaviorSubject, distinctUntilChanged, map, type Observable } from 'rxjs';
 import { classifyRecordedChildToolRuntimeEntry } from './models/child-tool-runtime-entry';
+import { SubappManagerService } from './subapp-manager.service';
 
 export interface ChildToolHostInfo {
   url: string;
@@ -80,6 +81,7 @@ interface ChildToolSession {
 export class ChildToolProcessService implements OnDestroy {
   private sessions = new Map<string, ChildToolSession>();
   private readonly prewarmReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly launchUpdateTasks = new Map<string, Promise<void>>();
   private readonly releaseGraceMs = 15000;
   private readonly recoveryBaseDelayMs = 500;
   private readonly maxRecoveryAttempts = 3;
@@ -96,6 +98,7 @@ export class ChildToolProcessService implements OnDestroy {
   constructor(
     private configService: ConfigService,
     private projectService: ProjectService,
+    private subappManager: SubappManagerService,
   ) {
     const onStateChanged = window['childToolSession']?.onStateChanged;
     if (typeof onStateChanged === 'function') {
@@ -106,6 +109,7 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   async acquire(toolId: string): Promise<ChildToolHostInfo> {
+    await this.installReadyUpdateBeforeLaunch(toolId);
     const config = this.requireConfig(toolId);
     if (config.runtime?.processMessagePort) {
       if (
@@ -274,6 +278,53 @@ export class ChildToolProcessService implements OnDestroy {
       hostInfo: null,
       updatedAt: 0,
     };
+  }
+
+  private async installReadyUpdateBeforeLaunch(toolId: string): Promise<void> {
+    const normalizedToolId = String(toolId || '').trim();
+    if (!normalizedToolId) return;
+
+    const existingTask = this.launchUpdateTasks.get(normalizedToolId);
+    if (existingTask) {
+      await existingTask;
+      return;
+    }
+
+    const task = this.performReadyUpdateBeforeLaunch(normalizedToolId);
+    this.launchUpdateTasks.set(normalizedToolId, task);
+    try {
+      await task;
+    } finally {
+      if (this.launchUpdateTasks.get(normalizedToolId) === task) {
+        this.launchUpdateTasks.delete(normalizedToolId);
+      }
+    }
+  }
+
+  private async performReadyUpdateBeforeLaunch(toolId: string): Promise<void> {
+    try {
+      await this.subappManager.initialize();
+      const item = this.subappManager.state.apps.find(candidate => candidate.toolId === toolId);
+      if (
+        item?.updatePolicy?.install !== 'next-launch'
+        || item.updateStatus.state !== 'ready'
+      ) {
+        return;
+      }
+
+      const runtime = this.getRuntimeSnapshot(toolId);
+      if (runtime.running && runtime.refCount > 0) {
+        return;
+      }
+      if (runtime.running) {
+        await this.forceStop(toolId);
+      }
+
+      await this.subappManager.installUpdate(item.id);
+    } catch (error) {
+      // 更新失败时保留并继续启动旧版本；目录状态会显示失败并允许手动重试。
+      console.warn(`[Subapp] Ready update was not installed before launching ${toolId}:`, error);
+    }
   }
 
   onMessage(
