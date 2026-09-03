@@ -8,7 +8,6 @@ import {
   PlatformService,
 } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { pinyin } from "pinyin-pro";
 import { Router } from '@angular/router';
 import { generateDateString } from '../../../func/func';
 import { ConfigService } from '@core/preferences/public-api';
@@ -61,6 +60,7 @@ import {
   resolveConfiguredProjectRootPath,
 } from './project-root-path';
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
+import { deriveProjectPackageName } from './project-package-name';
 
 interface ProjectPackageData {
   name: string;
@@ -540,12 +540,6 @@ export class ProjectService {
     return args.join(' ');
   }
 
-  // 检测字符串是否包含中文字符
-  containsChineseCharacters(str: string): boolean {
-    const chineseRegex = /[\u4e00-\u9fa5]/;
-    return chineseRegex.test(str);
-  }
-
   private buildProjectPath(newProjectData: NewProjectData): string {
     const inputName = String(newProjectData.name ?? '').trim();
     const projectPath = window['path'].join(newProjectData.path, inputName.replace(/\s/g, '_'));
@@ -578,28 +572,20 @@ export class ProjectService {
   ) {
     const inputName = String(newProjectData.name ?? '').trim();
     const packageJson = JSON.parse(window['fs'].readFileSync(`${projectPath}/package.json`));
-      if (this.containsChineseCharacters(inputName)) {
-        packageJson.name = pinyin(inputName, {
-          toneType: "none",
-          separator: ""
-        }).replace(/\s/g, '_');
-        packageJson.nickname = inputName;
-      } else {
-        packageJson.name = inputName;
-        packageJson.nickname = packageJson.name;
-      }
-      // Coder 使用 Arduino 模板；框架固定为 arduino，不沿用 Blockly 表单中的其他 devmode。
-      if (!options?.coderTemplate && newProjectData.devmode) {
-        packageJson.devmode = newProjectData.devmode;
-      }
+    packageJson.name = deriveProjectPackageName(inputName);
+    packageJson.nickname = inputName;
+    // Coder 使用 Arduino 模板；框架固定为 arduino，不沿用 Blockly 表单中的其他 devmode。
+    if (!options?.coderTemplate && newProjectData.devmode) {
+      packageJson.devmode = newProjectData.devmode;
+    }
 
-      if (options?.coderTemplate) {
-        const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
-        const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
-        applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange);
-      }
+    if (options?.coderTemplate) {
+      const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
+      const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
+      applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange);
+    }
 
-      window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
+    window['fs'].writeFileSync(`${projectPath}/package.json`, JSON.stringify(packageJson, null, 2));
   }
 
   private async finishProjectCreation(projectPath: string, options: ProjectCreationOptions = {}): Promise<boolean> {
@@ -1195,17 +1181,9 @@ export class ProjectService {
       delete packageJson.cloudId;
     }
     // 获取新的项目名称（文件夹名）
-    let name = window['path'].basename(path);
-    if (this.containsChineseCharacters(name)) {
-      packageJson.name = pinyin(name, {
-        toneType: "none",
-        separator: ""
-      }).replace(/\s/g, '_');
-      packageJson.nickname = name;
-    } else {
-      packageJson.name = name;
-      packageJson.nickname = name;
-    }
+    const name = window['path'].basename(path);
+    packageJson.name = deriveProjectPackageName(name);
+    packageJson.nickname = name;
     window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
     // 修改当前项目路径
     this.currentProjectPath = path;

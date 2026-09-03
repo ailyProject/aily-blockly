@@ -35,11 +35,6 @@ import {
   CoderLoadingStage,
 } from './coder-loading/coder-loading.component';
 import {
-  LibManagerService,
-  type PackageInfo,
-} from '../blockly-editor/components/lib-manager/lib-manager.service';
-import {
-  createAilyCoderLibraryContext,
   normalizeAilyCoderHostLanguage,
   toAilyCoderWorkbenchLocale,
 } from './services/aily-coder-library-context';
@@ -247,7 +242,6 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     private readonly translate: TranslateService,
     private readonly elementRef: ElementRef<HTMLElement>,
     private readonly codeCompletionHostBridge: CodeCompletionHostBridgeService,
-    private readonly libManagerService: LibManagerService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -950,49 +944,9 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     }
   }
 
-  /** 主软件内存目录未就绪时，同步读取库管理使用的同一个 libraries.json 缓存。 */
-  private getAilyLibraryCatalogForEmbed(): PackageInfo[] {
-    if (Array.isArray(this.configService.libraryList) && this.configService.libraryList.length > 0) {
-      return this.configService.libraryList;
-    }
-    try {
-      const appDataPath = window['path'].getAppDataPath() as string;
-      const cachePath = window['path'].join(appDataPath, 'libraries.json') as string;
-      if (!this.electronService.exists(cachePath)) return [];
-      const parsed = JSON.parse(this.electronService.readFile(cachePath));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-
-  private createAilyLibrariesForEmbed(
-    sourceLibraries: PackageInfo[],
-    boardType: string,
-    hostLanguage: string,
-    installedLibraries: PackageInfo[] = [],
-  ) {
-    const availableLibraries = this.libManagerService.filterByBoardType(
-      sourceLibraries,
-      boardType,
-    );
-    const mergedLibraries = installedLibraries.length > 0
-      ? this.libManagerService.mergeInstalledLibraries(
-          this.libManagerService.cloneLibraryList(availableLibraries),
-          installedLibraries,
-          true,
-        )
-      : this.libManagerService.cloneLibraryList(availableLibraries);
-    const localizedLibraries = this.libManagerService.applyLocalization(
-      this.libManagerService.filterByBoardType(mergedLibraries, boardType),
-      hostLanguage,
-    );
-    return createAilyCoderLibraryContext(localizedLibraries);
-  }
-
   /**
-   * 先同步注入库目录与语言，再异步补充安装状态、构建产物和平台包。
-   * 库面板不能被无关的构建/依赖解析阻塞。
+   * 先同步注入工作区与语言，再异步补充构建产物和平台包。
+   * Coder 库目录由子应用按当前区域独立加载，不再从 Blockly 库目录注入。
    */
   private async pushAilyCoderHostContext(projectRoot: string): Promise<void> {
     if (!this.isCurrentCoderWorkspace(projectRoot)) return;
@@ -1002,15 +956,6 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
       return;
     }
     const hostLanguage = this.translate.currentLang || this.translate.defaultLang || 'en';
-    const boardType = typeof this.projectService.currentBoardConfig?.type === 'string'
-      ? this.projectService.currentBoardConfig.type.trim()
-      : '';
-    const sourceLibraries = this.getAilyLibraryCatalogForEmbed();
-    const initialAilyLibraries = this.createAilyLibrariesForEmbed(
-      sourceLibraries,
-      boardType,
-      hostLanguage,
-    );
     const appDataPath = window['path'].getAppDataPath() as string;
     if (
       this.isCurrentCoderWorkspace(projectRoot)
@@ -1022,25 +967,17 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
           v: 1 as const,
           workspaceRoot: projectRoot,
           appDataPath,
-          ailyLibraries: initialAilyLibraries,
           meta: { theme: this.themeService.theme(), lang: hostLanguage },
         },
       }, '*');
     }
     try {
-      const [buildOutputs, platformPackages, boardProfile, installedLibraries] = await Promise.all([
+      const [buildOutputs, platformPackages, boardProfile] = await Promise.all([
         this.resolveEmbedBuildOutputs(projectRoot),
         this.loadPlatformPackagesForEmbed(),
         this.buildBoardProfileForEmbed(projectRoot),
-        this.npmService.getAllInstalledLibraries(projectRoot).catch(() => []),
       ]);
       const { buildPath, artifacts, mainHexAbs, mainHexRelPath } = buildOutputs;
-      const ailyLibraries = this.createAilyLibrariesForEmbed(
-        sourceLibraries,
-        boardType,
-        hostLanguage,
-        installedLibraries,
-      );
       const payload = {
         v: 1 as const,
         workspaceRoot: projectRoot,
@@ -1063,7 +1000,6 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
           : {}),
         ...(platformPackages.length > 0 ? { platformPackages } : {}),
         ...(boardProfile ? { boardProfile } : {}),
-        ailyLibraries,
         meta: { theme: this.themeService.theme(), lang: hostLanguage },
       };
       if (

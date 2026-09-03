@@ -436,20 +436,32 @@ export class NpmService {
     }
 
     this.boardDepsInstallPromise = (async () => {
-      this.isInstalling = true;
-      const installStateStarted = this.application.startInstall();
+      let installStateStarted = false;
 
       try {
         const boardPackageJson = await this.prjService.getBoardPackageJson() || {};
         const projectPackageJson = await this.prjService.getPackageJson() || {};
+        const boardDependencies: Record<string, string> = boardPackageJson.boardDependencies || {};
+        const boardPlatformDepsReady = await this.areBoardPlatformDepsReady(boardDependencies);
+        const isAilyCodeProject = this.isAilyCodeProjectRoot(this.prjService.currentProjectPath);
+
+        if (!boardPlatformDepsReady || isAilyCodeProject) {
+          this.isInstalling = true;
+          installStateStarted = this.application.startInstall();
+        }
+
         try {
           await this.recordGlobalDependencyUsage(projectPackageJson, boardPackageJson);
         } catch (error) {
           console.warn('Failed to record global dependency usage:', error);
         }
         // console.log("boardPackageJson: ", boardPackageJson);
-        await this.installBoardDependencies(boardPackageJson, false);
-        if (this.isAilyCodeProjectRoot(this.prjService.currentProjectPath)) {
+        if (!boardPlatformDepsReady) {
+          await this.installBoardDependencies(boardPackageJson, false, true);
+        } else {
+          console.log('[installBoardDeps] 平台依赖已就绪，跳过安装状态');
+        }
+        if (isAilyCodeProject) {
           await this.installPlatformPackageForAilyCodeProject();
         }
         try {

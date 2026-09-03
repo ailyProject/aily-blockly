@@ -144,10 +144,11 @@ function getActiveReaders() {
   return activeReaders;
 }
 
-function createPayload(token, label, mode) {
+function createPayload(token, label, mode, ownerWebContentsId) {
   return {
     token,
     pid: process.pid,
+    ownerWebContentsId,
     execPath: process.execPath,
     appVersion: app.getVersion(),
     label,
@@ -165,10 +166,14 @@ function logWait(event, label, mode, startedAt, extra) {
   });
 }
 
-async function acquireReadLock(label, token, startedAt, timeoutMs) {
+async function acquireReadLock(label, token, startedAt, timeoutMs, options = {}) {
   let lastHolderLogAt = 0;
 
   while (Date.now() - startedAt <= timeoutMs) {
+    if (options.isCancelled?.()) {
+      return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: 'read' };
+    }
+
     const writer = getActiveWriter();
     if (writer) {
       const now = Date.now();
@@ -185,7 +190,7 @@ async function acquireReadLock(label, token, startedAt, timeoutMs) {
 
     const readerLockPath = path.join(getReadersDirPath(), `${token}.lock`);
     try {
-      writeLock(readerLockPath, createPayload(token, label, 'read'));
+      writeLock(readerLockPath, createPayload(token, label, 'read', options.ownerWebContentsId));
     } catch (error) {
       if (error?.code !== 'EEXIST') {
         throw error;
@@ -194,8 +199,18 @@ async function acquireReadLock(label, token, startedAt, timeoutMs) {
       continue;
     }
 
+    if (options.isCancelled?.()) {
+      removeStaleLock(readerLockPath, readLock(readerLockPath), 'owner-destroyed');
+      return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: 'read' };
+    }
+
     if (!getActiveWriter()) {
-      heldLocks.set(token, { mode: 'read', lockPath: readerLockPath, label });
+      heldLocks.set(token, {
+        mode: 'read',
+        lockPath: readerLockPath,
+        label,
+        ownerWebContentsId: options.ownerWebContentsId
+      });
       return { ok: true, token, mode: 'read', lockPath: readerLockPath, waitMs: Date.now() - startedAt };
     }
 
@@ -206,15 +221,22 @@ async function acquireReadLock(label, token, startedAt, timeoutMs) {
   return { ok: false, error: 'APPDATA_RESOURCE_LOCK_TIMEOUT', mode: 'read', writer: getActiveWriter()?.holder };
 }
 
-async function acquireWriteLock(label, token, startedAt, timeoutMs) {
+async function acquireWriteLock(label, token, startedAt, timeoutMs, options = {}) {
   const writerLockPath = getWriterLockPath();
   let hasWriterLock = false;
   let lastHolderLogAt = 0;
 
   while (Date.now() - startedAt <= timeoutMs) {
+    if (options.isCancelled?.()) {
+      if (hasWriterLock) {
+        removeStaleLock(writerLockPath, readLock(writerLockPath), 'owner-destroyed');
+      }
+      return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: 'write' };
+    }
+
     if (!hasWriterLock) {
       try {
-        writeLock(writerLockPath, createPayload(token, label, 'write'));
+        writeLock(writerLockPath, createPayload(token, label, 'write', options.ownerWebContentsId));
         hasWriterLock = true;
       } catch (error) {
         if (error?.code !== 'EEXIST') {
@@ -237,7 +259,12 @@ async function acquireWriteLock(label, token, startedAt, timeoutMs) {
 
     const readers = getActiveReaders().filter((reader) => reader.holder.token !== token);
     if (readers.length === 0) {
-      heldLocks.set(token, { mode: 'write', lockPath: writerLockPath, label });
+      heldLocks.set(token, {
+        mode: 'write',
+        lockPath: writerLockPath,
+        label,
+        ownerWebContentsId: options.ownerWebContentsId
+      });
       return { ok: true, token, mode: 'write', lockPath: writerLockPath, waitMs: Date.now() - startedAt };
     }
 
@@ -258,15 +285,15 @@ async function acquireWriteLock(label, token, startedAt, timeoutMs) {
   return { ok: false, error: 'APPDATA_RESOURCE_LOCK_TIMEOUT', mode: 'write', readers: getActiveReaders().map((reader) => reader.holder) };
 }
 
-async function acquireAppDataResourceLock(label, mode = 'write', timeoutMs = DEFAULT_TIMEOUT_MS) {
+async function acquireAppDataResourceLock(label, mode = 'write', timeoutMs = DEFAULT_TIMEOUT_MS, options = {}) {
   const startedAt = Date.now();
   const normalizedMode = mode === 'read' ? 'read' : 'write';
   const token = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   try {
     const result = normalizedMode === 'read'
-      ? await acquireReadLock(label, token, startedAt, timeoutMs)
-      : await acquireWriteLock(label, token, startedAt, timeoutMs);
+      ? await acquireReadLock(label, token, startedAt, timeoutMs, options)
+      : await acquireWriteLock(label, token, startedAt, timeoutMs, options);
 
     if (result.ok) {
       console.info('[PROC_TRACE][APPDATA_FILE_LOCK_ACQUIRED]', {
@@ -302,6 +329,10 @@ function releaseAppDataResourceLock(token) {
     return { ok: true, alreadyReleased: true };
   }
 
+  if (lock.ownerWebContents && lock.onOwnerDestroyed && !lock.ownerWebContents.isDestroyed()) {
+    lock.ownerWebContents.removeListener('destroyed', lock.onOwnerDestroyed);
+  }
+
   const holder = readLock(lock.lockPath);
   if (holder?.pid === process.pid && holder?.token === token) {
     try {
@@ -310,7 +341,8 @@ function releaseAppDataResourceLock(token) {
         token,
         mode: lock.mode,
         label: holder.label,
-        lockPath: lock.lockPath
+        lockPath: lock.lockPath,
+        ownerWebContentsId: lock.ownerWebContentsId
       });
     } catch (error) {
       if (error?.code !== 'ENOENT') {
@@ -341,8 +373,57 @@ function registerAppDataResourceLockHandlers() {
 
   handlersRegistered = true;
 
-  ipcMain.handle('appdata-resource-lock-acquire', async (_event, data = {}) => {
-    return acquireAppDataResourceLock(data.label || 'unknown', data.mode || 'write', data.timeoutMs || DEFAULT_TIMEOUT_MS);
+  ipcMain.handle('appdata-resource-lock-acquire', async (event, data = {}) => {
+    const ownerWebContents = event.sender;
+    let ownerDestroyed = ownerWebContents.isDestroyed();
+    const markOwnerDestroyed = () => {
+      ownerDestroyed = true;
+    };
+
+    if (!ownerDestroyed) {
+      ownerWebContents.once('destroyed', markOwnerDestroyed);
+    }
+
+    const result = await acquireAppDataResourceLock(
+      data.label || 'unknown',
+      data.mode || 'write',
+      data.timeoutMs || DEFAULT_TIMEOUT_MS,
+      {
+        ownerWebContentsId: ownerWebContents.id,
+        isCancelled: () => ownerDestroyed || ownerWebContents.isDestroyed()
+      }
+    );
+
+    if (!ownerWebContents.isDestroyed()) {
+      ownerWebContents.removeListener('destroyed', markOwnerDestroyed);
+    }
+
+    if (!result.ok) {
+      return result;
+    }
+
+    if (ownerDestroyed || ownerWebContents.isDestroyed()) {
+      releaseAppDataResourceLock(result.token);
+      return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: result.mode };
+    }
+
+    const lock = heldLocks.get(result.token);
+    if (lock) {
+      const releaseOnOwnerDestroyed = () => {
+        console.warn('[PROC_TRACE][APPDATA_FILE_LOCK_OWNER_DESTROYED]', {
+          token: result.token,
+          label: lock.label,
+          mode: lock.mode,
+          ownerWebContentsId: ownerWebContents.id
+        });
+        releaseAppDataResourceLock(result.token);
+      };
+      lock.ownerWebContents = ownerWebContents;
+      lock.onOwnerDestroyed = releaseOnOwnerDestroyed;
+      ownerWebContents.once('destroyed', releaseOnOwnerDestroyed);
+    }
+
+    return result;
   });
 
   ipcMain.handle('appdata-resource-lock-release', (_event, data = {}) => {
