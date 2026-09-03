@@ -286,31 +286,47 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   get showSubappVersionAction(): boolean {
+    const updateState = this.currentSubappCatalogItem?.updateStatus.state;
     return !!this.currentSubappCatalogItem
       && (this.subappUpdateInProgress
         || this.subappRestartInProgress
-        || this.currentSubappCatalogItem.updateAvailable
+        || (updateState !== undefined && updateState !== 'current')
         || this.isSubappRestartRequired);
   }
 
   get subappVersionActionLabel(): string {
     if (this.subappUpdateInProgress) {
       const progress = this.subappUpdateProgress > 0 ? ` ${this.subappUpdateProgress}%` : '';
-      return `${this.translate.instant('APP_STORE.DOWNLOADING_UPDATE')}${progress}`;
+      return `${this.translate.instant('APP_STORE.INSTALLING_UPDATE')}${progress}`;
     }
     if (this.subappRestartInProgress) {
       return this.translate.instant('APP_STORE.RESTARTING');
     }
-    if (this.currentSubappCatalogItem?.updateAvailable) {
-      return this.translate.instant('APP_STORE.UPDATE');
+    const status = this.currentSubappCatalogItem?.updateStatus;
+    if (status?.state === 'downloading') {
+      const progress = status.progress ? ` ${status.progress}%` : '';
+      return `${this.translate.instant('APP_STORE.DOWNLOADING_UPDATE')}${progress}`;
+    }
+    if (status?.state === 'available') {
+      return this.translate.instant(this.currentSubappCatalogItem?.updatePolicy
+        ? 'APP_STORE.PREPARING_UPDATE'
+        : 'APP_STORE.UPDATE');
+    }
+    if (status?.state === 'ready') {
+      return this.translate.instant('APP_STORE.INSTALL_UPDATE');
+    }
+    if (status?.state === 'failed') {
+      return this.translate.instant(status.ready
+        ? 'APP_STORE.RETRY_INSTALL_UPDATE'
+        : 'APP_STORE.RETRY_UPDATE_DOWNLOAD');
     }
     return this.translate.instant('APP_STORE.RESTART');
   }
 
   get subappVersionActionTooltip(): string {
     const item = this.currentSubappCatalogItem;
-    if (!this.subappVersionActionBusy && item?.updateAvailable) {
-      return this.translate.instant('APP_STORE.UPDATE_TOOLTIP', {
+    if (!this.subappVersionActionBusy && item?.updateStatus.state === 'ready') {
+      return this.translate.instant('APP_STORE.INSTALL_UPDATE_TOOLTIP', {
         available: item.availableVersion,
       });
     }
@@ -318,7 +334,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   get subappVersionActionBusy(): boolean {
-    return this.subappUpdateInProgress || this.subappRestartInProgress;
+    const state = this.currentSubappCatalogItem?.updateStatus.state;
+    return this.subappUpdateInProgress
+      || this.subappRestartInProgress
+      || (state === 'available' && !!this.currentSubappCatalogItem?.updatePolicy)
+      || state === 'downloading'
+      || state === 'installing';
   }
 
   get isSubappRestartRequired(): boolean {
@@ -455,8 +476,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const item = this.currentSubappCatalogItem;
     if (!item) return;
 
-    if (item.updateAvailable) {
-      await this.downloadSubappUpdate(item);
+    if (!item.updatePolicy && item.updateAvailable) {
+      await this.installSubappUpdate(item, false);
+      return;
+    }
+
+    if (item.updateStatus.state === 'ready' || item.updateStatus.ready === true) {
+      await this.installSubappUpdate(item, true);
+      return;
+    }
+
+    if (item.updateStatus.state === 'failed') {
+      await this.retrySubappUpdateDownload(item);
       return;
     }
 
@@ -690,7 +721,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private applySubappUpdateProgress(progress: SubappInstallProgress | null): void {
     const catalogId = this.currentSubappCatalogItem?.id;
-    if (!catalogId || progress?.id !== catalogId || progress.action !== 'update') {
+    if (
+      !catalogId
+      || progress?.id !== catalogId
+      || (progress.action !== 'install-update' && progress.action !== 'update')
+    ) {
       if (!progress || progress?.id !== catalogId) {
         this.subappUpdateInProgress = false;
         this.subappUpdateProgress = 0;
@@ -702,10 +737,20 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.subappUpdateProgress = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
   }
 
-  private async downloadSubappUpdate(item: SubappCatalogItem): Promise<void> {
+  private async retrySubappUpdateDownload(item: SubappCatalogItem): Promise<void> {
+    try {
+      await this.subappManager.downloadUpdate(item.id);
+    } catch (error) {
+      this.showSubappActionError(error);
+    }
+  }
+
+  private async installSubappUpdate(item: SubappCatalogItem, staged: boolean): Promise<void> {
     const previousInstalledVersion = String(item.installedVersion || '').trim();
     const processRunning = this.hostStatus === 'ready' || this.hostStatus === 'starting';
     let forceClose = false;
+    let processStopped = false;
+    let updateInstalled = false;
 
     if (processRunning) {
       const confirmed = await this.confirmBusyForceClose('update');
@@ -717,16 +762,20 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.subappUpdateProgress = 1;
     this.cdr.markForCheck();
     try {
-      const preparation = await this.prepareUpdate();
+      const preparation = await this.prepareUpdate({ strict: true });
       if (preparation['ok'] !== true) {
         throw new Error(String(preparation['message'] || '子应用尚未准备好更新'));
       }
       // 宿主内更新：先停进程，界面保留并显示「正在更新」，完成后自动重启。
       if (this.resolvedToolId) {
         await this.processService.forceStop(this.resolvedToolId);
+        processStopped = true;
       }
       try {
-        await this.subappManager.update(item.id, { forceClose });
+        await (staged
+          ? this.subappManager.installUpdate(item.id, { forceClose })
+          : this.subappManager.update(item.id, { forceClose }));
+        updateInstalled = true;
       } catch (error) {
         if (forceClose || !this.isBusyForceRequiredError(error)) {
           throw error;
@@ -736,7 +785,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         forceClose = true;
         this.subappUpdateInProgress = true;
         this.cdr.markForCheck();
-        await this.subappManager.update(item.id, { forceClose: true });
+        await (staged
+          ? this.subappManager.installUpdate(item.id, { forceClose: true })
+          : this.subappManager.update(item.id, { forceClose: true }));
+        updateInstalled = true;
       }
 
       const updatedItem = this.currentSubappCatalogItem;
@@ -755,6 +807,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       if (!this.isBusyCancelledError(error)) {
         this.showSubappActionError(error);
       }
+      if (processRunning && processStopped && !updateInstalled) {
+        try {
+          await this.restartUpdatedSubapp();
+        } catch (restartError) {
+          this.showSubappActionError(restartError);
+        }
+      }
     } finally {
       this.subappUpdateInProgress = false;
       this.cdr.markForCheck();
@@ -765,7 +824,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const name = this.getToolDisplayName();
     const actionLabel = action === 'uninstall'
       ? this.translate.instant('APP_STORE.UNINSTALL')
-      : this.translate.instant('APP_STORE.UPDATE');
+      : this.translate.instant('APP_STORE.INSTALL_UPDATE');
     return new Promise((resolve) => {
       this.modal.confirm({
         nzClassName: 'subapp-service-confirm-modal',

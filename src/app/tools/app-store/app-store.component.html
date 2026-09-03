@@ -187,10 +187,24 @@
                                     [style.left.px]="getSubappMoreMenuLeft(app)"
                                     [style.top.px]="getSubappMoreMenuTop(app)">
                                     <button class="subapp-more-action" type="button" role="menuitem"
-                                        [disabled]="isCheckingSubapp(app)" (click)="runSubappMenuAction(app)">
-                                        @if (app.subapp?.updateAvailable) {
+                                        [disabled]="isCheckingSubapp(app) || isSubappUpdatePreparing(app)" (click)="runSubappMenuAction(app)">
+                                        @if (!app.subapp?.updatePolicy && app.subapp?.updateAvailable) {
                                         <i class="fa-light fa-cloud-arrow-down"></i>
                                         <span>{{ 'APP_STORE.UPDATE' | translate }}</span>
+                                        } @else if (app.subapp?.updateStatus?.state === 'ready') {
+                                        <i class="fa-light fa-cloud-arrow-down"></i>
+                                        <span>{{ 'APP_STORE.INSTALL_UPDATE' | translate }}</span>
+                                        } @else if (app.subapp?.updateStatus?.state === 'failed') {
+                                        <i class="fa-light fa-arrow-rotate-right"></i>
+                                        <span>{{ (app.subapp?.updateStatus?.ready
+                                            ? 'APP_STORE.RETRY_INSTALL_UPDATE'
+                                            : 'APP_STORE.RETRY_UPDATE_DOWNLOAD') | translate }}</span>
+                                        } @else if (app.subapp?.updateStatus?.state === 'downloading') {
+                                        <i class="fa-light fa-spinner-third app-store-spin"></i>
+                                        <span>{{ 'APP_STORE.DOWNLOADING_UPDATE' | translate }} {{ app.subapp?.updateStatus?.progress || 0 }}%</span>
+                                        } @else if (app.subapp?.updateStatus?.state === 'available') {
+                                        <i class="fa-light fa-spinner-third app-store-spin"></i>
+                                        <span>{{ 'APP_STORE.PREPARING_UPDATE' | translate }}</span>
                                         } @else if (isSubappRestartRequired(app)) {
                                         <i class="fa-light fa-arrow-rotate-right"></i>
                                         <span>{{ (app.extension

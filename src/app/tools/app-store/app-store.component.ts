@@ -239,9 +239,26 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId || !app.subapp?.installed || this.pendingCatalogId || this.checkingCatalogId) return;
 
-    if (app.subapp.updateAvailable) {
+    const updateStatus = app.subapp.updateStatus;
+    if (!app.subapp.updatePolicy && app.subapp.updateAvailable) {
       this.closeSubappMore();
       this.startSubappUpdate(app);
+      return;
+    }
+
+    if (updateStatus.state === 'ready' || updateStatus.ready === true) {
+      this.closeSubappMore();
+      this.startSubappUpdate(app);
+      return;
+    }
+
+    if (updateStatus.state === 'failed') {
+      this.closeSubappMore();
+      void this.retrySubappUpdateDownload(app);
+      return;
+    }
+
+    if (updateStatus.state === 'available' || updateStatus.state === 'downloading') {
       return;
     }
 
@@ -359,6 +376,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     return !!app.subapp && this.checkingCatalogId === app.subapp.catalogId;
   }
 
+  isSubappUpdatePreparing(app: AppItem): boolean {
+    const state = app.subapp?.updateStatus.state;
+    return (state === 'available' && !!app.subapp?.updatePolicy)
+      || state === 'downloading'
+      || state === 'installing';
+  }
+
   isUninstallConfirming(app: AppItem): boolean {
     return !!app.subapp && this.confirmUninstallCatalogId === app.subapp.catalogId;
   }
@@ -473,8 +497,24 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private startSubappUpdate(app: AppItem): void {
-    if (!app.subapp?.updateAvailable) return;
+    if (
+      !app.subapp
+      || (app.subapp.updatePolicy
+        && app.subapp.updateStatus.state !== 'ready'
+        && app.subapp.updateStatus.ready !== true)
+    ) return;
     void this.updateSubapp(app);
+  }
+
+  private async retrySubappUpdateDownload(app: AppItem): Promise<void> {
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId) return;
+    try {
+      await this.subappManager.downloadUpdate(catalogId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    }
   }
 
   private confirmSubappRestart(app: AppItem): void {
@@ -496,13 +536,22 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private async updateSubapp(app: AppItem): Promise<void> {
     const subapp = app.subapp;
-    if (!subapp?.updateAvailable || this.pendingCatalogId) return;
+    if (
+      !subapp
+      || (subapp.updatePolicy
+        && subapp.updateStatus.state !== 'ready'
+        && subapp.updateStatus.ready !== true)
+      || this.pendingCatalogId
+    ) return;
 
     const wasActive = await this.isSubappUiOpen(app);
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
     let restartTarget: AppItem | null = null;
     let extensionClientRestartRequired = false;
     let forceClose = false;
+    let processStopped = false;
+    let updateInstalled = false;
+    let restartPreviousVersion = false;
 
     if (wasActive) {
       const confirmed = await this.confirmBusyForceClose(app, 'update');
@@ -522,16 +571,23 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         const preparation = await this.mainUiAutomation.controlChildApp({
           toolId: app.id,
           action: 'prepareUpdate',
+          strictLifecycle: true,
         });
         if (preparation['ok'] !== true) {
           throw new Error(String(preparation['message'] || '子应用尚未准备好更新'));
         }
       }
       await this.childToolProcess.forceStop(app.id);
+      processStopped = true;
       if (!wasActive && !app.extension) {
         this.uiService.closeTool(app.id);
       }
-      await this.runSubappMutationWithBusyRetry('update', app, { forceClose });
+      await this.runSubappMutationWithBusyRetry(
+        subapp.updatePolicy ? 'installUpdate' : 'update',
+        app,
+        { forceClose },
+      );
+      updateInstalled = true;
       this.pendingProgress = 100;
       const updatedApp = this.subappManager.getCatalogApps()
         .find((item) => item.subapp?.catalogId === subapp.catalogId);
@@ -555,6 +611,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         const message = error instanceof Error ? error.message : String(error || 'Unknown error');
         this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       }
+      if (wasActive && processStopped && !updateInstalled) {
+        restartPreviousVersion = true;
+      }
     } finally {
       this.pendingCatalogId = '';
       this.pendingProgress = 0;
@@ -565,13 +624,20 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       // 强制更新前已确认关闭进程，更新完成后自动重启，不再二次确认
       await this.restartSubapp(restartTarget);
     }
+    if (restartPreviousVersion) {
+      try {
+        await this.restartSubapp(app);
+      } catch {
+        // restartSubapp already reports the recovery error.
+      }
+    }
     if (extensionClientRestartRequired) {
       this.showExtensionClientRestartInfo(app);
     }
   }
 
   private async runSubappMutationWithBusyRetry(
-    action: 'install' | 'update' | 'uninstall',
+    action: 'install' | 'update' | 'installUpdate' | 'uninstall',
     app: AppItem,
     options: { forceClose?: boolean } = {},
   ): Promise<void> {
@@ -590,7 +656,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         (cancelled as Error & { code?: string }).code = 'EBUSY_CANCELLED';
         throw cancelled;
       }
-      if (action === 'update') {
+      if (action === 'update' || action === 'installUpdate') {
         if (!app.extension) {
           this.uiService.openTool(app.id);
         }
@@ -606,7 +672,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   ): Promise<boolean> {
     const actionLabel = action === 'uninstall'
       ? this.translate.instant('APP_STORE.UNINSTALL')
-      : this.translate.instant('APP_STORE.UPDATE');
+      : this.translate.instant('APP_STORE.INSTALL_UPDATE');
     return new Promise((resolve) => {
       this.modal.confirm({
         nzClassName: 'subapp-service-confirm-modal',
@@ -692,12 +758,25 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         throw new Error(`Installed subapp was not found after refreshing the catalog: ${catalogId}`);
       }
 
-      if (!refreshedApp.subapp.updateAvailable) {
+      const updateStatus = refreshedApp.subapp.updateStatus;
+      if (updateStatus.state === 'current') {
         this.message.info(this.translate.instant('APP_STORE.LATEST_VERSION', { name: refreshedApp.name }));
         return;
       }
 
-      this.startSubappUpdate(refreshedApp);
+      if (updateStatus.state === 'ready' || updateStatus.ready === true) {
+        this.startSubappUpdate(refreshedApp);
+        return;
+      }
+
+      if (updateStatus.state === 'failed') {
+        await this.retrySubappUpdateDownload(refreshedApp);
+        return;
+      }
+
+      this.message.info(this.translate.instant('APP_STORE.UPDATE_DOWNLOAD_STARTED', {
+        name: refreshedApp.name,
+      }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || 'Unknown error');
       this.message.error(this.translate.instant('APP_STORE.CHECK_UPDATE_FAILED', { message }));
