@@ -61,12 +61,27 @@ jobs:
         env:
           NODE_ENV: production
 
+      - name: Add beta marker to test installer
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $outputDirectory = Join-Path $PWD 'dist/aily-coder'
+          $sourcePath = Join-Path $outputDirectory "aily-coder-CN-Setup-$version.exe"
+          $betaPath = Join-Path $outputDirectory "aily-coder-CN-Setup-beta-$version.exe"
+
+          if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "Unsigned installer not found: $sourcePath"
+          }
+
+          Move-Item -LiteralPath $sourcePath -Destination $betaPath
+          Write-Host "Test installer: $(Split-Path -Leaf $betaPath)"
+
       - name: Upload unsigned installer for SignPath
         id: upload_unsigned_coder
         uses: actions/upload-artifact@v4
         with:
           name: unsigned-aily-coder-windows-cn
-          path: dist/aily-coder/aily-coder-CN-Setup-${{ steps.version.outputs.version }}.exe
+          path: dist/aily-coder/aily-coder-CN-Setup-beta-${{ steps.version.outputs.version }}.exe
           if-no-files-found: error
 
       - name: Sign installer with SignPath test certificate
@@ -88,7 +103,7 @@ jobs:
         run: |
           $version = '${{ steps.version.outputs.version }}'
           $outputDirectory = Join-Path $PWD 'dist/aily-coder'
-          $installerName = "aily-coder-CN-Setup-$version.exe"
+          $installerName = "aily-coder-CN-Setup-beta-$version.exe"
           $installerPath = Join-Path $outputDirectory $installerName
 
           if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
@@ -124,7 +139,7 @@ jobs:
         with:
           name: AilyCoder-Windows-Package-cn
           path: |
-            dist/aily-coder/aily-coder-CN-Setup-${{ steps.version.outputs.version }}.exe
+            dist/aily-coder/aily-coder-CN-Setup-beta-${{ steps.version.outputs.version }}.exe
             dist/aily-coder/latest.yml
           if-no-files-found: error
 
@@ -174,7 +189,7 @@ jobs:
             Test-signed Windows package built from
             https://github.com/${{ github.repository }}/commit/${{ github.sha }}
           files: |
-            release/aily-coder-CN-Setup-${{ needs.build-and-sign-windows.outputs.version }}.exe
+            release/aily-coder-CN-Setup-beta-${{ needs.build-and-sign-windows.outputs.version }}.exe
             release/latest.yml
           fail_on_unmatched_files: true
           draft: false
