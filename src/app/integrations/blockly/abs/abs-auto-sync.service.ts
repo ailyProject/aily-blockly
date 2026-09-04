@@ -16,6 +16,7 @@ import { loadProjectBlockDefinitions } from './abs-parser';
 import { createProjectDataMarker } from '@domain/project/public-api';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { ElectronService } from '@core/platform/public-api';
+import { loadAbsWorkspaceInChunks } from './abs-chunk-loader';
 
 // =============================================================================
 // 类型定义
@@ -253,10 +254,14 @@ export class AbsAutoSyncService {
    * This is the narrow replacement for the retired Chat runtime resource
    * handler; no session or Agent runtime participates in the mutation.
    */
-  async importContent(absContent: string): Promise<{
+  async importContent(absContent: string, options: {
+    chunk?: boolean;
+    onProgress?: (blocks: number, batches: number) => void;
+  } = {}): Promise<{
     readonly success: boolean;
     readonly errors?: readonly string[];
     readonly warnings?: readonly string[];
+    readonly batchCount?: number;
   }> {
     if (!this.currentProjectPath || this.isSyncing) {
       return { success: false, errors: ['ABS 同步服务未初始化或正在执行其他同步。'] };
@@ -273,9 +278,14 @@ export class AbsAutoSyncService {
     }
 
     const Blockly = (window as any).Blockly;
-    const rollbackSnapshot = Blockly.serialization.workspaces.save(workspace);
+    const projectPath = this.currentProjectPath;
+    const absFilePath = this.getAbsFilePath();
+    const previousGroup = Blockly.Events.getGroup();
+    const previousRecordUndo = Blockly.Events.getRecordUndo();
+    let rollbackSnapshot: Record<string, any> | undefined;
     try {
-      loadProjectBlockDefinitions(this.currentProjectPath);
+      rollbackSnapshot = Blockly.serialization.workspaces.save(workspace);
+      loadProjectBlockDefinitions(projectPath);
       const conversion = convertAbsToAbi(absContent, {
         requireProjectDataHeader: true,
       });
@@ -288,19 +298,36 @@ export class AbsAutoSyncService {
         return { success: false, errors: ['ABS 预检发现未知或未加载的块类型。'], warnings };
       }
 
+      let batchCount: number | undefined;
       Blockly.Events.disable();
       try {
-        workspace.clear();
-        Blockly.serialization.workspaces.load(conversion.abiJson, workspace);
+        if (options.chunk) {
+          const loaded = await loadAbsWorkspaceInChunks(conversion.abiJson, workspace, (blocks, batches) => {
+            if (this.currentProjectPath !== projectPath || this.blocklyService.workspace !== workspace) {
+              throw new Error('ABS 切片导入期间工程或工作区已改变。');
+            }
+            options.onProgress?.(blocks, batches);
+          });
+          batchCount = loaded.batchCount;
+        } else {
+          workspace.clear();
+          Blockly.serialization.workspaces.load(conversion.abiJson, workspace);
+        }
       } finally {
         Blockly.Events.enable();
       }
-      workspace.render();
+      if (!options.chunk) workspace.render();
 
-      this.electronService.writeFile(this.getAbsFilePath(), absContent);
+      if (this.currentProjectPath !== projectPath || this.blocklyService.workspace !== workspace) {
+        throw new Error('ABS 导入期间工程或工作区已改变，停止写入。');
+      }
+      this.electronService.writeFile(absFilePath, absContent);
       this.exportedWorkspaceRevision = this.readWorkspaceRevision();
-      return { success: true };
+      return { success: true, ...(options.chunk ? { batchCount } : {}) };
     } catch (error) {
+      if (!rollbackSnapshot || this.blocklyService.workspace !== workspace || this.currentProjectPath !== projectPath) {
+        return { success: false, errors: [error instanceof Error ? error.message : String(error)] };
+      }
       Blockly.Events.disable();
       try {
         workspace.clear();
@@ -314,6 +341,8 @@ export class AbsAutoSyncService {
         errors: [error instanceof Error ? error.message : String(error)],
       };
     } finally {
+      Blockly.Events.setGroup(previousGroup);
+      Blockly.Events.setRecordUndo(previousRecordUndo);
       this.isSyncing = false;
     }
   }
