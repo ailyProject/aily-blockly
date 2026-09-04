@@ -84,14 +84,17 @@ export class ActionService {
   /**
    * 等待指定动作的反馈
    * @param actionId 动作ID
-   * @param timeoutMs 超时时间（毫秒）
+   * @param timeoutMs 超时时间（毫秒）；0 表示等待实际反馈，由调用方管理请求时限
    * @returns Observable<ActionFeedback>
    */
   private waitForFeedback<T = any>(actionId: string, timeoutMs: number): Observable<ActionFeedback<T>> {
-    return this.feedbackSubject.asObservable().pipe(
+    const feedback = this.feedbackSubject.asObservable().pipe(
       filter(feedback => feedback.actionId === actionId),
       take(1),
-      timeout(timeoutMs),
+    );
+    const boundedFeedback = timeoutMs > 0 ? feedback.pipe(timeout(timeoutMs)) : feedback;
+
+    return boundedFeedback.pipe(
       catchError(error => {
         // 超时或其他错误时返回错误反馈
         return of({

@@ -14,12 +14,20 @@ export interface BlocklyRuntimeMetadataSnapshot {
   failures: string[];
 }
 
+export interface BlocklyLibraryRuntimeSnapshot {
+  active: boolean;
+  loadedLibraries: string[];
+  toolboxLibraries: string[];
+  failedLibraries: string[];
+}
+
 export interface BlocklyLiveEditorPort {
   getWorkspace(): Blockly.WorkspaceSvg | null;
   setAiWritingActive(source: string, active: boolean): void;
   saveProject(path: string, createHistory: boolean): Promise<void>;
   getProjectRevisionSnapshot(): Promise<BlocklyProjectRevisionSnapshot>;
   getRuntimeBlockMetadataSnapshot(): BlocklyRuntimeMetadataSnapshot;
+  getLibraryRuntimeSnapshot(): BlocklyLibraryRuntimeSnapshot;
 }
 
 export const BLOCKLY_LIVE_EDITOR_PORT = new InjectionToken<BlocklyLiveEditorPort>(
