@@ -315,3 +315,116 @@ function readVersion(rootDir, packageName) {
     'utf8',
   )).version;
 }
+
+test('reinstall replaces the current package and stops its runtime first', async (t) => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-reinstall-test-'));
+  const rootDir = path.join(temporaryRoot, 'install');
+  const updateRootDir = path.join(temporaryRoot, 'updates');
+  const packageName = '@aily-project/subapp-test';
+  const entry = {
+    id: 'test',
+    package: packageName,
+    version: '1.0.0',
+    namespace: 'TEST',
+    titleKey: 'TEST.TITLE',
+    app: { name: 'Test', description: 'Test subapp', enabled: true },
+    i18n: { defaultLocale: 'en', locales: {} },
+  };
+  t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+
+  fs.mkdirSync(rootDir, { recursive: true });
+  writeJson(path.join(rootDir, 'subapp-index.json'), { test: entry, dev: true });
+  writeJson(path.join(rootDir, 'package.json'), {
+    name: 'aily-installed-subapps',
+    private: true,
+    version: '1.0.0',
+    dependencies: { [packageName]: '1.0.0' },
+  });
+  writeJson(path.join(rootDir, 'package-lock.json'), {
+    name: 'aily-installed-subapps',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { [packageName]: '1.0.0' } },
+      [`node_modules/${packageName}`]: { version: '1.0.0' },
+    },
+  });
+  writeInstalledPackage(rootDir, packageName, '1.0.0');
+  fs.writeFileSync(path.join(packagePathFor(rootDir, packageName), 'marker.txt'), 'old');
+
+  let stopCount = 0;
+  const manager = createSubappManager({
+    rootDir,
+    updateRootDir,
+    disableTarballProgress: true,
+    forceStopChildToolByCatalogId: async (id) => {
+      assert.equal(id, 'test');
+      stopCount += 1;
+    },
+    runNpm: async (args) => {
+      assert.equal(args[0], 'install');
+      writeInstalledPackage(rootDir, packageName, '1.0.0');
+      fs.writeFileSync(path.join(packagePathFor(rootDir, packageName), 'marker.txt'), 'fresh');
+      return { stdout: '' };
+    },
+  });
+
+  const result = await manager.reinstall({ id: 'test', locale: 'en', forceClose: true });
+
+  assert.equal(stopCount, 1);
+  assert.equal(result.apps.find(app => app.id === 'test').installed, true);
+  assert.equal(fs.readFileSync(path.join(packagePathFor(rootDir, packageName), 'marker.txt'), 'utf8'), 'fresh');
+});
+
+test('reinstall restores the previous package when the download fails', async (t) => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-subapp-reinstall-rollback-'));
+  const rootDir = path.join(temporaryRoot, 'install');
+  const updateRootDir = path.join(temporaryRoot, 'updates');
+  const packageName = '@aily-project/subapp-test';
+  const entry = {
+    id: 'test',
+    package: packageName,
+    version: '1.0.0',
+    namespace: 'TEST',
+    titleKey: 'TEST.TITLE',
+    app: { name: 'Test', description: 'Test subapp', enabled: true },
+    i18n: { defaultLocale: 'en', locales: {} },
+  };
+  t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+
+  fs.mkdirSync(rootDir, { recursive: true });
+  writeJson(path.join(rootDir, 'subapp-index.json'), { test: entry, dev: true });
+  writeJson(path.join(rootDir, 'package.json'), {
+    name: 'aily-installed-subapps',
+    private: true,
+    version: '1.0.0',
+    dependencies: { [packageName]: '1.0.0' },
+  });
+  writeJson(path.join(rootDir, 'package-lock.json'), {
+    name: 'aily-installed-subapps',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { [packageName]: '1.0.0' } },
+      [`node_modules/${packageName}`]: { version: '1.0.0' },
+    },
+  });
+  writeInstalledPackage(rootDir, packageName, '1.0.0');
+  fs.writeFileSync(path.join(packagePathFor(rootDir, packageName), 'marker.txt'), 'old');
+
+  const manager = createSubappManager({
+    rootDir,
+    updateRootDir,
+    disableTarballProgress: true,
+    runNpm: async () => {
+      throw new Error('network offline');
+    },
+  });
+
+  await assert.rejects(
+    manager.reinstall({ id: 'test', locale: 'en', forceClose: true }),
+    /network offline/,
+  );
+  assert.equal(readVersion(rootDir, packageName), '1.0.0');
+  assert.equal(fs.readFileSync(path.join(packagePathFor(rootDir, packageName), 'marker.txt'), 'utf8'), 'old');
+});

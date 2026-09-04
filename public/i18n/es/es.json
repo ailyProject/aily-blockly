@@ -870,6 +870,16 @@
             "DONE": "Listo"
         }
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "Preparando Aily Coder Editor",
+        "INSTALLING": "Descargando e instalando el editor ({{percent}} %)",
+        "FAILED": "La instalación del editor no se completó. Comprueba la red e inténtalo de nuevo.",
+        "RETRY": "Reintentar instalación",
+        "REINSTALL": "Reinstalar editor",
+        "REINSTALL_TITLE": "¿Reinstalar Aily Coder Editor?",
+        "REINSTALL_HINT": "Esto cerrará el servicio del editor actual y descargará un paquete nuevo. Guarda primero los archivos del proyecto. Si falla, se restaurará cualquier instalación existente.",
+        "REINSTALL_CONFIRM": "Reinstalar"
+    },
     "NPM": {
         "INSTALLING": "Instalando {{name}}...",
         "INSTALLING_DEPENDENCY": "Instalando dependencia {{name}}...",

@@ -1301,6 +1301,16 @@
         "TIMEOUT": "程式碼工作區啟動逾時，請重試",
         "RETRY": "重新嘗試"
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "正在準備 Aily Coder Editor",
+        "INSTALLING": "正在下載並安裝編輯器（{{percent}}%）",
+        "FAILED": "編輯器安裝未完成，請檢查網絡後重試。",
+        "RETRY": "重試安裝",
+        "REINSTALL": "重新安裝編輯器",
+        "REINSTALL_TITLE": "重新安裝 Aily Coder Editor？",
+        "REINSTALL_HINT": "這會關閉目前的編輯器服務並重新下載安裝套件。請先確認專案檔案已儲存；若存在舊安裝，安裝失敗時會自動還原。",
+        "REINSTALL_CONFIRM": "重新安裝"
+    },
     "AILYCODE_NEW_DIALOG": {
         "TITLE": "新建 Aily Code 專案",
         "HINT": "在所選目錄下生成符合 Aily Code 規範的專案骨架（與 Blockly 專案獨立）。",

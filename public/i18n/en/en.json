@@ -1009,6 +1009,16 @@
         "TIMEOUT": "The code workspace took too long to start. Please try again.",
         "RETRY": "Try again"
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "Preparing Aily Coder Editor",
+        "INSTALLING": "Downloading and installing the editor ({{percent}}%)",
+        "FAILED": "Editor installation did not finish. Check the network and try again.",
+        "RETRY": "Retry installation",
+        "REINSTALL": "Reinstall editor",
+        "REINSTALL_TITLE": "Reinstall Aily Coder Editor?",
+        "REINSTALL_HINT": "This closes the current editor service and downloads a fresh package. Save project files first. Any existing installation is restored if reinstallation fails.",
+        "REINSTALL_CONFIRM": "Reinstall"
+    },
     "NPM": {
         "INSTALLING": "Installing {{name}}...",
         "INSTALLING_DEPENDENCY": "Installing {{name}} dependency...",

@@ -151,6 +151,10 @@ export class SubappManagerService implements OnDestroy {
     return this.mutate('install', id, options);
   }
 
+  reinstall(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('reinstall', id, options);
+  }
+
   update(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
     return this.mutate('update', id, options);
   }
@@ -244,7 +248,7 @@ export class SubappManagerService implements OnDestroy {
   }
 
   private async mutate(
-    action: 'install' | 'update' | 'downloadUpdate' | 'installUpdate' | 'uninstall',
+    action: 'install' | 'reinstall' | 'update' | 'downloadUpdate' | 'installUpdate' | 'uninstall',
     id: string,
     options: { forceClose?: boolean } = {},
   ): Promise<void> {

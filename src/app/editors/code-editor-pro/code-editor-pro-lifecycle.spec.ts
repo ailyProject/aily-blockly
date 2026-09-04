@@ -55,4 +55,26 @@ describe('CodeEditorProComponent ready timeout lifecycle', () => {
     jasmine.clock().tick(30_000);
     expect(component.coderEmbedError).toBe('代码工作区启动超时，请重试');
   });
+
+  it('stops the old runtime, reinstalls the package, and starts a fresh embed', async () => {
+    component.coderEmbedWorkspaceRoot = '/projects/coder-demo';
+    component.coderRuntimeHostInfo = { url: 'http://127.0.0.1:12345/' };
+    component.coderRuntimeAcquirePromise = null;
+    component.beginCoderEmbedLoading = jasmine.createSpy('beginCoderEmbedLoading');
+    component.isCurrentCoderWorkspace = jasmine.createSpy('isCurrentCoderWorkspace').and.returnValue(true);
+    component.childToolProcess = {
+      forceStop: jasmine.createSpy('forceStop').and.resolveTo(),
+    };
+    component.requiredSubapps = {
+      reinstall: jasmine.createSpy('reinstall').and.resolveTo({ installedNow: true }),
+    };
+    component.initCoderEmbed = jasmine.createSpy('initCoderEmbed').and.resolveTo();
+
+    await component.reinstallCoderEmbed();
+
+    expect(component.childToolProcess.forceStop).toHaveBeenCalledOnceWith('aily-coder-editor');
+    expect(component.requiredSubapps.reinstall).toHaveBeenCalledOnceWith('aily-coder-editor');
+    expect(component.initCoderEmbed).toHaveBeenCalledOnceWith('/projects/coder-demo', false);
+    expect(component.coderRuntimeHostInfo).toBeNull();
+  });
 });

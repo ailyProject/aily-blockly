@@ -870,6 +870,16 @@
             "DONE": "تم"
         }
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "جارٍ تجهيز Aily Coder Editor",
+        "INSTALLING": "جارٍ تنزيل المحرر وتثبيته ({{percent}}%)",
+        "FAILED": "لم يكتمل تثبيت المحرر. تحقق من الشبكة ثم أعد المحاولة.",
+        "RETRY": "إعادة محاولة التثبيت",
+        "REINSTALL": "إعادة تثبيت المحرر",
+        "REINSTALL_TITLE": "هل تريد إعادة تثبيت Aily Coder Editor؟",
+        "REINSTALL_HINT": "سيؤدي ذلك إلى إغلاق خدمة المحرر الحالية وتنزيل حزمة جديدة. احفظ ملفات المشروع أولاً. ستتم استعادة أي نسخة مثبتة حالياً إذا فشلت العملية.",
+        "REINSTALL_CONFIRM": "إعادة التثبيت"
+    },
     "NPM": {
         "INSTALLING": "جاري تثبيت {{name}}...",
         "INSTALLING_DEPENDENCY": "جاري تثبيت التبعية {{name}}...",

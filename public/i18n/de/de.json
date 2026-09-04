@@ -870,6 +870,16 @@
             "DONE": "Fertig"
         }
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "Aily Coder Editor wird vorbereitet",
+        "INSTALLING": "Editor wird heruntergeladen und installiert ({{percent}} %)",
+        "FAILED": "Die Editor-Installation wurde nicht abgeschlossen. Netzwerk prüfen und erneut versuchen.",
+        "RETRY": "Installation erneut versuchen",
+        "REINSTALL": "Editor neu installieren",
+        "REINSTALL_TITLE": "Aily Coder Editor neu installieren?",
+        "REINSTALL_HINT": "Dadurch wird der aktuelle Editor-Dienst beendet und ein neues Paket heruntergeladen. Speichern Sie zuerst die Projektdateien. Eine vorhandene Installation wird bei einem Fehler wiederhergestellt.",
+        "REINSTALL_CONFIRM": "Neu installieren"
+    },
     "NPM": {
         "INSTALLING": "{{name}} wird installiert...",
         "INSTALLING_DEPENDENCY": "{{name}}-Abhängigkeit wird installiert...",
