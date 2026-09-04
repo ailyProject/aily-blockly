@@ -1089,6 +1089,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "返回主頁",
         "LOADING_EXAMPLE": "正在載入範例...",
         "EXAMPLE_LOAD_SUCCESS": "範例載入完成",
         "EXAMPLE_LOAD_FAILED": "範例載入失敗",

@@ -1022,6 +1022,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "Accueil",
         "LOADING_EXAMPLE": "Chargement de l'exemple...",
         "EXAMPLE_LOAD_SUCCESS": "Exemple chargé avec succès",
         "EXAMPLE_LOAD_FAILED": "Échec du chargement de l'exemple",

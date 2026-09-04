@@ -1010,6 +1010,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "홈",
         "LOADING_EXAMPLE": "예제 로드 중...",
         "EXAMPLE_LOAD_SUCCESS": "예제 로드 완료",
         "EXAMPLE_LOAD_FAILED": "예제 로드 실패",

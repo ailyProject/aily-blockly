@@ -1157,6 +1157,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "返回主页面",
         "LOADING_EXAMPLE": "正在加载示例...",
         "EXAMPLE_LOAD_SUCCESS": "示例加载完成",
         "EXAMPLE_LOAD_FAILED": "示例加载失败",
