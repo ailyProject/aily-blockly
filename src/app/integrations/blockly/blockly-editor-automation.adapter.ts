@@ -3,6 +3,7 @@ import type * as Blockly from 'blockly';
 
 import {
   type BlocklyGeneratedCodePort,
+  type BlocklyLibraryRuntimeSnapshot,
   type BlocklyLiveEditorPort,
   type BlocklyProjectRevisionSnapshot,
   type BlocklyRuntimeMetadataSnapshot,
@@ -41,5 +42,9 @@ export class BlocklyEditorAutomationAdapter implements
 
   getRuntimeBlockMetadataSnapshot(): BlocklyRuntimeMetadataSnapshot {
     return this.blocklyService.getRuntimeBlockMetadataSnapshot();
+  }
+
+  getLibraryRuntimeSnapshot(): BlocklyLibraryRuntimeSnapshot {
+    return this.blocklyService.getLibraryRuntimeSnapshot();
   }
 }
