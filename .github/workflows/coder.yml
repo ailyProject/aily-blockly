@@ -36,13 +36,13 @@ jobs:
             package-lock.json
             electron/package-lock.json
 
-      - name: Read package version
+      - name: Read Coder version
         id: version
         shell: pwsh
         run: |
-          $version = node -p "require('./package.json').version"
+          $version = node -p "require('./build/products/coder.json').version"
           if (-not $version) {
-            throw 'Unable to read package version'
+            throw 'Unable to read Coder version'
           }
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "Coder version: $version"

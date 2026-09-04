@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
+import { version as packageVersion } from '../../../../../package.json';
 
 export interface RendererLifecycleEvent {
   readonly kind: 'suspend' | 'resume' | 'lock-screen' | 'unlock-screen';
@@ -25,6 +26,7 @@ export interface UserInteractionNotificationResult extends Record<string, unknow
 export class ElectronService {
   isElectron = false;
   electron: any = window['electronAPI'];
+  private runtimeApplicationVersion = packageVersion;
   private readonly rendererGenerationSubject = new BehaviorSubject<number>(0);
   private readonly rendererLifecycleSubject = new Subject<RendererLifecycleEvent>();
   private rendererLifecycleListenersRegistered = false;
@@ -46,10 +48,22 @@ export class ElectronService {
         // console.log('load ' + key);
         window[key] = this.electron[key];
       }
+      try {
+        const appVersion = await this.electron.ipcRenderer?.invoke?.('get-app-version');
+        if (typeof appVersion === 'string' && appVersion.trim()) {
+          this.runtimeApplicationVersion = appVersion.trim();
+        }
+      } catch (error) {
+        console.warn('Unable to read packaged application version:', error);
+      }
       this.registerRendererLifecycleListeners();
     } else {
       console.log('Running in browser');
     }
+  }
+
+  get applicationVersion(): string {
+    return this.runtimeApplicationVersion;
   }
 
   /**

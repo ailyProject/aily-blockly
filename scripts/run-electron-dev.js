@@ -9,6 +9,9 @@ function createElectronDevLaunchOptions(args = [], environment = {}) {
   const env = {
     ...environment,
     AILY_BUILD_PRODUCT: coderMode ? 'coder' : 'blockly',
+    AILY_APP_VERSION: coderMode
+      ? require('../build/products/coder.json').version
+      : require('../package.json').version,
   };
   delete env.ELECTRON_RUN_AS_NODE;
 
