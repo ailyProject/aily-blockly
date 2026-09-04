@@ -4,6 +4,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import { NzMessageService } from 'ng-zorro-antd/message';
+import { NzModalService } from 'ng-zorro-antd/modal';
 import { TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
 import { ProjectService } from '@domain/project/public-api';
@@ -240,6 +241,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     private readonly childToolProcess: ChildToolProcessService,
     private readonly requiredSubapps: RequiredSubappService,
     private readonly translate: TranslateService,
+    private readonly modal: NzModalService,
     private readonly elementRef: ElementRef<HTMLElement>,
     private readonly codeCompletionHostBridge: CodeCompletionHostBridgeService,
   ) {
@@ -767,6 +769,53 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     const root = this.coderEmbedWorkspaceRoot;
     if (root) {
       void this.initCoderEmbed(root);
+    }
+  }
+
+  confirmReinstallCoderEmbed(): void {
+    if (!this.coderEmbedWorkspaceRoot) return;
+    this.modal.confirm({
+      nzClassName: 'subapp-service-confirm-modal',
+      nzTitle: this.translate.instant('CODER_SUBAPP_INSTALL.REINSTALL_TITLE'),
+      nzContent: this.translate.instant('CODER_SUBAPP_INSTALL.REINSTALL_HINT'),
+      nzOkText: this.translate.instant('CODER_SUBAPP_INSTALL.REINSTALL_CONFIRM'),
+      nzCancelText: this.translate.instant('COMMON.CANCEL'),
+      nzOkDanger: true,
+      nzMaskClosable: false,
+      nzOnOk: () => this.reinstallCoderEmbed(),
+    });
+  }
+
+  private async reinstallCoderEmbed(): Promise<void> {
+    const root = this.coderEmbedWorkspaceRoot;
+    if (!root) return;
+
+    this.beginCoderEmbedLoading();
+    this.coderEmbedLoaderVisible = true;
+    this.coderLoadingStage = 'dependency';
+    try {
+      const pendingAcquire = this.coderRuntimeAcquirePromise;
+      await this.childToolProcess.forceStop(AILY_CODER_EDITOR_SUBAPP_ID);
+      if (pendingAcquire) {
+        await pendingAcquire.catch(() => undefined);
+      }
+      this.coderRuntimeHostInfo = null;
+      this.coderRuntimeAcquirePromise = null;
+      if (!this.isCurrentCoderWorkspace(root)) return;
+      await this.requiredSubapps.reinstall(AILY_CODER_EDITOR_SUBAPP_ID);
+      if (!this.isCurrentCoderWorkspace(root)) return;
+      await this.initCoderEmbed(root, false);
+    } catch (error: any) {
+      if (!this.isCurrentCoderWorkspace(root)) return;
+      console.error('Aily Coder Editor reinstallation failed', error);
+      this.detachCoderEmbedFrame();
+      this.clearCoderEmbedLoadingTimers();
+      this.coderEmbedLoading = false;
+      this.coderEmbedLoaderVisible = true;
+      this.coderEmbedFrameReady = false;
+      this.coderEmbedRevealing = false;
+      this.coderEmbedSrc = null;
+      this.coderEmbedError = error?.message || String(error);
     }
   }
 

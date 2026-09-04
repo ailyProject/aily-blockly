@@ -31,6 +31,10 @@ interface RequiredSubappOperation {
   error?: string;
 }
 
+function isRunnable(entry: SubappCatalogItem | undefined): boolean {
+  return entry?.installed === true && !!entry.config;
+}
+
 export function resolveRequiredSubappState(
   id: string,
   catalog: SubappCatalogState,
@@ -76,7 +80,7 @@ export function resolveRequiredSubappState(
     });
   }
 
-  if (entry?.installed) {
+  if (isRunnable(entry)) {
     return stateFromEntry(id, entry, {
       status: 'installed',
       installed: true,
@@ -86,12 +90,15 @@ export function resolveRequiredSubappState(
   }
 
   if (entry) {
+    const incompleteError = entry.installed
+      ? entry.installError || `Required subapp installation is incomplete: ${id}`
+      : undefined;
     return stateFromEntry(id, entry, {
-      status: entry.installError ? 'error' : 'not-installed',
+      status: entry.installError || incompleteError ? 'error' : 'not-installed',
       installed: false,
       installing: false,
       percent: 0,
-      ...(entry.installError ? { error: entry.installError } : {}),
+      ...(entry.installError || incompleteError ? { error: entry.installError || incompleteError } : {}),
     });
   }
 
@@ -165,10 +172,24 @@ export class RequiredSubappService {
     return pending;
   }
 
+  reinstall(id: string): Promise<{ installedNow: boolean }> {
+    const normalizedId = this.normalizeId(id);
+    const current = this.installPromises.get(normalizedId);
+    if (current) return current;
+
+    const pending = this.reinstallOnce(normalizedId).finally(() => {
+      if (this.installPromises.get(normalizedId) === pending) {
+        this.installPromises.delete(normalizedId);
+      }
+    });
+    this.installPromises.set(normalizedId, pending);
+    return pending;
+  }
+
   private async ensureInstalledOnce(id: string): Promise<{ installedNow: boolean }> {
     await this.subappManager.initialize();
     let entry = this.findCatalogEntry(id);
-    if (entry?.installed) {
+    if (isRunnable(entry)) {
       this.clearOperation(id);
       return { installedNow: false };
     }
@@ -184,9 +205,13 @@ export class RequiredSubappService {
 
     this.setOperation(id, { status: 'installing' });
     try {
-      await this.subappManager.install(id);
+      if (entry.installed) {
+        await this.subappManager.reinstall(id, { forceClose: true });
+      } else {
+        await this.subappManager.install(id);
+      }
       const installed = this.findCatalogEntry(id);
-      if (!installed?.installed || !installed.config) {
+      if (!isRunnable(installed)) {
         throw new Error(`Required subapp installation completed without a runnable package: ${id}`);
       }
       this.clearOperation(id);
@@ -195,6 +220,41 @@ export class RequiredSubappService {
       const message = error instanceof Error
         ? error.message
         : String(error || `Required subapp installation failed: ${id}`);
+      this.setOperation(id, { status: 'error', error: message });
+      throw error;
+    }
+  }
+
+  private async reinstallOnce(id: string): Promise<{ installedNow: boolean }> {
+    await this.subappManager.initialize();
+    let entry = this.findCatalogEntry(id);
+    if (!entry) {
+      await this.subappManager.refresh(true);
+      entry = this.findCatalogEntry(id);
+    }
+    if (!entry) {
+      const error = `Required subapp is not available in the application catalog: ${id}`;
+      this.setOperation(id, { status: 'error', error });
+      throw new Error(error);
+    }
+
+    this.setOperation(id, { status: 'installing' });
+    try {
+      if (entry.installed) {
+        await this.subappManager.reinstall(id, { forceClose: true });
+      } else {
+        await this.subappManager.install(id);
+      }
+      const installed = this.findCatalogEntry(id);
+      if (!isRunnable(installed)) {
+        throw new Error(`Required subapp reinstallation completed without a runnable package: ${id}`);
+      }
+      this.clearOperation(id);
+      return { installedNow: true };
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : String(error || `Required subapp reinstallation failed: ${id}`);
       this.setOperation(id, { status: 'error', error: message });
       throw error;
     }

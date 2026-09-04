@@ -1005,6 +1005,16 @@
         "TIMEOUT": "代码工作区启动超时，请重试",
         "RETRY": "重新尝试"
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "正在准备 Aily Coder Editor",
+        "INSTALLING": "正在下载并安装编辑器（{{percent}}%）",
+        "FAILED": "编辑器安装未完成，请检查网络后重试。",
+        "RETRY": "重试安装",
+        "REINSTALL": "重新安装编辑器",
+        "REINSTALL_TITLE": "重新安装 Aily Coder Editor？",
+        "REINSTALL_HINT": "这会关闭当前编辑器服务并重新下载安装包。请先确认项目文件已经保存；若存在旧安装，安装失败时会自动恢复。",
+        "REINSTALL_CONFIRM": "重新安装"
+    },
     "NPM": {
         "INSTALLING": "正在安装{{name}}...",
         "INSTALLING_DEPENDENCY": "正在安装{{name}}依赖...",
@@ -1147,6 +1157,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "返回主页面",
         "LOADING_EXAMPLE": "正在加载示例...",
         "EXAMPLE_LOAD_SUCCESS": "示例加载完成",
         "EXAMPLE_LOAD_FAILED": "示例加载失败",

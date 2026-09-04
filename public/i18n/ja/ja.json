@@ -870,6 +870,16 @@
             "DONE": "完了"
         }
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "Aily Coder Editor を準備しています",
+        "INSTALLING": "エディターをダウンロードしてインストールしています（{{percent}}%）",
+        "FAILED": "エディターのインストールが完了しませんでした。ネットワークを確認して再試行してください。",
+        "RETRY": "インストールを再試行",
+        "REINSTALL": "エディターを再インストール",
+        "REINSTALL_TITLE": "Aily Coder Editor を再インストールしますか？",
+        "REINSTALL_HINT": "現在のエディターサービスを停止し、新しいパッケージをダウンロードします。先にプロジェクトファイルを保存してください。既存のインストールがある場合、失敗時に復元されます。",
+        "REINSTALL_CONFIRM": "再インストール"
+    },
     "NPM": {
         "INSTALLING": "{{name}}をインストール中...",
         "INSTALLING_DEPENDENCY": "{{name}}の依存関係をインストール中...",
@@ -1012,6 +1022,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "ホーム",
         "LOADING_EXAMPLE": "サンプルを読み込み中...",
         "EXAMPLE_LOAD_SUCCESS": "サンプルの読み込みが完了しました",
         "EXAMPLE_LOAD_FAILED": "サンプルの読み込みに失敗しました",

@@ -100,6 +100,7 @@ declare global {
           locale?: string;
         }) => Promise<any>;
         install: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        reinstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         update: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         downloadUpdate: (options: { id: string; locale?: string }) => Promise<any>;
         installUpdate: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;

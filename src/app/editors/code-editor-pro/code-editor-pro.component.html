@@ -8,6 +8,8 @@
         [visible]="(coderEmbedLoading && coderEmbedLoaderVisible) || !!coderEmbedError"
         [revealing]="coderEmbedRevealing"
         [error]="coderEmbedError"
-        (retry)="retryCoderEmbed()" />
+        [allowReinstall]="coderLoadingStage !== 'project'"
+        (retry)="retryCoderEmbed()"
+        (reinstall)="confirmReinstallCoderEmbed()" />
 </div>
 <app-notification></app-notification>

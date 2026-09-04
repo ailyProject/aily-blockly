@@ -858,6 +858,16 @@
             "DONE": "완료"
         }
     },
+    "CODER_SUBAPP_INSTALL": {
+        "TITLE": "Aily Coder Editor 준비 중",
+        "INSTALLING": "에디터 다운로드 및 설치 중({{percent}}%)",
+        "FAILED": "에디터 설치가 완료되지 않았습니다. 네트워크를 확인한 후 다시 시도하세요.",
+        "RETRY": "설치 다시 시도",
+        "REINSTALL": "에디터 재설치",
+        "REINSTALL_TITLE": "Aily Coder Editor를 재설치할까요?",
+        "REINSTALL_HINT": "현재 에디터 서비스를 종료하고 새 패키지를 다운로드합니다. 먼저 프로젝트 파일을 저장하세요. 기존 설치가 있으면 실패 시 복원됩니다.",
+        "REINSTALL_CONFIRM": "재설치"
+    },
     "NPM": {
         "INSTALLING": "{{name}} 설치 중...",
         "INSTALLING_DEPENDENCY": "{{name}} 의존성 설치 중...",
@@ -1000,6 +1010,7 @@
         }
     },
     "PLAYGROUND": {
+        "HOME": "홈",
         "LOADING_EXAMPLE": "예제 로드 중...",
         "EXAMPLE_LOAD_SUCCESS": "예제 로드 완료",
         "EXAMPLE_LOAD_FAILED": "예제 로드 실패",

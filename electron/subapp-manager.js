@@ -105,6 +105,11 @@ function normalizeLocale(value) {
   return String(value || 'en').trim().toLowerCase().replace(/-/g, '_');
 }
 
+function normalizeOnly(value, id) {
+  if (value === undefined) return 'all';
+  return requireText(value, `${id} only`).toLowerCase();
+}
+
 function resolveEnabledFlag(...candidates) {
   for (const value of candidates) {
     if (typeof value === 'boolean') return value;
@@ -188,6 +193,7 @@ function validateIndex(rawIndex) {
     index[id] = {
       ...rawEntry,
       id,
+      only: normalizeOnly(rawEntry.only, id),
       titleKey,
       namespace,
       package: validatePackageName(rawEntry.package),
@@ -837,6 +843,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           },
           id: entry.id,
           toolId,
+          only: entry.only,
           packageName: entry.package,
           availableVersion: entry.version,
           installedVersion: installedState.installedVersion,
@@ -2012,7 +2019,7 @@ async function replaceInstalledPackage(rootDir, entry, npmRunner, options = {}) 
     if (fs.existsSync(packagePath)) {
       await renamePackagePathWithForceClose(packagePath, backupPath, entry, {
         ...options,
-        mutationAction: 'update',
+        mutationAction: options.mutationAction || 'update',
       });
       backedUp = true;
     }
@@ -2563,6 +2570,17 @@ function createSubappManager(options = {}) {
           }
           if (action === 'uninstall') {
             await uninstallInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+          } else if (action === 'reinstall') {
+            if (typeof options.forceStopChildToolByCatalogId === 'function') {
+              const stopResult = await options.forceStopChildToolByCatalogId(entry.id);
+              if (stopResult?.success === false && stopResult.reason !== 'not-found') {
+                throw new Error(`Unable to stop the running subapp before reinstalling: ${entry.id}`);
+              }
+            }
+            await replaceInstalledPackage(rootDir, entry, options.runNpm || runNpm, {
+              ...mutationOptions,
+              mutationAction: 'reinstall',
+            });
           } else if (action === 'update') {
             if (entry.update) {
               throw new Error(`Use installUpdate for staged subapp updates: ${entry.id}`);
@@ -2613,6 +2631,7 @@ function createSubappManager(options = {}) {
     },
     list,
     install: (payload) => mutate('install', payload),
+    reinstall: (payload) => mutate('reinstall', payload),
     update: (payload) => mutate('update', payload),
     downloadUpdate,
     installUpdate: (payload) => mutate('install-update', payload),
@@ -2698,6 +2717,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
 
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
+  ipcMain.handle('subapp-manager-reinstall', handleMutation('reinstall'));
   ipcMain.handle('subapp-manager-update', handleMutation('update'));
   ipcMain.handle('subapp-manager-download-update', handleMutation('downloadUpdate'));
   ipcMain.handle('subapp-manager-install-update', handleMutation('installUpdate'));
