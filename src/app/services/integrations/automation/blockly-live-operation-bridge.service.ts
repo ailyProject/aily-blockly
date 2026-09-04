@@ -1,6 +1,5 @@
 import { Inject, Injectable, NgZone } from '@angular/core';
 import * as Blockly from 'blockly';
-import packageJson from '../../../../../package.json';
 
 import { ConfigService, ThemeService } from '@core/preferences/public-api';
 import { ElectronService } from '@core/platform/public-api';
@@ -370,7 +369,7 @@ export class BlocklyLiveOperationBridgeService {
       operation: 'app_info',
       app: {
         name: this.configService.getApplicationName(),
-        version: packageJson.version,
+        version: this.electronService.applicationVersion,
         buildFlavor,
         edition: buildFlavor === 'global' ? 'international' : 'domestic',
         editionLabel: buildFlavor === 'global' ? '国际版' : '国内版',

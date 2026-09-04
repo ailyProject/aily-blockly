@@ -1,0 +1,197 @@
+name: Aily Coder Package
+
+on:
+  push:
+    branches:
+      - deploy-coder
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: aily-coder-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CODER_RELEASE_REPOSITORY: ailyProject/aily-coder
+
+jobs:
+  build-and-sign-windows:
+    name: Build and test-sign Windows CN package
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            electron/package-lock.json
+
+      - name: Read Coder version
+        id: version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./build/products/coder.json').version"
+          if (-not $version) {
+            throw 'Unable to read Coder version'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Coder version: $version"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          npm install -g @angular/cli
+          npm ci --include=dev
+          Push-Location electron
+          npm ci --include=dev --force
+          Pop-Location
+
+      - name: Build aily coder Windows package
+        run: npm run build:coder
+        env:
+          NODE_ENV: production
+
+      - name: Add beta marker to test installer
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $outputDirectory = Join-Path $PWD 'dist/aily-coder'
+          $sourcePath = Join-Path $outputDirectory "aily-coder-CN-Setup-$version.exe"
+          $betaPath = Join-Path $outputDirectory "aily-coder-CN-Setup-beta-$version.exe"
+
+          if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "Unsigned installer not found: $sourcePath"
+          }
+
+          Move-Item -LiteralPath $sourcePath -Destination $betaPath
+          Write-Host "Test installer: $(Split-Path -Leaf $betaPath)"
+
+      - name: Upload unsigned installer for SignPath
+        id: upload_unsigned_coder
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-aily-coder-windows-cn
+          path: dist/aily-coder/aily-coder-CN-Setup-beta-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Sign installer with SignPath test certificate
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: 'bd01a768-a9e3-4a62-945d-fcfdc37a299e'
+          project-slug: 'aily-blockly'
+          signing-policy-slug: 'test-signing'
+          artifact-configuration-slug: 'aily-coder'
+          github-artifact-id: '${{ steps.upload_unsigned_coder.outputs.artifact-id }}'
+          parameters: |
+            version: ${{ toJSON(steps.version.outputs.version) }}
+          wait-for-completion: true
+          output-artifact-directory: dist/aily-coder
+
+      - name: Rebuild latest.yml from signed installer
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $outputDirectory = Join-Path $PWD 'dist/aily-coder'
+          $installerName = "aily-coder-CN-Setup-beta-$version.exe"
+          $installerPath = Join-Path $outputDirectory $installerName
+
+          if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+            throw "Signed installer not found: $installerPath"
+          }
+
+          Get-ChildItem -LiteralPath $outputDirectory -Filter '*.blockmap' -File |
+            Remove-Item -Force
+
+          $installer = Get-Item -LiteralPath $installerPath
+          $hash = Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA512
+          $hashBytes = [System.Convert]::FromHexString($hash.Hash)
+          $sha512 = [System.Convert]::ToBase64String($hashBytes)
+          $releaseDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+          $content = @(
+            "version: $version"
+            'files:'
+            "  - url: $installerName"
+            "    sha512: $sha512"
+            "    size: $($installer.Length)"
+            "path: $installerName"
+            "sha512: $sha512"
+            "releaseDate: '$releaseDate'"
+          ) -join "`n"
+
+          $manifestPath = Join-Path $outputDirectory 'latest.yml'
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText($manifestPath, "$content`n", $utf8NoBom)
+          Write-Host "Rebuilt latest.yml for signed installer: $installerName"
+
+      - name: Archive signed Coder package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AilyCoder-Windows-Package-cn
+          path: |
+            dist/aily-coder/aily-coder-CN-Setup-beta-${{ steps.version.outputs.version }}.exe
+            dist/aily-coder/latest.yml
+          if-no-files-found: error
+
+  publish-test-release:
+    name: Publish test release to ailyProject/aily-coder
+    needs: build-and-sign-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download signed Coder package
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyCoder-Windows-Package-cn
+          path: release
+
+      - name: Require target repository token
+        env:
+          TARGET_REPOSITORY_TOKEN: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
+        run: |
+          if [ -z "$TARGET_REPOSITORY_TOKEN" ]; then
+            echo "Missing repository secret: AILY_CODER_RELEASE_TOKEN" >&2
+            exit 1
+          fi
+
+      - name: Verify target repository is initialized
+        id: target_repository
+        env:
+          GH_TOKEN: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
+          TARGET_REPOSITORY: ${{ env.CODER_RELEASE_REPOSITORY }}
+        run: |
+          default_branch=$(gh api "repos/${TARGET_REPOSITORY}" --jq '.default_branch')
+          if ! gh api "repos/${TARGET_REPOSITORY}/commits/${default_branch}" --silent >/dev/null 2>&1; then
+            echo "::error::${TARGET_REPOSITORY} has no commits. Initialize it with a README before publishing a release."
+            exit 1
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Create aily coder test release
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ env.CODER_RELEASE_REPOSITORY }}
+          token: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
+          tag_name: v${{ needs.build-and-sign-windows.outputs.version }}
+          target_commitish: ${{ steps.target_repository.outputs.default_branch }}
+          name: aily coder v${{ needs.build-and-sign-windows.outputs.version }} (test signed)
+          body: |
+            Test-signed Windows package built from
+            https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+          files: |
+            release/aily-coder-CN-Setup-beta-${{ needs.build-and-sign-windows.outputs.version }}.exe
+            release/latest.yml
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: true
+          make_latest: false
