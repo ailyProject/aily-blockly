@@ -105,6 +105,11 @@ function normalizeLocale(value) {
   return String(value || 'en').trim().toLowerCase().replace(/-/g, '_');
 }
 
+function normalizeOnly(value, id) {
+  if (value === undefined) return 'all';
+  return requireText(value, `${id} only`).toLowerCase();
+}
+
 function resolveEnabledFlag(...candidates) {
   for (const value of candidates) {
     if (typeof value === 'boolean') return value;
@@ -188,6 +193,7 @@ function validateIndex(rawIndex) {
     index[id] = {
       ...rawEntry,
       id,
+      only: normalizeOnly(rawEntry.only, id),
       titleKey,
       namespace,
       package: validatePackageName(rawEntry.package),
@@ -837,6 +843,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           },
           id: entry.id,
           toolId,
+          only: entry.only,
           packageName: entry.package,
           availableVersion: entry.version,
           installedVersion: installedState.installedVersion,

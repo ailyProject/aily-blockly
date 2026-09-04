@@ -84,6 +84,30 @@ function writeInstalledPackage(rootDir, packageName, version) {
   fs.writeFileSync(path.join(packagePath, 'ui', 'index.html'), '<!doctype html>');
 }
 
+test('normalizes subapp-only visibility and defaults missing values to all', () => {
+  const catalogEntry = (id, only) => ({
+    id,
+    package: `@aily-project/subapp-${id}`,
+    version: '1.0.0',
+    namespace: id.toUpperCase().replaceAll('-', '_'),
+    titleKey: `${id.toUpperCase().replaceAll('-', '_')}.TITLE`,
+    app: { name: id, description: id, enabled: true },
+    i18n: { defaultLocale: 'en', locales: {} },
+    ...(only === undefined ? {} : { only }),
+  });
+  const index = validateIndex({
+    common: catalogEntry('common'),
+    coder: catalogEntry('coder', ' AILY CODER '),
+  });
+
+  assert.equal(index.common.only, 'all');
+  assert.equal(index.coder.only, 'aily coder');
+  assert.throws(
+    () => validateIndex({ invalid: catalogEntry('invalid', '') }),
+    /invalid only must be a non-empty string/,
+  );
+});
+
 async function stage(f) {
   const npmCalls = [];
   await stageSubappUpdate(f.rootDir, f.updateRootDir, f.entry, async (args) => {
@@ -252,7 +276,10 @@ test('refreshes remote updates while preserving only linked development subapps'
   });
 
   const remoteIndex = {
-    test: catalogEntry('test', '@aily-project/subapp-test', '1.1.0'),
+    test: {
+      ...catalogEntry('test', '@aily-project/subapp-test', '1.1.0'),
+      only: 'aily coder',
+    },
   };
   const manager = createSubappManager({
     rootDir,
@@ -274,6 +301,8 @@ test('refreshes remote updates while preserving only linked development subapps'
   assert.equal(fetchCount, 1);
   assert.equal(refreshed.source, 'network');
   assert.deepEqual(refreshed.apps.map(app => app.id).sort(), ['development', 'test']);
+  assert.equal(refreshed.apps.find(app => app.id === 'development').only, 'all');
+  assert.equal(refreshed.apps.find(app => app.id === 'test').only, 'aily coder');
 
   const cached = await manager.list({ strategy: 'cache-first' });
   assert.deepEqual(cached.apps.map(app => app.id).sort(), ['development', 'test']);
