@@ -1,4 +1,5 @@
 const packageJson = require('../package.json');
+const coderRelease = require('./products/coder.json');
 const appConfig = require('../electron/config/config.json');
 const {
   createBuilderConfig,
@@ -12,4 +13,10 @@ const plan = createBuildPlan([
   process.env.AILY_BUILD_FLAVOR || 'cn',
 ], appConfig);
 
-module.exports = createBuilderConfig(plan, packageJson.build);
+module.exports = createBuilderConfig(plan, {
+  ...packageJson.build,
+  extraMetadata: {
+    ...(packageJson.build.extraMetadata || {}),
+    version: coderRelease.version,
+  },
+});

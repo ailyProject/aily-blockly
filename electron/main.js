@@ -1351,6 +1351,12 @@ ipcMain.handle('get-renderer-generation', (event) => {
   return isCurrentMainRenderer(event.sender) ? rendererGeneration : 0;
 });
 
+ipcMain.handle('get-app-version', () => (
+  !app.isPackaged && process.env.AILY_APP_VERSION
+    ? process.env.AILY_APP_VERSION
+    : app.getVersion()
+));
+
 // 监听渲染进程就绪事件
 ipcMain.on('renderer-ready', (event, payload = {}) => {
   const requestedGeneration = Number(payload?.generation);

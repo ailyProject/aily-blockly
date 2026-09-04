@@ -18,8 +18,6 @@ import { stripAnsi } from 'fancy-ansi';
 import { Subscription } from 'rxjs';
 import { resolveFeedbackContentOnTypeChange } from './feedback-dialog-state';
 
-import packageJson from '../../../../package.json';
-
 @Component({
   selector: 'app-feedback-dialog',
   imports: [
@@ -251,7 +249,7 @@ export class FeedbackDialogComponent implements OnDestroy {
 
     return `
 - OS Version: ${window['platform'].type}
-- Software Version: ${packageJson.version}${this.isCnRegion ? '-cn' : ''}
+- Software Version: ${this.electronService.applicationVersion}${this.isCnRegion ? '-cn' : ''}
 - Project Dependencies:
 \`\`\`json
 ${dependenciesStr}

@@ -3,7 +3,6 @@ import { GUIDE_MENU } from '../../configs/menu.config';
 import { UiService, OnboardingService } from '@core/app-shell/public-api';
 import { getGuideRecentProjects, ProjectService } from '@domain/project/public-api';
 import { ConfigService, ThemeService } from '@core/preferences/public-api';
-import packageJson from '../../../../package.json';
 import { TranslateModule } from '@ngx-translate/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ElectronService } from '@core/platform/public-api';
@@ -20,7 +19,6 @@ import { Subscription } from 'rxjs';
   styleUrl: './guide.component.scss'
 })
 export class GuideComponent implements OnInit, OnDestroy {
-  version = packageJson.version;
   guideMenu = GUIDE_MENU;
   showMenu = true;
   private readonly guidePageDefaultUrl: SafeResourceUrl;
@@ -34,6 +32,10 @@ export class GuideComponent implements OnInit, OnDestroy {
 
   get applicationName(): string {
     return this.configService.getApplicationName();
+  }
+
+  get version(): string {
+    return this.electronService.applicationVersion;
   }
 
   get coderProduct(): boolean {
