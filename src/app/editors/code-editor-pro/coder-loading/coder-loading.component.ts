@@ -24,7 +24,9 @@ export class CoderLoadingComponent {
   @Input() visible = false;
   @Input() revealing = false;
   @Input() error: string | null = null;
+  @Input() allowReinstall = false;
   @Output() retry = new EventEmitter<void>();
+  @Output() reinstall = new EventEmitter<void>();
 
   get stageNumber(): string {
     return STAGE_META[this.stage].number;

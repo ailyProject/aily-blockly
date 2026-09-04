@@ -522,6 +522,34 @@ export class BlocklyService {
     return this.toolboxFacadeItemsSubject.value;
   }
 
+  getLibraryRuntimeSnapshot(): {
+    active: boolean;
+    loadedLibraries: string[];
+    toolboxLibraries: string[];
+    failedLibraries: string[];
+  } {
+    const toolboxLibraries = new Set<string>();
+    const failedLibraries = new Set<string>();
+    const items = [...this.getToolboxFacadeItems()];
+
+    for (const item of items) {
+      items.push(...item.children);
+      if (!item.libraryName) continue;
+
+      if (item.libraryLoadFailed) failedLibraries.add(item.libraryName);
+      else toolboxLibraries.add(item.libraryName);
+    }
+
+    return {
+      active: !!this.workspace && this.generatorRuntime.isActive() && !this.rebuildingLibraryRuntime,
+      loadedLibraries: [...new Set(
+        Array.from(this.loadedLibraryInfos.values(), (library) => library.packageName),
+      )],
+      toolboxLibraries: [...toolboxLibraries],
+      failedLibraries: [...failedLibraries],
+    };
+  }
+
   getToolboxSearchQuery(): string {
     return this.toolboxSearchQuerySubject.value;
   }

@@ -6,6 +6,9 @@ const {
   createBuildPlan,
 } = require('../scripts/build-electron');
 
+const coderIcon = 'public/icon-aci.ico';
+const coderMacIcon = 'public/icon-512-coder.ico';
+
 const plan = createBuildPlan([
   '--product',
   'coder',
@@ -18,5 +21,22 @@ module.exports = createBuilderConfig(plan, {
   extraMetadata: {
     ...(packageJson.build.extraMetadata || {}),
     version: coderRelease.version,
+  },
+  extraResources: (packageJson.build.extraResources || []).map((resource) => (
+    resource?.to === 'icon.ico'
+      ? { ...resource, from: coderIcon }
+      : resource
+  )),
+  win: {
+    ...packageJson.build.win,
+    icon: coderIcon,
+  },
+  mac: {
+    ...packageJson.build.mac,
+    icon: coderMacIcon,
+  },
+  linux: {
+    ...packageJson.build.linux,
+    icon: coderIcon,
   },
 });

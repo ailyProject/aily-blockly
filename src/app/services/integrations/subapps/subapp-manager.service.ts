@@ -34,6 +34,7 @@ export interface SubappUpdatePolicy {
 export interface SubappCatalogItem {
   id: string;
   toolId: string;
+  only: string;
   packageName: string;
   availableVersion: string;
   installedVersion?: string | null;
@@ -150,6 +151,10 @@ export class SubappManagerService implements OnDestroy {
     return this.mutate('install', id, options);
   }
 
+  reinstall(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('reinstall', id, options);
+  }
+
   update(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
     return this.mutate('update', id, options);
   }
@@ -172,6 +177,7 @@ export class SubappManagerService implements OnDestroy {
       .map((item) => ({
         ...(item.app || {}),
         id: item.toolId,
+        only: item.only,
         name: item.name,
         description: item.description,
         action: 'tool-open',
@@ -242,7 +248,7 @@ export class SubappManagerService implements OnDestroy {
   }
 
   private async mutate(
-    action: 'install' | 'update' | 'downloadUpdate' | 'installUpdate' | 'uninstall',
+    action: 'install' | 'reinstall' | 'update' | 'downloadUpdate' | 'installUpdate' | 'uninstall',
     id: string,
     options: { forceClose?: boolean } = {},
   ): Promise<void> {

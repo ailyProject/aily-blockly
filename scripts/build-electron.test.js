@@ -52,6 +52,16 @@ test('creates a separately named Aily Coder product build profile', () => {
   assert.equal(builderConfig.linux.fileAssociations, undefined);
 });
 
+test('uses the dedicated Coder icons in packaged builds', () => {
+  const builderConfig = require('../build/electron-builder.coder');
+  const packagedIcon = builderConfig.extraResources.find((resource) => resource.to === 'icon.ico');
+
+  assert.equal(builderConfig.win.icon, 'public/icon-aci.ico');
+  assert.equal(builderConfig.mac.icon, 'public/icon-512-coder.ico');
+  assert.equal(builderConfig.linux.icon, 'public/icon-aci.ico');
+  assert.equal(packagedIcon.from, 'public/icon-aci.ico');
+});
+
 test('maps an updater base URL without a Blockly suffix into a Coder child path', () => {
   assert.equal(
     resolveProductUpdaterUrl('https://downloads.example.com/releases/', 'coder'),

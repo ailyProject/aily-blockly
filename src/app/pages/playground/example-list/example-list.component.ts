@@ -1,5 +1,5 @@
 import { ChangeDetectorRef, Component, OnInit, ViewChild, ElementRef, AfterViewInit, OnDestroy } from '@angular/core';
-import { RouterModule, ActivatedRoute } from '@angular/router';
+import { RouterModule, ActivatedRoute, Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzInputModule } from 'ng-zorro-antd/input';
@@ -18,6 +18,7 @@ import { CmdService, ElectronService, PlatformService, CrossPlatformCmdService }
 import { updateBlocksInFile } from '../../../utils/blockly_updater';
 import { Buffer } from 'buffer';
 import { jsonrepair } from 'jsonrepair';
+import { normalizePlaygroundPage } from '../playground-search-history';
 
 @Component({
   selector: 'app-example-list',
@@ -60,6 +61,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     private configService: ConfigService,
     private translate: TranslateService,
     private route: ActivatedRoute,
+    private router: Router,
     private playgroundService: PlaygroundService,
     private cloudService: CloudService,
     private projectService: ProjectService,
@@ -114,11 +116,10 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
         this.board = params['board'] || '';
 
         this.keyword = params['keyword'] || '';
+        this.pageIndex = normalizePlaygroundPage(params['page']);
         this.params = this.parseParams(params['params'] || '');
 
         this.version = params['version'] || '';
-        // 当通过 URL 搜索时，重置回第一页
-        this.pageIndex = 1;
         // 只有在 pageSize 已计算后才获取数据
 
         if (this.pageSizeCalculated) {
@@ -255,8 +256,6 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
       this.pageSize = calculatedPageSize;
       // console.log(`Page size changed from ${oldPageSize} to ${this.pageSize}, refreshing data...`);
       
-      // 重置到第一页并重新获取数据
-      this.pageIndex = 1;
       this.getExamples();
     } else if (!this.pageSizeCalculated) {
       // 第一次计算完成后，即使值没变也要获取数据
@@ -419,8 +418,11 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   onPageChange(page: number) {
-    console.log('页码变化:', page);
     this.pageIndex = page;
-    this.getExamples();
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { page },
+      queryParamsHandling: 'merge',
+    });
   }
 }

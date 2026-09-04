@@ -24,6 +24,13 @@ export interface AppVisibilityContext {
   isDevMode?: boolean;
 }
 
+export function isAppAvailableForApplication(only: unknown, applicationName: string): boolean {
+  const target = typeof only === 'string' && only.trim()
+    ? only.trim().toLowerCase()
+    : 'all';
+  return target === 'all' || target === applicationName.trim().toLowerCase();
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -156,6 +163,10 @@ export class AppStoreService {
     }
 
     if (app.dev && !context.isDevMode) {
+      return false;
+    }
+
+    if (!isAppAvailableForApplication(app.only, this.configService.getApplicationName())) {
       return false;
     }
 
