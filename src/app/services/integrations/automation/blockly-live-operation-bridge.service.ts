@@ -12,6 +12,7 @@ import {
 import { BuilderService } from '@domain/build/public-api';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { SubappAgentBridgeService } from '@integration/subapps/public-api';
+import { isAilyLibraryPackageName } from '@shared/public-api';
 import {
   selectSerialPort,
   SerialService,
@@ -243,6 +244,8 @@ export class BlocklyLiveOperationBridgeService {
         return this.runBlockWritingOperation(() => this.executeAbsApply(payload.params || {}));
       case 'block_metadata_snapshot':
         return this.executeBlockMetadataSnapshot();
+      case 'library_runtime_sync':
+        return this.runBlockWritingOperation(() => this.executeLibraryRuntimeSync(payload.params || {}));
       case 'project_abi_check':
         return this.executeProjectAbiCheck();
       case 'project_build':
@@ -302,6 +305,7 @@ export class BlocklyLiveOperationBridgeService {
       'abi_set_field',
       'abs_apply',
       'block_metadata_snapshot',
+      'library_runtime_sync',
       'blocks_tidy',
       'project_save',
     ]).has(String(operation || ''));
@@ -532,6 +536,49 @@ export class BlocklyLiveOperationBridgeService {
       project: this.projectService.currentProjectPath,
       blocks: snapshot.blocks,
       failures: snapshot.failures,
+    };
+  }
+
+  private async executeLibraryRuntimeSync(params: Record<string, any>): Promise<Record<string, any>> {
+    const requestedPackages: unknown = params['packages'];
+    if (
+      !Array.isArray(requestedPackages)
+      || requestedPackages.length === 0
+      || !requestedPackages.every((name) => typeof name === 'string' && isAilyLibraryPackageName(name))
+    ) {
+      return { ok: false, operation: 'library_runtime_sync', ready: false, message: '请提供有效的库包名数组 packages' };
+    }
+
+    const packages = [...new Set<string>(requestedPackages)];
+    const projectPath = this.projectService.currentProjectPath;
+    await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
+
+    const loadStatus = this.projectService.getBlocklyProjectLoadStatus(projectPath);
+    const runtime = this.blocklyEditor.getLibraryRuntimeSnapshot();
+    const missingLibraries = packages.filter((name) => !runtime.loadedLibraries.includes(name));
+    const missingToolboxLibraries = packages.filter((name) => !runtime.toolboxLibraries.includes(name));
+    const failedLibraries = packages.filter((name) => runtime.failedLibraries.includes(name));
+    const ready = loadStatus.ready
+      && runtime.active
+      && missingLibraries.length === 0
+      && missingToolboxLibraries.length === 0
+      && failedLibraries.length === 0;
+
+    return {
+      ok: ready,
+      operation: 'library_runtime_sync',
+      project: projectPath,
+      ready,
+      packages,
+      loadStatus,
+      runtime,
+      missingLibraries,
+      missingToolboxLibraries,
+      failedLibraries,
+      ...(!ready ? {
+        reason: 'library_runtime_not_ready',
+        message: '库文件已同步，但宿主尚未完成目标库和工具箱的加载，请检查库加载错误。',
+      } : {}),
     };
   }
 

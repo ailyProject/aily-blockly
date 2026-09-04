@@ -1033,7 +1033,7 @@ async function handleCliBridgeCommand(action, payload) {
           ? 300000
           : operation === 'project_open'
             ? 130000
-          : operation === 'abs_apply'
+          : operation === 'abs_apply' || operation === 'library_runtime_sync'
             ? 120000
             : operation === 'subapp_agent_call'
               ? 620000
