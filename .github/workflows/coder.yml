@@ -143,9 +143,116 @@ jobs:
             dist/aily-coder/latest.yml
           if-no-files-found: error
 
+  build-and-sign-macos:
+    name: Build, sign and notarize macOS CN package
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            electron/package-lock.json
+
+      - name: Read Coder version
+        id: version
+        shell: bash
+        run: |
+          version=$(node -p "require('./build/products/coder.json').version")
+          if [ -z "$version" ]; then
+            echo "Unable to read Coder version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Coder version: $version"
+
+      - name: Install dependencies
+        run: |
+          npm install -g @angular/cli
+          npm ci --include=dev
+          cd electron
+          npm ci --include=dev --force
+
+      - name: Import codesign certificate
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.APPLE_SIGNING_CERT }}
+          p12-password: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+
+      - name: Verify codesign certificate
+        shell: bash
+        run: |
+          if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+            echo "No Developer ID Application certificate found" >&2
+            exit 1
+          fi
+
+      - name: Build, sign and notarize aily coder macOS package
+        run: npm run build:coder
+        env:
+          NODE_ENV: production
+          CSC_LINK: ${{ secrets.APPLE_SIGNING_CERT }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Notarize, staple and mark macOS test package
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          version='${{ steps.version.outputs.version }}'
+          output_directory='dist/aily-coder'
+          dmg_count=0
+
+          while IFS= read -r -d '' dmg_path; do
+            xcrun notarytool submit "$dmg_path" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait \
+              --timeout 30m
+
+            xcrun stapler staple "$dmg_path"
+
+            original_name=$(basename "$dmg_path")
+            beta_name=${original_name/aily-coder-CN-macos-/aily-coder-CN-macos-beta-}
+            beta_path="$(dirname "$dmg_path")/$beta_name"
+            mv "$dmg_path" "$beta_path"
+
+            xcrun stapler validate "$beta_path"
+            echo "Test package: $beta_name"
+            dmg_count=$((dmg_count + 1))
+          done < <(
+            find "$output_directory" -maxdepth 1 -type f \
+              -name "aily-coder-CN-macos-${version}-*.dmg" -print0
+          )
+
+          if [ "$dmg_count" -eq 0 ]; then
+            echo "macOS DMG not found in $output_directory" >&2
+            exit 1
+          fi
+
+      - name: Archive signed Coder macOS package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AilyCoder-macOS-Package-cn
+          path: dist/aily-coder/aily-coder-CN-macos-beta-${{ steps.version.outputs.version }}-*.dmg
+          if-no-files-found: error
+
   publish-test-release:
     name: Publish test release to ailyProject/aily-coder
-    needs: build-and-sign-windows
+    needs: [build-and-sign-windows, build-and-sign-macos]
     runs-on: ubuntu-latest
 
     steps:
@@ -154,6 +261,12 @@ jobs:
         with:
           name: AilyCoder-Windows-Package-cn
           path: release
+
+      - name: Download signed Coder macOS package
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyCoder-macOS-Package-cn
+          path: release-macos
 
       - name: Require target repository token
         env:
@@ -184,13 +297,16 @@ jobs:
           token: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
           tag_name: v${{ needs.build-and-sign-windows.outputs.version }}
           target_commitish: ${{ steps.target_repository.outputs.default_branch }}
-          name: aily coder v${{ needs.build-and-sign-windows.outputs.version }} (test signed)
+          name: aily coder v${{ needs.build-and-sign-windows.outputs.version }} (beta)
           body: |
-            Test-signed Windows package built from
+            Beta Windows and macOS packages built from
             https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+
+            Windows uses SignPath test signing. macOS uses Apple Developer ID signing and notarization.
           files: |
             release/aily-coder-CN-Setup-beta-${{ needs.build-and-sign-windows.outputs.version }}.exe
             release/latest.yml
+            release-macos/aily-coder-CN-macos-beta-${{ needs.build-and-sign-windows.outputs.version }}-*.dmg
           fail_on_unmatched_files: true
           draft: false
           prerelease: true
