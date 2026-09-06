@@ -29,6 +29,7 @@
       {
         "name": "Aily Blockly OAuth",
         "schemes": [
+          "abis",
           "ailyblockly"
         ]
       }

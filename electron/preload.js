@@ -225,6 +225,12 @@ function extractLeadingTimestampMs(line) {
 }
 
 contextBridge.exposeInMainWorld("electronAPI", {
+  auth: {
+    ...require('./build-product').getProductAuthConfig(process.env.AILY_BUILD_PRODUCT),
+    read: () => ipcRenderer.invoke('auth-credentials-read'),
+    write: (record, expectedRefreshToken) => ipcRenderer.invoke('auth-credentials-write', record, expectedRefreshToken),
+    clear: () => ipcRenderer.invoke('auth-credentials-clear'),
+  },
   ipcRenderer: {
     send: (channel, data) => ipcRenderer.send(channel, data),
     on: (channel, callback) => {
