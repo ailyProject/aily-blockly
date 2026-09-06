@@ -41,6 +41,8 @@ function spawnInherited(command, args, workspaceRoot) {
     cwd: workspaceRoot,
     env: process.env,
     stdio: 'inherit',
+    // Windows command scripts must be launched through cmd.exe.
+    shell: process.platform === 'win32' && command === 'npm.cmd',
   });
 }
 
