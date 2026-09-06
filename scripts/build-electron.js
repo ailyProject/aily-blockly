@@ -1,5 +1,6 @@
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { getProductAuthConfig } = require('../electron/build-product');
 
 const BUILD_PRODUCTS = Object.freeze({
   blockly: Object.freeze({
@@ -80,8 +81,11 @@ function createBuilderConfig(plan, baseConfig) {
     }],
     protocols: (baseConfig.protocols || []).map((protocol) => ({
       ...protocol,
-      ...(plan.buildProduct === 'coder' && protocol?.name === 'Aily Blockly OAuth'
-        ? { name: 'Aily Coder OAuth' }
+      ...(protocol?.name === 'Aily Blockly OAuth'
+        ? {
+          name: plan.buildProduct === 'coder' ? 'Aily Coder OAuth' : protocol.name,
+          schemes: getProductAuthConfig(plan.buildProduct).protocols,
+        }
         : {}),
     })),
     win: {

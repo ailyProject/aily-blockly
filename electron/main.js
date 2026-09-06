@@ -34,6 +34,8 @@ const { mergeConfigChanges } = require("./config-persistence");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const {
   normalizeBuildProduct,
+  getProductAuthConfig,
+  isProductProtocolUrl,
 } = require('./build-product');
 const {
   registerWebviewDebuggerSurfaceHandlers,
@@ -102,7 +104,8 @@ app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 // 限制 HTTP 磁盘缓存为 100MB，防止无限增长
 app.commandLine.appendSwitch('disk-cache-size', '104857600');
-const PROTOCOL = "abis";
+const PROTOCOLS = getProductAuthConfig(getBuildProduct()).protocols;
+const isSupportedProtocolUrl = url => isProductProtocolUrl(getBuildProduct(), url);
 
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
@@ -386,7 +389,7 @@ function shouldUseMultiInstance() {
 // 只有在需要多实例时才设置独立的用户数据目录
 if (shouldUseMultiInstance()) {
   // 检查是否是协议启动
-  const isProtocolLaunch = process.argv.some(arg => arg.startsWith(`${PROTOCOL}://`));
+  const isProtocolLaunch = process.argv.some(isSupportedProtocolUrl);
 
   if (!isProtocolLaunch) {
     // 只有非协议启动才设置实例隔离
@@ -396,7 +399,9 @@ if (shouldUseMultiInstance()) {
   }
 }
 
-app.removeAsDefaultProtocolClient(PROTOCOL);
+for (const protocol of PROTOCOLS) {
+  app.removeAsDefaultProtocolClient(protocol);
+}
 
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
@@ -438,12 +443,14 @@ if (serve) {
 }
 
 // 注册协议处理
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+for (const protocol of PROTOCOLS) {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(protocol, process.execPath, [path.resolve(process.argv[1])]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient(protocol);
   }
-} else {
-  app.setAsDefaultProtocolClient(PROTOCOL);
 }
 
 // 文件关联处理
@@ -605,9 +612,10 @@ function handleProtocol(url) {
 
   try {
     const urlObj = new URL(url);
+    if (!isSupportedProtocolUrl(url)) return;
 
     // 自定义协议URL中，hostname 可能包含路径的第一部分
-    // 例如 ailyblockly://auth/callback 中，hostname='auth', pathname='/callback'
+    // 例如 abis://auth/callback 或 acis://auth/callback 中，hostname='auth', pathname='/callback'
     // 需要重新构建完整路径
     let fullPath = urlObj.pathname;
     if (urlObj.hostname && urlObj.hostname !== '') {
@@ -771,7 +779,7 @@ const {
   wakeWebviewBridge,
 } = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
-const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks } = require("./appdata-resource-lock");
+const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks, withAppDataResourceLock } = require("./appdata-resource-lock");
 // debug模块
 const { initLogger, registerLoggerHandlers } = require("./logger");
 // tools
@@ -2081,6 +2089,18 @@ function loadEnv() {
   }
 
   registerAppDataResourceLockHandlers();
+  const authStore = require('./auth-store').createAuthStore(
+    process.env.AILY_APPDATA_PATH,
+    buildProduct,
+    (operation) => withAppDataResourceLock(`auth-${buildProduct}`, operation),
+  );
+  // loadEnv runs again when macOS recreates the main window.
+  for (const operation of ['read', 'write', 'clear']) {
+    ipcMain.removeHandler(`auth-credentials-${operation}`);
+  }
+  ipcMain.handle('auth-credentials-read', () => authStore.read());
+  ipcMain.handle('auth-credentials-write', (_event, record, expectedRefreshToken) => authStore.write(record, expectedRefreshToken));
+  ipcMain.handle('auth-credentials-clear', () => authStore.clear());
 
   // 检测并读取appdata_path目录下是否有config.json文件
   const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");
@@ -2735,7 +2755,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 
 if (shouldUseMultiInstance()) {
   // 多实例模式：检查是否是协议启动
-  const isProtocolLaunch = process.argv.some(arg => arg.startsWith(`${PROTOCOL}://`));
+  const isProtocolLaunch = process.argv.some(isSupportedProtocolUrl);
 
   if (isProtocolLaunch) {
     // 协议启动时，检查是否已有其他实例能处理
@@ -2759,7 +2779,7 @@ if (shouldUseMultiInstance()) {
     console.log('收到second-instance事件，命令行参数:', commandLine);
 
     // 查找协议链接
-    const protocolUrl = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`));
+    const protocolUrl = commandLine.find(isSupportedProtocolUrl);
     if (protocolUrl) {
       console.log('在second-instance中处理协议链接:', protocolUrl);
 
@@ -2815,7 +2835,7 @@ if (shouldUseMultiInstance()) {
     // 监听second-instance事件，处理协议链接和其他启动参数
     app.on('second-instance', (event, commandLine, workingDirectory) => {
       // 查找协议链接
-      const protocolUrl = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`));
+      const protocolUrl = commandLine.find(isSupportedProtocolUrl);
       if (protocolUrl) {
         console.log('在second-instance中处理协议链接:', protocolUrl);
         handleProtocol(protocolUrl);
@@ -2906,7 +2926,7 @@ function ensureRosettaIfNeededOnDarwin() {
 
 app.on("ready", async () => {
   // 检查是否是协议启动
-  const protocolUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
+  const protocolUrl = process.argv.find(isSupportedProtocolUrl);
 
   // 判断是否是纯转发型协议（不需要创建窗口的协议路径）
   if (protocolUrl) {

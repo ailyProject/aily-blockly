@@ -2,6 +2,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { AsyncLocalStorage } = require('async_hooks');
+const lockScope = new AsyncLocalStorage();
 const { ipcMain, app } = require('electron');
 
 const LOCK_DIR = '.lock';
@@ -19,7 +21,7 @@ function getAppDataPath() {
 }
 
 function getLockRootPath() {
-  return path.join(getAppDataPath(), LOCK_DIR, LOCK_ROOT);
+  return path.join(getAppDataPath(), LOCK_DIR, lockScope.getStore() || LOCK_ROOT);
 }
 
 function getWriterLockPath() {
@@ -431,7 +433,20 @@ function registerAppDataResourceLockHandlers() {
   });
 }
 
+async function withAppDataResourceLock(scope, operation) {
+  return lockScope.run(scope, async () => {
+    const lock = await acquireAppDataResourceLock(scope, 'write', 15000);
+    if (!lock.ok) throw new Error(lock.error);
+    try {
+      return await operation();
+    } finally {
+      releaseAppDataResourceLock(lock.token);
+    }
+  });
+}
+
 module.exports = {
+  withAppDataResourceLock,
   registerAppDataResourceLockHandlers,
   releaseAllAppDataResourceLocks,
 };
