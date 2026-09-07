@@ -6,6 +6,7 @@ import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
 import { CmdService, CmdOutput, PlatformService } from '@core/platform/public-api';
 import { AuthService } from '@core/auth/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 
 declare global {
   interface Window {
@@ -30,7 +31,8 @@ export class CloudService {
       private http: HttpClient,
       private cmdService: CmdService,
       private platformService: PlatformService,
-      private authService: AuthService
+      private authService: AuthService,
+      private configService: ConfigService,
   ) { }
 
   /** 
@@ -47,6 +49,7 @@ export class CloudService {
     if (keywords) params = params.set('keywords', keywords);
     if (projectId) params = params.set('id', projectId);
     if (boardName) params = params.set('board', boardName);
+    if (this.configService.isCoderProduct()) params = params.set('category', 'coder');
 
     return this.http.get<any>(API.cloudPublicProjects, { params })
       .pipe(
@@ -63,8 +66,10 @@ export class CloudService {
     pid?: string;
     projectData?: any; // 新增的项目数据对象
     archive?: string;
+    category?: 'coder';
   }): Observable<any> {
     const formData = new FormData();
+    if (params.category) formData.append('category', params.category);
     if (params.projectData) {
       formData.append('projectData', JSON.stringify(params.projectData));
     }
@@ -105,10 +110,11 @@ export class CloudService {
    * @param limit 返回的最大项目数量（分页）
    */
   getProjects(skip: number = 0, limit: number = 20): Observable<any> {
-    const params = {
+    const params: Record<string, string> = {
       page: skip.toString(),
       perPage: limit.toString()
     };
+    if (this.configService.isCoderProduct()) params['category'] = 'coder';
 
     return this.http.get<any>(this.cloudProjectsUrl, { params })
       .pipe(
@@ -234,6 +240,7 @@ export class CloudService {
     if (board?.trim()) {
       params['board'] = board.trim();
     }
+    if (this.configService.isCoderProduct()) params['category'] = 'coder';
 
     return this.http.get<any>(`${this.cloudProjectsUrl}/templates`, {
       params

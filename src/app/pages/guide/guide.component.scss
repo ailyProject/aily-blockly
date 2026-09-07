@@ -40,13 +40,12 @@
       height: 32px;
     }
 
-    .application-name {
-      color: var(--aily-text-primary);
-      font-size: 32px;
-      font-weight: 600;
-      line-height: 32px;
-      letter-spacing: -0.5px;
-      white-space: nowrap;
+    .coder-logo {
+      filter: brightness(0) invert(1);
+
+      :host-context([data-theme="light"]) & {
+        filter: none;
+      }
     }
 
     .version {

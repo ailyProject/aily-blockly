@@ -1,11 +1,7 @@
 <div class="guide-box ccenter">
   <div class="left-box">
     <div class="stitle">
-      @if (coderProduct) {
-      <span class="logo application-name">{{ applicationName }}</span>
-      } @else {
-      <img class="logo" [src]="logoSrc" [alt]="applicationName" draggable="false">
-      }
+      <img class="logo" [class.coder-logo]="coderProduct" [src]="logoSrc" [alt]="applicationName" draggable="false">
       <div class="version">ver {{version}}{{ isCnRegion ? '-cn' : '' }}</div>
     </div>
     <div class="title">{{'GUIDE.START' | translate}}</div>

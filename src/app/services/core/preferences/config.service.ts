@@ -182,6 +182,16 @@ export class ConfigService {
     return this.isCoderProduct() ? 'aily coder' : 'aily blockly';
   }
 
+  getApplicationLogoSrc(theme: 'light' | 'dark' = 'dark'): string {
+    // Coder 共用透明字标，由显示位置按主题着色，避免两套字形偏移。
+    if (this.isCoderProduct()) return 'imgs/logo-coder.png';
+    return theme === 'light' ? 'imgs/logo-light.webp' : 'imgs/logo.webp';
+  }
+
+  getDefaultProjectImageSrc(): string {
+    return this.isCoderProduct() ? 'imgs/subject-coder.png' : 'imgs/subject.webp';
+  }
+
   getDevelopmentModePreference(): DevelopmentModePreference {
     if (this.isCoderProduct()) {
       return 'coder';

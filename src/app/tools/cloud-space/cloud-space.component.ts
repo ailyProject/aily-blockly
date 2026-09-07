@@ -11,6 +11,7 @@ import {
   projectDataRuntime,
   assertNoOversizedInlineValues,
   extractStructuredAbsValues,
+  detectProjectMode,
 } from '@domain/project/public-api';
 import { CmdService, ElectronService, PlatformService, CrossPlatformCmdService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -21,6 +22,7 @@ import { distinctUntilChanged } from 'rxjs/operators';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { TranslateService } from '@ngx-translate/core';
+import { ConfigService } from '@core/preferences/public-api';
 
 @Component({
   selector: 'app-cloud-space',
@@ -59,6 +61,7 @@ export class CloudSpaceComponent {
     private platformService: PlatformService,
     private crossPlatformCmdService: CrossPlatformCmdService,
     private translate: TranslateService,
+    private configService: ConfigService,
   ) { }
 
   // 分页参数
@@ -175,7 +178,7 @@ export class CloudSpaceComponent {
             const separator = prj.image_url.includes('?') ? '&' : '?';
             imageUrl = this.cloudService.baseUrl + prj.image_url + separator + 't=' + timestamp;
           } else {
-            imageUrl = 'imgs/subject.webp';
+            imageUrl = this.configService.getDefaultProjectImageSrc();
           }
 
           if (prj.archive_url) {
@@ -245,28 +248,6 @@ export class CloudSpaceComponent {
       return;
     }
 
-    const abiPath = window['path'].join(prjPath, 'project.abi');
-    try {
-      const abi = JSON.parse(window['fs'].readFileSync(abiPath, 'utf8'));
-      assertNoOversizedInlineValues(abi);
-      await projectDataRuntime.flushPending();
-      const roots: unknown[] = [abi];
-      const absPath = window['path'].join(prjPath, 'project.abs');
-      if (window['fs'].existsSync(absPath)) {
-        roots.push(...extractStructuredAbsValues(window['fs'].readFileSync(absPath, 'utf8'), { strict: true }));
-      }
-      const validation = await projectDataRuntime.getStore().validateReferences(
-        roots.flatMap((root) => projectDataRuntime.getStore().collectReferences(root)),
-      );
-      if (!validation.valid) {
-        throw new Error(validation.issues.map((issue) => issue.error).join('; '));
-      }
-    } catch (error) {
-      this.message.error('项目数据资源不完整，无法打包');
-      console.error('项目数据资源预检失败:', error);
-      return;
-    }
-
     let cloudPackageJson;
     try {
       cloudPackageJson = JSON.parse(this.electronService.readFile(packageJsonPath));
@@ -274,6 +255,43 @@ export class CloudSpaceComponent {
       this.message.error('package.json 格式错误，无法打包');
       console.error('读取 package.json 失败:', error);
       return;
+    }
+
+    const abiPath = window['path'].join(prjPath, 'project.abi');
+    const aciPath = window['path'].join(prjPath, 'project.aci');
+    const isCoder = detectProjectMode({
+      manifest: cloudPackageJson,
+      hasAbi: window['fs'].existsSync(abiPath),
+      hasAci: window['fs'].existsSync(aciPath),
+    }) === 'coder';
+    if (isCoder) {
+      // Coder 保存的是源码工作区，不依赖 Blockly ABI/ABS 或外置数据运行时。
+      if (!window['fs'].existsSync(window['path'].join(prjPath, 'sketch'))
+        && !window['fs'].existsSync(aciPath)) {
+        this.message.error('Coder 项目源码不存在，无法打包');
+        return;
+      }
+    } else {
+      try {
+        const abi = JSON.parse(window['fs'].readFileSync(abiPath, 'utf8'));
+        assertNoOversizedInlineValues(abi);
+        await projectDataRuntime.flushPending();
+        const roots: unknown[] = [abi];
+        const absPath = window['path'].join(prjPath, 'project.abs');
+        if (window['fs'].existsSync(absPath)) {
+          roots.push(...extractStructuredAbsValues(window['fs'].readFileSync(absPath, 'utf8'), { strict: true }));
+        }
+        const validation = await projectDataRuntime.getStore().validateReferences(
+          roots.flatMap((root) => projectDataRuntime.getStore().collectReferences(root)),
+        );
+        if (!validation.valid) {
+          throw new Error(validation.issues.map((issue) => issue.error).join('; '));
+        }
+      } catch (error) {
+        this.message.error('项目数据资源不完整，无法打包');
+        console.error('项目数据资源预检失败:', error);
+        return;
+      }
     }
     const hasLocalLibrarySources = Object.prototype.hasOwnProperty.call(
       cloudPackageJson,
@@ -291,6 +309,19 @@ export class CloudSpaceComponent {
     // -x!project.7z: 排除自身
     // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
     let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs"`;
+    if (isCoder) {
+      // 保留 sketch 源码、本地库和 .aily-component-library.json 来源记录。
+      // 只排除本机状态和可重建缓存，Blockly 仍使用上面的原始打包规则。
+      const exclusions = [
+        '-x!node_modules', '-x!package-lock.json', '-x!project.7z',
+        '-x!project.abi', '-x!project.abi.backup', '-x!project.abs',
+        '-xr!.git', '-xr!.aily', '-xr!.temp', '-xr!.build', '-xr!.cache', '-xr!.pio',
+        '-xr!.DS_Store', '-xr!.env*',
+        '-x!sketch/preprocess.json', '-x!sketch/library-cache.json',
+        '-x!sketch/build-config.json', '-x!sketch/upload-config.json',
+      ];
+      packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * ${exclusions.map(value => `"${value}"`).join(' ')}`;
+    }
     if (hasLocalLibrarySources) {
       packCommand += ` "-x!package.json"`;
     }
@@ -430,7 +461,9 @@ export class CloudSpaceComponent {
     this.cloudService.syncProject({
       pid: currentProjectData?.cloudId,
       projectData: cloudProjectData,
-      archive: archivePath
+      archive: archivePath,
+      ...(this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder'
+        ? { category: 'coder' as const } : {}),
     }).subscribe(async res => {
         try {
           if (res && res.status === 200) {

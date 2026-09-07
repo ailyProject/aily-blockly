@@ -169,7 +169,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
           } else if (prj.image_url) {
             prj.image_url = this.cloudService.baseUrl + prj.image_url;
           } else {
-            prj.image_url = 'imgs/subject.webp';
+            prj.image_url = this.configService.getDefaultProjectImageSrc();
           }
           // archive_url
           if (prj.archive_url) {
@@ -271,7 +271,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   onImgError(event) {
-    (event.target as HTMLImageElement).src = 'imgs/subject.webp';
+    (event.target as HTMLImageElement).src = this.configService.getDefaultProjectImageSrc();
   }
 
   clearSearch() {

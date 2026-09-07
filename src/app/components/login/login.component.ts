@@ -156,6 +156,10 @@ export class LoginComponent implements OnInit, OnDestroy {
     return this.configService.getApplicationName();
   }
 
+  get logoSrc(): string {
+    return this.configService.getApplicationLogoSrc();
+  }
+
   get showWeChatLogin(): boolean {
     return this.configService.isCnRegion;
   }

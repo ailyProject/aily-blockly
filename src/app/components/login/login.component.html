@@ -110,11 +110,8 @@
                         <span>{{ welcomeBefore }}</span>
                         }
                         <span class="title-brand">
-                            @if (coderProduct) {
-                            <span class="title-application-name">{{ applicationName }}</span>
-                            } @else {
-                            <img class="title-logo" src="imgs/logo.webp" [alt]="applicationName" draggable="false" />
-                            }
+                            <img class="title-logo" [class.coder-logo]="coderProduct" [src]="logoSrc"
+                                [alt]="applicationName" draggable="false" />
                             <img class="title-chevron" src="imgs/chevron-right.svg" alt="" aria-hidden="true"
                                 draggable="false" />
                         </span>

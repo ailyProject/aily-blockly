@@ -198,13 +198,8 @@
     object-fit: contain;
 }
 
-.title-application-name {
-    color: var(--aily-text-primary);
-    font-size: 26px;
-    font-weight: 600;
-    line-height: 26px;
-    letter-spacing: -0.5px;
-    white-space: nowrap;
+.title-logo.coder-logo {
+    filter: brightness(0) invert(1);
 }
 
 .title-chevron {
@@ -218,6 +213,10 @@
 :host-context([data-theme="light"]) {
     .title-logo {
         filter: invert(1);
+    }
+
+    .title-logo.coder-logo {
+        filter: none;
     }
 
     .title-chevron {
