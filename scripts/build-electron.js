@@ -62,7 +62,7 @@ function createBuilderConfig(plan, baseConfig) {
     extraMetadata: {
       ...(baseConfig.extraMetadata || {}),
       ...(plan.buildProduct === 'coder'
-        ? { name: 'aily-coder', productName: product.productName }
+        ? { name: 'aily-coder', productName: product.productName, description: product.productName }
         : {}),
       ailyBuildFlavor: plan.buildFlavor,
       ailyBuildProduct: plan.buildProduct,

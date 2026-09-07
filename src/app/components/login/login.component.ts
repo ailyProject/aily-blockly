@@ -148,8 +148,24 @@ export class LoginComponent implements OnInit, OnDestroy {
     this.authService.dismissLoginDialog();
   }
 
+  get coderProduct(): boolean {
+    return this.configService.isCoderProduct();
+  }
+
+  get applicationName(): string {
+    return this.configService.getApplicationName();
+  }
+
   get showWeChatLogin(): boolean {
     return this.configService.isCnRegion;
+  }
+
+  get applicationName(): string {
+    return this.configService.getApplicationName();
+  }
+
+  get coderProduct(): boolean {
+    return this.configService.isCoderProduct();
   }
 
   private loginText(key: string, params?: Record<string, unknown>): string {
