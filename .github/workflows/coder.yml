@@ -194,10 +194,9 @@ jobs:
 
       - name: Build, sign and notarize aily coder macOS package
         run: npm run build:coder
+        # Reuse the imported keychain; CSC_LINK triggers electron-builder's broken re-import.
         env:
           NODE_ENV: production
-          CSC_LINK: ${{ secrets.APPLE_SIGNING_CERT }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
