@@ -3300,7 +3300,7 @@ ipcMain.handle("select-folder-saveAs", async (event, data) => {
   });
 
   if (result.canceled) {
-    return data.path || '';
+    return data.returnEmptyOnCancel ? '' : data.path || '';
   }
   // 直接返回用户选择的完整路径，保留文件名部分
   return result.filePath;

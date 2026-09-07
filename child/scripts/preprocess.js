@@ -149,9 +149,9 @@ async function main() {
 
         // 3. 处理库文件
         // Coder libraries are persistent sources under sketch/libraries and are
-        // installed only from libraries-coder-index.json (or intentionally
-        // authored locally). Legacy @aily-project/lib-* npm dependencies remain
-        // a Blockly-only input and must never enter the Coder compiler search.
+        // materialized by the Coder installer from Aily packages or Arduino
+        // archives (or intentionally authored locally). npm packages alone
+        // do not enter the Coder compiler search.
         const libsPath = collectDependencyLibraryPackages(
             dependencies,
             currentProjectPath,

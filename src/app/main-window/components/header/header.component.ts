@@ -998,6 +998,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   async selectSaveAsFolder() {
+    const sourcePath = this.projectService.currentProjectPath;
+    if (this.projectService.getProjectMode(sourcePath) === 'coder') {
+      return window['ipcRenderer'].invoke('select-folder-saveAs', {
+        path: window['path'].dirname(sourcePath),
+        suggestedName: window['path'].basename(sourcePath) + '_new',
+        returnEmptyOnCancel: true,
+      });
+    }
     const folderPath = await window['ipcRenderer'].invoke('select-folder-saveAs', {
       path: this.projectData.path,
       suggestedName: this.projectData.name + '_new',
@@ -1015,6 +1023,26 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   updateSubscription: any = null;
   private workspaceImageExporting = false;
+  private coderProjectSavingAs = false;
+
+  private async saveCoderProjectAs(): Promise<void> {
+    if (this.coderProjectSavingAs) return;
+    this.coderProjectSavingAs = true;
+    const sourcePath = this.projectService.currentProjectPath;
+    try {
+      const path = await this.selectSaveAsFolder();
+      if (!path) return;
+      if (this.projectService.currentProjectPath !== sourcePath) {
+        throw new Error('当前项目已切换，请重新执行另存为');
+      }
+      await this.projectService.saveAs(path);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.message.error(`另存为失败：${detail}`);
+    } finally {
+      this.coderProjectSavingAs = false;
+    }
+  }
 
   async process(item: IMenuItem, event = null) {
     switch (item.action) {
@@ -1036,6 +1064,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.projectService.save();
         break;
       case 'project-save-as':
+        if (this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') {
+          await this.saveCoderProjectAs();
+          break;
+        }
         const path = await this.selectSaveAsFolder();
         if (path) {
           await this.projectService.saveAs(path);

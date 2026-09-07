@@ -1123,7 +1123,8 @@ export class ProjectService {
       });
     }
 
-    if (window['path']?.isExists?.(window['path'].join(path, 'project.abi'))) {
+    if (this.getProjectMode(path) !== 'coder'
+      && window['path']?.isExists?.(window['path'].join(path, 'project.abi'))) {
       const loadStatus = this.getBlocklyProjectLoadStatus(path);
       if (!loadStatus.ready) {
         return Promise.resolve({
@@ -1156,6 +1157,10 @@ export class ProjectService {
 
   async saveAs(path: string): Promise<void> {
     const sourceProjectPath = this.currentProjectPath;
+    if (this.getProjectMode(sourceProjectPath) === 'coder') {
+      await this.saveCoderAs(sourceProjectPath, path);
+      return;
+    }
     const saveResult = await this.save(sourceProjectPath);
     if (!saveResult.success) {
       throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
@@ -1190,6 +1195,71 @@ export class ProjectService {
     projectDataRuntime.configure(path);
     this.currentPackageData = packageJson;
     this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
+  }
+
+  private async saveCoderAs(sourceProjectPath: string, targetPath: string): Promise<void> {
+    const pathApi = window['path'];
+    const fs = window['fs'];
+    if (!targetPath || !pathApi.isAbsolute(targetPath)) {
+      throw new Error('请选择有效的另存为路径');
+    }
+    // Preserve spaces in the selected path, including its parent directories.
+    const targetProjectPath = pathApi.resolve(targetPath);
+    if (fs.existsSync(targetProjectPath)) {
+      throw new Error('目标文件或文件夹已存在，请选择新的项目文件夹名称');
+    }
+    // Resolve symlinked parents too, so copying into the source cannot recurse.
+    const sourceRealPath = await fs.realpathAsync(sourceProjectPath);
+    const targetParent = await fs.realpathAsync(pathApi.dirname(targetProjectPath));
+    const relativeTarget = pathApi.relative(
+      sourceRealPath,
+      pathApi.join(targetParent, pathApi.basename(targetProjectPath)),
+    );
+    if (!relativeTarget || (!pathApi.isAbsolute(relativeTarget)
+      && relativeTarget !== '..' && !/^\.\.[/\\]/.test(relativeTarget))) {
+      throw new Error('另存为位置不能位于当前项目内部，请选择其他目录');
+    }
+
+    // The embedded Workbench has a 10s save handshake; wait for disk persistence
+    // before copying any source files, including dirty tabs and local libraries.
+    const saveResult = await this.save(sourceProjectPath, 15_000);
+    if (!saveResult.success) {
+      throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
+    }
+    if (!this.isSameProjectPath(sourceProjectPath, this.currentProjectPath)) {
+      throw new Error('当前项目已切换，请重新执行另存为');
+    }
+
+    // Non-recursive mkdir reserves a new destination without merging into an
+    // existing folder, even if another operation created it while saving.
+    await window['fsp'].mkdir(targetProjectPath);
+    try {
+      fs.copySync(sourceProjectPath, targetProjectPath);
+      const packagePath = pathApi.join(targetProjectPath, 'package.json');
+      const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+      const name = pathApi.basename(targetProjectPath);
+      delete packageJson.cloudId;
+      packageJson.name = deriveProjectPackageName(name);
+      packageJson.nickname = name;
+      packageJson.type = 'coder';
+      if (Object.prototype.hasOwnProperty.call(packageJson, 'path')) {
+        packageJson.path = targetProjectPath;
+      }
+      fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2));
+    } catch (error) {
+      try {
+        await window['fsp'].rm(targetProjectPath, { recursive: true, force: true });
+      } catch (cleanupError) {
+        console.warn('清理未完成的 Coder 另存为目录失败:', targetProjectPath, cleanupError);
+      }
+      throw error;
+    }
+
+    // Normal activation updates locks, route params, recent projects and the
+    // iframe's native-FS workspace root together. Do not configure Blockly data.
+    if (!(await this.projectOpen(targetProjectPath))) {
+      throw new Error(`项目已另存至 ${targetProjectPath}，但未能切换，请手动打开该项目`);
+    }
   }
 
   async close(options: { allowDuringChatTool?: boolean } = {}) {
