@@ -160,14 +160,6 @@ export class LoginComponent implements OnInit, OnDestroy {
     return this.configService.isCnRegion;
   }
 
-  get applicationName(): string {
-    return this.configService.getApplicationName();
-  }
-
-  get coderProduct(): boolean {
-    return this.configService.isCoderProduct();
-  }
-
   private loginText(key: string, params?: Record<string, unknown>): string {
     return this.translate.instant(`LOGIN.${key}`, params);
   }
