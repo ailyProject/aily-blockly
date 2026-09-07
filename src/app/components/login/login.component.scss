@@ -198,6 +198,15 @@
     object-fit: contain;
 }
 
+.title-application-name {
+    color: var(--aily-text-primary);
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 26px;
+    letter-spacing: -0.5px;
+    white-space: nowrap;
+}
+
 .title-chevron {
     display: block;
     width: 8px;
