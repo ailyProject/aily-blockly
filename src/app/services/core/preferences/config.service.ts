@@ -2164,9 +2164,6 @@ interface AppConfig {
     enabled?: boolean;
   };
 
-  /** 串口监视器快速发送列表 */
-  quickSendList?: Array<{ name: string, type: "signal" | "text" | "hex", data: string }>;
-
   /** 最近打开的项目列表 */
   recentlyProjects?: Array<{ name: string, path: string, nickname?: string }>;
 
@@ -2188,19 +2185,4 @@ interface AppConfig {
   /** AI聊天当前自定义智能体目标 */
   aiChatCustomAgentTarget?: string;
 
-  /** 串口监视器配置 */
-  serialMonitor?: {
-    /** 上次选择的串口 */
-    port?: string;
-    /** 上次选择的波特率 */
-    baudRate?: string;
-    /** 数据位 */
-    dataBits?: string;
-    /** 停止位 */
-    stopBits?: string;
-    /** 校验位 */
-    parity?: string;
-    /** 流控制 */
-    flowControl?: string;
-  };
 }

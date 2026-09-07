@@ -28,7 +28,6 @@
         "IMAGE_EXPORT_FAILED": "ワークスペース画像のエクスポートに失敗しました",
         "DEBUG": "デバッグ",
         "TERMINAL": "ターミナル",
-        "TOOL_SERIAL": "シリアルツール",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
         "AI": "AI",

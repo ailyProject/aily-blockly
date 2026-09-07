@@ -28,7 +28,6 @@
         "IMAGE_EXPORT_FAILED": "تعذر تصدير صورة مساحة العمل",
         "DEBUG": "تصحيح الأخطاء",
         "TERMINAL": "الطرفية",
-        "TOOL_SERIAL": "أداة المنفذ التسلسلي",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
         "AI": "الذكاء الاصطناعي",

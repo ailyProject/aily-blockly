@@ -23,7 +23,7 @@ import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component'
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Router } from '@angular/router';
 import { ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
-import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { AppItem } from '../../../configs/tool.config';
 import { AppStoreService } from '../../../tools/app-store/app-store.service';
@@ -214,7 +214,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
     private uploaderBleService: UploaderBleService,
     private ngZone: NgZone,
     private appStoreService: AppStoreService,
-    private toolI18n: ToolI18nService,
     private cmdService: CmdService,
     private blocklyService: BlocklyService,
     private uiAutomationRegistry: UiAutomationRegistryService,
@@ -225,7 +224,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.loadHeaderButtons();
-    void this.toolI18n.load('serial-monitor');
 
     this.unregisterHeaderMenuAutomation = this.uiAutomationRegistry.registerMenuProvider('header', {
       list: (options) => this.createHeaderMenuAutomationSnapshot(options).items,

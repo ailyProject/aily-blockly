@@ -16,7 +16,6 @@ import { NoticeService, ActionState, ActionService, WorkflowService, ProcessStat
 import { NzModalService } from "ng-zorro-antd/modal";
 import { CmdOutput, CmdService, LogService, AppDataResourceLockService } from '@core/platform/public-api';
 import { NpmService } from "@domain/dependencies/public-api";
-import { SerialMonitorService } from "../../../tools/serial-monitor/serial-monitor.service";
 import {
   normalizeArduinoGeneratedCode,
 } from "../components/blockly/generators/arduino/arduino";
@@ -77,7 +76,6 @@ export class _UploaderService {
     private cmdService: CmdService,
     private logService: LogService,
     private npmService: NpmService,
-    private serialMonitorService: SerialMonitorService,
     private actionService: ActionService,
     private blocklyService: BlocklyService,
     private workflowService: WorkflowService,

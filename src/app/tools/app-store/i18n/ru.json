@@ -58,7 +58,6 @@
         "DRAG_HERE": "Перетащите сюда",
         "CODE_DESC": "Просмотр сгенерированного кода",
         "LIB_MANAGER_DESC": "Управление зависимостями библиотек проекта",
-        "SERIAL_DESC": "Инструмент серийного монитора",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
         "AI_DESC": "Ассистент ИИ",

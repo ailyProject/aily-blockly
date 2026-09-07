@@ -60,7 +60,6 @@
         "DRAG_HERE": "拖拽到此处",
         "CODE_DESC": "查看生成的代码",
         "LIB_MANAGER_DESC": "管理项目库依赖",
-        "SERIAL_DESC": "串口监视器工具",
         "MQTT_DEBUGGER_DESC": "MQTT连接、订阅和发布调试工具",
         "NETWORK_DEBUGGER_DESC": "HTTP与WebSocket调试工具",
         "AI_DESC": "AI 智能助手",

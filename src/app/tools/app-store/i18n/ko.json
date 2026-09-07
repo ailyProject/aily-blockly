@@ -58,7 +58,6 @@
         "DRAG_HERE": "여기로 끌어다 놓기",
         "CODE_DESC": "생성된 코드 보기",
         "LIB_MANAGER_DESC": "프로젝트 라이브러리 종속성 관리",
-        "SERIAL_DESC": "시리얼 모니터 도구",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
         "AI_DESC": "AI 비서",

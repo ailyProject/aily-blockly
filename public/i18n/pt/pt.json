@@ -28,7 +28,6 @@
         "IMAGE_EXPORT_FAILED": "Falha ao exportar a imagem da área de trabalho",
         "DEBUG": "Depurar",
         "TERMINAL": "Terminal",
-        "TOOL_SERIAL": "Ferramenta serial",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
         "AI": "IA",

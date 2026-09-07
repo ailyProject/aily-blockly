@@ -29,7 +29,6 @@
         "IMAGE_EXPORT_FAILED": "Failed to export workspace image",
         "DEBUG": "Debug",
         "TERMINAL": "Terminal",
-        "TOOL_SERIAL": "Serial Tool",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
         "AI": "AI",

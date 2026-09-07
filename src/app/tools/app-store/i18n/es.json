@@ -58,7 +58,6 @@
         "DRAG_HERE": "Arrastre aquí",
         "CODE_DESC": "Ver código generado",
         "LIB_MANAGER_DESC": "Gestionar dependencias de biblioteca de proyecto",
-        "SERIAL_DESC": "Herramienta de monitor serial",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
         "AI_DESC": "Asistente de IA",

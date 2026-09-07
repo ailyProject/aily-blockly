@@ -2,7 +2,6 @@ import { HeaderComponent } from '../main-window/components/header/header.compone
 import { GuideComponent } from '../pages/guide/guide.component';
 import { ConfigService } from '@core/preferences/public-api';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
-import { SerialMonitorService } from '../tools/serial-monitor/serial-monitor.service';
 import { SettingsComponent } from '../windows/settings/settings.component';
 
 function createConfig(product: 'blockly' | 'coder'): ConfigService {
@@ -101,15 +100,4 @@ describe('application product branding', () => {
     expect(guide.loadSponsors).not.toHaveBeenCalled();
   });
 
-  it('brands new serial examples without replacing saved user commands', () => {
-    const serial = Object.create(SerialMonitorService.prototype) as any;
-    serial.configService = createConfig('coder');
-    serial.loadQuickSendList();
-    expect(serial.quickSendList.find(item => item.type === 'text').data).toBe('This is aily coder');
-
-    const savedCommands = [{ name: 'My command', type: 'text', data: 'This is aily blockly' }];
-    serial.configService.data.quickSendList = savedCommands;
-    serial.loadQuickSendList();
-    expect(serial.quickSendList).toBe(savedCommands);
-  });
 });

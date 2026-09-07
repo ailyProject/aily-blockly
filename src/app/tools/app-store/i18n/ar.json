@@ -58,7 +58,6 @@
         "DRAG_HERE": "اسحب إلى هنا",
         "CODE_DESC": "عرض الكود المولد",
         "LIB_MANAGER_DESC": "إدارة تبعيات مكتبة المشروع",
-        "SERIAL_DESC": "أداة مراقبة المنفذ التسلسلي",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
         "AI_DESC": "مساعد الذكاء الاصطناعي",

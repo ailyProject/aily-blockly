@@ -28,7 +28,6 @@
         "IMAGE_EXPORT_FAILED": "匯出工作區圖片失敗",
         "DEBUG": "偵錯",
         "TERMINAL": "終端",
-        "TOOL_SERIAL": "串口工具",
         "MQTT_DEBUGGER": "MQTT調試器",
         "NETWORK_DEBUGGER": "網絡調試器",
         "AI": "AI",

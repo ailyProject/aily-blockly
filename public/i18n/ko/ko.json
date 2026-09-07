@@ -28,7 +28,6 @@
         "IMAGE_EXPORT_FAILED": "작업 공간 이미지 내보내기에 실패했습니다",
         "DEBUG": "디버그",
         "TERMINAL": "터미널",
-        "TOOL_SERIAL": "시리얼 도구",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
         "AI": "AI",

@@ -81,10 +81,6 @@ export const routes: Routes = [
         loadComponent: () => import('./windows/about/about.component').then(m => m.AboutComponent)
     },
     {
-        path: "serial-monitor",
-        loadComponent: () => import('./tools/serial-monitor/serial-monitor.component').then(m => m.SerialMonitorComponent)
-    },
-    {
         path: "mqtt-debugger",
         redirectTo: "child-tool/mqtt-debugger",
         pathMatch: "full"

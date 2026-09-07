@@ -58,7 +58,6 @@
         "DRAG_HERE": "Hierher ziehen",
         "CODE_DESC": "Generierten Code anzeigen",
         "LIB_MANAGER_DESC": "Projektbibliothek-Abhängigkeiten verwalten",
-        "SERIAL_DESC": "Serieller Monitor",
         "MQTT_DEBUGGER_DESC": "MQTT publish/subscribe debugger",
         "NETWORK_DEBUGGER_DESC": "HTTP and WebSocket network debugger",
         "AI_DESC": "KI-Assistent",

@@ -126,7 +126,7 @@ export class UploaderService {
     };
   }
 
-  private async sendSerialMonitorUploadSignal(
+  private async sendSerialResourceUploadSignal(
     signal: string,
     port: any,
     portType = this.serialService.currentPortInfo?.type,
@@ -138,7 +138,7 @@ export class UploaderService {
       return;
     }
 
-    // 让订阅方（serial-monitor / ffs-manager 等）把"释放串口"的
+    // 让订阅方（AI 串口调试器、文件系统管理器等）把"释放串口"的
     // Promise 推进 waitFor，这里等它们全部完成后再开始处理后续动作。
     const waitFor: Promise<void>[] = [];
     const payload: Record<string, unknown> = {
@@ -165,7 +165,7 @@ export class UploaderService {
     // node-serialport 的 close 回调返回后，Windows 还要短暂窗口才会真正放开
     // 独占句柄；这里给外部 esptool.exe 等 child_process 一点缓冲，避免
     // "Could not open COMx, the port is busy" 报错。即使本次没有订阅方释放
-    // 串口（waitFor=0），上一次 ffs-manager / serial-monitor 的关闭也可能
+    // 串口（waitFor=0），上一次其他串口工具的关闭也可能
     // 刚发生不久，仍然需要这个缓冲。
     if (signal === 'serial-monitor:disconnect') {
       await new Promise(resolve => setTimeout(resolve, 300));
@@ -187,7 +187,7 @@ export class UploaderService {
     let uploadOutcome = 'failed';
     let resourceRecovery: UploadRecoveryPolicy | undefined;
     try {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:disconnect',
         uploadPort,
         uploadPortType,
@@ -244,7 +244,7 @@ export class UploaderService {
       }
       throw error;
     } finally {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:connect',
         uploadPort,
         uploadPortType,
@@ -288,7 +288,7 @@ export class UploaderService {
     const operationId = this.createUploadOperationId('flash-softdevice', uploadPort);
     let uploadOutcome = 'failed';
     try {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:disconnect',
         uploadPort,
         uploadPortType,
@@ -311,7 +311,7 @@ export class UploaderService {
       }
       return { success: false, message: error.message || '烧录失败' };
     } finally {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:connect',
         uploadPort,
         uploadPortType,

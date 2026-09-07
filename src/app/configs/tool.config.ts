@@ -232,16 +232,6 @@ export const APP_LIST: AppItem[] = [
     enabled: true
   },
   {
-    id: 'serial-monitor',
-    name: 'MENU.TOOL_SERIAL',
-    description: 'APP_STORE.SERIAL_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'serial-monitor' },
-    icon: 'fa-light fa-monitor-waveform',
-    enabled: true,
-    lock: true
-  },
-  {
     id: 'cloud-space',
     name: 'MENU.USER_SPACE',
     description: 'APP_STORE.CLOUD_SPACE_DESC',
@@ -266,7 +256,6 @@ export const APP_LIST: AppItem[] = [
 // 子应用（含 aily-simulator）由 SubappManagerService 从远端 subapp-index.json 注入，不在此硬编码。
 export const AVAILABLE_APP_IDS: string[] = [
   'code-viewer',
-  'serial-monitor',
   'cloud-space',
   'user-center',
 ];
@@ -274,7 +263,6 @@ export const AVAILABLE_APP_IDS: string[] = [
 // 软件初始状态 toolbar 显示的 App id。用户调整后会保存到本地配置。
 export const DEFAULT_TOOLBAR_APP_IDS: string[] = [
   'code-viewer',
-  'serial-monitor',
   'cloud-space',
   'user-center'
 ];

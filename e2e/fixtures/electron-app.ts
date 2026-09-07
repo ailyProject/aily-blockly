@@ -261,7 +261,7 @@ async function installOnboardingAutoDismiss(win: Page): Promise<void> {
 
 /**
  * 通过 hash 路由导航当前窗口（应用使用 withHashLocation()）。
- * 例：navigate(win, '/serial-monitor') -> location.hash = '#/serial-monitor'
+ * 例：navigate(win, '/code-viewer') -> location.hash = '#/code-viewer'
  */
 export async function navigate(win: Page, route: string): Promise<void> {
   const hash = route.startsWith('#') ? route : `#${route}`;

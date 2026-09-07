@@ -28,7 +28,6 @@
         "IMAGE_EXPORT_FAILED": "Не удалось экспортировать изображение рабочей области",
         "DEBUG": "Отладка",
         "TERMINAL": "Терминал",
-        "TOOL_SERIAL": "Инструмент последовательного порта",
         "MQTT_DEBUGGER": "MQTT Debugger",
         "NETWORK_DEBUGGER": "Network Debugger",
         "AI": "ИИ",

@@ -8,7 +8,6 @@ import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService, UpdateService, OnboardingService } from '@core/app-shell/public-api';
-import { SerialMonitorComponent } from '../tools/serial-monitor/serial-monitor.component';
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '@domain/project/public-api';
@@ -65,7 +64,6 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     NzTabsModule,
     TerminalComponent,
     LogComponent,
-    SerialMonitorComponent,
     ChildToolHostComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
