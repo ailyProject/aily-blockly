@@ -30,6 +30,8 @@ const STARTUP_TIMEOUTS = Object.freeze({
   'ffs-manager-child': 10000,
 });
 const DEFAULT_TOOLBAR_IDS = new Set(['aily-chat']);
+const BUNDLED_CODER_ID = 'aily-coder-editor';
+const BUNDLED_CODER_PACKAGE = '@aily-project/subapp-aily-coder-editor';
 const mutationQueues = new Map();
 
 function buildSubappIndexUrl(resourceUrl) {
@@ -881,6 +883,81 @@ function ensureInstallProject(rootDir) {
   }
 }
 
+function readBundledCoderFallback(options = {}) {
+  const env = options.env || process.env;
+  if ((options.buildProduct || env.AILY_BUILD_PRODUCT) !== 'coder') return null;
+  const childPath = options.childPath || env.AILY_CHILD_PATH;
+  if (!childPath) return null;
+  const manifestPath = path.join(childPath, `${BUNDLED_CODER_ID}.json`);
+  const tarballPath = path.join(childPath, `${BUNDLED_CODER_ID}.tgz`);
+  if (!fs.existsSync(manifestPath) || !fs.existsSync(tarballPath)) return null;
+  const manifest = readJson(manifestPath);
+  if (manifest.schemaVersion !== 1 || manifest.entry?.package !== BUNDLED_CODER_PACKAGE) {
+    throw new Error('Invalid bundled Aily Coder Editor manifest');
+  }
+  const entry = validateIndex({ [BUNDLED_CODER_ID]: manifest.entry })[BUNDLED_CODER_ID];
+  parseIntegrity(manifest.integrity);
+  return { entry, tarballPath, integrity: manifest.integrity };
+}
+
+async function installBundledCoderPackage(rootDir, bundle, npmRunner, options) {
+  const { entry, tarballPath, integrity } = bundle;
+  verifyFileIntegrity(tarballPath, integrity);
+  const stagingRoot = fs.mkdtempSync(path.join(rootDir, '.subapp-bundled-'));
+  const tracker = options.progressTracker;
+  try {
+    // 隔离 npm reify，避免离线安装时重新解析或裁剪全局目录中的其它子应用。
+    ensureInstallProject(stagingRoot);
+    tracker?.setDownload(100);
+    await npmRunner([
+      'install', '--prefix', stagingRoot, '--offline', '--ignore-scripts',
+      '--save-exact', '--omit=dev', '--no-audit', '--no-fund', tarballPath,
+    ], withProgressOutput(options, tracker));
+
+    const installed = readInstalledState(stagingRoot, entry);
+    const stagedPath = packagePathFor(stagingRoot, entry.package);
+    const packageJson = readJson(path.join(stagedPath, 'package.json'));
+    if (
+      !installed.installed || installed.installError || installed.installedVersion !== entry.version
+      || packageJson.name !== entry.package || packageJson.ailySubapp?.id !== entry.id
+      || !fs.existsSync(path.join(stagedPath, 'runtime', 'index.js'))
+      || Object.keys({
+        ...packageJson.dependencies, ...packageJson.optionalDependencies, ...packageJson.peerDependencies,
+      }).length > 0
+    ) {
+      throw new Error('Bundled Aily Coder Editor is not a complete self-contained package');
+    }
+
+    const targetPath = packagePathFor(rootDir, entry.package);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    await renameWithBusyRetry(stagedPath, targetPath, options);
+
+    // 保留其它子应用记录，使用版本号，不能把临时安装路径写入全局依赖。
+    const manifestPath = path.join(rootDir, 'package.json');
+    const manifest = readJson(manifestPath);
+    manifest.dependencies = { ...manifest.dependencies, [entry.package]: entry.version };
+    writeJsonAtomic(manifestPath, manifest);
+    const lockPath = path.join(rootDir, 'package-lock.json');
+    if (fs.existsSync(lockPath)) {
+      const lock = readJson(lockPath);
+      if (lock.packages) {
+        lock.packages[''] = {
+          ...lock.packages[''],
+          dependencies: { ...lock.packages['']?.dependencies, [entry.package]: entry.version },
+        };
+        lock.packages[`node_modules/${entry.package}`] = { version: entry.version, integrity };
+      }
+      if (lock.dependencies) {
+        lock.dependencies[entry.package] = { version: entry.version, integrity };
+      }
+      writeJsonAtomic(lockPath, lock);
+    }
+    tracker?.setExtract(100);
+  } finally {
+    fs.rmSync(stagingRoot, { recursive: true, force: true });
+  }
+}
+
 function npmExecutable(env = process.env, platform = process.platform) {
   const childPath = env.AILY_CHILD_PATH || '';
   const bundled = platform === 'win32'
@@ -1528,6 +1605,9 @@ function withProgressOutput(options = {}, tracker) {
 }
 
 async function installPackage(rootDir, entry, npmRunner, options = {}) {
+  if (options.bundledCoderFallback) {
+    return installBundledCoderPackage(rootDir, options.bundledCoderFallback, npmRunner, options);
+  }
   const tracker = options.progressTracker;
   const npmOptions = withProgressOutput(options, tracker);
   const retryOptions = {
@@ -2286,6 +2366,29 @@ function createSubappManager(options = {}) {
   }
 
   async function loadIndex(strategy = 'network-first') {
+    const bundle = readBundledCoderFallback(options);
+    if (!bundle) return loadConfiguredIndex(strategy);
+    let loaded;
+    try {
+      // 首次启动不必等待网络，正常刷新仍会获取远端目录及更新信息。
+      loaded = await loadConfiguredIndex(strategy === 'cache-first' ? 'cache-only' : strategy);
+    } catch (error) {
+      if (!['cache-first', 'cache-only', 'network-first'].includes(strategy)) throw error;
+      loaded = {
+        index: {},
+        meta: {
+          indexUrl: resolveIndexUrl(), source: 'cache', fetchedAt: new Date().toISOString(),
+          warning: strategy === 'network-first' ? error.message : null,
+        },
+      };
+    }
+    return {
+      ...loaded,
+      index: { [BUNDLED_CODER_ID]: bundle.entry, ...loaded.index },
+    };
+  }
+
+  async function loadConfiguredIndex(strategy = 'network-first') {
     if (strategy !== 'network-first' && strategy !== 'cache-first' && strategy !== 'cache-only') {
       throw new Error(`Unsupported subapp catalog load strategy: ${strategy}`);
     }
@@ -2588,7 +2691,21 @@ function createSubappManager(options = {}) {
             await replaceInstalledPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
           } else {
             progressTracker.start();
-            await installPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+            const bundle = id === BUNDLED_CODER_ID ? readBundledCoderFallback(options) : null;
+            if (bundle) {
+              if (!readInstalledState(rootDir, bundle.entry).installed) {
+                const packagePath = packagePathFor(rootDir, bundle.entry.package);
+                if (fs.lstatSync(packagePath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+                  throw new Error('Cannot replace a development-linked Aily Coder Editor with the bundled package');
+                }
+                await replaceInstalledPackage(rootDir, bundle.entry, options.runNpm || runNpm, {
+                  ...mutationOptions,
+                  bundledCoderFallback: bundle,
+                });
+              }
+            } else {
+              await installPackage(rootDir, entry, options.runNpm || runNpm, mutationOptions);
+            }
             progressTracker.complete();
           }
         }

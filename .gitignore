@@ -66,6 +66,8 @@ child/aily-builder*
 /child/probe-rs
 /child/tools/*/node_modules/*
 /child/xpm
+/child/aily-coder-editor.tgz
+/child/aily-coder-editor.json
 
 # Playwright E2E
 /renderer

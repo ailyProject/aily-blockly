@@ -72,9 +72,15 @@ function createBuilderConfig(plan, baseConfig) {
       ...(baseConfig.directories || {}),
       output: product.outputDirectory,
     },
-    extraResources: (baseConfig.extraResources || []).filter(
-      (resource) => resource?.to !== 'app-update.yml',
-    ),
+    extraResources: [
+      ...(baseConfig.extraResources || []).filter(
+        (resource) => resource?.to !== 'app-update.yml',
+      ),
+      ...(plan.buildProduct === 'coder' ? [
+        { from: 'child/aily-coder-editor.tgz', to: 'child/aily-coder-editor.tgz' },
+        { from: 'child/aily-coder-editor.json', to: 'child/aily-coder-editor.json' },
+      ] : []),
+    ],
     publish: [{
       provider: 'generic',
       url: plan.updateBaseUrl,

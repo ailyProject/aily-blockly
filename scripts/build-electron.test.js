@@ -62,6 +62,17 @@ test('uses the dedicated Coder icons in packaged builds', () => {
   assert.equal(packagedIcon.from, 'public/icon-aci.ico');
 });
 
+test('ships the offline editor archive and catalog only with the Coder product', () => {
+  const baseConfig = require('../package.json').build;
+  const coder = require('../build/electron-builder.coder');
+  const blockly = createBuilderConfig(createBuildPlan([], config), baseConfig);
+  for (const name of ['aily-coder-editor.tgz', 'aily-coder-editor.json']) {
+    assert.ok(coder.extraResources.some(resource =>
+      resource.from === `child/${name}` && resource.to === `child/${name}`));
+    assert.ok(!blockly.extraResources.some(resource => resource.to === `child/${name}`));
+  }
+});
+
 test('maps an updater base URL without a Blockly suffix into a Coder child path', () => {
   assert.equal(
     resolveProductUpdaterUrl('https://downloads.example.com/releases/', 'coder'),
