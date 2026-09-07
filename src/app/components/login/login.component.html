@@ -11,7 +11,7 @@
         <div class="login-stage">
             <div class="brand-panel" aria-hidden="true">
                 <div class="brand-glow"></div>
-                <img class="brand-icon" src="icon-512.ico" alt="" draggable="false" />
+                <img class="brand-icon" [src]="coderProduct ? 'icon-512-coder.ico' : 'icon-512.ico'" alt="" draggable="false" />
             </div>
 
             <section class="login-content" [class.standard-login]="!loginBindMode && !emailBindMode"
@@ -110,7 +110,11 @@
                         <span>{{ welcomeBefore }}</span>
                         }
                         <span class="title-brand">
-                            <img class="title-logo" src="imgs/logo.webp" alt="Aily Blockly" draggable="false" />
+                            @if (coderProduct) {
+                            <span>{{ applicationName }}</span>
+                            } @else {
+                            <img class="title-logo" src="imgs/logo.webp" [alt]="applicationName" draggable="false" />
+                            }
                             <img class="title-chevron" src="imgs/chevron-right.svg" alt="" aria-hidden="true"
                                 draggable="false" />
                         </span>
