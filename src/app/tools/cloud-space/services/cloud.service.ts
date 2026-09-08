@@ -49,7 +49,7 @@ export class CloudService {
     if (keywords) params = params.set('keywords', keywords);
     if (projectId) params = params.set('id', projectId);
     if (boardName) params = params.set('board', boardName);
-    if (this.configService.isCoderProduct()) params = params.set('category', 'coder');
+    params = params.set('category', this.configService.isCoderProduct() ? 'coder' : 'blockly');
 
     return this.http.get<any>(API.cloudPublicProjects, { params })
       .pipe(
@@ -66,7 +66,7 @@ export class CloudService {
     pid?: string;
     projectData?: any; // 新增的项目数据对象
     archive?: string;
-    category?: 'coder';
+    category?: 'blockly' | 'coder';
   }): Observable<any> {
     const formData = new FormData();
     if (params.category) formData.append('category', params.category);
@@ -114,7 +114,7 @@ export class CloudService {
       page: skip.toString(),
       perPage: limit.toString()
     };
-    if (this.configService.isCoderProduct()) params['category'] = 'coder';
+    params['category'] = this.configService.isCoderProduct() ? 'coder' : 'blockly';
 
     return this.http.get<any>(this.cloudProjectsUrl, { params })
       .pipe(
@@ -240,7 +240,7 @@ export class CloudService {
     if (board?.trim()) {
       params['board'] = board.trim();
     }
-    if (this.configService.isCoderProduct()) params['category'] = 'coder';
+    params['category'] = this.configService.isCoderProduct() ? 'coder' : 'blockly';
 
     return this.http.get<any>(`${this.cloudProjectsUrl}/templates`, {
       params

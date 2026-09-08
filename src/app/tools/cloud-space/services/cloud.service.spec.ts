@@ -30,14 +30,17 @@ describe('CloudService Coder category isolation', () => {
     expect(http.get.calls.mostRecent().args[1].params).toEqual({ page: '1', perPage: '20', board: 'esp32', category: 'coder' });
   });
 
-  it('keeps the original Blockly request parameters and does not send an empty category', () => {
+  it('explicitly filters all three Blockly lists without changing the other parameters', () => {
     config.isCoderProduct.and.returnValue(false);
     service.getPublicProjects(1, 10, '');
-    expect(http.get.calls.mostRecent().args[1].params.keys()).toEqual(['page', 'perPage']);
+    const params = http.get.calls.mostRecent().args[1].params;
+    expect(Object.fromEntries(params.keys().map((key: string) => [key, params.get(key)]))).toEqual({
+      page: '1', perPage: '10', category: 'blockly',
+    });
     service.getProjects(1, 100);
-    expect(http.get.calls.mostRecent().args[1].params).toEqual({ page: '1', perPage: '100' });
+    expect(http.get.calls.mostRecent().args[1].params).toEqual({ page: '1', perPage: '100', category: 'blockly' });
     service.getMyTemplates(1, 20, 'esp32');
-    expect(http.get.calls.mostRecent().args[1].params).toEqual({ page: '1', perPage: '20', board: 'esp32' });
+    expect(http.get.calls.mostRecent().args[1].params).toEqual({ page: '1', perPage: '20', board: 'esp32', category: 'blockly' });
   });
 
   it('retains the unauthenticated template short circuit', () => {
@@ -60,9 +63,9 @@ describe('CloudService Coder category isolation', () => {
   });
 
   it('does not relabel a Blockly upload based on the running product', () => {
-    service.syncProject({ projectData: { name: 'blockly' } });
+    service.syncProject({ projectData: { name: 'blockly' }, category: 'blockly' });
     const body: FormData = http.post.calls.mostRecent().args[1];
-    expect(body.has('category')).toBeFalse();
+    expect(body.get('category')).toBe('blockly');
     expect(JSON.parse(body.get('projectData') as string)).toEqual({ name: 'blockly' });
   });
 

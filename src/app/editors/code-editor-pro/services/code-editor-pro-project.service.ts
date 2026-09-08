@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { ActionService } from '@core/app-shell/public-api';
 import { ProjectService } from '@domain/project/public-api';
+import { CoderBuildInfoService } from '@domain/build/public-api';
 
 export interface CodeEditorProPersistenceBridge {
   saveAll(): Promise<{ ok: boolean; message?: string }>;
@@ -17,6 +18,7 @@ export class CodeEditorProProjectService {
   constructor(
     private actionService: ActionService,
     private projectService: ProjectService,
+    private coderBuildInfo: CoderBuildInfoService,
   ) {}
 
   init() {
@@ -39,7 +41,7 @@ export class CodeEditorProProjectService {
       'project-save',
       async (action) => {
         const path = action.payload?.path || this.projectService.currentProjectPath;
-        await this.saveAll();
+        await this.saveAll(path);
         if (path) {
           await this.projectService.copyPackageJsonToTemp(path);
         }
@@ -59,13 +61,16 @@ export class CodeEditorProProjectService {
     }
   }
 
-  private async saveAll(): Promise<{ ok: true }> {
+  private async saveAll(projectPath = this.projectService.currentProjectPath): Promise<{ ok: true }> {
     if (!this.persistenceBridge) {
       throw new Error('Aily Coder 保存通道尚未就绪');
     }
     const result = await this.persistenceBridge.saveAll();
     if (!result.ok) {
       throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
+    }
+    if (projectPath && this.projectService.isAilyCodeProject(projectPath)) {
+      await this.coderBuildInfo.updateCodeHash(projectPath);
     }
     return { ok: true };
   }

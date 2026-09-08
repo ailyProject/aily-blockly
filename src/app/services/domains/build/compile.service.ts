@@ -13,6 +13,7 @@ import {
 import { ProjectService } from '@domain/project/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { CompileValidationService } from './compile-validation.service';
+import { CoderBuildInfoService } from './coder-build-info.service';
 import {
   BUILD_APPLICATION_PORT,
   type BuildActionState,
@@ -70,6 +71,7 @@ export class CompileService {
     private compileValidationService: CompileValidationService,
     private logService: LogService,
     private translate: TranslateService,
+    private coderBuildInfo: CoderBuildInfoService,
   ) { }
 
   cancel(): void {
@@ -121,11 +123,17 @@ export class CompileService {
 
     this.cancelled = false;
     const started = Date.now();
+    let compiledHash: string | undefined;
+    let buildStatus: 'success' | 'failed' = 'failed';
+    let finishReason: string | undefined;
 
     try {
+      if (isAilyCodeProject) {
+        compiledHash = await this.coderBuildInfo.updateCodeHash(root);
+      }
       const boardModule = await this.resolveBoardModule(root);
       if (!boardModule) {
-        this.application.finishBuild(false, 'Missing board module');
+        finishReason = 'Missing board module';
         const text = 'Cannot resolve board module from the active project.';
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
         return { success: false, result: { state: 'error', text } };
@@ -140,7 +148,7 @@ export class CompileService {
         : this.electronService.pathJoin(root, '.temp');
 
       if (!ailyBuilderPath || !ailyChildPath) {
-        this.application.finishBuild(false, 'Missing builder paths');
+        finishReason = 'Missing builder paths';
         const text = 'aily-builder path is unavailable.';
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
         return { success: false, result: { state: 'error', text } };
@@ -183,7 +191,7 @@ export class CompileService {
         this.publishBuildLog(root, line.line, line.type);
       });
       if (this.cancelled) {
-        this.application.finishBuild(false, 'Cancelled');
+        finishReason = 'Cancelled';
         const sec = ((Date.now() - started) / 1000).toFixed(2);
         const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
         this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
@@ -192,7 +200,7 @@ export class CompileService {
       }
       if (pre.exitCode !== 0) {
         const detail = pre.combined || pre.stderr + pre.stdout;
-        this.application.finishBuild(false, 'Preprocess failed');
+        finishReason = 'Preprocess failed';
         this.handleFailNotice(
           root,
           this.t('PRECOMPILE_FAILED_TITLE'),
@@ -236,7 +244,7 @@ export class CompileService {
       const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
 
       if (this.cancelled) {
-        this.application.finishBuild(false, 'Cancelled');
+        finishReason = 'Cancelled';
         const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
         this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
         this.updateCancelledNotice(text);
@@ -245,7 +253,7 @@ export class CompileService {
 
       if (cmp.exitCode !== 0) {
         const detail = cmp.combined || cmp.stderr + cmp.stdout;
-        this.application.finishBuild(false, 'Compile failed');
+        finishReason = 'Compile failed';
         const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
         return {
@@ -254,8 +262,8 @@ export class CompileService {
         };
       }
 
+      buildStatus = 'success';
       this.compileValidationService.triggerAfterSuccessfulCompile();
-      this.application.finishBuild(true);
       const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
       this.application.updateNotice({
         title: this.t('COMPLETE_TITLE'),
@@ -268,10 +276,34 @@ export class CompileService {
       return { success: true, result: { state: 'done', text: completeText } };
     } catch (e: any) {
       const msg = e?.message || String(e);
-      this.application.finishBuild(false, msg);
+      buildStatus = 'failed';
+      finishReason = msg;
       this.message.error(msg);
       this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, msg);
       return { success: false, result: { state: 'error', text: msg, fullStdErr: msg } };
+    } finally {
+      let metadataError: string | undefined;
+      if (compiledHash) {
+        try {
+          await this.coderBuildInfo.saveBuildInfo(
+            root,
+            compiledHash,
+            this.cancelled ? 'cancelled' : buildStatus,
+            Number(((Date.now() - started) / 1000).toFixed(2)),
+          );
+        } catch (error: any) {
+          metadataError = error?.message || 'Failed to save Coder build metadata.';
+          buildStatus = 'failed';
+          finishReason = metadataError;
+        }
+      }
+      // Keep the build lock until metadata is persisted; a second build must
+      // not reset cancellation state or overwrite this build's result midway.
+      this.application.finishBuild(buildStatus === 'success', finishReason);
+      if (metadataError) {
+        this.handleFailNotice(root, this.t('FAILED_TITLE'), metadataError, metadataError);
+        return { success: false, result: { state: 'error', text: metadataError } };
+      }
     }
   }
 
