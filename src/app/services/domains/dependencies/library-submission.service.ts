@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { defer, Observable, throwError } from 'rxjs';
-import { catchError, finalize, switchMap } from 'rxjs/operators';
+import { catchError, finalize, map, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
 import {
   BlocklyLibraryPackageRef,
@@ -103,6 +103,7 @@ export class LibrarySubmissionService {
 
   submitJson(payload: LibrarySubmissionPayload): Observable<LibrarySubmissionResponse> {
     return this.http.post<LibrarySubmissionResponse>(API.librarySubmissions, payload).pipe(
+      map(response => this.validateResponse(response)),
       catchError(error => this.handleError(error)),
     );
   }
@@ -115,16 +116,24 @@ export class LibrarySubmissionService {
     formData.append('src_archive', file, 'src.7z');
 
     return this.http.post<LibrarySubmissionResponse>(API.librarySubmissions, formData).pipe(
+      map(response => this.validateResponse(response)),
       catchError(error => this.handleError(error)),
     );
   }
 
+  private validateResponse(response: LibrarySubmissionResponse): LibrarySubmissionResponse {
+    if (response?.status !== 200 || !response.data) {
+      throw response;
+    }
+    return response;
+  }
+
   private handleError(error: HttpErrorResponse | unknown): Observable<never> {
     const source = this.getApiErrorPayload(error);
-    const details = extractApiErrorDetails(source, '库提交失败');
+    const details = extractApiErrorDetails(error);
     const normalized: LibrarySubmissionApiError = {
       ...details,
-      status: error instanceof HttpErrorResponse ? error.status : undefined,
+      status: error && typeof error === 'object' && typeof error['status'] === 'number' ? error['status'] : undefined,
       raw: error,
       submission: this.getSubmissionFromErrorPayload(source),
       sameContent: this.getSameContentFromErrorPayload(source),
@@ -168,23 +177,26 @@ export class LibrarySubmissionService {
     }
 
     const tempDir = this.createTempArchiveDirectory();
-    const tempArchivePath = window['path'].join(tempDir, 'src.7z');
-    const command = `${this.platformService.za7} a -t7z -mx=9 "${tempArchivePath}" src`;
-    const result = await this.cmdService.runAsync(command, packagePath, false);
-    if (result.type === 'error' || result.code !== 0) {
-      this.cleanupTempDirectory(tempDir);
-      throw new Error(this.formatArchiveError('src.7z 打包失败', command, result));
-    }
+    try {
+      const tempArchivePath = window['path'].join(tempDir, 'src.7z');
+      const command = `${this.platformService.za7} a -t7z -mx=9 "${tempArchivePath}" src`;
+      const result = await this.cmdService.runAsync(command, packagePath, false);
+      if (result.type === 'error' || result.code !== 0) {
+        throw new Error(this.formatArchiveError('src.7z 打包失败', command, result));
+      }
 
-    if (!this.isNonEmptyFile(tempArchivePath)) {
-      this.cleanupTempDirectory(tempDir);
-      throw new Error(this.formatArchiveError(`src.7z 生成失败: ${tempArchivePath}`, command, result));
-    }
+      if (!this.isNonEmptyFile(tempArchivePath)) {
+        throw new Error(this.formatArchiveError(`src.7z 生成失败: ${tempArchivePath}`, command, result));
+      }
 
-    return {
-      path: tempArchivePath,
-      tempDir,
-    };
+      return {
+        path: tempArchivePath,
+        tempDir,
+      };
+    } catch (error) {
+      this.cleanupTempDirectory(tempDir);
+      throw error;
+    }
   }
 
   private isNonEmptyDirectory(path: string): boolean {
@@ -251,10 +263,7 @@ export class LibrarySubmissionService {
   }
 
   private getApiErrorPayload(error: HttpErrorResponse | unknown): unknown {
-    if (!(error instanceof HttpErrorResponse)) {
-      return error;
-    }
-    const body = error.error;
+    const body = error instanceof HttpErrorResponse ? error.error : error;
     if (body && typeof body === 'object' && !Array.isArray(body) && body['detail']) {
       return body['detail'];
     }

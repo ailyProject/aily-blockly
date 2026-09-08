@@ -1058,6 +1058,12 @@
         "LOCK_ACQUIRE_FAILED": "プロジェクトロックを取得できませんでした。再試行してください。"
     },
     "LIBRARY_PUBLISH": {
+        "SUBMIT_FAILED": "公開に失敗しました：{{error}}",
+        "NETWORK_ERROR": "ネットワーク接続に失敗しました。接続とユーザーセンターの提出状況を確認してから再試行してください。",
+        "SERVICE_ERROR": "サービスは一時的に利用できません。後ほどユーザーセンターで提出状況を確認してください。",
+        "GITHUB_AUTH_TIMEOUT": "GitHub 認証がタイムアウトしました。もう一度公開操作を行い、認証を完了してください。",
+        "LOCAL_SAVE_FAILED": "提出は受理されましたが、ローカル情報の保存に失敗しました：{{error}}。ローカルファイルを確認してください。再提出は不要です。",
+        "PACKAGE_NAME_UNAVAILABLE": "ライブラリ名 {{name}} は別のユーザーが使用しています。名前を変更してから公開してください。",
         "RELOAD_TITLE": "現在のプロジェクトを再読み込み",
         "RELOAD_RENAMED": "ローカルライブラリは {{previousName}} から {{nextName}} に名前変更されました。",
         "RELOAD_UPDATED": "ローカルライブラリ情報が更新されました。",

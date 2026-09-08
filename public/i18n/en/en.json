@@ -1204,6 +1204,12 @@
         "CANCEL": "Cancel"
     },
     "LIBRARY_PUBLISH": {
+        "SUBMIT_FAILED": "Publishing failed: {{error}}",
+        "NETWORK_ERROR": "Network connection failed. Check your connection and the submission status in User Center before retrying.",
+        "SERVICE_ERROR": "The service is temporarily unavailable. Check the submission status in User Center later.",
+        "GITHUB_AUTH_TIMEOUT": "GitHub authorization timed out. Publish again and complete authorization.",
+        "LOCAL_SAVE_FAILED": "The submission was accepted, but local metadata could not be saved: {{error}}. Check the local files; you do not need to publish again.",
+        "PACKAGE_NAME_UNAVAILABLE": "The library name {{name}} is already used by another user. Change the name before publishing.",
         "RELOAD_TITLE": "Reload current project",
         "RELOAD_RENAMED": "The local library was renamed from {{previousName}} to {{nextName}}.",
         "RELOAD_UPDATED": "The local library information has been updated.",
