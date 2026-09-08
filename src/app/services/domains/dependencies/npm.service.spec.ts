@@ -1,4 +1,70 @@
 import { NpmService } from './npm.service';
+import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
+
+describe('NpmService Coder dependency sources', () => {
+  function createService(coder = true, alreadyInstalled = false) {
+    const service = Object.create(NpmService.prototype) as any;
+    service.installedOk = jasmine.createSpy('installedOk').and.returnValues(
+      Promise.resolve(alreadyInstalled), Promise.resolve(true),
+    );
+    service.isAilyCodeProjectRoot = jasmine.createSpy('isAilyCodeProjectRoot').and.returnValue(coder);
+    service.cmdService = { runAsync: jasmine.createSpy('runAsync').and.resolveTo({ code: 0 }) };
+    service.configService = { withProjectNpmRegistry: (command: string) => command };
+    service.translate = { instant: (key: string) => key };
+    service.application = {
+      materializeCoderProjectLibraries: jasmine.createSpy('materializeCoderProjectLibraries').and.resolveTo(),
+      updateNotice: jasmine.createSpy('updateNotice'),
+    };
+    // Keep notification ordering deterministic without leaving timers after the test.
+    spyOn(window, 'setTimeout').and.callFake(((callback: () => void) => {
+      callback();
+      return 0;
+    }) as any);
+    return service;
+  }
+
+  it('waits for template source extraction after npm before reporting success', fakeAsync(() => {
+    const service = createService();
+    let finishSources!: () => void;
+    service.application.materializeCoderProjectLibraries.and.returnValue(new Promise<void>(resolve => { finishSources = resolve; }));
+    let ready: boolean | undefined;
+    service.ensureProjectDependenciesInstalled('/tmp/coder-template').then((value: boolean) => { ready = value; });
+    flushMicrotasks();
+    expect(service.cmdService.runAsync).toHaveBeenCalledBefore(service.application.materializeCoderProjectLibraries);
+    expect(service.application.materializeCoderProjectLibraries).toHaveBeenCalledOnceWith('/tmp/coder-template');
+    expect(ready).toBeUndefined();
+    expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
+    finishSources();
+    flushMicrotasks();
+    expect(ready).toBeTrue();
+    expect(service.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
+  }));
+
+  it('repairs npm-only Coder projects without rerunning npm', async () => {
+    const service = createService(true, true);
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/coder-template')).toBeTrue();
+    expect(service.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(service.application.materializeCoderProjectLibraries).toHaveBeenCalledOnceWith('/tmp/coder-template');
+  });
+
+  it('returns a retryable failure when source extraction fails', async () => {
+    const service = createService();
+    service.application.materializeCoderProjectLibraries.and.rejectWith(new Error('src.7z is invalid'));
+    const onRetryInstall = jasmine.createSpy('retry');
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/coder-template', { onRetryInstall })).toBeFalse();
+    expect(service.application.updateNotice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+      state: 'error', detail: 'src.7z is invalid', onRetry: onRetryInstall,
+    }));
+    expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
+  });
+
+  it('does not invoke the Coder runtime for Blockly dependency installs', async () => {
+    const service = createService(false);
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
+    expect(service.cmdService.runAsync).toHaveBeenCalled();
+    expect(service.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
+  });
+});
 
 describe('NpmService installBoardDeps', () => {
   function createService(boardPlatformDepsReady: boolean) {
