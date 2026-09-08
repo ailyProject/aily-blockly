@@ -53,6 +53,8 @@ aily-todos/*.json
 docs/performance-optimization.md
 
 # child
+/child/windows/
+/child/macos/
 child/node*
 child/aily-builder*
 /child/node

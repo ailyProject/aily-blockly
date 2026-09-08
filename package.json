@@ -14,6 +14,7 @@
     ],
     "appId": "blockly.aily.pro",
     "forceCodeSigning": false,
+    "afterPack": "scripts/package-child-resources.js",
     "asar": true,
     "asarUnpack": [
       "electron/preload.js",
@@ -90,16 +91,6 @@
           "icon": "public/icon.ico",
           "role": "Editor"
         }
-      ],
-      "extraResources": [
-        {
-          "from": "child/windows",
-          "to": "child",
-          "filter": [
-            "**/*",
-            "!aily-builder-*.7z"
-          ]
-        }
       ]
     },
     "mac": {
@@ -111,16 +102,6 @@
           "name": "Aily Blockly Project",
           "description": "Aily Blockly Project File",
           "role": "Editor"
-        }
-      ],
-      "extraResources": [
-        {
-          "from": "child/macos",
-          "to": "child",
-          "filter": [
-            "**/*",
-            "!aily-builder-*.7z"
-          ]
         }
       ]
     },
@@ -163,6 +144,7 @@
     "smoke:simulator-gateway-crash": "node scripts/smoke-simulator-gateway-crash.mjs",
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && node ./scripts/run-electron-dev.js --serve\"",
     "electron:coder": "node ./scripts/run-electron-coder-dev.js",
+    "prepare:child": "node scripts/prepare-child-resources.js",
     "prepare:simulator-runtime": "node scripts/prepare-simulator-runtime.js",
     "prepare:simulator-runtime:release": "node scripts/prepare-simulator-runtime.js",
     "prepare:electron-runtime": "npm run prepare:simulator-runtime",
@@ -181,7 +163,7 @@
     "test:e2e:simulator-debug": "node ./scripts/run-simulator-debug-e2e.mjs",
     "test:e2e:simulator-subapp-mainline": "node ./scripts/run-simulator-subapp-mainline-e2e.mjs",
     "validate:e2e:simulator-debug": "node ./scripts/validate-simulator-debug-e2e-report.mjs",
-    "setup:external-tools": "node scripts/install-external-tools.js",
+    "setup:external-tools": "node scripts/prepare-child-resources.js",
     "setup:local-builder": "node scripts/use-local-builder.mjs",
     "setup:local-connector": "node scripts/use-local-connector.mjs"
   },
