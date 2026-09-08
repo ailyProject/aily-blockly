@@ -206,6 +206,12 @@ async function main() {
                 `"${path.join(buildPath, 'aily-artifact-manifest.json')}"`
             );
             if (simulatorArtifactRequested) {
+                if (!supportsSimulationDebug()) {
+                    throw new Error(
+                        '当前 aily-builder 不支持仿真源码调试产物，请升级后重试。'
+                    );
+                }
+                args.push('--simulation-debug');
                 if (!/^[a-f0-9]{64}$/.test(config.graphSemanticRevision)) {
                     throw new Error('graphSemanticRevision 必须是小写 SHA-256。');
                 }
@@ -511,6 +517,25 @@ function supportsArtifactManifest() {
         );
         return `${result.stdout || ''}\n${result.stderr || ''}`
             .includes('--emit-artifact-manifest');
+    } catch {
+        return false;
+    }
+}
+
+function supportsSimulationDebug() {
+    try {
+        const invocation = resolveBuilderInvocation(['capabilities', '--json']);
+        const result = spawnSync(invocation.command, invocation.args, {
+            shell: invocation.shell,
+            encoding: 'utf8',
+            windowsHide: true,
+            timeout: 5000,
+        });
+        if (result.status !== 0) return false;
+        const capabilities = JSON.parse(result.stdout || '{}');
+        return capabilities?.schemaVersion === 1
+            && capabilities?.capabilities?.simulationSourceDebug
+                ?.schemaVersion === 1;
     } catch {
         return false;
     }
