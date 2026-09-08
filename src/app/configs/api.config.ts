@@ -103,6 +103,8 @@ export const API = {
   get generateTitle() { return `${getServerUrl()}/api/v1/generate_title`; },
   get conversationFeedback() { return `${getServerUrl()}/api/v1/conversation_feedback`; },
   // Aily Coder cloud inline completion (host-authenticated SSE proxy)
+  get codeSuggestionCapabilities() { return `${getServerUrl()}/api/v4/code/capabilities`; },
+  get codeSuggestions() { return `${getServerUrl()}/api/v4/code/suggestions`; },
   get codeCompletions() { return `${getServerUrl()}/api/v3/code/completions`; },
   get codeCompletionQuota() { return `${getServerUrl()}/api/v3/code/completions/quota`; },
   // cloud

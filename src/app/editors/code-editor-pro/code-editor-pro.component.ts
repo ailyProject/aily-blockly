@@ -23,6 +23,7 @@ import {
   CodeEditorProProjectService,
   type CodeEditorProPersistenceBridge,
 } from './services/code-editor-pro-project.service';
+import { CodeSuggestionHostBridgeService } from './services/code-suggestion-host-bridge.service';
 import { CodeCompletionHostBridgeService } from './services/code-completion-host-bridge.service';
 import { NpmService } from '@domain/dependencies/public-api';
 import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/builder.utils';
@@ -146,7 +147,7 @@ function boundedCoderNativeSearchInteger(
 @Component({
   selector: 'app-code-editor-pro',
   imports: [CommonModule, NotificationComponent, CoderLoadingComponent],
-  providers: [CodeCompletionHostBridgeService],
+  providers: [CodeCompletionHostBridgeService, CodeSuggestionHostBridgeService],
   templateUrl: './code-editor-pro.component.html',
   styleUrl: './code-editor-pro.component.scss',
 })
@@ -244,6 +245,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     private readonly modal: NzModalService,
     private readonly elementRef: ElementRef<HTMLElement>,
     private readonly codeCompletionHostBridge: CodeCompletionHostBridgeService,
+    private readonly codeSuggestionHostBridge: CodeSuggestionHostBridgeService,
   ) {
     toObservable(this.themeService.theme)
       .pipe(takeUntilDestroyed())
@@ -447,6 +449,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.detachCoderEmbedFrame();
     this.stopBuildOutputsWatch();
     this.codeCompletionHostBridge.dispose();
+    this.codeSuggestionHostBridge.dispose();
     this.aiCoderDiffBridge.setWorkspaceRoot(null);
     this.coderEmbedWorkspaceRoot = null;
     if (this.coderRuntimeHostInfo) {
@@ -725,6 +728,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     }
     this.aiCoderDiffBridge.registerEmbed(frame?.contentWindow ?? null);
     this.codeCompletionHostBridge.registerFrame(frame?.contentWindow ?? null);
+    this.codeSuggestionHostBridge.registerFrame(frame?.contentWindow ?? null);
     if (root) {
       void this.pushAilyCoderHostContext(root);
     }
@@ -1185,6 +1189,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
     this.stopAllCoderEmbedFsWatchers();
     this.stopAllCoderNativeSearches();
     this.codeCompletionHostBridge.registerFrame(null);
+    this.codeSuggestionHostBridge.registerFrame(null);
     this.aiCoderDiffBridge.registerEmbed(null);
   }
 
@@ -1795,7 +1800,7 @@ export class CodeEditorProComponent implements OnInit, OnDestroy, AfterViewInit 
   }
 
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
-    if (this.codeCompletionHostBridge.handleMessage(ev)) {
+    if (this.codeSuggestionHostBridge.handleMessage(ev) || this.codeCompletionHostBridge.handleMessage(ev)) {
       return;
     }
     const msg = ev.data as {
