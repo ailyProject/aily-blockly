@@ -50,6 +50,7 @@
       "tool_web": "https://tool.yiyu.pro",
       "npm_registry": "https://registry.yiyu.pro",
       "npm_registry_linux": "https://lregistry.yiyu.pro",
+      "npm_registry_coder": "https://cregistry.yiyu.pro",
       "resource": "https://blockly.yiyu.pro",
       "updater": "https://dl.yiyu.pro/blockly"
     },
@@ -63,6 +64,7 @@
       "tool_web": "https://tool.aily.pro",
       "npm_registry": "https://registry.aily.pro",
       "npm_registry_linux": "https://lregistry.aily.pro",
+      "npm_registry_coder": "https://cregistry.aily.pro",
       "resource": "https://rs1.aily.pro",
       "updater": "https://dl.aily.pro/blockly"
     },
@@ -76,6 +78,7 @@
       "tool_web": "https://tool.yiyu.pro",
       "npm_registry": "http://localhost:4873",
       "npm_registry_linux": "https://lregistry.yiyu.pro",
+      "npm_registry_coder": "https://cregistry.yiyu.pro",
       "resource": "http://localhost:4874",
       "updater": ""
     }

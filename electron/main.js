@@ -2122,6 +2122,7 @@ function loadEnv() {
     "tool_web",
     "npm_registry",
     "npm_registry_linux",
+    "npm_registry_coder",
     "resource",
     "updater",
   ];
@@ -2236,6 +2237,7 @@ function loadEnv() {
   // npm registry
   process.env.AILY_NPM_REGISTRY = ORIGINAL_AILY_NPM_REGISTRY || regionConfig.npm_registry;
   process.env.AILY_NPM_REGISTRY_LINUX = regionConfig.npm_registry_linux || conf.linux?.npm_registry || "";
+  process.env.AILY_NPM_REGISTRY_CODER = regionConfig.npm_registry_coder || "";
   // 显式启动环境可临时覆盖子应用源；默认仍跟随当前服务区域。
   process.env.AILY_SUBAPP_INDEX_URL = ORIGINAL_SUBAPP_INDEX_URL
     || buildSubappIndexUrl(regionConfig.resource);
@@ -2244,11 +2246,12 @@ function loadEnv() {
   try {
     const registryLine = "@aily-project:registry=${AILY_NPM_REGISTRY}";
     const linuxRegistryLine = "@aily-project-linux:registry=${AILY_NPM_REGISTRY_LINUX}";
+    const coderRegistryLine = "@aily-project-coder:registry=${AILY_NPM_REGISTRY_CODER}";
     const saveExactLine = "save-exact=true";
     if (!fs.existsSync(appNpmrcPath)) {
       fs.writeFileSync(
         appNpmrcPath,
-        `${registryLine}\n${linuxRegistryLine}\naudit=false\nfund=false\n${saveExactLine}\n`,
+        `${registryLine}\n${linuxRegistryLine}\n${coderRegistryLine}\naudit=false\nfund=false\n${saveExactLine}\n`,
       );
     } else {
       const existingNpmrc = fs.readFileSync(appNpmrcPath, "utf8");
@@ -2266,6 +2269,15 @@ function loadEnv() {
         );
       } else {
         nextNpmrc += `${nextNpmrc.endsWith("\n") ? "" : "\n"}${linuxRegistryLine}\n`;
+      }
+
+      if (/^@aily-project-coder:registry=.*$/m.test(nextNpmrc)) {
+        nextNpmrc = nextNpmrc.replace(
+          /^@aily-project-coder:registry=.*$/m,
+          coderRegistryLine,
+        );
+      } else {
+        nextNpmrc += `${nextNpmrc.endsWith("\n") ? "" : "\n"}${coderRegistryLine}\n`;
       }
 
       if (!/^\s*save-exact\s*=/m.test(nextNpmrc)) {
