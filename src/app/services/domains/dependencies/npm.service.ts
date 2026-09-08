@@ -369,6 +369,8 @@ export class NpmService {
         return false;
       }
 
+      await this.application.materializeCoderProjectLibraries(projectPath);
+
       const boardModule = await this.prjService.getBoardModule();
       if (boardModule) {
         const boardPackageJson = (await this.prjService.getBoardPackageJson()) || {};
@@ -1497,7 +1499,7 @@ export class NpmService {
   ): Promise<boolean> {
     // 已完整安装则不再跑 npm install，缩短冷启动
     if (await this.installedOk(projectPath)) {
-      return true;
+      return this.ensureCoderDependencyLibrarySources(projectPath, options);
     }
 
     // 与 Blockly 一致：下一帧再挂通知，避免变更检测/弹层偶发不同步
@@ -1539,6 +1541,10 @@ export class NpmService {
       return false;
     }
 
+    if (!(await this.ensureCoderDependencyLibrarySources(projectPath, options))) {
+      return false;
+    }
+
     setTimeout(() => {
       this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
@@ -1549,6 +1555,27 @@ export class NpmService {
       });
     }, 100);
     return true;
+  }
+
+  private async ensureCoderDependencyLibrarySources(
+    projectPath: string,
+    options?: { onRetryInstall?: () => void },
+  ): Promise<boolean> {
+    if (!this.isAilyCodeProjectRoot(projectPath)) return true;
+    try {
+      await this.application.materializeCoderProjectLibraries(projectPath);
+      return true;
+    } catch (error) {
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+        text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+        detail: this.getNpmErrorMessage(error),
+        state: 'error',
+        sendToLog: false,
+        ...(options?.onRetryInstall ? { onRetry: options.onRetryInstall } : {}),
+      });
+      return false;
+    }
   }
 
   /**
