@@ -472,8 +472,20 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   async reloadChildUi(): Promise<void> {
-    this.uiHealthFailed = false;
-    await this.reloadChildFrame('manual');
+    if (!this.config || !this.acquired || this.closing || this.hostStatus === 'closed') return;
+    const previous = this.serverInfo;
+    try {
+      const hostInfo = await this.processService.ensureRunning(this.config.id);
+      if (!this.initialized || this.closing || !this.acquired) return;
+      // A replacement Runtime is already remounted by observeRuntime.
+      if (previous?.url !== hostInfo.url || previous?.pid !== hostInfo.pid) return;
+      await this.reloadChildFrame('manual');
+    } catch (error) {
+      this.hostStatus = 'error';
+      this.errorMessage = error instanceof Error ? error.message : String(error);
+      this.logError('reload child UI failed', this.errorMessage);
+      this.cdr.markForCheck();
+    }
   }
 
   private handleApiServerChange(): void {

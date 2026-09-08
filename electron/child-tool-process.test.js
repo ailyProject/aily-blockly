@@ -214,11 +214,189 @@ function createService(processModule) {
   );
 }
 
+for (const origin of ['initial', 'replacement']) {
+  test(`shared ${origin} Runtime recovers repeated exits without a renderer-owned stdout listener`, async () => {
+    const processModule = await processModulePromise;
+    const originalWindow = global.window;
+    const harness = createHarness({ ready: true });
+    global.window = harness.window;
+    processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+    const service = createService(processModule);
+    service.recoveryBaseDelayMs = 1;
+    try {
+      if (origin === 'initial') harness.share('shared-1');
+      await service.acquire('fixture');
+      if (origin === 'replacement') {
+        harness.share('shared-1');
+        harness.publishState();
+        await waitFor(() => service.getRuntimeSnapshot('fixture').hostInfo?.port === 4200);
+      }
+      const initialRuns = harness.runCalls.length;
+      for (let index = 0; index < 3; index += 1) {
+        harness.closeShared(false);
+        await waitFor(() => harness.runCalls.length === initialRuns + index + 1
+          && service.getRuntimeSnapshot('fixture').state === 'ready');
+      }
+      assert.equal(service.getRuntimeSnapshot('fixture').refCount, 1);
+    } finally {
+      await service.stop('fixture');
+      global.window = originalWindow;
+    }
+  });
+}
+
+test('expected shared exit invalidates the renderer cache without restarting it', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  service.recoveryBaseDelayMs = 1;
+  try {
+    harness.share('shared-1');
+    await service.acquire('fixture');
+    harness.closeShared(true);
+    assert.equal(service.getRuntimeSnapshot('fixture').state, 'stopped');
+    assert.equal(service.getRuntimeSnapshot('fixture').running, false);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(harness.runCalls.length, 0);
+  } finally {
+    await service.stop('fixture');
+    global.window = originalWindow;
+  }
+});
+
+test('manual recovery checks process truth without adding leases or restarting a healthy Runtime', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  try {
+    harness.share('shared-1');
+    await service.acquire('fixture');
+    await service.ensureRunning('fixture');
+    assert.equal(harness.runCalls.length, 0);
+    harness.closeShared(false, false);
+    await Promise.all([service.ensureRunning('fixture'), service.ensureRunning('fixture')]);
+    assert.equal(harness.runCalls.length, 1);
+    assert.equal(service.getRuntimeSnapshot('fixture').refCount, 1);
+  } finally {
+    await service.stop('fixture');
+    global.window = originalWindow;
+  }
+});
+
+async function waitFor(predicate) {
+  const deadline = Date.now() + 1000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, 'Runtime transition timed out');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+test('preload APIs mapped after service construction still establish exactly one lifecycle subscription', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  global.window = {};
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  service.recoveryBaseDelayMs = 1;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  try {
+    harness.share('shared-1');
+    await service.acquire('fixture');
+    await service.acquire('fixture');
+    harness.closeShared(false);
+    await waitFor(() => harness.runCalls.length === 1 && service.getRuntimeSnapshot('fixture').state === 'ready');
+    assert.equal(harness.stateSubscriptions, 1);
+    assert.equal(service.getRuntimeSnapshot('fixture').refCount, 2);
+  } finally {
+    await service.stop('fixture');
+    global.window = originalWindow;
+  }
+});
+
+test('duplicate close notifications and late old-stream exits do not restart a replacement twice', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  service.recoveryBaseDelayMs = 1;
+  try {
+    await service.acquire('fixture');
+    const streamId = harness.runCalls[0].streamId;
+    harness.closeShared(false);
+    harness.emitCaptured(streamId, { type: 'close', code: 1 });
+    await waitFor(() => harness.runCalls.length === 2 && service.getRuntimeSnapshot('fixture').state === 'ready');
+    harness.publishState([{ toolId: 'fixture', streamId, running: false, exit: { code: 1, expected: false } }]);
+    harness.emitCaptured(streamId, { type: 'close', code: 1 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(harness.runCalls.length, 2);
+    assert.equal(service.getRuntimeSnapshot('fixture').state, 'ready');
+  } finally {
+    await service.stop('fixture');
+    global.window = originalWindow;
+  }
+});
+
+test('an unleased shared Runtime is invalidated but not automatically restarted', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  try {
+    harness.share('shared-1');
+    await service.acquire('fixture');
+    await service.release('fixture');
+    harness.closeShared(false);
+    await assert.rejects(service.ensureRunning('fixture'), /no active lease/);
+    assert.equal(service.getRuntimeSnapshot('fixture').running, false);
+    assert.equal(harness.runCalls.length, 0);
+  } finally {
+    await service.stop('fixture');
+    global.window = originalWindow;
+  }
+});
+
+test('a delayed original close preserves explicit stop intent even after main removed the shared registration', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  const service = createService(processModule);
+  service.recoveryBaseDelayMs = 1;
+  try {
+    await service.acquire('fixture');
+    const streamId = harness.runCalls[0].streamId;
+    await harness.window.childToolSession.unregister({ toolId: 'fixture', streamId });
+    harness.emitCaptured(streamId, { type: 'close', code: 1, expected: true });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(service.getRuntimeSnapshot('fixture').state, 'stopped');
+    assert.equal(harness.runCalls.length, 1);
+    await service.ensureRunning('fixture');
+    assert.equal(harness.runCalls.length, 2);
+    assert.equal(service.getRuntimeSnapshot('fixture').refCount, 1);
+  } finally {
+    await service.stop('fixture');
+    global.window = originalWindow;
+  }
+});
+
 function createHarness(options) {
   const activeListeners = new Map();
   const capturedListeners = new Map();
   const registered = new Map();
   let messageListener = null;
+  let stateListener = null;
   const harness = {
     ready: options.ready,
     acquireCalls: 0,
@@ -227,6 +405,20 @@ function createHarness(options) {
     registerCalls: [],
     releaseCalls: 0,
     sendMessageCalls: [],
+    stateSubscriptions: 0,
+    share(streamId) {
+      registered.set('fixture', {
+        toolId: 'fixture', streamId, running: true,
+        hostInfo: { ...JSON.parse(readyOutput(4200).data).data, entry: 'index.js', packagePath: '/subapps/fixture' },
+      });
+    },
+    publishState(rows = [...registered.values()]) { stateListener?.(rows); },
+    closeShared(expected, publish = true) {
+      const current = registered.get('fixture');
+      current.running = false;
+      current.exit = { code: 1, signal: null, expected };
+      if (publish) harness.publishState();
+    },
     emitCaptured(streamId, output) {
       capturedListeners.get(streamId)?.(output);
     },
@@ -247,11 +439,12 @@ function createHarness(options) {
       async acquire() {
         harness.acquireCalls += 1;
         await Promise.resolve();
-        return null;
+        const current = registered.get('fixture');
+        return current?.running ? current : null;
       },
       async register(payload) {
         harness.registerCalls.push(payload);
-        registered.set(payload.toolId, payload);
+        registered.set(payload.toolId, { ...payload, running: true });
         return { success: true };
       },
       async release(payload) {
@@ -286,6 +479,12 @@ function createHarness(options) {
         return () => {
           if (messageListener === listener) messageListener = null;
         };
+      },
+      async list() { return [...registered.values()]; },
+      onStateChanged(listener) {
+        harness.stateSubscriptions += 1;
+        stateListener = listener;
+        return () => { if (stateListener === listener) stateListener = null; };
       },
     },
     cmd: {

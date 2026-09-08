@@ -52,6 +52,7 @@ interface SharedChildToolRuntime {
   streamId?: string;
   hostInfo?: ChildToolHostInfo | null;
   running?: boolean;
+  exit?: { code: number | null; signal: string | null; expected: boolean };
 }
 
 interface ChildToolSession {
@@ -102,14 +103,7 @@ export class ChildToolProcessService implements OnDestroy {
   constructor(
     private configService: ConfigService,
     private projectService: ProjectService,
-  ) {
-    const onStateChanged = window['childToolSession']?.onStateChanged;
-    if (typeof onStateChanged === 'function') {
-      this.removeSessionStateListener = onStateChanged((payload: unknown) => {
-        this.reconcileSharedRuntimeStates(payload);
-      });
-    }
-  }
+  ) {}
 
   async acquire(toolId: string): Promise<ChildToolHostInfo> {
     const config = this.requireConfig(toolId);
@@ -156,6 +150,34 @@ export class ChildToolProcessService implements OnDestroy {
     if (session.refCount === 0) {
       this.cancelRecovery(session);
       this.scheduleRelease(config, session);
+    }
+  }
+
+  async ensureRunning(toolId: string): Promise<ChildToolHostInfo> {
+    const config = this.requireConfig(toolId);
+    const session = this.sessions.get(config.id);
+    if (!session || session.refCount === 0) {
+      throw new Error(`Child tool has no active lease: ${toolId}`);
+    }
+    const streamId = session.streamId;
+    const runtimes: SharedChildToolRuntime[] = await window['childToolSession'].list();
+    if (session.reconcilePromise) await session.reconcilePromise;
+    if (this.sessions.get(config.id) !== session || session.refCount === 0) {
+      throw new Error(`Child tool lease was released: ${toolId}`);
+    }
+    if (!session.startPromise && session.streamId === streamId
+      && !runtimes.some(runtime => runtime.toolId === config.id
+        && runtime.streamId === streamId && runtime.running)) {
+      this.handleClose(session);
+    }
+    this.cancelRecovery(session, true);
+    try {
+      const hostInfo = await this.startSession(config, session);
+      this.publishRuntimeState(config.id, 'ready', session);
+      return hostInfo;
+    } catch (error) {
+      this.publishRuntimeState(config.id, 'error', session, error);
+      throw error;
     }
   }
 
@@ -446,6 +468,7 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   private async startSession(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
+    this.ensureSessionStateListener();
     if (session.running && session.hostInfo) {
       return session.hostInfo;
     }
@@ -909,7 +932,7 @@ export class ChildToolProcessService implements OnDestroy {
     }
 
     if (output.type === 'close') {
-      const expectedStopReason = session.expectedStopReason;
+      const expectedStopReason = session.expectedStopReason || (output.expected ? 'shutdown' : null);
       const shouldRecover = !expectedStopReason && session.refCount > 0;
       const reason = `${config.id} server closed with code ${this.formatProcessExitCode(output.code)}${this.formatBufferedStderr(session)}`;
       const details = {
@@ -988,6 +1011,14 @@ export class ChildToolProcessService implements OnDestroy {
   private reconcileSharedRuntimeStates(payload: unknown): void {
     const runtimes = Array.isArray(payload) ? payload as SharedChildToolRuntime[] : [];
     for (const [toolId, session] of this.sessions) {
+      const config = getChildToolConfig(toolId);
+      if (!config) continue;
+      const exited = runtimes.find(runtime => runtime?.toolId === toolId
+        && !!session.streamId && runtime.streamId === session.streamId && runtime.running === false);
+      if (exited) {
+        this.handleProcessOutput(config, session, session.streamId, { type: 'close', ...exited.exit });
+        continue;
+      }
       if (session.refCount === 0 || session.startPromise || session.readyResolve || session.reconcilePromise) continue;
       const shared = runtimes.find(runtime =>
         runtime?.toolId === toolId
@@ -995,12 +1026,22 @@ export class ChildToolProcessService implements OnDestroy {
         && !!runtime.streamId
         && !!runtime.hostInfo?.url);
       if (!shared || (session.running && session.streamId === shared.streamId)) continue;
-      const config = getChildToolConfig(toolId);
-      if (!config) continue;
       session.reconcilePromise = this.reacquireSharedRuntime(config, session).finally(() => {
         session.reconcilePromise = null;
       });
     }
+  }
+
+  private ensureSessionStateListener(): void {
+    if (this.removeSessionStateListener) return;
+    // The host maps preload APIs after root services have been constructed.
+    const onStateChanged = window['childToolSession']?.onStateChanged;
+    if (typeof onStateChanged !== 'function') {
+      throw new Error('Electron child tool lifecycle bridge is not available');
+    }
+    this.removeSessionStateListener = onStateChanged((payload: unknown) => {
+      this.reconcileSharedRuntimeStates(payload);
+    });
   }
 
   private async reacquireSharedRuntime(

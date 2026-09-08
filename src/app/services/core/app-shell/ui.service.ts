@@ -319,6 +319,15 @@ export class UiService {
       return false;
     }
 
+    // Local chat history and an existing runtime remain accessible offline.
+    // The service still authenticates each remote operation with the stored token.
+    if (name === 'aily-chat' && !this.authService.isSessionInvalidating) {
+      const state = this.authService.getAuthInitializationState();
+      if (this.authService.hasLocalAuthSession || state === 'idle' || state === 'checking') {
+        return false;
+      }
+    }
+
     this.authService.requestLogin(`tool:${name}`);
     return true;
   }

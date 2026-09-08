@@ -123,6 +123,11 @@ export class AuthService {
   private isLoggedInSubject = new BehaviorSubject<boolean>(false);
   public isLoggedIn$ = this.isLoggedInSubject.asObservable();
   get isLoggedIn(): boolean { return this.isLoggedInSubject.value; }
+  get hasLocalAuthSession(): boolean {
+    return !this.authSessionInvalidating && (
+      this.isLoggedIn || this.authInitializationStateSubject.value === 'unavailable'
+    );
+  }
 
   // 登录时需要绑定微信的信号
   private needsWechatBindSubject = new Subject<string>();

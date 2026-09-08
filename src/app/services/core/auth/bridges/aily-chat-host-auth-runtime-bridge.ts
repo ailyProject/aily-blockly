@@ -23,7 +23,7 @@ export interface AilyHostAuthRuntimeResult {
 }
 
 export interface AilyHostAuthRuntimeAuthService {
-  readonly isLoggedIn: boolean;
+  readonly hasLocalAuthSession: boolean;
   readonly isSessionInvalidating: boolean;
   initializeAuth(): Promise<void>;
   getToken2(): Promise<string | null>;
@@ -45,7 +45,7 @@ export function createAilyHostAuthRequestHandler(
   let refreshPromise: Promise<boolean> | null = null;
 
   const readLease = async (): Promise<AilyHostAuthRuntimeResult> => {
-    if (!authService.isLoggedIn || authService.isSessionInvalidating) {
+    if (!authService.hasLocalAuthSession || authService.isSessionInvalidating) {
       return failure(authService, 'AUTH_SIGNED_OUT', 'The host account is signed out');
     }
 
@@ -85,7 +85,7 @@ export function createAilyHostAuthRequestHandler(
     // The main window normally owns an already-initialized AuthService. Only
     // recover startup state when the bridge is called before that initialization
     // has completed; otherwise every Aily API request would repeat `/me`.
-    if (!authService.isLoggedIn && !authService.isSessionInvalidating) {
+    if (!authService.hasLocalAuthSession && !authService.isSessionInvalidating) {
       await authService.initializeAuth();
     }
     if (operation === 'access-token') {
@@ -100,7 +100,7 @@ export function createAilyHostAuthRequestHandler(
       return readLease();
     }
 
-    if (!authService.isLoggedIn || authService.isSessionInvalidating) {
+    if (!authService.hasLocalAuthSession || authService.isSessionInvalidating) {
       return failure(authService, 'AUTH_SIGNED_OUT', 'The host account is signed out');
     }
 
