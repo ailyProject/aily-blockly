@@ -2664,6 +2664,7 @@ function createWindow() {
   registerTerminalHandlers(mainWindow);
   registerWindowHandlers(mainWindow, {
     resolveRendererUrl: resolveAppRendererUrl,
+    getRendererGeneration: () => rendererGeneration,
   });
   registerNpmHandlers(mainWindow);
   registerCmdHandlers(mainWindow);
