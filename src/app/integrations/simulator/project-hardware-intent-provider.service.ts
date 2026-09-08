@@ -6,9 +6,8 @@ import {
 
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { ProjectService } from '@domain/project/public-api';
-import {
-  createAlignedSimulatorProjectFirmwareEvidenceSource,
-} from './simulator-project-firmware-evidence-source';
+import { createAlignedSimulatorProjectFirmwareEvidenceSource } from './simulator-project-firmware-evidence-source';
+import { resolveProjectHardwareIntentBoard } from './project-hardware-intent-board';
 
 interface SceneGenerationIdentity {
   readonly requestId: string;
@@ -27,44 +26,78 @@ export class ProjectHardwareIntentProviderService {
     request: SceneGenerationIdentity,
     signal?: AbortSignal,
   ): Promise<ProjectHardwareIntentSnapshotV1> {
-    throwIfAborted(signal);
-    if (!this.projectService.currentProjectPath) {
-      throw new Error('Project hardware intent requires an open project.');
+    let stage = 'project-binding';
+    try {
+      throwIfAborted(signal);
+      const projectRoot = this.projectService.currentProjectPath;
+      if (!projectRoot) {
+        throw new Error('Project hardware intent requires an open project.');
+      }
+      stage = 'generated-code';
+      const generatedSource =
+        await this.blocklyService.waitForReusableGeneratedCode({
+          signal,
+          timeoutMs: 30_000,
+        });
+      if (generatedSource.trim().length === 0) {
+        throw new Error(
+          'Generated Arduino source is empty; add executable Blockly content before creating a Scene.',
+        );
+      }
+      stage = 'firmware-evidence';
+      const sourceText =
+        await createAlignedSimulatorProjectFirmwareEvidenceSource({
+          projectRoot,
+          sourceText: generatedSource,
+          files: {
+            exists: (filePath) => window['fs'].existsSync(filePath),
+            readText: (filePath) => window['fs'].readFileSync(filePath, 'utf8'),
+            join: (...segments) => window['path'].join(...segments),
+          },
+        });
+      stage = 'project-package';
+      const packageJson = await this.projectService.getPackageJson();
+      throwIfAborted(signal);
+      stage = 'board-config';
+      const boardConfig =
+        this.projectService.currentBoardConfig ??
+        (await this.projectService.getBoardJson());
+      throwIfAborted(signal);
+      stage = 'snapshot';
+      return await buildProjectHardwareIntentSnapshot({
+        request: {
+          requestId: request.requestId,
+          projectIdentity: request.projectIdentity,
+        },
+        board: resolveProjectHardwareIntentBoard(boardConfig, packageJson),
+        sourceText,
+        libraries: resolveLibraries(packageJson),
+        userIntent: request.instruction ?? null,
+      });
+    } catch (error) {
+      logHardwareIntentFailure(stage, error);
+      throw error;
     }
-    const generatedSource = await this.blocklyService.waitForReusableGeneratedCode({
-      signal,
-      timeoutMs: 30_000,
-    });
-    if (generatedSource.trim().length === 0) {
-      throw new Error(
-        'Generated Arduino source is empty; add executable Blockly content before creating a Scene.',
-      );
-    }
-    const sourceText = await createAlignedSimulatorProjectFirmwareEvidenceSource({
-      projectRoot: this.projectService.currentProjectPath,
-      sourceText: generatedSource,
-      files: {
-        exists: filePath => window['fs'].existsSync(filePath),
-        readText: filePath => window['fs'].readFileSync(filePath, 'utf8'),
-        join: (...segments) => window['path'].join(...segments),
-      },
-    });
-    const boardConfig = this.projectService.currentBoardConfig
-      ?? await this.projectService.getBoardJson();
-    throwIfAborted(signal);
-    const packageJson = await this.projectService.getPackageJson();
-    throwIfAborted(signal);
-    return buildProjectHardwareIntentSnapshot({
-      request: {
-        requestId: request.requestId,
-        projectIdentity: request.projectIdentity,
-      },
-      board: resolveBoard(boardConfig),
-      sourceText,
-      libraries: resolveLibraries(packageJson),
-      userIntent: request.instruction ?? null,
-    });
   }
+}
+
+function logHardwareIntentFailure(stage: string, error: unknown): void {
+  const value = error !== null && typeof error === 'object'
+    ? error as { name?: unknown; code?: unknown; message?: unknown }
+    : null;
+  console.error('[SimulatorHost][HardwareIntentReadFailed]', JSON.stringify({
+    stage,
+    errorName: typeof value?.name === 'string'
+      ? value.name.slice(0, 80)
+      : null,
+    errorCode: typeof value?.code === 'string'
+      ? value.code.slice(0, 80)
+      : null,
+    errorMessage: typeof value?.message === 'string'
+      ? value.message.slice(0, 240)
+      : null,
+    rendererRealmError: error instanceof Error,
+  }));
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -74,32 +107,9 @@ function throwIfAborted(signal?: AbortSignal): void {
     : new Error('Project hardware intent request was cancelled.');
 }
 
-function resolveBoard(value: unknown): {
-  fqbn: string;
-  boardId: string;
-  architecture: string;
-  mcu: string;
-} {
-  const board = record(value);
-  const fqbn = text(board['fqbn']) || text(board['type']);
-  const core = text(board['core']);
-  const boardId = text(board['boardId'])
-    || fqbn.split(':').filter(Boolean).at(-1)
-    || text(board['name']);
-  const architecture = text(board['architecture'])
-    || core.split(':').filter(Boolean)[0]
-    || fqbn.split(':').filter(Boolean)[0];
-  const uploadParam = text(board['uploadParam']).toLowerCase();
-  const mcu = text(board['mcu'])
-    || uploadParam.match(/--chip\s+([a-z0-9_-]+)/u)?.[1]
-    || inferMcu(fqbn);
-  if (!fqbn || !boardId || !architecture || !mcu) {
-    throw new Error('Current board metadata is incomplete for Scene generation.');
-  }
-  return { fqbn, boardId, architecture, mcu };
-}
-
-function resolveLibraries(value: unknown): Array<{ name: string; version: string | null }> {
+function resolveLibraries(
+  value: unknown,
+): Array<{ name: string; version: string | null }> {
   const packageJson = record(value);
   const dependencyGroups = [
     packageJson['dependencies'],
@@ -109,30 +119,23 @@ function resolveLibraries(value: unknown): Array<{ name: string; version: string
   for (const dependencies of dependencyGroups) {
     for (const [name, version] of Object.entries(dependencies)) {
       if (
-        name.startsWith('@aily-project/board-')
-        || name.startsWith('@aily-project/coder-')
+        name.startsWith('@aily-project/board-') ||
+        name.startsWith('@aily-project/coder-')
       ) {
         continue;
       }
-      libraries.set(name, typeof version === 'string' && version.trim()
-        ? version.trim()
-        : null);
+      libraries.set(
+        name,
+        typeof version === 'string' && version.trim() ? version.trim() : null,
+      );
     }
   }
   return [...libraries.entries()].map(([name, version]) => ({ name, version }));
 }
 
-function inferMcu(fqbn: string): string {
-  const normalized = fqbn.toLowerCase();
-  for (const candidate of ['esp32s3', 'esp32c3', 'esp32c6', 'esp32s2', 'esp32']) {
-    if (normalized.includes(candidate)) return candidate;
-  }
-  return normalized.split(':').filter(Boolean).at(-1) || '';
-}
-
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 
