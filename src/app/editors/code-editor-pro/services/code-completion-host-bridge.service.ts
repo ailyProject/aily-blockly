@@ -1,3 +1,4 @@
+import { beginCodeRequest } from './code-completion-request-gate';
 import { Injectable } from '@angular/core';
 import { AuthService } from '@core/auth/public-api';
 import { API } from '../../../configs/api.config';
@@ -444,6 +445,7 @@ export class CodeCompletionHostBridgeService {
     const controller = new AbortController();
     this.activeRequests.set(requestId, controller);
     this.currentClientVersion = payload.client.version;
+    const releaseGate = beginCodeRequest(target, controller);
     void this.runCompletion(
       target,
       requestId,
@@ -451,6 +453,7 @@ export class CodeCompletionHostBridgeService {
       body,
       controller,
     ).finally(() => {
+      releaseGate();
       if (this.activeRequests.get(requestId) === controller) {
         this.activeRequests.delete(requestId);
       }
