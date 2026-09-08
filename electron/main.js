@@ -31,6 +31,7 @@ const {
   shouldInstallForAppVersion,
 } = require("./tools/aily-tools-install-state");
 const { mergeConfigChanges } = require("./config-persistence");
+const { resolveAilyAppDataPath } = require("./appdata-path");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const {
   normalizeBuildProduct,
@@ -2054,17 +2055,13 @@ function loadEnv() {
     : {};
   const buildProduct = getBuildProduct();
 
-  // 设置系统默认的应用数据目录
-  if (isWin32) {
-    // 设置Windows的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["win32"].replace('%HOMEPATH%', os.homedir());
-  } else if (isDarwin) {
-    // 设置macOS的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["darwin"].replace('~', os.homedir());
-  } else {
-    // 设置Linux的环境变量
-    process.env.AILY_APPDATA_PATH = conf["appdata_path"]["linux"];
-  }
+  // 显式数据目录优先，避免便携部署或隔离验收落入用户默认目录。
+  process.env.AILY_APPDATA_PATH = resolveAilyAppDataPath({
+    env: process.env,
+    platform: process.platform,
+    home: os.homedir(),
+    config: conf,
+  });
   builder.configureCacheEnvironment();
   process.env.AILY_CONNECTOR_DATA_PATH = path.join(
     process.env.AILY_APPDATA_PATH,
