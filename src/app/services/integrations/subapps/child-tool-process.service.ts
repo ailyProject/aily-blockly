@@ -22,6 +22,8 @@ export interface ChildToolHostInfo {
   packagePath?: string;
   /** Unique `pnpm dev` session served by this Runtime. */
   devSessionId?: string;
+  /** Configuration of this running process, retained across catalog refreshes. */
+  runtimeConfig?: ChildToolConfig;
 }
 
 export type ChildToolRuntimeState = 'unknown' | 'starting' | 'ready' | 'stopped' | 'error';
@@ -93,6 +95,8 @@ export class ChildToolProcessService implements OnDestroy {
   >();
   private removeProcessMessageListener: (() => void) | null = null;
   private removeSessionStateListener: (() => void) | null = null;
+  private removeHostShutdownListener: (() => void) | null = null;
+  private hostShuttingDown = false;
   readonly runtimeStates$ = this.runtimeStatesSubject.asObservable();
 
   constructor(
@@ -100,7 +104,18 @@ export class ChildToolProcessService implements OnDestroy {
     private projectService: ProjectService,
     private subappManager: SubappManagerService,
   ) {
-    const onStateChanged = window['childToolSession']?.onStateChanged;
+    // DI may construct this service before ElectronService.init installs window aliases.
+    const sessionApi = (window as any).electronAPI?.childToolSession || window['childToolSession'];
+    this.removeHostShutdownListener = sessionApi?.onHostShutdown?.(() => {
+      this.hostShuttingDown = true;
+      for (const toolId of this.prewarmReleaseTimers.keys()) this.clearPrewarmRelease(toolId);
+      for (const session of this.sessions.values()) {
+        session.expectedStopReason = 'shutdown';
+        this.cancelReleaseTimer(session);
+        this.cancelRecovery(session, true);
+      }
+    }) || null;
+    const onStateChanged = sessionApi?.onStateChanged;
     if (typeof onStateChanged === 'function') {
       this.removeSessionStateListener = onStateChanged((payload: unknown) => {
         this.reconcileSharedRuntimeStates(payload);
@@ -378,6 +393,8 @@ export class ChildToolProcessService implements OnDestroy {
     this.removeProcessMessageListener = null;
     this.removeSessionStateListener?.();
     this.removeSessionStateListener = null;
+    this.removeHostShutdownListener?.();
+    this.removeHostShutdownListener = null;
     this.processMessageListeners.clear();
     for (const toolId of this.prewarmReleaseTimers.keys()) {
       this.clearPrewarmRelease(toolId);
@@ -480,6 +497,7 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   private async startSession(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
+    if (this.hostShuttingDown) throw new Error('Host is shutting down');
     if (session.running && session.hostInfo) {
       return session.hostInfo;
     }
@@ -508,7 +526,18 @@ export class ChildToolProcessService implements OnDestroy {
       return sharedHostInfo;
     }
 
-    return await this.startServer(config, session);
+    const api = (window as any).electronAPI?.subapps;
+    if (!config.catalogId || !api?.prepareLaunch) return this.startServer(config, session);
+
+    const prepared = await api.prepareLaunch({ id: config.catalogId });
+    try {
+      if (this.hostShuttingDown) throw new Error('Host is shutting down');
+      const latestConfig = prepared.config as ChildToolConfig;
+      session.version = latestConfig.version || '';
+      return await this.startServer(latestConfig, session);
+    } finally {
+      await api.finishLaunch(prepared.token);
+    }
   }
 
   private async stopSession(
@@ -613,6 +642,7 @@ export class ChildToolProcessService implements OnDestroy {
 
     session.streamId = String(sharedSession.streamId || '');
     session.hostInfo = hostInfo;
+    session.version = hostInfo.runtimeConfig?.version || session.version;
     session.running = true;
     this.publishRuntimeState(config.id, 'ready', session);
     this.log(config, 'shared session acquired', this.sanitizeHostInfo(hostInfo));
@@ -807,6 +837,7 @@ export class ChildToolProcessService implements OnDestroy {
         ...(hostApiServer ? { apiServer: hostApiServer } : {}),
         entry: config.entry || 'index.js',
         packagePath: projectPath,
+        runtimeConfig: config,
       };
       session.hostInfo = registeredHostInfo;
       const registered = await window['childToolSession']?.register?.({
@@ -938,7 +969,7 @@ export class ChildToolProcessService implements OnDestroy {
     }
 
     if (output.type === 'close') {
-      const expectedStopReason = session.expectedStopReason;
+      const expectedStopReason = this.hostShuttingDown ? 'shutdown' : session.expectedStopReason;
       const shouldRecover = !expectedStopReason && session.refCount > 0;
       const reason = `${config.id} server closed with code ${this.formatProcessExitCode(output.code)}${this.formatBufferedStderr(session)}`;
       const details = {
@@ -983,7 +1014,7 @@ export class ChildToolProcessService implements OnDestroy {
     session: ChildToolSession,
     reason: string,
   ): void {
-    if (session.refCount === 0 || session.running || session.recoveryTimer) return;
+    if (this.hostShuttingDown || session.refCount === 0 || session.running || session.recoveryTimer) return;
     if (session.recoveryAttempts >= this.maxRecoveryAttempts) {
       this.publishRuntimeState(config.id, 'error', session, reason);
       return;
@@ -1015,6 +1046,7 @@ export class ChildToolProcessService implements OnDestroy {
   }
 
   private reconcileSharedRuntimeStates(payload: unknown): void {
+    if (this.hostShuttingDown) return;
     const runtimes = Array.isArray(payload) ? payload as SharedChildToolRuntime[] : [];
     for (const [toolId, session] of this.sessions) {
       if (session.refCount === 0 || session.startPromise || session.readyResolve || session.reconcilePromise) continue;

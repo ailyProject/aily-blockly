@@ -96,7 +96,9 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   get openToolList() {
-    return this.uiService.openToolList;
+    // Focus changes the z-index, not DOM order: moving an iframe reloads its document
+    // and invalidates in-flight child lifecycle calls (including prepareUpdate).
+    return [...this.uiService.openToolList].sort();
   }
 
   isChildTool(toolId: string): boolean {

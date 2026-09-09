@@ -754,6 +754,7 @@ const {
   registerWindowHandlers,
   forceStopChildToolByCatalogId,
   listChildToolHoldersForCatalogId,
+  getRunningSubappConfig,
 } = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
@@ -1998,8 +1999,10 @@ function loadEnv() {
     : {};
   const buildProduct = getBuildProduct();
 
-  // 设置系统默认的应用数据目录
-  if (isWin32) {
+  // Explicit launch overrides allow isolated profiles without changing production defaults.
+  if (process.env.AILY_APPDATA_PATH) {
+    process.env.AILY_APPDATA_PATH = path.resolve(process.env.AILY_APPDATA_PATH);
+  } else if (isWin32) {
     // 设置Windows的环境变量
     process.env.AILY_APPDATA_PATH = conf["appdata_path"]["win32"].replace('%HOMEPATH%', os.homedir());
   } else if (isDarwin) {
@@ -2595,6 +2598,8 @@ function createWindow() {
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {
+    canMutateSharedTree: () => !hasOtherRunningInstances(),
+    getRunningSubappConfig,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
     canActivateUpdate: (entry) => {
