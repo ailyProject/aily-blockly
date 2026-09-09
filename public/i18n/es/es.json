@@ -1058,6 +1058,12 @@
         "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
     },
     "LIBRARY_PUBLISH": {
+        "SUBMIT_FAILED": "Error al publicar: {{error}}",
+        "NETWORK_ERROR": "Error de conexión. Comprueba la conexión y el estado del envío en el centro de usuario antes de reintentarlo.",
+        "SERVICE_ERROR": "El servicio no está disponible temporalmente. Comprueba más tarde el estado del envío en el centro de usuario.",
+        "GITHUB_AUTH_TIMEOUT": "La autorización de GitHub ha agotado el tiempo de espera. Vuelve a publicar y completa la autorización.",
+        "LOCAL_SAVE_FAILED": "El envío se ha aceptado, pero no se pudieron guardar los metadatos locales: {{error}}. Revisa los archivos locales; no es necesario volver a publicar.",
+        "PACKAGE_NAME_UNAVAILABLE": "Otro usuario ya utiliza el nombre de biblioteca {{name}}. Cambia el nombre antes de publicar.",
         "RELOAD_TITLE": "Recargar proyecto actual",
         "RELOAD_RENAMED": "La biblioteca local cambió de nombre de {{previousName}} a {{nextName}}.",
         "RELOAD_UPDATED": "La información de la biblioteca local se ha actualizado.",

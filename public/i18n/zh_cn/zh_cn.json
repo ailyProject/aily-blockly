@@ -1207,6 +1207,12 @@
         "CANCEL": "取消"
     },
     "LIBRARY_PUBLISH": {
+        "SUBMIT_FAILED": "发布失败：{{error}}",
+        "NETWORK_ERROR": "网络连接失败，请检查网络，并到用户中心确认提交状态后再重试。",
+        "SERVICE_ERROR": "服务暂时不可用，请稍后到用户中心确认提交状态。",
+        "GITHUB_AUTH_TIMEOUT": "GitHub 授权等待超时，请重新发布并完成授权。",
+        "LOCAL_SAVE_FAILED": "库提交已受理，但本地信息保存失败：{{error}}。请检查本地文件，无需重复发布。",
+        "PACKAGE_NAME_UNAVAILABLE": "库名 {{name}} 已被其他用户发布或占用，请修改库名后再发布。",
         "RELOAD_TITLE": "重新加载当前项目",
         "RELOAD_RENAMED": "本地库已从 {{previousName}} 重命名为 {{nextName}}。",
         "RELOAD_UPDATED": "本地库信息已更新。",

@@ -164,11 +164,11 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(getStore).not.toHaveBeenCalled();
   });
 
-  it('does not add a category to a Blockly upload', async () => {
+  it('uploads Blockly with an explicit category', async () => {
     useBlockly();
     await component.syncToCloud();
     expect(component.cloudService.syncProject.calls.first().args[0]).toEqual({
-      pid: undefined, projectData: { name: 'demo' }, archive: `${root}/project.7z`,
+      pid: undefined, projectData: { name: 'demo' }, archive: `${root}/project.7z`, category: 'blockly',
     });
   });
 
@@ -178,6 +178,34 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(component.cmdService.runAsync).not.toHaveBeenCalled();
     expect(component.cloudService.syncProject).not.toHaveBeenCalled();
     expect(component.isSyncing).toBeFalse();
+  });
+
+  it('does not upload another project metadata when the active project changes while packing', async () => {
+    component.cmdService.runAsync.and.callFake(async () => {
+      files.set(`${root}/project.7z`, 'archive');
+      component.projectService.currentProjectPath = '/Aily Projects/other';
+      return { type: 'close', code: 0 };
+    });
+    await component.syncToCloud();
+    expect(component.cloudService.syncProject).not.toHaveBeenCalled();
+    expect(files.has(`${root}/project.7z`)).toBeFalse();
+    expect(component.isSyncing).toBeFalse();
+  });
+
+  it('writes the returned cloud ID to the uploaded project even after switching projects', async () => {
+    const otherPath = '/Aily Projects/other';
+    const otherData = { name: 'other', cloudId: 'other-cloud' };
+    files.set(`${otherPath}/package.json`, JSON.stringify(otherData));
+    component.projectService.currentProjectPath = otherPath;
+    component.projectService.currentPackageData = otherData;
+    component.projectService.copyPackageJsonToTemp = jasmine.createSpy('copy');
+
+    await component.setCurrentProjectCloudId('uploaded-cloud', root);
+
+    expect(JSON.parse(files.get(`${root}/package.json`)!)).toEqual(jasmine.objectContaining({ cloudId: 'uploaded-cloud' }));
+    expect(JSON.parse(files.get(`${otherPath}/package.json`)!)).toEqual(otherData);
+    expect(component.projectService.currentPackageData).toBe(otherData);
+    expect(component.projectService.copyPackageJsonToTemp).toHaveBeenCalledOnceWith(root);
   });
 
   it('does not upload an archive when 7z reports a failure', async () => {

@@ -23,6 +23,12 @@ jobs:
             package-lock.json
             electron/package-lock.json
 
+      - name: Cache child resources
+        uses: actions/cache@v4
+        with:
+          path: .aily/child-cache
+          key: child-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
+
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
@@ -155,6 +161,12 @@ jobs:
             package-lock.json
             electron/package-lock.json
 
+      - name: Cache child resources
+        uses: actions/cache@v4
+        with:
+          path: .aily/child-cache
+          key: child-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
+
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
@@ -272,6 +284,12 @@ jobs:
             package-lock.json
             electron/package-lock.json
 
+      - name: Cache child resources
+        uses: actions/cache@v4
+        with:
+          path: .aily/child-cache
+          key: child-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
+
       - name: Install Dependencies
         run: |
           npm install -g @angular/cli
@@ -372,6 +390,12 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             electron/package-lock.json
+
+      - name: Cache child resources
+        uses: actions/cache@v4
+        with:
+          path: .aily/child-cache
+          key: child-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
 
       - name: Install Dependencies
         run: |

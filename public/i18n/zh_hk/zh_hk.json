@@ -1139,6 +1139,12 @@
         "CANCEL": "取消"
     },
     "LIBRARY_PUBLISH": {
+        "SUBMIT_FAILED": "發佈失敗：{{error}}",
+        "NETWORK_ERROR": "網絡連線失敗，請檢查網絡，並到用戶中心確認提交狀態後再重試。",
+        "SERVICE_ERROR": "服務暫時無法使用，請稍後到用戶中心確認提交狀態。",
+        "GITHUB_AUTH_TIMEOUT": "GitHub 授權等待逾時，請重新發佈並完成授權。",
+        "LOCAL_SAVE_FAILED": "庫提交已受理，但本地資訊儲存失敗：{{error}}。請檢查本地檔案，無需重複發佈。",
+        "PACKAGE_NAME_UNAVAILABLE": "庫名 {{name}} 已被其他用戶發佈或佔用，請修改庫名後再發佈。",
         "RELOAD_TITLE": "重新載入目前專案",
         "RELOAD_RENAMED": "本地庫已從 {{previousName}} 重新命名為 {{nextName}}。",
         "RELOAD_UPDATED": "本地庫資訊已更新。",

@@ -1046,6 +1046,12 @@
         "LOCK_ACQUIRE_FAILED": "Could not acquire project lock. Please try again."
     },
     "LIBRARY_PUBLISH": {
+        "SUBMIT_FAILED": "게시 실패: {{error}}",
+        "NETWORK_ERROR": "네트워크 연결에 실패했습니다. 다시 시도하기 전에 연결과 사용자 센터의 제출 상태를 확인하세요.",
+        "SERVICE_ERROR": "서비스를 일시적으로 사용할 수 없습니다. 나중에 사용자 센터에서 제출 상태를 확인하세요.",
+        "GITHUB_AUTH_TIMEOUT": "GitHub 인증 대기 시간이 초과되었습니다. 다시 게시하고 인증을 완료하세요.",
+        "LOCAL_SAVE_FAILED": "제출은 접수되었지만 로컬 정보 저장에 실패했습니다: {{error}}. 로컬 파일을 확인하세요. 다시 게시할 필요가 없습니다.",
+        "PACKAGE_NAME_UNAVAILABLE": "라이브러리 이름 {{name}}을 다른 사용자가 사용하고 있습니다. 이름을 변경한 후 게시하세요.",
         "RELOAD_TITLE": "현재 프로젝트 다시 불러오기",
         "RELOAD_RENAMED": "로컬 라이브러리 이름이 {{previousName}}에서 {{nextName}}(으)로 변경되었습니다.",
         "RELOAD_UPDATED": "로컬 라이브러리 정보가 업데이트되었습니다.",

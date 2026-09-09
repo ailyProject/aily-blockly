@@ -1,4 +1,5 @@
 const { spawn } = require('child_process');
+const { prepareChildResources } = require('./prepare-child-resources');
 
 function isCoderDevMode(args = []) {
   return args.includes('--coder');
@@ -22,27 +23,34 @@ function createElectronDevLaunchOptions(args = [], environment = {}) {
   };
 }
 
-function main() {
-  const electronPath = require('electron');
+async function main() {
   const launch = createElectronDevLaunchOptions(process.argv.slice(2), process.env);
+  await prepareChildResources({ development: true, includeCoder: launch.coderMode });
+  const electronPath = require('electron');
 
   console.log(`[electron-dev] product=${launch.env.AILY_BUILD_PRODUCT}`);
   const child = spawn(electronPath, ['./electron/main.js', ...launch.electronArgs], {
-    stdio: 'inherit',
+    // Let Node write Unicode to Windows terminals instead of interpreting Electron's UTF-8 as GBK.
+    stdio: process.platform === 'win32' ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     env: launch.env,
   });
+  child.stdout?.pipe(process.stdout, { end: false });
+  child.stderr?.pipe(process.stderr, { end: false });
 
-  child.on('exit', (code, signal) => {
+  child.on('close', (code, signal) => {
     if (signal) {
       process.kill(process.pid, signal);
       return;
     }
-    process.exit(code ?? 0);
+    process.exitCode = code ?? 0;
   });
 }
 
 if (require.main === module) {
-  main();
+  main().catch((error) => {
+    console.error(`[electron-dev] ${error.message}`);
+    process.exitCode = 1;
+  });
 }
 
 module.exports = {

@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+const { prepareChildResources } = require('../scripts/prepare-child-resources');
+
 /**
  * Playwright global setup.
  *
@@ -9,6 +11,7 @@ import path from 'node:path';
  * 1. Run `ng build --base-href ./` to produce `dist/aily-blockly/browser`.
  * 2. Stage that browser output into `<root>/renderer`, matching the production
  *    electron-builder mapping used by `electron/main.js`.
+ * 3. Prepare the platform's locked child resources before starting Electron.
  *
  * 每次运行都重新构建并暂存 renderer，确保测试使用当前源码。
  */
@@ -91,7 +94,8 @@ function isFreshAgainstBuildInputs(targetPath: string): boolean {
   return latestMtimeMs(targetPath) >= latestBuildInputMtimeMs();
 }
 
-export default function globalSetup(): void {
+export default async function globalSetup(): Promise<void> {
+  await prepareChildResources({ workspaceRoot: ROOT, development: true });
   runAngularBuild();
   stageRenderer();
 }

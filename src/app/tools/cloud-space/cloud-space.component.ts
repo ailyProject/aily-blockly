@@ -417,23 +417,25 @@ export class CloudSpaceComponent {
     // cloudService.uploadProject(project)
   }
 
-  async setCurrentProjectCloudId(cloudId: string) {
-    const currentProjectData = this.projectService.currentPackageData;
-    console.log('当前项目数据:', currentProjectData);
-    if (!currentProjectData) return;
-
-    currentProjectData.cloudId = cloudId;
-
-    // 同步更新package.json
-    await this.projectService.setPackageJson(currentProjectData);
+  async setCurrentProjectCloudId(cloudId: string, projectPath: string) {
+    const packagePath = `${projectPath}/package.json`;
+    const packageData = JSON.parse(this.electronService.readFile(packagePath));
+    packageData.cloudId = cloudId;
+    window['fs'].writeFileSync(packagePath, JSON.stringify(packageData, null, 2));
+    if (this.projectService.currentProjectPath === projectPath) {
+      this.projectService.currentPackageData = packageData;
+    }
+    await this.projectService.copyPackageJsonToTemp(projectPath);
   }
 
   async syncToCloud() {
+    if (this.isSyncing) return;
     this.isSyncing = true;
+    const projectPath = this.projectService.currentProjectPath;
 
     try {
       // 等待保存完成
-      const result = await this.projectService.save(this.projectService.currentProjectPath);
+      const result = await this.projectService.save(projectPath);
       if (result.success) {
         console.log('项目保存成功，开始同步到云端');
       } else {
@@ -442,14 +444,21 @@ export class CloudSpaceComponent {
         return;
       }
 
-      const archivePath = await this.packageProject(this.projectService.currentProjectPath);
+      if (this.projectService.currentProjectPath !== projectPath) {
+        throw new Error('当前项目已切换，请重新同步');
+      }
+      const archivePath = await this.packageProject(projectPath);
       if (!archivePath) {
         this.isSyncing = false;
         return;
       }
 
-      // 获取当前项目数据（此时 package.json 已经更新完成）
-      const currentProjectData = await this.projectService.getPackageJson();
+      if (this.projectService.currentProjectPath !== projectPath) {
+        await this.delete7zFile(archivePath);
+        throw new Error('当前项目已切换，请重新同步');
+      }
+      // 使用已打包项目的元数据，避免上传期间切换项目导致分类或云 ID 错配。
+      const currentProjectData = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
       console.log('当前项目数据:', currentProjectData);
       if (!currentProjectData) {
         this.isSyncing = false;
@@ -462,12 +471,12 @@ export class CloudSpaceComponent {
       pid: currentProjectData?.cloudId,
       projectData: cloudProjectData,
       archive: archivePath,
-      ...(this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder'
-        ? { category: 'coder' as const } : {}),
+      category: this.projectService.getProjectMode(projectPath) === 'coder'
+        ? 'coder' : 'blockly',
     }).subscribe(async res => {
         try {
           if (res && res.status === 200) {
-            await this.setCurrentProjectCloudId(res.data.id);
+            await this.setCurrentProjectCloudId(res.data.id, projectPath);
             this.message.success('同步成功');
             // 更新项目列表
             await this.getCloudProjects();

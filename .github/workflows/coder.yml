@@ -36,6 +36,12 @@ jobs:
             package-lock.json
             electron/package-lock.json
 
+      - name: Cache child resources
+        uses: actions/cache@v4
+        with:
+          path: .aily/child-cache
+          key: child-coder-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
+
       - name: Read Coder version
         id: version
         shell: pwsh

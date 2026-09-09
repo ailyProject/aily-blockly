@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { ActionService } from '@core/app-shell/public-api';
 import { ProjectService } from '@domain/project/public-api';
+import { CoderBuildInfoService } from '@domain/build/public-api';
 
 export interface CodeEditorProPersistenceBridge {
   saveAll(): Promise<{ ok: boolean; message?: string }>;
@@ -13,11 +14,14 @@ export interface CodeEditorProPersistenceBridge {
 export class CodeEditorProProjectService {
   private initialized = false;
   private readonly persistenceBridges = new Map<string, CodeEditorProPersistenceBridge>();
-  private key(path: string): string { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
+  private key(path: string): string {
+    return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  }
 
   constructor(
     private actionService: ActionService,
     private projectService: ProjectService,
+    private coderBuildInfo: CoderBuildInfoService,
   ) {}
 
   init() {
@@ -63,6 +67,9 @@ export class CodeEditorProProjectService {
     if (!bridge) throw new Error(`Aily Coder 保存通道尚未就绪: ${path}`);
     const result = await bridge.saveAll();
     if (!result.ok) throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
+    if (path && this.projectService.isAilyCodeProject(path)) {
+      await this.coderBuildInfo.updateCodeHash(path);
+    }
     return { ok: true };
   }
 

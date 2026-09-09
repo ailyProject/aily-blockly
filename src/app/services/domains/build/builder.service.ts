@@ -118,14 +118,15 @@ export class BuilderService {
     },
   ) {
     try {
+      const projectPath = this.projectService.currentProjectPath;
       await this.persistActiveCoderProjectBeforeBuild(
-        this.projectService.currentProjectPath,
+        projectPath,
       );
       // Pro / code-editor-pro 路由下 Blockly 未挂载，compile-begin 无监听者会一直等反馈；
       // Coder 工程改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
       let feedback: any;
       if (!this.actionService.hasListener('builder-compile-begin')) {
-        const r = await this.compileService.runCompileFromDisk();
+        const r = await this.compileService.runCompileFromDisk({ projectPath });
         feedback = {
           success: true,
           data: { success: r.success, result: r.result },
@@ -157,11 +158,11 @@ export class BuilderService {
         error.text = buildResult?.text || feedback?.error || '编译失败';
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildResult = buildResult;
-        this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: false, result: buildResult, error });
+        this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
         throw error;
       }
 
-      this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: true, result: buildResult });
+      this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
       return buildResult;
     } catch (error: any) {
       // console.error('编译失败:', error);
@@ -194,11 +195,11 @@ export class BuilderService {
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
       error.buildResult = buildResult;
-      this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: false, result: buildResult, error });
+      this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
       throw error;
     }
 
-    this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: true, result: buildResult });
+    this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
     return buildResult;
   }
 

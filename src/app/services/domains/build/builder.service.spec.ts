@@ -2,14 +2,16 @@ import { of, Subject } from 'rxjs';
 import { BuilderService } from './builder.service';
 
 describe('BuilderService Coder persistence', () => {
-  function createHarness(options: { coder: boolean; saveSucceeds?: boolean }) {
+  function createHarness(options: { coder: boolean; saveSucceeds?: boolean; switchDuringSave?: boolean }) {
     const events: string[] = [];
     const operationEvents: string[] = [];
+    const compiledProjects: string[] = [];
     const actionService = {
       hasListener: () => false,
       dispatch: () => undefined,
       dispatchWithFeedback: (type: string) => {
         events.push(type);
+        if (options.switchDuringSave) projectService.currentProjectPath = '/workspace/other';
         return of({
           actionId: 'test-save',
           success: options.saveSucceeds !== false,
@@ -30,8 +32,9 @@ describe('BuilderService Coder persistence', () => {
       isAilyCodeProject: () => options.coder,
     };
     const compileService = {
-      runCompileFromDisk: async () => {
+      runCompileFromDisk: async (input: { projectPath: string }) => {
         events.push('compile-from-disk');
+        compiledProjects.push(input.projectPath);
         return {
           success: true,
           result: { state: 'done', text: 'compiled' },
@@ -47,7 +50,7 @@ describe('BuilderService Coder persistence', () => {
       { isWindowFocused: () => true } as any,
       compileService as any,
     );
-    return { service, events, operationEvents };
+    return { service, events, operationEvents, compiledProjects };
   }
 
   it('saves the active Coder editor to disk before compiling from disk', async () => {
@@ -73,5 +76,14 @@ describe('BuilderService Coder persistence', () => {
 
     expect(events).toEqual(['project-save']);
     expect(operationEvents).toEqual(['build:/workspace/coder', 'finished']);
+  });
+
+  it('keeps the original project path when the active project changes during saving', async () => {
+    const { service, compiledProjects } = createHarness({ coder: true, switchDuringSave: true });
+    const finishedProjects: Array<string | undefined> = [];
+    service.buildFinishedSubject.subscribe(event => finishedProjects.push(event.projectPath));
+    await service.build();
+    expect(compiledProjects).toEqual(['/workspace/coder']);
+    expect(finishedProjects).toEqual(['/workspace/coder']);
   });
 });

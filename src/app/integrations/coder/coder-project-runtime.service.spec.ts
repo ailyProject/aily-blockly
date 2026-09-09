@@ -6,7 +6,11 @@ import { NoticeService } from '@core/app-shell/public-api';
 import { CmdService, CrossPlatformCmdService, ElectronService, LogService, PlatformService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService, CODER_EXECUTION_PORT } from '@domain/project/public-api';
-import { BUILD_ACTION_PORT, CompileValidationService } from '@domain/build/public-api';
+import {
+  BUILD_ACTION_PORT,
+  CoderBuildInfoService,
+  CompileValidationService,
+} from '@domain/build/public-api';
 import { SerialService, UploaderService } from '@domain/device/public-api';
 import { CoderProjectRuntimeService } from './coder-project-runtime.service';
 
@@ -63,6 +67,10 @@ describe('Coder concurrent process integration', () => {
       { provide: NzMessageService, useValue: { warning: () => {}, error: () => {} } },
       { provide: TranslateService, useValue: { instant: (key: string) => key } },
       { provide: CompileValidationService, useValue: { triggerAfterSuccessfulCompile: () => {} } },
+      { provide: CoderBuildInfoService, useValue: {
+        updateCodeHash: async (path: string) => `hash:${path}`,
+        saveBuildInfo: async () => {},
+      } },
     ] });
     runtime = TestBed.inject(CoderProjectRuntimeService);
   });

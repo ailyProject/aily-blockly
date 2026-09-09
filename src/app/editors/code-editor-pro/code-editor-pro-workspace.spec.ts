@@ -106,7 +106,12 @@ describe('Coder retained project workspaces', () => {
   });
 
   it('routes simultaneous saves to their matching iframe and includes inactive dirty editors when closing', async () => {
-    const persistence = new CodeEditorProProjectService({} as any, service);
+    const updateCodeHash = jasmine.createSpy('updateCodeHash').and.resolveTo('hash');
+    const persistence = new CodeEditorProProjectService(
+      {} as any,
+      service,
+      { updateCodeHash } as any,
+    );
     let finishA!: (value: { ok: boolean }) => void;
     const a = { saveAll: jasmine.createSpy('saveA').and.returnValue(new Promise(resolve => finishA = resolve)), hasUnsavedChanges: async () => true };
     const b = { saveAll: jasmine.createSpy('saveB').and.resolveTo({ ok: true }), hasUnsavedChanges: async () => false };
@@ -117,5 +122,43 @@ describe('Coder retained project workspaces', () => {
     expect(a.saveAll).toHaveBeenCalledTimes(1); expect(b.saveAll).toHaveBeenCalledTimes(1);
     expect(await (persistence as any).hasUnsavedChanges()).toBeTrue();
     finishA({ ok: true }); await pendingA;
+    expect(updateCodeHash).toHaveBeenCalledWith('/work/device-a');
+    expect(updateCodeHash).toHaveBeenCalledWith('/work/device-b');
+  });
+
+  it('awaits code-hash persistence before acknowledging project-save', async () => {
+    const listeners = new Map<string, (action: any) => any>();
+    let finishHash!: (value: string) => void;
+    const hashSaved = new Promise<string>(resolve => finishHash = resolve);
+    const project = {
+      currentProjectPath: '/work/device-a',
+      isAilyCodeProject: () => true,
+      copyPackageJsonToTemp: jasmine.createSpy('copyPackageJsonToTemp').and.resolveTo(true),
+    };
+    const persistence = new CodeEditorProProjectService(
+      {
+        listen: (type: string, callback: (action: any) => any) => listeners.set(type, callback),
+      } as any,
+      project as any,
+      { updateCodeHash: () => hashSaved } as any,
+    );
+    persistence.registerPersistenceBridge('/work/device-a', {
+      saveAll: async () => ({ ok: true }),
+      hasUnsavedChanges: async () => false,
+    });
+    persistence.init();
+
+    let acknowledged = false;
+    const save = listeners.get('project-save')!({ payload: { path: '/work/device-a' } })
+      .then((result: any) => {
+        acknowledged = true;
+        return result;
+      });
+    await Promise.resolve();
+    expect(acknowledged).toBeFalse();
+
+    finishHash('hash');
+    expect(await save).toEqual({ success: true, path: '/work/device-a' });
+    expect(project.copyPackageJsonToTemp).toHaveBeenCalledOnceWith('/work/device-a');
   });
 });
