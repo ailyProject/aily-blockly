@@ -337,8 +337,8 @@ function logCommandOutput(streamId, type, output, targetWebContents) {
 class CommandManager {
   constructor() {
     this.processes = new Map(); // 存储进程
-    this.streams = new Map(); // 存储流监听器
     this.processMessageListeners = new Set();
+    this.processExitListeners = new Set();
   }
 
   // 执行命令并返回流式数据
@@ -458,7 +458,7 @@ class CommandManager {
         });
 
     const startedAt = Date.now();
-    this.processes.set(streamId, {
+    const entry = {
       process: child,
       command,
       args,
@@ -467,7 +467,19 @@ class CommandManager {
       shellKind,
       shellDiagnostics,
       messagePort,
-      startedAt
+      startedAt,
+      stopRequested: false,
+    };
+    this.processes.set(streamId, entry);
+    child.once('close', (code, signal) => {
+      if (this.processes.get(streamId) === entry) this.processes.delete(streamId);
+      for (const listener of this.processExitListeners) {
+        try {
+          listener({ streamId, pid: child.pid, code, signal, expected: entry.stopRequested });
+        } catch (error) {
+          console.warn('[PROC_TRACE][CMD_EXIT_LISTENER_ERROR]', { streamId, error: String(error) });
+        }
+      }
     });
     if (messagePort) {
       child.on('message', (message) => {
@@ -508,6 +520,8 @@ class CommandManager {
     return {
       pid: child.pid,
       process: child,
+      startedAt,
+      get stopRequested() { return entry.stopRequested; },
       shouldLogOutput
     };
   }
@@ -521,9 +535,13 @@ class CommandManager {
         pid: entry.process.pid,
         command: entry.command
       });
-      await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`);
-      this.processes.delete(streamId);
-      this.streams.delete(streamId);
+      entry.stopRequested = true;
+      const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`);
+      if (!stopped && this.processes.get(streamId) === entry) {
+        entry.stopRequested = false;
+        return false;
+      }
+      if (this.processes.get(streamId) === entry) this.processes.delete(streamId);
       return true;
     }
     return false;
@@ -602,6 +620,14 @@ class CommandManager {
     return () => this.processMessageListeners.delete(listener);
   }
 
+  onProcessExit(listener) {
+    if (typeof listener !== 'function') {
+      throw new TypeError('Process exit listener must be a function.');
+    }
+    this.processExitListeners.add(listener);
+    return () => this.processExitListeners.delete(listener);
+  }
+
   notifyProcessMessage(event) {
     for (const listener of this.processMessageListeners) {
       try {
@@ -618,11 +644,7 @@ class CommandManager {
   async killAllProcesses() {
     const entries = Array.from(this.processes.entries());
     console.info('[PROC_TRACE][CMD_KILL_ALL]', { count: entries.length, processes: this.getActiveProcessSummaries() });
-    await Promise.all(entries.map(async ([streamId, entry]) => {
-      await killRegisteredProcessTree(entry.process?.pid, `cmd:${streamId}`);
-      this.processes.delete(streamId);
-      this.streams.delete(streamId);
-    }));
+    await Promise.all(entries.map(([streamId]) => this.killProcess(streamId)));
   }
 
     /**
@@ -677,22 +699,21 @@ function registerCmdHandlers(mainWindow) {
 
       // 监听进程关闭
       process.on('close', (code, signal) => {
-        const entry = commandManager.processes.get(streamId);
         console.log(`[CMD][${streamId}] close, code: ${code}, signal: ${signal}`);
         console.info('[PROC_TRACE][CMD_CLOSE]', {
           streamId,
           pid: process.pid,
           code,
           signal,
-          durationMs: entry ? Date.now() - entry.startedAt : undefined
+          durationMs: Date.now() - result.startedAt
         });
         sendCmdData(senderWindow, `cmd-data-${streamId}`, {
           type: 'close',
           code,
           signal,
-          streamId
+          streamId,
+          expected: result.stopRequested,
         });
-        commandManager.processes.delete(streamId);
       });
 
       // 监听进程错误
@@ -714,7 +735,6 @@ function registerCmdHandlers(mainWindow) {
           error: formattedError,
           streamId
         });
-        commandManager.processes.delete(streamId);
       });
 
       return {
@@ -768,5 +788,6 @@ module.exports = {
   killAllCmdProcesses: () => commandManager.killAllProcesses(),
   getActiveCmdProcesses: () => commandManager.getActiveProcessSummaries(),
   onCmdProcessMessage: (listener) => commandManager.onProcessMessage(listener),
+  onCmdProcessExit: (listener) => commandManager.onProcessExit(listener),
   sendCmdProcessMessage: (streamId, message) => commandManager.sendProcessMessage(streamId, message),
 };
