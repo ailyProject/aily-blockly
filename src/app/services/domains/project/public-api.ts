@@ -20,3 +20,5 @@ export * from './project-mode';
 export * from './project.service';
 export * from './recent-projects';
 export * from './ports/project-application.port';
+
+export { CODER_EXECUTION_PORT, type CoderExecutionPort } from './ports/coder-execution.port';

@@ -12,7 +12,8 @@ export interface CodeEditorProPersistenceBridge {
 })
 export class CodeEditorProProjectService {
   private initialized = false;
-  private persistenceBridge: CodeEditorProPersistenceBridge | null = null;
+  private readonly persistenceBridges = new Map<string, CodeEditorProPersistenceBridge>();
+  private key(path: string): string { return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
 
   constructor(
     private actionService: ActionService,
@@ -27,7 +28,7 @@ export class CodeEditorProProjectService {
     this.initialized = true;
     this.actionService.listen(
       'saveProject',
-      () => this.saveAll(),
+      () => this.saveAllOpenProjects(),
       'code-editor-pro-save-project',
     );
     this.actionService.listen(
@@ -39,7 +40,7 @@ export class CodeEditorProProjectService {
       'project-save',
       async (action) => {
         const path = action.payload?.path || this.projectService.currentProjectPath;
-        await this.saveAll();
+        await this.saveAll(path);
         if (path) {
           await this.projectService.copyPackageJsonToTemp(path);
         }
@@ -49,39 +50,37 @@ export class CodeEditorProProjectService {
     );
   }
 
-  registerPersistenceBridge(bridge: CodeEditorProPersistenceBridge): void {
-    this.persistenceBridge = bridge;
+  registerPersistenceBridge(path: string, bridge: CodeEditorProPersistenceBridge): void {
+    this.persistenceBridges.set(this.key(path), bridge);
   }
 
-  unregisterPersistenceBridge(bridge: CodeEditorProPersistenceBridge): void {
-    if (this.persistenceBridge === bridge) {
-      this.persistenceBridge = null;
-    }
+  unregisterPersistenceBridge(path: string, bridge: CodeEditorProPersistenceBridge): void {
+    if (this.persistenceBridges.get(this.key(path)) === bridge) this.persistenceBridges.delete(this.key(path));
   }
 
-  private async saveAll(): Promise<{ ok: true }> {
-    if (!this.persistenceBridge) {
-      throw new Error('Aily Coder 保存通道尚未就绪');
-    }
-    const result = await this.persistenceBridge.saveAll();
-    if (!result.ok) {
-      throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
-    }
+  async saveAll(path = this.projectService.currentProjectPath): Promise<{ ok: true }> {
+    const bridge = this.persistenceBridges.get(this.key(path));
+    if (!bridge) throw new Error(`Aily Coder 保存通道尚未就绪: ${path}`);
+    const result = await bridge.saveAll();
+    if (!result.ok) throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
+    return { ok: true };
+  }
+
+  async saveAllOpenProjects(): Promise<{ ok: true }> {
+    await Promise.all([...this.persistenceBridges.keys()].map(path => this.saveAll(path)));
     return { ok: true };
   }
 
   private async hasUnsavedChanges(): Promise<boolean> {
-    if (!this.persistenceBridge) {
-      return true;
-    }
-    return this.persistenceBridge.hasUnsavedChanges();
+    const states = await Promise.all([...this.persistenceBridges.values()].map(bridge => bridge.hasUnsavedChanges()));
+    return states.some(Boolean);
   }
 
   destroy() {
     this.actionService.unlisten('code-editor-pro-save-project');
     this.actionService.unlisten('code-editor-pro-check-unsaved');
     this.actionService.unlisten('code-editor-pro-project-save');
-    this.persistenceBridge = null;
+    this.persistenceBridges.clear();
     this.initialized = false;
   }
 }

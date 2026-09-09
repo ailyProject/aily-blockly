@@ -1024,6 +1024,7 @@ async function handleCliBridgeCommand(action, payload) {
         'project_open',
         'project_close',
         'project_load_status',
+        'project_list',
         'app_info',
         'main_menu_list',
         'main_menu_execute',
@@ -1180,10 +1181,17 @@ async function handleCliBridgeCommand(action, payload) {
   }
 }
 
+let coderOpenProjects = [];
+ipcMain.on('cli-bridge:coder-projects', (event, projects) => {
+  if (event.sender !== mainWindow?.webContents || !Array.isArray(projects)) return;
+  coderOpenProjects = [...new Set(projects.filter(project => typeof project === 'string' && path.isAbsolute(project)).map(project => path.resolve(project)))];
+});
+
 function getCliBridgeStatus() {
   return {
     pid: process.pid,
     project: getOpenedProjectPathFromWindow(),
+    projects: coderOpenProjects,
     serve: !!serve,
   };
 }

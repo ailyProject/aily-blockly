@@ -82,6 +82,12 @@ export let HEADER_MENU: IMenuItem[] = [
     data: { type: 'project-open', data: 'project-open' },
     icon: 'fa-light fa-folder-open',
   },
+  {
+    name: 'MENU.PROJECT_ADD',
+    action: 'project-add',
+    icon: 'fa-light fa-folder-plus',
+    router: ['/main/code-editor-pro'],
+  },
   /** 子项由 header 打开菜单时动态填充 */
   {
     name: 'MENU.RECENT_PROJECTS',

@@ -1,12 +1,12 @@
-import { CodeEditorProComponent } from './code-editor-pro.component';
+import { CodeEditorFrameComponent } from './code-editor-frame.component';
 
-describe('CodeEditorProComponent ready timeout lifecycle', () => {
+describe('CodeEditorFrameComponent ready timeout lifecycle', () => {
   let component: any;
 
   beforeEach(() => {
     jasmine.clock().install();
     jasmine.clock().mockDate(new Date('2026-09-02T04:00:00Z'));
-    component = Object.create(CodeEditorProComponent.prototype);
+    component = Object.create(CodeEditorFrameComponent.prototype);
     component.coderEmbedLoading = true;
     component.coderReadyProtocolSupported = true;
     component.coderSystemSuspended = false;

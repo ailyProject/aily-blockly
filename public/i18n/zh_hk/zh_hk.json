@@ -1,4 +1,10 @@
 {
+  "CODER_TABS": {
+    "PROJECTS": "專案",
+    "CLOSE": "關閉專案",
+    "BUILDING": "正在編譯",
+    "UPLOADING": "正在上傳"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "專案公開失敗",
         "WORKSPACE_PROJECT_NOT_FOUND": "專案不存在",
@@ -10,6 +16,7 @@
         "MENU": "選單",
         "PROJECT_NEW": "新建專案",
         "PROJECT_OPEN": "開啟專案",
+        "PROJECT_ADD": "新增專案工程",
         "RECENT_PROJECTS": "最近的專案",
         "RECENT_PROJECTS_EMPTY": "暫無最近開啟的專案",
         "PROJECT_SAVE": "儲存專案",

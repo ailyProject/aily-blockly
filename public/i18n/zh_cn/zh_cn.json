@@ -1,4 +1,10 @@
 {
+  "CODER_TABS": {
+    "PROJECTS": "工程",
+    "CLOSE": "关闭工程",
+    "BUILDING": "正在编译",
+    "UPLOADING": "正在上传"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "项目公开失败",
         "WORKSPACE_PROJECT_NOT_FOUND": "项目不存在",
@@ -11,6 +17,7 @@
         "PROJECT_NEW": "新建项目",
         "PROJECT_NEW_AILY_CODE": "新建 Aily Code 项目",
         "PROJECT_OPEN": "打开项目",
+        "PROJECT_ADD": "添加项目工程",
         "RECENT_PROJECTS": "最近的项目",
         "RECENT_PROJECTS_EMPTY": "暂无最近打开的项目",
         "PROJECT_SAVE": "保存项目",

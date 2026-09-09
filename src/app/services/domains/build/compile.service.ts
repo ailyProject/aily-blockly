@@ -32,6 +32,7 @@ import {
 } from '../../../utils/project-log.utils';
 
 interface DiskCompileOptions {
+  preprocessOnly?: boolean;
   projectPath?: string;
   code?: string;
 }
@@ -210,6 +211,11 @@ export class CompileService {
             fullStdErr: detail,
           },
         };
+      }
+
+      if (options.preprocessOnly) {
+        this.application.finishBuild(true);
+        return { success: true, result: { state: 'done', text: '预处理完成' } };
       }
 
       const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');

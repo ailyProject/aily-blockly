@@ -1,6 +1,6 @@
-import { Inject, Injectable } from '@angular/core';
+import { Inject, Injectable, Optional } from '@angular/core';
 import { firstValueFrom, Subject } from 'rxjs';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
 import {
   CmdService,
   CrossPlatformCmdService,
@@ -10,6 +10,7 @@ import { CompileService } from './compile.service';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
 
 export interface BuildFinishedEvent {
+  projectPath?: string;
   success: boolean;
   result?: any;
   error?: any;
@@ -37,6 +38,7 @@ export class BuilderService {
     private crossPlatformCmdService: CrossPlatformCmdService,
     private electronService: ElectronService,
     private compileService: CompileService,
+    @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution?: CoderExecutionPort,
   ) {
     this.init();
   }
@@ -62,12 +64,16 @@ export class BuilderService {
   /*
    * 开始编译
    */
-  async build(projectPath?: string) {
-    if (projectPath) {
-      return this.buildFromProjectPath(projectPath);
+  async build(projectPath?: string, options: { preprocessOnly?: boolean } = {}) {
+    const targetPath = projectPath || this.projectService.currentProjectPath;
+    if (this.coderExecution && this.projectService.isAilyCodeProject(targetPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
+    const finish = this.projectService.beginCoderOperation('build', targetPath);
+    try {
+      if (projectPath || this.projectService.isAilyCodeProject(targetPath)) return await this.buildFromProjectPath(targetPath, options);
+      return await this.buildCurrentBlocklyProject({});
+    } finally {
+      finish();
     }
-
-    return this.buildCurrentBlocklyProject({});
   }
 
   /**
@@ -151,11 +157,11 @@ export class BuilderService {
         error.text = buildResult?.text || feedback?.error || '编译失败';
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildResult = buildResult;
-        this.buildFinishedSubject.next({ success: false, result: buildResult, error });
+        this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: false, result: buildResult, error });
         throw error;
       }
 
-      this.buildFinishedSubject.next({ success: true, result: buildResult });
+      this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: true, result: buildResult });
       return buildResult;
     } catch (error: any) {
       // console.error('编译失败:', error);
@@ -178,9 +184,9 @@ export class BuilderService {
     return normalize(left) === normalize(right);
   }
 
-  private async buildFromProjectPath(projectPath: string) {
+  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean } = {}) {
     await this.persistActiveCoderProjectBeforeBuild(projectPath);
-    const compileResult = await this.compileService.runCompileFromDisk({ projectPath });
+    const compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
     const buildResult = compileResult.result;
     if (!compileResult.success || buildResult?.state === 'error') {
       const error: any = new Error(buildResult?.text || 'Build failed');
@@ -188,11 +194,11 @@ export class BuilderService {
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
       error.buildResult = buildResult;
-      this.buildFinishedSubject.next({ success: false, result: buildResult, error });
+      this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: false, result: buildResult, error });
       throw error;
     }
 
-    this.buildFinishedSubject.next({ success: true, result: buildResult });
+    this.buildFinishedSubject.next({ projectPath: this.projectService.currentProjectPath, success: true, result: buildResult });
     return buildResult;
   }
 
@@ -206,7 +212,7 @@ export class BuilderService {
     if (
       !projectPath
       || !this.projectService.isAilyCodeProject(projectPath)
-      || !this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)
+      || !this.projectService.coderProjects.some(project => this.isSameProjectPath(projectPath, project.path))
     ) {
       return;
     }
@@ -229,8 +235,10 @@ export class BuilderService {
   /*
    * 取消当前编译过程
    */
-  cancel() {
+  cancel(projectPath = this.projectService.currentProjectPath) {
+    if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) { this.coderExecution.cancel(projectPath, 'build'); return; }
     this.compileService.cancel();
+    if (this.projectService.isCoderProjectContext) return;
     this.actionService.dispatch('compile-cancel', {}, result => {
       if (result.success) {
       } else {
@@ -292,10 +300,10 @@ export class BuilderService {
       await this.crossPlatformCmdService.removeItem(libraryCachePath, false, true);
     }
 
-    if (isAilyCode) {
+    {
       const preprocessResultPath = this.electronService.pathJoin(
         projectPath,
-        'sketch',
+        isAilyCode ? 'sketch' : '.temp',
         'preprocess.json',
       );
       if (window['fs'].existsSync(preprocessResultPath)) {

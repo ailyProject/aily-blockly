@@ -4,6 +4,7 @@ import { BuilderService } from './builder.service';
 describe('BuilderService Coder persistence', () => {
   function createHarness(options: { coder: boolean; saveSucceeds?: boolean }) {
     const events: string[] = [];
+    const operationEvents: string[] = [];
     const actionService = {
       hasListener: () => false,
       dispatch: () => undefined,
@@ -19,6 +20,11 @@ describe('BuilderService Coder persistence', () => {
       },
     };
     const projectService = {
+      beginCoderOperation: (kind: string, path: string) => {
+        operationEvents.push(`${kind}:${path}`);
+        return () => operationEvents.push('finished');
+      },
+      coderProjects: [{ path: '/workspace/coder' }],
       currentProjectPath: options.coder ? '/workspace/coder' : '/workspace/blockly',
       boardChangeSubject: new Subject<void>(),
       isAilyCodeProject: () => options.coder,
@@ -41,7 +47,7 @@ describe('BuilderService Coder persistence', () => {
       { isWindowFocused: () => true } as any,
       compileService as any,
     );
-    return { service, events };
+    return { service, events, operationEvents };
   }
 
   it('saves the active Coder editor to disk before compiling from disk', async () => {
@@ -61,10 +67,11 @@ describe('BuilderService Coder persistence', () => {
   });
 
   it('does not compile Coder source when persistence fails', async () => {
-    const { service, events } = createHarness({ coder: true, saveSucceeds: false });
+    const { service, events, operationEvents } = createHarness({ coder: true, saveSucceeds: false });
 
     await expectAsync(service.build()).toBeRejectedWithError('save failed');
 
     expect(events).toEqual(['project-save']);
+    expect(operationEvents).toEqual(['build:/workspace/coder', 'finished']);
   });
 });

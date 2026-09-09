@@ -1,10 +1,10 @@
-import { Inject, Injectable } from '@angular/core';
+import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService } from '@core/platform/public-api';
 import { BuilderService } from '@domain/build/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
 import { resolveUploadDispatchMode } from './policies/upload-dispatch-policy';
 import {
   DEVICE_APPLICATION_PORT,
@@ -34,6 +34,7 @@ export class UploaderService {
     private projectService: ProjectService,
     private builderService: BuilderService,
     private translate: TranslateService,
+    @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution?: CoderExecutionPort,
   ) { }
 
   requiresLocalPort(): boolean {
@@ -172,7 +173,17 @@ export class UploaderService {
     }
   }
 
-  async upload() {
+  async upload(projectPath = this.projectService.currentProjectPath, port?: string) {
+    if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.upload(projectPath, port);
+    const finish = this.projectService.beginCoderOperation('upload');
+    try {
+      return await this.uploadCurrentProject();
+    } finally {
+      finish();
+    }
+  }
+
+  private async uploadCurrentProject() {
     // Python 将 main.py 交给 Linux connector 同步并运行；其余项目保留原 Arduino 固件上传流程。
     if (this.isPythonProject()) {
       const pythonRoute = this.currentLinuxBoardRoute();
@@ -264,7 +275,8 @@ export class UploaderService {
   /**
   * 取消当前编译过程
   */
-  cancel() {
+  cancel(projectPath = this.projectService.currentProjectPath) {
+    if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) { this.coderExecution.cancel(projectPath, 'upload'); return; }
     if (this.directUploaderActive) {
       this.application.cancelBlocklyEditorUpload();
       return;

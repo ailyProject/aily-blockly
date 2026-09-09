@@ -1,15 +1,37 @@
 <div class="code-editor-pro">
-    @if (coderEmbedSrc) {
-    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="Aily Coder"
-        [src]="coderEmbedSrc" (load)="onCoderEmbedFrameLoad()"></iframe>
+    @if (coderProjects.length > 1) {
+    <div class="coder-project-tabs" role="tablist" [attr.aria-label]="'CODER_TABS.PROJECTS' | translate">
+        @for (project of coderProjects; track project.path) {
+        <div class="coder-project-tab" [class.is-active]="isCoderTabActive(project.path)">
+            <button type="button" role="tab" class="project-select"
+                [attr.aria-selected]="isCoderTabActive(project.path)"
+                [title]="coderTabTitle(project.path)" (click)="selectCoderProject(project.path)">
+                @if (coderTabOperation(project.path)) {
+                <i class="fa-light fa-spinner fa-spin" [attr.aria-label]="('CODER_TABS.' + (coderTabOperation(project.path) === 'build' ? 'BUILDING' : 'UPLOADING')) | translate"></i>
+                } @else {
+                <i class="fa-light fa-folder" aria-hidden="true"></i>
+                }
+                <span>{{ project.name }}</span>
+                @if (coderTabOperation(project.path)) {
+                <span class="project-operation">{{ ('CODER_TABS.' + (coderTabOperation(project.path) === 'build' ? 'BUILDING' : 'UPLOADING')) | translate }}</span>
+                }
+            </button>
+            <button type="button" class="project-close" [disabled]="coderTabClosing(project.path)"
+                [attr.aria-label]="('CODER_TABS.CLOSE' | translate) + ' ' + project.name"
+                [title]="'CODER_TABS.CLOSE' | translate" (click)="closeCoderProject(project.path, $event)">
+                <i class="fa-light fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        }
+    </div>
     }
-    <app-coder-loading
-        [stage]="coderLoadingStage"
-        [visible]="(coderEmbedLoading && coderEmbedLoaderVisible) || !!coderEmbedError"
-        [revealing]="coderEmbedRevealing"
-        [error]="coderEmbedError"
-        [allowReinstall]="coderLoadingStage !== 'project'"
-        (retry)="retryCoderEmbed()"
-        (reinstall)="confirmReinstallCoderEmbed()" />
+    <div class="coder-project-frames">
+        @for (project of coderProjects; track project.path) {
+        <app-code-editor-frame [projectPath]="project.path" [active]="isCoderTabActive(project.path)"
+            [class.is-active]="isCoderTabActive(project.path)"
+            [attr.aria-hidden]="!isCoderTabActive(project.path)"
+            [attr.inert]="isCoderTabActive(project.path) ? null : ''" />
+        }
+    </div>
 </div>
 <app-notification></app-notification>

@@ -1,0 +1,15 @@
+<div class="code-editor-pro">
+    @for (projectPath of coderEmbedSrc ? [coderFrameProjectPath] : []; track projectPath) {
+    <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="Aily Coder"
+        [src]="coderEmbedSrc" (load)="onCoderEmbedFrameLoad()"></iframe>
+    }
+    <app-coder-loading
+        [stage]="coderLoadingStage"
+        [visible]="(coderEmbedLoading && coderEmbedLoaderVisible) || !!coderEmbedError"
+        [revealing]="coderEmbedRevealing"
+        [error]="coderEmbedError"
+        [allowReinstall]="coderLoadingStage !== 'project'"
+        (retry)="retryCoderEmbed()"
+        (reinstall)="confirmReinstallCoderEmbed()" />
+</div>
+

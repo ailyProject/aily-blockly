@@ -1,3 +1,5 @@
+import { CODER_EXECUTION_PORT } from '@domain/project/public-api';
+import { CoderProjectRuntimeService } from './integrations/coder/coder-project-runtime.service';
 import { ApplicationConfig, importProvidersFrom, inject, provideAppInitializer, provideZoneChangeDetection } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
 import { provideRouter, withHashLocation } from '@angular/router';
@@ -33,6 +35,7 @@ import { SubappAutomationAdapter } from './integrations/subapps/subapp-automatio
 
 export const appConfig: ApplicationConfig = {
   providers: [
+    { provide: CODER_EXECUTION_PORT, useExisting: CoderProjectRuntimeService },
     provideZoneChangeDetection({ 
       eventCoalescing: true,
       runCoalescing: true

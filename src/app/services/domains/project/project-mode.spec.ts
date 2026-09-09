@@ -14,16 +14,22 @@ describe('project mode boundaries', () => {
       data: { recentlyProjects: [coder, blockly] },
       init: jasmine.createSpy('init').and.resolveTo(),
       getPreferredChatAgentRuntimeMode: () => mode,
+      getApplicationName: () => 'Aily',
       save: jasmine.createSpy('save').and.resolveTo(),
     };
+    service.coderOperations = new Map();
+    service.coderOperationsSubject = new BehaviorSubject(new Map());
+    service.coderOperationSubject = new BehaviorSubject(null);
+    service.coderProjectsSubject = new BehaviorSubject([]);
     service.currentProjectPathSubject = new BehaviorSubject(blockly.path);
     service.stateSubject = new BehaviorSubject('loaded');
     service.projectActivationSubject = new Subject();
-    service.electronService = { isElectron: true, exists: () => true };
+    service.electronService = { isElectron: true, exists: () => true, setTitle: () => {} };
     service.messageService = { error: jasmine.createSpy('error'), warning: jasmine.createSpy('warning') };
     service.modalService = { confirm: jasmine.createSpy('confirm') };
     service.translate = { instant: (key: string) => key };
     spyOn(service, 'getProjectMode').and.callFake((path: string) => path.includes('code') ? 'coder' : path.includes('blocks') ? 'blockly' : null);
+    service.getCoderProjectContext = () => ({ currentPackageData: { name: 'Code' }, stateSubject: new BehaviorSubject('loaded'), syncCurrentBoardConfig: async () => true });
     spyOn(service, 'shouldBlockForAiOperation').and.returnValue(false);
     return service;
   }

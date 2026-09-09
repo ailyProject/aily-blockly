@@ -91,6 +91,16 @@ export interface ProjectActivationEvent {
   sessionResource?: string | null;
 }
 
+export interface CoderProjectOperation {
+  projectPath: string;
+  kind: 'build' | 'upload';
+}
+
+export interface CoderProjectTab {
+  path: string;
+  name: string;
+}
+
 interface ProjectOpenOptions {
   reason?: ProjectActivationReason;
   sessionResource?: string | null;
@@ -126,6 +136,130 @@ export class ProjectService {
   private currentProjectPathSubject = new BehaviorSubject<string>('');
   currentProjectPath$ = this.currentProjectPathSubject.asObservable();
 
+  private readonly coderOperations = new Map<symbol, CoderProjectOperation>();
+  readonly coderOperationSubject = new BehaviorSubject<CoderProjectOperation | null>(null);
+
+  readonly coderOperationsSubject = new BehaviorSubject<ReadonlyMap<string, CoderProjectOperation>>(new Map());
+  readonly isCoderProjectContext = false;
+  private readonly coderProjectContexts = new Map<string, ProjectService>();
+
+  /** Each open iframe and executor keeps a stable project context across tab changes. */
+  getCoderProjectContext(path: string): ProjectService {
+    const key = this.normalizeProjectPath(path);
+    const existing = this.coderProjectContexts.get(key);
+    if (existing) return existing;
+    if (this.getProjectMode(path) !== 'coder') throw new Error('请选择 Coder 工程文件夹');
+    const context: ProjectService = Object.assign(Object.create(ProjectService.prototype), this);
+    Object.assign(context, {
+      isCoderProjectContext: true,
+      currentProjectPathSubject: new BehaviorSubject(path),
+      currentPackageData: JSON.parse(this.electronService.readFile(window['path'].join(path, 'package.json'))),
+      currentBoardConfig: undefined,
+      currentBoardPinConfig: { board: null, variant: null, variant_h: null },
+      stateSubject: new BehaviorSubject('loaded'),
+      boardChangeSubject: new Subject<void>(),
+      boardConfigUpdatedSubject: new Subject<any>(),
+      projectOpenTask: null,
+    });
+    context.currentProjectPath$ = context.currentProjectPathSubject.asObservable();
+    context.projectOpen = this.projectOpen.bind(this);
+    context.beginCoderOperation = this.beginCoderOperation.bind(this);
+    context.syncCurrentBoardConfig = async () => {
+      try {
+        context.currentBoardConfig = await context.getBoardJson();
+        context.boardConfigUpdatedSubject.next(context.currentBoardConfig);
+        return true;
+      } catch { return false; }
+    };
+    const project = path;
+    context.stateSubject.subscribe(() => {
+      if (this.isSameProjectPath(this.currentProjectPath, project)) this.publishCoderProjectContext(context);
+    });
+    context.boardConfigUpdatedSubject.subscribe(() => {
+      if (this.isSameProjectPath(this.currentProjectPath, project)) {
+        this.publishCoderProjectContext(context);
+        this.boardConfigUpdatedSubject.next(context.currentBoardConfig);
+      }
+    });
+    this.coderProjectContexts.set(key, context);
+    return context;
+  }
+
+  private publishCoderProjectContext(context: ProjectService): void {
+    this.currentPackageData = context.currentPackageData;
+    this.currentBoardConfig = context.currentBoardConfig;
+    this.currentBoardPinConfig = context.currentBoardPinConfig;
+    window['boardConfig'] = context.currentBoardConfig;
+    this.stateSubject.next(context.stateSubject.value);
+  }
+
+  beginCoderOperation(kind: CoderProjectOperation['kind'], projectPath = this.currentProjectPath): () => void {
+    if (!this.isAilyCodeProject(projectPath)) return () => {};
+    const id = Symbol(kind);
+    this.coderOperations.set(id, { kind, projectPath });
+    this.publishCoderOperations();
+    return () => {
+      this.coderOperations.delete(id);
+      this.publishCoderOperations();
+    };
+  }
+
+  private publishCoderOperations(): void {
+    const operations = new Map<string, CoderProjectOperation>();
+    for (const operation of this.coderOperations.values()) operations.set(this.normalizeProjectPath(operation.projectPath), operation);
+    this.coderOperationsSubject.next(operations);
+    this.coderOperationSubject.next(operations.get(this.normalizeProjectPath(this.currentProjectPath)) || null);
+  }
+
+  getCoderOperation(path: string): CoderProjectOperation | null {
+    return this.coderOperationsSubject.value.get(this.normalizeProjectPath(path)) || null;
+  }
+
+  private readonly coderProjectsSubject = new BehaviorSubject<readonly CoderProjectTab[]>([]);
+  readonly coderProjects$ = this.coderProjectsSubject.asObservable();
+
+  get coderProjects(): readonly CoderProjectTab[] {
+    return this.coderProjectsSubject.value;
+  }
+
+  private registerCoderProject(path: string): void {
+    if (this.coderProjects.some(folder => this.isSameProjectPath(folder.path, path))) return;
+    this.coderProjectsSubject.next([
+      ...this.coderProjects,
+      { path, name: path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || path },
+    ]);
+    this.publishCoderProjects();
+  }
+
+  /** Open projects become host tabs. Each editor iframe receives only its own project root. */
+  async addCoderProject(candidate: string): Promise<void> {
+    if (this.getProjectMode(this.currentProjectPath) !== 'coder') throw new Error('请先打开 Coder 工程');
+    const path = window['path'].resolve(candidate);
+    if (!window['fs'].isDirectory(path)) throw new Error(`文件夹不存在: ${path}`);
+    if (this.getProjectMode(path) !== 'coder') throw new Error('请选择 Coder 工程文件夹');
+    if (this.coderProjects.some(folder => this.isSameProjectPath(folder.path, path))) return;
+    if (window['projectLock']) {
+      const result = await window['projectLock'].tryAcquire(path);
+      if (!result.ok) throw new Error(`工程已被其他窗口占用: ${path}`);
+    }
+    this.registerCoderProject(path);
+  }
+
+  private publishCoderProjects(): void {
+    window['ipcRenderer']?.send?.('cli-bridge:coder-projects', this.coderProjects.map(project => project.path));
+  }
+
+  async removeCoderProject(path: string): Promise<void> {
+    if (this.getCoderOperation(path)) throw new Error('工程正在编译或上传');
+    if (this.isSameProjectPath(path, this.currentProjectPath)) throw new Error('请先切换到另一个 Coder 工程，再移除此工程');
+    const folder = this.coderProjects.find(item => this.isSameProjectPath(item.path, path));
+    if (!folder) return;
+    await window['projectLock']?.release(folder.path);
+    this.coderProjectsSubject.next(this.coderProjects.filter(item => item !== folder));
+    this.coderProjectContexts.delete(this.normalizeProjectPath(path));
+    this.publishCoderProjects();
+  }
+
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
   private projectOpenTask: { path: string; promise: Promise<boolean> } | null = null;
@@ -155,7 +289,11 @@ export class ProjectService {
   }
 
   set currentProjectPath(path: string) {
+    if (path && this.getProjectMode(path) === 'coder') {
+      this.registerCoderProject(path);
+    }
     this.currentProjectPathSubject.next(path);
+    if (!this.isCoderProjectContext) this.publishCoderOperations();
   }
 
   get isProjectOpening(): boolean {
@@ -955,6 +1093,32 @@ export class ProjectService {
     // Reject before acquiring locks, closing windows, changing routes or publishing activation.
     if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
 
+    // Coder tabs keep their iframe and in-flight operations. Activating another
+    // project only changes the host projection; it does not save or recreate editors.
+    if (this.getProjectMode(projectPath) === 'coder') {
+      const reload = activationReason === 'reload' || activationReason === 'chat-tool-reload';
+      if (reload && this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
+        if (this.getCoderOperation(projectPath)) throw new Error('工程正在编译或上传，请等待完成后重新加载');
+        const saved = await this.application.dispatchProjectSave(projectPath, 15_000);
+        if (!saved.success) throw new Error(saved.error || '重新加载前保存工程失败');
+      }
+      if (!this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
+        if (window['projectLock']) {
+          const lock = await window['projectLock'].tryAcquire(projectPath);
+          if (!lock.ok) { this.message.error('工程已被其他窗口占用'); return false; }
+        }
+        this.registerCoderProject(projectPath);
+      }
+      const context = this.getCoderProjectContext(projectPath);
+      this.currentProjectPath = projectPath;
+      this.publishCoderProjectContext(context);
+      void window['ipcRenderer']?.invoke?.('logger-set-project-path', projectPath).catch(() => undefined);
+      this.electronService.setTitle(`${this.configService.getApplicationName()} - ${context.currentPackageData.name}`);
+      this.projectActivationSubject.next({ path: projectPath, previousPath: previousProjectPath, reason: activationReason, sessionResource: options.sessionResource ?? null });
+      await context.syncCurrentBoardConfig();
+      return this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
+    }
+
     if (this.shouldBlockForAiOperation(activationReason)) {
       this.warnBlockingAiOperation();
       return false;
@@ -987,7 +1151,8 @@ export class ProjectService {
     }
 
     if (isSwitchingProject && !(await this.application.closeConnectionGraphWindows())) {
-      if (this.electronService.isElectron && window['projectLock']) {
+      if (this.electronService.isElectron && window['projectLock']
+        && !this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
         try {
           await window['projectLock'].release(projectPath);
         } catch (e) {
@@ -1002,7 +1167,8 @@ export class ProjectService {
     if (this.electronService.isElectron
       && previousProjectPath
       && !this.isSameProjectPath(previousProjectPath, projectPath)
-      && window['projectLock']) {
+      && window['projectLock']
+      && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
       try {
         await window['projectLock'].release(previousProjectPath);
       } catch (e) {
@@ -1115,7 +1281,7 @@ export class ProjectService {
 
   // 保存项目
   save(path = this.currentProjectPath, feedbackTimeoutMs = 5000) {
-    if (this.isProjectOpening) {
+    if (this.isProjectOpening && this.getProjectMode(path) !== 'coder') {
       return Promise.resolve({
         success: false,
         error: 'project is loading',
@@ -1263,6 +1429,10 @@ export class ProjectService {
   }
 
   async close(options: { allowDuringChatTool?: boolean } = {}) {
+    if (this.coderOperationsSubject.value.size) {
+      this.message.warning('工程正在编译或上传');
+      return false;
+    }
     if (!options.allowDuringChatTool && this.shouldBlockForAiOperation()) {
       this.warnBlockingAiOperation();
       return false;
@@ -1275,12 +1445,17 @@ export class ProjectService {
 
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
       try {
-        await window['projectLock'].release(this.currentProjectPath);
+        for (const path of new Set([this.currentProjectPath, ...this.coderProjects.map(folder => folder.path)])) {
+          await window['projectLock'].release(path);
+        }
       } catch (e) {
         console.warn('project-lock release:', e);
       }
     }
     this.application.closeTerminal();
+    this.coderProjectsSubject.next([]);
+    this.coderProjectContexts.clear();
+    this.publishCoderProjects();
     this.currentProjectPath = '';
     this.loadingBlocklyProjectPath = '';
     this.loadedBlocklyProjectPath = '';
