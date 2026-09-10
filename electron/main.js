@@ -768,6 +768,7 @@ const {
   registerWindowHandlers,
   forceStopChildToolByCatalogId,
   listChildToolHoldersForCatalogId,
+  getRunningSubappConfig,
 } = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
@@ -2607,6 +2608,8 @@ function createWindow() {
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {
+    canMutateSharedTree: () => !hasOtherRunningInstances(),
+    getRunningSubappConfig,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
     canActivateUpdate: (entry) => {

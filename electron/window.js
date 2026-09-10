@@ -111,6 +111,12 @@ function readSubWindowMinimumSize(win) {
 let applicationIsQuitting = false;
 app.once('before-quit', () => {
     applicationIsQuitting = true;
+    // Notify every renderer in this host before main.js terminates its child processes.
+    for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+            win.webContents.send('child-tool-host-shutdown');
+        }
+    }
 });
 
 function isDevServeSubWindow() {
@@ -441,6 +447,14 @@ function resolveChildToolIdsForCatalogId(catalogId) {
     } catch (_) {
         return [id];
     }
+}
+
+function getRunningSubappConfig(catalogId) {
+    for (const toolId of resolveChildToolIdsForCatalogId(catalogId)) {
+        const session = childToolSessions.get(toolId);
+        if (session?.hostInfo?.runtimeConfig) return session.hostInfo.runtimeConfig;
+    }
+    return null;
 }
 
 function listChildToolHoldersForCatalogId(catalogId) {
@@ -2157,4 +2171,5 @@ module.exports = {
     registerWindowHandlers,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
+    getRunningSubappConfig,
 };

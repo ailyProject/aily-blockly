@@ -963,6 +963,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         ? await this.processService.restart(this.config.id)
         : await this.processService.acquire(this.config.id);
       this.acquired = true;
+      this.adoptRuntimeConfig(this.serverInfo);
       const childToolUrl = this.buildChildToolUrl(this.serverInfo.url);
       this.childToolUrl = childToolUrl;
       this.log('server acquired', this.sanitizeHostInfo(this.serverInfo));
@@ -974,6 +975,15 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       this.errorMessage = error instanceof Error ? error.message : String(error || '');
       this.logError('start failed', this.errorMessage);
     }
+  }
+
+  private adoptRuntimeConfig(hostInfo: ChildToolHostInfo): void {
+    const config = hostInfo.runtimeConfig;
+    if (!config) return;
+    this.config = config;
+    this.childVersion = config.version || '';
+    this.titleKey = config.titleKey;
+    this.routePath = config.routePath || `/child-tool/${config.id}`;
   }
 
   private handleRuntimeSnapshot(snapshot: ChildToolRuntimeSnapshot): void {
@@ -1000,6 +1010,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       recovered: this.sanitizeHostInfo(recoveredHost),
     });
     this.serverInfo = recoveredHost;
+    this.adoptRuntimeConfig(recoveredHost);
     this.childToolUrl = this.buildChildToolUrl(recoveredHost.url);
     this.frameLoaded = false;
     this.uiHealthFailed = false;
@@ -1124,8 +1135,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       }
     });
 
-    void this.penpalConnection.promise
+    const connection = this.penpalConnection;
+    void connection.promise
       .then(remote => {
+        if (this.penpalConnection !== connection) return;
         this.log('penpal connected');
         this.remoteApi = remote;
         this.penpalState = 'connected';
@@ -1135,6 +1148,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         this.pushChatSubappActivities();
       })
       .catch(error => {
+        // A restart may destroy the previous handshake after a new one has begun.
+        if (this.penpalConnection !== connection) return;
         this.ngZone.run(() => {
           this.penpalState = 'failed';
           this.hostStatus = 'error';
