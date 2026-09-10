@@ -145,7 +145,7 @@
     </div>
     <div class="window-footer">
       <div class="btns">
-        @if (currentStep == 0) {
+        @if (currentStep == 0 && currentBoard?.state !== 'todo') {
         <button nz-button nzType="primary" (click)="nextStep()">
           {{ 'PROJECT_NEW.BUTTONS.NEXT' | translate }}
         </button>
