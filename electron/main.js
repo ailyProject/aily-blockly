@@ -802,6 +802,7 @@ let hasProcessCleanupCompleted = false;
 let processHealthDiagnosticsRegistered = false;
 let projectContextState = {
   workspace: null,
+  coderWorkspace: null,
   version: 0,
 };
 let hostAuthState = {
@@ -3410,8 +3411,10 @@ ipcMain.on("host-project-context-changed", (event, data = {}) => {
   }
 
   const rawWorkspace = typeof data.workspace === "string" ? data.workspace : "";
+  const coderWorkspace = normalizeCoderWorkspaceContext(data.coderWorkspace);
   projectContextState = {
     workspace: rawWorkspace.trim() ? rawWorkspace : null,
+    coderWorkspace,
     version: projectContextState.version + 1,
   };
 
@@ -3427,6 +3430,31 @@ ipcMain.on("host-project-context-changed", (event, data = {}) => {
 });
 
 ipcMain.handle("host-project-context-get", () => ({ ...projectContextState }));
+
+function normalizeCoderWorkspaceContext(value) {
+  if (!value || typeof value !== "object") return null;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  const root = typeof value.root === "string" ? value.root.trim() : "";
+  const activeProject = typeof value.activeProject === "string" ? value.activeProject.trim() : "";
+  const projects = Array.isArray(value.projects)
+    ? value.projects.flatMap((project) => {
+        const path = typeof project?.path === "string" ? project.path.trim() : "";
+        if (!path) return [];
+        const name = typeof project?.name === "string" && project.name.trim()
+          ? project.name.trim()
+          : path.replace(/\\/g, "/").split("/").filter(Boolean).pop() || path;
+        return [{ path, name }];
+      })
+    : [];
+  if (!id || !root || !activeProject || projects.length < 2) return null;
+  return {
+    id,
+    root,
+    activeProject,
+    name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Coder Workspace",
+    projects,
+  };
+}
 
 ipcMain.on("host-auth-state-changed", (event, data = {}) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);

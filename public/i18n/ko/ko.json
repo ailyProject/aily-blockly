@@ -145,6 +145,7 @@
     "GUIDE": {
         "START": "시작",
         "RECENTLY": "최근",
+        "UNMERGE_CODER_WORKSPACE": "다중 프로젝트 작업 공간 병합 해제",
         "USER_GROUP": "사용자 커뮤니티",
         "USER_GROUP_DESC": "커뮤니티에 참여하여 개발팀 및 다른 사용자들과 소통하세요",
         "AI_APP_CENTER": "AI 앱 센터",

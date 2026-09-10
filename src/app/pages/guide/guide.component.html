@@ -30,8 +30,16 @@
         <div class="project btn link" (click)="openProjectByPath(project)">
           <div class="project-info">
             <div class="name">{{project.nickname || project.name}}</div>
-            <div class="delete-btn" (click)="removeProject($event, project)">
-              <i class="fa-regular fa-xmark"></i>
+            <div class="project-actions">
+              @if (project.coderWorkspaceId && project.coderProjects?.length > 1) {
+              <div class="unmerge-btn" [title]="'GUIDE.UNMERGE_CODER_WORKSPACE' | translate"
+                (click)="unmergeProject($event, project)">
+                <i class="fa-light fa-object-ungroup"></i>
+              </div>
+              }
+              <div class="delete-btn" (click)="removeProject($event, project)">
+                <i class="fa-regular fa-xmark"></i>
+              </div>
             </div>
           </div>
           <div class="path ellipsis">{{project.path}}</div>

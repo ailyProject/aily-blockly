@@ -145,6 +145,7 @@
     "GUIDE": {
         "START": "Démarrer",
         "RECENTLY": "Récent",
+        "UNMERGE_CODER_WORKSPACE": "Dissocier l’espace de travail multiprojet",
         "USER_GROUP": "Communauté des Utilisateurs",
         "USER_GROUP_DESC": "Rejoignez la communauté pour échanger avec l'équipe de développement et d'autres utilisateurs",
         "AI_APP_CENTER": "Centre d'Applications IA",

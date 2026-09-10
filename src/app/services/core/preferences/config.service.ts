@@ -2175,7 +2175,22 @@ interface AppConfig {
   };
 
   /** 最近打开的项目列表 */
-  recentlyProjects?: Array<{ name: string, path: string, nickname?: string }>;
+  recentlyProjects?: Array<{
+    name: string;
+    path: string;
+    nickname?: string;
+    coderWorkspaceId?: string;
+    coderProjects?: Array<{ path: string; name: string }>;
+  }>;
+
+  /** Coder logical workspaces survive tab/project closure without moving source directories. */
+  coderWorkspaceGroups?: Array<{
+    id: string;
+    root: string;
+    name: string;
+    projects: Array<{ path: string; name: string }>;
+    activeProject: string;
+  }>;
 
   /** 当前选择的语言 */
   selectedLanguage?: string;

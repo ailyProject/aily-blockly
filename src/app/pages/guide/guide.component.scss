@@ -102,8 +102,8 @@
     }
 
     &:hover {
-      .delete-btn {
-        display: block;
+      .project-actions {
+        display: flex;
       }
     }
   }
@@ -114,16 +114,27 @@
     align-items: center;
     width: 100%;
 
-    .delete-btn {
+    .project-actions {
+      display: none;
+      align-items: center;
+      gap: 7px;
+      margin-left: 8px;
+    }
+
+    .delete-btn,
+    .unmerge-btn {
       cursor: pointer;
       color: var(--aily-text-secondary);
       font-size: 12px;
-      margin-left: 5px;
-      display: none;
     }
 
     .delete-btn:hover {
       color: red;
+      transition: all 0.2s;
+    }
+
+    .unmerge-btn:hover {
+      color: var(--aily-text-primary);
       transition: all 0.2s;
     }
   }

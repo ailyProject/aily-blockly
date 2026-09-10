@@ -145,6 +145,7 @@
     "GUIDE": {
         "START": "スタート",
         "RECENTLY": "最近",
+        "UNMERGE_CODER_WORKSPACE": "複数プロジェクトの統合を解除",
         "USER_GROUP": "ユーザーコミュニティ",
         "USER_GROUP_DESC": "コミュニティに参加して、開発チームや他のユーザーと交流しましょう",
         "AI_APP_CENTER": "AIアプリセンター",

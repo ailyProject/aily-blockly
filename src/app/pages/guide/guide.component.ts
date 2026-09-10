@@ -302,6 +302,14 @@ export class GuideComponent implements OnInit, OnDestroy {
     this.projectService.removeRecentlyProject({ path: project.path });
   }
 
+  unmergeProject(event: Event, project: any) {
+    event.stopPropagation();
+    this.projectService.unmergeCoderWorkspace({
+      workspaceId: project.coderWorkspaceId,
+      path: project.path,
+    });
+  }
+
   process(item) {
     switch (item.action) {
       case 'project-new':

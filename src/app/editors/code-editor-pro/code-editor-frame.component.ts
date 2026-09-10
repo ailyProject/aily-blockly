@@ -53,6 +53,8 @@ const AILY_CODER_EDITOR_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-editor-open-l
 const AILY_CODER_EDITOR_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-editor-open-board-selector';
 /** Aily View：复制路径等写入系统剪贴板（iframe 内 Clipboard API 被 Permissions-Policy 禁用） */
 const AILY_CODER_EDITOR_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-editor-clipboard-write';
+/** Coder 库面板 → 主软件：安装/卸载过程写入顶部消息与当前工程底部日志。 */
+const AILY_CODER_EDITOR_LIBRARY_OPERATION_FEEDBACK_CHANNEL = 'aily-coder-editor-library-operation-feedback';
 /** Extension Host（Worker）无 window，用 BroadcastChannel 与宿主通信；须与 ailyViewExplorer 一致 */
 const AILY_EMBED_OS_REVEAL_CHANNEL = 'aily-embed-os-reveal';
 const AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-embed-open-library-manager';
@@ -110,6 +112,15 @@ type CoderGitHistoryRefs = {
 type CoderNativeSearchApi = {
   searchText?: (params: Record<string, unknown>) => Promise<unknown>;
   cancelSearch?: (requestId: string) => void;
+};
+
+type CoderLibraryOperationFeedback = {
+  channel?: string;
+  state?: 'loading' | 'success' | 'error';
+  action?: 'install' | 'uninstall';
+  libraryName?: string;
+  command?: string;
+  error?: string;
 };
 
 function normalizeCoderNativeSearchRequestId(value: unknown): string {
@@ -1812,6 +1823,50 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     }
   }
 
+  private handleCoderLibraryOperationFeedback(payload: CoderLibraryOperationFeedback): void {
+    const state = payload.state;
+    if (state !== 'loading' && state !== 'success' && state !== 'error') return;
+
+    const action = payload.action;
+    if (action !== 'install' && action !== 'uninstall') return;
+    const libraryName = String(payload.libraryName ?? '').trim().slice(0, 240);
+    const command = String(payload.command ?? '').trim().slice(0, 16_000);
+    const rawError = String(payload.error ?? '').trim().slice(0, 2_000);
+    if (!libraryName || !command || !this.projectPath || (state === 'error' && !rawError)) return;
+
+    if (state === 'loading') {
+      this.coderRuntime.getSession(this.projectPath).log.update({
+        title: '执行命令',
+        detail: command,
+        state: 'info',
+      });
+      const operation = action === 'install'
+        ? this.translate.instant('LIB_MANAGER.INSTALLING')
+        : this.translate.instant('LIB_MANAGER.UNINSTALLING');
+      this.message.loading(`${libraryName} ${operation}...`);
+      return;
+    }
+
+    if (state === 'success') {
+      const operation = action === 'install'
+        ? this.translate.instant('LIB_MANAGER.INSTALLED')
+        : this.translate.instant('LIB_MANAGER.UNINSTALLED');
+      this.message.success(`${libraryName} ${operation}`);
+      return;
+    }
+
+    this.coderRuntime.getSession(this.projectPath).log.update({
+      title: '命令执行失败',
+      detail: `${command}\n${rawError}`,
+      state: 'error',
+    });
+    const readableError = rawError.length > 240 ? `${rawError.slice(0, 240)}...` : rawError;
+    const operation = action === 'install'
+      ? this.translate.instant('LIB_MANAGER.INSTALL_FAILED')
+      : this.translate.instant('NPM.UNINSTALL_FAILED_TITLE');
+    this.message.error(`${libraryName} ${operation}: ${readableError}`);
+  }
+
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
     if (this.codeSuggestionHostBridge.handleMessage(ev) || this.codeCompletionHostBridge.handleMessage(ev)) {
       return;
@@ -1824,6 +1879,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       payload?: Record<string, unknown>;
       absPath?: string;
     };
+    if (msg?.channel === AILY_CODER_EDITOR_LIBRARY_OPERATION_FEEDBACK_CHANNEL) {
+      if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
+      this.handleCoderLibraryOperationFeedback(msg as CoderLibraryOperationFeedback);
+      return;
+    }
     if (msg?.channel === AILY_CODER_EDITOR_HOST_CONTEXT_REQUEST_CHANNEL) {
       const frameWindow = this.coderEmbedFrame?.nativeElement?.contentWindow;
       const root = this.coderEmbedWorkspaceRoot;

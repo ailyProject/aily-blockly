@@ -191,6 +191,7 @@
     "GUIDE": {
         "START": "Start",
         "RECENTLY": "Recent",
+        "UNMERGE_CODER_WORKSPACE": "Unmerge multi-project workspace",
         "USER_GROUP": "User Community",
         "USER_GROUP_DESC": "Join the community to connect with the development team and other users",
         "AI_APP_CENTER": "AI App Center",

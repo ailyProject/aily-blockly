@@ -83,9 +83,10 @@ async function main() {
     const compileSourcePath = isAilyCode
         ? ailyCodeProject.resolveCompileSourcePath(currentProjectPath)
         : sketchFilePath;
-    const librariesPath = isAilyCode
+    const localLibrariesPath = isAilyCode
         ? ailyCodeProject.resolveLibrariesPath(currentProjectPath)
-        : path.join(tempPath, 'libraries');
+        : null;
+    const librariesPath = path.join(tempPath, 'libraries');
     
     const compilerPath = path.join(appDataPath, 'compiler');
     const sdkPath = path.join(appDataPath, 'sdk');
@@ -124,7 +125,7 @@ async function main() {
     );
 
     // 缓存文件路径
-    const cacheFilePath = path.join(path.dirname(librariesPath), 'library-cache.json');
+    const cacheFilePath = path.join(tempPath, 'library-cache.json');
     let libraryCache = {};
     if (fs.existsSync(cacheFilePath)) {
         try {
@@ -138,7 +139,7 @@ async function main() {
         // 1. 创建文件夹
         mkdirp(tempPath);
         mkdirp(sketchPath);
-        mkdirp(librariesPath);
+        if (!isAilyCode) mkdirp(librariesPath);
 
         // 2. Coder 直接预处理 package.json.entry；Blockly 仍物化 sketch 及 src 辅助文件。
         mkdirp(path.dirname(compileSourcePath));
@@ -148,23 +149,30 @@ async function main() {
         }
 
         // 3. 处理库文件
-        // Coder libraries are persistent sources under sketch/libraries and are
-        // materialized by the Coder installer from Aily packages or Arduino
-        // archives (or intentionally authored locally). npm packages alone
-        // do not enter the Coder compiler search.
+        // Coder passes package-local final src roots directly to aily-builder.
+        // Localized/editable libraries remain physical roots under sketch/libraries
+        // and are searched last so they override npm packages with the same headers.
         const libsPath = collectDependencyLibraryPackages(
             dependencies,
-            currentProjectPath,
-            isAilyCode
+            currentProjectPath
         );
-        const componentLibraries = isAilyCode
-            ? collectWorkspaceLibraries(librariesPath)
-            : collectComponentLibraries(currentProjectPath);
-
         logger.log(`开始处理 ${libsPath.length} 个库文件`);
-        const copiedLibraries = isAilyCode
-            ? componentLibraries.map(component => component.name)
-            : await processLibrariesParallel(
+        let copiedLibraries = [];
+        let librarySearchPaths;
+        if (isAilyCode) {
+            // Remove the obsolete projection created by older builds. New builds
+            // never create .temp/lib* or copy/hard-link dependency sources.
+            rm(path.join(currentProjectPath, '.temp', 'libraries'));
+            rm(path.join(currentProjectPath, '.temp', 'library-cache.json'));
+            librarySearchPaths = await resolveCoderLibrarySearchPaths(
+                libsPath,
+                currentProjectPath,
+                za7Path,
+                localLibrariesPath
+            );
+        } else {
+            const componentLibraries = collectComponentLibraries(currentProjectPath);
+            copiedLibraries = await processLibrariesParallel(
                 libsPath,
                 librariesPath,
                 currentProjectPath,
@@ -172,10 +180,9 @@ async function main() {
                 developmentMode,
                 libraryCache
             );
-        if (!isAilyCode) {
             copiedLibraries.push(...await processComponentLibraries(componentLibraries, librariesPath));
+            librarySearchPaths = [librariesPath];
         }
-        const librarySearchPaths = [librariesPath];
         
         // 保存缓存
         if (!isAilyCode) {
@@ -498,25 +505,38 @@ function copyItemRecursive(sourcePath, targetPath) {
 
 function isCompilableLibraryPackage(packageName) {
     return typeof packageName === 'string'
-        && packageName.startsWith('@aily-project/lib-')
+        && (packageName.startsWith('@aily-project/lib-')
+            || packageName.startsWith('@aily-project-coder/lib-'))
         && !packageName.startsWith('@aily-project/lib-core');
 }
 
 function collectLibraryPackages(projectDependencies, currentProjectPath) {
     const libraries = [];
     const visited = new Set();
-    const pending = Object.keys(projectDependencies || {});
+    const realProjectPath = fs.realpathSync(currentProjectPath);
+    const pending = Object.keys(projectDependencies || {}).map(packageName => ({
+        packageName,
+        packagePath: path.join(currentProjectPath, 'node_modules', packageName),
+    }));
 
     for (let index = 0; index < pending.length; index++) {
-        const packageName = pending[index];
-        if (!isCompilableLibraryPackage(packageName) || visited.has(packageName)) {
+        const { packageName, packagePath } = pending[index];
+        if (!isCompilableLibraryPackage(packageName) || !fs.existsSync(packagePath)) {
             continue;
         }
-        visited.add(packageName);
-        libraries.push(packageName);
+        let realPackagePath;
+        try {
+            realPackagePath = fs.realpathSync(packagePath);
+        } catch {
+            continue;
+        }
+        if (!isPathWithin(realProjectPath, realPackagePath) || visited.has(realPackagePath)) {
+            continue;
+        }
+        visited.add(realPackagePath);
+        libraries.push({ packageName, packagePath: realPackagePath });
 
-        const packagePath = path.join(currentProjectPath, 'node_modules', packageName);
-        const packageJsonPath = path.join(packagePath, 'package.json');
+        const packageJsonPath = path.join(realPackagePath, 'package.json');
         if (!fs.existsSync(packageJsonPath)) {
             logger.warn(`Library package is not installed: ${packageName}`);
             continue;
@@ -531,17 +551,34 @@ function collectLibraryPackages(projectDependencies, currentProjectPath) {
         }
 
         Object.keys(packageJson.dependencies || {}).forEach(dependencyName => {
-            pending.push(dependencyName);
+            if (!isCompilableLibraryPackage(dependencyName)) return;
+            const dependencyPath = resolveLibraryDependencyPath(
+                realPackagePath,
+                realProjectPath,
+                dependencyName
+            );
+            if (dependencyPath) {
+                pending.push({ packageName: dependencyName, packagePath: dependencyPath });
+            }
         });
     }
 
     return libraries;
 }
 
-function collectDependencyLibraryPackages(projectDependencies, currentProjectPath, isAilyCode) {
-    return isAilyCode
-        ? []
-        : collectLibraryPackages(projectDependencies, currentProjectPath);
+function resolveLibraryDependencyPath(parentPackagePath, projectRoot, dependencyName) {
+    let cursor = parentPackagePath;
+    while (isPathWithin(projectRoot, cursor)) {
+        const candidate = path.join(cursor, 'node_modules', dependencyName);
+        if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
+        if (cursor === projectRoot) break;
+        cursor = path.dirname(cursor);
+    }
+    return null;
+}
+
+function collectDependencyLibraryPackages(projectDependencies, currentProjectPath) {
+    return collectLibraryPackages(projectDependencies, currentProjectPath);
 }
 
 /**
@@ -622,14 +659,65 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
     return copiedLibraries;
 }
 
+async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath) {
+    const result = [];
+    const seen = new Set();
+
+    const append = sourcePath => {
+        if (!sourcePath || !fs.existsSync(sourcePath)) return;
+        const canonical = fs.realpathSync(sourcePath);
+        if (seen.has(canonical)) return;
+        // Reject escaping/cyclic links before handing a source tree to the builder.
+        createLibrarySourceFingerprint(canonical);
+        seen.add(canonical);
+        result.push(canonical);
+    };
+
+    for (const lib of libsPath) {
+        const packageName = typeof lib === 'string' ? lib : lib.packageName;
+        const packageRoot = typeof lib === 'string'
+            ? path.join(currentProjectPath, 'node_modules', lib)
+            : lib.packagePath;
+        const sourcePathBase = path.join(packageRoot, 'src');
+
+        if (!fs.existsSync(sourcePathBase)) {
+            const sourceZipPath = path.join(packageRoot, 'src.7z');
+            if (!fs.existsSync(sourceZipPath)) {
+                logger.warn(`库 ${packageName} 没有 src 或 src.7z，已跳过`);
+                continue;
+            }
+            try {
+                extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePathBase);
+            } catch (error) {
+                throw new Error(`库 ${packageName} 解压失败: ${error.message}`);
+            }
+        }
+
+        append(resolveNestedSrcPath(sourcePathBase));
+    }
+
+    // The builder scans each path recursively. Keeping the local container last
+    // gives sketch/libraries deterministic precedence without another projection.
+    append(localLibrariesPath);
+    return result;
+}
+
 async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
     try {
-        const sourcePathBase = path.join(currentProjectPath, 'node_modules', lib, 'src');
+        const packageName = typeof lib === 'string' ? lib : lib.packageName;
+        const packageRoot = typeof lib === 'string'
+            ? path.join(currentProjectPath, 'node_modules', lib)
+            : lib.packagePath;
+        const defaultPackageRoot = path.join(currentProjectPath, 'node_modules', packageName);
+        const cacheKey = path.resolve(packageRoot) === path.resolve(defaultPackageRoot)
+            ? packageName
+            : path.relative(currentProjectPath, packageRoot).split(path.sep).join('/');
+        const sourcePathBase = path.join(packageRoot, 'src');
 
         // Prepare source
         let sourcePath = sourcePathBase;
         if (!fs.existsSync(sourcePath)) {
-            const sourceZipPath = path.join(currentProjectPath, 'node_modules', lib, 'src.7z');
+            const sourceZipPath = path.join(packageRoot, 'src.7z');
             if (fs.existsSync(sourceZipPath)) {
                 try {
                     extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath);
@@ -644,26 +732,28 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
         sourcePath = resolveNestedSrcPath(sourcePath);
 
         const sourceFingerprint = createLibrarySourceFingerprint(sourcePath);
-        const cached = libraryCache[lib];
+        const cached = libraryCache[cacheKey];
         if (!devmode && cached && isLibraryCacheValid(cached, sourceFingerprint, librariesPath)) {
             return { targetNames: cached.targetNames, success: true };
         }
 
         removeCachedLibraryTargets(cached, librariesPath);
 
-        const hasHeaders = checkForHeaderFiles(sourcePath);
+        // A final src root containing files is itself one Arduino library.
+        // Only a directory-only wrapper is expanded into its immediate child roots.
+        const hasDirectFiles = hasDirectSourceFiles(sourcePath);
         let result;
-        if (hasHeaders) {
-            result = await processLibraryWithHeaders(lib, sourcePath, librariesPath);
+        if (hasDirectFiles) {
+            result = await processLibraryWithHeaders(packageName, sourcePath, librariesPath);
         } else {
-            result = await processLibraryDirectories(lib, sourcePath, librariesPath);
+            result = await processLibraryDirectories(packageName, sourcePath, librariesPath);
         }
 
         if (result.success) {
-            libraryCache[lib] = {
+            libraryCache[cacheKey] = {
                 schemaVersion: LIBRARY_CACHE_SCHEMA_VERSION,
                 sourceFingerprint,
-                hasHeaderFiles: hasHeaders,
+                hasHeaderFiles: hasDirectFiles,
                 targetNames: result.targetNames
             };
         }
@@ -687,7 +777,7 @@ function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
 }
 
 function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
-    const extractedItems = fs.readdirSync(extractPath);
+    const extractedItems = fs.readdirSync(extractPath).filter(item => !item.startsWith('.'));
     const nestedSourcePath = path.join(extractPath, 'src');
     const extractedSourcePath = extractedItems.length === 1 && extractedItems[0] === 'src' && fs.statSync(nestedSourcePath).isDirectory()
         ? nestedSourcePath
@@ -799,29 +889,32 @@ function resolveLibraryTargetPath(librariesPath, targetName) {
 function resolveNestedSrcPath(sourcePath) {
     if (!fs.existsSync(sourcePath)) return sourcePath;
     try {
-        const items = fs.readdirSync(sourcePath);
-        if (items.length === 1 && items[0] === 'src') {
+        let items = fs.readdirSync(sourcePath).filter(item => !item.startsWith('.'));
+        while (items.length === 1 && items[0] === 'src') {
             const nested = path.join(sourcePath, 'src');
             if (fs.statSync(nested).isDirectory()) {
-                return nested;
+                sourcePath = nested;
+                items = fs.readdirSync(sourcePath).filter(item => !item.startsWith('.'));
+                continue;
             }
+            break;
         }
     } catch (e) {}
     return sourcePath;
 }
 
-function checkForHeaderFiles(sourcePath) {
+function hasDirectSourceFiles(sourcePath) {
     if (!fs.existsSync(sourcePath)) return false;
     try {
-        const files = fs.readdirSync(sourcePath);
-        return files.some(f => f.endsWith('.h'));
+        return fs.readdirSync(sourcePath, { withFileTypes: true })
+            .some(entry => !entry.name.startsWith('.') && entry.isFile());
     } catch {
         return false;
     }
 }
 
 async function processLibraryWithHeaders(lib, sourcePath, librariesPath) {
-    const targetName = lib.split('@aily-project/')[1];
+    const targetName = lib.split('/').pop();
     const targetPath = path.join(librariesPath, targetName);
 
     rm(targetPath);
@@ -840,6 +933,7 @@ async function processLibraryDirectories(lib, sourcePath, librariesPath) {
 
     const items = fs.readdirSync(sourcePath);
     for (const item of items) {
+        if (item.startsWith('.')) continue;
         const fullSourcePath = path.join(sourcePath, item);
         if (fs.statSync(fullSourcePath).isDirectory()) {
             const targetPath = path.join(librariesPath, item);
@@ -912,4 +1006,5 @@ module.exports = {
     normalizeExtractedSourceDirectory,
     processComponentLibraries,
     processLibrariesParallel,
+    resolveCoderLibrarySearchPaths,
 };

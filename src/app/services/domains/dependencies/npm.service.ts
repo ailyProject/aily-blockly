@@ -1488,7 +1488,8 @@ export class NpmService {
   }
 
   /**
-   * Blockly / Aily Code 打开工程共用：package.json 声明的依赖与 node_modules 不一致时在项目目录执行 npm install，并用通知反馈进度。
+   * Blockly / Aily Code 打开工程共用：package.json 声明的依赖与 node_modules 不一致时执行 npm install。
+   * Coder 随后将库包 src.7z 解到包内同级 src，供编译和 Aily View 映射；不会复制到 sketch/libraries。
    * @param projectPath 项目根路径
    * @param options.onRetryInstall 若设置，安装失败时通知条展示「重试」并调用此回调（由调用方再次传入本方法以复跑安装）
    * @returns 依赖已就绪 true；安装失败 false

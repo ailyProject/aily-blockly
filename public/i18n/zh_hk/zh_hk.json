@@ -154,6 +154,7 @@
     "GUIDE": {
         "START": "開始",
         "RECENTLY": "最近",
+        "UNMERGE_CODER_WORKSPACE": "解除多工程合併",
         "USER_GROUP": "用戶社區",
         "USER_GROUP_DESC": "加入社區，與開發團隊和其他用戶交流",
         "AI_APP_CENTER": "AI應用中心",

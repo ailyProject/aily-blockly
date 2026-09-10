@@ -38,7 +38,7 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
 import { ElectronService, LogService } from '@core/platform/public-api';
 import { MainUiAutomationService, AiOperationRegistryService } from '@integration/automation/public-api';
 import { NoticeService, UiService } from '@core/app-shell/public-api';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, type CoderWorkspaceContext } from '@domain/project/public-api';
 import { SubappActivityDockComponent } from '../../components/subapp-activity-dock/subapp-activity-dock.component';
 import {
   type ChildAuthStateSnapshot,
@@ -52,6 +52,7 @@ type ChildLifecycleReason = 'close' | 'restart' | 'update';
 
 interface HostProjectContext {
   workspace?: string | null;
+  coderWorkspace?: CoderWorkspaceContext | null;
   version?: number;
 }
 
@@ -155,6 +156,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private subappRestartRequired = false;
   private lastKnownApiServer = '';
   private standaloneWorkspace: string | null | undefined;
+  private standaloneCoderWorkspace: CoderWorkspaceContext | null | undefined;
   private standaloneWorkspaceVersion = -1;
   private projectContextListenerRegistered = false;
   private projectContextListenerCleanup: (() => void) | null = null;
@@ -198,7 +200,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   ) {
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
-    this.projectPathSubscription = this.projectService.currentProjectPath$.subscribe(() => {
+    this.projectPathSubscription = combineLatest([
+      this.projectService.currentProjectPath$,
+      this.projectService.coderWorkspace$,
+    ]).subscribe(() => {
       if (this.initialized) {
         this.syncHostContext(true);
       }
@@ -1727,6 +1732,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       surface: launch.surface,
       surfaceParams: launch.params,
       workspace,
+      coderWorkspace: this.resolveHostCoderWorkspace(),
       activeChatSessionId: isAilyChat ? (this.ailyChatSessionId || null) : null,
       blockResources: isAilyChat && this.active ? this.createSelectedBlockResources() : [],
       capabilities: {
@@ -2315,6 +2321,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private async initializeStandaloneProjectContext(): Promise<void> {
     if (!this.isStandalone) {
       this.standaloneWorkspace = undefined;
+      this.standaloneCoderWorkspace = undefined;
       this.standaloneWorkspaceVersion = -1;
       this.projectContextListenerCleanup?.();
       this.projectContextListenerCleanup = null;
@@ -2403,9 +2410,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     const rawWorkspace = typeof context?.workspace === 'string' ? context.workspace : '';
     const workspace = rawWorkspace.trim() ? rawWorkspace : null;
-    const changed = this.standaloneWorkspace !== workspace;
+    const coderWorkspace = context?.coderWorkspace && typeof context.coderWorkspace === 'object'
+      ? context.coderWorkspace
+      : null;
+    const changed = this.standaloneWorkspace !== workspace ||
+      JSON.stringify(this.standaloneCoderWorkspace) !== JSON.stringify(coderWorkspace);
 
     this.standaloneWorkspace = workspace;
+    this.standaloneCoderWorkspace = coderWorkspace;
     if (Number.isFinite(version)) {
       this.standaloneWorkspaceVersion = version;
     }
@@ -2420,6 +2432,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       return this.standaloneWorkspace;
     }
     return this.projectService.currentProjectPath || null;
+  }
+
+  private resolveHostCoderWorkspace(): CoderWorkspaceContext | null {
+    if (this.isStandalone && this.standaloneCoderWorkspace !== undefined) {
+      return this.standaloneCoderWorkspace;
+    }
+    return this.projectService.coderWorkspace;
   }
 
   private normalizeLang(lang: string): string {

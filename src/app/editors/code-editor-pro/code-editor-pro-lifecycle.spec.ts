@@ -77,4 +77,96 @@ describe('CodeEditorFrameComponent ready timeout lifecycle', () => {
     expect(component.initCoderEmbed).toHaveBeenCalledOnceWith('/projects/coder-demo', false);
     expect(component.coderRuntimeHostInfo).toBeNull();
   });
+
+  it('projects Coder library operations into the matching project log and host messages', async () => {
+    const frameWindow = {};
+    const log = { update: jasmine.createSpy('log.update') };
+    component.projectPath = '/projects/coder-demo';
+    component.coderEmbedFrame = { nativeElement: { contentWindow: frameWindow } };
+    component.codeSuggestionHostBridge = { handleMessage: () => false };
+    component.codeCompletionHostBridge = { handleMessage: () => false };
+    component.coderRuntime = {
+      getSession: jasmine.createSpy('getSession').and.returnValue({ log }),
+    };
+    component.message = {
+      loading: jasmine.createSpy('loading'),
+      success: jasmine.createSpy('success'),
+      error: jasmine.createSpy('error'),
+    };
+    component.translate = {
+      instant: jasmine.createSpy('instant').and.callFake((key: string) => ({
+        'LIB_MANAGER.INSTALLING': '正在安装',
+        'LIB_MANAGER.INSTALLED': '已安装',
+        'LIB_MANAGER.INSTALL_FAILED': '安装失败',
+        'LIB_MANAGER.UNINSTALLING': '正在卸载',
+        'LIB_MANAGER.UNINSTALLED': '已卸载',
+        'NPM.UNINSTALL_FAILED_TITLE': '卸载失败',
+      }[key])),
+    };
+
+    const emit = (
+      source: unknown,
+      state: 'loading' | 'success' | 'error',
+      action: 'install' | 'uninstall',
+      error?: string,
+    ) =>
+      component.onCoderNativeFsMessage({
+        source,
+        data: {
+          channel: 'aily-coder-editor-library-operation-feedback',
+          state,
+          action,
+          libraryName: 'Sensor',
+          command: action === 'install'
+            ? 'npm install @aily-project-coder/lib-sensor@1.2.3 --save --save-exact --ignore-scripts --no-audit --no-fund'
+            : 'npm uninstall @aily-project-coder/lib-sensor --ignore-scripts --no-audit --no-fund',
+          error,
+        },
+      });
+
+    await emit({}, 'success', 'install');
+    expect(log.update).not.toHaveBeenCalled();
+
+    await emit(frameWindow, 'loading', 'install');
+    await emit(frameWindow, 'success', 'install');
+    await emit(frameWindow, 'error', 'install', 'npm exited with code 1');
+    await emit(frameWindow, 'loading', 'uninstall');
+    await emit(frameWindow, 'success', 'uninstall');
+    await emit(frameWindow, 'error', 'uninstall', 'package is in use');
+
+    expect(log.update.calls.allArgs()).toEqual([
+      [{
+        title: '执行命令',
+        detail: 'npm install @aily-project-coder/lib-sensor@1.2.3 --save --save-exact --ignore-scripts --no-audit --no-fund',
+        state: 'info',
+      }],
+      [{
+        title: '命令执行失败',
+        detail: 'npm install @aily-project-coder/lib-sensor@1.2.3 --save --save-exact --ignore-scripts --no-audit --no-fund\nnpm exited with code 1',
+        state: 'error',
+      }],
+      [{
+        title: '执行命令',
+        detail: 'npm uninstall @aily-project-coder/lib-sensor --ignore-scripts --no-audit --no-fund',
+        state: 'info',
+      }],
+      [{
+        title: '命令执行失败',
+        detail: 'npm uninstall @aily-project-coder/lib-sensor --ignore-scripts --no-audit --no-fund\npackage is in use',
+        state: 'error',
+      }],
+    ]);
+    expect(component.message.loading.calls.allArgs()).toEqual([
+      ['Sensor 正在安装...'],
+      ['Sensor 正在卸载...'],
+    ]);
+    expect(component.message.success.calls.allArgs()).toEqual([
+      ['Sensor 已安装'],
+      ['Sensor 已卸载'],
+    ]);
+    expect(component.message.error.calls.allArgs()).toEqual([
+      ['Sensor 安装失败: npm exited with code 1'],
+      ['Sensor 卸载失败: package is in use'],
+    ]);
+  });
 });

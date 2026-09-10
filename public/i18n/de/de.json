@@ -145,6 +145,7 @@
     "GUIDE": {
         "START": "Start",
         "RECENTLY": "Zuletzt",
+        "UNMERGE_CODER_WORKSPACE": "Mehrprojekt-Arbeitsbereich aufheben",
         "USER_GROUP": "Benutzer-Community",
         "USER_GROUP_DESC": "Treten Sie der Community bei, um sich mit dem Entwicklungsteam und anderen Benutzern auszutauschen",
         "AI_APP_CENTER": "AI-App-Center",

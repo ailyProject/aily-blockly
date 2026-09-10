@@ -22,7 +22,14 @@ describe('Coder retained project workspaces', () => {
       coderOperationSubject: new BehaviorSubject(null), coderOperationsSubject: new BehaviorSubject(new Map()),
       coderOperations: new Map(), coderProjectContexts: new Map(), coderProjectsSubject: new BehaviorSubject([]),
       currentProjectPathSubject: new BehaviorSubject(''), stateSubject: new BehaviorSubject('loaded'),
+      coderWorkspaceSubject: new BehaviorSubject(null),
       boardConfigUpdatedSubject: new Subject(),
+      configService: {
+        data: { recentlyProjects: [] },
+        save: jasmine.createSpy('save'),
+        getApplicationName: () => 'Coder',
+        getPreferredChatAgentRuntimeMode: () => 'coder',
+      },
       getProjectMode: (path: string) => path.includes('device') ? 'coder' : 'blockly',
       isAilyCodeProject: (path: string) => path.includes('device'),
       electronService: { isElectron: true, exists: () => true, readFile: () => '{"name":"device","type":"coder"}', setTitle: jasmine.createSpy('title') },
@@ -38,6 +45,130 @@ describe('Coder retained project workspaces', () => {
     expect(service.currentProjectPath).toBe('/work/device-a');
     expect(window['projectLock'].tryAcquire).toHaveBeenCalledTimes(1);
     await expectAsync(service.addCoderProject('/work/blocks')).toBeRejected();
+    expect(service.coderWorkspace.root).toBe('/work/device-a');
+    expect(service.coderWorkspace.projects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+  });
+
+  it('keeps delayed member iframe recent writes collapsed into the workspace entry', async () => {
+    await service.addCoderProject('/work/device-b');
+    const workspaceId = service.coderWorkspace.id;
+
+    service.addRecentlyProject({ name: 'device-b', path: '/work/device-b' });
+    service.addRecentlyProject({ name: 'device-a', path: '/work/device-a' });
+
+    expect(service.configService.data.recentlyProjects.length).toBe(1);
+    expect(service.configService.data.recentlyProjects[0]).toEqual(jasmine.objectContaining({
+      path: '/work/device-a',
+      coderWorkspaceId: workspaceId,
+    }));
+    expect(service.configService.data.recentlyProjects[0].coderProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+  });
+
+  it('repairs previously raced independent recents when the guide list is read', async () => {
+    await service.addCoderProject('/work/device-b');
+    const workspaceId = service.coderWorkspace.id;
+    service.configService.data.recentlyProjects = [
+      { name: 'device-b', path: '/work/device-b' },
+      { name: 'device-a', path: '/work/device-a' },
+      { name: 'device-z', path: '/work/device-z' },
+    ];
+
+    const visible = service.recentlyProjects;
+
+    expect(visible.map((project: any) => project.path)).toEqual(['/work/device-a', '/work/device-z']);
+    expect(visible[0].coderWorkspaceId).toBe(workspaceId);
+    expect(service.configService.data.recentlyProjects).toEqual(visible);
+  });
+
+  it('dissolves a two-project workspace into independent recents when one tab is closed', async () => {
+    await service.addCoderProject('/work/device-b');
+    await service.removeCoderProject('/work/device-b');
+    expect(service.coderProjects.map((project: any) => project.path)).toEqual(['/work/device-a']);
+    expect(service.coderWorkspace).toBeNull();
+    expect(service.configService.data.coderWorkspaceGroups).toEqual([]);
+    expect(service.configService.data.recentlyProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+    expect(service.configService.data.recentlyProjects.every((project: any) => !project.coderWorkspaceId)).toBeTrue();
+  });
+
+  it('unmerges a recent workspace without closing its open tabs', async () => {
+    await service.addCoderProject('/work/device-b');
+    const workspaceId = service.coderWorkspace.id;
+    expect(service.unmergeCoderWorkspace({ workspaceId })).toBeTrue();
+    expect(service.coderProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+    expect(service.coderWorkspace).toBeNull();
+    expect(service.configService.data.recentlyProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+  });
+
+  it('shrinks a three-project workspace and keeps the closed project independent', async () => {
+    await service.addCoderProject('/work/device-b');
+    await service.addCoderProject('/work/device-c');
+    await service.removeCoderProject('/work/device-c');
+    expect(service.coderWorkspace.projects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+    expect(service.configService.data.recentlyProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-c'
+    ]);
+    expect(service.configService.data.recentlyProjects[0].coderProjects.length).toBe(2);
+    expect(service.configService.data.recentlyProjects[1].coderWorkspaceId).toBeUndefined();
+  });
+
+  it('promotes a remaining project when the workspace anchor tab is closed', async () => {
+    await service.addCoderProject('/work/device-b');
+    await service.addCoderProject('/work/device-c');
+    const workspaceId = service.coderWorkspace.id;
+    service.currentProjectPath = '/work/device-b';
+    await service.removeCoderProject('/work/device-a');
+    expect(service.coderWorkspace.id).toBe(workspaceId);
+    expect(service.coderWorkspace.root).toBe('/work/device-b');
+    expect(service.coderWorkspace.projects.map((project: any) => project.path)).toEqual([
+      '/work/device-b', '/work/device-c'
+    ]);
+    expect(service.configService.data.recentlyProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-b', '/work/device-a'
+    ]);
+  });
+
+  it('restores the associated project tabs when any workspace member is reopened', async () => {
+    await service.addCoderProject('/work/device-b');
+    service.coderProjectsSubject.next([]);
+    service.currentProjectPathSubject.next('');
+    service.registerCoderProject('/work/device-a');
+    await service.restoreCoderWorkspaceTabs('/work/device-a');
+    expect(service.coderProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b'
+    ]);
+  });
+
+  it('keeps the independent current project as root when merging another saved group', async () => {
+    service.configService.data.coderWorkspaceGroups = [{
+      id: 'coder-workspace:old-b',
+      root: '/work/device-b',
+      name: 'old-b',
+      activeProject: '/work/device-b',
+      projects: [
+        { path: '/work/device-b', name: 'device-b' },
+        { path: '/work/device-c', name: 'device-c' },
+      ],
+    }];
+    await service.addCoderProject('/work/device-b');
+    expect(service.coderWorkspace.root).toBe('/work/device-a');
+    expect(service.coderWorkspace.projects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b', '/work/device-c'
+    ]);
+    expect(service.coderProjects.map((project: any) => project.path)).toEqual([
+      '/work/device-a', '/work/device-b', '/work/device-c'
+    ]);
   });
 
   it('creates stable project contexts whose path and metadata do not change on tab activation', () => {
@@ -45,6 +176,8 @@ describe('Coder retained project workspaces', () => {
     const b = service.getCoderProjectContext('/work/device-b');
     b.currentPackageData = { name: 'B' };
     service.currentProjectPath = '/work/device-b';
+    expect(service.coderWorkspace.root).toBe('/work/device-a');
+    expect(service.coderWorkspace.activeProject).toBe('/work/device-b');
     expect(service.getCoderProjectContext('/work/device-a')).toBe(a);
     expect(a.currentProjectPath).toBe('/work/device-a');
     expect(a.currentPackageData.name).toBe('device');
@@ -79,7 +212,7 @@ describe('Coder retained project workspaces', () => {
   it('allows switching during a background operation without saving or unloading its editor', async () => {
     service.beginCoderOperation('upload', '/work/device-a');
     service.ensureProjectModeAllowed = async () => true;
-    service.configService = { getApplicationName: () => 'Coder' };
+    service.configService.getApplicationName = () => 'Coder';
     service.routerService = { navigate: jasmine.createSpy('navigate').and.resolveTo(true) };
     service.projectActivationSubject = new Subject();
     Object.defineProperty(service, 'application', { value: { dispatchProjectSave: jasmine.createSpy('save') } });

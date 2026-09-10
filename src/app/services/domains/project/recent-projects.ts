@@ -5,6 +5,9 @@ export interface RecentProject {
   name: string;
   path: string;
   nickname?: string;
+  /** Persisted Coder workspace groups use the anchor project as the recent-item path. */
+  coderWorkspaceId?: string;
+  coderProjects?: Array<{ path: string; name: string }>;
 }
 
 export function addRecentProject(

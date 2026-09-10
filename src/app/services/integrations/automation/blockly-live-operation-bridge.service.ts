@@ -119,7 +119,12 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async execute(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
-    if (payload.operation === 'project_list') return { ok: true, project: this.projectService.currentProjectPath, projects: this.projectService.coderProjects.map(project => project.path) };
+    if (payload.operation === 'project_list') return {
+      ok: true,
+      project: this.projectService.currentProjectPath,
+      projects: this.projectService.coderProjects.map(project => project.path),
+      coderWorkspace: this.projectService.coderWorkspace,
+    };
     if (payload.operation === 'abs_apply_status') {
       return {
         ok: true,
@@ -742,7 +747,7 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeCoderProjectCreate(params: Record<string, any>): Promise<Record<string, any>> {
-    return executeCoderProjectCreateOperation(params, {
+    const result = await executeCoderProjectCreateOperation(params, {
       normalizeBoardName: (value) => this.normalizeAilyBoardPackageName(value),
       getBoards: () => this.configService.getBoardListForSelector(),
       loadBoards: () => this.configService.loadBoardList(),
@@ -763,6 +768,12 @@ export class BlocklyLiveOperationBridgeService {
       }),
       recordBoardUsage: (boardName) => this.configService.recordBoardUsage(boardName),
     });
+    return {
+      ...result,
+      ...(result['ok'] === true && this.projectService.coderWorkspace
+        ? { coderWorkspace: this.projectService.coderWorkspace }
+        : {}),
+    };
   }
 
   private async executeCoderProjectOperation(path: string, operation: string, params: Record<string, any>): Promise<Record<string, any>> {
@@ -1018,6 +1029,9 @@ export class BlocklyLiveOperationBridgeService {
         project: requestedProject,
         message: '项目已打开并完成加载',
         loadStatus,
+        ...(this.projectService.coderWorkspace
+          ? { coderWorkspace: this.projectService.coderWorkspace }
+          : {}),
       };
     } catch (error) {
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
