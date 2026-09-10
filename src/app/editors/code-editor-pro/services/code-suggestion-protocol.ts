@@ -114,7 +114,9 @@ export function parseSuggestionRequest(value: unknown): SuggestionRequest {
 export function validateSuggestionResult(value: unknown, request: SuggestionRequest): SuggestionResult {
   const result = record(value); keys(result, ['protocolVersion', 'requestId', 'opportunityId', 'completionId', 'suggestions', 'expiresInMs', 'finishReason'])
   if (wireBytes(value) > MAX_OUTPUT_BYTES || result['protocolVersion'] !== 2 || result['requestId'] !== request.requestId || result['opportunityId'] !== request.opportunityId || !/^sug_[a-f0-9]{32}$/.test(String(result['completionId']))) throw new SuggestionError('INVALID_SUGGESTION_ID')
-  integer(result['expiresInMs'], 30_000)
+  // Advanced comparison results intentionally live longer than automatic
+  // inline suggestions so a user can review three candidates before applying.
+  integer(result['expiresInMs'], 120_000)
   if (!Array.isArray(result['suggestions']) || result['suggestions'].length > request.options['maxCandidates'] || (request.mode === 'next-edit' && result['suggestions'].length > 1)) throw new SuggestionError('INVALID_SUGGESTION_COUNT')
   const ids = new Set<string>()
   for (const item of result['suggestions']) {

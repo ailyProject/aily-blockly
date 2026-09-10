@@ -154,6 +154,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private subappCatalogSubscription: Subscription | null = null;
   private subappProgressSubscription: Subscription | null = null;
   private subappRestartRequired = false;
+  private deferPreparedUpdateOnInitialLaunch = false;
   private lastKnownApiServer = '';
   private standaloneWorkspace: string | null | undefined;
   private standaloneCoderWorkspace: CoderWorkspaceContext | null | undefined;
@@ -307,10 +308,16 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     if (this.subappRestartInProgress) {
       return this.translate.instant('APP_STORE.RESTARTING');
     }
+    if (this.isSubappRestartRequired) {
+      return this.translate.instant('APP_STORE.RESTART');
+    }
     const status = this.currentSubappCatalogItem?.updateStatus;
     if (status?.state === 'downloading') {
       const progress = status.progress ? ` ${status.progress}%` : '';
-      return `${this.translate.instant('APP_STORE.DOWNLOADING_UPDATE')}${progress}`;
+      const label = status.phase === 'extract'
+        ? 'APP_STORE.INSTALLING_UPDATE'
+        : 'APP_STORE.DOWNLOADING_UPDATE';
+      return `${this.translate.instant(label)}${progress}`;
     }
     if (status?.state === 'available') {
       return this.translate.instant(this.currentSubappCatalogItem?.updatePolicy
@@ -330,7 +337,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   get subappVersionActionTooltip(): string {
     const item = this.currentSubappCatalogItem;
-    if (!this.subappVersionActionBusy && item?.updateStatus.state === 'ready') {
+    if (!this.isSubappRestartRequired
+      && !this.subappVersionActionBusy
+      && item?.updateStatus.state === 'ready') {
       return this.translate.instant('APP_STORE.INSTALL_UPDATE_TOOLTIP', {
         available: item.availableVersion,
       });
@@ -348,10 +357,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   get isSubappRestartRequired(): boolean {
-    const installedVersion = String(this.currentSubappCatalogItem?.installedVersion || '').trim();
+    const item = this.currentSubappCatalogItem;
+    const installedVersion = String(item?.installedVersion || '').trim();
     const runningVersion = String(this.childVersion || '').trim();
+    const preparedVersion = item?.updateStatus.ready === true || item?.updateStatus.state === 'ready'
+      ? String(item.availableVersion || '').trim()
+      : '';
+    const processRunning = this.hostStatus === 'ready' || this.hostStatus === 'starting';
     return this.subappRestartRequired
-      || (!!installedVersion && !!runningVersion && installedVersion !== runningVersion);
+      || (processRunning && !!runningVersion
+        && (preparedVersion
+          ? preparedVersion !== runningVersion
+          : !!installedVersion && installedVersion !== runningVersion));
   }
 
   ngOnInit(): void {
@@ -481,6 +498,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const item = this.currentSubappCatalogItem;
     if (!item) return;
 
+    if (this.isSubappRestartRequired) {
+      this.confirmUpdatedSubappRestart();
+      return;
+    }
+
     if (!item.updatePolicy && item.updateAvailable) {
       await this.installSubappUpdate(item, false);
       return;
@@ -496,9 +518,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       return;
     }
 
-    if (this.isSubappRestartRequired) {
-      this.confirmUpdatedSubappRestart();
-    }
   }
 
   async reloadChildUi(): Promise<void> {
@@ -565,6 +584,16 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       return { ok: false, message: '子应用拒绝重启，可能存在未完成操作。' };
     }
 
+    const itemBeforeRestart = this.currentSubappCatalogItem;
+    const expectedVersion = itemBeforeRestart?.updateStatus.ready === true
+      || itemBeforeRestart?.updateStatus.state === 'ready'
+      ? String(itemBeforeRestart.availableVersion || '').trim()
+      : String(itemBeforeRestart?.installedVersion || '').trim();
+    if (!force && itemBeforeRestart
+      && (itemBeforeRestart.updateStatus.ready === true
+        || itemBeforeRestart.updateStatus.state === 'ready')) {
+      await this.subappManager.installUpdate(itemBeforeRestart.id);
+    }
     const updatedConfig = getChildToolConfig(this.resolvedToolId);
     if (!updatedConfig) {
       return { ok: false, message: `子应用配置未找到: ${this.resolvedToolId}` };
@@ -582,7 +611,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     await this.startServer(true);
     const restartedStatus = this.hostStatus as HostStatus;
     if (restartedStatus === 'ready') {
-      const expectedVersion = String(this.currentSubappCatalogItem?.installedVersion || '').trim();
+      await this.subappManager.refresh(false);
       const runningVersion = String(this.childVersion || '').trim();
       if (expectedVersion && runningVersion !== expectedVersion) {
         this.subappRestartRequired = true;
@@ -690,6 +719,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     this.config = config;
     this.resolvedToolId = config.id;
+    const catalogItemAtOpen = this.subappManager.state.apps.find(item => item.toolId === config.id);
+    this.deferPreparedUpdateOnInitialLaunch = catalogItemAtOpen?.installed === true
+      && catalogItemAtOpen.updatePolicy?.install === 'next-launch'
+      && catalogItemAtOpen.updateStatus.state !== 'ready'
+      && catalogItemAtOpen.updateStatus.ready !== true;
     this.runtimeSubscription?.unsubscribe();
     this.runtimeSubscription = this.processService.observeRuntime(config.id).subscribe(snapshot => {
       this.handleRuntimeSnapshot(snapshot);
@@ -731,9 +765,14 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const item = this.currentSubappCatalogItem;
     const installedVersion = String(item?.installedVersion || '').trim();
     const runningVersion = String(this.childVersion || '').trim();
-    if (item?.installed && installedVersion && runningVersion && installedVersion !== runningVersion) {
-      this.subappRestartRequired = true;
-    }
+    const preparedVersion = item?.updateStatus.ready === true || item?.updateStatus.state === 'ready'
+      ? String(item.availableVersion || '').trim()
+      : '';
+    const processRunning = this.hostStatus === 'ready' || this.hostStatus === 'starting';
+    if (!item?.installed || !runningVersion || !processRunning) return;
+    this.subappRestartRequired = preparedVersion
+      ? preparedVersion !== runningVersion
+      : !!installedVersion && installedVersion !== runningVersion;
   }
 
   private applySubappUpdateProgress(progress: SubappInstallProgress | null): void {
@@ -959,9 +998,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.log(restart ? 'restart server' : 'start server');
 
     try {
+      const deferPreparedUpdate = !restart && this.deferPreparedUpdateOnInitialLaunch;
+      this.deferPreparedUpdateOnInitialLaunch = false;
       this.serverInfo = restart
         ? await this.processService.restart(this.config.id)
-        : await this.processService.acquire(this.config.id);
+        : await this.processService.acquire(this.config.id, { deferPreparedUpdate });
       this.acquired = true;
       this.adoptRuntimeConfig(this.serverInfo);
       const childToolUrl = this.buildChildToolUrl(this.serverInfo.url);
@@ -984,6 +1025,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.childVersion = config.version || '';
     this.titleKey = config.titleKey;
     this.routePath = config.routePath || `/child-tool/${config.id}`;
+    this.syncSubappRestartRequirement();
   }
 
   private handleRuntimeSnapshot(snapshot: ChildToolRuntimeSnapshot): void {

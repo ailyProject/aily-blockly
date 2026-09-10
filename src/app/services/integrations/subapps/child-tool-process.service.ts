@@ -45,6 +45,11 @@ export interface ChildToolProcessMessageEvent {
   message: Record<string, unknown>;
 }
 
+export interface ChildToolAcquireOptions {
+  /** Keep the version selected when the user opened the UI while a background update was still pending. */
+  deferPreparedUpdate?: boolean;
+}
+
 interface ChildToolBackendMessage {
   event?: string;
   data?: any;
@@ -124,9 +129,14 @@ export class ChildToolProcessService implements OnDestroy {
     }
   }
 
-  async acquire(toolId: string): Promise<ChildToolHostInfo> {
-    await this.installReadyUpdateBeforeLaunch(toolId);
-    const config = this.requireConfig(toolId);
+  async acquire(toolId: string, options: ChildToolAcquireOptions = {}): Promise<ChildToolHostInfo> {
+    const openingConfig = this.requireConfig(toolId);
+    if (options.deferPreparedUpdate !== true) {
+      await this.installReadyUpdateBeforeLaunch(toolId);
+    }
+    const config = options.deferPreparedUpdate === true
+      ? openingConfig
+      : this.requireConfig(toolId);
     if (config.runtime?.processMessagePort) {
       if (
         !window['childToolSession']?.sendMessage
@@ -146,7 +156,7 @@ export class ChildToolProcessService implements OnDestroy {
     );
 
     try {
-      const hostInfo = await this.startSession(config, session);
+      const hostInfo = await this.startSession(config, session, options);
       this.publishRuntimeState(config.id, 'ready', session);
       return hostInfo;
     } catch (error) {
@@ -525,7 +535,11 @@ export class ChildToolProcessService implements OnDestroy {
     if (resetAttempts) session.recoveryAttempts = 0;
   }
 
-  private async startSession(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
+  private async startSession(
+    config: ChildToolConfig,
+    session: ChildToolSession,
+    options: ChildToolAcquireOptions = {},
+  ): Promise<ChildToolHostInfo> {
     this.ensureSessionStateListener();
     if (this.hostShuttingDown) throw new Error('Host is shutting down');
     if (session.running && session.hostInfo) {
@@ -534,7 +548,7 @@ export class ChildToolProcessService implements OnDestroy {
 
     if (!session.startPromise) {
       session.version = config.version || '';
-      session.startPromise = this.startOrAcquireSession(config, session);
+      session.startPromise = this.startOrAcquireSession(config, session, options);
     }
 
     const startPromise = session.startPromise;
@@ -550,6 +564,7 @@ export class ChildToolProcessService implements OnDestroy {
   private async startOrAcquireSession(
     config: ChildToolConfig,
     session: ChildToolSession,
+    options: ChildToolAcquireOptions = {},
   ): Promise<ChildToolHostInfo> {
     const sharedHostInfo = await this.acquireSharedSession(config, session);
     if (sharedHostInfo) {
@@ -559,7 +574,10 @@ export class ChildToolProcessService implements OnDestroy {
     const api = (window as any).electronAPI?.subapps;
     if (!config.catalogId || !api?.prepareLaunch) return this.startServer(config, session);
 
-    const prepared = await api.prepareLaunch({ id: config.catalogId });
+    const prepared = await api.prepareLaunch({
+      id: config.catalogId,
+      deferPreparedUpdate: options.deferPreparedUpdate === true,
+    });
     try {
       if (this.hostShuttingDown) throw new Error('Host is shutting down');
       const latestConfig = prepared.config as ChildToolConfig;

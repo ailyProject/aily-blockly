@@ -191,6 +191,11 @@
                                         @if (!app.subapp?.updatePolicy && app.subapp?.updateAvailable) {
                                         <i class="fa-light fa-cloud-arrow-down"></i>
                                         <span>{{ 'APP_STORE.UPDATE' | translate }}</span>
+                                        } @else if (isSubappRestartRequired(app)) {
+                                        <i class="fa-light fa-arrow-rotate-right"></i>
+                                        <span>{{ (app.extension
+                                            ? 'APP_STORE.RESTART_CLIENT'
+                                            : 'APP_STORE.RESTART_SERVICE') | translate }}</span>
                                         } @else if (app.subapp?.updateStatus?.state === 'ready') {
                                         <i class="fa-light fa-cloud-arrow-down"></i>
                                         <span>{{ 'APP_STORE.INSTALL_UPDATE' | translate }}</span>
@@ -205,11 +210,6 @@
                                         } @else if (app.subapp?.updateStatus?.state === 'available') {
                                         <i class="fa-light fa-spinner-third app-store-spin"></i>
                                         <span>{{ 'APP_STORE.PREPARING_UPDATE' | translate }}</span>
-                                        } @else if (isSubappRestartRequired(app)) {
-                                        <i class="fa-light fa-arrow-rotate-right"></i>
-                                        <span>{{ (app.extension
-                                            ? 'APP_STORE.RESTART_CLIENT'
-                                            : 'APP_STORE.RESTART_SERVICE') | translate }}</span>
                                         } @else {
                                         <i class="fa-light fa-rotate"></i>
                                         <span>{{ 'APP_STORE.CHECK_UPDATE' | translate }}</span>

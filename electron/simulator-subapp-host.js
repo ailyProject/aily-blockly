@@ -5,7 +5,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const { originFromSenderUrl } = require('./simulator-gateway');
-const { resolveSubappRoot } = require('./subapp-manager');
+const { resolveInstalledPackagePath, resolveSubappRoot } = require('./subapp-manager');
 
 const CONTROL_SCHEMA_VERSION = 2;
 const CONTROL_REQUEST_TYPE = 'aily-simulator-subapp.control.request';
@@ -1586,16 +1586,15 @@ function createSimulatorSubappHost(options = {}) {
 
 function resolveSimulatorSubappRuntime({ app, moduleDirectory }) {
   const workspaceRoot = path.resolve(moduleDirectory, '..', '..', 'aily-simulator');
-  const installedRoot = path.join(
-    resolveSubappRoot({
-      env: process.env,
-      platform: process.platform,
-      home: os.homedir(),
-    }),
-    'node_modules',
-    '@aily-project',
-    'subapp-aily-simulator',
-  );
+  const installed = resolveInstalledPackagePath(resolveSubappRoot({
+    env: process.env,
+    platform: process.platform,
+    home: os.homedir(),
+  }), {
+    id: 'aily-simulator',
+    package: '@aily-project/subapp-aily-simulator',
+  });
+  const installedRoot = installed.disabled ? null : installed.packagePath;
   const simulatorRoot = firstExistingDirectory([
     process.env.AILY_SIMULATOR_SUBAPP_ROOT,
     process.env.AILY_SIMULATOR_ROOT,

@@ -240,6 +240,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!catalogId || !app.subapp?.installed || this.pendingCatalogId || this.checkingCatalogId) return;
 
     const updateStatus = app.subapp.updateStatus;
+    if (this.isSubappRestartRequired(app)) {
+      this.closeSubappMore();
+      this.confirmSubappRestart(app);
+      return;
+    }
     if (!app.subapp.updatePolicy && app.subapp.updateAvailable) {
       this.closeSubappMore();
       this.startSubappUpdate(app);
@@ -259,12 +264,6 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     if (updateStatus.state === 'available' || updateStatus.state === 'downloading') {
-      return;
-    }
-
-    if (this.isSubappRestartRequired(app)) {
-      this.closeSubappMore();
-      this.confirmSubappRestart(app);
       return;
     }
 
@@ -307,10 +306,15 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const installedVersion = String(app.subapp?.installedVersion || '').trim();
     const activeVersion = this.getSubappActiveVersion(app);
     const hasOpenUi = this.isSubappActive(app) || this.activeSubappVersions.has(app.id);
+    const preparedVersion = app.subapp?.updateStatus.ready === true
+      || app.subapp?.updateStatus.state === 'ready'
+      ? String(app.subapp?.availableVersion || '').trim()
+      : '';
     return hasOpenUi
-      && !!installedVersion
       && !!activeVersion
-      && activeVersion !== installedVersion;
+      && (preparedVersion
+        ? activeVersion !== preparedVersion
+        : !!installedVersion && activeVersion !== installedVersion);
   }
 
   toggleSubappMore(app: AppItem, event: Event): void {
@@ -723,12 +727,16 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       if (result['ok'] !== true) {
         throw new Error(String(result['message'] || this.translate.instant('APP_STORE.RESTART_FAILED')));
       }
-      const expectedVersion = String(app.subapp?.installedVersion || '').trim();
+      const expectedVersion = app.subapp?.updateStatus.ready === true
+        || app.subapp?.updateStatus.state === 'ready'
+        ? String(app.subapp?.availableVersion || '').trim()
+        : String(app.subapp?.installedVersion || '').trim();
       const restartedHost = result['host'] as Record<string, unknown> | undefined;
       const runningVersion = String(restartedHost?.['version'] || '').trim();
       if (expectedVersion && runningVersion !== expectedVersion) {
         throw new Error(`子应用运行版本校验失败：应为 ${expectedVersion}，实际为 ${runningVersion || '未知'}`);
       }
+      await this.subappManager.refresh(false);
       await this.refreshSubappActiveVersion(app);
       this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', { name: app.name }));
     } catch (error) {
@@ -765,7 +773,12 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       }
 
       if (updateStatus.state === 'ready' || updateStatus.ready === true) {
-        this.startSubappUpdate(refreshedApp);
+        await this.refreshSubappActiveVersion(refreshedApp);
+        if (this.isSubappRestartRequired(refreshedApp)) {
+          this.confirmSubappRestart(refreshedApp);
+        } else {
+          this.startSubappUpdate(refreshedApp);
+        }
         return;
       }
 

@@ -21,6 +21,7 @@ export interface SubappUpdateStatus {
   state: SubappUpdateState;
   targetVersion: string;
   progress?: number;
+  phase?: string;
   ready?: boolean;
   error?: string;
   downloadedAt?: string;
@@ -310,7 +311,9 @@ export class SubappManagerService implements OnDestroy {
     if (!payload || typeof payload.id !== 'string') return;
     const percent = Math.max(0, Math.min(100, Math.round(Number(payload.percent) || 0)));
     const previous = this.progressSubject.value;
-    const nextPercent = previous?.id === payload.id && previous.action === payload.action
+    const nextPercent = previous?.id === payload.id
+      && previous.action === payload.action
+      && previous.phase === payload.phase
       ? Math.max(previous.percent || 0, percent)
       : percent;
     const progress = {
@@ -339,6 +342,7 @@ export class SubappManagerService implements OnDestroy {
           ...item.updateStatus,
           state,
           progress: progress.percent,
+          phase: payload.phase,
           ...(failed && payload.error ? { error: payload.error } : {}),
           ...(payload.action === 'download-update' ? { ready: false } : {}),
         },

@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const { resolveAilyAppDataPath } = require('./appdata-path');
+const { resolveAilyAppDataPath, resolveAilyNpmPrefix } = require('./appdata-path');
 
 const config = {
   appdata_path: {
@@ -46,4 +46,30 @@ test('main initializes the auth store under the explicitly selected data root', 
     isWin32: true, isDarwin: false,
   });
   assert.equal(processStub.env.AILY_APPDATA_PATH, explicit);
+});
+
+test('npm prefix preserves explicit macOS and Windows paths including spaces', () => {
+  assert.equal(resolveAilyNpmPrefix({
+    env: { AILY_NPM_PREFIX: '/Volumes/Aily Data/npm-global', AILY_APPDATA_PATH: '/Users/test/Library/aily-project' },
+    platform: 'darwin',
+  }), '/Volumes/Aily Data/npm-global');
+  assert.equal(resolveAilyNpmPrefix({
+    env: { AILY_NPM_PREFIX: 'D:\\Aily Data\\npm-global', AILY_APPDATA_PATH: 'C:\\Users\\test\\AppData\\Local\\aily-project' },
+    platform: 'win32',
+  }), 'D:\\Aily Data\\npm-global');
+  assert.equal(resolveAilyNpmPrefix({
+    env: { AILY_NPM_PREFIX: '\\\\server\\Aily Data\\npm-global' },
+    platform: 'win32',
+  }), '\\\\server\\Aily Data\\npm-global');
+});
+
+test('npm prefix still follows a custom appdata directory when no prefix is set', () => {
+  assert.equal(resolveAilyNpmPrefix({
+    env: { AILY_APPDATA_PATH: '/tmp/isolated-aily' },
+    platform: 'darwin',
+  }), '/tmp/isolated-aily/npm-global');
+  assert.equal(resolveAilyNpmPrefix({
+    env: { AILY_APPDATA_PATH: 'D:\\Portable Aily\\data' },
+    platform: 'win32',
+  }), 'D:\\Portable Aily\\data\\npm-global');
 });
