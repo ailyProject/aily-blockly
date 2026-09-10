@@ -14,6 +14,7 @@ export interface AppItem extends IMenuItem {
     availableVersion: string;
     installedVersion?: string | null;
     installed: boolean;
+    uninstalling?: boolean;
     updateAvailable: boolean;
     updateStatus: {
       state: 'current' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed';

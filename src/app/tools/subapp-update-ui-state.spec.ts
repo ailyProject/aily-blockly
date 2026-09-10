@@ -99,4 +99,21 @@ describe('subapp prepared update UI state', () => {
     });
     expect(finishLaunch).toHaveBeenCalledWith('token');
   });
+
+  it('continues an interrupted uninstall instead of invoking install from the app card', () => {
+    const store = Object.create(AppStoreComponent.prototype) as any;
+    store.runSubappAction = jasmine.createSpy('runSubappAction');
+    const app = {
+      id: 'aily-chat',
+      subapp: {
+        catalogId: 'aily-chat',
+        installed: false,
+        uninstalling: true,
+      },
+    };
+
+    store.openApp(app);
+
+    expect(store.runSubappAction).toHaveBeenCalledWith('uninstall', app);
+  });
 });

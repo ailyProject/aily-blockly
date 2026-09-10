@@ -202,6 +202,11 @@ export class RequiredSubappService {
       this.setOperation(id, { status: 'error', error });
       throw new Error(error);
     }
+    if (entry.uninstalling) {
+      const error = `Required subapp uninstall must be completed before installation: ${id}`;
+      this.setOperation(id, { status: 'error', error });
+      throw new Error(error);
+    }
 
     this.setOperation(id, { status: 'installing' });
     try {

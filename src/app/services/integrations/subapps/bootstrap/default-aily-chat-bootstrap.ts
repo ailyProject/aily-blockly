@@ -5,6 +5,7 @@ export interface DefaultAilyChatCatalogItem {
   id: string;
   toolId: string;
   installed: boolean;
+  uninstalling?: boolean;
 }
 
 export interface DefaultAilyChatBootstrapAdapter {
@@ -31,6 +32,9 @@ export async function bootstrapDefaultAilyChatSubapp(
   }
 
   if (!item.installed) {
+    if (item.uninstalling) {
+      return false;
+    }
     await adapter.install(item.id);
     item = adapter.readCatalog().find(app => app.toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID);
   }

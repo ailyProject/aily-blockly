@@ -7,6 +7,7 @@ const { createHash } = require('crypto');
 const versions = require('../subapp-version-store');
 const {
   createSubappManager,
+  listProcessesUsingPath,
   packagePathFor,
   prepareNpmSpawn,
   readInstalledState,
@@ -282,6 +283,14 @@ test('uninstall removes B, every A version, cache and only this root dependency'
     },
   }));
   await f.manager.install({ id: ID });
+  writeRunnablePackage(
+    path.join(f.rootDir, 'store', 'subapp-aily-chat', '0.1.30', 'source'),
+    '0.1.30',
+  );
+  writeRunnablePackage(
+    path.join(f.rootDir, 'store', 'subapp-aily-chat', '0.1.31', 'source'),
+    '0.1.31',
+  );
   fs.mkdirSync(path.join(f.updateRootDir, ID, '0.1.31'), { recursive: true });
   fs.writeFileSync(path.join(f.updateRootDir, ID, '0.1.31', 'package.tgz'), 'old');
 
@@ -300,7 +309,7 @@ test('uninstall removes B, every A version, cache and only this root dependency'
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
-test('a busy Windows uninstall leaves a suppressing marker and a forced retry finishes cleanup', async (t) => {
+test('a busy Windows preflight keeps the installation visible and a forced retry finishes cleanup', async (t) => {
   let killed = 0;
   const f = fixture(t, {
     managerOptions: {
@@ -312,13 +321,117 @@ test('a busy Windows uninstall leaves a suppressing marker and a forced retry fi
   const legacy = packagePathFor(f.rootDir, PACKAGE);
   writeRunnablePackage(legacy, '0.1.32');
   await assert.rejects(f.manager.uninstall({ id: ID }), error => error.requiresForceClose === true);
-  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
-  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, true);
   assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
   await f.manager.uninstall({ id: ID, forceClose: true });
   assert.ok(killed >= 1);
   assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
   assert.equal(fs.lstatSync(legacy, { throwIfNoEntry: false }), undefined);
+});
+
+test('macOS process inventory returns the PIDs whose command line uses the package path', async () => {
+  const packagePath = '/Users/test/Library/aily-project/npm-global/app/node_modules/@aily-project/subapp-aily-chat';
+  const holders = await listProcessesUsingPath(packagePath, {
+    platform: 'darwin',
+    execFileImpl: (command, args, options, callback) => {
+      assert.equal(command, 'ps');
+      assert.deepEqual(args, ['-ww', '-axo', 'pid=,command=']);
+      assert.equal(options.windowsHide, true);
+      callback(null, [
+        ` 43212 /usr/local/bin/node ${packagePath}/server/index.js`,
+        ` 43213 "/Applications/Node Runtime" ${packagePath}/runtime/mcp/cli.js`,
+        ' 43214 /usr/local/bin/node /tmp/unrelated.js',
+      ].join('\n'));
+    },
+  });
+
+  assert.deepEqual(holders.map(holder => ({ pid: holder.pid, name: holder.name })), [
+    { pid: 43212, name: 'node' },
+    { pid: 43213, name: 'Node Runtime' },
+  ]);
+});
+
+test('a forced macOS uninstall closes unregistered processes discovered from command lines', async (t) => {
+  let legacy = '';
+  const killed = [];
+  const f = fixture(t, {
+    managerOptions: {
+      platform: 'darwin',
+      execFileImpl: (_command, _args, _options, callback) => {
+        callback(null, legacy ? ` 43215 /usr/local/bin/node ${legacy}/runtime/mcp/cli.js` : '');
+      },
+      killProcessTree: async (pid) => { killed.push(pid); },
+    },
+  });
+  legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+
+  await assert.rejects(
+    f.manager.uninstall({ id: ID }),
+    error => error.requiresForceClose === true,
+  );
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, true);
+
+  await f.manager.uninstall({ id: ID, forceClose: true });
+
+  assert.deepEqual(killed, [43215]);
+  assert.equal(fs.existsSync(legacy), false);
+});
+
+test('install requests cannot race an active uninstall and recreate the package', async (t) => {
+  let releaseStop;
+  let reportStopStarted;
+  const stopStarted = new Promise(resolve => { reportStopStarted = resolve; });
+  const waitForStop = new Promise(resolve => { releaseStop = resolve; });
+  const f = fixture(t, {
+    managerOptions: {
+      forceStopChildToolByCatalogId: async () => {
+        reportStopStarted();
+        await waitForStop;
+        return { success: true };
+      },
+    },
+  });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+
+  const uninstalling = f.manager.uninstall({ id: ID });
+  await stopStarted;
+  await assert.rejects(
+    f.manager.install({ id: ID }),
+    error => error.code === 'SUBAPP_UNINSTALLING',
+  );
+  await assert.rejects(
+    f.manager.downloadUpdate({ id: ID }),
+    error => error.code === 'SUBAPP_UNINSTALLING',
+  );
+  releaseStop();
+  await uninstalling;
+
+  assert.equal(fs.existsSync(path.join(legacy, 'package.json')), false);
+  assert.equal(f.downloads.length, 0);
+});
+
+test('an interrupted uninstall is reported explicitly and cannot turn into install', async (t) => {
+  const f = fixture(t);
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  versions.beginUninstall(f.rootDir, f.entry);
+
+  const state = await f.manager.list({ strategy: 'network-first' });
+  const item = state.apps.find(app => app.id === ID);
+  assert.equal(item.installed, false);
+  assert.equal(item.uninstalling, true);
+  await assert.rejects(
+    f.manager.install({ id: ID }),
+    error => error.code === 'SUBAPP_UNINSTALLING',
+  );
+  await assert.rejects(
+    f.manager.downloadUpdate({ id: ID }),
+    error => error.code === 'SUBAPP_UNINSTALLING',
+  );
+  assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
 });
 
 test('same-version reinstall preserves the active generation until its holders are force-closed', async (t) => {

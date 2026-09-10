@@ -40,6 +40,7 @@ export interface SubappCatalogItem {
   availableVersion: string;
   installedVersion?: string | null;
   installed: boolean;
+  uninstalling?: boolean;
   updateAvailable: boolean;
   updateStatus: SubappUpdateStatus;
   updatePolicy?: SubappUpdatePolicy;
@@ -194,6 +195,7 @@ export class SubappManagerService implements OnDestroy {
           availableVersion: item.availableVersion,
           installedVersion: item.installedVersion,
           installed: item.installed,
+          uninstalling: item.uninstalling === true,
           updateAvailable: item.updateAvailable,
           updateStatus: item.updateStatus,
           updatePolicy: item.updatePolicy,

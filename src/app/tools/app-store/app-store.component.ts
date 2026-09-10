@@ -199,6 +199,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   openApp(app: AppItem): void {
+    if (app.subapp?.uninstalling) {
+      void this.runSubappAction('uninstall', app);
+      return;
+    }
     if (app.subapp && !app.subapp.installed) {
       this.installSubapp(app);
       return;

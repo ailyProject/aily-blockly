@@ -91,6 +91,7 @@
                     <div class="catalog-card" [class.dev]="app.dev" [class.locked]="app.lock"
                         [class.extension]="isExtensionOpenDisabled(app)"
                         [class.not-installed]="app.subapp && !app.subapp.installed"
+                        [class.uninstalling]="app.subapp?.uninstalling"
                         [class.installing]="isSubappPending(app)"
                         [class.has-update]="app.subapp?.updateAvailable"
                         [style.--install-progress]="getInstallProgressRatio(app)"
@@ -115,7 +116,9 @@
                                     <span class="app-name">{{ app.name | translate }}</span>
                                     @if (app.subapp) {
                                     <span class="app-version" [class.has-update]="app.subapp.updateAvailable">
-                                        @if (isCheckingSubapp(app)) {
+                                        @if (app.subapp.uninstalling) {
+                                        {{ 'APP_STORE.UNINSTALL' | translate }}
+                                        } @else if (isCheckingSubapp(app)) {
                                         <i class="fa-light fa-spinner-third app-store-spin" aria-hidden="true"></i>
                                         } @else if (app.subapp.installedVersion) {
                                         v{{ app.subapp.installedVersion }}

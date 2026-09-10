@@ -686,9 +686,16 @@ function resolveInstalledPackagePath(rootDir, entry) {
   const legacyPath = packagePathFor(rootDir, entry.package);
   // An interrupted uninstall suppresses every package source until cleanup is retried.
   try {
-    if (versions.isUninstalling(rootDir, entry)) return { packagePath: legacyPath, disabled: true };
+    if (versions.isUninstalling(rootDir, entry)) {
+      return { packagePath: legacyPath, disabled: true, uninstalling: true };
+    }
   } catch (error) {
-    return { packagePath: legacyPath, disabled: true, selectionError: error.message };
+    return {
+      packagePath: legacyPath,
+      disabled: true,
+      uninstalling: true,
+      selectionError: error.message,
+    };
   }
   // A managed dev link always wins over a selected release.
   if (fs.lstatSync(legacyPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
@@ -733,7 +740,13 @@ function readInstalledState(rootDir, entry) {
   const packagePath = selected.packagePath;
   const packageJsonPath = path.join(packagePath, 'package.json');
   if (selected.disabled || !fs.existsSync(packageJsonPath)) {
-    return { installed: false, installedVersion: null, packagePath, config: null };
+    return {
+      installed: false,
+      installedVersion: null,
+      packagePath,
+      config: null,
+      ...(selected.uninstalling ? { uninstalling: true } : {}),
+    };
   }
 
   try {
@@ -909,6 +922,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           availableVersion: entry.version,
           installedVersion: installedState.installedVersion,
           installed: installedState.installed,
+          uninstalling: installedState.uninstalling === true,
           updateAvailable,
           updateStatus,
           ...(entry.update ? { updatePolicy: entry.update } : {}),
@@ -1746,7 +1760,42 @@ function hasProcessesUsingPackagePath(packagePath, platform = process.platform) 
 
 function listProcessesUsingPath(packagePath, options = {}) {
   const platform = options.platform || process.platform;
-  if (platform !== 'win32' || !packagePath) return Promise.resolve([]);
+  if (!packagePath) return Promise.resolve([]);
+
+  if (platform !== 'win32') {
+    const execFileImpl = options.execFileImpl || execFile;
+    const needle = path.resolve(packagePath);
+    return new Promise((resolve) => {
+      execFileImpl(
+        'ps',
+        ['-ww', '-axo', 'pid=,command='],
+        { windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024 },
+        (error, stdout) => {
+          if (error) {
+            console.warn('[subapp-manager] listProcessesUsingPath failed:', error.message || error);
+            resolve([]);
+            return;
+          }
+          const selfPid = process.pid;
+          resolve(String(stdout || '').trim().split('\n').flatMap((line) => {
+            const match = line.trim().match(/^(\d+)\s+(.*)$/);
+            const pid = Number(match?.[1]);
+            const commandLine = match?.[2] || '';
+            if (!Number.isInteger(pid) || pid <= 0 || pid === selfPid || !commandLine.includes(needle)) {
+              return [];
+            }
+            const executable = commandLine.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/)?.slice(1).find(Boolean) || '';
+            return [{
+              pid,
+              name: path.basename(executable) || 'unknown',
+              commandLine,
+              source: 'command-line',
+            }];
+          }));
+        },
+      );
+    });
+  }
 
   const execImpl = options.execImpl || exec;
   const needle = path.resolve(packagePath).toLowerCase().replace(/'/g, "''");
@@ -2031,6 +2080,36 @@ function removePackageFromRootManifests(rootDir, packageName) {
   }
 }
 
+function assertSubappUninstallComplete(rootDir, entry, paths) {
+  const residuals = paths
+    .filter(target => fs.lstatSync(target, { throwIfNoEntry: false }))
+    .map(target => path.resolve(target));
+  const packageKey = `node_modules/${entry.package}`;
+  for (const name of ['package.json', 'package-lock.json']) {
+    const file = path.join(rootDir, name);
+    if (!fs.existsSync(file)) continue;
+    const manifest = readJson(file);
+    const declared = ['dependencies', 'devDependencies', 'optionalDependencies']
+      .some(field => isObject(manifest[field])
+        && Object.prototype.hasOwnProperty.call(manifest[field], entry.package));
+    const rootDeclared = ['dependencies', 'devDependencies', 'optionalDependencies']
+      .some(field => isObject(manifest.packages?.['']?.[field])
+        && Object.prototype.hasOwnProperty.call(manifest.packages[''][field], entry.package));
+    const packageLocked = isObject(manifest.packages)
+      && Object.prototype.hasOwnProperty.call(manifest.packages, packageKey);
+    if (declared || rootDeclared || packageLocked) residuals.push(path.resolve(file));
+  }
+  if (!residuals.length) return;
+
+  const error = new Error(
+    `Subapp uninstall is incomplete; all installed versions and legacy compatibility files must be removed: ${entry.id}\n`
+      + residuals.join('\n'),
+  );
+  error.code = 'SUBAPP_UNINSTALL_INCOMPLETE';
+  error.residualPaths = residuals;
+  throw error;
+}
+
 function declaredBinNames(packagePath, packageName) {
   try {
     const manifest = readJson(path.join(packagePath, 'package.json'));
@@ -2075,9 +2154,6 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
   const versionStoreRoot = path.join(storeRoot, storeKey);
   const binNames = declaredBinNames(legacyPath, entry.package);
 
-  // The marker is outside the version directory so a failed Windows deletion cannot
-  // make a partially removed installation runnable on the next launch.
-  versions.beginUninstall(rootDir, entry);
   const preparationLocks = [];
   const lockDirectory = path.join(storeRoot, '.locks');
   try {
@@ -2102,11 +2178,16 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
       }
     }
 
+    // The marker is written only when destructive cleanup is about to start. A busy
+    // preflight must leave the existing installation visible and retryable.
+    versions.beginUninstall(rootDir, entry);
     removeOwnedBinLinks(rootDir, legacyPath, entry.package, binNames);
     for (const target of targets) await rmWithBusyRetry(target, options);
 
-    await rmWithBusyRetry(path.join(updateRootDir, validateId(entry.id)), options);
+    const updateCachePath = path.join(updateRootDir, validateId(entry.id));
+    await rmWithBusyRetry(updateCachePath, options);
     removePackageFromRootManifests(rootDir, entry.package);
+    assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
     versions.finishUninstall(rootDir, entry);
   } finally {
     for (const release of preparationLocks.reverse()) release();
@@ -2186,6 +2267,7 @@ function createSubappManager(options = {}) {
   const updateOperations = new Map();
   const backgroundAttempts = new Set();
   const backgroundDownloads = new Map();
+  const pendingUninstallCounts = new Map();
   let currentIndex = null;
   let currentMeta = null;
   let currentIndexUrl = null;
@@ -2360,6 +2442,16 @@ function createSubappManager(options = {}) {
     return `${entry.id}@${entry.version}`;
   }
 
+  function assertNotUninstalling(id, entry = null) {
+    if ((pendingUninstallCounts.get(id) || 0) <= 0
+      && (!entry || !versions.isUninstalling(rootDir, entry))) {
+      return;
+    }
+    const error = new Error(`Subapp uninstall is in progress: ${id}`);
+    error.code = 'SUBAPP_UNINSTALLING';
+    throw error;
+  }
+
   function progressHandler(entry, state, externalHandler) {
     return (progress) => {
       const percent = progress.action === 'download-update'
@@ -2498,9 +2590,16 @@ function createSubappManager(options = {}) {
   }
 
   async function mutate(action, payload = {}) {
-    return enqueueMutation(async () => {
+    const requestedId = validateId(payload.id);
+    if (action !== 'uninstall') assertNotUninstalling(requestedId);
+    const tracksUninstall = action === 'uninstall';
+    if (tracksUninstall) {
+      pendingUninstallCounts.set(requestedId, (pendingUninstallCounts.get(requestedId) || 0) + 1);
+    }
+    try {
+      return await enqueueMutation(async () => {
       const { index } = await loadIndex('cache-first');
-      const id = validateId(payload.id);
+      const id = requestedId;
       const entry = index[id];
       if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);
       if (entry.app.enabled === false && action !== 'uninstall') {
@@ -2542,13 +2641,9 @@ function createSubappManager(options = {}) {
         }
         progressTracker.start();
         if (action !== 'uninstall' && versions.isUninstalling(rootDir, entry)) {
-          releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
-          try {
-            await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
-          } finally {
-            releaseLock();
-            releaseLock = null;
-          }
+          const error = new Error(`Subapp uninstall must be completed before installation: ${entry.id}`);
+          error.code = 'SUBAPP_UNINSTALLING';
+          throw error;
         }
         let targetEntry = entry;
         let prepared;
@@ -2615,7 +2710,14 @@ function createSubappManager(options = {}) {
         updateOperations.delete(updateKey(entry));
       }
       return list({ locale: payload.locale || 'en' });
-    });
+      });
+    } finally {
+      if (tracksUninstall) {
+        const remaining = (pendingUninstallCounts.get(requestedId) || 1) - 1;
+        if (remaining > 0) pendingUninstallCounts.set(requestedId, remaining);
+        else pendingUninstallCounts.delete(requestedId);
+      }
+    }
   }
 
   async function downloadUpdate(payload = {}) {
@@ -2624,6 +2726,7 @@ function createSubappManager(options = {}) {
     const id = validateId(payload.id);
     const entry = index[id];
     if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);
+    assertNotUninstalling(id, entry);
     ensureInstallProject(rootDir);
     await downloadUpdateEntry(entry, payload);
     return list({ locale: payload.locale || 'en' });
