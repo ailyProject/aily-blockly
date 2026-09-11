@@ -6,7 +6,7 @@ const path = require('node:path');
 const { readCodeDeclaration } = require('../code-suggestion-declarations');
 
 test('SDK declaration reader limits installed roots, symlinks, type, size and version', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-cursor-sdk-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-tab-sdk-'));
   try {
     const sdk = path.join(dir, 'installed-sdk'); await fs.mkdir(sdk);
     const header = path.join(sdk, 'Sensor.h'); await fs.writeFile(header, 'struct Sensor {};\n');

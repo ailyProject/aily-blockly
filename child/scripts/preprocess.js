@@ -7,6 +7,7 @@ const ailyCodeProject = require('./aily-code-project');
 const platformRuntime = require('./platform-runtime');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
+const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
 
 // 简单的日志工具
 const logger = {
@@ -662,6 +663,10 @@ async function processLibrariesParallel(libsPath, librariesPath, currentProjectP
 async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7Path, localLibrariesPath) {
     const result = [];
     const seen = new Set();
+    const localizedSourceRoots = collectLocalizedCoderSourceRoots(
+        localLibrariesPath,
+        currentProjectPath
+    );
 
     const append = sourcePath => {
         if (!sourcePath || !fs.existsSync(sourcePath)) return;
@@ -693,12 +698,85 @@ async function resolveCoderLibrarySearchPaths(libsPath, currentProjectPath, za7P
             }
         }
 
-        append(resolveNestedSrcPath(sourcePathBase));
+        const sourcePath = resolveNestedSrcPath(sourcePathBase);
+        const packageOverrides = localizedSourceRoots.get(packageName);
+        if (!packageOverrides?.size) {
+            for (const searchRoot of coderLibraryCompileSearchRoots(sourcePath)) append(searchRoot);
+            continue;
+        }
+
+        // A localized root is the editable project authority. Do not also hand
+        // its npm-managed source to the builder: retaining both makes header and
+        // library-name resolution depend on incidental scan order after reload.
+        for (const root of coderPackageLibraryRoots(sourcePath)) {
+            if (!packageOverrides.has(canonicalExistingPath(root))) {
+                for (const searchRoot of coderLibraryCompileSearchRoots(root)) append(searchRoot);
+            }
+        }
     }
 
-    // The builder scans each path recursively. Keeping the local container last
-    // gives sketch/libraries deterministic precedence without another projection.
-    append(localLibrariesPath);
+    // Local project libraries remain last so they override npm roots. Standard
+    // Arduino libraries also contribute their src/ directory because that is
+    // the public include and recursive compilation root.
+    for (const searchRoot of coderLibraryCompileSearchRoots(localLibrariesPath)) append(searchRoot);
+    return result;
+}
+
+function canonicalExistingPath(candidate) {
+    try {
+        return fs.realpathSync(candidate);
+    } catch {
+        return path.resolve(candidate);
+    }
+}
+
+function collectLocalizedCoderSourceRoots(localLibrariesPath, currentProjectPath) {
+    const result = new Map();
+    if (!localLibrariesPath || !fs.existsSync(localLibrariesPath)) return result;
+
+    for (const entry of fs.readdirSync(localLibrariesPath, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+        const receiptPath = path.join(localLibrariesPath, entry.name, CODER_LOCAL_LIBRARY_RECEIPT);
+        let receipt;
+        try {
+            receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+        } catch {
+            continue;
+        }
+        if (receipt?.source !== 'aily-chat'
+            || typeof receipt.sourcePackage !== 'string'
+            || typeof receipt.sourceLibraryRoot !== 'string') {
+            continue;
+        }
+        const sourceRoot = path.resolve(currentProjectPath, receipt.sourceLibraryRoot);
+        if (!isPathWithin(path.resolve(currentProjectPath), sourceRoot)) continue;
+        const roots = result.get(receipt.sourcePackage) || new Set();
+        roots.add(canonicalExistingPath(sourceRoot));
+        result.set(receipt.sourcePackage, roots);
+    }
+    return result;
+}
+
+function coderPackageLibraryRoots(sourcePath) {
+    if (!fs.existsSync(sourcePath)) return [];
+    const entries = fs.readdirSync(sourcePath, { withFileTypes: true })
+        .filter(entry => !entry.name.startsWith('.'));
+    if (entries.some(entry => !entry.isDirectory())) return [sourcePath];
+    return entries.filter(entry => entry.isDirectory()).map(entry => path.join(sourcePath, entry.name));
+}
+
+function coderLibraryCompileSearchRoots(sourcePath) {
+    if (!sourcePath || !fs.existsSync(sourcePath)) return [];
+    const result = [sourcePath];
+    for (const libraryRoot of coderPackageLibraryRoots(sourcePath)) {
+        const manifestPath = path.join(libraryRoot, 'library.properties');
+        const standardSourceRoot = path.join(libraryRoot, 'src');
+        if (fs.existsSync(manifestPath)
+            && fs.existsSync(standardSourceRoot)
+            && fs.statSync(standardSourceRoot).isDirectory()) {
+            result.push(standardSourceRoot);
+        }
+    }
     return result;
 }
 

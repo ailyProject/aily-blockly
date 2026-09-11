@@ -13,6 +13,7 @@ const versions = require('./subapp-version-store');
 const { acquireInstallLock: acquireUpdateLock } = require('./subapp-install-lock');
 const { extractNpmTarballInBackground } = require('./subapp-package-worker-client');
 const { resolveAilyNpmPrefix } = require('./appdata-path');
+const subappBinRouter = require('./subapp-bin-router');
 
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
@@ -816,6 +817,9 @@ function readInstalledState(rootDir, entry) {
           AILY_SUBAPP_PACKAGE_PATH: runnablePackagePath,
           AILY_SUBAPP_VERSION: installedVersion || '',
           AILY_SUBAPP_SOURCE: selected.source || (development ? 'development' : 'legacy-npm'),
+          ...(subappBinRouter.isStableRouterReady(rootDir)
+            ? { AILY_SUBAPP_BIN_ROUTER: subappBinRouter.stableRouterPath(rootDir) }
+            : {}),
         },
         entry: mainEntry,
         uiIndex,
@@ -2279,6 +2283,13 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
 function createSubappManager(options = {}) {
   const rootDir = resolveSubappRoot(options);
   const updateRootDir = resolveSubappUpdateRoot(options);
+  try {
+    subappBinRouter.ensureStableRouter(rootDir);
+  } catch (error) {
+    // Older child packages still resolve their direct MCP entry point. Keep the
+    // host usable if the stable external launcher cannot be refreshed.
+    console.warn('[subapp-manager] failed to install stable bin router:', error.message || error);
+  }
   const updateOperations = new Map();
   const backgroundAttempts = new Set();
   const backgroundDownloads = new Map();

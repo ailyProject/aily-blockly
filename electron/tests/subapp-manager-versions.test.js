@@ -42,7 +42,10 @@ function writeRunnablePackage(packageRoot, version, options = {}) {
     name: options.name || PACKAGE,
     version,
     main: 'server/index.js',
-    bin: { 'subapp-aily-chat': 'server/index.js' },
+    bin: {
+      'subapp-aily-chat': 'server/index.js',
+      'aily-blockly-mcp': 'runtime/mcp/cli.js',
+    },
     aily: { uiIndex: 'ui/index.html' },
     ailySubapp: { id: ID },
     ...(options.portable === false ? {} : {
@@ -50,6 +53,8 @@ function writeRunnablePackage(packageRoot, version, options = {}) {
     }),
   }));
   fs.writeFileSync(path.join(packageRoot, 'server/index.js'), `module.exports='${version}'`);
+  fs.mkdirSync(path.join(packageRoot, 'runtime', 'mcp'), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, 'runtime', 'mcp', 'cli.js'), `module.exports='mcp-${version}'`);
   fs.writeFileSync(path.join(packageRoot, 'ui/index.html'), version);
 }
 
@@ -115,7 +120,9 @@ test('reads a legacy B installation and emits the version-selected environment c
     AILY_SUBAPP_PACKAGE_PATH: legacy,
     AILY_SUBAPP_VERSION: '0.1.32',
     AILY_SUBAPP_SOURCE: 'legacy-npm',
+    AILY_SUBAPP_BIN_ROUTER: path.join(f.rootDir, 'bin', 'subapp-bin-router.cjs'),
   });
+  assert.equal(fs.existsSync(installed.config.env.AILY_SUBAPP_BIN_ROUTER), true);
 });
 
 test('portable install downloads and extracts directly to A without npm or changing root manifests', async (t) => {
