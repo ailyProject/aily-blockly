@@ -63,10 +63,35 @@ describe('CodeSuggestionHostBridgeService', () => {
   it('rejects arbitrary URLs and tools in the child payload', async () => { dispatch('suggest', { ...request(), tools: [], endpoint: 'https://example.com' }); expect((await waitFor('error'))['status']).toBe(400); expect(fetchSpy).not.toHaveBeenCalled(); });
   it('refreshes an expired token once', async () => { fetchSpy.and.returnValues(Promise.resolve(new Response('', { status: 401 })), Promise.resolve(response())); dispatch(); await waitFor('result'); expect(auth.refreshAuthToken).toHaveBeenCalledTimes(1); expect(fetchSpy).toHaveBeenCalledTimes(2); });
   it('returns 402 without retrying a different endpoint', async () => { fetchSpy.and.resolveTo(new Response('', { status: 402 })); dispatch(); expect((await waitFor('error'))['status']).toBe(402); expect(fetchSpy).toHaveBeenCalledTimes(1); });
+  it('preserves concurrency throttling and Retry-After for automatic recovery', async () => {
+    fetchSpy.and.resolveTo(Response.json({ code: 'CODE_COMPLETION_DEVICE_CONCURRENCY_LIMITED', message: 'busy', secret: 'never-forward' }, { status: 429, headers: { 'Retry-After': '1' } }));
+    dispatch(); const event = await waitFor('error');
+    expect(event['status']).toBe(429); expect(event['code']).toBe('CODE_COMPLETION_DEVICE_CONCURRENCY_LIMITED');
+    expect(event['headers']).toEqual({ 'retry-after': '1' }); expect(JSON.stringify(posted)).not.toContain('never-forward'); expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
   it('acknowledges capability negotiation and exposes only supported features', async () => {
     fetchSpy.and.resolveTo(Response.json({ protocolVersions: [2, 3], modes: ['completion', 'next-edit', 'arbitrary'], features: { crossFile: true, atomicAdditionalEdits: true }, maxCandidates: 10, maxRequestBytes: 500000, maxOutputBytes: 500000, quota: { enabled: true, allowed: true, remaining: 9 }, model: { id: 'public-model', apiKey: 'never-forward' } }));
     dispatch('capabilities'); expect(posted[0]?.['type']).toBe('ack'); const event = await waitFor('capabilities'); const capabilities = event['capabilities'] as Record<string, unknown>;
-    expect(capabilities['maxCandidates']).toBe(3); expect(JSON.stringify(event)).not.toContain('never-forward'); expect(JSON.stringify(event)).not.toContain('arbitrary');
+    expect(capabilities['maxCandidates']).toBe(1); expect(JSON.stringify(event)).not.toContain('never-forward'); expect(JSON.stringify(event)).not.toContain('arbitrary');
+    expect((capabilities['features'] as { crossFile: boolean }).crossFile).toBeTrue();
+  });
+  it('does not read external declarations without installed SDK roots', async () => {
+    dispatch('declaration', { path: '/private/header.h' });
+    expect((await waitFor('declaration'))['declaration']).toBeNull(); expect(fetchSpy).not.toHaveBeenCalled();
+  });
+  it('declaration roots come from the host and are cleared with the frame', async () => {
+    const old = Object.getOwnPropertyDescriptor(window, 'fs');
+    const read = jasmine.createSpy().and.resolveTo({ text: 'int read();', relativePath: '@sdk/test/header.h', snapshotId: 'one' });
+    Object.defineProperty(window, 'fs', { configurable: true, value: { readCodeDeclaration: read } });
+    try {
+      service.registerDeclarationRoots([{ id: 'test', version: '1', absolutePath: '/installed/sdk', kind: 'sdk' }]);
+      dispatch('declaration', { path: '/installed/sdk/header.h', roots: [{ absolutePath: '/private' }] });
+      await waitFor('declaration');
+      expect(read).toHaveBeenCalledOnceWith('/installed/sdk/header.h', [{ id: 'test', version: '1', absolutePath: '/installed/sdk' }]);
+      service.registerFrame(null); service.registerFrame(target); posted = [];
+      dispatch('declaration', { path: '/installed/sdk/header.h' });
+      expect((await waitFor('declaration'))['declaration']).toBeNull(); expect(read).toHaveBeenCalledTimes(1);
+    } finally { if (old) Object.defineProperty(window, 'fs', old); else delete (window as any)['fs']; }
   });
   it('shares cancellation with a v3 request on the same frame', async () => {
     const previous = new AbortController(); beginCodeRequest(target, previous);

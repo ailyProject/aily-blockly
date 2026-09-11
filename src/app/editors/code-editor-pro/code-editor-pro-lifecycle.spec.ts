@@ -78,13 +78,33 @@ describe('CodeEditorFrameComponent ready timeout lifecycle', () => {
     expect(component.coderRuntimeHostInfo).toBeNull();
   });
 
+  it('does not erase complete catalog context during repeated ready/theme replay', async () => {
+    const previousPath = window['path']; window['path'] = { getAppDataPath: () => '/app-data' } as any;
+    try {
+      const postMessage = jasmine.createSpy('postMessage'); const frame = { postMessage };
+      component.coderHostContextGeneration = 0;
+      component.coderEmbedFrame = { nativeElement: { contentWindow: frame } };
+      component.isCurrentCoderWorkspace = () => true;
+      component.translate = { currentLang: 'zh_cn' }; component.themeService = { theme: () => 'dark' };
+      component.resolveEmbedBuildOutputs = async () => ({ artifacts: [] });
+      component.loadPlatformPackagesForEmbed = async () => [{ name: 'sdk', path: '/sdk' }];
+      component.buildBoardProfileForEmbed = async () => ({ boardName: 'esp32' });
+      component.codeSuggestionHostBridge = { registerDeclarationRoots: () => {} };
+      await component.pushAilyCoderHostContext('/project');
+      expect(postMessage.calls.allArgs().filter(args => !args[0].payload.boardProfile).length).toBe(1);
+      postMessage.calls.reset();
+      await Promise.all([component.pushAilyCoderHostContext('/project'), component.pushAilyCoderHostContext('/project'), component.pushAilyCoderHostContext('/project')]);
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      expect(postMessage.calls.mostRecent().args[0].payload.boardProfile.boardName).toBe('esp32');
+    } finally { window['path'] = previousPath; }
+  });
+
   it('projects Coder library operations into the matching project log and host messages', async () => {
     const frameWindow = {};
     const log = { update: jasmine.createSpy('log.update') };
     component.projectPath = '/projects/coder-demo';
     component.coderEmbedFrame = { nativeElement: { contentWindow: frameWindow } };
     component.codeSuggestionHostBridge = { handleMessage: () => false };
-    component.codeCompletionHostBridge = { handleMessage: () => false };
     component.coderRuntime = {
       getSession: jasmine.createSpy('getSession').and.returnValue({ log }),
     };

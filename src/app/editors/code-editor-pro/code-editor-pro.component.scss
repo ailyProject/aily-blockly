@@ -35,6 +35,7 @@ app-code-editor-frame {
   scrollbar-width: thin;
 }
 .coder-project-tab {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
   max-width: 320px;
@@ -74,4 +75,40 @@ app-code-editor-frame {
     &:hover { background: var(--aily-bg-tertiary, #333); }
   }
   &:hover .project-close, &:focus-within .project-close, &.is-active .project-close { opacity: 1; }
+}
+
+// Font Awesome's shared animation can be suppressed or look frozen on some
+// Windows compositors. Keep this functional status indicator on its own GPU
+// transform layer and use a shorter, deterministic cycle.
+.coder-project-spinner {
+  display: inline-block;
+  transform-origin: center;
+  backface-visibility: hidden;
+  will-change: transform;
+  animation: coder-project-spin 0.72s linear infinite;
+}
+
+@keyframes coder-project-spin {
+  from { transform: translateZ(0) rotate(0deg); }
+  to { transform: translateZ(0) rotate(360deg); }
+}
+
+.project-progress-track {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgb(115 201 145 / 18%);
+}
+
+.project-progress-value {
+  display: block;
+  height: 100%;
+  min-width: 1px;
+  background: #73c991;
+  transition: width 120ms linear;
 }

@@ -32,7 +32,7 @@ const {
   shouldInstallForAppVersion,
 } = require("./tools/aily-tools-install-state");
 const { mergeConfigChanges } = require("./config-persistence");
-const { resolveAilyAppDataPath, resolveAilyNpmPrefix } = require("./appdata-path");
+const { resolveAilyAppDataPath } = require("./appdata-path");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const {
   normalizeBuildProduct,
@@ -2241,10 +2241,7 @@ function loadEnv() {
   // aily-builder / aily-linter / aily-connector 使用独立的 npm 全局 prefix。
   // AppData 根目录本身是开发板、SDK 和工具包的普通 npm 项目；两者共用
   // node_modules 时，开发板依赖的 npm install/uninstall 会清理掉全局工具。
-  process.env.AILY_NPM_PREFIX = resolveAilyNpmPrefix({
-    env: process.env,
-    platform: process.platform,
-  });
+  process.env.AILY_NPM_PREFIX = path.join(process.env.AILY_APPDATA_PATH, "npm-global");
   try {
     fs.mkdirSync(process.env.AILY_NPM_PREFIX, { recursive: true });
   } catch (error) {
@@ -2611,9 +2608,19 @@ function createWindow() {
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {
+    canMutateSharedTree: () => !hasOtherRunningInstances(),
     getRunningSubappConfig,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
+    canActivateUpdate: (entry) => {
+      if (hasOtherRunningInstances()) {
+        return { ok: false, reason: 'Another aily blockly instance is running' };
+      }
+      if (listChildToolHoldersForCatalogId(entry.id).length > 0) {
+        return { ok: false, reason: `${entry.id} is already running` };
+      }
+      return { ok: true };
+    },
   });
   builder.registerHandlers(() => mainWindow);
   linter.registerHandlers(() => mainWindow);

@@ -8,7 +8,13 @@ describe('Coder retained project workspaces', () => {
   let service: any;
   let originals: any;
   beforeEach(() => {
-    originals = { path: window['path'], fs: window['fs'], projectLock: window['projectLock'], ipcRenderer: window['ipcRenderer'] };
+    originals = {
+      path: window['path'],
+      fs: window['fs'],
+      platform: window['platform'],
+      projectLock: window['projectLock'],
+      ipcRenderer: window['ipcRenderer'],
+    };
     window['path'] = {
       resolve: (path: string) => path.replace(/\/$/, ''), join: (...parts: string[]) => parts.join('/'),
       relative: (root: string, path: string) => path === root ? '' : path.startsWith(root + '/') ? path.slice(root.length + 1) : '../outside',
@@ -195,6 +201,30 @@ describe('Coder retained project workspaces', () => {
     expect(() => b.assertPathInsideCoderEmbedRoot('/work/device-a/main.cpp')).toThrow();
   });
 
+  it('coalesces a Windows atomic rename into one settled file refresh', () => {
+    jasmine.clock().install();
+    try {
+      window['platform'] = { isWindows: true };
+      const component: any = Object.create(CodeEditorFrameComponent.prototype);
+      component.coderEmbedFsWatchers = new Map([[7, () => {}]]);
+      component.coderEmbedFsWatchSettleTimers = new Map();
+      component.pushCoderNativeFsWatchEvent = jasmine.createSpy('pushWatchEvent');
+
+      const rename = { eventType: 'rename', filename: 'sketch\\src\\main.cpp' };
+      component.scheduleSettledCoderNativeFsWatchEvent(7, rename);
+      component.scheduleSettledCoderNativeFsWatchEvent(7, rename);
+      jasmine.clock().tick(79);
+      expect(component.pushCoderNativeFsWatchEvent).not.toHaveBeenCalled();
+      jasmine.clock().tick(1);
+      expect(component.pushCoderNativeFsWatchEvent).toHaveBeenCalledOnceWith(7, {
+        eventType: 'change',
+        filename: 'sketch\\src\\main.cpp',
+      });
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
   it('tracks overlapping uploads and builds by project and restores nested upload state', () => {
     const finishUpload = service.beginCoderOperation('upload', '/work/device-a');
     const finishB = service.beginCoderOperation('build', '/work/device-b');
@@ -207,6 +237,24 @@ describe('Coder retained project workspaces', () => {
     expect(service.getCoderOperation('/work/device-a').kind).toBe('upload');
     finishUpload();
     expect(service.coderOperationsSubject.value.size).toBe(0);
+  });
+
+  it('projects independent build and upload progress into their matching project tabs', () => {
+    const component: any = Object.create(CodeEditorProComponent.prototype);
+    component.projectService = service;
+    component.runtime = {
+      getState: (path: string) => ({
+        build: 'doing',
+        upload: 'doing',
+        notice: { progress: path.endsWith('a') ? 24.6 : 78.2 },
+      }),
+    };
+    service.beginCoderOperation('build', '/work/device-a');
+    service.beginCoderOperation('upload', '/work/device-b');
+
+    expect(component.coderTabProgress('/work/device-a')).toBe(25);
+    expect(component.coderTabProgress('/work/device-b')).toBe(78);
+    expect(component.coderTabProgress('/work/device-c')).toBeNull();
   });
 
   it('allows switching during a background operation without saving or unloading its editor', async () => {

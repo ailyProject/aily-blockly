@@ -618,6 +618,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
+    readCodeDeclaration: (candidate, roots) => require('./code-suggestion-declarations').readCodeDeclaration(candidate, roots),
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readFileBufferAsync: async (path) => {
       const buffer = await require("fs").promises.readFile(path);

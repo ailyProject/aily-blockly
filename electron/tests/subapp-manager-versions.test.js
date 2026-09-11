@@ -254,6 +254,66 @@ test('a legacy package without a portable declaration runs npm only inside A/sou
   assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, version);
 });
 
+test('published self-contained Aily Coder packages without the portable marker skip legacy npm', async (t) => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-coder-portable-compat-'));
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const rootDir = path.join(temporary, 'app');
+  const updateRootDir = path.join(temporary, 'updates');
+  const id = 'aily-coder-editor';
+  const packageName = '@aily-project/subapp-aily-coder-editor';
+  const version = '0.1.7';
+  const archive = npmTarball({
+    'package.json': JSON.stringify({
+      name: packageName,
+      version,
+      type: 'module',
+      main: 'index.js',
+      aily: { uiIndex: 'ui/index.html' },
+      ailySubapp: { id },
+      devDependencies: { typescript: '~5.9.3' },
+    }),
+    'index.js': "import './runtime/index.js';\n",
+    'runtime/index.js': 'export const version = 1;\n',
+    'ui/index.html': '<h1>Aily Coder</h1>',
+  });
+  const entry = {
+    id,
+    package: packageName,
+    version,
+    namespace: 'AILY_CODER_EDITOR',
+    titleKey: 'AILY_CODER_EDITOR.TITLE',
+    app: { name: 'Aily Coder Editor', enabled: true, extension: true },
+    dist: { tarball: `https://packages.example.test/${version}.tgz`, integrity: integrity(archive) },
+  };
+  let npmCalls = 0;
+  const manager = createSubappManager({
+    rootDir,
+    updateRootDir,
+    indexUrl: 'https://packages.example.test/subapp-index.json',
+    fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ [id]: entry }) }),
+    downloadFile: async (_url, destination, onProgress) => {
+      fs.writeFileSync(destination, archive);
+      onProgress?.(100);
+    },
+    runNpm: async () => {
+      npmCalls += 1;
+      throw new Error('legacy npm must not run for the self-contained Coder package');
+    },
+    platform: process.platform,
+  });
+
+  await manager.install({ id });
+
+  const installed = readInstalledState(rootDir, entry);
+  assert.equal(installed.installedVersion, version);
+  assert.equal(installed.config.env.AILY_SUBAPP_SOURCE, 'version-store');
+  assert.equal(npmCalls, 0);
+  assert.equal(
+    fs.existsSync(path.join(rootDir, 'store', 'subapp-aily-coder-editor', version, 'source', 'runtime', 'index.js')),
+    true,
+  );
+});
+
 test('catalogs without dist metadata query the exact version and still use direct extraction', async (t) => {
   const f = fixture(t);
   delete f.entry.dist;

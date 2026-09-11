@@ -1479,15 +1479,6 @@ function validatePreparedPackage(packagePath, entry) {
 
 function portablePackageStatus(packagePath, manifest, options = {}) {
   const declaration = isObject(manifest.ailyPortable) ? manifest.ailyPortable : null;
-  if (!declaration || declaration.version !== 1) return { portable: false, reason: 'missing ailyPortable v1' };
-  const platform = options.platform || process.platform;
-  const architecture = options.arch || process.arch;
-  if (Array.isArray(declaration.platforms) && !declaration.platforms.includes(platform)) {
-    throw new Error(`Subapp package does not support ${platform}`);
-  }
-  if (Array.isArray(declaration.architectures) && !declaration.architectures.includes(architecture)) {
-    throw new Error(`Subapp package does not support ${architecture}`);
-  }
   const scripts = isObject(manifest.scripts) ? manifest.scripts : {};
   if (['preinstall', 'install', 'postinstall'].some(name => typeof scripts[name] === 'string' && scripts[name].trim())) {
     return { portable: false, reason: 'package has install lifecycle scripts' };
@@ -1501,6 +1492,30 @@ function portablePackageStatus(packagePath, manifest, options = {}) {
     ...(Array.isArray(manifest.bundledDependencies) ? manifest.bundledDependencies : []),
     ...(Array.isArray(manifest.bundleDependencies) ? manifest.bundleDependencies : []),
   ]);
+  // Aily Coder Editor 0.1.6/0.1.7 were already published as complete runtime
+  // bundles before the portable marker became mandatory. Keep this narrowly
+  // scoped compatibility path so those immutable packages are not sent through
+  // npm after extraction. Generic unmarked packages still use legacy npm.
+  if (!declaration || declaration.version !== 1) {
+    const isSelfContainedCoder = manifest.name === BUNDLED_CODER_PACKAGE
+      && manifest.ailySubapp?.id === BUNDLED_CODER_ID
+      && ['0.1.6', '0.1.7'].includes(manifest.version)
+      && ['darwin', 'win32', 'linux'].includes(options.platform || process.platform)
+      && ['arm64', 'x64'].includes(options.arch || process.arch)
+      && Object.keys(dependencies).length === 0
+      && fs.existsSync(path.join(packagePath, 'runtime', 'index.js'));
+    return isSelfContainedCoder
+      ? { portable: true, compatibility: 'aily-coder-editor-pre-portable-marker' }
+      : { portable: false, reason: 'missing ailyPortable v1' };
+  }
+  const platform = options.platform || process.platform;
+  const architecture = options.arch || process.arch;
+  if (Array.isArray(declaration.platforms) && !declaration.platforms.includes(platform)) {
+    throw new Error(`Subapp package does not support ${platform}`);
+  }
+  if (Array.isArray(declaration.architectures) && !declaration.architectures.includes(architecture)) {
+    throw new Error(`Subapp package does not support ${architecture}`);
+  }
   for (const dependency of Object.keys(dependencies)) {
     if (!bundled.has(dependency)
       || !fs.existsSync(path.join(packagePath, 'node_modules', ...dependency.split('/'), 'package.json'))) {

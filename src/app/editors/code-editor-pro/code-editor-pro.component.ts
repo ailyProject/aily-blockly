@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { ChangeDetectorRef, Component, NgZone, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -26,19 +26,36 @@ export class CodeEditorProComponent implements OnInit, OnDestroy {
     private readonly route: ActivatedRoute,
     private readonly message: NzMessageService,
     private readonly translate: TranslateService,
+    private readonly changeDetector: ChangeDetectorRef,
+    private readonly zone: NgZone,
   ) {}
 
   get coderProjects() { return this.projectService.coderProjects; }
   isCoderTabActive(path: string) { return path === this.projectService.currentProjectPath; }
   coderTabOperation(path: string) { return this.projectService.getCoderOperation(path)?.kind || null; }
+  coderTabProgress(path: string): number | null {
+    if (!this.coderTabOperation(path)) return null;
+    const progress = this.runtime.getState(path).notice?.progress;
+    return typeof progress === 'number' && Number.isFinite(progress)
+      ? Math.max(0, Math.min(100, Math.round(progress)))
+      : null;
+  }
   coderTabTitle(path: string) {
     const operation = this.coderTabOperation(path);
-    return operation ? `${path} — ${this.translate.instant('CODER_TABS.' + (operation === 'build' ? 'BUILDING' : 'UPLOADING'))}` : path;
+    if (!operation) return path;
+    const label = this.translate.instant('CODER_TABS.' + (operation === 'build' ? 'BUILDING' : 'UPLOADING'));
+    const progress = this.coderTabProgress(path);
+    return `${path} — ${label}${progress === null ? '' : ` ${progress}%`}`;
   }
   coderTabClosing(path: string) { return this.closing.has(path) || !!this.coderTabOperation(path); }
 
   ngOnInit(): void {
     this.persistence.init();
+    this.subscriptions.add(this.runtime.states$.subscribe(() => {
+      const refresh = () => this.changeDetector.markForCheck();
+      if (NgZone.isInAngularZone()) refresh();
+      else this.zone.run(refresh);
+    }));
     this.subscriptions.add(this.route.queryParams.subscribe(params => {
       if (params['path'] && !this.isCoderTabActive(params['path'])) void this.selectCoderProject(params['path']);
     }));

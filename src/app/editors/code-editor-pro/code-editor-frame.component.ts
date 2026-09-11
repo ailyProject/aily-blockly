@@ -24,7 +24,6 @@ import {
   type CodeEditorProPersistenceBridge,
 } from './services/code-editor-pro-project.service';
 import { CodeSuggestionHostBridgeService } from './services/code-suggestion-host-bridge.service';
-import { CodeCompletionHostBridgeService } from './services/code-completion-host-bridge.service';
 import { NpmService } from '@domain/dependencies/public-api';
 import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/builder.utils';
 import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-packages.utils';
@@ -158,7 +157,7 @@ function boundedCoderNativeSearchInteger(
 @Component({
   selector: 'app-code-editor-frame',
   imports: [CommonModule, TranslateModule, CoderLoadingComponent],
-  providers: [CodeCompletionHostBridgeService, CodeSuggestionHostBridgeService],
+  providers: [CodeSuggestionHostBridgeService],
   templateUrl: './code-editor-frame.component.html',
   styleUrl: './code-editor-frame.component.scss',
 })
@@ -237,6 +236,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /** 内嵌 Coder nativeFsWatchStart 注册的宿主 fs.watch 句柄 */
   private coderEmbedFsWatchers = new Map<number, () => void>();
   private coderEmbedFsWatchSeq = 0;
+  /** Windows 原子 rename 的稳定态重发定时器（按 watcher + 文件合并）。 */
+  private coderEmbedFsWatchSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** iframe 发起、Electron ripgrep 主进程仍在执行的搜索。 */
   private readonly coderNativeSearchRequestIds = new Set<string>();
   /** 监听 .aily/build 与全局 aily-builder 缓存变更，编译产物增删后同步 hints / hostContext */
@@ -245,6 +246,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private buildOutputsWatchDebounce?: ReturnType<typeof setTimeout>;
   /** 只允许最近一次异步 host-context 解析结果写入 iframe，避免空旧快照覆盖完整目录。 */
   private coderHostContextGeneration = 0;
+  private coderInitialContextFrame: Window | null = null;
+  private coderInitialContextRoot = '';
 
   constructor(
     private projectService: ProjectService,
@@ -267,7 +270,6 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     private readonly translate: TranslateService,
     private readonly modal: NzModalService,
     private readonly elementRef: ElementRef<HTMLElement>,
-    private readonly codeCompletionHostBridge: CodeCompletionHostBridgeService,
     private readonly codeSuggestionHostBridge: CodeSuggestionHostBridgeService,
     private readonly coderRuntime: CoderProjectRuntimeService,
   ) {
@@ -473,7 +475,6 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.componentSubscriptions.unsubscribe();
     this.detachCoderEmbedFrame();
     this.stopBuildOutputsWatch();
-    this.codeCompletionHostBridge.dispose();
     this.codeSuggestionHostBridge.dispose();
     if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(null);
     this.coderEmbedWorkspaceRoot = null;
@@ -740,6 +741,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    * iframe 每次加载完成后向 aily-coder-editor 同步宿主上下文（构建目录等），避免依赖 ProjectService 竞态。
    */
   onCoderEmbedFrameLoad(): void {
+    this.coderInitialContextFrame = null;
+    this.coderInitialContextRoot = '';
     const frame = this.coderEmbedFrame?.nativeElement;
     const root = this.coderEmbedWorkspaceRoot;
     this.coderWorkbenchReady = false;
@@ -750,7 +753,6 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(root);
     }
     if (this.active) this.aiCoderDiffBridge.registerEmbed(frame?.contentWindow ?? null);
-    this.codeCompletionHostBridge.registerFrame(frame?.contentWindow ?? null);
     this.codeSuggestionHostBridge.registerFrame(frame?.contentWindow ?? null);
     if (root) {
       void this.pushAilyCoderHostContext(root);
@@ -1037,7 +1039,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (
       this.isCurrentCoderWorkspace(projectRoot)
       && win === this.coderEmbedFrame?.nativeElement?.contentWindow
+      && (this.coderInitialContextFrame !== win || this.coderInitialContextRoot !== projectRoot)
     ) {
+      this.coderInitialContextFrame = win;
+      this.coderInitialContextRoot = projectRoot;
       win.postMessage({
         channel: AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL,
         payload: {
@@ -1054,6 +1059,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         this.loadPlatformPackagesForEmbed(),
         this.buildBoardProfileForEmbed(projectRoot),
       ]);
+      if (generation === this.coderHostContextGeneration && this.isCurrentCoderWorkspace(projectRoot) && win === this.coderEmbedFrame?.nativeElement?.contentWindow) {
+        this.codeSuggestionHostBridge.registerDeclarationRoots(platformPackages);
+      }
       const { buildPath, artifacts, mainHexAbs, mainHexRelPath } = buildOutputs;
       const payload = {
         v: 1 as const,
@@ -1087,6 +1095,21 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         return;
       }
       win.postMessage({ channel: AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL, payload }, '*');
+      if (this.coderWorkbenchReady && this.coderRuntimeHostInfo?.wsUrl) {
+        let buildRevision = '';
+        try {
+          const stat = window['fs'].statSync(window['path'].join(projectRoot, '.build', 'build.ninja'));
+          buildRevision = `${stat.mtime}:${stat.size}`;
+        } catch { /* The first build may not exist yet. */ }
+        const identity = JSON.stringify([this.projectService?.currentBoardConfig, this.projectService?.currentPackageData, platformPackages, buildRevision]);
+        let revision = 2166136261;
+        for (let index = 0; index < identity.length; index++) revision = Math.imul(revision ^ identity.charCodeAt(index), 16777619);
+        const lspUrl = new URL(this.coderRuntimeHostInfo.wsUrl);
+        lspUrl.pathname = '/lsp';
+        lspUrl.searchParams.set('root', projectRoot);
+        lspUrl.searchParams.set('configuration', (revision >>> 0).toString(16));
+        win.postMessage({ channel: 'aily-coder-editor-language-server', url: lspUrl.toString() }, new URL(this.coderRuntimeHostInfo.url).origin);
+      }
     } catch (e) {
       console.warn('[CodeEditorPro] postMessage host context 失败', e);
     }
@@ -1201,6 +1224,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const dispose = this.coderEmbedFsWatchers.get(watchId);
     if (!dispose) return;
     this.coderEmbedFsWatchers.delete(watchId);
+    const timerPrefix = `${watchId}\0`;
+    for (const [key, timer] of this.coderEmbedFsWatchSettleTimers) {
+      if (!key.startsWith(timerPrefix)) continue;
+      clearTimeout(timer);
+      this.coderEmbedFsWatchSettleTimers.delete(key);
+    }
     try {
       dispose();
     } catch {
@@ -1212,7 +1241,6 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private detachCoderEmbedFrame(): void {
     this.stopAllCoderEmbedFsWatchers();
     this.stopAllCoderNativeSearches();
-    this.codeCompletionHostBridge.registerFrame(null);
     this.codeSuggestionHostBridge.registerFrame(null);
     if (this.active) this.aiCoderDiffBridge.registerEmbed(null);
   }
@@ -1333,6 +1361,25 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     } catch {
       /* ignore */
     }
+  }
+
+  /**
+   * Windows 的原子文件覆盖会先触发 rename；等 rename 完成后再推一次 change，
+   * 避免 Workbench 在目标短暂不可读时一直等到下一次鼠标交互才重取内容。
+   */
+  private scheduleSettledCoderNativeFsWatchEvent(
+    watchId: number,
+    event: { eventType?: string; filename?: string; error?: string },
+  ): void {
+    if (!window['platform']?.isWindows || event.eventType?.toLowerCase() !== 'rename') return;
+    const key = `${watchId}\0${event.filename || ''}`;
+    const previous = this.coderEmbedFsWatchSettleTimers.get(key);
+    if (previous != null) clearTimeout(previous);
+    this.coderEmbedFsWatchSettleTimers.set(key, setTimeout(() => {
+      this.coderEmbedFsWatchSettleTimers.delete(key);
+      if (!this.coderEmbedFsWatchers.has(watchId)) return;
+      this.pushCoderNativeFsWatchEvent(watchId, { ...event, eventType: 'change' });
+    }, 80));
   }
 
   private replyCoderNativeFs(
@@ -1868,7 +1915,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
-    if (this.codeSuggestionHostBridge.handleMessage(ev) || this.codeCompletionHostBridge.handleMessage(ev)) {
+    if (this.codeSuggestionHostBridge.handleMessage(ev)) {
       return;
     }
     const msg = ev.data as {
@@ -2167,6 +2214,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                       filename: filenameArg ?? undefined,
                     };
                 this.pushCoderNativeFsWatchEvent(watchId, event);
+                this.scheduleSettledCoderNativeFsWatchEvent(watchId, event);
                 if (event.eventType === 'error') {
                   watcherFailed = true;
                   this.stopCoderEmbedFsWatcher(watchId);

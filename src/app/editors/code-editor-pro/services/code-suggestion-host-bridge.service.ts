@@ -15,6 +15,7 @@ export class CodeSuggestionHostBridgeService {
   private refresh: Promise<boolean> | null = null;
   private pending = new Map<string, AbortController>();
   private feedbackControllers = new Set<AbortController>();
+  private declarationRoots: Array<{ id: string; version: string; absolutePath: string }> = [];
   private readonly authSubscription: { unsubscribe(): void };
   constructor(private readonly auth: AuthService) {
     let identity: string | undefined;
@@ -31,7 +32,11 @@ export class CodeSuggestionHostBridgeService {
   registerFrame(frame: Window | null): void {
     if (frame === this.frame) return;
     this.abortAll();
+    this.declarationRoots = [];
     this.frame = frame;
+  }
+  registerDeclarationRoots(roots: Array<{ id: string; version: string; absolutePath: string; kind: string }>): void {
+    this.declarationRoots = roots.filter(root => root.kind === 'sdk').slice(0, 32).map(({ id, version, absolutePath }) => ({ id, version, absolutePath }));
   }
   dispose(): void { this.authSubscription.unsubscribe(); this.abortAll(); this.frame = null; this.disposed = true; }
   handleMessage(event: MessageEvent): boolean {
@@ -44,6 +49,15 @@ export class CodeSuggestionHostBridgeService {
     this.post(frame, id, 'ack', {});
     if (message.operation === 'cancel') { this.pending.get(id)?.abort(); return true; }
     if (message.operation === 'feedback') { this.sendFeedback(frame, message); return true; }
+    if (message.operation === 'declaration') {
+      const roots = this.declarationRoots;
+      const fs = (window as any)['fs'];
+      if (typeof message.payload?.path !== 'string' || !roots.length || typeof fs?.readCodeDeclaration !== 'function') { this.post(frame, id, 'declaration', { declaration: null }); return true; }
+      void fs.readCodeDeclaration(message.payload.path, roots).then((declaration: unknown) => {
+        if (this.declarationRoots === roots) this.post(frame, id, 'declaration', { declaration });
+      }).catch(() => this.post(frame, id, 'declaration', { declaration: null }));
+      return true;
+    }
     if (!['capabilities', 'suggest'].includes(message.operation)) { this.error(frame, id, 400, 'INVALID_SUGGESTION_OPERATION'); return true; }
     let request: SuggestionRequest | undefined;
     if (message.operation === 'suggest') {
@@ -83,8 +97,12 @@ export class CodeSuggestionHostBridgeService {
       const value = response.headers.get(key); if (value != null) headers[key] = value;
     }
     if (!response.ok) {
-      await response.body?.cancel();
-      this.error(frame, id, response.status, response.status === 404 || response.status === 405 ? 'CODE_SUGGESTION_UNSUPPORTED' : 'CODE_SUGGESTION_HTTP_ERROR', headers);
+      let code = response.status === 404 || response.status === 405 ? 'CODE_SUGGESTION_UNSUPPORTED' : 'CODE_SUGGESTION_HTTP_ERROR';
+      try {
+        const body = JSON.parse(await this.boundedText(response, 4096));
+        if (typeof body.code === 'string' && /^CODE_(?:COMPLETION|SUGGESTION)_[A-Z_]{1,80}$/.test(body.code)) code = body.code;
+      } catch { /* Preserve HTTP status and Retry-After even for a non-JSON gateway error. */ }
+      this.error(frame, id, response.status, code, headers);
       return;
     }
     if (!request) {
@@ -93,11 +111,11 @@ export class CodeSuggestionHostBridgeService {
       if (!Array.isArray(value.protocolVersions) || !value.protocolVersions.includes(2) || !Array.isArray(value.modes)) throw new SuggestionError('INVALID_SUGGESTION_CAPABILITIES', undefined, 502);
       // Only expose the intersection, never endpoint details or extra server fields.
       this.post(frame, id, 'capabilities', { capabilities: {
-        protocolVersions: [2], modes: value.modes.filter((mode: string) => ['completion', 'alternatives', 'next-edit'].includes(mode)),
-        maxCandidates: Math.min(3, Number(value.maxCandidates) || 1), maxRequestBytes: Math.min(192 * 1024, Number(value.maxRequestBytes) || 0),
+        protocolVersions: [2], modes: value.modes.filter((mode: string) => ['completion', 'next-edit'].includes(mode)),
+        maxCandidates: 1, maxRequestBytes: Math.min(192 * 1024, Number(value.maxRequestBytes) || 0),
         maxOutputBytes: Math.min(MAX_OUTPUT_BYTES, Number(value.maxOutputBytes) || 0),
-        features: { crossFile: false, atomicAdditionalEdits: value.features?.atomicAdditionalEdits === true,
-          partialInsertAccept: value.features?.partialInsertAccept === true, partialAcceptWithImports: false, extendedRange: value.features?.extendedRange === true },
+        features: { crossFile: value.features?.crossFile === true, atomicAdditionalEdits: value.features?.atomicAdditionalEdits === true,
+          partialInsertAccept: value.features?.partialInsertAccept === true, partialAcceptWithImports: value.features?.partialAcceptWithImports === true, extendedRange: value.features?.extendedRange === true },
         quota: { enabled: value.quota?.enabled === true, allowed: value.quota?.allowed === true, remaining: Number(value.quota?.remaining ?? 0) },
         model: { id: typeof value.model?.id === 'string' ? value.model.id.slice(0, 64) : 'aily-code', selectable: false },
       } });
