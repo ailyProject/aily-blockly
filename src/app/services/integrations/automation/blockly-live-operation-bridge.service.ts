@@ -31,6 +31,7 @@ import {
 } from '../../../integrations/blockly/blockly-host-operations';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
+import { getBoardConfig, setBoardConfig } from '../../../integrations/blockly/board-config-operation';
 import type { EditorOperationEvent } from '../../../integrations/blockly/editor-operation-event';
 import type { HostToolResult } from '../../../integrations/blockly/host-tool-result';
 import {
@@ -264,6 +265,10 @@ export class BlocklyLiveOperationBridgeService {
         return this.executeProjectAbiCheck();
       case 'project_build':
         return this.executeProjectBuild(payload.params || {});
+      case 'get_board_config':
+        return getBoardConfig(this.projectService);
+      case 'set_board_config':
+        return setBoardConfig(this.projectService, this.builderService, this.electronService, payload.params || {});
       case 'serial_ports_list':
         return this.executeSerialPortsList(payload.params || {});
       case 'project_upload':

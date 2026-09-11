@@ -2124,7 +2124,8 @@ export class ProjectService {
   }
 
   /** Build the current board's configuration menu from its root menu.json. */
-  async getBoardConfigMenu(): Promise<IMenuItem[]> {
+  async getBoardConfigMenu(options: { persistDefaults?: boolean } = {}): Promise<IMenuItem[]> {
+    const persistDefaults = options.persistDefaults !== false;
     const menu = this.cloneCurrentBoardMenuConfig();
     if (menu.length === 0) {
       return [];
@@ -2136,6 +2137,7 @@ export class ProjectService {
       packageJson = await this.getPackageJson();
       currentProjectConfig = packageJson?.projectConfig || {};
     } catch (error) {
+      if (!persistDefaults) throw error;
       console.warn('[ProjectService] failed to read current project config:', error);
     }
 
@@ -2173,7 +2175,7 @@ export class ProjectService {
         child.check = currentValue !== undefined && this.compareConfigs(child.data, currentValue);
         hasSelectedChild ||= child.check;
 
-        if (child.check && child.extra?.syncPinConfig) {
+        if (persistDefaults && child.check && child.extra?.syncPinConfig) {
           this.currentBoardPinConfig.board = child.data;
           this.currentBoardPinConfig.variant = child.extra?.build?.variant || null;
           this.currentBoardPinConfig.variant_h = child.extra?.build?.variant_h || null;
@@ -2187,7 +2189,7 @@ export class ProjectService {
       }
 
       if (
-        currentValue === undefined &&
+        persistDefaults && currentValue === undefined &&
         menuItem.extra?.selectFirstByDefault &&
         children.length > 0 &&
         packageJson
