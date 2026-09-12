@@ -115,7 +115,8 @@ export class CodeSuggestionHostBridgeService {
         maxCandidates: 1, maxRequestBytes: Math.min(192 * 1024, Number(value.maxRequestBytes) || 0),
         maxOutputBytes: Math.min(MAX_OUTPUT_BYTES, Number(value.maxOutputBytes) || 0),
         features: { crossFile: value.features?.crossFile === true, atomicAdditionalEdits: value.features?.atomicAdditionalEdits === true,
-          partialInsertAccept: value.features?.partialInsertAccept === true, partialAcceptWithImports: value.features?.partialAcceptWithImports === true, extendedRange: value.features?.extendedRange === true },
+          partialInsertAccept: value.features?.partialInsertAccept === true, partialAcceptWithImports: value.features?.partialAcceptWithImports === true, extendedRange: value.features?.extendedRange === true,
+          clipboardContext: value.features?.clipboardContext === true },
         quota: { enabled: value.quota?.enabled === true, allowed: value.quota?.allowed === true, remaining: Number(value.quota?.remaining ?? 0) },
         model: { id: typeof value.model?.id === 'string' ? value.model.id.slice(0, 64) : 'aily-code', selectable: false },
       } });

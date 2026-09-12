@@ -648,14 +648,16 @@ async function processComponentLibraries(componentLibraries, librariesPath) {
 async function processLibrariesParallel(libsPath, librariesPath, currentProjectPath, za7Path, devmode, libraryCache) {
     const tasks = libsPath.map(lib => processLibrary(lib, librariesPath, currentProjectPath, za7Path, devmode, libraryCache));
     const results = await Promise.all(tasks);
+    const failures = results.flatMap((result, index) => result.success ? [] : [
+        `${typeof libsPath[index] === 'string' ? libsPath[index] : libsPath[index].packageName}: ${result.error}`
+    ]);
+    if (failures.length > 0) {
+        throw new Error(`Library source preparation failed:\n${failures.join('\n')}`);
+    }
     
     const copiedLibraries = [];
     results.forEach(result => {
-        if (result.success) {
-            copiedLibraries.push(...result.targetNames);
-        } else {
-            logger.warn(`库处理失败: ${result.error}`);
-        }
+        copiedLibraries.push(...result.targetNames);
     });
     return copiedLibraries;
 }
@@ -1018,12 +1020,8 @@ async function processLibraryDirectories(lib, sourcePath, librariesPath) {
             
             rm(targetPath);
 
-            try {
-                linkItem(fullSourcePath, targetPath);
-                targetNames.push(item);
-            } catch (e) {
-                // ignore or log
-            }
+            linkItem(fullSourcePath, targetPath);
+            targetNames.push(item);
         }
     }
     return { targetNames, success: true };

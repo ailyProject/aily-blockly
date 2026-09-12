@@ -43,6 +43,20 @@ describe('CodeSuggestionHostBridgeService', () => {
   });
   afterEach(() => service.dispose());
   it('rejects a foreign frame without network activity', () => { expect(dispatch('suggest', request(), {} as Window)).toBeFalse(); expect(fetchSpy).not.toHaveBeenCalled(); });
+  it('forwards bounded clipboard references and rejects unsupported history fields', async () => {
+    fetchSpy.and.resolveTo(response());
+    const input = request();
+    input.clipboardHistory = [{ operation: 'copy', text: 'int copied = 1;', relativePath: 'source.cpp', languageId: 'cpp', ageMs: 20 }];
+    expect(dispatch('suggest', input)).toBeTrue();
+    await waitFor('result');
+    const sent = JSON.parse(fetchSpy.calls.mostRecent().args[1].body);
+    expect(sent.clipboardHistory).toEqual(input.clipboardHistory);
+    posted = []; fetchSpy.calls.reset();
+    Object.assign(input.clipboardHistory[0], { permission: 'edit' });
+    expect(dispatch('suggest', input)).toBeTrue();
+    expect((await waitFor('error'))['status']).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
   it('cancels old-account output and notifies the child on sign-out', async () => {
     let resolve!: (response: Response) => void;
     fetchSpy.and.returnValue(new Promise<Response>(done => { resolve = done; })); dispatch();
@@ -74,6 +88,12 @@ describe('CodeSuggestionHostBridgeService', () => {
     dispatch('capabilities'); expect(posted[0]?.['type']).toBe('ack'); const event = await waitFor('capabilities'); const capabilities = event['capabilities'] as Record<string, unknown>;
     expect(capabilities['maxCandidates']).toBe(1); expect(JSON.stringify(event)).not.toContain('never-forward'); expect(JSON.stringify(event)).not.toContain('arbitrary');
     expect((capabilities['features'] as { crossFile: boolean }).crossFile).toBeTrue();
+    expect((capabilities['features'] as { clipboardContext: boolean }).clipboardContext).toBeFalse();
+    posted = [];
+    fetchSpy.and.resolveTo(Response.json({ protocolVersions: [2], modes: ['completion'], features: { clipboardContext: true } }));
+    dispatch('capabilities');
+    const upgraded = (await waitFor('capabilities'))['capabilities'] as { features: { clipboardContext: boolean } };
+    expect(upgraded.features.clipboardContext).toBeTrue();
   });
   it('does not read external declarations without installed SDK roots', async () => {
     dispatch('declaration', { path: '/private/header.h' });

@@ -11,14 +11,19 @@ export type CandidateDocument = DocumentRef & {
   relativePath: string; languageId: string; version: number; permission: 'edit' | 'context-only'; windows: CodeWindow[]
 }
 export type RecentEdit = { fileId: string; before: string; after: string; ageMs: number; origin: 'typing' | 'paste' | 'completion' | 'undo' | 'redo' | 'external' }
+export type ClipboardContext = { operation: 'copy' | 'cut'; text: string; relativePath: string; languageId: string; ageMs: number }
+export const CLIPBOARD_HISTORY_LIMIT = 5
+export const CLIPBOARD_TEXT_LIMIT = 2048
+export const CLIPBOARD_TOTAL_LIMIT = 4096
+export const CLIPBOARD_MAX_AGE_MS = 300_000
 export type DiagnosticContext = DocumentRef & { range: Range; message: string; code?: string; severity: 'error' | 'warning'; freshness: 'version-matched' | 'observed-current' }
 export type SuggestionRequest = {
   protocolVersion: 2; requestId: string; opportunityId: string; workspaceSessionId: string
   client: { name: 'aily-coder-editor'; version: string; sessionId: string }
   mode: 'completion' | 'next-edit'
-  trigger: 'typing' | 'edit' | 'accept' | 'diagnostic' | 'manual'
-  active: DocumentRef & { position: Position }
-  documents: CandidateDocument[]; recentEdits: RecentEdit[]; diagnostics: DiagnosticContext[]
+  trigger: 'typing' | 'edit' | 'accept' | 'diagnostic' | 'cursor' | 'selection' | 'manual'
+  active: DocumentRef & { position: Position; selection?: Range }
+  documents: CandidateDocument[]; recentEdits: RecentEdit[]; diagnostics: DiagnosticContext[]; clipboardHistory?: ClipboardContext[]
   options: { crossFile: boolean; autoImports: boolean; partialInsertAccept: boolean; maxCandidates: number }
 }
 export type TextEdit = { range: Range; expectedText: string; newText: string }
@@ -32,7 +37,7 @@ export type FeedbackEvent = typeof FEEDBACK_EVENTS[number]
 export type SuggestionFeedback = { opportunityId: string; candidateId: string; event: FeedbackEvent; acceptedCharacters?: number }
 export type SuggestionCapabilities = {
   protocolVersions: number[]; modes: SuggestionRequest['mode'][]; maxCandidates: number; maxRequestBytes: number; maxOutputBytes: number
-  features: { crossFile: boolean; atomicAdditionalEdits: boolean; partialInsertAccept: boolean; partialAcceptWithImports: boolean; extendedRange: boolean }
+  features: { crossFile: boolean; atomicAdditionalEdits: boolean; partialInsertAccept: boolean; partialAcceptWithImports: boolean; extendedRange: boolean; clipboardContext?: boolean }
   quota?: { enabled: boolean; allowed: boolean; remaining: number }
   model?: { id: string; selectable: boolean }
 }
@@ -66,18 +71,19 @@ function importLines(text: string): string[] { return text.split(/\r?\n/).map(li
 export function parseSuggestionRequest(value: unknown): SuggestionRequest {
   if (wireBytes(value) > MAX_REQUEST_BYTES) throw new SuggestionError('SUGGESTION_TOO_LARGE', undefined, 413)
   const input = record(value)
-  keys(input, ['protocolVersion', 'requestId', 'opportunityId', 'workspaceSessionId', 'client', 'mode', 'trigger', 'active', 'documents', 'recentEdits', 'diagnostics', 'options'])
+  keys(input, ['protocolVersion', 'requestId', 'opportunityId', 'workspaceSessionId', 'client', 'mode', 'trigger', 'active', 'documents', 'recentEdits', 'diagnostics', 'clipboardHistory', 'options'])
   if (input['protocolVersion'] !== 2 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(input['requestId'])) || input['requestId'] !== input['opportunityId']) throw new SuggestionError('INVALID_SUGGESTION_ID')
   str(input['workspaceSessionId'], 128, 8)
   const client = record(input['client']); keys(client, ['name', 'version', 'sessionId'])
   if (client['name'] !== 'aily-coder-editor') throw new SuggestionError('INVALID_SUGGESTION_CLIENT')
   str(client['version'], 64, 1); str(client['sessionId'], 128, 8)
-  if (!['completion', 'next-edit'].includes(String(input['mode'])) || !['typing', 'edit', 'accept', 'diagnostic', 'manual'].includes(String(input['trigger']))) throw new SuggestionError('INVALID_SUGGESTION_MODE')
+  if (!['completion', 'next-edit'].includes(String(input['mode'])) || !['typing', 'edit', 'accept', 'diagnostic', 'cursor', 'selection', 'manual'].includes(String(input['trigger']))) throw new SuggestionError('INVALID_SUGGESTION_MODE')
   const options = record(input['options']); keys(options, ['crossFile', 'autoImports', 'partialInsertAccept', 'maxCandidates'])
   if (typeof options['crossFile'] !== 'boolean' || typeof options['autoImports'] !== 'boolean' || typeof options['partialInsertAccept'] !== 'boolean' || (options['crossFile'] && input['mode'] !== 'next-edit')) throw new SuggestionError('INVALID_SUGGESTION_OPTIONS')
   integer(options['maxCandidates'], 1); if (options['maxCandidates'] === 0) throw new SuggestionError('INVALID_SUGGESTION_OPTIONS')
-  const active = record(input['active']); keys(active, ['fileId', 'snapshotId', 'position']); str(active['fileId'], 64, 1); str(active['snapshotId'], 128, 1)
+  const active = record(input['active']); keys(active, ['fileId', 'snapshotId', 'position', 'selection']); str(active['fileId'], 64, 1); str(active['snapshotId'], 128, 1)
   validateRange({ start: active['position'], end: active['position'] })
+  if (active['selection'] != null) validateRange(active['selection'])
   if (!Array.isArray(input['documents']) || input['documents'].length < 1 || input['documents'].length > 8) throw new SuggestionError('INVALID_SUGGESTION_DOCUMENTS')
   const files = new Map<string, CandidateDocument>(); const windowIds = new Set<string>()
   for (const item of input['documents']) {
@@ -100,11 +106,27 @@ export function parseSuggestionRequest(value: unknown): SuggestionRequest {
   }
   const activeDoc = files.get(active['fileId'])
   if (activeDoc?.snapshotId !== active['snapshotId'] || activeDoc.permission !== 'edit') throw new SuggestionError('INVALID_SUGGESTION_SNAPSHOT')
+  const selection = active['selection'] as Range | undefined
+  if (['cursor', 'selection'].includes(String(input['trigger'])) && input['mode'] !== 'next-edit') throw new SuggestionError('INVALID_SUGGESTION_SELECTION')
+  if ((input['trigger'] === 'selection') !== !!selection || (selection && (sameRange(selection, { start: selection.start, end: selection.start }) ||
+    comparePosition(selection.start, active['position'] as Position) > 0 || comparePosition(active['position'] as Position, selection.end) > 0 ||
+    !activeDoc.windows.some(window => window.purpose === 'completion' && sameRange(window.range, selection) && !!window.text)))) throw new SuggestionError('INVALID_SUGGESTION_SELECTION')
   if (input['mode'] !== 'next-edit' && !activeDoc.windows.some(w => w.purpose === 'completion' && sameRange(w.range, { start: active['position'] as Position, end: active['position'] as Position }))) throw new SuggestionError('INVALID_SUGGESTION_INSERT')
   if (!Array.isArray(input['recentEdits']) || input['recentEdits'].length > 20 || !Array.isArray(input['diagnostics']) || input['diagnostics'].length > 20) throw new SuggestionError('INVALID_SUGGESTION_CONTEXT')
   for (const item of input['recentEdits']) {
     const edit = record(item); keys(edit, ['fileId', 'before', 'after', 'ageMs', 'origin']); str(edit['before'], 4096); str(edit['after'], 4096); integer(edit['ageMs'], 300_000)
     if (!files.has(String(edit['fileId'])) || !['typing', 'paste', 'completion', 'undo', 'redo', 'external'].includes(String(edit['origin']))) throw new SuggestionError('INVALID_SUGGESTION_HISTORY')
+  }
+  if (input['clipboardHistory'] !== undefined) {
+    if (!Array.isArray(input['clipboardHistory']) || input['clipboardHistory'].length > CLIPBOARD_HISTORY_LIMIT) throw new SuggestionError('INVALID_CLIPBOARD_HISTORY')
+    let characters = 0
+    for (const item of input['clipboardHistory']) {
+      const entry = record(item); keys(entry, ['operation', 'text', 'relativePath', 'languageId', 'ageMs'])
+      str(entry['text'], CLIPBOARD_TEXT_LIMIT, 1); str(entry['relativePath'], 1024, 1); str(entry['languageId'], 64, 1); integer(entry['ageMs'], CLIPBOARD_MAX_AGE_MS)
+      if (!['copy', 'cut'].includes(String(entry['operation'])) || !entry['text'].trim() || /^(?:[\\/]|[a-z]:)/i.test(entry['relativePath']) || entry['relativePath'].replace(/\\/g, '/').split('/').includes('..')) throw new SuggestionError('INVALID_CLIPBOARD_HISTORY')
+      characters += entry['text'].length
+    }
+    if (characters > CLIPBOARD_TOTAL_LIMIT) throw new SuggestionError('INVALID_CLIPBOARD_HISTORY')
   }
   for (const item of input['diagnostics']) {
     const diag = record(item); keys(diag, ['fileId', 'snapshotId', 'range', 'message', 'severity', 'code', 'freshness']); validateRange(diag['range']); str(diag['message'], 2048)
