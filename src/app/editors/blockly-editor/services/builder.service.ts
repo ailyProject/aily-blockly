@@ -1605,7 +1605,13 @@ export class _BuilderService {
           // 启动进度初始化定时器（3秒后如果还没有进度就显示初始进度）
           // this.startProgressInitTimer(boardName);
 
-          this.buildSubscription = this.cmdService.run(compileCommand, null, false).subscribe({
+          this.logService.update({ detail: compileCommand, state: 'info' });
+          // Launch Node directly so a native crash keeps its real exit code and
+          // project paths are passed as arguments without another shell parser.
+          this.buildSubscription = this.cmdService.spawn('node', [compileScriptPath, configFilePath], {
+            cwd: this.currentProjectPath,
+            shellProfile: false,
+          }).subscribe({
             next: (output: CmdOutput) => {
               // 第一时间检查取消状态
               if (this.cancelled) {
@@ -1623,17 +1629,6 @@ export class _BuilderService {
               if (output.type === 'close') {
                 processExitCode = output.code ?? (output.signal ? 1 : 0);
                 processSignal = output.signal || null;
-
-                if (processExitCode !== 0 || processSignal) {
-                  this.isErrored = true;
-                  const processErrorMessage = processSignal
-                    ? this.t('PROCESS_SIGNAL_TERMINATED', { signal: processSignal })
-                    : this.t('PROCESS_EXITED_WITH_CODE', { code: processExitCode });
-                  lastStdErr = lastStdErr || processErrorMessage;
-                  if (!fullStdErr) {
-                    fullStdErr = processErrorMessage;
-                  }
-                }
 
                 // A process may exit without a final newline.
                 outputLines = outputLineBuffer.flush();
@@ -1767,6 +1762,20 @@ export class _BuilderService {
                       lastLogLines.shift();
                     }
               });
+
+              if (output.type === 'close' && (processExitCode !== 0 || processSignal)) {
+                this.isErrored = true;
+                const processErrorMessage = processSignal
+                  ? this.t('PROCESS_SIGNAL_TERMINATED', { signal: processSignal })
+                  : this.t('PROCESS_EXITED_WITH_CODE', { code: processExitCode });
+                lastStdErr = lastStdErr || processErrorMessage;
+                // Flush streamed lines first, then recover missing diagnostics from
+                // the close event without duplicating output already received.
+                fullStdErr = fullStdErr.trim()
+                  || output.stderr?.trim()
+                  || output.stdout?.trim()
+                  || processErrorMessage;
+              }
             },
             error: (error: any) => {
               this.isErrored = true;
