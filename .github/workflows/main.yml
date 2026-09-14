@@ -322,9 +322,7 @@ jobs:
           npm run build:global
         env:
           NODE_ENV: production
-          # electron-builder 签名配置
-          CSC_LINK: ${{ secrets.APPLE_SIGNING_CERT }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+          # 签名复用前一步导入的 Keychain 证书；不要设置 CSC_LINK 触发重复导入。
           # Apple 公证配置（electron-builder 要求的变量名）
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -427,8 +425,7 @@ jobs:
           npm run build:cn
         env:
           NODE_ENV: production
-          CSC_LINK: ${{ secrets.APPLE_SIGNING_CERT }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+          # 签名复用前一步导入的 Keychain 证书；不要设置 CSC_LINK 触发重复导入。
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
