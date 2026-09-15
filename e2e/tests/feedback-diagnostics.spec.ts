@@ -124,7 +124,7 @@ test.describe('反馈诊断正文', () => {
         await openBlocklyProject(mainWindow, projectPath);
         await expect(mainWindow.locator('app-blockly-editor')).toBeVisible();
         await expect(mainWindow.locator('app-header .project-box')).toContainText(PRIVATE_PROJECT_NICKNAME);
-        const crashFixture = await appendCrashDiagnosticFixture(mainWindow, temporaryHome);
+        const crashFixture = await appendCrashDiagnosticFixture(mainWindow, launched.userDataDir);
         const forbiddenMarkers = [
           ...crashFixture.forbiddenMarkers,
           PRIVATE_SOURCE_CODE,
@@ -340,7 +340,7 @@ async function dismissBlockingLoginDialog(page: Page): Promise<void> {
   await expect(loginModal).toHaveCount(0);
 }
 
-async function appendCrashDiagnosticFixture(page: Page, temporaryHome: string): Promise<CrashDiagnosticFixture> {
+async function appendCrashDiagnosticFixture(page: Page, isolatedAppDataRoot: string): Promise<CrashDiagnosticFixture> {
   const runtimePaths = await page.evaluate(() => {
     const pathApi = (window as unknown as {
       path?: {
@@ -359,7 +359,7 @@ async function appendCrashDiagnosticFixture(page: Page, temporaryHome: string): 
   if (!runtimePaths.appDataPath) {
     throw new Error('E2E 临时 AppData 路径不可用。');
   }
-  if (!isPathInside(runtimePaths.appDataPath, temporaryHome)) {
+  if (!isPathInside(runtimePaths.appDataPath, isolatedAppDataRoot)) {
     throw new Error(`拒绝写入未隔离的 AppData 路径：${runtimePaths.appDataPath}`);
   }
 

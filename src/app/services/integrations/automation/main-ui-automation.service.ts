@@ -152,6 +152,9 @@ export class MainUiAutomationService {
     if (mode !== 'embedded' && mode !== 'window') {
       return { ok: false, message: `不支持的打开模式: ${mode}；可用 embedded 或 window。` };
     }
+    if (config.app?.extension === true) {
+      return this.extensionUiUnavailable(config);
+    }
 
     const hasPlacement = ['x', 'y', 'width', 'height', 'displayId'].some(key => params[key] !== undefined);
     const placement = {
@@ -201,7 +204,9 @@ export class MainUiAutomationService {
       const detached = await this.childHostRegistry.control(toolId, 'detach', placement);
       if (detached['ok'] !== true) return detached;
     } else {
-      this.ui.openToolWindow(toolId, { title: this.titleOf(config), ...placement });
+      if (!this.ui.openToolWindow(toolId, { title: this.titleOf(config), ...placement })) {
+        return { ok: false, toolId, requestedMode: mode, message: `无法为子应用创建独立窗口: ${toolId}` };
+      }
     }
 
     return {
@@ -229,6 +234,9 @@ export class MainUiAutomationService {
     ];
     if (!supported.includes(action)) {
       return { ok: false, message: `不支持的子应用动作: ${action || '(空)'}`, supportedActions: supported };
+    }
+    if (config.app?.extension === true && action !== 'close' && action !== 'prepareUpdate') {
+      return this.extensionUiUnavailable(config);
     }
 
     const routePath = this.routePath(config);
@@ -442,6 +450,7 @@ export class MainUiAutomationService {
       version: config.version || null,
       available: config.app?.available !== false,
       enabled: config.app?.enabled !== false,
+      extension: config.app?.extension === true,
       routePath,
       mode,
       ui: {
@@ -458,10 +467,21 @@ export class MainUiAutomationService {
         durationMs: session?.durationMs ?? 0,
         url: this.sanitizeLocalUrl(session?.hostInfo?.url),
       },
-      supportedActions: [
+      supportedActions: config.app?.extension === true ? [] : [
         'open_embedded', 'open_window', 'restart', 'detach', 'embed', 'focus',
         'maximize', 'unmaximize', 'minimize', 'restore', 'move', 'resize', 'close',
       ],
+    };
+  }
+
+  private extensionUiUnavailable(config: ChildToolConfig): Record<string, unknown> {
+    return {
+      ok: false,
+      toolId: config.id,
+      extension: true,
+      errorCode: 'SUBAPP_EXTENSION_UI_UNAVAILABLE',
+      supportedActions: [],
+      message: `${this.titleOf(config)} 是扩展服务，由宿主集成使用，不支持在右侧面板或独立窗口中打开。`,
     };
   }
 

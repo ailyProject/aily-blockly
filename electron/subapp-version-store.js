@@ -60,6 +60,13 @@ function validateDistribution(value) {
   return { tarball: value.tarball, integrity: value.integrity };
 }
 
+function validateInstallMode(value) {
+  if (!['portable', 'legacy-npm', 'development', 'next'].includes(value)) {
+    throw new Error(`Invalid version-store install mode: ${String(value)}`);
+  }
+  return value;
+}
+
 function directory(rootDir, segments, { create = false, optional = false } = {}) {
   let current = path.resolve(rootDir);
   if (create) fs.mkdirSync(current, { recursive: true });
@@ -168,6 +175,7 @@ function inspectVersion(rootDir, entry, locator) {
     throw new Error(`Invalid version-store completion receipt: ${entry.id}@${locator.version}`);
   }
   const distribution = validateDistribution(ready.distribution);
+  const installMode = validateInstallMode(ready.installMode);
   const integrity = distribution?.integrity || (typeof ready.integrity === 'string' ? ready.integrity : null);
   if ((locator.integrity || null) !== (integrity || null)) {
     throw new Error(`Version-store integrity does not match: ${entry.id}@${locator.version}`);
@@ -186,10 +194,12 @@ function inspectVersion(rootDir, entry, locator) {
     ...(integrity ? { integrity } : {}),
     distribution,
     installedAt: ready.installedAt,
-    installMode: ready.installMode,
+    installMode,
     project: versionDirectory,
     packagePath: source,
-    source: 'version-store',
+    source: installMode === 'development' ? 'development' : 'version-store',
+    ...(installMode === 'development' ? { development: true } : {}),
+    ...(installMode === 'next' ? { localNext: true } : {}),
   };
 }
 
@@ -248,7 +258,11 @@ function publishCandidate(rootDir, entry, candidate, options = {}) {
     path: relativePath,
     ...(integrity ? { integrity } : {}),
     distribution,
-    installMode: options.installMode === 'legacy-npm' ? 'legacy-npm' : 'portable',
+    installMode: options.installMode === 'development'
+      ? 'development'
+      : options.installMode === 'legacy-npm'
+        ? 'legacy-npm'
+        : options.installMode === 'next' ? 'next' : 'portable',
     installedAt: new Date().toISOString(),
   });
 

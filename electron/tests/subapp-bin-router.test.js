@@ -49,7 +49,9 @@ function publish(rootDir, version, options = {}) {
   const targetEntry = entry(version);
   const candidate = versions.createCandidate(rootDir, targetEntry);
   writePackage(candidate.source, version, options);
-  return versions.publishCandidate(rootDir, targetEntry, candidate);
+  return versions.publishCandidate(rootDir, targetEntry, candidate, {
+    installMode: options.installMode,
+  });
 }
 
 test('installs one versionless router path and keeps it stable across refreshes', (t) => {
@@ -92,6 +94,27 @@ test('uses the verified previous MCP entry when the selected generation is damag
   const resolved = resolveStableBin(f.rootDir, PACKAGE, BIN);
   assert.equal(resolved.version, '1.0.0');
   assert.equal(resolved.fallback, true);
+});
+
+test('routes a pinned version-dev generation as development', (t) => {
+  const f = fixture(t);
+  const selected = publish(f.rootDir, '1.2.3-dev', { installMode: 'development' });
+  versions.activate(f.rootDir, entry('1.2.3-dev'), selected, { mode: 'pinned' });
+
+  const resolved = resolveStableBin(f.rootDir, PACKAGE, BIN);
+  assert.equal(resolved.version, '1.2.3-dev');
+  assert.equal(resolved.source, 'development');
+  assert.match(resolved.packagePath, /1\.2\.3-dev[/\\]source$/);
+});
+
+test('routes a pinned version-next generation with production version-store semantics', (t) => {
+  const f = fixture(t);
+  const selected = publish(f.rootDir, '1.2.3-next', { installMode: 'next' });
+  versions.activate(f.rootDir, entry('1.2.3-next'), selected, { mode: 'pinned' });
+
+  const resolved = resolveStableBin(f.rootDir, PACKAGE, BIN);
+  assert.equal(resolved.version, '1.2.3-next');
+  assert.equal(resolved.source, 'version-store');
 });
 
 test('the stable router delegates stdio without changing the client working directory', (t) => {

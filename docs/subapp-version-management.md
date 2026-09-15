@@ -10,7 +10,7 @@
   `/Users/downey/Library/aily-project/npm-global/app/store/subapp-aily-chat/0.1.33/source`
 - B 是旧版 npm 安装目录：
   `/Users/downey/Library/aily-project/npm-global/app/node_modules/@aily-project/subapp-aily-chat`
-- B 保持原样，继续兼容旧版 `npm install`、旧主程序和现有开发链接。
+- B 保持原样，继续兼容旧版 `npm install`、旧主程序和历史开发链接；新的 `dev` 命令不再写入 B。
 - 新主程序通过 `active.json` 选择 A，启动子应用时把 A 的绝对路径写入运行配置，并通过进程环境变量传给子应用。
 - 已经运行的进程固定使用启动时的目录。切换清单只影响下一次启动，不移动、覆盖或删除正在使用的版本。
 
@@ -20,7 +20,7 @@
 
 1. 发现新版本后自动完成下载、完整性校验和解压；符合 portable 规范的包不再运行 npm，用户下次打开子应用时无需等待。
 2. 新旧版本同时保留，切换失败时仍可启动上一个完整版本。
-3. 兼容 B 中已有的普通 npm 安装，以及现有 `dev:link` 创建的开发软链接或 Windows junction。
+3. 兼容 B 中已有的普通 npm 安装，以及历史 `dev:link` 创建的开发软链接或 Windows junction；新开发态使用独立的 `<version>-dev` 版本目录。
 4. macOS 与 Windows 使用同一状态模型，不依赖 Windows 的符号链接权限。
 5. 多个主程序窗口或进程并行运行时，不改动其他进程已经打开的目录。
 6. 不让子应用版本切换修改主安装根目录的 `package.json`、`package-lock.json` 或其他子应用依赖。
@@ -57,16 +57,22 @@ R/
         ├── 0.1.32/
         │   ├── ready.json
         │   └── source/                    # 上一个完整版本
-        └── 0.1.33/
-            ├── package.tgz                # 可选保留的原始包
-            ├── ready.json                 # 完整性与运行环境记录
-            └── source/                    # A：实际 package root
-                ├── package.json
-                ├── package-lock.json      # 仅 legacy npm prepare 需要
-                ├── node_modules/          # portable 内置或 legacy 准备的依赖
-                ├── server/
-                ├── runtime/
-                └── ui/
+        ├── 0.1.33/
+        │   ├── package.tgz                # 可选保留的原始包
+        │   ├── ready.json                 # 完整性与运行环境记录
+        │   └── source/                    # A：实际 package root
+        │       ├── package.json
+        │       ├── package-lock.json      # 仅 legacy npm prepare 需要
+        │       ├── node_modules/          # portable 内置或 legacy 准备的依赖
+        │       ├── server/
+        │       ├── runtime/
+        │       └── ui/
+        ├── 0.1.33-dev/                   # 当前源码对应的开发版本
+        │   ├── ready.json                # installMode=development
+        │   └── source/                   # package.json.version=0.1.33-dev
+        └── 0.1.33-next/                  # 本机构建产物的打包态验证版本
+            ├── ready.json                # installMode=next
+            └── source/                   # npm pack/install 后的 package root
 ```
 
 `subapp-aily-chat` 是由目录中的正式存储键生成的稳定名称。`ready.json` 必须同时保存完整 npm 包名 `@aily-project/subapp-aily-chat`，防止不同 scope 或目录名碰撞。
@@ -79,7 +85,7 @@ A 的 `source` 是可直接运行的 package root。推荐的子应用发布物�
 
 不符合 portable 规范的旧包不能假装成可直接运行的 A。它们进入独立的 legacy npm prepare 分支，在 A 内准备依赖，不触碰 R/B；需要执行安装脚本时，还必须经过可信目录和包策略校验。
 
-版本目录完成后视为不可变。相同版本需要修复或重装时，先在同级临时目录准备；只有确认没有进程使用损坏目录时才替换。若仍被使用，则推迟到所有持有者退出，不能原地覆盖。
+正式版本目录完成后视为不可变。相同正式版本需要修复或重装时，先在同级临时目录准备；只有确认没有进程使用损坏目录时才替换。若仍被使用，则推迟到所有持有者退出，不能原地覆盖。`<version>-dev` 是明确标记的开发例外：其 `source` 映射到当前源码/构建输出，只能由 dev 脚本创建、刷新和移除。`<version>-next` 是本机打包态验证例外：运行文件必须来自已有构建的 npm pack/install 结果，不得链接源码或启动 watcher。
 
 ## 4. 为什么不建议让 B 指向 A
 
@@ -144,12 +150,13 @@ A 的 `source` 是可直接运行的 package root。推荐的子应用发布物�
 
 解析顺序如下：
 
-1. 如果 B 是受管理的开发软链接或 junction，使用 B。开发态必须明确优先，避免正式更新覆盖本地调试。
-2. 如果 `active.json.mode` 是显式回滚或固定版本，验证 selected 后使用 A。
-3. 自动模式下，同时检查 selected、previous 和普通目录 B。选择其中完整且版本最高的候选，防止旧主程序刚通过 npm 把 B 更新到更高版本后，新主程序仍启动较旧的 A。
-4. selected 损坏时，依次验证 previous 和 B；校验失败的目录不能启动。
-5. 没有 `active.json` 时直接使用 B，保持现有用户无迁移启动。
-6. 若存在“卸载中”事务标记，立即视为未安装，不解析 A、B 或 previous。该标记只用于崩溃恢复；成功卸载后连同所有版本一起清除。
+1. 如果 `active.json.mode=pinned` 且 selected 指向带 `installMode=development` 的 `<version>-dev` 或带 `installMode=next` 的 `<version>-next`，验证后使用该固定版本。
+2. 如果 B 是历史受管理开发软链接或 junction，仍兼容读取 B；新的 dev 命令不再创建此入口。
+3. 如果 `active.json.mode` 是显式回滚或固定正式版本，验证 selected 后使用 A。
+4. 自动模式下，同时检查 selected、previous 和普通目录 B。选择其中完整且版本最高的候选，防止旧主程序刚通过 npm 把 B 更新到更高版本后，新主程序仍启动较旧的 A。
+5. selected 损坏时，依次验证 previous 和 B；校验失败的目录不能启动。
+6. 没有 `active.json` 时直接使用 B，保持现有用户无迁移启动。
+7. 若存在“卸载中”事务标记，立即视为未安装，不解析 A、B 或 previous。该标记只用于崩溃恢复；成功卸载后连同所有版本一起清除。
 
 候选目录至少校验：包名、精确版本、portable 契约、平台与架构、Node ABI、主入口、UI 入口、声明的 Agent manifest，以及 `ready.json` 中的完整性记录。
 
@@ -215,12 +222,28 @@ npm 官方说明，普通安装会同时安装 dependencies，并可能执行生
 - 新版本运行后崩溃：是否自动回滚应由连续启动失败计数决定，普通业务错误不能自动降级。
 - 回滚只修改选择清单，不复制、移动或删除 A/B。
 
+### 7.4 开发版本
+
+1. `dev`/`dev:link` 根据源码 `package.json.version` 创建 `store/<storeKey>/<version>-dev/source`，写入 `installMode: development` 的 `ready.json`。
+2. 开发 package root 使用正式包名，版本改为 `<version>-dev`；源码目录和构建输出在该 package root 内映射，不再把 B 改成 symlink/junction，也不改 R 根依赖。
+3. dev 脚本先备份原 `active.json`，再以 `mode: pinned` 选择开发版本；因此普通 B 或版本号更高的正式版本不会盖过本地调试。
+4. `dev:unlink` 先恢复原 `active.json`，再只清理带 `installMode: development` 的版本目录。正式版本目录、B、根 `package.json` 和锁文件保持不变。
+5. 源码版本号变化后重新运行 dev，会创建新的 `<version>-dev` 并清理旧开发代；不会把旧开发代误当正式历史版本保留。
+
+### 7.5 本机构建产物验证版本
+
+1. `deploy:next` 必须内置执行 `build:subapp`；`--skip-build` 只用于隔离测试或明确复用已有正式构建产物，任何路径都不得复用源码链接。
+2. `deploy:next` 对构建目录执行 `npm pack` 和隔离安装，把 npm 实际收录的文件部署到 `store/<storeKey>/<version>-next/source`，并写入 `installMode: next`。
+3. 本地 next 使用 `mode: pinned`，但运行环境仍为 `AILY_SUBAPP_SOURCE=version-store`，以保持正式打包态启动语义。
+4. 本地目录索引继续使用 `dev: true` 防止远端更新覆盖验收版本；`deploy:next -- --unlink` 恢复原 `active.json` 和目录项，并只清理带 `installMode: next` 的目录。
+5. 同一包允许同时保留本地版本，运行优先级固定为 `dev > next > 线上正式版`：部署 next 不抢占正在运行的 dev，退出 dev 自动落到 next，退出 next 再落到线上正式版。
+
 ## 8. 与旧 npm 安装的兼容边界
 
 ### 必须兼容
 
 - B 是普通 npm 目录时，新主程序可以直接读取和启动。
-- B 是现有 `dev:link` 时，开发版本优先。
+- pinned `<version>-dev` 开发版本优先；历史 B 开发链接仅作为兼容读路径。
 - 旧主程序继续通过 R 根目录的 `npm install` 更新 B，不受 A 的目录结构影响。
 - 新预下载流程不能修改 R 根 `package.json` 和 `package-lock.json`。
 - 新主程序发现 B 的版本高于自动选择的 A 时，优先 B，并在后台把该版本准备到 A；不能发生版本倒退。
@@ -297,7 +320,7 @@ npm 官方说明，普通安装会同时安装 dependencies，并可能执行生
 5. 两个主程序同时下载、切换时只产生一个完整版本，慢任务不能覆盖更高版本。
 6. active 清单损坏、A 缺入口或 UI 时，回退到经过验证的 previous/B。
 7. 旧 npm 更新 B 到更高版本后，新主程序不会启动更低的自动版本。
-8. 开发软链接或 Windows junction 始终优先，正式自动更新不覆盖开发目录。
+8. pinned `<version>-dev` 始终优先，正式自动更新不覆盖开发目录；历史开发软链接或 Windows junction 仍可读取，但新 dev 不再创建。
 9. macOS 真机覆盖空格、中文路径、`/var` realpath、旧新进程并存。
 10. Windows 真机覆盖空格、中文路径、npm 参数、杀毒软件短时占用、多实例和异常退出恢复。
 11. Header、App Store、模拟器、i18n、Agent 工具和技能读取的是同一个 resolved packagePath。
@@ -308,7 +331,7 @@ npm 官方说明，普通安装会同时安装 dependencies，并可能执行生
 
 ## 12. 最终建议
 
-优先实施清单/变量方案：B 保持旧 npm 兼容，A 保存完整的 portable 新版本，`active.json` 保存选择，`packagePath` 与环境变量把选择传入一次运行。
+统一实施清单/变量方案：B 只保留旧 npm 兼容，A 保存正式 portable 版本与显式 `<version>-dev` 开发版本，`active.json` 保存选择，`packagePath` 与环境变量把选择传入一次运行。
 
 软链接适合 `dev:link`，不适合承担正式版本管理。若把 B 变成正式版本指针，就必须同时禁止旧 npm 对 R 的写入，并要求主程序完全退出后再切换；这与当前“老版本 npm i 逻辑需要兼容”的目标冲突。
 

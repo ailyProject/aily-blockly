@@ -6,6 +6,7 @@ import { ConfigService, ThemeService } from '@core/preferences/public-api';
 import { ElectronService } from '@core/platform/public-api';
 import {
   executeCoderProjectCreateOperation,
+  getProjectApplicationName,
   getProjectCreationModeError,
   ProjectService,
 } from '@domain/project/public-api';
@@ -1006,6 +1007,41 @@ export class BlocklyLiveOperationBridgeService {
     }
     if (!this.electronService.exists(requestedProject)) {
       return { ok: false, operation: 'project_open', message: `项目目录不存在: ${requestedProject}` };
+    }
+
+    // Chat-triggered opens must never surface the manual cross-product dialog or
+    // bind an opposite-mode project into this renderer.  Keep this preflight in
+    // the bridge even though ProjectService also guards interactive UI opens: it
+    // gives older/remote Agents a stable machine-readable rejection before any
+    // route, lock, recent-project or activation state can change.
+    await this.configService.init();
+    const developmentMode = this.configService.getPreferredChatAgentRuntimeMode();
+    const projectType = this.projectService.getProjectMode(requestedProject);
+    if (!projectType) {
+      return {
+        ok: false,
+        operation: 'project_open',
+        project: requestedProject,
+        reason: 'project_mode_unknown',
+        developmentMode,
+        projectType: null,
+        stateChanged: false,
+        message: '无法识别项目类型，已阻止打开。',
+      };
+    }
+    if (projectType !== developmentMode) {
+      return {
+        ok: false,
+        operation: 'project_open',
+        project: requestedProject,
+        reason: 'project_mode_mismatch',
+        developmentMode,
+        projectType,
+        stateChanged: false,
+        referenceOnly: true,
+        message: `当前 ${getProjectApplicationName(developmentMode)} 不能直接打开 ${getProjectApplicationName(projectType)} 工程。`,
+        guidance: '如果只需参考对方模式的代码，可以使用只读文件工具，但不能将该目录绑定为当前项目；如需继续编辑，请在对应应用中手动打开。',
+      };
     }
 
     const sameProject = this.normalizePath(requestedProject)

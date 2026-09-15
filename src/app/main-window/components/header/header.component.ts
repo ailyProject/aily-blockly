@@ -993,7 +993,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   onClick(item, event = null) {
-    this.process(item, event);
+    this.process(item, event, event?.isTrusted ? 'manual' : 'system');
   }
 
   isOpenTool(btn) {
@@ -1007,7 +1007,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   onMenuClick(item) {
     if (item.disabled) return;
-    this.process(item);
+    this.process(item, null, 'manual');
     this.closeMenu();
   }
 
@@ -1085,7 +1085,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
   }
 
-  async process(item: IMenuItem, event = null) {
+  async process(item: IMenuItem, event = null, source: 'manual' | 'ai' | 'system' = 'system') {
     switch (item.action) {
       case 'project-new':
         if (this.isLoaded()) { // 只在已加载项目时检查
@@ -1145,7 +1145,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       case 'compile':
         if (item.state === 'doing') return;
         item.state = 'doing';
-        this.builderService.build().then(result => {
+        this.builderService.build(undefined, { source }).then(result => {
           item.state = result.state || 'done';
         }).catch(err => {
           // console.log("编译未完成: ", JSON.stringify(err));
@@ -1481,7 +1481,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
           // 执行对应的操作
           if (menuItem.action) {
-            this.process(menuItem);
+            this.process(menuItem, event, event.isTrusted ? 'manual' : 'system');
           }
         }
       }

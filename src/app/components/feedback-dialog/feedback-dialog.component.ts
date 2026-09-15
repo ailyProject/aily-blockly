@@ -378,7 +378,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       this.readLatestCrashDiagnostic(),
     ]);
     const sensitivePaths = this.readSensitivePaths(projectPath, projectPackage);
-    const recentErrors = this.selectLogs({
+    const recentErrors = await this.selectLogs({
       now,
       withinMs: 30 * 60 * 1000,
       limit: 10,
@@ -522,7 +522,7 @@ export class FeedbackDialogComponent implements OnDestroy {
     const sensitivePaths = this.readSensitivePaths(projectPath, projectPackage);
     const libraryName = this.getFeedbackLibraryName();
     const relatedLogs = libraryName
-      ? this.selectLogs({
+      ? await this.selectLogs({
         now,
         withinMs: 30 * 60 * 1000,
         limit: 10,
@@ -553,7 +553,7 @@ export class FeedbackDialogComponent implements OnDestroy {
     const now = this.toTimestamp(feedbackTime) ?? Date.now();
     const projectPath = this.readCurrentProjectPath();
     const projectPackage = await this.readProjectPackage();
-    const latestError = this.selectLogs({
+    const latestError = await this.selectLogs({
       now,
       withinMs: Number.MAX_SAFE_INTEGER,
       limit: 1,
@@ -897,17 +897,27 @@ export class FeedbackDialogComponent implements OnDestroy {
       .filter((entry) => Number.isFinite(entry.timestamp) && !!entry.detail);
   }
 
-  private selectLogs(options: {
+  private async selectLogs(options: {
     now: number;
     withinMs: number;
     limit: number;
     state?: string;
     query?: string;
-  }): DiagnosticLogSelection {
+  }): Promise<DiagnosticLogSelection> {
     try {
-      return selectRecentDiagnosticLogs(this.logService.list, options);
+      const page = await this.logService.readPage({
+        mode: 'tail',
+        limit: 1000,
+        errorsOnly: options.state === 'error',
+        keyword: options.query,
+      });
+      return selectRecentDiagnosticLogs(page.entries, options);
     } catch {
-      return { content: null, latestTimestamp: null };
+      try {
+        return selectRecentDiagnosticLogs(this.logService.list, options);
+      } catch {
+        return { content: null, latestTimestamp: null };
+      }
     }
   }
 

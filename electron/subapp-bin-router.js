@@ -258,10 +258,12 @@ function inspectVersion(rootDir, packageName, binName, storeKey, locator) {
     || ready.packageName !== packageName || ready.storeKey !== storeKey
     || ready.version !== locator.version || ready.path !== locator.path
     || typeof ready.installedAt !== 'string' || !Number.isFinite(Date.parse(ready.installedAt))
+    || !['portable', 'legacy-npm', 'development', 'next'].includes(ready.installMode)
     || (locator.integrity || null) !== readyIntegrity) {
     throw new Error(`Invalid version-store completion receipt: ${packageName}@${locator.version}`);
   }
-  return resolvePackageBin(sourceRoot, packageName, binName, 'version-store', locator.version);
+  const resolved = resolvePackageBin(sourceRoot, packageName, binName, 'version-store', locator.version);
+  return ready.installMode === 'development' ? { ...resolved, source: 'development' } : resolved;
 }
 
 function readVersionSelection(rootDir, packageName, binName, storeKey) {

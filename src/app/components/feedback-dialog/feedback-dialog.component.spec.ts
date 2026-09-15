@@ -26,7 +26,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     getBoardModule: jasmine.Spy;
     getBoardPackageJson: jasmine.Spy;
   };
-  let logService: { list: unknown[] };
+  let logService: { list: unknown[]; readPage: jasmine.Spy };
   let serialService: { currentPort: unknown };
   let authUserInfo: BehaviorSubject<any>;
   let authService: {
@@ -73,7 +73,17 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
       getBoardModule: jasmine.createSpy('getBoardModule').and.resolveTo('@aily-project/board-test'),
       getBoardPackageJson: jasmine.createSpy('getBoardPackageJson').and.resolveTo({ version: '1.2.3' }),
     };
-    logService = { list: [] };
+    logService = {
+      list: [],
+      readPage: jasmine.createSpy('readPage'),
+    };
+    logService.readPage.and.callFake(async () => ({
+      generation: 0,
+      entries: logService.list,
+      beforeOffset: 0,
+      nextOffset: logService.list.length,
+      hasMore: false,
+    }));
     serialService = { currentPort: 'COM7' };
     authUserInfo = new BehaviorSubject<any>(null);
     authService = {
@@ -166,6 +176,38 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
 
     expect(component.getBasicInfo('2026-09-02T08:00:00.000Z')).toContain('| Account Status Code | 000 |');
     expect(authService.getAuthSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('prefers persisted journal entries when building feedback log diagnostics', async () => {
+    logService.list = [{
+      detail: 'cached error should not be submitted',
+      state: 'error',
+      timestamp: Date.now(),
+    }];
+    logService.readPage.and.resolveTo({
+      generation: 1,
+      entries: [{
+        detail: 'persisted journal error',
+        state: 'error',
+        timestamp: Date.now(),
+      }],
+      beforeOffset: 0,
+      nextOffset: 1,
+      hasMore: false,
+    });
+    const component = createComponent();
+    prepareValidFeedback(component, 'bug');
+
+    await component.submitFeedback();
+
+    expect(logService.readPage).toHaveBeenCalledWith({
+      mode: 'tail',
+      limit: 1000,
+      errorsOnly: true,
+      keyword: undefined,
+    });
+    expect(submittedPayload().content).toContain('persisted journal error');
+    expect(submittedPayload().content).not.toContain('cached error should not be submitted');
   });
 
   it('keeps library context out of the user description and clears an untouched legacy template', async () => {

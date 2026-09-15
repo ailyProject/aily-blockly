@@ -74,6 +74,43 @@ test('keeps versions side by side and falls back to the verified previous versio
   assert.ok(fs.existsSync(path.join(old.packagePath, 'package.json')));
 });
 
+test('publishes a pinned version-dev generation as development', (t) => {
+  const { root } = fixture(t);
+  const devEntry = { ...ENTRY, version: `${ENTRY.version}-dev` };
+  const prepared = prepare(root, devEntry, { distribution: null, installMode: 'development' });
+  store.activate(root, devEntry, prepared, { mode: 'pinned' });
+
+  const selected = store.readSelection(root, { id: ENTRY.id, package: ENTRY.package });
+  assert.equal(selected.version, '0.1.33-dev');
+  assert.equal(selected.packagePath, path.join(
+    root, 'store', 'subapp-aily-chat', '0.1.33-dev', 'source',
+  ));
+  assert.equal(selected.installMode, 'development');
+  assert.equal(selected.development, true);
+  assert.equal(selected.source, 'development');
+  assert.equal(selected.selectionMode, 'pinned');
+});
+
+test('publishes a pinned version-next generation as a local packaged build', (t) => {
+  const { root } = fixture(t);
+  const nextEntry = { ...ENTRY, version: `${ENTRY.version}-next` };
+  const prepared = prepare(root, nextEntry, {
+    distribution: null,
+    integrity: 'sha512-bG9jYWwtbmV4dA==',
+    installMode: 'next',
+  });
+  store.activate(root, nextEntry, prepared, { mode: 'pinned' });
+
+  const selected = store.readSelection(root, { id: ENTRY.id, package: ENTRY.package });
+  assert.equal(selected.version, '0.1.33-next');
+  assert.equal(selected.installMode, 'next');
+  assert.equal(selected.localNext, true);
+  assert.equal(selected.integrity, 'sha512-bG9jYWwtbmV4dA==');
+  assert.equal(selected.development, undefined);
+  assert.equal(selected.source, 'version-store');
+  assert.equal(selected.selectionMode, 'pinned');
+});
+
 test('same-version repair uses a staged replacement and never mutates files in place', (t) => {
   const { root } = fixture(t);
   const first = prepare(root, ENTRY, { marker: 'first' });

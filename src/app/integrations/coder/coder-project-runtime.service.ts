@@ -40,6 +40,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
   private readonly uploadDevices = new Map<string, string>();
   readonly states$ = new BehaviorSubject<ReadonlyMap<string, CoderProjectRunState>>(new Map());
   private activePath = '';
+  private nextLogStreamId = 0;
 
   constructor(
     private readonly injector: Injector,
@@ -53,11 +54,14 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       const previous = this.sessions.get(this.key(this.activePath));
       if (previous) this.capturePort(previous);
       this.activePath = path;
-      if (!path || projects.getProjectMode(path) !== 'coder') return;
+      if (!path || projects.getProjectMode(path) !== 'coder') {
+        this.logs.setDisplaySource(null);
+        return;
+      }
       const session = this.getSession(path);
       this.serial.currentPort = session.serial.currentPort;
       this.serial.currentPortInfo = session.serial.currentPortInfo;
-      this.logs.list = session.log.list;
+      this.logs.setDisplaySource(session.log);
       this.notices.clear();
       const notice = session.state.notice;
       if (notice && (notice.state === 'doing' || !session.noticePresented)) {
@@ -100,8 +104,11 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       { provide: DEVICE_APPLICATION_PORT, useClass: DeviceApplicationAdapter },
       { provide: DEPENDENCY_APPLICATION_PORT, useClass: DependencyApplicationAdapter },
     ] });
+    const sessionLog = child.get(LogService);
+    const sessionId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${++this.nextLogStreamId}`;
+    sessionLog.setStreamId(`coder-${sessionId}`);
     const session: CoderProjectSession = {
-      injector: child, project, serial, notice: child.get(NoticeService), log: child.get(LogService),
+      injector: child, project, serial, notice: child.get(NoticeService), log: sessionLog,
       busy: null, editorReady: false, state: { build: 'default', upload: 'default' },
     };
     this.sessions.set(key, session);
@@ -115,7 +122,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       }
     });
     session.log.stateSubject.subscribe(log => {
-      if (this.isActive(path)) { this.logs.list = session.log.list; this.logs.stateSubject.next(log); }
+      if (this.isActive(path)) this.logs.stateSubject.next(log);
     });
     return session;
   }

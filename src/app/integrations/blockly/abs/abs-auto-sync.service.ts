@@ -321,6 +321,12 @@ export class AbsAutoSyncService {
       if (this.currentProjectPath !== projectPath || this.blocklyService.workspace !== workspace) {
         throw new Error('ABS 导入期间工程或工作区已改变，停止写入。');
       }
+      // ABS replacement disables Blockly events so the import is atomic. That
+      // also suppresses the normal generated-code cache invalidation and
+      // dependency-preprocess trigger, so publish both explicitly before a
+      // following build can reuse the pre-import preprocess result.
+      this.blocklyService.markWorkspaceCodeDirty();
+      this.blocklyService.dependencySubject.next('abs-apply');
       this.electronService.writeFile(absFilePath, absContent);
       this.exportedWorkspaceRevision = this.readWorkspaceRevision();
       return { success: true, ...(options.chunk ? { batchCount } : {}) };

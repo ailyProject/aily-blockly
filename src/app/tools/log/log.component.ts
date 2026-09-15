@@ -24,6 +24,18 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   private clickTimeout: any;
   private preventSingleClick = false;
   private subscription: Subscription = new Subscription();
+  private readVersion = 0;
+  private generation = 0;
+  private nextOffset = 0;
+  private beforeOffset = 0;
+  private hasMoreHistory = false;
+  private readingNew = false;
+  private readingOlder = false;
+  private pendingNew = false;
+  private readErrorShown = false;
+  private readTimer: ReturnType<typeof setTimeout> | null = null;
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly maxVisible = 5000;
 
   // 滚动容器引用
   scrollElement = viewChild<ElementRef<HTMLDivElement>>('scrollElement');
@@ -78,21 +90,20 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private async initTool(): Promise<void> {
     await this.toolI18n.load('log');
-    // 初始化日志列表
-    this.refreshLogList();
+    await this.reloadTail();
   }
 
   ngAfterViewInit() {
     // 监听日志更新
     this.subscription.add(
-      this.logService.stateSubject.subscribe(() => {
-        this.handleLogUpdate();
+      this.logService.stateSubject.subscribe(item => {
+        if (!item.title && !item.detail) {
+          void this.reloadTail();
+        } else {
+          this.scheduleReadNew();
+        }
       })
     );
-
-    if (this.logService.list.length > 0) {
-      this.scrollToBottom();
-    }
   }
 
   // 滚动到底部
@@ -110,66 +121,146 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private scrollTimeoutId: any;
 
-  private refreshLogList() {
-    let sourceList = this.showOnlyErrors
-      ? this.logService.list.filter(item => item.state === 'error')
-      : [...this.logService.list];
-
-    const keyword = this.normalizeSearchText(this.logSearchKeyword);
-    if (keyword) {
-      sourceList = sourceList.filter(item => this.matchesLogSearch(item, keyword));
-    }
-
-    this.logList = sourceList;
-    this.logCount.set(this.logList.length);
-  }
-
-  private matchesLogSearch(item: LogOptions, keyword: string): boolean {
-    const searchableText = [
-      item.state,
-      item.title,
-      stripAnsi(item.detail || '')
-    ].join('\n');
-
-    return this.normalizeSearchText(searchableText).includes(keyword);
-  }
-
   private normalizeSearchText(value: unknown): string {
     return String(value ?? '').trim().toLowerCase();
   }
 
-  // 处理日志更新
-  private handleLogUpdate() {
-    this.refreshLogList();
-    this.cdr.detectChanges();
-    // 滚动到底部
-    if (!this.normalizeSearchText(this.logSearchKeyword)) {
-      this.scrollToBottom();
+  private readOptions() {
+    return {
+      errorsOnly: this.showOnlyErrors,
+      keyword: this.normalizeSearchText(this.logSearchKeyword),
+      limit: 500,
+    };
+  }
+
+  private async reloadTail(): Promise<void> {
+    const version = ++this.readVersion;
+    try {
+      const page = await this.logService.readPage({ mode: 'tail', ...this.readOptions() });
+      if (version !== this.readVersion) return;
+      this.generation = page.generation;
+      this.beforeOffset = page.beforeOffset;
+      this.nextOffset = page.nextOffset;
+      this.hasMoreHistory = page.hasMore;
+      this.logList = page.entries;
+      this.readErrorShown = false;
+      this.logCount.set(this.logList.length);
+      this.cdr.detectChanges();
+      if (this.normalizeSearchText(this.logSearchKeyword)) this.scrollToTop();
+      else this.scrollToBottom();
+    } catch (error) {
+      this.reportReadError(error);
+      if (version === this.readVersion) {
+        this.logList = [];
+        this.logCount.set(0);
+        this.cdr.detectChanges();
+      }
+    }
+  }
+
+  private scheduleReadNew(): void {
+    if (this.readTimer) return;
+    this.readTimer = setTimeout(() => {
+      this.readTimer = null;
+      void this.readNew();
+    }, 80);
+  }
+
+  private async readNew(): Promise<void> {
+    if (this.readingNew) {
+      this.pendingNew = true;
+      return;
+    }
+    this.readingNew = true;
+    const version = this.readVersion;
+    try {
+      let hasMore = true;
+      let pages = 0;
+      while (hasMore && version === this.readVersion && pages++ < 20) {
+        const previousOffset = this.nextOffset;
+        const page = await this.logService.readPage({
+          mode: 'after', afterOffset: this.nextOffset, generation: this.generation, ...this.readOptions(),
+        });
+        if (version !== this.readVersion) return;
+        if (page.reset) { await this.reloadTail(); return; }
+        this.nextOffset = page.nextOffset;
+        this.readErrorShown = false;
+        if (page.entries.length) {
+          const element = this.scrollElement()?.nativeElement;
+          const shouldFollow = !!element && element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+          this.logList = [...this.logList, ...page.entries].slice(-this.maxVisible);
+          this.logCount.set(this.logList.length);
+          this.cdr.detectChanges();
+          if (shouldFollow && !this.normalizeSearchText(this.logSearchKeyword)) this.scrollToBottom();
+        }
+        hasMore = page.hasMore && page.nextOffset > previousOffset;
+      }
+      if (hasMore) this.pendingNew = true;
+    } catch (error) {
+      this.reportReadError(error);
+    } finally {
+      this.readingNew = false;
+      if (this.pendingNew) {
+        this.pendingNew = false;
+        this.scheduleReadNew();
+      }
+    }
+  }
+
+  onLogScroll(): void {
+    const element = this.scrollElement()?.nativeElement;
+    if (element && element.scrollTop < 48 && this.hasMoreHistory && !this.readingOlder && this.logList.length < this.maxVisible) {
+      void this.readOlder();
+    }
+  }
+
+  private async readOlder(): Promise<void> {
+    if (this.logList.length >= this.maxVisible) return;
+    this.readingOlder = true;
+    const version = this.readVersion;
+    try {
+      const page = await this.logService.readPage({
+        mode: 'before', beforeOffset: this.beforeOffset, generation: this.generation,
+        ...this.readOptions(), limit: Math.min(500, this.maxVisible - this.logList.length),
+      });
+      if (version !== this.readVersion) return;
+      if (page.reset) { await this.reloadTail(); return; }
+      this.beforeOffset = page.beforeOffset;
+      this.readErrorShown = false;
+      this.hasMoreHistory = page.hasMore && page.entries.length > 0;
+      if (page.entries.length) {
+        this.logList = [...page.entries, ...this.logList];
+        this.logCount.set(this.logList.length);
+        this.cdr.detectChanges();
+        this.virtualizer.scrollToIndex(page.entries.length, { align: 'start' });
+      }
+    } catch (error) {
+      this.reportReadError(error);
+    } finally {
+      this.readingOlder = false;
+    }
+  }
+
+  private reportReadError(error: unknown): void {
+    console.error('读取底部日志失败:', error);
+    if (!this.readErrorShown) {
+      this.readErrorShown = true;
+      this.message.error(String(error));
     }
   }
 
   onErrorFilterChange(showOnlyErrors: boolean) {
     this.showOnlyErrors = showOnlyErrors;
-    this.refreshLogList();
-    this.cdr.detectChanges();
-
-    if (this.normalizeSearchText(this.logSearchKeyword)) {
-      this.scrollToTop();
-    } else {
-      this.scrollToBottom();
-    }
+    void this.reloadTail();
   }
 
   onLogSearchChange(keyword: string) {
     this.logSearchKeyword = keyword || '';
-    this.refreshLogList();
-    this.cdr.detectChanges();
-
-    if (this.normalizeSearchText(this.logSearchKeyword)) {
-      this.scrollToTop();
-    } else {
-      this.scrollToBottom();
-    }
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = setTimeout(() => {
+      this.searchTimer = null;
+      void this.reloadTail();
+    }, 180);
   }
 
   toggleSearchToolbar() {
@@ -188,11 +279,17 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     }, 30);
   }
 
-  clear() {
-    this.logService.clear();
-    this.logList = [];
-    this.logCount.set(0);
-    this.cdr.detectChanges();
+  async clear() {
+    try {
+      await this.logService.clear();
+      this.logList = [];
+      this.logCount.set(0);
+      this.cdr.detectChanges();
+      await this.reloadTail();
+    } catch (error) {
+      console.error('清空底部日志失败:', error);
+      this.message.error(String(error));
+    }
   }
 
   ngOnDestroy() {
@@ -202,13 +299,14 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.scrollTimeoutId) {
       clearTimeout(this.scrollTimeoutId);
     }
+    if (this.readTimer) clearTimeout(this.readTimer);
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.readVersion++;
     this.subscription.unsubscribe();
   }
 
   // 处理点击事件，区分单击和双击
   handleClick(item: any, event: MouseEvent) {
-    console.log('click event:', item);
-
     this.clickTimeout = setTimeout(() => {
       if (!this.preventSingleClick) {
         this.copyLogItemToClipboard(item);
@@ -259,9 +357,10 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // 单击复制日志内容到剪切板
-  async copyLogItemToClipboard(item: any) {
+  async copyLogItemToClipboard(item: LogOptions) {
     try {
-      const logContent = this.cleanLogContent(item.detail);
+      const fullItem = await this.logService.readEntry(item, this.generation);
+      const logContent = this.cleanLogContent(fullItem.detail);
       await this.electronService.clipboardWriteText(logContent);
       this.message.success(this.translate.instant('LOG.COPIED_TO_CLIPBOARD'));
     } catch (err) {
@@ -270,17 +369,31 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // 双击打开AI助手并发送日志内容
-  async copyLogItemToChat(item: any) {
-    const cleanDetail = this.cleanLogContent(item.detail);
-    this.uiService.openAndSendToChat(`log:\n${cleanDetail}`, {
-      sender: 'LogComponent',
-      type: 'log'
-    });
-    this.message.info(this.translate.instant('LOG.SENT_TO_AI'));
+  async copyLogItemToChat(item: LogOptions) {
+    try {
+      const fullItem = await this.logService.readEntry(item, this.generation);
+      const cleanDetail = this.cleanLogContent(fullItem.detail);
+      this.uiService.openAndSendToChat(`log:\n${cleanDetail}`, {
+        sender: 'LogComponent',
+        type: 'log'
+      });
+      this.message.info(this.translate.instant('LOG.SENT_TO_AI'));
+    } catch (error) {
+      console.error('读取完整日志失败:', error);
+      this.message.error(String(error));
+    }
   }
 
   async exportData() {
-    if (this.logService.list.length === 0) {
+    let preview;
+    try {
+      preview = await this.logService.readPage({ mode: 'tail', limit: 1 });
+    } catch (error) {
+      console.error('检查底部日志导出内容失败:', error);
+      this.message.error(String(error));
+      return;
+    }
+    if (preview.entries.length === 0) {
       this.message.warning(this.translate.instant('LOG.NO_DATA_TO_EXPORT'));
       return;
     }
@@ -307,18 +420,13 @@ export class LogComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // 准备要写入的内容
-    let fileContent = '';
-
-    for (const item of this.logService.list) {
-      const timeString = new Date(item.timestamp).toLocaleTimeString();
-      const detail = this.cleanLogContent(item.detail || '');
-      fileContent += `[${timeString}] ${detail}\n`;
+    try {
+      await this.logService.exportText(folderPath);
+      this.message.success(this.translate.instant('LOG.EXPORT_SUCCESS') + folderPath);
+    } catch (error) {
+      console.error('导出底部日志失败:', error);
+      this.message.error(String(error));
     }
-
-    // 写入文件
-    this.electronService.writeFile(folderPath, fileContent);
-    this.message.success(this.translate.instant('LOG.EXPORT_SUCCESS') + folderPath);
   }
 
 }

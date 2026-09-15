@@ -10,7 +10,7 @@ import { Connection, WindowMessenger, connect } from 'penpal';
 import { combineLatest, firstValueFrom, merge, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
-import { ChildToolConfig, getChildToolConfig } from '../../configs/tool.config';
+import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication } from '../../configs/tool.config';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   ChildToolHostInfo,
@@ -714,6 +714,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const config = getChildToolConfig(nextToolId);
     if (!config) {
       this.showConfigError(`Child tool is not registered: ${nextToolId}`);
+      return;
+    }
+    if (config.app?.extension === true) {
+      this.showConfigError(`${nextToolId} 是扩展服务，不支持在右侧面板或独立窗口中打开。`);
       return;
     }
 
@@ -2262,9 +2266,24 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     if (!this.isAilyChatTool()) {
       return { ok: false, message: 'Child app listing is only available to Aily Chat' };
     }
-    return this.mainUiAutomation.listChildApps({
+    const listed = await this.mainUiAutomation.listChildApps({
       limit: Math.max(1, Math.min(100, Number(payload?.limit) || 100)),
     });
+    if (listed['ok'] !== true || !Array.isArray(listed['items'])) return listed;
+
+    const catalogByToolId = new Map(this.subappManager.state.apps.map(item => [item.toolId, item]));
+    const applicationName = this.configService.getApplicationName();
+    const items = listed['items'].filter((value: unknown) => {
+      if (!value || typeof value !== 'object') return false;
+      const item = value as Record<string, unknown>;
+      const toolId = typeof item['id'] === 'string' ? item['id'] : '';
+      const catalog = catalogByToolId.get(toolId);
+      return item['extension'] !== true
+        && catalog?.extension !== true
+        && catalog?.app?.extension !== true
+        && isAppAvailableForApplication(catalog?.only ?? getChildToolConfig(toolId)?.app?.only, applicationName);
+    });
+    return { ok: true, items };
   }
 
   private async openChatChildApp(

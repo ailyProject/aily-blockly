@@ -32,6 +32,13 @@ export interface AppItem extends IMenuItem {
   };
 }
 
+export function isAppAvailableForApplication(only: unknown, applicationName: string): boolean {
+  const target = typeof only === 'string' && only.trim()
+    ? only.trim().toLowerCase()
+    : 'all';
+  return target === 'all' || target === applicationName.trim().toLowerCase();
+}
+
 export interface ChildToolAppConfig extends Partial<AppItem> {
   available?: boolean;
   defaultToolbar?: boolean;

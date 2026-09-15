@@ -100,11 +100,14 @@ export class SubappAgentBridgeService implements OnDestroy {
       const params = this.record(input['params']);
       const hasExplicitPresentation = Object.prototype.hasOwnProperty.call(params, 'presentUi');
       const activeMode = !hasExplicitPresentation
+        && resolved.config.app?.extension !== true
         && resolved.definition.presentation
         && await this.automation.isChildAppWindowOpen(resolved.config.id)
         ? 'window' as const
         : undefined;
-      const presentationPolicy = resolveSubappAgentPresentation(params, resolved.definition, activeMode);
+      const presentationPolicy = resolved.config.app?.extension === true
+        ? { uiMode: 'none' as const, activityPresentation: undefined }
+        : resolveSubappAgentPresentation(params, resolved.definition, activeMode);
       this.subappActivityService.recordInvocationStarted({
         sessionId: ownerSessionId,
         toolId: resolved.config.id,

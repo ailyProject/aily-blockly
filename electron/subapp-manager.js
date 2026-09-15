@@ -698,7 +698,8 @@ function resolveInstalledPackagePath(rootDir, entry) {
       selectionError: error.message,
     };
   }
-  // A managed dev link always wins over a selected release.
+  // Legacy development links remain readable during migration. New dev runs use
+  // a pinned <version>-dev generation in the version store below.
   if (fs.lstatSync(legacyPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
     return { packagePath: legacyPath, development: true, source: 'development' };
   }
@@ -752,6 +753,7 @@ function readInstalledState(rootDir, entry) {
 
   try {
     const development = selected.development === true;
+    const localNext = selected.localNext === true;
     const packageJson = readJson(packageJsonPath);
     if (!development && packageJson.name !== entry.package) {
       throw new Error('Installed subapp package name does not match the catalog');
@@ -803,6 +805,7 @@ function readInstalledState(rootDir, entry) {
       installed: complete,
       installedVersion,
       development,
+      localNext,
       packagePath: runnablePackagePath,
       config: complete ? {
         id: toolId,
@@ -893,6 +896,8 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
       .map((entry) => {
         const installedState = readInstalledState(rootDir, entry);
         const updateAvailable = installedState.installed
+          && !installedState.development
+          && !installedState.localNext
           && hasUpdate(installedState.installedVersion, entry.version);
         const updateStatus = readSubappUpdateStatus(
           meta.updateRootDir || resolveSubappUpdateRoot(),
@@ -1346,11 +1351,12 @@ function mergeDevelopmentLinkedEntries(rootDir, remoteIndex, developmentIndex) {
   for (const [id, entry] of Object.entries(developmentIndex || {})) {
     if (id === 'dev') continue;
     try {
-      if (fs.lstatSync(packagePathFor(rootDir, entry.package)).isSymbolicLink()) {
+      const selected = resolveInstalledPackagePath(rootDir, entry);
+      if (selected.development === true || selected.localNext === true) {
         merged[id] = entry;
       }
     } catch {
-      // Ignore stale development catalog entries whose package link no longer exists.
+      // Ignore stale local catalog entries whose dev/next generation is no longer active.
     }
   }
 
@@ -1406,10 +1412,13 @@ function verifyStagedAssets(updateRootDir, record) {
 
 function readSubappUpdateStatus(updateRootDir, entry, installedState, operation = null, rootDir = null) {
   const targetVersion = entry.version;
-  if (!installedState.installed || !hasUpdate(installedState.installedVersion, targetVersion)) {
+  if (installedState.development
+    || installedState.localNext
+    || !installedState.installed
+    || !hasUpdate(installedState.installedVersion, targetVersion)) {
     return { state: 'current', targetVersion };
   }
-  if (!entry.update || installedState.development) {
+  if (!entry.update) {
     return { state: 'available', targetVersion };
   }
   if (operation && operation.version === targetVersion) {
@@ -1619,7 +1628,9 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
 
 async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
   const installedState = readInstalledState(rootDir, entry);
-  if (installedState.development) throw new Error(`Development-linked subapp cannot be updated: ${entry.id}`);
+  if (installedState.development || installedState.localNext) {
+    throw new Error(`Local subapp cannot be updated: ${entry.id}`);
+  }
   if (!installedState.installed || !hasUpdate(installedState.installedVersion, entry.version)) {
     throw new Error(`Subapp update is not available: ${entry.id}`);
   }
@@ -2267,7 +2278,9 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
   const release = options.lockHeld ? () => {} : await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
   try {
     const installed = readInstalledState(rootDir, entry);
-    if (installed.development) throw new Error(`Development-linked subapp cannot be updated: ${entry.id}`);
+    if (installed.development || installed.localNext) {
+      throw new Error(`Local subapp cannot be updated: ${entry.id}`);
+    }
     if (installed.installed && semver.valid(installed.installedVersion)
       && semver.gt(installed.installedVersion, entry.version)) {
       return { id: entry.id, version: installed.installedVersion, status: 'current' };
@@ -2558,6 +2571,7 @@ function createSubappManager(options = {}) {
       if (
         !installedState.installed
         || installedState.development
+        || installedState.localNext
         || !hasUpdate(installedState.installedVersion, entry.version)
       ) {
         continue;
@@ -2594,7 +2608,7 @@ function createSubappManager(options = {}) {
       let installed = readInstalledState(rootDir, entry);
       const runningConfig = options.getRunningSubappConfig?.(entry.id) || null;
       if (!runningConfig && payload.deferPreparedUpdate !== true
-        && index.dev !== true && !installed.development && installed.installed
+        && index.dev !== true && !installed.development && !installed.localNext && installed.installed
         && hasUpdate(installed.installedVersion, entry.version)) {
         try {
           const prepared = readPreparedVersion(rootDir, entry);
@@ -2660,7 +2674,9 @@ function createSubappManager(options = {}) {
           await Promise.all(downloads);
         }
         const installed = readInstalledState(rootDir, entry);
-        if (installed.development || index.dev === true) throw new Error('Development subapps cannot be changed');
+        if (installed.development || installed.localNext || index.dev === true) {
+          throw new Error('Local subapps cannot be changed');
+        }
         if ((action === 'update' || action === 'install-update')
           && installed.installed && !hasUpdate(installed.installedVersion, entry.version)) {
           return list({ locale: payload.locale || 'en' });
@@ -2706,10 +2722,10 @@ function createSubappManager(options = {}) {
           }
         }
         releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
-        // A dev link may have been added while downloading; do not supersede it.
+        // A local dev/next selection may have been added while downloading; do not supersede it.
         const current = readInstalledState(rootDir, entry);
-        if (current.development || readDevelopmentIndexCache(rootDir)) {
-          throw new Error('Development subapps cannot be changed');
+        if (current.development || current.localNext || readDevelopmentIndexCache(rootDir)) {
+          throw new Error('Local subapps cannot be changed');
         }
         if (action === 'uninstall') {
           await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
@@ -2748,7 +2764,7 @@ function createSubappManager(options = {}) {
 
   async function downloadUpdate(payload = {}) {
     const { index } = await loadIndex('cache-first');
-    if (index.dev === true) throw new Error('Development subapps cannot be updated');
+    if (index.dev === true) throw new Error('Local subapps cannot be updated');
     const id = validateId(payload.id);
     const entry = index[id];
     if (!entry) throw new Error(`Subapp is not present in the remote index: ${id}`);

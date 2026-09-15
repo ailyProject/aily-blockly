@@ -3,8 +3,10 @@ const path = require('path');
 const electronLog = require('electron-log');
 const fs = require('fs');
 const { BrowserWindow } = require('electron');
+const { BottomLogJournal } = require('./bottom-log-journal');
 
 const projectPathByWebContentsId = new Map();
+let bottomLogJournal;
 
 function initLogger(appDataPath) {
     const logDir = path.join(appDataPath, 'logs');
@@ -17,6 +19,7 @@ function initLogger(appDataPath) {
     electronLog.transports.file.maxSize = 1024 * 1024;
     electronLog.transports.file.level = 'info';
     electronLog.transports.console.level = 'info';
+    bottomLogJournal = new BottomLogJournal(appDataPath);
 
     console.log = (...args) => writeAppConsoleLog('INFO', args);
     console.info = (...args) => writeAppConsoleLog('INFO', args);
@@ -39,6 +42,23 @@ function initLogger(appDataPath) {
 
 function registerLoggerHandlers() {
     const { ipcMain } = require('electron');
+
+    ipcMain.handle('bottom-log:append-batch', async (_event, payload) => {
+        const entries = payload?.entries;
+        if (!Array.isArray(entries)) throw new Error('Invalid bottom log batch');
+        const stream = bottomLogJournal.stream(payload?.streamId);
+        for (const entry of entries) bottomLogJournal.append(payload.streamId, entry);
+        await bottomLogJournal.flush(stream);
+        return { count: entries.length };
+    });
+    ipcMain.handle('bottom-log:read', (_event, payload) =>
+        bottomLogJournal.read(payload?.streamId, payload?.options));
+    ipcMain.handle('bottom-log:entry', (_event, payload) =>
+        bottomLogJournal.readEntry(payload?.streamId, payload?.options));
+    ipcMain.handle('bottom-log:clear', (_event, payload) =>
+        bottomLogJournal.clear(payload?.streamId));
+    ipcMain.handle('bottom-log:export', (_event, payload) =>
+        bottomLogJournal.exportText(payload?.streamId, payload?.targetPath));
 
     ipcMain.handle('logger-set-project-path', (event, projectPath) => {
         setProjectPathForSender(event, projectPath);

@@ -19,7 +19,7 @@ export async function runProjectBuild(
       };
     }
 
-    const result = await builderService.build();
+    const result = await builderService.build(undefined, { source: 'ai' });
     return {
       is_error: false,
       content: JSON.stringify({
