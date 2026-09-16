@@ -1617,6 +1617,10 @@ export class ProjectService {
     packageJson.name = deriveProjectPackageName(name);
     packageJson.nickname = name;
     window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
+    // 清除副本的旧配置快照、日志和编译缓存，避免重开时恢复源项目的 cloudId。
+    for (const directory of ['.temp', '.log', '.build']) {
+      await window['fsp'].rm(window['path'].join(path, directory), { recursive: true, force: true });
+    }
     // 修改当前项目路径
     this.currentProjectPath = path;
     projectDataRuntime.configure(path);

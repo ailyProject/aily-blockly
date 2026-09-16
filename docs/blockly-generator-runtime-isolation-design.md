@@ -2,8 +2,34 @@
 
 > 状态：核心隔离链路与动态库删除后的全量 rebuild 已实施并通过真实项目功能验证；依赖解析与动态库升级待后续完成  
 > 适用仓库：`aily-blockly`  
-> 更新时间：2026-07-17  
+> 更新时间：2026-09-16
 > 约束：不修改任何 Blockly 库包，不使用浏览器整页刷新
+
+## 2026-09-16 单库加载失败恢复
+
+7 月 17 日的 `d31cf7132` 将生成器执行失败升级为整个项目加载失败：runtime 被标记为 inactive，loader 销毁 runtime 并抛出异常。7 月 25 日 `d8fd57ce` 添加的红点/重试仅覆盖完整性校验失败，未覆盖该执行异常分支。
+
+现已保留「失败 Realm 必须替换」的隔离约束，同时恢复单库容错：
+
+- 保存原始错误堆栈，使用旧 context 创建新 Realm，重新注册此前成功的库，再继续加载后续库。
+- 坏库保留红点工具箱入口；可读的 block.json 用于恢复已有积木外观，不执行失败的生成器；使用这些积木生成代码时显式报错，避免悄悄遗漏代码。
+- 点击坏库展示原始错误、安装目录、本地源目录，复用通知的 AI 处理入口；修复后重新读盘加载并恢复工作区，清除红点。
+- 库加载串行化，避免并发安装写入正在替换的 Realm。多坏库的占位和错误在恢复中保留，项目 reset / 显式全量库重建时清理。
+
+验证命令：
+
+```sh
+npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/editors/blockly-editor/services/blockly-library-recovery.spec.ts' --include='src/app/editors/blockly-editor/services/blockly-generator-runtime.service.spec.ts'
+npx tsc --noEmit -p tsconfig.app.json
+# 指向已安装依赖的 NLCS11 复现项目；测试复制后才修改副本。
+AILY_E2E_LIBRARY_RECOVERY_PROJECT=/path/to/nlcs11_project npm run test:e2e -- blockly-library-recovery.spec.ts
+```
+
+浏览器回归覆盖：完整性失败、语法失败、运行时失败、部分注册回滚、多个坏库、并发加载、失败重试、修复后重载和正常库继续生成代码。正式开发窗口实测 NLCS11 的 `ReferenceError: asd is not defined` 已不阻止项目打开，原有积木保留，通知可显示原始错误和 AI 处理入口。AI 实际发起修复不属于本次自动验收。
+
+本次结果：7/7 ChromeHeadless 回归通过；TypeScript 检查、生产构建通过；Electron 生产渲染层 E2E 1/1 通过。E2E 使用隔离项目副本，验证坏库红点、正常库展开、错误通知/AI入口、修复后重加载、全部积木 ID 保留，以及 NLCS11/Serial 代码恢复生成。没有进行硬件编译、上传或真实 AI 对话。
+
+E2E 会在 Playwright 当前运行的输出目录生成 `library-failure.png` 和 `library-recovered.png`；后续测试会清理该临时目录，需要时可通过上述命令重新生成。
 
 ## 0. 2026-07-17 实施结论与方案收敛
 

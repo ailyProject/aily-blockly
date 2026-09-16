@@ -1808,7 +1808,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         resourcePicker: isAilyChat
           && typeof (window as any).dialog?.selectFiles === 'function',
         childAppMenu: isAilyChat,
-        clipboardWrite: isAilyChat,
+        clipboardWrite: true,
         openFile: isAilyChat
           && typeof (window as any).electronAPI?.shell?.showItemInFolder === 'function',
         blockSelectionContext: isAilyChat,
@@ -2111,9 +2111,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private async writeClipboardText(payload: { text?: string }): Promise<Record<string, unknown>> {
-    if (!this.isAilyChatTool()) {
-      return { ok: false, message: 'Clipboard access is only available to Aily Chat' };
-    }
     const text = typeof payload?.text === 'string' ? payload.text : '';
     if (!text) {
       return { ok: false, message: 'Clipboard text is empty' };

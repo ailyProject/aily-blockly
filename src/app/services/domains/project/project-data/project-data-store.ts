@@ -218,16 +218,18 @@ export class ProjectDataStore {
   collectReferences(value: unknown): AilyDataRef[] {
     const refs = new Map<string, AilyDataRef>();
     const visited = new Set<object>();
-    const visit = (current: unknown): void => {
+    const pending: unknown[] = [value];
+    while (pending.length) {
+      const current = pending.pop();
       if (typeof current === 'string' && current.includes('$ailyData') && current.trim().startsWith('{')) {
         try {
-          visit(JSON.parse(current));
+          pending.push(JSON.parse(current));
         } catch (error) {
           throw new ProjectDataError('invalid-ref', 'String containing reserved $ailyData metadata is invalid JSON.', {
             cause: String(error),
           });
         }
-        return;
+        continue;
       }
       if (current && typeof current === 'object' && !Array.isArray(current)
         && Object.prototype.hasOwnProperty.call(current, '$ailyData')) {
@@ -237,17 +239,15 @@ export class ProjectDataStore {
           throw new ProjectDataError('corrupt', `Conflicting metadata for project data ID: ${current.$ailyData.id}`);
         }
         refs.set(current.$ailyData.id, current);
-        return;
+        continue;
       }
-      if (!current || typeof current !== 'object' || visited.has(current)) return;
+      if (!current || typeof current !== 'object' || visited.has(current)) continue;
       visited.add(current);
-      if (Array.isArray(current)) {
-        for (const item of current) visit(item);
-      } else {
-        for (const item of Object.values(current as Record<string, unknown>)) visit(item);
+      const members = Array.isArray(current) ? current : Object.values(current);
+      for (let index = members.length - 1; index >= 0; index--) {
+        pending.push(members[index]);
       }
-    };
-    visit(value);
+    }
     return [...refs.values()];
   }
 

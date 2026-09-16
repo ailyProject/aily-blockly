@@ -1,5 +1,6 @@
-import { AfterViewInit, ChangeDetectorRef, Component, ElementRef, EventEmitter, Input, OnDestroy, OnInit, Output, ViewChild, effect } from '@angular/core';
+import { AfterViewInit, ChangeDetectorRef, Component, ElementRef, EventEmitter, Input, NgZone, OnDestroy, OnInit, Output, ViewChild, effect } from '@angular/core';
 import * as Blockly from 'blockly';
+import { WorkspaceCodeChangeTracker, WorkspaceCodeEvent } from '../../utils/blockly-performance';
 import { Subject, combineLatest } from 'rxjs';
 
 import { debounceTime, takeUntil, map, distinctUntilChanged, pairwise, startWith } from 'rxjs/operators';
@@ -113,7 +114,7 @@ import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
 import { writeArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 
-type BlocklyWorkspaceEvent = { type?: string } | null | undefined;
+type BlocklyWorkspaceEvent = WorkspaceCodeEvent | null | undefined;
 
 const PROJECT_BREAKPOINT_CONTEXT_MENU_IDS = [
   'ailyProjectBreakpointAddOrRebind',
@@ -324,6 +325,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     'var_delete',
     'var_rename',
   ]);
+  private readonly codeChangeTracker = new WorkspaceCodeChangeTracker();
   private readonly minimapSyncEventTypes = new Set([
     'finished_loading',
     'create',
@@ -474,6 +476,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     private noticeService: NoticeService,
     private translateService: TranslateService,
     private cdr: ChangeDetectorRef,
+    private ngZone: NgZone,
     private cmdService: CmdService,
     private projectService: ProjectService,
     private electronService: ElectronService,
@@ -826,8 +829,10 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       this.options.grid.colour = blocklyGridColourForUiTheme(currentTheme);
 
       applyWindowsBlocklyScrollbarThickness(this.platformService.isWindows());
-      this.workspace = Blockly.inject(this.workspacePaneComponent.blocklyHostElement, this.options);
-      this.workspacePaneComponent.blocklyHostElement.addEventListener('pointerdown', this.onWorkspacePointerDownBound, true);
+      this.ngZone.runOutsideAngular(() => {
+        this.workspace = Blockly.inject(this.workspacePaneComponent.blocklyHostElement, this.options);
+        this.workspacePaneComponent.blocklyHostElement.addEventListener('pointerdown', this.onWorkspacePointerDownBound, true);
+      });
       this.workspace.updateToolbox(this.toolbox);
       this.registerExternalToolboxDeleteArea();
       this.blocklyService.hydrateWorkspaceFromProjectState();
@@ -836,8 +841,10 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       this.applyFlyoutAutoClose();
       this.setupFlyoutPinControl(0);
 
-      const multiselectPlugin = new Multiselect(this.workspace);
-      multiselectPlugin.init(this.options);
+      this.ngZone.runOutsideAngular(() => {
+        const multiselectPlugin = new Multiselect(this.workspace);
+        multiselectPlugin.init(this.options);
+      });
       this.registerBlockExplainContextMenu();
       this.registerProjectBreakpointContextMenus();
 
@@ -994,7 +1001,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
     setTimeout(() => {
       Blockly.svgResize(this.workspace);
-      this.workspace.render();
       this.queueProjectBreakpointMarkerSync();
       this.queueDebugExecutionMarkerSync();
       this.blocklyService.syncToolboxFacadeWithWorkspace();
@@ -2214,11 +2220,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private shouldGenerateCodeForEvent(event?: BlocklyWorkspaceEvent): boolean {
-    if (!event?.type) {
-      return true;
-    }
-
-    return this.codeGenerationEventTypes.has(event.type);
+    return !!this.workspace && this.codeChangeTracker.affectsCode(event, this.workspace);
   }
 
   private requestMinimapSync(event?: BlocklyWorkspaceEvent): void {

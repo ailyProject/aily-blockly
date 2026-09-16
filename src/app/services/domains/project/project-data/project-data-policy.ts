@@ -50,9 +50,13 @@ export function findOversizedInlineValues(
     diagnostics.push({ ...context, fieldName, jsonPointer, canonicalLength, threshold });
   };
 
-  const visit = (value: unknown, pointer: string, inheritedContext: BlockContext) => {
-    if (!value || typeof value !== 'object' || isAilyDataRef(value)) return;
-    if (visited.has(value)) return;
+  const pending: Array<{ value: unknown; pointer: string; inheritedContext: BlockContext }> = [
+    { value: document, pointer: '', inheritedContext: {} },
+  ];
+  while (pending.length) {
+    const { value, pointer, inheritedContext } = pending.pop()!;
+    if (!value || typeof value !== 'object' || isAilyDataRef(value)) continue;
+    if (visited.has(value)) continue;
     visited.add(value);
 
     const record = value as Record<string, unknown>;
@@ -70,16 +74,12 @@ export function findOversizedInlineValues(
       inspectCandidate(record['extraState'], `${pointer}/extraState`, context);
     }
 
-    if (Array.isArray(value)) {
-      value.forEach((member, index) => visit(member, `${pointer}/${index}`, context));
-    } else {
-      for (const [key, member] of Object.entries(record)) {
-        visit(member, `${pointer}/${escapePointer(key)}`, context);
-      }
+    const entries = Object.entries(record);
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const [key, member] = entries[index];
+      pending.push({ value: member, pointer: `${pointer}/${escapePointer(key)}`, inheritedContext: context });
     }
-  };
-
-  visit(document, '', {});
+  }
   return diagnostics;
 }
 

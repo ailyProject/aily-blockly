@@ -319,6 +319,9 @@ Penpal 只负责 iframe 生命周期和宿主能力，不承载高频业务数�
     lang: string;
     theme: 'light' | 'dark' | string;
     platform: string;
+    capabilities: {
+      clipboardWrite: true;
+    };
   };
   childReady(payload: {
     wsConnected?: boolean;
@@ -340,10 +343,17 @@ Penpal 只负责 iframe 生命周期和宿主能力，不承载高频业务数�
   requestClose(): void;
   requestRestart(): void;
   openExternal(url: string): void;
+  writeClipboardText(payload: { text: string }): Promise<{
+    ok: boolean;
+    message?: string;
+  }>;
 }
 ```
 
 `childError()` 表示 child UI 已进入不可恢复错误，父页面会切换 host 状态；普通提示、警告、可恢复错误应调用 `reportHostMessage()`。`reportHostMessage()` 只用于低频宿主通知，默认同时弹出 `message` 并写入主应用 log；大量日志流、扫描结果、硬件事件仍必须走 WebSocket 数据面。
+
+`writeClipboardText()` 对所有子应用开放，无需按 tool id 添加宿主白名单。子应用应优先使用该方法写入系统剪贴板，
+避免 iframe 权限策略导致 `navigator.clipboard` 失败；宿主只接受非空字符串，且不向子应用开放剪贴板读取。
 
 child UI 向父页面暴露：
 

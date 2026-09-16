@@ -137,6 +137,9 @@ getHostContext(): {
   lang: string;
   theme: "light" | "dark";
   platform: string;
+  capabilities: {
+    clipboardWrite: true;
+  };
 }
 
 childReady(payload?: {
@@ -165,7 +168,12 @@ reportHostMessage(payload: {
 requestClose(): void
 requestRestart(): void
 openExternal(url: string): void
+writeClipboardText(payload: { text: string }): Promise<{ ok: boolean; message?: string }>
 sendToolSignal(signal: string, payload?: object): Promise<{ ok: boolean; waitFor: number }>
+
+`writeClipboardText()` 是所有子应用都可调用的通用宿主能力。需要复制文本时优先调用该方法，
+不要直接依赖 iframe 内的 `navigator.clipboard`；新增子应用不需要在主软件中登记 tool id。
+宿主只接受非空字符串，并通过统一的平台剪贴板实现完成写入；此能力不包含剪贴板读取。
 
 子应用 UI 需要通过 Penpal 暴露给主应用的方法：
 

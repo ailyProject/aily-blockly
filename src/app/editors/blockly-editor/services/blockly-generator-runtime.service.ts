@@ -194,12 +194,19 @@ export class BlocklyGeneratorRuntimeService {
   rebuild(
     context: Partial<Omit<GeneratorRuntimeContext, 'mode' | 'getWorkspace'>> = {},
   ): ProjectGenerator {
-    const currentContext = this.requireActiveSession().context;
+    // A failed script can leave lexical bindings behind. Recovery must replace
+    // that realm, using its context even after markFailed made it inactive.
+    if (!this.session) throw new Error('Blockly generator runtime is not active');
+    const currentContext = this.session.context;
     return this.activate({ ...currentContext, ...context });
   }
 
   isActive(): boolean {
     return !!this.session?.active;
+  }
+
+  isReady(): boolean {
+    return this.session?.iframe.getAttribute('data-runtime-ready') === 'true';
   }
 
   /**

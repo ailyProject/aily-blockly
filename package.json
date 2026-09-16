@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.98",
+  "version": "0.9.99",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -210,7 +210,7 @@
     "loaders.css": "^0.1.2",
     "marked": "^15.0.12",
     "marked-highlight": "^2.2.1",
-    "mermaid": "^11.9.0",
+    "mermaid": "^11.17.2",
     "monaco-editor": "^0.52.2",
     "mp4box": "^2.3.0",
     "ng-zorro-antd": "^19.0.1",
