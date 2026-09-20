@@ -16,8 +16,17 @@
     <div class="down ccenter"><i class="fa-regular fa-angle-down"></i></div>
   </div>
   }
-  <div class="null-box drag" (dblclick)="maximize()"></div>
-  <div class="project-box ccenter">{{ projectTitle }}</div>
+  <div class="null-box" [class.drag]="!isEditingProjectTitle" (dblclick)="maximize()"></div>
+  <div class="project-box ccenter">
+    @if (isEditingProjectTitle) {
+    <input #projectTitleInput class="project-title-input" type="text" [value]="projectTitle"
+      [readOnly]="isSavingProjectTitle" [attr.aria-label]="'PROJECT_SETTING_DIALOG.NAME' | translate"
+      (keydown)="onProjectTitleKeydown($event)" (blur)="saveProjectTitle(projectTitleInput.value)">
+    } @else {
+    <button class="project-title" type="button" [disabled]="!canEditProjectTitle"
+      (click)="startEditingProjectTitle()">{{ projectTitle }}</button>
+    }
+  </div>
   <div class="toolbox">
     <div class="zone ccenter">
       @for (btn of headerBtns; track $index) {

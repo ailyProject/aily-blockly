@@ -233,6 +233,15 @@ export class SubappAgentBridgeService implements OnDestroy {
       if (result?.ok !== true || result.ready !== true) {
         throw new Error('Coder dependency library sources are not ready');
       }
+    } catch (error) {
+      if (error instanceof SubappRpcError && error.code === 'SUBAPP_TOOL_METHOD_NOT_FOUND') {
+        throw new SubappRpcError(
+          '当前运行的 Aily Coder 编辑器版本不支持依赖库准备。请更新 Aily Coder 编辑器；如果已更新，请保存工程并重新启动 Aily Coder 后重试。\n' + error.message,
+          'CODER_RUNTIME_UPDATE_REQUIRED',
+          error.details,
+        );
+      }
+      throw error;
     } finally {
       await this.releaseSession(sessionId);
     }

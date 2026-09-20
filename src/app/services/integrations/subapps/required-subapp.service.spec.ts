@@ -4,6 +4,7 @@ import {
   resolveRequiredSubappState,
 } from './required-subapp.service';
 import { BehaviorSubject } from 'rxjs';
+import { bootstrapDefaultSubapps } from './bootstrap/default-subapps-bootstrap';
 
 function catalogEntry(installed: boolean) {
   return {
@@ -14,6 +15,44 @@ function catalogEntry(installed: boolean) {
 }
 
 describe('RequiredSubappService', () => {
+  it('shares one installation between the Coder startup notice and catalog bootstrap', async () => {
+    let finishInstall!: () => void;
+    let bootstrapJoined!: () => void;
+    const installResult = new Promise<void>(resolve => { finishInstall = resolve; });
+    const joined = new Promise<void>(resolve => { bootstrapJoined = resolve; });
+    const item = {
+      ...catalogEntry(false), toolId: 'aily-coder-editor', only: 'aily coder',
+      app: { autoInstall: true, defaultToolbar: false },
+    };
+    const manager: any = {
+      state: { apps: [item] },
+      initialize: jasmine.createSpy('initialize').and.resolveTo(),
+      install: jasmine.createSpy('install').and.callFake(async () => {
+        await installResult;
+        manager.state.apps = [{ ...item, ...catalogEntry(true) }];
+      }),
+    };
+    const required = new RequiredSubappService(manager);
+    const fromNotice = required.ensureInstalled('aily-coder-editor');
+    const fromCatalog = bootstrapDefaultSubapps({
+      initialize: () => manager.initialize(),
+      readCatalog: () => manager.state.apps,
+      isAvailable: entry => entry.only === 'aily coder',
+      install: async id => {
+        const pending = required.ensureInstalled(id);
+        bootstrapJoined();
+        await pending;
+      },
+      onError: (_id, error) => { throw error; },
+    });
+    await joined;
+    expect(manager.install).toHaveBeenCalledOnceWith('aily-coder-editor');
+    finishInstall();
+    await Promise.all([fromNotice, fromCatalog]);
+    expect(manager.install).toHaveBeenCalledTimes(1);
+    expect(manager.state.apps[0].installed).toBeTrue();
+  });
+
   it('reports a detected package without a runnable config as incomplete', () => {
     const incomplete = resolveRequiredSubappState(
       'aily-coder-editor',

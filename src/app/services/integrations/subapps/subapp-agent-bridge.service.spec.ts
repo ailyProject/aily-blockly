@@ -27,4 +27,20 @@ describe('SubappAgentBridgeService dependency materialization', () => {
     await expectAsync(service.materializeCoderProjectLibraries('/projects/new-coder')).toBeRejectedWithError('archive failed');
     expect(service.releaseSession).toHaveBeenCalledTimes(2);
   });
+
+  it('explains how to recover an old runtime while retaining the original RPC error', async () => {
+    const service = createService(null);
+    service.request.and.callFake(() => new Promise((_resolve, reject) => {
+      const channel = { pending: new Map([['old-runtime', { reject }]]) };
+      service.handleMessage(channel, { data: JSON.stringify({
+        id: 'old-runtime', ok: false, errorCode: 'SUBAPP_TOOL_METHOD_NOT_FOUND',
+        error: 'Unknown Aily Coder Agent method: coder.library.materialize',
+      }) });
+    }));
+    const error = await service.materializeCoderProjectLibraries('/projects/new-coder').catch((value: any) => value);
+    expect(error.code).toBe('CODER_RUNTIME_UPDATE_REQUIRED');
+    expect(error.message).toContain('保存工程并重新启动');
+    expect(error.message).toContain('Unknown Aily Coder Agent method: coder.library.materialize');
+    expect(service.releaseSession).toHaveBeenCalledTimes(1);
+  });
 });

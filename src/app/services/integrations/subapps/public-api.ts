@@ -1,5 +1,5 @@
 export * from './adapters/subapp-resource-lifecycle-adapter';
-export * from './bootstrap/default-aily-chat-bootstrap';
+export * from './bootstrap/default-subapps-bootstrap';
 export * from './child-app-host-registry.service';
 export * from './child-app-safety.service';
 export * from './child-tool-process.service';

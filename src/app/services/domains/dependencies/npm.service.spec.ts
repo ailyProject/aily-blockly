@@ -53,7 +53,7 @@ describe('NpmService Coder dependency sources', () => {
     const onRetryInstall = jasmine.createSpy('retry');
     expect(await service.ensureProjectDependenciesInstalled('/tmp/coder-template', { onRetryInstall })).toBeFalse();
     expect(service.application.updateNotice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
-      state: 'error', detail: 'src.7z is invalid', onRetry: onRetryInstall,
+      state: 'error', detail: 'src.7z is invalid', sendToLog: true, onRetry: onRetryInstall,
     }));
     expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
   });

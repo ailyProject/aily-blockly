@@ -94,6 +94,7 @@ export class SubappManagerService implements OnDestroy {
   private readonly stateSubject = new BehaviorSubject<SubappCatalogState>(EMPTY_STATE);
   private readonly progressSubject = new BehaviorSubject<SubappInstallProgress | null>(null);
   private initializePromise: Promise<void> | null = null;
+  private initialCatalogRefresh: Promise<void> | null = null;
   private initialized = false;
   private removeChangedListener: (() => void) | null = null;
   private removeProgressListener: (() => void) | null = null;
@@ -147,6 +148,14 @@ export class SubappManagerService implements OnDestroy {
 
   async refresh(force = true): Promise<void> {
     await this.load(force ? 'network-first' : 'cache-first');
+  }
+
+  /** Share startup's existing refresh so defaults see remote entries even when
+   * the initial cache only contains bundled/local apps. The shell does not wait.
+   */
+  async initializeForBootstrap(): Promise<void> {
+    await this.initialize();
+    await this.initialCatalogRefresh;
   }
 
   install(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
@@ -247,7 +256,7 @@ export class SubappManagerService implements OnDestroy {
   }
 
   private refreshCatalogInBackground(locale: string): void {
-    void this.load('network-first', locale, false);
+    this.initialCatalogRefresh = this.load('network-first', locale, false);
   }
 
   private async mutate(

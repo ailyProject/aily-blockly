@@ -24,13 +24,18 @@ describe('Coder concurrent process integration', () => {
   const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
   beforeEach(() => {
-    originals = { path: window['path'], fs: window['fs'] };
+    originals = { path: window['path'], fs: window['fs'], cmd: window['cmd'] };
     window['path'] = { join: (...parts: string[]) => parts.join('/'), isExists: () => true,
       getAilyBuilderPath: () => '/builder', getAilyChildPath: () => '/child', getAppDataPath: () => '/appdata' };
     window['fs'] = { existsSync: () => true, appendFileSync: () => {}, mkdirSync: () => {}, readFileSync: (path: string) => path.endsWith('package.json')
       ? JSON.stringify({ type: 'coder', entry: 'src/main.cpp', dependencies: { '@aily-project/board-uno': '1' } }) : 'void setup() {}\nvoid loop() {}',
       writeFileSync: jasmine.createSpy('write') };
     commands = []; killed = [];
+    spyOn(CmdService.prototype, 'run').and.callFake((command: string) => {
+      const output = new Subject<any>(); const id = `process-${commands.length}`;
+      commands.push({ command, output, id }); return output;
+    });
+    spyOn(CmdService.prototype, 'kill').and.callFake(async (id: string) => { killed.push(id); return true; });
     const contexts = new Map<string, any>();
     project = {
       currentProjectPath: '/a', currentProjectPath$: new BehaviorSubject('/a'),
@@ -52,14 +57,10 @@ describe('Coder concurrent process integration', () => {
     serial = { currentPort: null, currentPortInfo: null,
       getSerialPorts: async () => [{ name: '/dev/A', type: 'serial' }, { name: '/dev/B', type: 'serial' }] };
     TestBed.configureTestingModule({ providers: [
-      CoderProjectRuntimeService, NoticeService, LogService,
+      CoderProjectRuntimeService, NoticeService, LogService, CmdService,
       { provide: CODER_EXECUTION_PORT, useExisting: CoderProjectRuntimeService },
       { provide: ProjectService, useValue: project }, { provide: SerialService, useValue: serial },
       { provide: BUILD_ACTION_PORT, useValue: { hasListener: () => false, dispatchWithFeedback: () => of({ success: true }) } },
-      { provide: CmdService, useValue: {
-        run: (command: string) => { const output = new Subject<any>(); const id = `process-${commands.length}`; commands.push({ command, output, id }); return output; },
-        kill: async (id: string) => { killed.push(id); },
-      } },
       { provide: CrossPlatformCmdService, useValue: {} },
       { provide: ElectronService, useValue: { pathJoin: (...parts: string[]) => parts.join('/'), isWindowFocused: () => true } },
       { provide: PlatformService, useValue: { za7: '/7z' } },
@@ -78,6 +79,36 @@ describe('Coder concurrent process integration', () => {
 
   function started(command: typeof commands[number]): void { command.output.next({ type: 'stdout', data: 'running\n', streamId: command.id }); }
   function finish(command: typeof commands[number]): void { command.output.next({ type: 'close', code: 0, streamId: command.id }); command.output.complete(); }
+
+  it('records command and RPC failures in the owning project without leaking across tabs', async () => {
+    (CmdService.prototype.run as jasmine.Spy).and.callThrough();
+    const callbacks = new Map<string, (data: any) => void>();
+    window['cmd'] = {
+      onData: (id: string, callback: (data: any) => void) => {
+        callbacks.set(id, callback); return () => callbacks.delete(id);
+      },
+      run: async () => ({ success: true }),
+    };
+    const a = runtime.getSession('/a'); const b = runtime.getSession('/b');
+    const visible = TestBed.inject(LogService);
+    a.injector.get(CmdService).run('npm install', '/a', false).subscribe();
+    const [id, callback] = [...callbacks.entries()][0];
+    callback({ type: 'stderr', data: 'dependency install failed', streamId: id });
+    // Finish A after switching to B: the failure must remain attached to A.
+    project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
+    callback({ type: 'close', code: 1, streamId: id });
+    a.notice.update({ title: 'Library preparation failed', detail: 'Unknown Aily Coder Agent method: coder.library.materialize', state: 'error' });
+    expect((await visible.readPage()).entries).toEqual([]);
+    expect(b.log.list).toEqual([]);
+    project.currentProjectPath = '/a'; project.currentProjectPath$.next('/a');
+    const entries = (await visible.readPage()).entries;
+    expect(entries.map(entry => entry.detail)).toEqual([
+      'npm install', 'npm install\ndependency install failed',
+      'Unknown Aily Coder Agent method: coder.library.materialize',
+    ]);
+    project.currentProjectPath = ''; project.currentProjectPath$.next('');
+    expect((await visible.readPage()).entries).toEqual([]);
+  });
 
   it('starts both real compile pipelines before either finishes and cancels only the addressed process', async () => {
     const a = runtime.build('/a').catch(error => error);

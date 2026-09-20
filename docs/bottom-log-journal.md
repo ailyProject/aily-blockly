@@ -9,3 +9,11 @@
 “清空”会切换到新文件段，旧段仍保留在该会话目录供诊断；面板、反馈和导出只读取当前段。启动时异步清理超过 7 天或使旧会话总量超过 512 MiB 的目录。文件写入错误会反馈到读取或导出操作，避免把内存缓存误报为已落盘。
 
 验证入口：`node --test electron/bottom-log-journal.test.js`、`ng test --watch=false --browsers=ChromeHeadless --include=src/app/integrations/coder/coder-project-runtime.service.spec.ts`、`playwright test e2e/tests/bottom-log-journal.spec.ts`。最后一项使用隔离应用数据目录，从现有跨窗口日志入口产生一条日志，核对面板显示、JSONL 文件、搜索和清空。
+
+## 2026-09-17 Coder 打开工程与日志修复
+
+Coder 工程注入器同时提供 `LogService` 和 `CmdService`，确保 npm、预处理、编译等命令的执行记录及失败详情写入所属工程流。后台工程完成命令时不能写入当前激活工程，也不能落到面板不读取的主日志流。库准备 RPC 没有命令输出作为错误记录，因此 `ensureCoderDependencyLibrarySources` 的失败通知必须开启 `sendToLog`。
+
+`coder.library.materialize` 返回 `SUBAPP_TOOL_METHOD_NOT_FOUND` 时，桥接层保留原始错误，并提示更新编辑器、保存工程后重启；不能把未准备好的依赖当作成功，也不能直接重启共享编辑器进程而丢失编辑状态。本次真实窗口运行的是 0.1.6（不含此方法），磁盘已激活 0.1.11。Angular 热更新后旧子进程仍在；保存工程、重启桌面进程并保留原 Angular 服务后，实际子进程切到 0.1.11，原工程 `esp32s3-gif-display` 正常打开。
+
+验证：依赖安装、RPC 错误及多工程隔离的 Angular 定向测试共 15 项通过；`tsc --noEmit -p tsconfig.app.json` 通过。真实 Electron 窗口先验证失败详情进入底部面板和工程 JSONL，再从工具栏编译原工程，15.93 秒完成，面板及 JSONL 均包含执行命令、编译输出和成功结果。架构检查仍报告 `extension-ui-boundary.spec.ts` 和 `blockly-performance.spec.ts` 中既有的 6 处导入问题，不属于本次改动。此验证范围为本机 macOS 开发态，未验证 Windows 发布包或设备上传。

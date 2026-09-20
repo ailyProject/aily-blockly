@@ -2,7 +2,7 @@ import type { IMenuItem } from '../../configs/menu.config';
 import { Injectable, Injector } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { NoticeService, WorkflowService } from '@core/app-shell/public-api';
-import { LogService } from '@core/platform/public-api';
+import { CmdService, LogService } from '@core/platform/public-api';
 import { ProjectService, type CoderExecutionPort } from '@domain/project/public-api';
 import { BuilderService, CompileService, BUILD_APPLICATION_PORT } from '@domain/build/public-api';
 import { SerialService, UploaderService, DEVICE_APPLICATION_PORT, selectSerialPort } from '@domain/device/public-api';
@@ -97,7 +97,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
     const child = Injector.create({ parent: this.injector, providers: [
       { provide: ProjectService, useValue: project },
       { provide: SerialService, useValue: serial },
-      WorkflowService, NoticeService, LogService, NpmService, CompileService, BuilderService, UploaderService, _UploaderService,
+      WorkflowService, NoticeService, LogService, CmdService, NpmService, CompileService, BuilderService, UploaderService, _UploaderService,
       // Coder never uses the Blockly generator/cache. Its legacy uploader status is local.
       { provide: _BuilderService, useValue: { isUploading: false } },
       { provide: BUILD_APPLICATION_PORT, useClass: BuildApplicationAdapter },

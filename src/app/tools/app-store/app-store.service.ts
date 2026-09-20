@@ -10,12 +10,11 @@ import {
   AppStoreLayout,
   DEFAULT_TOOLBAR_APP_IDS,
   HEADER_APP_LIMIT,
-  TOOLBAR_APP_IDS_CONFIG_KEY
+  TOOLBAR_APP_IDS_CONFIG_KEY,
+  SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY,
+  SubappToolbarDefaults,
 } from './app-store.config';
-import {
-  getChildToolDefaultToolbarAppIds,
-  isAppAvailableForApplication,
-} from '../../configs/tool.config';
+import { isAppAvailableForApplication } from '../../configs/tool.config';
 import { ConfigService } from '@core/preferences/public-api';
 import { SubappManagerService } from '@integration/subapps/public-api';
 
@@ -31,6 +30,7 @@ export { isAppAvailableForApplication } from '../../configs/tool.config';
   providedIn: 'root'
 })
 export class AppStoreService {
+  private subappToolbarDefaultsReady = false;
   private readonly appMap = new Map<string, AppItem>();
   private readonly zoneLimits = new Map(APP_STORE_ZONES.map(zone => [zone.id, zone.limit]));
   private readonly layoutSubject = new BehaviorSubject<AppStoreLayout>({
@@ -53,6 +53,7 @@ export class AppStoreService {
     this.configService.configReloaded$.subscribe(() => {
       this.refreshAppRegistry();
       this.layoutSubject.next(this.loadLayout());
+      if (this.subappToolbarDefaultsReady) void this.applySubappToolbarDefaults();
     });
 
     this.subappManager.state$.subscribe((state) => {
@@ -62,6 +63,7 @@ export class AppStoreService {
           ? this.normalizeLayout(this.layoutSubject.value, true)
           : this.loadLayout()
       );
+      if (this.subappToolbarDefaultsReady && !state.loading) void this.applySubappToolbarDefaults();
     });
   }
 
@@ -96,7 +98,85 @@ export class AppStoreService {
   setZoneApps(zone: AppPlacementZone, appIds: string[]): void {
     const nextLayout = this.cloneLayout(this.layoutSubject.value);
     nextLayout.zones[zone] = this.sanitizeZoneIds(zone, appIds);
+    this.recordManualSubappPlacement([...this.getZoneIds(zone), ...nextLayout.zones[zone]]);
     this.commitLayout(nextLayout);
+  }
+
+  /** Called after product settings and the startup catalog refresh are ready.
+   * Subsequent catalog events cover both automatic and manual installations.
+   */
+  async initializeSubappToolbarDefaults(): Promise<void> {
+    const preserveExisting = !this.subappToolbarDefaultsReady
+      && this.readSubappToolbarDefaults() === null
+      && this.readConfigToolbarAppIds() !== null;
+    this.subappToolbarDefaultsReady = true;
+    await this.applySubappToolbarDefaults(preserveExisting);
+  }
+
+  private readSubappToolbarDefaults(): SubappToolbarDefaults | null {
+    const value = this.configService.data?.[SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY];
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  }
+
+  private recordManualSubappPlacement(toolIds: string[]): void {
+    const previous = this.readSubappToolbarDefaults();
+    const next: SubappToolbarDefaults = { ...previous };
+    const ids = new Set(toolIds);
+    for (const item of this.subappManager.state.apps || []) {
+      // On upgrade, an existing saved layout is authoritative for installed apps.
+      if (!previous && item.installed) next[item.id] = 'preserved';
+      if (ids.has(item.toolId)) next[item.id] = 'manual';
+    }
+    this.configService.data[SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY] = next;
+  }
+
+  private async applySubappToolbarDefaults(preserveExisting = false): Promise<void> {
+    const previous = this.readSubappToolbarDefaults();
+    const next: SubappToolbarDefaults = { ...previous };
+    const layout = this.cloneLayout(this.layoutSubject.value);
+    let changed = previous === null;
+    let layoutChanged = false;
+    for (const item of this.subappManager.state.apps || []) {
+      if (Object.prototype.hasOwnProperty.call(next, item.id)
+        || !item.installed || !item.config || item.uninstalling
+        || item.enabled === false || item.app?.enabled === false
+        || !isAppAvailableForApplication(item.only, this.configService.getApplicationName())) continue;
+
+      changed = true;
+      if (preserveExisting) {
+        next[item.id] = 'preserved';
+      } else if (item.app?.defaultToolbar !== true || !this.canRegisterApp(item.toolId)) {
+        next[item.id] = 'disabled';
+      } else if (layout.zones.header.includes(item.toolId)) {
+        next[item.id] = 'applied';
+      } else if (layout.zones.header.length >= this.getZoneLimit('header')) {
+        // The first-install suggestion is consumed even when the toolbar is full.
+        next[item.id] = 'skipped-full';
+      } else {
+        layout.zones.header.push(item.toolId);
+        next[item.id] = 'applied';
+        layoutChanged = true;
+      }
+    }
+    if (!changed) return;
+
+    // Update synchronously before awaiting persistence so concurrent catalog
+    // events cannot repeat an automatic placement. Save the decision and layout together.
+    this.configService.data[SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY] = next;
+    if (layoutChanged) {
+      this.configService.data[TOOLBAR_APP_IDS_CONFIG_KEY] = [...layout.zones.header];
+      this.commitLayout(layout, false);
+    }
+    try {
+      await this.configService.save();
+    } catch (error) {
+      // A later manual edit owns its newer decisions; never roll those back.
+      if (this.configService.data[SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY] === next) {
+        if (previous) this.configService.data[SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY] = previous;
+        else delete this.configService.data[SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY];
+      }
+      console.error('Failed to save initial subapp toolbar placement:', error);
+    }
   }
 
   setVisibleZoneOrder(zone: AppPlacementZone, visibleIds: string[], visibleCatalogIds: string[]): void {
@@ -213,10 +293,7 @@ export class AppStoreService {
     return {
       version: 2,
       zones: {
-        header: [
-          ...DEFAULT_TOOLBAR_APP_IDS,
-          ...getChildToolDefaultToolbarAppIds()
-        ]
+        header: [...DEFAULT_TOOLBAR_APP_IDS]
       }
     };
   }

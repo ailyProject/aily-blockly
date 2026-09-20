@@ -136,6 +136,80 @@ export class HeaderComponent implements OnInit, OnDestroy {
       : applicationName;
   }
 
+  @ViewChild('projectTitleInput') projectTitleInput?: ElementRef<HTMLInputElement>;
+  isEditingProjectTitle = false;
+  isSavingProjectTitle = false;
+  private editingProjectPath = '';
+
+  get canEditProjectTitle(): boolean {
+    return !!this.projectService.currentProjectPath && !this.isSavingProjectTitle;
+  }
+
+  startEditingProjectTitle(): void {
+    if (!this.canEditProjectTitle || this.isEditingProjectTitle) return;
+
+    this.editingProjectPath = this.projectService.currentProjectPath;
+    this.isEditingProjectTitle = true;
+    this.cd.detectChanges();
+    const input = this.projectTitleInput?.nativeElement;
+    if (input) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  onProjectTitleKeydown(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.isComposing || event.keyCode === 229) return;
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void this.saveProjectTitle((event.target as HTMLInputElement).value);
+    } else if (event.key === 'Escape' && !this.isSavingProjectTitle) {
+      event.preventDefault();
+      this.isEditingProjectTitle = false;
+    }
+  }
+
+  private readonly onProjectTitleOutsidePointerDown = (event: PointerEvent): void => {
+    const input = this.projectTitleInput?.nativeElement;
+    if (this.isEditingProjectTitle && input && event.target !== input) {
+      this.ngZone.run(() => void this.saveProjectTitle(input.value));
+    }
+  };
+
+  async saveProjectTitle(value: string): Promise<void> {
+    if (!this.isEditingProjectTitle || this.isSavingProjectTitle) return;
+
+    const nickname = value.trim();
+    const projectPath = this.editingProjectPath;
+    if (!projectPath || projectPath !== this.projectService.currentProjectPath
+      || !nickname || nickname === this.projectTitle) {
+      this.isEditingProjectTitle = false;
+      return;
+    }
+
+    this.isSavingProjectTitle = true;
+    try {
+      // 只提交昵称，让服务合并磁盘上的最新配置并同步 .temp 快照。
+      await this.projectService.setPackageJson({ nickname });
+      if (projectPath === this.projectService.currentProjectPath) {
+        this.projectService.addRecentlyProject({
+          name: this.projectData.name,
+          path: projectPath,
+          nickname,
+        });
+      }
+      this.isEditingProjectTitle = false;
+    } catch (error) {
+      console.error('保存项目名称失败:', error);
+      this.message.error(this.translate.instant('PROJECT_SETTING_DIALOG.ERROR_SAVE_FAILED'));
+    } finally {
+      this.isSavingProjectTitle = false;
+      this.cd.markForCheck();
+    }
+  }
+
   get openToolList() {
     return this.uiService.openToolList;
   }
@@ -244,6 +318,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    // Blockly 会阻止事件冒泡及默认的焦点切换，必须在捕获阶段处理外部点击。
+    this.ngZone.runOutsideAngular(() => {
+      document.addEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
+    });
     this.loadHeaderButtons();
 
     this.unregisterHeaderMenuAutomation = this.uiAutomationRegistry.registerMenuProvider('header', {
@@ -1338,6 +1416,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    document.removeEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
     this.unregisterHeaderMenuAutomation?.();
     this.unregisterHeaderMenuAutomation = null;
     this.appStoreSubscription?.unsubscribe();

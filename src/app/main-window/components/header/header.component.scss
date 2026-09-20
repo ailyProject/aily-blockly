@@ -67,9 +67,54 @@ $header-inner-height: 38px;
 
   .project-box {
     position: absolute;
-    width: 20vw;
-    left: 40vw;
+    width: max-content;
+    max-width: max(100px, 20vw);
+    left: 50%;
+    transform: translateX(-50%);
     white-space: nowrap;
+    -webkit-app-region: no-drag;
+
+    .project-title,
+    .project-title-input {
+      width: auto;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      height: 28px;
+      margin: 0;
+      padding: 0 6px;
+      border: none;
+      border-radius: 4px;
+      color: inherit;
+      font: inherit;
+      line-height: 28px;
+      text-align: center;
+      appearance: none;
+    }
+
+    .project-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: transparent;
+      cursor: text;
+
+      &:disabled {
+        cursor: default;
+      }
+
+      &:enabled:hover {
+        background: var(--aily-bg-tertiary);
+      }
+    }
+
+    .project-title-input {
+      field-sizing: content;
+      min-width: 100px;
+      background: var(--aily-bg-tertiary);
+      outline: none;
+      box-shadow: none;
+    }
   }
 
   .toolbox {

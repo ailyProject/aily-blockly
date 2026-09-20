@@ -1572,7 +1572,8 @@ export class NpmService {
         text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
         detail: this.getNpmErrorMessage(error),
         state: 'error',
-        sendToLog: false,
+        // Materialization runs through RPC, so no command stream records its error.
+        sendToLog: true,
         ...(options?.onRetryInstall ? { onRetry: options.onRetryInstall } : {}),
       });
       return false;

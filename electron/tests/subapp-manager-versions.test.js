@@ -11,6 +11,7 @@ const {
   packagePathFor,
   prepareNpmSpawn,
   readInstalledState,
+  validateIndex,
 } = require('../subapp-manager');
 const { npmTarball, portableSubappTarball } = require('./npm-tarball-fixture');
 
@@ -123,6 +124,44 @@ test('reads a legacy B installation and emits the version-selected environment c
     AILY_SUBAPP_BIN_ROUTER: path.join(f.rootDir, 'bin', 'subapp-bin-router.cjs'),
   });
   assert.equal(fs.existsSync(installed.config.env.AILY_SUBAPP_BIN_ROUTER), true);
+});
+
+test('catalog app policies survive validation, installation, and runtime config projection', async (t) => {
+  const f = fixture(t, { entry: {
+    app: { enabled: true, autoInstall: true, defaultToolbar: true, customPolicy: { keep: true } },
+  } });
+  const before = await f.manager.list();
+  assert.equal(before.apps[0].installed, false);
+  assert.equal(before.apps[0].app.autoInstall, true);
+  assert.equal(before.apps[0].app.defaultToolbar, true);
+  await f.manager.install({ id: ID });
+  const after = await f.manager.list();
+  assert.equal(after.apps[0].installed, true);
+  assert.equal(after.apps[0].config.app.autoInstall, true);
+  assert.equal(after.apps[0].config.app.defaultToolbar, true);
+  assert.deepEqual(after.apps[0].config.app.customPolicy, { keep: true });
+});
+
+test('Chat has no implicit install or toolbar policy and explicit false is honored', (t) => {
+  const f = fixture(t);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.33');
+  for (const app of [{ enabled: true }, { enabled: true, autoInstall: false, defaultToolbar: false }]) {
+    const entry = validateIndex({ [ID]: { ...f.entry, app } })[ID];
+    const installed = readInstalledState(f.rootDir, entry);
+    assert.equal(entry.app.autoInstall, false);
+    assert.equal(installed.config.app.defaultToolbar, false);
+  }
+});
+
+test('catalog rejects non-boolean initialization flags', (t) => {
+  const f = fixture(t);
+  for (const flag of ['autoInstall', 'defaultToolbar']) {
+    for (const value of ['true', 1, null, {}]) {
+      assert.throws(() => validateIndex({ [ID]: {
+        ...f.entry, app: { ...f.entry.app, [flag]: value },
+      } }), new RegExp(`app\\.${flag} must be a boolean`));
+    }
+  }
 });
 
 test('portable install downloads and extracts directly to A without npm or changing root manifests', async (t) => {
