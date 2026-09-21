@@ -1,22 +1,19 @@
 import { Injectable } from '@angular/core';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyProjectDocument, BlocklyService } from './blockly.service';
 import { ActionService } from '@core/app-shell/public-api';
-import {
-  normalizeArduinoGeneratedCode,
-} from '../components/blockly/generators/arduino/arduino';
-import {
-  getActiveProjectGenerator,
-  runWithPreparedActiveProjectGenerator,
-} from './blockly-generator-runtime.service';
-import { ElectronService } from '@core/platform/public-api';
+import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
+import { ElectronService, ProjectFilePublicationError } from '@core/platform/public-api';
 import {
   projectDataRuntime,
-  assertNoOversizedInlineValues,
-  externalizeGenericProjectDataValues,
+  canonicalJsonStringify,
   materializePreparedGenericProjectDataValues,
+  materializeGenericProjectDataValues,
+  type AilyDataRef,
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import type { PreparedBlocklyCode } from './prepared-project-code';
+import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave } from './prepared-project-save';
 
 
 @Injectable({
@@ -78,12 +75,36 @@ export class _ProjectService {
     memoryHash: string;
     diskHash: string;
     changed: boolean;
+
+    usedLibraries: string[];
   }> {
-    const abi = this.getComparableAbiJson();
+    const context = this.captureSaveContext(this.currentProjectPath);
+    context.assertCurrent();
+    await projectDataRuntime.flushPending(); context.assertCurrent();
+
+    const { document, revision } = this.blocklyService.captureProjectSnapshot();
+    const path = `${this.currentProjectPath}/project.abi`;
+    const diskText = window['fs'].readFileSync(path, 'utf8');
+    const memory = canonicalJsonStringify(this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(document)));
+    const usedLibraries = Object.keys(this.blocklyService.getProjectUsedLibraryManifest(undefined, document));
+
+    const assertCurrent = () => {
+      context.assertCurrent();
+      if (this.blocklyService.captureProjectSnapshot().revision !== revision || window['fs'].readFileSync(path, 'utf8') !== diskText) {
+        throw new Error('Project changed during ABI revision verification.');
+      }
+    };
+    // A cache miss after reopen/eviction is not missing project data. Resolve the fixed disk snapshot.
+    const materialized = await materializeGenericProjectDataValues(JSON.parse(diskText), {
+      resolve: async <TValue>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<TValue>(ref); assertCurrent(); return value; },
+    });
+    assertCurrent();
+    const disk = canonicalJsonStringify(this.blocklyService.normalizeProjectAbi(materialized));
     const [memoryHash, diskHash] = await Promise.all([
-      sha256Hex(abi.memory),
-      sha256Hex(abi.disk),
+      sha256Hex(memory),
+      sha256Hex(disk),
     ]);
+    assertCurrent();
 
     return {
       algorithm: 'sha256',
@@ -91,6 +112,7 @@ export class _ProjectService {
       memoryHash,
       diskHash,
       changed: memoryHash !== diskHash,
+      usedLibraries,
     };
   }
 
@@ -109,37 +131,82 @@ export class _ProjectService {
     );
 
     return {
-      memory: JSON.stringify(memoryAbi),
-      disk: JSON.stringify(diskAbi),
+      memory: canonicalJsonStringify(memoryAbi),
+      disk: canonicalJsonStringify(diskAbi),
     };
   }
 
-  async save(path: string, createHistory: boolean = true) {
-    await projectDataRuntime.flushPending();
-    const projectDocument = this.blocklyService.getProjectDocument();
-    const inlineJsonData = this.blocklyService.getProjectAbiForSave(projectDocument);
-    const { document: jsonData } = await externalizeGenericProjectDataValues(
-      inlineJsonData,
-      projectDataRuntime,
-    );
-    await projectDataRuntime.flushPending();
-    assertNoOversizedInlineValues(jsonData);
-    const refs = projectDataRuntime.getStore().collectReferences(jsonData);
-    const validation = await projectDataRuntime.getStore().validateReferences(refs);
-    if (!validation.valid) {
-      throw new Error(`Project data validation failed: ${validation.issues.map((issue) => issue.error).join('; ')}`);
-    }
-    const abiPath = `${path}/project.abi`;
-    const tempPath = `${abiPath}.tmp`;
-    window['fs'].writeFileSync(tempPath, JSON.stringify(jsonData));
-    window['fs'].renameSync(tempPath, abiPath);
-    this.syncUsedLibraryManifest(path, projectDocument);
-    
-    // 更新 codeHash 以反映当前代码状态
-    // 这样当代码改变后同步时，服务器能够检测到代码已改变
-    await this.updateCodeHash(path, projectDocument);
-    
-    // this.stateSubject.next('saved');
+  save(path: string): Promise<void> {
+    const context = this.captureSaveContext(path);
+    return this.blocklyService.runProjectOperation(async () => {
+      context.assertCurrent();
+      const abiPath = `${path}/project.abi`;
+      const expectedAbi = window['fs'].existsSync(abiPath) ? window['fs'].readFileSync(abiPath, 'utf8') : null;
+      const lease = this.blocklyService.acquireWorkspaceEditLease();
+      try {
+        await projectDataRuntime.flushPending();
+        context.assertCurrent();
+        const assertContext = () => { context.assertCurrent(); lease.assertCurrent(); };
+        const generated = await this.blocklyService.prepareProjectCode(assertContext, lease);
+        assertContext();
+        const snapshot = this.blocklyService.captureProjectSnapshot(lease);
+        if (generated && generated.revision !== snapshot.revision) throw new Error('Project changed after code preparation; retry saving the latest revision.');
+        const document = snapshot.document;
+        const assertRevision = () => {
+          assertContext();
+          if (this.blocklyService.captureProjectSnapshot(lease).revision !== snapshot.revision) {
+            throw new Error('Project state changed during save preparation; retry saving the latest revision.');
+          }
+        };
+        const prepared = await this.prepareSave(document, assertRevision);
+        const publication = await this.commitPreparedSave(path, prepared, expectedAbi, assertRevision).catch(error => {
+          if (error instanceof ProjectFilePublicationError && error.uncertain && context.isCurrent()) {
+            // Do not overwrite a commit whose acknowledgement was lost, or quarantine a new context.
+            lease.quarantine(error.message);
+          }
+          throw error;
+        });
+        if (publication?.warnings?.length) console.warn('Project ABI committed with host cleanup warnings:', publication.warnings);
+        // ABI is now committed. Later derived-code failures must not imply it was rolled back.
+        try {
+          assertRevision();
+          await this.publishPreparedSaveOutputs(path, prepared, generated, assertRevision);
+        } catch (error) {
+          console.warn('Project ABI is saved; skipped stale derived metadata/code updates:', error);
+        }
+      } finally { lease.release(); }
+    });
+  }
+
+  prepareSave(document: BlocklyProjectDocument, assertCurrent: () => void): Promise<PreparedBlocklySave> {
+    return prepareBlocklySave(document, snapshot => this.blocklyService.getProjectAbiForSave(snapshot), assertCurrent);
+  }
+
+  commitPreparedSave(path: string, prepared: PreparedBlocklySave, expectedAbi: string | null, assertCurrent: () => void) {
+    return commitPreparedBlocklySave(path, prepared, expectedAbi, window['fs'], assertCurrent);
+  }
+
+  /** Shared post-commit output publication. No ABI save, Generator execution or clean-state mutation. */
+  async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+    assertCurrent();
+    this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
+    await this.publishPreparedCode(path, generated, assertCurrent);
+  }
+
+  private captureSaveContext(path: string) {
+    const workspace = this.blocklyService.workspace;
+    const pageId = this.blocklyService.getActivePageId();
+    const generator = getActiveProjectGenerator();
+    const runtimeRevision = getActiveProjectGeneratorRevision();
+    const session = projectDataRuntime.getSessionToken();
+    const isCurrent = () => Boolean(path) && path === this.currentProjectPath && workspace === this.blocklyService.workspace
+      && pageId === this.blocklyService.getActivePageId() && generator === getActiveProjectGenerator()
+      && session === projectDataRuntime.getSessionToken() && runtimeRevision === getActiveProjectGeneratorRevision();
+    return { isCurrent, assertCurrent: () => {
+      if (!isCurrent()) {
+        throw new Error('Project, page or runtime changed; stopped the stale save.');
+      }
+    } };
   }
 
   syncUsedLibraryManifest(path: string, projectDocument?: BlocklyProjectDocument): boolean {
@@ -165,47 +232,23 @@ export class _ProjectService {
     }
   }
 
-  /**
-   * 更新 package.json 中的 codeHash
-   * 用于在项目保存时记录当前代码的哈希值
-   */
-  private async updateCodeHash(path: string, projectDocument?: BlocklyProjectDocument) {
-    try {
-      if (!getActiveProjectGenerator() || !this.blocklyService || !this.blocklyService.workspace) {
-        console.warn('无法生成代码哈希，跳过更新');
-        return;
-      }
-
-      // 复用最近一次成功生成的代码；如果工作区已变更但防抖生成尚未完成，再同步生成一次。
-      const generated = await runWithPreparedActiveProjectGenerator(
-        this.blocklyService.workspace,
-        (generator) => ({
-          code: this.blocklyService.getReusableGeneratedCode()
-            ?? normalizeArduinoGeneratedCode(generator.workspaceToCode(this.blocklyService.workspace)),
-          generator,
-        }),
-        projectDocument ?? this.blocklyService.getProjectDocument(),
-      );
-      const { code, generator } = generated;
-      await writeArduinoGeneratedArtifacts(path, generator);
-      this.blocklyService.publishGeneratedCode(code);
-      
-      // 计算哈希
-      if (this.electronService && this.electronService.calculateHash) {
-        const codeHash = await this.electronService.calculateHash(code);
-          // 读取 package.json 并更新 codeHash
-          const packageJsonPath = `${path}/package.json`;
-          try {
-            const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
-            packageJson.codeHash = codeHash;
-            window['fs'].writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
-            console.log('✅ codeHash 已更新:', codeHash.substring(0, 8) + '...');
-          } catch (error) {
-            console.error('更新 codeHash 失败:', error);
-          }
-      }
-    } catch (error) {
-      console.error('更新代码哈希时出错:', error);
+  /** Post-commit work consumes immutable code/artifacts; never calls a Generator. */
+  private async publishPreparedCode(path: string, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+    if (!generated || generated.code === null) {
+      if (generated?.error) console.warn('Project ABI is saved; code generation failed:', generated.error);
+      return;
+    }
+    assertCurrent();
+    await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts);
+    assertCurrent();
+    this.blocklyService.publishGeneratedCode(generated.code);
+    if (this.electronService?.calculateHash) {
+      const codeHash = await this.electronService.calculateHash(generated.code);
+      assertCurrent();
+      const packageJsonPath = `${path}/package.json`;
+      const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
+      packageJson.codeHash = codeHash;
+      window['fs'].writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
     }
   }
 

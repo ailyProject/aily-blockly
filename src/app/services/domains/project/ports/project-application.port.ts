@@ -29,7 +29,7 @@ export interface ProjectApplicationPort {
   updateFooterState(state: ProjectFooterState): void;
   closeTerminal(): void;
   closeConnectionGraphWindows(): Promise<boolean>;
-  hasActiveAiOperation(projectPath: string): boolean;
+  hasActiveProjectMutation(projectPath: string): boolean;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;

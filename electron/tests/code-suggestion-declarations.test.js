@@ -16,9 +16,11 @@ test('SDK declaration reader limits installed roots, symlinks, type, size and ve
     assert.equal(result.text, 'struct Sensor {};\n');
     assert.equal(await readCodeDeclaration(header, []), null);
     assert.notEqual((await readCodeDeclaration(header, [{ ...roots[0], version: '2' }])).snapshotId, result.snapshotId);
-    const outside = path.join(dir, 'private.h'); await fs.writeFile(outside, 'private');
-    await fs.symlink(outside, path.join(sdk, 'escape.h'));
-    assert.equal(await readCodeDeclaration(path.join(sdk, 'escape.h'), roots), null);
+    const outsideDir = path.join(dir, 'outside'); await fs.mkdir(outsideDir);
+    const outside = path.join(outsideDir, 'private.h'); await fs.writeFile(outside, 'private');
+    // Directory junctions exercise realpath escapes without Windows symlink privileges.
+    await fs.symlink(outsideDir, path.join(sdk, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.equal(await readCodeDeclaration(path.join(sdk, 'escape', 'private.h'), roots), null);
     assert.equal(await readCodeDeclaration(outside, roots), null);
     await fs.writeFile(path.join(sdk, 'data.json'), '{}');
     assert.equal(await readCodeDeclaration(path.join(sdk, 'data.json'), roots), null);

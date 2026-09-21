@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 
 Blockly.Msg['LED_MATRIX_IMAGE_BUTTON_CLEAR'] = 'Clear';
 Blockly.Msg['LED_MATRIX_IMAGE_BUTTON_FILL'] = 'Fill';
@@ -197,7 +197,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         this.updateBlockDisplayImage();
         this.renderCanvasEditor();
         this.updateControlsFromValue();
-        if (nextRefId) {
+        if (nextRefId && this.blockDisplayImage && projectDataRuntime.isConfigured()) {
             void this.ensureValueLoaded().catch((error) => {
                 console.error('LED matrix resource load failed:', error);
             });
@@ -242,7 +242,7 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         ) as SVGImageElement;
 
         this.updateBlockDisplayImage();
-        void this.ensureValueLoaded().catch((error) => {
+        if (projectDataRuntime.isConfigured()) void this.ensureValueLoaded().catch((error) => {
             console.error('LED matrix resource load failed:', error);
         });
     }

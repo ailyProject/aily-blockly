@@ -14,6 +14,7 @@ import { ProjectService } from '@domain/project/public-api';
 import { ImageViewerComponent } from '../../../../components/image-viewer/image-viewer.component';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 import { Subscription } from 'rxjs';
+import { getToolWebUrl } from '../../../../configs/api.config';
 import { DevToolDragController, DragBounds, DragPoint } from './dev-tool-drag-controller';
 
 @Component({
@@ -512,7 +513,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    const windowUrl = 'https://tool.aily.pro/connection-graph?type=json&theme=' + this.themeService.theme() + '&lang=' + this.translate.currentLang;
+    const windowUrl = `${getToolWebUrl()}/connection-graph?type=json&theme=${this.themeService.theme()}&lang=${this.translate.currentLang}`;
 
     this.uiService.openWindow({
       title: this.translate.instant('FLOAT_SIDER.CIRCUIT'),

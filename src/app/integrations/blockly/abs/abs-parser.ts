@@ -23,6 +23,9 @@
  */
 
 import type { BlockConfig } from './block-config';
+import { queryLiveAbsBlockShape } from './abs-live-block-shape';
+import { findAbsExtraAnnotation, isAbsEscaped, stripAbsLineComment } from './abs-literals';
+import { readAbsFieldToken, resolveAbsFieldValue } from './abs-field-values';
 import { 
   BlockMeta as DynamicBlockMeta,
   getGlobalBlockMetas, 
@@ -54,7 +57,7 @@ interface AbsNode {
   indent: number;                  // 缩进级别
   lineNumber: number;              // 源代码行号
   raw: string;                     // 原始行内容
-  extraState?: Record<string, any>; // @extra: 注解中的 mutator 状态
+  extraState?: unknown; // @extra: 注解中的 mutator 状态
 }
 
 /**
@@ -100,7 +103,6 @@ interface BlockMeta {
  */
 export function loadProjectBlockDefinitions(projectPath: string): void {
   try {
-    runtimeBlockMetaCache.clear();
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI) {
       console.warn('[absParser] electronAPI 不可用，使用内置块定义');
@@ -161,7 +163,7 @@ function isKnownBlock(blockType: string): boolean {
   if (dynamicMetas?.has(blockType)) {
     return true;
   }
-  return blockType in FALLBACK_BLOCKS || !!queryBlocklyRuntimeMeta(blockType);
+  return blockType in FALLBACK_BLOCKS || !!queryLiveAbsBlockShape(blockType);
 }
 
 /**
@@ -183,71 +185,6 @@ function convertDynamicMeta(meta: DynamicBlockMeta): Partial<BlockMeta> {
 // =============================================================================
 // 内置块定义（作为动态加载失败时的回退）
 // =============================================================================
-
-// Blockly 运行时查询缓存：blockType -> Partial<BlockMeta>
-const runtimeBlockMetaCache = new Map<string, Partial<BlockMeta> | null>();
-
-/**
- * 从 Blockly 运行时查询块的字段/输入结构。
- * 当块仅由 JS 定义（不在 block.json 中）时，静态 getBlockMeta() 无法获取元信息，
- * 此函数通过创建临时块实例来获取其真实的 argsOrder。
- * 结果会被缓存以避免重复创建。
- */
-function queryBlocklyRuntimeMeta(blockType: string): Partial<BlockMeta> | undefined {
-  if (runtimeBlockMetaCache.has(blockType)) {
-    return runtimeBlockMetaCache.get(blockType) || undefined;
-  }
-  try {
-    const Blockly = (window as any).Blockly;
-    if (!Blockly) return undefined;
-    const workspace = Blockly.getMainWorkspace?.();
-    if (!workspace) return undefined;
-    const tempBlock = workspace.newBlock(blockType);
-    if (!tempBlock) return undefined;
-    try {
-      const argsOrder: Array<{ name: string; kind: 'field' | 'valueInput' | 'statementInput' }> = [];
-      const fieldNames: string[] = [];
-      const valueInputNames: string[] = [];
-      const statementInputNames: string[] = [];
-      if (tempBlock.inputList) {
-        for (const input of tempBlock.inputList) {
-          if (input.fieldRow) {
-            for (const field of input.fieldRow) {
-              if (field.name && field.SERIALIZABLE) {
-                argsOrder.push({ name: field.name, kind: 'field' });
-                fieldNames.push(field.name);
-              }
-            }
-          }
-          if (input.connection) {
-            const inputName = input.name;
-            if (input.connection.type === 1) {
-              argsOrder.push({ name: inputName, kind: 'valueInput' });
-              valueInputNames.push(inputName);
-            } else if (input.connection.type === 3) {
-              argsOrder.push({ name: inputName, kind: 'statementInput' });
-              statementInputNames.push(inputName);
-            }
-          }
-        }
-      }
-      const result: Partial<BlockMeta> = {
-        argsOrder: argsOrder.length > 0 ? argsOrder : undefined,
-        fieldNames: fieldNames.length > 0 ? fieldNames : undefined,
-        valueInputNames: valueInputNames.length > 0 ? valueInputNames : undefined,
-        statementInputNames: statementInputNames.length > 0 ? statementInputNames : undefined,
-        hasStatementInput: statementInputNames.length > 0,
-      };
-      runtimeBlockMetaCache.set(blockType, result);
-      return result;
-    } finally {
-      tempBlock.dispose(false);
-    }
-  } catch (e) {
-    runtimeBlockMetaCache.set(blockType, null);
-    return undefined;
-  }
-}
 
 /**
  * 内置块定义 - 仅包含核心块，作为动态加载失败时的回退
@@ -520,7 +457,7 @@ export class BlocklyAbsParser {
         if (!inString) {
           inString = true;
           stringChar = ch;
-        } else if (ch === stringChar && text[i - 1] !== '\\') {
+        } else if (ch === stringChar && !isAbsEscaped(text, i)) {
           inString = false;
         }
         continue;
@@ -712,7 +649,7 @@ export class BlocklyAbsParser {
       indent: actualIndent,
       lineNumber: this.currentLine + 1,
       raw: trimmed,
-      ...(parsedExtraState ? { extraState: parsedExtraState } : {})
+      ...(parsedExtraState !== undefined ? { extraState: parsedExtraState } : {})
     };
     
     this.currentLine++;
@@ -809,7 +746,7 @@ export class BlocklyAbsParser {
     type: string;
     fields: Record<string, any>;
     inlineInputs: Record<string, AbsNode>;
-    extraState?: Record<string, any>;
+    extraState?: unknown;
   } {
     const fields: Record<string, any> = {};
     const inlineInputs: Record<string, AbsNode> = {};
@@ -852,7 +789,7 @@ export class BlocklyAbsParser {
       const char = argsString[i];
       
       // 处理字符串
-      if ((char === '"' || char === "'") && (i === 0 || argsString[i - 1] !== '\\')) {
+      if ((char === '"' || char === "'") && !isAbsEscaped(argsString, i)) {
         if (!inString) {
           inString = true;
           stringChar = char;
@@ -900,7 +837,7 @@ export class BlocklyAbsParser {
     inlineInputs: Record<string, AbsNode>
   ): void {
     // 优先从 block.json 获取元信息，失败时从 Blockly 运行时查询
-    const meta = getBlockMeta(blockType) || queryBlocklyRuntimeMeta(blockType);
+    const meta = getBlockMeta(blockType) || queryLiveAbsBlockShape(blockType);
     
     // 首先提取命名参数（KEY=value 格式）
     const namedArgs: Record<string, string> = {};
@@ -909,14 +846,17 @@ export class BlocklyAbsParser {
     for (const arg of args) {
       // 检查是否是命名参数（KEY=value 格式）
       // 格式：标识符=值，值可以是任何表达式（包括函数调用）
-      const namedMatch = arg.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/i);
+      const namedMatch = arg.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.+)$/i);
       if (namedMatch) {
         // 确保 = 左边是纯标识符（不是比较表达式的一部分）
         const keyPart = namedMatch[1];
         const valuePart = namedMatch[2];
         // 如果 key 是有效的输入名（大写字母开头），视为命名参数
         if (/^[A-Z_][A-Z0-9_]*$/i.test(keyPart)) {
-          namedArgs[keyPart.toUpperCase()] = valuePart;
+          if (Object.prototype.hasOwnProperty.call(namedArgs, keyPart)) {
+            this.errors.push({ line: this.currentLine + 1, message: `Duplicate argument: ${keyPart}` });
+          }
+          namedArgs[keyPart] = valuePart;
           continue;
         }
       }
@@ -927,14 +867,14 @@ export class BlocklyAbsParser {
     for (const [fieldName, value] of Object.entries(namedArgs)) {
       // 裸变量引用 $varName 或 $varName:TYPE（不含函数调用）→ 始终作为字段值
       if (/^\$[^\s(]+$/.test(value)) {
-        fields[fieldName] = this.parseFieldValue(value);
-      } else if (this.isComplexExpression(value)) {
+        fields[fieldName] = this.parseTypedFieldValue(value, blockType, fieldName);
+      } else if (!meta?.fieldNames?.includes(fieldName) && this.isComplexExpression(value)) {
         const valueNode = this.parseInlineValue(value);
         if (valueNode) {
           inlineInputs[fieldName] = valueNode;
         }
       } else {
-        fields[fieldName] = this.parseFieldValue(value);
+        fields[fieldName] = this.parseTypedFieldValue(value, blockType, fieldName);
       }
     }
     
@@ -958,7 +898,7 @@ export class BlocklyAbsParser {
             
             if (kind === 'field') {
               // 字段参数
-              fields[name] = this.parseFieldValue(arg);
+              fields[name] = this.parseTypedFieldValue(arg, blockType, name);
             } else if (kind === 'valueInput') {
               // 值输入参数
               const valueNode = this.parseInlineValue(arg);
@@ -976,7 +916,7 @@ export class BlocklyAbsParser {
           for (const fieldName of meta.fieldNames) {
             if (fieldName in fields || fieldName in inlineInputs) continue; // 已设置
             if (argIndex < positionalArgs.length) {
-              fields[fieldName] = this.parseFieldValue(positionalArgs[argIndex]);
+              fields[fieldName] = this.parseTypedFieldValue(positionalArgs[argIndex], blockType, fieldName);
               argIndex++;
             }
           }
@@ -1038,7 +978,6 @@ export class BlocklyAbsParser {
     
     // 常见的字段名模式
     const commonFieldNames = ['WIDGET', 'SERIAL', 'PIN', 'MODE', 'OP', 'SPEED', 'VALUE', 'TEXT', 'NUM', 'VAR'];
-    const commonInputNames = ['VAR', 'VALUE', 'A', 'B', 'NUM', 'BOOL', 'TEXT', 'PIN'];
     
     let fieldIndex = 0;
     let inputIndex = 0;
@@ -1070,7 +1009,7 @@ export class BlocklyAbsParser {
       } else {
         // 简单值作为字段
         const fieldName = fieldIndex < commonFieldNames.length ? commonFieldNames[fieldIndex] : `FIELD${fieldIndex}`;
-        fields[fieldName] = this.parseFieldValue(arg);
+        fields[fieldName] = this.parseTypedFieldValue(arg, blockType, fieldName);
         fieldIndex++;
       }
     }
@@ -1081,7 +1020,7 @@ export class BlocklyAbsParser {
    */
   private isComplexExpression(value: string): boolean {
     // 包含函数调用
-    if (/\w+\(.+\)/.test(value)) {
+    if (/^\w+\(.*\)/.test(value)) {
       return true;
     }
     // 变量引用 $varName
@@ -1098,6 +1037,29 @@ export class BlocklyAbsParser {
   /**
    * 解析字段值
    */
+  private parseTypedFieldValue(raw: string, blockType: string, fieldName: string): unknown {
+    const meta = getGlobalBlockMetas()?.get(blockType);
+    const definition = meta?.fieldDefinitions?.get(fieldName)
+      ?? (meta?.fieldTypes?.has(fieldName) ? { type: meta.fieldTypes.get(fieldName)! } : undefined);
+    try {
+      if (!definition || raw.startsWith('$')) return this.parseFieldValue(raw);
+      const token = raw.startsWith("'")
+        ? { raw, quoted: true, value: this.parseFieldValue(raw) }
+        : readAbsFieldToken(raw);
+      // Only the legacy parser accepts the previous serialized envelope spelling.
+      if (typeof token.value === 'string' && token.value.startsWith('@json:')) {
+        token.value = JSON.parse(token.value.slice(6));
+      }
+      return resolveAbsFieldValue(token, definition);
+    } catch (error) {
+      this.errors.push({
+        line: this.currentLine + 1,
+        message: `${blockType}.${fieldName}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return null;
+    }
+  }
+
   private parseFieldValue(value: string): any {
     value = value.trim();
 
@@ -1115,7 +1077,7 @@ export class BlocklyAbsParser {
     // 移除引号并处理转义序列
     if ((value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'"))) {
-      const decoded = unescapeString(value.slice(1, -1));
+      const decoded = value.startsWith('"') ? JSON.parse(value) : unescapeString(value.slice(1, -1));
       if (decoded.startsWith('@json:')) {
         try {
           return JSON.parse(decoded.slice('@json:'.length));
@@ -1139,7 +1101,7 @@ export class BlocklyAbsParser {
         // 查找未转义的闭合引号
         let closeQuote = -1;
         for (let ci = 1; ci < varRef.length; ci++) {
-          if (varRef[ci] === '"' && varRef[ci - 1] !== '\\') {
+          if (varRef[ci] === '"' && !isAbsEscaped(varRef, ci)) {
             closeQuote = ci;
             break;
           }
@@ -1165,9 +1127,7 @@ export class BlocklyAbsParser {
       return value;
     }
     
-    // 布尔值
-    if (value.toLowerCase() === 'true') return 'TRUE';
-    if (value.toLowerCase() === 'false') return 'FALSE';
+    // Without a field contract, never rewrite the spelling of a literal.
     
     // 其他作为字符串
     return value;
@@ -1249,7 +1209,7 @@ export class BlocklyAbsParser {
         indent: 0,
         lineNumber: this.currentLine + 1,
         raw: value,
-        ...(extraState ? { extraState } : {})
+        ...(extraState !== undefined ? { extraState } : {})
       };
     }
     
@@ -1393,7 +1353,7 @@ export class BlocklyAbsParser {
     }
     
     // === 通用 @extra: 注解优先：如果 AbsNode 携带了 @extra: 解析的 extraState，直接使用 ===
-    if (node.extraState) {
+    if (Object.hasOwn(node, 'extraState')) {
       config.extraState = node.extraState as BlockConfig['extraState'];
     }
     
@@ -1401,7 +1361,7 @@ export class BlocklyAbsParser {
     // 并将 EXTRA_N 输入重映射到 RETURN
     // 仅在没有 @extra: 注解时生效（AI 手写 ABS 的兼容路径）
     const blockMutator = getBlockMeta(node.type)?.mutator;
-    if (!config.extraState && blockMutator === 'function_params_mutator') {
+    if (!Object.hasOwn(config, 'extraState') && blockMutator === 'function_params_mutator') {
       // 1. 收集 EXTRA_N 字段（参数类型/名称对）
       const extraFields: Array<{ index: number; value: any }> = [];
       for (const [key, value] of Object.entries(config.fields || {})) {
@@ -1514,7 +1474,7 @@ export class BlocklyAbsParser {
 
     // 自动推断动态块的 extraState
     // 例如: controls_if 的 elseIfCount/hasElse, text_join 的 itemCount
-    if (!config.extraState) {
+    if (!Object.hasOwn(config, 'extraState')) {
       const extraState = inferExtraStateFromInputs(node.type, config.inputs || {});
       if (extraState) {
         config.extraState = extraState as BlockConfig['extraState'];
@@ -1525,37 +1485,21 @@ export class BlocklyAbsParser {
   }
 
   /**
-   * 判断块类型是否应该作为 shadow 块
-   * 基础值类型（text, math_number, logic_boolean, variables_get）使用 shadow
-   */
-  private isShadowBlockType(blockType: string): boolean {
-    const shadowTypes = new Set([
-      'text',
-      'math_number',
-      'logic_boolean',
-      'variables_get'
-    ]);
-    return shadowTypes.has(blockType);
-  }
-
-  /**
    * 从完整块行或内联块表达式末尾提取通用 extraState 注解。
-   * 使用 lastIndexOf，避免结构化字段的 JSON 字符串内容干扰注解定位。
+   * 只识别调用外的注解，跳过字符串和内联子块中的同名文本。
    */
   private extractExtraStateAnnotation(value: string): {
     expression: string;
-    extraState?: Record<string, any>;
+    extraState?: unknown;
   } {
-    const marker = ' @extra:';
-    const markerIndex = value.lastIndexOf(marker);
+    value = stripAbsLineComment(value);
+    const marker = '@extra:';
+    const markerIndex = findAbsExtraAnnotation(value);
     if (markerIndex < 0) return { expression: value };
 
     const json = value.slice(markerIndex + marker.length).trim();
     try {
       const extraState = JSON.parse(json);
-      if (!extraState || typeof extraState !== 'object' || Array.isArray(extraState)) {
-        return { expression: value };
-      }
       return {
         expression: value.slice(0, markerIndex).trimEnd(),
         extraState,

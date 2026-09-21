@@ -2,6 +2,7 @@ import { createDefaultProjectDataCodecRegistry, ProjectDataCodecRegistry } from 
 import { MAX_PROJECT_DATA_CONTAINER_OVERHEAD } from './project-data-container';
 import { createElectronProjectDataFileSystem } from './project-data-file-system';
 import { ProjectDataStore, PutProjectDataRequest } from './project-data-store';
+import { projectDataFieldReference } from './project-data-references';
 import {
   AilyDataRef,
   areAilyDataRefsEquivalent,
@@ -68,6 +69,11 @@ class ProjectDataRuntime {
       throw new ProjectDataError('not-configured', 'ProjectDataRuntime is not configured for a project.');
     }
     return this.store;
+  }
+
+  /** Opaque identity only; consumers cannot access or retain a previous project's store. */
+  getSessionToken(): string | null {
+    return this.sessionId || null;
   }
 
   private captureSession(operation: string): ProjectDataRuntimeSessionSnapshot {
@@ -297,24 +303,7 @@ class ProjectDataRuntime {
   }
 
   getPreparedFieldPayload<TValue>(block: any, fieldName: string): TValue {
-    let fieldState = block?.getFieldValue?.(fieldName);
-    if (typeof fieldState === 'string') {
-      try {
-        fieldState = JSON.parse(fieldState);
-      } catch {
-        throw new ProjectDataError('invalid-ref', `Field ${fieldName} does not contain valid JSON state.`);
-      }
-    }
-    const refs = isAilyDataRef(fieldState)
-      ? [fieldState]
-      : this.getStore().collectReferences(fieldState);
-    if (refs.length !== 1) {
-      throw new ProjectDataError(
-        'invalid-ref',
-        `Field ${fieldName} must contain exactly one project data reference; received ${refs.length}.`,
-      );
-    }
-    return this.getPrepared<TValue>(refs[0]);
+    return this.getPrepared<TValue>(projectDataFieldReference(block?.getFieldValue?.(fieldName), fieldName));
   }
 
   private takePrepared<TValue>(ref: AilyDataRef): TValue | undefined {

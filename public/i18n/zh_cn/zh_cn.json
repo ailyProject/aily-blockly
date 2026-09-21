@@ -1185,6 +1185,7 @@
         "CREATE_FAILED": "项目创建失败",
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
+        "SDK_CONFIG_NOT_READY": "SDK 尚未就绪，部分开发板配置暂不可用",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",
         "BOARD_SWITCH_SUCCESS": "开发板切换成功",
         "SWITCHING_BOARD": "正在切换开发板...",

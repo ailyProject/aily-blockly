@@ -6,6 +6,17 @@ function normalizeBuildProduct(product) {
     : DEFAULT_BUILD_PRODUCT;
 }
 
+function resolveBuildProduct({ environment = {}, packagedProduct, argv = [] } = {}) {
+  const prefix = '--aily-build-product=';
+  const launchProduct = argv.find(arg => typeof arg === 'string' && arg.startsWith(prefix))?.slice(prefix.length);
+  return normalizeBuildProduct(environment.AILY_BUILD_PRODUCT || packagedProduct || launchProduct);
+}
+
+function createDevelopmentProtocolArgs({ appEntry, product, serve = false }) {
+  // A browser-launched process does not inherit the development launcher's env.
+  return [appEntry, `--aily-build-product=${normalizeBuildProduct(product)}`, ...(serve ? ['--serve'] : [])];
+}
+
 function getProductAuthConfig(product) {
   const id = normalizeBuildProduct(product);
   const protocol = id === 'coder' ? 'acis' : 'abis';
@@ -20,8 +31,10 @@ function isProductProtocolUrl(product, url) {
 }
 
 module.exports = {
+  createDevelopmentProtocolArgs,
   isProductProtocolUrl,
   getProductAuthConfig,
   DEFAULT_BUILD_PRODUCT,
   normalizeBuildProduct,
+  resolveBuildProduct,
 };

@@ -1368,6 +1368,37 @@ function mergeDevelopmentLinkedEntries(rootDir, remoteIndex, developmentIndex) {
   return merged;
 }
 
+function restoreCatalogAfterUninstall(rootDir, entry) {
+  const localIndex = readDevelopmentIndexCache(rootDir);
+
+  if (!localIndex) return;
+
+  const cachePath = path.join(rootDir, INDEX_CACHE_FILE);
+  const backupPath = `${cachePath}.aily-dev-backup`;
+  const backup = fs.existsSync(backupPath) ? readJson(backupPath) : null;
+  const originalIndex = backup?.devIndexOriginallyMissing === true ? {} : backup || {};
+  const remainingLocalIndex = { ...localIndex };
+
+  delete remainingLocalIndex[entry.id];
+
+  const localEntries = mergeDevelopmentLinkedEntries(rootDir, {}, remainingLocalIndex);
+  const hasLocalEntries = Object.keys(localEntries).length > 0;
+
+  const restored = hasLocalEntries
+    ? { ...originalIndex, ...localEntries, dev: true }
+    : { ...originalIndex };
+
+  if (!hasLocalEntries) delete restored.dev;
+
+  if (Object.keys(restored).length > 0) {
+    writeJsonAtomic(cachePath, restored);
+  } else {
+    fs.rmSync(cachePath, { force: true });
+  }
+
+  if (!hasLocalEntries) fs.rmSync(backupPath, { force: true });
+}
+
 function stagedManifestPaths(updateRootDir, id, version) {
   const directory = updateVersionDirectory(updateRootDir, id, version);
   return {
@@ -2223,6 +2254,7 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
     await rmWithBusyRetry(updateCachePath, options);
     removePackageFromRootManifests(rootDir, entry.package);
     assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
+    restoreCatalogAfterUninstall(rootDir, entry);
     versions.finishUninstall(rootDir, entry);
   } finally {
     for (const release of preparationLocks.reverse()) release();
@@ -2679,7 +2711,9 @@ function createSubappManager(options = {}) {
           await Promise.all(downloads);
         }
         const installed = readInstalledState(rootDir, entry);
-        if (installed.development || installed.localNext || index.dev === true) {
+
+        if (action !== 'uninstall'
+          && (installed.development || installed.localNext || index.dev === true)) {
           throw new Error('Local subapps cannot be changed');
         }
         if ((action === 'update' || action === 'install-update')
@@ -2729,11 +2763,16 @@ function createSubappManager(options = {}) {
         releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
         // A local dev/next selection may have been added while downloading; do not supersede it.
         const current = readInstalledState(rootDir, entry);
-        if (current.development || current.localNext || readDevelopmentIndexCache(rootDir)) {
+
+        if (action !== 'uninstall'
+          && (current.development || current.localNext || readDevelopmentIndexCache(rootDir))) {
           throw new Error('Local subapps cannot be changed');
         }
         if (action === 'uninstall') {
           await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
+
+          currentIndex = null;
+          currentMeta = null;
         } else if (!current.installed || !semver.valid(current.installedVersion)
           || semver.gte(targetEntry.version, current.installedVersion)) {
           versions.activate(rootDir, targetEntry, prepared);

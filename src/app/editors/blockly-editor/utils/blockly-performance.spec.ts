@@ -1,9 +1,7 @@
 import * as Blockly from 'blockly';
 import { installBlocklyVariableComparator, WorkspaceCodeChangeTracker } from './blockly-performance';
 import { ArduinoGenerator } from '../components/blockly/generators/arduino/arduino';
-import { findOversizedInlineValues } from '../../../services/domains/project/project-data/project-data-policy';
-import { ProjectDataStore } from '../../../services/domains/project/project-data/project-data-store';
-import { ProjectDataFileSystem } from '../../../services/domains/project/project-data/project-data-file-system';
+import { findOversizedInlineValues, ProjectDataStore, type ProjectDataFileSystem } from '@domain/project/public-api';
 
 describe('large Blockly workspaces', () => {
   let workspace: Blockly.Workspace;
@@ -108,7 +106,7 @@ describe('large Blockly workspaces', () => {
     // No IO is required to traverse/validate metadata.
     const store = new ProjectDataStore({} as ProjectDataFileSystem);
     let document: any = { id: 'leaf', type: 'test', fields: { TEXT: 'oversized' } };
-    for (let index = 0; index < 12000; index++) document = { next: { block: document } };
+    for (let index = 0; index < 12000; index++) document = { type: 'test', next: { block: document } };
     const diagnostics = findOversizedInlineValues(document, 3);
     expect(diagnostics.length).toBe(1);
     expect(diagnostics[0].blockId).toBe('leaf');

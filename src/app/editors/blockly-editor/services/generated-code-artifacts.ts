@@ -12,6 +12,18 @@ function isArduinoGeneratedArtifactSource(
   return typeof (generator as ArduinoGeneratedArtifactSource | null)?.getGeneratedArtifacts === 'function';
 }
 
+/** Copy within workspaceToCode's synchronous phase; never retain a mutable runtime source. */
+export function captureArduinoGeneratedArtifacts(generator: unknown): readonly ArduinoGeneratedArtifact[] | null {
+  if (!isArduinoGeneratedArtifactSource(generator)) return null;
+  return Object.freeze(generator.getGeneratedArtifacts().map(artifact => {
+    const { fileName, content, sourceTag } = artifact;
+    if (!GENERATED_HEADER_PATTERN.test(fileName) || typeof content !== 'string' || typeof sourceTag !== 'string') {
+      throw new Error('Invalid generated Arduino artifact.');
+    }
+    return Object.freeze({ fileName, content, sourceTag });
+  }));
+}
+
 /**
  * Materialize large generator declarations in the project's regular Arduino
  * source directory. The build and lint boundaries copy project/src into the
@@ -22,14 +34,13 @@ function isArduinoGeneratedArtifactSource(
  * Artifact emission is an Arduino capability, so non-Arduino generators are a
  * deliberate no-op instead of falling back to the old global generator.
  */
-export async function writeArduinoGeneratedArtifacts(
+export async function writePreparedArduinoGeneratedArtifacts(
   projectPath: string | null | undefined,
-  generator: unknown,
+  artifacts: readonly ArduinoGeneratedArtifact[] | null,
 ): Promise<void> {
-  if (!projectPath || !isArduinoGeneratedArtifactSource(generator)) return;
+  if (!projectPath || artifacts === null) return;
   const fsApi = window['fs'];
   const pathApi = window['path'];
-  const artifacts = generator.getGeneratedArtifacts();
   const outputDirectory = pathApi.join(projectPath, 'src');
   if (!artifacts.length && !fsApi.existsSync(outputDirectory)) return;
   if (!fsApi.existsSync(outputDirectory)) fsApi.mkdirSync(outputDirectory, { recursive: true });

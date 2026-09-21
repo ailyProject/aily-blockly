@@ -1,7 +1,8 @@
 import { Component, Input, OnInit } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { IframeComponent } from '../../windows/iframe/iframe.component';
-import { ThemeService } from '@core/preferences/public-api';
+import { ConfigService, ThemeService } from '@core/preferences/public-api';
+import { getToolWebUrl } from '../../configs/api.config';
 
 @Component({
   selector: 'app-graph-editor',
@@ -15,18 +16,23 @@ export class GraphEditorComponent implements OnInit {
 
   resolvedUrl = '';
 
-  private readonly baseUrl = 'https://tool.aily.pro/connection-graph?type=json';
-  // private readonly baseUrl = 'http://localhost:4201/connection-graph?type=json';
-
   constructor(
     private route: ActivatedRoute,
-    private themeService: ThemeService
+    private themeService: ThemeService,
+    private configService: ConfigService
   ) {}
 
-  ngOnInit(): void {
-    this.resolvedUrl =
-      this.url ??
-      this.route.snapshot.queryParams['url'] ??
-      `${this.baseUrl}&theme=${this.themeService.theme()}`;
+  async ngOnInit(): Promise<void> {
+    const explicitUrl = this.url ?? this.route.snapshot.queryParams['url'];
+
+    if (explicitUrl != null) {
+      this.resolvedUrl = explicitUrl;
+
+      return;
+    }
+
+    await this.configService.init();
+
+    this.resolvedUrl = `${getToolWebUrl()}/connection-graph?type=json&theme=${this.themeService.theme()}`;
   }
 }

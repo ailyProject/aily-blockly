@@ -14,8 +14,7 @@ import { Subject, Subscription } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { CloudService } from '../../../tools/cloud-space/services/cloud.service';
 import { ProjectService } from '@domain/project/public-api';
-import { CmdService, ElectronService, PlatformService, CrossPlatformCmdService } from '@core/platform/public-api';
-import { updateBlocksInFile } from '../../../utils/blockly_updater';
+import { ElectronService, PlatformService } from '@core/platform/public-api';
 import { Buffer } from 'buffer';
 import { jsonrepair } from 'jsonrepair';
 import { normalizePlaygroundPage } from '../playground-search-history';
@@ -55,6 +54,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   private pageSizeCalculated: boolean = false; // 标记 pageSize 是否已计算
   
   private destroy$ = new Subject<void>();
+  private exampleLoadGeneration = 0;
   private examplesSub: Subscription | null = null;
 
   constructor(
@@ -65,10 +65,8 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
     private playgroundService: PlaygroundService,
     private cloudService: CloudService,
     private projectService: ProjectService,
-    private cmdService: CmdService,
     private electronService: ElectronService,
     private platformService: PlatformService,
-    private crossPlatformCmdService: CrossPlatformCmdService,
     private messageService: NzMessageService,
     private cd: ChangeDetectorRef
   ) {
@@ -219,6 +217,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    ++this.exampleLoadGeneration;
     this.destroy$.next();
     this.destroy$.complete();
   }
@@ -281,6 +280,11 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   loadExample(index: number) {
+    const generation = ++this.exampleLoadGeneration;
+    const fieldUpdates = structuredClone(this.params || {});
+    const assertCurrent = () => {
+      if (generation !== this.exampleLoadGeneration) throw new Error('例程加载已取消或被新的请求替代');
+    };
     // 设置当前加载的示例索引
     this.loadingExampleIndex = index;
 
@@ -292,7 +296,9 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
           try {
             // 直接添加随机数避免重名
             const randomNum = Math.floor(100000 + Math.random() * 900000);
-            const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
+            assertCurrent();
+            const safeName = String(item.name || 'cloud_project').replace(/[^a-zA-Z0-9_-]/g, '_');
+            const uniqueName = `${safeName}_${randomNum}`;
             const targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + uniqueName;
 
             // 确保目标目录的父目录存在
@@ -301,65 +307,10 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
               window['fs'].mkdirSync(targetParent, { recursive: true });
             }
             
-            // 如果目标目录已存在，先删除它（确保干净复制）
-            if (window['fs'].existsSync(targetPath)) {
-              window['fs'].rmdirSync(targetPath, { recursive: true });
-            }
-            
             console.log('复制解压文件:', res, '->', targetPath);
-            // 使用 Move-Item 将下载/临时文件移动到目标项目目录
-            // -Force 用于覆盖同名目标（如果存在）
-            await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
-            
-            // 验证复制是否成功
-            if (!window['fs'].existsSync(targetPath)) {
-              throw new Error(`复制失败：目标目录不存在 ${targetPath}`);
-            }
-            
-            // 等待一小段时间，确保文件系统操作完成
-            await new Promise(resolve => setTimeout(resolve, 100));
+            const actualProjectPath = this.projectService.importProjectDirectory(res, targetPath, true);
 
-            // 检查解压后的目录结构，可能有一个子目录包含实际项目文件
-            let actualProjectPath = targetPath;
-            
-            // 检查目标目录是否存在且可读
-            if (!window['fs'].existsSync(targetPath)) {
-              throw new Error(`目标目录不存在: ${targetPath}`);
-            }
-            
-            const files = window['fs'].readDirSync(targetPath);
-            
-            // 如果目标目录只有一个子目录，且该子目录包含 package.json，则使用子目录
-            if (files.length === 1) {
-              const firstItem = files[0];
-              const itemName = typeof firstItem === 'object' && firstItem !== null ? firstItem.name : firstItem;
-              const subPath = `${targetPath}${this.platformService.getPlatformSeparator()}${itemName}`;
-              
-              // 检查子目录是否是目录且包含 package.json
-              if (window['fs'].isDirectory(subPath)) {
-                const subFiles = window['fs'].readDirSync(subPath);
-                const hasPackageJson = subFiles.some((file: any) => {
-                  const fileName = typeof file === 'object' && file !== null ? file.name : file;
-                  return fileName === 'package.json';
-                });
-                
-                if (hasPackageJson) {
-                  actualProjectPath = subPath;
-                  console.log('检测到嵌套目录结构，使用子目录:', actualProjectPath);
-                }
-              }
-            }
-
-            // 验证 package.json 是否存在
             const packageJsonPath = `${actualProjectPath}${this.platformService.getPlatformSeparator()}package.json`;
-            if (!window['fs'].existsSync(packageJsonPath)) {
-              // 列出目录内容以便调试
-              const dirContents = window['fs'].readDirSync(actualProjectPath).map((file: any) => {
-                return typeof file === 'object' && file !== null ? file.name : file;
-              });
-              throw new Error(`package.json 不存在于 ${actualProjectPath}。目录内容: ${dirContents.join(', ')}`);
-            }
-
             // 更新 package.json 中的项目信息
             const packageJson = JSON.parse(this.electronService.readFile(packageJsonPath));
             packageJson.nickname = item.nickname
@@ -369,18 +320,13 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
             packageJson.cloudId = item.id;
 
             this.electronService.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
-            await this.projectService.initializeProjectDataSchema(actualProjectPath);
-
-            if (this.params && Object.keys(this.params).length > 0) {
-              const abiFilePath = `${actualProjectPath}${this.platformService.getPlatformSeparator()}project.abi`;
-              if (window['fs'].existsSync(abiFilePath)) {
-                updateBlocksInFile(abiFilePath, this.params);
-              }
-            }
-
-            this.projectService.projectOpen(actualProjectPath);
+            await this.projectService.initializeProjectDataSchema(actualProjectPath, assertCurrent, fieldUpdates);
+            assertCurrent();
+            await this.projectService.projectOpen(actualProjectPath);
+            assertCurrent();
             this.loadingExampleIndex = null;
           } catch (error) {
+            if (generation !== this.exampleLoadGeneration) return;
             console.error('加载示例处理失败:', error);
             // 将错误写入日志文件
             if ((window as any)['electronAPI']?.log) {
@@ -391,6 +337,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
           }
         },
         error: (error) => {
+          if (generation !== this.exampleLoadGeneration) return;
           console.error('加载示例失败:', error);
           // 将错误写入日志文件
           if ((window as any)['electronAPI']?.log) {

@@ -2,6 +2,7 @@ import type { IMenuItem } from '../../configs/menu.config';
 import type { ElectronService } from '@core/platform/public-api';
 import type { BuilderService } from '@domain/build/public-api';
 import type { ProjectService } from '@domain/project/public-api';
+import { describeBuildEnvironment } from './build-environment';
 
 function configOptions(menu: IMenuItem[]): IMenuItem[] {
   return menu.flatMap(item => item.children || []).filter(item =>
@@ -9,24 +10,68 @@ function configOptions(menu: IMenuItem[]): IMenuItem[] {
   );
 }
 
-export async function getBoardConfig(projectService: ProjectService): Promise<Record<string, unknown>> {
+async function declaredBoardPackages(projectService: ProjectService, packageJson: any): Promise<string[]> {
+  const coder = projectService.isAilyCodeProject();
+  const names = [...new Set(Object.keys({ ...packageJson?.dependencies, ...(coder ? packageJson?.boardDependencies : {}) }))]
+    .filter(name => /^@aily-project\/board-[\w.-]+$/.test(name) || coder && /^@aily-project\/coder-[\w.-]+$/.test(name));
+  if (!names.length && coder) {
+    const legacyTarget = await projectService.getBoardModule();
+    if (legacyTarget) return [legacyTarget];
+  }
+  return names;
+}
+
+export async function getBoardConfig(projectService: ProjectService, section: unknown = 'all'): Promise<Record<string, unknown>> {
   const project = projectService.currentProjectPath;
   const board = projectService.currentBoardConfig;
   if (!project || !board) {
     return { ok: false, reason: 'board_not_ready', message: '请先打开项目并等待开发板加载完成。' };
   }
 
-  const menu = await projectService.getBoardConfigMenu({ persistDefaults: false });
   const packageJson = await projectService.getPackageJson();
+  const boardPackage = projectService.getRuntimeBoardModule();
+  const declaredBoards = await declaredBoardPackages(projectService, packageJson);
+  if (projectService.currentProjectPath !== project || projectService.currentBoardConfig !== board) {
+    return { ok: false, reason: 'project_changed', message: 'Project/board changed during inspection.' };
+  }
+  if (!boardPackage || declaredBoards.length !== 1 || declaredBoards[0] !== boardPackage) {
+    return { ok: false, operation: 'get_board_config', project, reason: 'board_state_mismatch', boardPackage, declaredBoards,
+      message: 'The loaded board does not match the project manifest. Complete board_switch/reload before using board options or build facts.' };
+  }
+  if (section === 'pins') return { ok: true, operation: 'get_board_config', project, boardPackage };
+  let buildEnvironment: Record<string, unknown>;
+  try {
+    buildEnvironment = describeBuildEnvironment({
+      project,
+      appDataPath: window['path'].getAppDataPath(),
+      boardModule: boardPackage,
+      board,
+      dependencies: await projectService.getEffectiveBoardDependencies(),
+      packageJson: packageJson || {},
+      coder: projectService.isAilyCodeProject(),
+    }, { join: (...segments) => window['path'].join(...segments), exists: path => window['fs'].existsSync(path) });
+  } catch (error) {
+    buildEnvironment = { version: 1, status: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (projectService.currentProjectPath !== project || projectService.currentBoardConfig !== board) {
+    return { ok: false, operation: 'get_board_config', reason: 'project_changed', message: 'Project/board changed during inspection; query the current project again.' };
+  }
+  if (section === 'build') return { ok: true, operation: 'get_board_config', project, boardPackage, buildEnvironment };
+  const menu = await projectService.getBoardConfigMenu({ persistDefaults: false });
+  if (projectService.currentProjectPath !== project || projectService.currentBoardConfig !== board) {
+    return { ok: false, reason: 'project_changed', message: 'Project/board changed during menu inspection.' };
+  }
   const configured = packageJson?.projectConfig || {};
 
   return {
     ok: true,
     operation: 'get_board_config',
     project,
+    boardPackage,
     board: board['description'] || '',
     core: board['core'] || '',
     config_type: board['type'] || '',
+    buildEnvironment,
     config_items: menu.filter(item => !item.sep && configOptions([item]).length > 0).map(item => {
       const options = configOptions([item]);
       const key = item.key || options[0].key!;
@@ -54,8 +99,10 @@ export async function setBoardConfig(
   builderService: BuilderService,
   electronService: ElectronService,
   input: Record<string, unknown>,
+  preprocess?: (project: string) => Promise<unknown>,
 ): Promise<Record<string, unknown>> {
   const project = projectService.currentProjectPath;
+  const board = projectService.currentBoardConfig;
   const configKey = input['config_key'];
   const configValue = input['config_value'];
   const base = { operation: 'set_board_config', project, config_key: configKey };
@@ -66,6 +113,9 @@ export async function setBoardConfig(
   if (typeof configKey !== 'string' || !configKey || typeof configValue !== 'string') {
     return { ...base, ok: false, reason: 'invalid_board_config_input', message: 'config_key 和 config_value 必须是 get_board_config 返回的字符串。' };
   }
+
+  const boardState = await getBoardConfig(projectService, 'pins');
+  if (!boardState['ok']) return { ...boardState, ...base };
 
   const menu = await projectService.getBoardConfigMenu({ persistDefaults: false });
   const selection = configOptions(menu).find(item => item.key === configKey && String(item.data) === configValue);
@@ -85,7 +135,9 @@ export async function setBoardConfig(
   }
 
   const packageJson = await projectService.getPackageJson();
-  if (projectService.currentProjectPath !== project || !packageJson) {
+  const boards = await declaredBoardPackages(projectService, packageJson);
+  if (projectService.currentProjectPath !== project || projectService.currentBoardConfig !== board || !packageJson
+    || boards.length !== 1 || boards[0] !== boardState['boardPackage']) {
     return { ...base, ok: false, reason: 'project_changed', message: '当前项目已改变，请重新查询板卡配置。' };
   }
   const oldValue = packageJson.projectConfig?.[configKey];
@@ -124,7 +176,10 @@ export async function setBoardConfig(
     }
 
     const requiresFile = customPartition['requires_file'] === true;
-    if (!requiresFile) builderService.triggerPreprocess('config-changed');
+    if (!requiresFile) {
+      if (preprocess) await preprocess(project);
+      else builderService.triggerPreprocess('config-changed');
+    }
 
     return {
       ...result,

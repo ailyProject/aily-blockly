@@ -32,24 +32,24 @@
             </div>
         </div>
         <div class="user-data">
-            <!-- 可用次数 -->
+            <!-- Credit balance -->
             <div class="item">
                 <div class="icon ccenter">
                     <i class="fa-light fa-star-christmas"></i>
                 </div>
                 <div class="content">
-                    <span class="label">{{ 'USER_CENTER.AI_CALLS' | translate }}</span>
-                    <span class="value">{{ aiAvailableValue }}</span>
+                    <span class="label">{{ 'USER_CENTER.CREDITS_AVAILABLE' | translate }}</span>
+                    <span class="value">{{ creditAvailableValue }}</span>
                 </div>
-                @if (!isProPlanSubscriber || displayAiCallsResetDate) {
+                @if (!isProPlanSubscriber || displayCreditResetDate) {
                 <div class="action-stack">
                     @if (!isProPlanSubscriber) {
                     <div class="btn link" (click)="OpenUrl('/user/subscription')">
-                    {{ 'USER_CENTER.ADD_AI_CALLS' | translate }}
+                    {{ 'USER_CENTER.ADD_CREDITS' | translate }}
                     </div>
                     }
-                    @if (displayAiCallsResetDate) {
-                    <div class="reset-date">{{ 'USER_CENTER.AI_CALLS_RESET_SHORT' | translate: { date: displayAiCallsResetDate } }}</div>
+                    @if (displayCreditResetDate) {
+                    <div class="reset-date">{{ 'USER_CENTER.CREDITS_RESET_SHORT' | translate: { date: displayCreditResetDate } }}</div>
                     }
                 </div>
                 }

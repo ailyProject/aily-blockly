@@ -3,6 +3,7 @@ const { access, mkdtemp, mkdir, readFile, realpath, rm, writeFile } = require('n
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const relativePath = (root, target) => path.relative(root, target).split(path.sep).join('/');
 
 const {
     collectDependencyLibraryPackages,
@@ -68,12 +69,12 @@ test('Coder passes both npm scopes from their package-local final src roots', as
     ]);
     const searchPaths = await resolveCoderLibrarySearchPaths(packages, root, '', null);
     const canonicalRoot = await realpath(root);
-    assert.deepEqual(searchPaths.map(item => path.relative(canonicalRoot, item)).sort(), [
+    assert.deepEqual(searchPaths.map(item => relativePath(canonicalRoot, item)).sort(), [
         'node_modules/@aily-project-coder/lib-direct/src',
         'node_modules/@aily-project/lib-meta/node_modules/@aily-project/lib-nested/src',
         'node_modules/@aily-project/lib-wrapped/src/src/src',
     ]);
-    assert.equal(await readFile(path.join(searchPaths.find(item => item.endsWith('lib-direct/src')), 'Direct.h'), 'utf8'), 'official');
+    assert.equal(await readFile(path.join(searchPaths.find(item => item.endsWith(path.join('lib-direct', 'src'))), 'Direct.h'), 'utf8'), 'official');
     await assert.rejects(access(path.join(root, '.temp', 'libraries')));
 });
 
@@ -94,7 +95,7 @@ test('Coder adds the standard src compile root without changing Blockly staging'
     const searchPaths = await resolveCoderLibrarySearchPaths(packages, root, '', null);
     const canonicalRoot = await realpath(root);
 
-    assert.deepEqual(searchPaths.map(item => path.relative(canonicalRoot, item)), [
+    assert.deepEqual(searchPaths.map(item => relativePath(canonicalRoot, item)), [
         'node_modules/@aily-project-coder/lib-arduinojson/src',
         'node_modules/@aily-project-coder/lib-arduinojson/src/arduinojson/src',
     ]);
@@ -173,7 +174,7 @@ test('localized standard-layout libraries expose their local src compile root', 
     );
     const canonicalRoot = await realpath(root);
 
-    assert.deepEqual(searchPaths.map(item => path.relative(canonicalRoot, item)), [
+    assert.deepEqual(searchPaths.map(item => relativePath(canonicalRoot, item)), [
         'sketch/libraries',
         'sketch/libraries/arduinojson/src',
     ]);
@@ -207,7 +208,7 @@ test('localizing one root keeps unrelated roots from the same npm package', asyn
     );
 
     const canonicalRoot = await realpath(root);
-    assert.deepEqual(searchPaths.map(item => path.relative(canonicalRoot, item)), [
+    assert.deepEqual(searchPaths.map(item => relativePath(canonicalRoot, item)), [
         'node_modules/@aily-project/lib-demo/src/Support',
         'sketch/libraries',
     ]);

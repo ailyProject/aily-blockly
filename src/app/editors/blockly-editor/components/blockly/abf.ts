@@ -1,22 +1,11 @@
-
+import { resolveBoardJsonBindings, translateDropdownOptions } from './board-json-bindings';
 /**
  * 替换json配置中的board相关变量
  * @param {object} sourceJson - 需要处理的JSON对象
  * @returns {object} - 处理后的JSON对象
  */
 export function processJsonVar(sourceJson, boardConfig) {
-    let jsonString = JSON.stringify(sourceJson)
-    let result = jsonString.match(/"\$\{board\.(\S*?)\}"/g)
-    if (result != null) {
-        // console.log(result);
-        result.forEach(item => {
-            let itemName = item.replace('"${', '').replace('}"', '')
-            let data = JSON.parse(JSON.stringify(boardConfig))
-            data = data[getLastElement(itemName.split('.'))]
-            jsonString = jsonString.replace(item, JSON.stringify(data))
-        });
-    }
-    return JSON.parse(jsonString)
+    return resolveBoardJsonBindings(sourceJson, boardConfig);
 }
 
 /**
@@ -104,6 +93,13 @@ export function processI18n(sourceJson, i18nData) {
                         if (i18nData[blockType][argsKey][j] !== undefined &&
                             i18nData[blockType][argsKey][j] !== null) {
 
+                            const argument = block[argsKey][j];
+                            const translation = i18nData[blockType][argsKey][j];
+                            if (argument?.type === 'field_dropdown') {
+                                argument.options = translateDropdownOptions(argument.options, translation?.options);
+                                continue;
+                            }
+
                             // 如果是对象，则合并属性
                             if (typeof block[argsKey][j] === 'object' &&
                                 block[argsKey][j] !== null &&
@@ -187,13 +183,6 @@ function processToolboxContents(contents, labels = {}, categories, state = { cat
             processToolboxContents(item.contents, labels, categories, state);
         }
     }
-}
-
-function getLastElement<T>(array: T[]): T | undefined {
-    if (array.length === 0) {
-        return undefined;
-    }
-    return array[array.length - 1];
 }
 
 type BoardSerialPortOption = [string, string];

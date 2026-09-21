@@ -30,7 +30,7 @@ describe('project mode boundaries', () => {
     service.translate = { instant: (key: string) => key };
     spyOn(service, 'getProjectMode').and.callFake((path: string) => path.includes('code') ? 'coder' : path.includes('blocks') ? 'blockly' : null);
     service.getCoderProjectContext = () => ({ currentPackageData: { name: 'Code' }, stateSubject: new BehaviorSubject('loaded'), syncCurrentBoardConfig: async () => true });
-    spyOn(service, 'shouldBlockForAiOperation').and.returnValue(false);
+    spyOn(service, 'acquireProjectLifecycle').and.returnValue({ token: Symbol(), release: () => {} });
     return service;
   }
 

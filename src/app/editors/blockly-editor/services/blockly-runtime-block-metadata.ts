@@ -34,20 +34,48 @@ function runtimeFieldType(field: any): string {
       return type;
     }
   }
-  return 'field_input';
+  return 'field_custom';
 }
 
-function runtimeFieldOptions(field: any): Array<[string, string]> {
-  if (typeof field?.getOptions !== 'function') {
-    return [];
+export interface RuntimeFieldContract {
+  type: string;
+  options?: Array<[unknown, string | number | boolean]>;
+  min?: number;
+  max?: number;
+  precision?: number;
+  valueType?: 'string' | 'number' | 'boolean' | 'json';
+  variableTypes?: string[];
+}
+
+/** Actual field contract, not a field-name heuristic or a probe block's defaults. */
+export function serializeRuntimeFieldContract(field: any, serializedValue?: unknown): RuntimeFieldContract {
+  let type = runtimeFieldType(field);
+  // Custom serializers may return structured state even when extending a text/dropdown widget.
+  if (serializedValue !== null && typeof serializedValue === 'object' && type !== 'field_variable') type = 'field_custom';
+  const result: RuntimeFieldContract = { type };
+  if (type === 'field_variable' && Array.isArray(field.variableTypes)) result.variableTypes = [...field.variableTypes];
+  if (type === 'field_dropdown') {
+    const options: unknown = field.getOptions(false);
+    if (!Array.isArray(options)) throw new Error('Dropdown options are not an array.');
+    result.options = options.filter(option => option !== 'separator').map(option => {
+      if (!Array.isArray(option) || option.length < 2 || !['string', 'number', 'boolean'].includes(typeof option[1])) {
+        throw new Error('Dropdown option has an invalid serialized value.');
+      }
+      // Labels may be DOM/images and are not needed for validating the stored option value.
+      return [typeof option[0] === 'string' ? option[0] : null, option[1]];
+    });
   }
-  try {
-    return field.getOptions(false)
-      .filter((option: unknown) => Array.isArray(option) && option.length >= 2)
-      .map((option: unknown[]) => [String(option[0]), String(option[1])]);
-  } catch {
-    return [];
+  if (type === 'field_number') {
+    for (const [key, method] of [['min', 'getMin'], ['max', 'getMax'], ['precision', 'getPrecision']] as const) {
+      const value = field[method]();
+      if (Number.isFinite(value)) result[key] = value;
+    }
   }
+  if (type === 'field_custom') {
+    const valueType = typeof serializedValue;
+    result.valueType = valueType === 'string' || valueType === 'number' || valueType === 'boolean' ? valueType : 'json';
+  }
+  return result;
 }
 
 export function changedRuntimeBlockTypes(
@@ -77,15 +105,14 @@ export function serializeRuntimeBlockMetadata(
       if (!field?.name || field.SERIALIZABLE === false) {
         continue;
       }
-      const fieldType = runtimeFieldType(field);
-      const options = runtimeFieldOptions(field);
+      const contract = serializeRuntimeFieldContract(field);
+      const fieldType = contract.type;
       fieldNames.push(field.name);
       fieldTypes[field.name] = fieldType;
       argsOrder.push({ name: field.name, kind: 'field' });
       rawArgs.push({
-        type: fieldType,
+        ...contract,
         name: field.name,
-        ...(options.length > 0 ? { options } : {}),
       });
     }
 

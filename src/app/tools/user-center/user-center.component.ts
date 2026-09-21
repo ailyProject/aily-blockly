@@ -1,4 +1,4 @@
-import { Component, ElementRef, inject, ViewChild } from '@angular/core';
+import { Component, ElementRef, HostListener, inject, ViewChild } from '@angular/core';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
@@ -6,15 +6,13 @@ import {
   AuthService,
   LoginRequest,
   RegisterRequest,
-  projectAuthQuotaInfo,
-  type AuthQuotaInfo,
+  type AuthCreditSnapshot,
   ProtectedToolCloseError,
 } from '@core/auth/public-api';
 import { Subject, takeUntil } from 'rxjs';
 import { ElectronService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzButtonModule } from 'ng-zorro-antd/button';
-import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { UiService } from '@core/app-shell/public-api';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
@@ -22,6 +20,7 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { ToolI18nService } from '@core/preferences/public-api';
 import { ChildAppSafetyService } from '@integration/subapps/public-api';
+import { formatCreditQuota, isProCreditPlan } from './credit-display';
 
 @Component({
   selector: 'app-user-center',
@@ -30,7 +29,6 @@ import { ChildAppSafetyService } from '@integration/subapps/public-api';
     CommonModule,
     ToolContainerComponent,
     NzButtonModule,
-    NzProgressModule,
     NzInputModule,
     NzToolTipModule,
     TranslateModule
@@ -65,11 +63,11 @@ export class UserCenterComponent {
   editedNickname = '';
   nicknameSaving = false;
   nicknameError = '';
-  quotaUsagePercent = 0;
+  private refreshingQuota = false;
   private logoutConfirmOpen = false;
 
   benefits: any = null;
-  authQuotaInfo: AuthQuotaInfo | null = null;
+  creditSnapshot: AuthCreditSnapshot | null = null;
 
   constructor(
     private uiService: UiService,
@@ -102,7 +100,7 @@ export class UserCenterComponent {
     this.authService.authSnapshot$
       .pipe(takeUntil(this.destroy$))
       .subscribe((authSnapshot) => {
-        this.authQuotaInfo = projectAuthQuotaInfo(authSnapshot);
+        this.creditSnapshot = authSnapshot?.quotaInfoSnapshot?.creditSnapshot ?? null;
       });
 
     // 监听用户信息
@@ -111,7 +109,6 @@ export class UserCenterComponent {
       .subscribe(userInfo => {
         // console.log('UserCenterComponent - 接收到用户信息更新: ', userInfo);
         this.currentUser = userInfo;
-        this.calculateQuotaUsagePercent();
       });
 
     if (this.authService.isLoggedIn) {
@@ -136,13 +133,21 @@ export class UserCenterComponent {
     }
   }
 
-  refreshMe() {
-    this.authService.refreshMe().then(() => {
-      // console.log('Auth token refreshed.');
-      this.calculateQuotaUsagePercent();
-    }).catch((error) => {
+  @HostListener('window:focus')
+  onWindowFocus(): void {
+    if (this.authService.isLoggedIn) void this.refreshMe();
+  }
+
+  async refreshMe(): Promise<void> {
+    if (this.refreshingQuota) return;
+    this.refreshingQuota = true;
+    try {
+      await this.authService.refreshMe();
+    } catch (error) {
       console.warn('刷新用户信息失败:', error);
-    });
+    } finally {
+      this.refreshingQuota = false;
+    }
   }
   refreshBenefits() {
     if (!this.authService.isLoggedIn) return;
@@ -390,11 +395,8 @@ export class UserCenterComponent {
     });
   }
 
-  get displayAiCallsResetDate(): string {
-    if (this.benefits?.ai_calls?.unlimited) {
-      return '';
-    }
-    const resetDate = this.benefits?.ai_calls?.resetDate;
+  get displayCreditResetDate(): string {
+    const resetDate = this.creditSnapshot?.next_reset_at;
     if (!resetDate) {
       return '';
     }
@@ -407,60 +409,14 @@ export class UserCenterComponent {
   }
 
   get isProPlanSubscriber(): boolean {
-    const subscriptionPlan = this.currentUser?.subscription_plan;
-    const planName = `${subscriptionPlan?.name || ''} ${subscriptionPlan?.display_name || ''}`.trim().toLowerCase();
-    return planName.includes('pro');
+    return this.authService.isLoggedIn &&
+      isProCreditPlan(this.creditSnapshot?.subscription_plan ?? this.currentUser?.subscription_plan?.name);
   }
 
-  get quotaRemainingPercent(): number {
-    return Math.max(0, 100 - this.quotaUsagePercent);
-  }
-
-  get aiAvailableValue(): string {
-    if (this.authQuotaInfo) {
-      const unlimited = this.authQuotaInfo.unlimited === true || this.authQuotaInfo.quota < 0;
-      if (unlimited) {
-        return '♾️';
-      }
-
-      const remaining = Math.max(0, this.authQuotaInfo.remaining);
-      const quota = Math.max(0, this.authQuotaInfo.quota);
-      const unitSuffix = this.authQuotaInfo.usageUnit === 'interactions' ? '次' : ' tokens';
-      return `${remaining}/${quota}${unitSuffix}`;
-    }
-
-    const aiCalls = this.benefits?.ai_calls;
-    if (aiCalls?.unlimited) {
-      return '♾️';
-    }
-
-    const total = Math.max(0, Number(aiCalls?.total) || 0);
-    const used = Math.max(0, Number(aiCalls?.used) || 0);
-    const remaining = Math.max(0, total - used);
-    return `${remaining}/${total}次`;
-  }
-
-  private calculateQuotaUsagePercent(): void {
-    // console.log('=== 开始计算配额使用百分比 ===');
-    // console.log('currentUser 完整对象:', JSON.stringify(this.currentUser, null, 2));
-    // console.log('currentUser?.quota:', this.currentUser?.quota);
-
-    const total = this.currentUser?.quota?.total_token ?? 0;
-    const used = this.currentUser?.quota?.used_token ?? 0;
-
-    // console.log('提取的值 - total:', total, 'used:', used);
-    // console.log('total 类型:', typeof total, 'used 类型:', typeof used);
-
-    if (!total || total <= 0) {
-      this.quotaUsagePercent = 0;
-      // console.log('总配额为0或无效，设置使用百分比为0');
-      return;
-    }
-    const percent = (used / total) * 100;
-    // 保留2位小数，不四舍五入到整数
-    this.quotaUsagePercent = Math.max(0, Math.min(100, Number(percent.toFixed(2))));
-    // console.log('计算得到的使用百分比:', this.quotaUsagePercent, '(used/total*100 =', used, '/', total, '*100)');
-    // console.log('=== 计算完成 ===');
+  get creditAvailableValue(): string {
+    if (!this.authService.isLoggedIn) return '--';
+    const locale = (this.translate.currentLang || this.translate.defaultLang || 'en').replace(/_/g, '-');
+    return formatCreditQuota(this.creditSnapshot, locale, this.currentUser?.subscription_plan?.name);
   }
 
   /**

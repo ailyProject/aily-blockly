@@ -11,6 +11,9 @@ const { tmpdir } = require("os");
 const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
+const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION } = require("./project-file-writer");
+const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
+const { copyProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -618,6 +621,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
+    projectFilePublicationVersion: PROJECT_FILE_PUBLICATION_VERSION,
+    replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
+    projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
+    openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
     readCodeDeclaration: (candidate, roots) => require('./code-suggestion-declarations').readCodeDeclaration(candidate, roots),
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readFileBufferAsync: async (path) => {
@@ -657,6 +664,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
+    copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
+    importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);

@@ -6,6 +6,7 @@
 
 import { parseAbs, BlocklyAbsParser } from './abs-parser';
 import { getGlobalBlockMetas } from './block-definition.service';
+import { assertLegacyAbsWorkspaceSupported } from './abs-project-data';
 import {
   AILY_PROJECT_DATA_ABS_HEADER,
   createProjectDataMarker,
@@ -14,7 +15,7 @@ import {
   assertNoOversizedInlineValues,
 } from '@domain/project/public-api';
 
-declare const Blockly: any;
+import { queryLiveAbsBlockShape } from './abs-live-block-shape';
 
 // =============================================================================
 // ABI JSON → ABS 转换
@@ -38,76 +39,7 @@ export interface AbiToAbsOptions {
  * 将完整的 ABI JSON 转换为 ABS 格式
  */
 export function convertAbiToAbs(abiJson: any, options: AbiToAbsOptions = {}): string {
-  assertNoOversizedInlineValues(abiJson);
-  const {
-    includeHeader = true,
-    indentStr = '    ',
-    includeBlockIds = false,
-    explicitBlockTypes = true
-  } = options;
-  
-  const lines: string[] = [];
-  const context = new ConversionContext(indentStr, includeBlockIds, explicitBlockTypes);
-  
-  // 文件头
-  if (includeHeader) {
-    lines.push('# ============================================');
-    lines.push('# Blockly ABS File');
-    if (isAilyProjectDataMarker(abiJson?.$ailyProjectData)) {
-      lines.push(AILY_PROJECT_DATA_ABS_HEADER);
-    }
-    lines.push(`# Generated: ${new Date().toISOString()}`);
-    if (explicitBlockTypes) {
-      lines.push('# Mode: Explicit block types (no syntax sugar)');
-    }
-    lines.push('# ============================================');
-    lines.push('');
-    lines.push('# Global definitions can be created as standalone blocks or within arduino_global blocks, eg:');
-    lines.push('# arduino_global()');
-    lines.push('#    variable_define("variable", int, math_number(0))');
-    lines.push('');
-  }
-  
-  // 注册变量用于 ID→名称转换（不输出 @var 声明到 ABS）
-  // 注意：不再输出 @var 声明，因为：
-  // 1. @var 是 Blockly 工作区内部变量，不生成 C++ 代码
-  // 2. variable_define 等块才会生成实际的 C++ 变量声明
-  // 3. 避免 LLM 混淆两种不同的变量概念
-  if (abiJson.variables && Array.isArray(abiJson.variables)) {
-    for (const variable of abiJson.variables) {
-      context.registerVariable(variable.id, variable.name, variable.type || 'int');
-    }
-  }
-  
-  // 设置 lineOffset 为当前 header 行数（后续块转换时使用）
-  context.lineOffset = lines.length;
-  
-  // 转换块（按 y 坐标排序，确保输出顺序与视觉布局一致）
-  if (abiJson.blocks?.blocks && Array.isArray(abiJson.blocks.blocks)) {
-    const sortedBlocks = [...abiJson.blocks.blocks].sort((a: any, b: any) => {
-      const ay = a.y ?? 0, by = b.y ?? 0;
-      if (ay !== by) return ay - by;
-      return (a.x ?? 0) - (b.x ?? 0);
-    });
-    let renderedBlockCount = 0;
-    for (const block of sortedBlocks) {
-      const disabled = isBlockDisabled(block);
-      if (disabled && !hasExportableBlockInChain(block.next?.block)) continue;
-
-      // 仅在实际导出的顶层块之间插入空行。
-      if (renderedBlockCount > 0) {
-        lines.push('');
-        context.lineOffset++;
-      }
-      const blockAbs = disabled
-        ? convertBlockChainToAbs(block.next?.block, 0, context)
-        : convertBlockToAbs(block, 0, context);
-      lines.push(...blockAbs);
-      renderedBlockCount++;
-    }
-  }
-  
-  return lines.join('\n');
+  return convertAbiToAbsWithLineMap(abiJson, options).abs;
 }
 
 /**
@@ -118,6 +50,7 @@ export function convertAbiToAbsWithLineMap(
   abiJson: any,
   options: AbiToAbsOptions = {}
 ): { abs: string; blockLineMap: Map<string, { startLine: number; endLine: number }> } {
+  assertLegacyAbsWorkspaceSupported(abiJson);
   assertNoOversizedInlineValues(abiJson);
   const {
     includeHeader = true,
@@ -146,6 +79,9 @@ export function convertAbiToAbsWithLineMap(
     lines.push('# arduino_global()');
     lines.push('#    variable_define("variable", int, math_number(0))');
     lines.push('');
+  } else if (isAilyProjectDataMarker(abiJson?.$ailyProjectData)) {
+    // The data schema is semantic, not an optional descriptive header.
+    lines.push(AILY_PROJECT_DATA_ABS_HEADER);
   }
   
   // 注册变量用于 ID→名称转换（不输出 @var 声明到 ABS）
@@ -523,7 +459,7 @@ function buildBlockCall(block: any, context: ConversionContext): string {
   const meta = dynamicMetas?.get(block.type);
   
   // 获取 argsOrder：优先静态元数据 → Blockly 运行时回退
-  const argsOrder = (meta?.argsOrder?.length ? meta.argsOrder : null) || queryArgsOrderFromBlockly(block.type);
+  const argsOrder = (meta?.argsOrder?.length ? meta.argsOrder : null) || queryLiveAbsBlockShape(block.type, block.id)?.argsOrder;
   
   if (argsOrder && argsOrder.length > 0) {
     // 有 argsOrder：按定义顺序输出位置参数
@@ -578,7 +514,8 @@ function buildBlockCall(block: any, context: ConversionContext): string {
   // 构建调用 - 始终使用括号格式，确保导入时能正确识别为块
   
   // === 通用处理：导出 argsOrder 未覆盖的剩余字段和非语句输入（动态 mutator 添加的）===
-  // 作为额外位置参数输出，导入时通过 EXTRA_N 模式进入 mutator 处理器
+  // Fields outside static argsOrder must retain their real names; positional EXTRA_N loses that identity.
+  // Extra value inputs retain the existing mutator input mapping until the v2 cutover.
   if (argsOrder && argsOrder.length > 0) {
     const processedByArgsOrder = new Set(argsOrder.map(a => a.name));
     // 剩余字段
@@ -587,7 +524,8 @@ function buildBlockCall(block: any, context: ConversionContext): string {
         if (processedByArgsOrder.has(fieldName)) continue;
         const formattedValue = formatFieldValue(block.type, fieldName, fieldValue, context);
         if (formattedValue !== null) {
-          args.push(formattedValue);
+          if (!/^[A-Za-z_]\w*$/.test(fieldName)) throw new Error(`Legacy ABS cannot name dynamic field: ${fieldName}`);
+          args.push(`${fieldName}=${formattedValue}`);
         }
       }
     }
@@ -664,19 +602,8 @@ function formatFieldValue(blockType: string, fieldName: string, value: any, cont
     }
   }
   
-  // 字符串
-  if (typeof value === 'string') {
-    // 特殊标识符不需要引号
-    if (isIdentifier(value) || isEnumValue(blockType, fieldName, value)) {
-      return value;
-    }
-    // 数字字符串
-    if (/^-?\d+(\.\d+)?$/.test(value)) {
-      return value;
-    }
-    // 其他字符串加引号
-    return `"${escapeString(value)}"`;
-  }
+  // Strings retain their type; field definitions handle any accepted coercion on import.
+  if (typeof value === 'string') return JSON.stringify(value);
   
   // 数字
   if (typeof value === 'number') {
@@ -769,162 +696,16 @@ function formatBlockAsValue(block: any, context: ConversionContext): string {
   }
 }
 
-// 运行时查询缓存：blockType -> Set<语句输入名>
-const runtimeStatementInputCache = new Map<string, Set<string>>();
-
-// 运行时查询缓存：blockType -> argsOrder
-const runtimeArgsOrderCache = new Map<string, Array<{ name: string; kind: 'field' | 'valueInput' | 'statementInput' }> | null>();
-
-// 运行时查询缓存：blockType -> Map<fieldName, variableType>
-const runtimeFieldVarTypeCache = new Map<string, Map<string, string>>();
-
-/**
- * 通过 Blockly 运行时查询块的参数顺序
- * 遍历 inputList 及其 fieldRow，按定义顺序收集所有字段和输入
- */
-function queryArgsOrderFromBlockly(blockType: string): Array<{ name: string; kind: 'field' | 'valueInput' | 'statementInput' }> | null {
-  if (runtimeArgsOrderCache.has(blockType)) {
-    return runtimeArgsOrderCache.get(blockType) || null;
-  }
-  
-  if (typeof Blockly === 'undefined' || !Blockly.Blocks || !Blockly.Blocks[blockType]) {
-    return null;
-  }
-  
-  try {
-    const workspace = Blockly.getMainWorkspace?.();
-    if (!workspace) return null;
-    
-    const tempBlock = workspace.newBlock(blockType);
-    const argsOrder: Array<{ name: string; kind: 'field' | 'valueInput' | 'statementInput' }> = [];
-    
-    if (tempBlock.inputList) {
-      for (const input of tempBlock.inputList) {
-        // 先收集该行的字段（按 fieldRow 顺序）
-        if (input.fieldRow) {
-          for (const field of input.fieldRow) {
-            if (field.name && field.SERIALIZABLE) {
-              argsOrder.push({ name: field.name, kind: 'field' });
-              // 顺便收集 FieldVariable 的类型过滤器
-              // 注意：不使用 getVariableTypes() 公开 API，因为对于无约束的 FieldVariable
-              // （如 variables_set 的 VAR），它会回退到 workspace.getVariableTypes()，
-              // 错误地返回工作区中其他类型（如 FUNC）。
-              // 直接检查 field.variableTypes（字段自身的显式类型约束）+ defaultType。
-              if (typeof field.getVariable === 'function') {
-                let varType = '';
-                // field.variableTypes: 编译后的 Blockly 属性（无下划线）
-                // 空数组 [] = 不限类型；['FUNC'] = 只接受 FUNC
-                const explicitTypes = field.variableTypes;
-                if (Array.isArray(explicitTypes) && explicitTypes.length > 0 && explicitTypes[0] !== '') {
-                  varType = explicitTypes[0];
-                }
-                if (!varType && field.defaultType) {
-                  varType = field.defaultType;
-                }
-                if (varType) {
-                  if (!runtimeFieldVarTypeCache.has(blockType)) {
-                    runtimeFieldVarTypeCache.set(blockType, new Map());
-                  }
-                  runtimeFieldVarTypeCache.get(blockType)!.set(field.name, varType);
-                }
-              }
-            }
-          }
-        }
-        // 再收集输入本身
-        if (input.connection) {
-          if (input.connection.type === 1) { // INPUT_VALUE
-            argsOrder.push({ name: input.name, kind: 'valueInput' });
-          } else if (input.connection.type === 3) { // INPUT_STATEMENT
-            argsOrder.push({ name: input.name, kind: 'statementInput' });
-          }
-        }
-      }
-    }
-    
-    tempBlock.dispose();
-    runtimeArgsOrderCache.set(blockType, argsOrder.length > 0 ? argsOrder : null);
-    return argsOrder.length > 0 ? argsOrder : null;
-  } catch (e) {
-    console.warn(`[abiAbsConverter] Failed to query argsOrder for ${blockType}:`, e);
-    runtimeArgsOrderCache.set(blockType, null);
-    return null;
-  }
-}
-
-/**
- * 通过 Blockly 运行时查询块的语句输入名称
- * 这是最可靠的方式，因为它直接从块定义中获取，包括 mutator 动态添加的输入
- */
-function queryStatementInputsFromBlockly(blockType: string): Set<string> | null {
-  // 检查缓存
-  if (runtimeStatementInputCache.has(blockType)) {
-    return runtimeStatementInputCache.get(blockType)!;
-  }
-  
-  // 检查 Blockly 是否可用
-  if (typeof Blockly === 'undefined' || !Blockly.Blocks || !Blockly.Blocks[blockType]) {
-    return null;
-  }
-  
-  try {
-    // 获取工作区用于创建临时块
-    const workspace = Blockly.getMainWorkspace?.();
-    if (!workspace) return null;
-    
-    // 创建临时块来查询输入类型
-    const tempBlock = workspace.newBlock(blockType);
-    const statementInputs = new Set<string>();
-    
-    if (tempBlock.inputList) {
-      for (const input of tempBlock.inputList) {
-        // connection.type === 3 表示 NEXT_STATEMENT（语句输入）
-        if (input.connection && input.connection.type === 3) {
-          statementInputs.add(input.name);
-        }
-      }
-    }
-    
-    // 清理临时块
-    tempBlock.dispose();
-    
-    // 缓存结果
-    runtimeStatementInputCache.set(blockType, statementInputs);
-    return statementInputs;
-  } catch (e) {
-    console.warn(`[abiAbsConverter] Failed to query block ${blockType} from Blockly:`, e);
-    return null;
-  }
-}
-
-/**
- * 从 Blockly 运行时推断 FieldVariable 字段期望的变量类型。
- * 例如: custom_function_call_advance 的 FUNC_NAME 字段期望 "FUNC" 类型。
- * 块定义本身知道每个 FieldVariable 接受的变量类型，ABS 无需重复标注。
- *
- * 类型信息在 queryArgsOrderFromBlockly 执行时顺便收集到 runtimeFieldVarTypeCache。
- * 若缓存中没有，则触发一次 queryArgsOrderFromBlockly 来填充。
- */
+/** Infer only explicit variable constraints from an existing, unambiguous block shape. */
 export function inferFieldVariableType(blockType: string, fieldName: string): string {
-  if (runtimeFieldVarTypeCache.has(blockType)) {
-    return runtimeFieldVarTypeCache.get(blockType)!.get(fieldName) || '';
-  }
-
-  // 触发 queryArgsOrderFromBlockly 以填充缓存
-  queryArgsOrderFromBlockly(blockType);
-
-  if (runtimeFieldVarTypeCache.has(blockType)) {
-    return runtimeFieldVarTypeCache.get(blockType)!.get(fieldName) || '';
-  }
-
-  return '';
+  return queryLiveAbsBlockShape(blockType)?.fieldVariableTypes[fieldName] || '';
 }
 
 /**
  * 获取块的语句输入名称
  * 
  * 采用三层检测策略（按优先级）：
- * 1. 【最可靠】从 Blockly 运行时查询（直接获取块定义，包括 mutator 动态输入）
+ * 1. 【最可靠】从 Blockly 运行时查询（只读获取已有块实例，读取已有实例的 mutator 动态输入）
  * 2. 从静态块元数据获取（来自 block.json 的 input_statement）
  * 3. 【回退】启发式规则（用于 Blockly 不可用时）
  */
@@ -935,10 +716,10 @@ function getStatementInputs(block: any): string[] {
   const result = new Set<string>();
   
   // 1. 优先从 Blockly 运行时查询（最可靠）
-  const runtimeInputs = queryStatementInputsFromBlockly(block.type);
+  const runtimeInputs = queryLiveAbsBlockShape(block.type, block.id)?.statementInputNames;
   if (runtimeInputs) {
     for (const inputName of inputNames) {
-      if (runtimeInputs.has(inputName)) {
+      if (runtimeInputs.includes(inputName)) {
         result.add(inputName);
       }
     }
@@ -974,7 +755,7 @@ function getStatementInputs(block: any): string[] {
  * 【回退方案】判断输入名是否可能是语句输入
  * 
  * 此函数仅在 Blockly 运行时不可用且静态元数据缺失时使用。
- * 优先应使用 queryStatementInputsFromBlockly() 从 Blockly 运行时查询。
+ * 优先应使用 queryLiveAbsBlockShape() 从 Blockly 运行时查询。
  * 
  * @deprecated 优先使用 Blockly 运行时查询
  */
@@ -1029,83 +810,20 @@ export function normalizeInputNameForAbs(inputName: string): string {
   return inputName.toLowerCase();
 }
 
-/**
- * 判断是否是标识符
- */
-function isIdentifier(value: string): boolean {
-  return /^[A-Z_][A-Z0-9_]*$/.test(value);
-}
-
-/**
- * 创建可移植的 extraState：去除工作区特定的 ID 值
- * 启发式规则：值为包含 '::' 的字符串（如 "xxx::FUNC"、"xxx::PARAM::1"）
- * 或数组元素全部包含 '::'，视为 Blockly 运行时 ID，导出时剔除。
- * 这些 ID 由运行时 loadExtraState + FINISHED_LOADING 通过名称查找自动重建。
- */
-function makePortableExtraState(extraState: any): any | null {
-  if (!extraState || typeof extraState !== 'object') return extraState;
-  const result: any = {};
-  for (const [key, value] of Object.entries(extraState)) {
-    // 字符串值包含 '::' → 工作区特定 ID，跳过
-    if (typeof value === 'string' && value.includes('::')) continue;
-    // 数组元素全部是包含 '::' 的字符串 → ID 数组，跳过
-    if (Array.isArray(value) && value.length > 0
-        && value.every((v: any) => typeof v === 'string' && v.includes('::'))) continue;
-    result[key] = value;
-  }
-  return Object.keys(result).length > 0 ? result : null;
-}
-
-/** 将动态块状态编码为 ABS 行尾注解。 */
-function formatExtraStateAnnotation(extraState: any): string {
-  const portableExtraState = makePortableExtraState(extraState);
-  if (!portableExtraState) return '';
-
-  try {
-    return ` @extra:${JSON.stringify(portableExtraState)}`;
-  } catch {
-    return '';
-  }
+/** Preserve the serializer contract; ID remapping is an explicit copy operation. */
+function formatExtraStateAnnotation(extraState: unknown): string {
+  return extraState === undefined ? '' : ` @extra:${JSON.stringify(extraState)}`;
 }
 
 /** 判断字段是否由 Blockly 变量模型管理。 */
 function isVariableField(blockType: string, fieldName: string): boolean {
   const fieldType = getGlobalBlockMetas()?.get(blockType)?.fieldTypes?.get(fieldName);
   if (fieldType === 'field_variable') return true;
-  if (runtimeFieldVarTypeCache.get(blockType)?.has(fieldName)) return true;
+  const variableTypes = queryLiveAbsBlockShape(blockType)?.fieldVariableTypes;
+  if (variableTypes && Object.prototype.hasOwnProperty.call(variableTypes, fieldName)) return true;
 
   // 无元数据时仅接受 Blockly 标准变量字段名，避免把普通对象误判为变量。
   return fieldName === 'VAR' || fieldName === 'VARIABLE';
-}
-
-/**
- * 判断是否是枚举/下拉菜单值
- * 动态从块定义中判断字段类型
- */
-function isEnumValue(blockType: string, fieldName: string, value: string): boolean {
-  // 优先从动态加载的块定义获取
-  const dynamicMetas = getGlobalBlockMetas();
-  if (dynamicMetas) {
-    const meta = dynamicMetas.get(blockType);
-    if (meta && meta.fieldTypes) {
-      const fieldType = meta.fieldTypes.get(fieldName);
-      // field_dropdown 和 field_variable 的值不需要引号
-      if (fieldType === 'field_dropdown' || fieldType === 'field_variable') {
-        return true;
-      }
-      // 其他字段类型（如 field_input）可能需要引号
-      if (fieldType) {
-        return false;
-      }
-    }
-  }
-  
-  // 回退：硬编码的常见枚举字段名
-  const enumFields = new Set([
-    'SERIAL', 'OP', 'MODE', 'STATE', 'PIN', 'SPEED', 'TYPE', 
-    'PROPERTY', 'BOOL', 'BASE', 'CONSTANT', 'DIRECTION'
-  ]);
-  return enumFields.has(fieldName);
 }
 
 /**
@@ -1133,6 +851,8 @@ export interface AbsToAbiResult {
 
 export interface AbsToAbiOptions {
   requireProjectDataHeader?: boolean;
+  /** Host preparation only: the returned draft MUST be externalized/validated before loading or saving. */
+  deferProjectDataExternalization?: boolean;
 }
 
 /**
@@ -1197,7 +917,7 @@ export function convertAbsToAbi(
   }
 
   try {
-    assertNoOversizedInlineValues(abiJson);
+    if (!options.deferProjectDataExternalization) assertNoOversizedInlineValues(abiJson);
   } catch (error) {
     return {
       success: false,
@@ -1238,7 +958,7 @@ function convertBlockConfigToAbi(
     block.fields = {};
     for (const [key, value] of Object.entries(config.fields)) {
       // 处理变量引用：{ name: "varName" } -> { id: "varId", name: "varName", type: "" }
-      if (typeof value === 'object' && value !== null && (value as any).name) {
+      if (isVariableField(config.type, key) && typeof value === 'object' && value !== null && (value as any).name) {
         const varName = (value as any).name;
         const varId = variableNameToId.get(varName);
         // 优先使用解析值中的 type（$name:TYPE），再从 Blockly 运行时推断
@@ -1290,8 +1010,8 @@ function convertBlockConfigToAbi(
   
   // === 通用写入 extraState（mutator 块的关键状态）===
   // 直接透传，不做 blockType 特定的补全——完整的 extraState 应由 @extra: 注解或解析器推断提供
-  if (config.extraState) {
-    block.extraState = { ...config.extraState };
+  if (Object.prototype.hasOwnProperty.call(config, 'extraState')) {
+    block.extraState = config.extraState;
   }
   
   return block;
@@ -1346,7 +1066,7 @@ function collectVariableReferences(
   // 变量类型优先使用解析值中携带的 type（来自 $name:TYPE 向后兼容），再从 Blockly 运行时推断
   if (config.fields) {
     for (const [key, value] of Object.entries(config.fields)) {
-      if (typeof value === 'object' && value !== null && (value as any).name) {
+      if (isVariableField(config.type, key) && typeof value === 'object' && value !== null && (value as any).name) {
         const varName = (value as any).name;
         const varType = (value as any).type || inferFieldVariableType(config.type, key);
         if (!variableNameToId.has(varName)) {
@@ -1407,29 +1127,4 @@ export function formatAbs(abs: string): string {
     return convertAbiToAbs(result.abiJson, { includeHeader: false });
   }
   return abs;
-}
-
-/**
- * 将单个块的 ABI JSON（来自 Blockly.serialization.blocks.save()）转换为 ABS 格式
- * 包含整个块子树（含子块、next 链）
- * 
- * @param blockAbiJson 单个块的 ABI JSON 对象
- * @param variables 工作区变量列表（用于将变量 ID 转为名称），格式 [{id, name, type}]
- * @returns ABS 文本
- */
-export function convertBlockTreeToAbs(
-  blockAbiJson: any,
-  variables?: { id: string; name: string; type?: string }[]
-): string {
-  const context = new ConversionContext('    ', false, true);
-
-  // 注册变量以支持 ID → 名称转换
-  if (variables) {
-    for (const v of variables) {
-      context.registerVariable(v.id, v.name, v.type || 'int');
-    }
-  }
-
-  const lines = convertBlockChainToAbs(blockAbiJson, 0, context);
-  return lines.join('\n');
 }

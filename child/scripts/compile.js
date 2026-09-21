@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const ailyCodeProject = require('./aily-code-project');
+const { runCompilePreprocess } = require('./compile-preprocess');
 
 // 简单的日志工具
 const logger = {
@@ -153,11 +154,9 @@ async function main() {
             mkdirp(frameworkOutputDir);
         }
 
-        // 3. 检查预编译缓存是否存在
-        if (!fs.existsSync(preprocessCachePath)) {
-            throw new Error(`未找到预编译缓存: ${preprocessCachePath}，请先运行预处理脚本`);
-        }
-        syncPreprocessBuildPath(preprocessCachePath, buildPath);
+        // A saved file can belong to the pre-edit workspace. Derive dependencies
+        // from this frozen compile input, not the existence of a background cache.
+        await runCompilePreprocess(config, tempPath, preprocessCachePath);
 
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -510,19 +509,6 @@ function supportsSceneGraphProvenance(builderCommand) {
 main().catch(e => {
     exitWithFatalError(e);
 });
-
-function syncPreprocessBuildPath(preprocessCachePath, buildPath) {
-    try {
-        const preprocessResult = JSON.parse(fs.readFileSync(preprocessCachePath, 'utf8'));
-        preprocessResult.envVars = preprocessResult.envVars || {};
-        if (preprocessResult.envVars.BUILD_PATH !== buildPath) {
-            preprocessResult.envVars.BUILD_PATH = buildPath;
-            fs.writeFileSync(preprocessCachePath, JSON.stringify(preprocessResult, null, 2));
-        }
-    } catch (error) {
-        logger.warn(`Failed to update preprocess build path: ${error.message}`);
-    }
-}
 
 async function copyProjectSrcToSketch(currentProjectPath, sketchPath) {
     const projectSrcPath = path.join(currentProjectPath, 'src');

@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "files": ["src/app/editors/blockly-editor/services/blockly-native-candidate.entry.ts"],
+  "include": ["src/**/*.d.ts"]
+}

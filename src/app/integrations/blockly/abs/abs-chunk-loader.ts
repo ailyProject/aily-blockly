@@ -1,4 +1,6 @@
 import * as Blockly from 'blockly';
+import { createBrowserFrameBudget } from '@shared/public-api';
+import { withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
 
 type BlockState = Blockly.serialization.blocks.State;
 
@@ -8,6 +10,7 @@ interface PendingFragment {
 }
 
 const BLOCKS_PER_BATCH = 64;
+const BLOCKS_PER_FRAGMENT = 8;
 
 /** Cut only real connections; fields, mutators and fallback shadow trees stay intact. */
 function takeFragment(source: BlockState, budget: number): {
@@ -51,6 +54,7 @@ export async function loadAbsWorkspaceInChunks(
   abi: Record<string, any>,
   workspace: Blockly.WorkspaceSvg,
   onProgress?: (blocks: number, batches: number) => void,
+  assertCurrent: () => void = () => undefined,
 ): Promise<{ blockCount: number; batchCount: number }> {
   // appendInternal is exported by the bundled Blockly runtime. It preserves
   // parent-before-field loading and queues rendering instead of forcing it.
@@ -58,6 +62,7 @@ export async function loadAbsWorkspaceInChunks(
     throw new Error('当前 Blockly 运行时不支持 ABS 切片装载。');
   }
 
+  assertCurrent();
   const pending: PendingFragment[] = (abi['blocks']?.blocks || [])
     .map((state: BlockState) => ({ state }))
     .reverse();
@@ -68,11 +73,14 @@ export async function loadAbsWorkspaceInChunks(
 
   let blockCount = 0;
   let batchCount = 0;
+  const budget = createBrowserFrameBudget({ onYield: () => Blockly.renderManagement.triggerQueuedRenders(workspace) });
   while (pending.length > 0) {
+    assertCurrent();
     let batchBlocks = 0;
     while (pending.length > 0 && batchBlocks < BLOCKS_PER_BATCH) {
+      assertCurrent();
       const item = pending.pop()!;
-      const fragment = takeFragment(item.state, BLOCKS_PER_BATCH - batchBlocks);
+      const fragment = takeFragment(item.state, Math.min(BLOCKS_PER_FRAGMENT, BLOCKS_PER_BATCH - batchBlocks));
       const parent = item.parent ? workspace.getBlockById(item.parent.id) : undefined;
       const parentConnection = item.parent
         ? item.parent.input !== undefined
@@ -83,12 +91,14 @@ export async function loadAbsWorkspaceInChunks(
         throw new Error(`ABS 切片连接不存在: ${item.parent.id}/${item.parent.input ?? 'next'}`);
       }
 
-      Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
+      withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
         parentConnection: parentConnection || undefined,
         recordUndo: false,
-      });
+      }));
       pending.push(...fragment.deferred.reverse());
       batchBlocks += fragment.blockCount;
+      await budget.checkpoint('abs.native-load');
+      assertCurrent();
     }
 
     blockCount += batchBlocks;
@@ -96,7 +106,9 @@ export async function loadAbsWorkspaceInChunks(
     Blockly.renderManagement.triggerQueuedRenders(workspace);
     onProgress?.(blockCount, batchCount);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    budget.reset();
   }
 
+  assertCurrent();
   return { blockCount, batchCount };
 }

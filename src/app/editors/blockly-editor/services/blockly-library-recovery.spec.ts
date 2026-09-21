@@ -3,6 +3,10 @@ import { ArduinoGenerator } from '../components/blockly/generators/arduino/ardui
 import { Subject } from 'rxjs';
 import { BlocklyService } from './blockly.service';
 import { BlocklyGeneratorRuntimeService } from './blockly-generator-runtime.service';
+import { BlocklyWorkspaceEditGate } from './blockly-workspace-edit-lease';
+import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
+import { BlocklyProjectCodePreparation } from './prepared-project-code';
+import { AbsReferenceContractCache } from '../../../integrations/blockly/abs/abs-reference-contract-cache';
 
 describe('Blockly library failure recovery', () => {
   let service: any;
@@ -22,6 +26,10 @@ describe('Blockly library failure recovery', () => {
     runtime.activate({ mode: 'arduino', projectPath, getWorkspace: () => null });
     service = Object.create(BlocklyService.prototype);
     Object.assign(service, {
+      workspaceEditGate: new BlocklyWorkspaceEditGate(),
+      declarativeBlocks: new BlocklyDeclarativeBlockCatalog(),
+      projectCodePreparation: new BlocklyProjectCodePreparation(),
+      pageReferenceContracts: new AbsReferenceContractCache(),
       generatorRuntime: runtime,
       translateService: { currentLang: 'en', instant: (key: string) => key },
       electronService: {

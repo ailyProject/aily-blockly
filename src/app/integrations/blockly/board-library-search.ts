@@ -168,7 +168,7 @@ export const searchBoardsLibrariesTool = {
 **注意：**
 - filters 参数优先级高于 query（结构化查询更精确）
 - 可以同时使用 query 和 filters 组合查询
-- 返回结果默认限制在前50条最相关匹配`,
+- 默认返回8条精简候选；offset翻页，detail=full查看完整元数据，不截断描述`,
     
     parameters: {
         type: 'object',
@@ -269,7 +269,13 @@ export const searchBoardsLibrariesTool = {
             },
             maxResults: {
                 type: 'number',
-                description: '最大返回结果数，默认50'
+                description: '最大返回结果数，默认8，范围1–50'
+            },
+            offset: {
+                type: 'integer', minimum: 0, description: '结果偏移量，默认0'
+            },
+            detail: {
+                type: 'string', enum: ['summary', 'full'], description: '默认summary；full返回完整元数据'
             }
         },
         required: []
@@ -281,10 +287,18 @@ export const searchBoardsLibrariesTool = {
             type?: 'boards' | 'libraries' | 'both';
             filters?: StructuredFilters | string;
             maxResults?: number;
+            offset?: number;
+            detail?: 'summary' | 'full';
         },
         configService: ConfigService
     ): Promise<SearchBoardsLibrariesToolResult> => {
-        const { query, type = 'both', maxResults = 50 } = params;
+        const { query, type = 'both', maxResults = 8, offset = 0, detail = 'summary' } = params;
+        if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 50) {
+            return { is_error: true, content: 'maxResults must be an integer between 1 and 50.' };
+        }
+        if (!Number.isSafeInteger(offset) || offset < 0 || !['summary', 'full'].includes(detail)) {
+            return { is_error: true, content: 'offset must be a non-negative safe integer; detail must be summary or full.' };
+        }
         
         // 处理 filters 参数：可能是字符串（LLM 传入的 JSON 字符串）或对象
         let filters: StructuredFilters | undefined = undefined;
@@ -360,7 +374,7 @@ export const searchBoardsLibrariesTool = {
         }
         
         // 转换为小写用于匹配
-        const queryListLower = queryList.map(q => q.toLowerCase());
+        const queryListLower = queryList.map(q => q.toLowerCase().replace(/^@aily-project\//, ''));
 
         let results: Array<{
             source: 'board' | 'library';
@@ -411,8 +425,16 @@ export const searchBoardsLibrariesTool = {
             }
 
             // 按分数排序并限制结果数
-            results.sort((a, b) => b.score - a.score);
-            results = results.slice(0, maxResults);
+            const exactQuery = (typeof (filters?.keywords ?? query) === 'string'
+                ? String(filters?.keywords ?? query) : queryList.join(' ')).trim().toLowerCase();
+            const exact = (item: SearchResultItem) => Number([item.name, item.displayName,
+                toCanonicalAilyPackageName(item.name, item.source)].some(value => value?.toLowerCase() === exactQuery));
+            results.sort((a, b) => exact(b) - exact(a) || b.score - a.score || a.name.localeCompare(b.name));
+            const totalMatches = results.length;
+            results = results.slice(offset, offset + maxResults);
+            const page = { totalMatches, returnedCount: results.length, offset, maxResults,
+                truncated: offset + results.length < totalMatches,
+                nextOffset: offset + results.length < totalMatches ? offset + results.length : null };
 
             if (results.length === 0) {
                 const queryDisplay = queryList.length > 0 ? queryList.join(', ') : '结构化筛选';
@@ -422,9 +444,29 @@ export const searchBoardsLibrariesTool = {
                 }
                 const toolResult = {
                     is_error: false,
-                    content: `未找到与 "${queryDisplay}" 匹配的结果\n\n搜索范围: ${type === 'both' ? '开发板和库' : type === 'boards' ? '开发板' : '库'}\n${hint}`
+                    metadata: { ...page, results: [], query: queryList, searchType: type, detail },
+                    content: totalMatches ? `当前页为空，共 ${totalMatches} 个匹配项。请减小 offset。` : `未找到与 "${queryDisplay}" 匹配的结果\n\n搜索范围: ${type === 'both' ? '开发板和库' : type === 'boards' ? '开发板' : '库'}\n${hint}`
                 };
                 return toolResult;
+            }
+
+            if (detail === 'summary') {
+                return {
+                    is_error: false,
+                    content: `找到 ${totalMatches} 个匹配项，返回 ${results.length} 项。使用 nextOffset 翻页；仅需更多元数据时用精确包名和 detail=full 查询。`,
+                    metadata: { ...page, detail, query: queryList, filters, searchType: type, dataFormat,
+                        results: results.map(item => ({
+                            source: item.source,
+                            packageName: toCanonicalAilyPackageName(item.name, item.source) ?? item.name,
+                            displayName: item.displayName,
+                            description: item.description,
+                            // Keep selection constraints, not ranking internals or duplicate identities.
+                            ...Object.fromEntries(Object.entries(item.metadata ?? {}).filter(([key]) =>
+                                ['category', 'supportedCores', 'core', 'architecture', 'mcu', 'brand', 'voltage',
+                                    'frequency', 'frequencyUnit', 'flash', 'sram', 'psram', 'gpio', 'connectivity',
+                                    'interfaces', 'communication', 'compatibleHardware', 'hardwareType'].includes(key)))
+                        })) }
+                };
             }
 
             // 格式化输出
@@ -432,7 +474,7 @@ export const searchBoardsLibrariesTool = {
             const filterDisplay = filters ? `\n筛选条件: ${JSON.stringify(filters, null, 2)}` : '';
             const formatNotice = dataFormat === 'old' && filters ? '\n⚠️ 注意：使用旧格式数据，结构化筛选已转为文本搜索\n' : '';
             
-            let resultContent = `找到 ${results.length} 个匹配项（${queryDisplay}）${filterDisplay}${formatNotice}\n`;
+            let resultContent = `找到 ${totalMatches} 个匹配项，返回 ${results.length} 项（${queryDisplay}）${filterDisplay}${formatNotice}\n`;
             resultContent += `搜索范围: ${type === 'both' ? '开发板和库' : type === 'boards' ? '开发板' : '库'}\n`;
             resultContent += `数据格式: ${dataFormat === 'new' ? '新索引（结构化）' : '旧索引（文本）'}\n\n`;
 
@@ -471,7 +513,8 @@ export const searchBoardsLibrariesTool = {
                 is_error: false,
                 content: resultContent,
                 metadata: {
-                    totalMatches: results.length,
+                    ...page,
+                    detail,
                     query: queryList,
                     filters: filters,
                     searchType: type,
@@ -707,7 +750,8 @@ function scoreItemByFields(
                     ? scoreArrayExact(value, query, config.weights[0])
                     : scoreArrayField(value, query, config.weights);
             } else {
-                fieldScore = scoreTextField(String(value), query, config.weights);
+                const text = config.name === 'name' ? String(value).replace(/^@aily-project\//i, '') : String(value);
+                fieldScore = scoreTextField(text, query, config.weights);
             }
 
             if (fieldScore > 0) {
@@ -946,7 +990,7 @@ function searchInOldBoards(boards: OldBoardItem[], queryList: string[]): SearchR
 
         // 最低分数门槛
         const minThreshold = matchedQueries.length > 0 ? matchedQueries.length * 10 : 10;
-        if (totalScore < minThreshold) continue;
+        if (totalScore < minThreshold && !queryList.includes(board.name.toLowerCase().replace(/^@aily-project\//, ''))) continue;
 
         if (totalScore > 0) {
             results.push({
@@ -974,7 +1018,7 @@ function searchInOldLibraries(libraries: OldLibraryItem[], queryList: string[]):
         const totalScore = applyMultiKeywordBonus(raw, queryList.length, matchedQueries.length);
 
         const minThreshold = matchedQueries.length > 0 ? matchedQueries.length * 10 : 10;
-        if (totalScore < minThreshold) continue;
+        if (totalScore < minThreshold && !queryList.includes(lib.name.toLowerCase().replace(/^@aily-project\//, ''))) continue;
 
         if (totalScore > 0) {
             results.push({

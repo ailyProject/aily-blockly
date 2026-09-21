@@ -1,24 +1,20 @@
 import { Injectable } from '@angular/core';
+import { observeNativeBlockDefinition } from './blockly-native-structure';
+import { createBlocklyExtensionFacade } from './blockly-extension-registration';
+import { BlocklyNativeReplayJournal } from './blockly-native-replay-journal';
+import { installProjectDataImageCache } from '@domain/project/project-data/public-api';
+import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-native-candidate-protocol';
 import * as Blockly from 'blockly';
-import {
-  ArduinoGenerator,
-  createArduinoGenerator,
-} from '../components/blockly/generators/arduino/arduino';
-import {
-  MicroPythonGenerator,
-  createMicroPythonGenerator,
-} from '../components/blockly/generators/micropython/micropython';
-import {
-  PythonGenerator,
-  createPythonGenerator,
-} from '../components/blockly/generators/python/python';
+import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
+import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { registerCustomFunctionContract, clearCustomFunctionRegistration } from './blockly-custom-function-contract';
+import { registerVariableDeclarationContract, clearVariableDeclarationRegistration } from './blockly-variable-declaration-contract';
+import { createProjectGenerator, type BlocklyGeneratorMode, type ProjectGenerator } from './blockly-generator-factory';
+export type { BlocklyGeneratorMode, ProjectGenerator } from './blockly-generator-factory';
 import {
   prepareBlocklyProjectDataForCodeGeneration,
   wrapProjectDataGeneratorFunctions,
 } from '@domain/project/public-api';
-
-export type BlocklyGeneratorMode = 'arduino' | 'micropython' | 'python';
-export type ProjectGenerator = ArduinoGenerator | MicroPythonGenerator | PythonGenerator;
 
 export interface GeneratorRuntimeContext {
   mode: BlocklyGeneratorMode;
@@ -27,9 +23,11 @@ export interface GeneratorRuntimeContext {
   packageJson?: unknown;
   projectService?: unknown;
   getWorkspace: () => Blockly.WorkspaceSvg | null;
+  onBlockDefinition?: (source: Record<string, any>, definition: object) => void;
 }
 
 export interface GeneratorLoadResult {
+  contractsReady?: Promise<void>;
   filePath: string;
   arduinoBlockTypes: string[];
   micropythonBlockTypes: string[];
@@ -69,13 +67,18 @@ interface RuntimeSession {
   registrySnapshot: RegistrySnapshot;
   resources: RuntimeResources;
   loadedPaths: Set<string>;
+  replay: BlocklyNativeReplayJournal;
 }
 
 let activeProjectGenerator: ProjectGenerator | null = null;
+let activeProjectGeneratorRevision = 0;
 
 export function getActiveProjectGenerator(): ProjectGenerator | null {
   return activeProjectGenerator;
 }
+
+/** Configuration/library changes invalidate prepared code even if workspace bytes are unchanged. */
+export function getActiveProjectGeneratorRevision(): number { return activeProjectGeneratorRevision; }
 
 /**
  * Cross the asynchronous Project Data barrier while retaining the identity of
@@ -89,12 +92,13 @@ export async function runWithPreparedActiveProjectGenerator<T>(
   projectValue?: unknown,
 ): Promise<T> {
   const generator = activeProjectGenerator;
+  const revision = activeProjectGeneratorRevision;
   if (!generator) {
     throw new Error('Blockly generator runtime is not active');
   }
 
   await prepareBlocklyProjectDataForCodeGeneration(workspace, projectValue);
-  if (activeProjectGenerator !== generator) {
+  if (activeProjectGenerator !== generator || activeProjectGeneratorRevision !== revision) {
     throw new Error('Blockly generator runtime changed while Project Data was being prepared');
   }
 
@@ -156,11 +160,7 @@ export class BlocklyGeneratorRuntimeService {
     }
 
     // 模式只在会话创建处决策一次，保证同一项目不会同时持有 Python 与 Arduino 生成器状态。
-    const generator = context.mode === 'python'
-      ? createPythonGenerator()
-      : context.mode === 'micropython'
-        ? createMicroPythonGenerator()
-        : createArduinoGenerator();
+    const generator = createProjectGenerator(context.mode);
     const session: RuntimeSession = {
       id: sessionId,
       epoch,
@@ -179,16 +179,39 @@ export class BlocklyGeneratorRuntimeService {
         workspaceFacades: new WeakMap<Blockly.Workspace, Blockly.Workspace>(),
       },
       loadedPaths: new Set<string>(),
+      replay: new BlocklyNativeReplayJournal(),
     };
 
     this.session = session;
     activeProjectGenerator = generator;
+    activeProjectGeneratorRevision++;
     this.installRealmBridge(session);
     return generator;
   }
 
   getActiveGenerator(): ProjectGenerator | null {
     return this.session?.active ? this.session.generator : null;
+  }
+
+  captureNativeReplay() {
+    const session = this.requireActiveSession(), revision = activeProjectGeneratorRevision;
+    return session.replay.capture(() => {
+      if (!this.isCurrent(session) || activeProjectGeneratorRevision !== revision) throw new Error('Native candidate runtime changed.');
+    });
+  }
+
+  /** Diagnostic preparation only: no ABS capability promotion or host workspace mutation. */
+  async evaluateNativeCandidate(blocks: NativeCandidateBlock[], options: NativeCandidateOptions) {
+    const replay = this.captureNativeReplay(), detached = structuredClone(blocks);
+    const { evaluateNativeCandidate } = await import('./blockly-native-candidate');
+    return evaluateNativeCandidate({ steps: replay.steps, blocks: detached }, {
+      ...options, assertCurrent: () => { options.assertCurrent(); replay.assertCurrent(); },
+    });
+  }
+
+  recordNativeBlockDefinitions(definitions: Record<string, any>[], libraryName?: string): void {
+    // Host bootstrap definitions can load before the project runtime exists.
+    if (this.session?.active) this.session.replay.append({ kind: 'definitions', definitions, ...(libraryName ? { libraryName } : {}) });
   }
 
   rebuild(
@@ -225,6 +248,9 @@ export class BlocklyGeneratorRuntimeService {
       return;
     }
 
+    activeProjectGeneratorRevision++;
+    session.replay.append({ kind: 'messages', value: { ...Blockly.Msg } });
+
     const messageSurface = session.registrySnapshot.propertySurfaces
       .find((surface) => surface.target === Blockly.Msg);
     if (!messageSurface) {
@@ -241,6 +267,7 @@ export class BlocklyGeneratorRuntimeService {
 
   updateContext(context: Partial<Omit<GeneratorRuntimeContext, 'mode' | 'getWorkspace'>>): void {
     const session = this.requireActiveSession();
+    activeProjectGeneratorRevision++;
     session.context = { ...session.context, ...context };
     this.publishContextToRealm(session);
   }
@@ -257,8 +284,10 @@ export class BlocklyGeneratorRuntimeService {
 
   setLibraryI18n(packageName: string, value: unknown): void {
     const session = this.requireActiveSession();
+    activeProjectGeneratorRevision++;
     const realm = session.realmWindow as unknown as Record<string, any>;
     realm['__BLOCKLY_LIB_I18N__'][packageName] = cloneRuntimeValue(value);
+    session.replay.append({ kind: 'i18n', packageName, value });
   }
 
   loadGenerator(filePath: string, source: string): GeneratorLoadResult {
@@ -267,6 +296,9 @@ export class BlocklyGeneratorRuntimeService {
       return this.describeLoadedGenerator(session, filePath, []);
     }
 
+    activeProjectGeneratorRevision++;
+    session.replay.append({ kind: 'script', label: filePath, source });
+    const previousTextHandler = session.generator.forBlock['text'];
     const globalsBefore = new Set(Reflect.ownKeys(session.realmWindow).map(String));
     let scriptError: ErrorEvent | null = null;
     const errorHandler = (event: ErrorEvent) => {
@@ -305,11 +337,21 @@ export class BlocklyGeneratorRuntimeService {
     // Generator scripts now live in the project iframe, so Project Data's
     // legacy-field projection must be installed at this runtime boundary. This
     // keeps read-only libraries working even when callers/loaders evolve.
+    if (session.context.mode === 'arduino' && session.generator.forBlock['text'] !== previousTextHandler) {
+      adaptArduinoTextLiterals(session.generator);
+    }
     wrapProjectDataGeneratorFunctions(session.generator, [
       ...result.arduinoBlockTypes,
       ...result.micropythonBlockTypes,
       ...result.pythonBlockTypes,
     ]);
+    if (session.context.mode === 'arduino') {
+      adaptBundledArduinoProcedureCalls(session.generator);
+    }
+    if (session.context.mode === 'arduino') result.contractsReady = Promise.all([
+      registerCustomFunctionContract(source, session.realmWindow, Blockly.Blocks, session, () => this.session === session && session.active),
+      registerVariableDeclarationContract(source, session.realmWindow, session.generator, Blockly.Blocks, session, () => this.session === session && session.active),
+    ]).then(() => undefined);
     return result;
   }
 
@@ -325,13 +367,15 @@ export class BlocklyGeneratorRuntimeService {
     return Reflect.apply(candidate as (...values: unknown[]) => T, session.realmWindow, bridgedArgs);
   }
 
-  destroy(): void {
+  destroy(expectedGenerator?: ProjectGenerator | null): void {
     const session = this.session;
-    if (!session) {
+    if (!session || expectedGenerator !== undefined && session.generator !== expectedGenerator) {
       return;
     }
 
     session.active = false;
+    clearCustomFunctionRegistration(Blockly.Blocks, session);
+    clearVariableDeclarationRegistration(Blockly.Blocks, session);
     this.clearResources(session);
     this.restoreHostState(session.registrySnapshot);
     session.loadedPaths.clear();
@@ -360,6 +404,41 @@ export class BlocklyGeneratorRuntimeService {
 
   private installRealmBridge(session: RuntimeSession): void {
     const realm = session.realmWindow as unknown as Record<string, any>;
+    const extensionFacade = createBlocklyExtensionFacade(realm, () => this.isCurrent(session));
+    // JS-assigned definitions must be observed before their first normal init,
+    // including newBlock calls made by the same script. Do not probe any blocks.
+    const observeRegistered = (key: PropertyKey) => {
+      const definition = Object.getOwnPropertyDescriptor(Blockly.Blocks, key)?.value;
+      if (definition && typeof definition === 'object') observeNativeBlockDefinition(definition);
+      activeProjectGeneratorRevision++;
+    };
+    const blocksFacade = new Proxy(Blockly.Blocks, {
+      set: (target, key, value) => {
+        if (!this.isCurrent(session)) throw new Error('Block registration belongs to an inactive runtime.');
+        const written = Reflect.set(target, key, value, target);
+        if (written) observeRegistered(key);
+        return written;
+      },
+      defineProperty: (target, key, descriptor) => {
+        if (!this.isCurrent(session)) throw new Error('Block registration belongs to an inactive runtime.');
+        const written = Reflect.defineProperty(target, key, descriptor);
+        if (written) observeRegistered(key);
+        return written;
+      },
+      deleteProperty: (target, key) => {
+        if (!this.isCurrent(session)) throw new Error('Block registration belongs to an inactive runtime.');
+        const deleted = Reflect.deleteProperty(target, key);
+        if (deleted) activeProjectGeneratorRevision++;
+        return deleted;
+      },
+    });
+    const defineBlocks = Blockly.defineBlocksWithJsonArray;
+    const registerDeclarations = (definitions: any[]) => {
+      if (!this.isCurrent(session)) throw new Error('Generator declaration belongs to an inactive runtime.');
+      defineBlocks(definitions);
+      activeProjectGeneratorRevision++;
+      for (const source of definitions) session.context.onBlockDefinition?.(source, Blockly.Blocks[source.type]);
+    };
     const blocklyFacade = new Proxy(Object.create(null), {
       get: (_target, key) => {
         if (!this.isCurrent(session)) {
@@ -371,6 +450,9 @@ export class BlocklyGeneratorRuntimeService {
             return workspace ? this.getWorkspaceFacade(session, workspace) : null;
           };
         }
+        if (key === 'defineBlocksWithJsonArray') return registerDeclarations;
+        if (key === 'Blocks') return blocksFacade;
+        if (key === 'Extensions') return extensionFacade;
         return Reflect.get(Blockly, key);
       },
       has: (_target, key) => Reflect.has(Blockly, key),
@@ -390,6 +472,9 @@ export class BlocklyGeneratorRuntimeService {
     realm['Python'] = session.context.mode === 'python' ? session.generator : undefined;
     realm['pinyinPro'] = (globalThis as Record<string, unknown>)['pinyinPro'];
     realm['__BLOCKLY_LIB_I18N__'] = Object.create(null);
+    installProjectDataImageCache(realm, session.context.getWorkspace, () => {
+      if (!this.isCurrent(session)) throw new Error('Image cache belongs to an inactive generator runtime.');
+    });
 
     this.installTimerBridge(session, realm);
     this.publishContextToRealm(session);
@@ -400,6 +485,7 @@ export class BlocklyGeneratorRuntimeService {
     realm['boardConfig'] = cloneRuntimeValue(session.context.boardConfig);
     realm['packageJson'] = cloneRuntimeValue(session.context.packageJson);
     realm['projectService'] = this.createProjectServiceFacade(session);
+    session.replay.append({ kind: 'context', mode: session.context.mode, messages: { ...Blockly.Msg }, boardConfig: session.context.boardConfig, packageJson: session.context.packageJson });
   }
 
   private createProjectServiceFacade(session: RuntimeSession): unknown {
@@ -583,7 +669,7 @@ export class BlocklyGeneratorRuntimeService {
 
     return {
       extensionSurface: extensions ? this.captureSurface(extensions) : undefined,
-      propertySurfaces: [Blockly.Blocks, Blockly.Msg, ...prototypes].map((target) => this.captureSurface(target)),
+      propertySurfaces: [Blockly.Blocks, Blockly.Msg, Blockly.Extensions, ...prototypes].map((target) => this.captureSurface(target)),
       registryTypeMap,
       contextMenuItems: registeredItems ? new Map(registeredItems) : undefined,
     };

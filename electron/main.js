@@ -35,7 +35,9 @@ const { mergeConfigChanges } = require("./config-persistence");
 const { resolveAilyAppDataPath } = require("./appdata-path");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const {
+  createDevelopmentProtocolArgs,
   normalizeBuildProduct,
+  resolveBuildProduct,
   getProductAuthConfig,
   isProductProtocolUrl,
 } = require('./build-product');
@@ -82,7 +84,11 @@ function getPackagedBuildProduct() {
 }
 
 function getBuildProduct() {
-  return normalizeBuildProduct(process.env.AILY_BUILD_PRODUCT || getPackagedBuildProduct());
+  return resolveBuildProduct({
+    environment: process.env,
+    packagedProduct: getPackagedBuildProduct(),
+    argv: process.argv,
+  });
 }
 
 function applyAppIdentity(product) {
@@ -448,7 +454,11 @@ if (serve) {
 for (const protocol of PROTOCOLS) {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(protocol, process.execPath, [path.resolve(process.argv[1])]);
+      app.setAsDefaultProtocolClient(protocol, process.execPath, createDevelopmentProtocolArgs({
+        appEntry: path.resolve(process.argv[1]),
+        product: getBuildProduct(),
+        serve,
+      }));
     }
   } else {
     app.setAsDefaultProtocolClient(protocol);
@@ -1046,6 +1056,8 @@ async function handleCliBridgeCommand(action, payload) {
         ? 620000
         : operation === 'project_upload'
           ? 920000
+        : operation === 'board_switch'
+          ? 420000
         : operation === 'project_create'
           ? 300000
           : operation === 'project_open'
@@ -1054,7 +1066,7 @@ async function handleCliBridgeCommand(action, payload) {
             ? 600000
           : operation === 'project_save' && payload?.params?.chunk === true
             ? 140000
-          : operation === 'abs_apply' || operation === 'library_runtime_sync' || operation === 'set_board_config'
+          : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config'
             ? 120000
             : operation === 'subapp_agent_call'
               ? 620000

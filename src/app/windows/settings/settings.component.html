@@ -363,3 +363,30 @@
     </div>
   </div>
 </app-sub-window>
+
+<ng-template #cleanupDialogTemplate>
+  @if (cleanupDialog; as dialog) {
+  <app-base-dialog
+    [title]="dialog.title | translate"
+    [showCloseButton]="dialog.phase !== 'running'"
+    [showFooter]="dialog.phase !== 'running'"
+    [buttons]="cleanupDialogButtons"
+    (closeDialog)="onCleanupDialogAction('close')"
+    (buttonClick)="onCleanupDialogAction($event)">
+    <div class="cleanup-status" role="status" aria-live="polite">
+      @if (dialog.phase === 'running') {
+      <i class="fa-light fa-spinner-third fa-spin" aria-hidden="true"></i>
+      }
+      <span>{{ dialog.text | translate }}</span>
+    </div>
+    @if (dialog.phase !== 'confirm') {
+    <nz-progress
+      [nzPercent]="dialog.percent"
+      [nzStatus]="dialog.phase === 'error' ? 'exception' : dialog.phase === 'success' ? 'success' : 'active'"
+      [nzFormat]="cleanupPercentFormat"
+      [attr.aria-label]="dialog.title | translate">
+    </nz-progress>
+    }
+  </app-base-dialog>
+  }
+</ng-template>

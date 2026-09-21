@@ -11,6 +11,7 @@
 import * as Blockly from 'blockly/core';
 import {createPlusField} from './field_plus';
 import {createMinusField} from './field_minus';
+import {registerStructuralMutator} from './structural-mutators';
 
 const textJoinMutator = {
   /**
@@ -162,8 +163,9 @@ const textJoinHelper = function () {
 if (Blockly.Extensions.isRegistered('text_join_mutator')) {
   Blockly.Extensions.unregister('text_join_mutator');
 }
-Blockly.Extensions.registerMutator(
+registerStructuralMutator(
   'text_join_mutator',
   textJoinMutator,
   textJoinHelper,
+  { count: 'itemCount', initial: 2, start: 0, replace: true, repeated: [{ prefix: 'ADD', kind: 'valueInput' }], serialization: 'always' },
 );

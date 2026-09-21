@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.99",
+  "version": "0.9.100",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -132,11 +132,13 @@
     }
   },
   "scripts": {
-    "ng": "ng",
-    "start": "ng serve",
-    "watch": "ng build --watch --configuration development",
-    "test": "ng test",
-    "test:unit:ci": "ng test --watch=false --browsers=ChromeHeadless",
+    "ng": "node scripts/run-angular.cjs",
+    "start": "node scripts/run-angular.cjs serve",
+    "watch": "node scripts/run-angular.cjs build --watch --configuration development",
+    "test": "node scripts/run-angular.cjs test",
+    "test:unit:ci": "node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless",
+    "test:abs-sync": "node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless",
+    "prepare:blockly-native": "node scripts/blockly-native-bundle.cjs",
     "guard:aily-chat-mainline": "node scripts/guard-aily-chat-mainline.js",
     "architecture:services": "node scripts/check-angular-service-architecture.mjs",
     "architecture:services:inventory": "node scripts/check-angular-service-architecture.mjs --inventory",
@@ -148,12 +150,12 @@
     "prepare:simulator-runtime": "node scripts/prepare-simulator-runtime.js",
     "prepare:simulator-runtime:release": "node scripts/prepare-simulator-runtime.js",
     "prepare:electron-runtime": "npm run prepare:simulator-runtime",
-    "build": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder build",
+    "build": "npm run prepare:electron-runtime && node scripts/run-angular.cjs build --base-href ./ && electron-builder build",
     "build:cn": "node ./scripts/build-electron.js --flavor cn",
     "build:global": "node ./scripts/build-electron.js --flavor global",
     "build:coder": "node ./scripts/build-electron.js --product coder",
-    "build:mac": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder --mac --arm64 --x64",
-    "build:mac:universal": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder --mac --universal",
+    "build:mac": "npm run prepare:electron-runtime && node scripts/run-angular.cjs build --base-href ./ && electron-builder --mac --arm64 --x64",
+    "build:mac:universal": "npm run prepare:electron-runtime && node scripts/run-angular.cjs build --base-href ./ && electron-builder --mac --universal",
     "test:e2e": "node ./scripts/run-e2e.mjs test",
     "test:e2e:ui": "node ./scripts/run-e2e.mjs ui",
     "test:e2e:headed": "node ./scripts/run-e2e.mjs headed",
@@ -255,5 +257,8 @@
   },
   "overrides": {
     "blockly": "npm:aily-project-blockly@^1.0.2"
+  },
+  "allowScripts": {
+    "electron": true
   }
 }

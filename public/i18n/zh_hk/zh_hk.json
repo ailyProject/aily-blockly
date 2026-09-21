@@ -369,6 +369,7 @@
             "UI_THEME": "介面主題",
             "BLOCKLY_THEME": "Blockly主題",
             "BLOCKLY_MINIMAP": "Blockly縮略圖",
+            "FLYOUT_AUTO_CLOSE": "自動關閉工具箱",
             "COMPILATION_OPTIONS": "編譯選項",
             "REGION": "服務區域",
             "RESOURCE_SOURCE": "資源節點",

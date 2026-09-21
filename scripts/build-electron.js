@@ -198,7 +198,7 @@ function main(args = process.argv.slice(2)) {
     'scripts',
     'prepare-simulator-runtime.js',
   );
-  const ngCliPath = path.join(workspaceRoot, 'node_modules', '@angular', 'cli', 'bin', 'ng.js');
+  const ngCliPath = path.join(workspaceRoot, 'scripts', 'run-angular.cjs');
   const electronBuilderCliPath = path.join(workspaceRoot, 'node_modules', 'electron-builder', 'cli.js');
 
   run([simulatorRuntimePrepareScript], workspaceRoot, environment);

@@ -389,3 +389,12 @@ ngx-simplebar {
 [disabled] {
   opacity: 0.6;
 }
+
+.cleanup-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--aily-text-primary);
+  line-height: 1.6;
+}

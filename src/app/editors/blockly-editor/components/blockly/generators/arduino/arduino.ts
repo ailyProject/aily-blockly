@@ -1,4 +1,5 @@
 import * as Blockly from 'blockly';
+import { cppStringLiteral } from './cpp-string-literal';
 import { applyArduinoEntrypointBlockMappings } from './arduino-entrypoint-mapping';
 
 export enum Order {
@@ -865,33 +866,24 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 
   /**
-   * Encode a string as a properly escaped JavaScript string, complete with
+   * Encode a string as a properly escaped C++ string, complete with
    * quotes.
    *
    * @param string Text to encode.
-   * @returns JavaScript string.
+   * @returns C++ string literal.
    */
   quote_(string: string): string {
-    // Can't use goog.string.quote since Google's style guide recommends
-    // JS string literals use single quotes.
-    string = string
-      .replace(/\\/g, '\\\\')
-      .replace(/\n/g, '\\\n')
-      .replace(/'/g, "\\'");
-    return "\"" + string + "\"";
+    return cppStringLiteral(string);
   }
 
   /**
-   * Encode a string as a properly escaped multiline JavaScript string, complete
+   * Encode a string as a properly escaped multiline C++ string, complete
    * with quotes.
    * @param string Text to encode.
-   * @returns JavaScript string.
+   * @returns C++ string literal.
    */
   multiline_quote_(string: string): string {
-    // Can't use goog.string.quote since Google's style guide recommends
-    // JS string literals use single quotes.
-    const lines = string.split(/\n/g).map(this.quote_);
-    return lines.join(" + '\\n' +\n");
+    return cppStringLiteral(string);
   }
 
   /**

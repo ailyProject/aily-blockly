@@ -97,3 +97,4 @@ src/app/tools/aily-chat/tools/tests
 src/app/tools/aily-chat/tools/自定义库-函数
 todo.md
 plans/
+/.generated/blockly-runtime/

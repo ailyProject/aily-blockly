@@ -12,6 +12,7 @@ import type {
   AuthUserInfo,
 } from './models/auth-snapshot';
 import { isDetachedAilyChatRenderer } from './policies/detached-aily-chat-auth';
+import { normalizeAuthCreditSnapshot } from './models/auth-credit-snapshot';
 
 export interface CommonResponse {
   status: number;
@@ -462,7 +463,7 @@ export class AuthService {
               const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
               this.setCurrentUserInfo(userData, quotaInfoSnapshot);
             } catch (quotaError) {
-              console.warn('获取独立配额快照失败，回退到 auth/me:', quotaError);
+              console.warn('Credit 额度快照刷新失败，保留同账号已确认的额度:', quotaError);
               const recoveredQuotaInfoSnapshot = await this.retryAuthQuotaInfoSnapshotImmediately(token);
               if (recoveredQuotaInfoSnapshot) {
                 this.setCurrentUserInfo(userData, recoveredQuotaInfoSnapshot);
@@ -906,7 +907,12 @@ export class AuthService {
             return;
           }
 
-          resolve(normalizeAuthQuotaInfoSnapshotPayload(response.data, { source: 'token' }) ?? null);
+          const snapshot = normalizeAuthQuotaInfoSnapshotPayload(response.data, { source: 'token' });
+          if (!snapshot?.creditSnapshot) {
+            reject(new Error('Invalid Credit quota snapshot'));
+            return;
+          }
+          resolve(snapshot);
         },
         error: (error) => reject(error),
       });
@@ -1966,6 +1972,10 @@ export function normalizeAuthQuotaInfoSnapshotPayload(
   },
 ): AuthQuotaInfoSnapshot | undefined {
   const detailRecord = isRecord(value) ? value : undefined;
+  if (detailRecord?.['unit'] === 'credits') {
+    const creditSnapshot = normalizeAuthCreditSnapshot(detailRecord);
+    return creditSnapshot ? { source: options?.source ?? 'token', creditSnapshot } : undefined;
+  }
   const normalizedQuotaSnapshots = normalizeAuthQuotaSnapshots(
     detailRecord?.['quota_snapshots'] ?? detailRecord?.['quotaSnapshots'],
   );

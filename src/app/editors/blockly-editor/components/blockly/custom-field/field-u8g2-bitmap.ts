@@ -5,8 +5,9 @@
  */
 
 import * as Blockly from 'blockly/core';
-import { BitmapUploadRequest, GlobalServiceManager } from '../../../services/bitmap-upload.service';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
+import type { BitmapUploadRequest } from '../../../services/bitmap-upload.service';
+import { GlobalServiceManager } from '../../../services/bitmap-upload-bridge';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = 'Clear';
@@ -122,11 +123,6 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
           // Initialize global service manager
         this.globalServiceManager = GlobalServiceManager.getInstance();
 
-        // 延迟设置上传响应处理器，确保字段完全初始化
-        setTimeout(() => {
-            this.setupUploadResponseHandler();
-        }, 0);
-
         // Configure value, height, and width
         const normalized = normalizeU8g2BitmapValue(
             value === Blockly.Field.SKIP_SETUP ? config?.value : value,
@@ -235,7 +231,7 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
         }
         this.updateBlockDisplayImage();
         this.updateControlsFromValue();
-        if (nextRefId) {
+        if (nextRefId && this.blockDisplayImage && projectDataRuntime.isConfigured()) {
             void this.ensureBitmapLoaded().catch((error) => console.error('位图资源加载失败:', error));
         }
     }
@@ -375,6 +371,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
      * Initializes the on-block display.
      */
     override initView() {
+        // Upload subscriptions belong to the rendered field, never headless state loading.
+        if (projectDataRuntime.isConfigured()) this.setupUploadResponseHandler();
         const blockPixelSize = this.getBlockPixelSize();
         // 创建SVG图片元素来显示bitmap
         this.blockDisplayImage = Blockly.utils.dom.createSvgElement(
@@ -391,7 +389,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
 
         // 初始渲染
         this.updateBlockDisplayImage();
-        void this.ensureBitmapLoaded().catch((error) => console.error('位图资源加载失败:', error));
+        // A graphical candidate has no editor Store; its resources are prepared separately.
+        if (projectDataRuntime.isConfigured()) void this.ensureBitmapLoaded().catch((error) => console.error('位图资源加载失败:', error));
     }
 
     /**

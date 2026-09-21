@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "src/app/tools/user-center/credit-contract.spec.ts",
+    "src/**/*.d.ts"
+  ]
+}

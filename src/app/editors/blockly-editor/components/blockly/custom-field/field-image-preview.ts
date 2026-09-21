@@ -5,8 +5,9 @@
  */
 
 import * as Blockly from 'blockly/core';
-import { GlobalServiceManager } from '../../../services/bitmap-upload.service';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
+import { GlobalServiceManager } from '../../../services/bitmap-upload-bridge';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef, cacheProjectDataImage, prepareProjectDataImage,
+    registerNativeFieldPreparation, releaseProjectDataImage } from '@domain/project/project-data/public-api';
 
 Blockly.Msg['BUTTON_LABEL_BROWSE'] = '打开';
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = '清除';
@@ -125,7 +126,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         }
         this.value_ = { ...newValue };
         this.updateBlockDisplay();
-        if (nextRefId && (this.previewImage || this.blockDisplayImage)) {
+        if (nextRefId && (this.previewImage || this.blockDisplayImage) && projectDataRuntime.isConfigured()) {
             void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
         }
     }
@@ -620,133 +621,11 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
             const imageData = e.target?.result as string;
             this.updatePreview(imageData);
             // 直接更新值，包含新的图片数据
-            this.updateValueWithImageData(imageData, file.name);
+            this.updateValueWithImageData(imageData);
         };
         reader.readAsDataURL(file);
     }
 
-    /**
-     * 处理图片并缓存到全局存储
-     */
-    private processAndCacheImage(fileName: string, imageData: string, resourceId = ''): Promise<void> {
-        console.log(`🔍 [图片处理] 开始处理文件: ${fileName}`);
-
-        // 初始化全局图片缓存
-        if (!(window as any).tftImageCache) {
-            (window as any).tftImageCache = {};
-        }
-
-        let resolveLoading!: () => void;
-        let rejectLoading!: (reason?: unknown) => void;
-        const loading = new Promise<void>((resolve, reject) => {
-            resolveLoading = resolve;
-            rejectLoading = reject;
-        });
-        const img = new Image();
-        img.onload = () => {
-            console.log(`🖼️ 图片加载完成: ${img.width}x${img.height}`);
-
-            try {
-                // 处理所有可能用到的尺寸
-                const processedSizes: { [key: number]: string[] } = {};
-                const sizesToProcess = [8, 16, 24, 32, 48, 64, 96, 128];
-
-                let processedCount = 0;
-                sizesToProcess.forEach(size => {
-                    try {
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        if (!ctx) return;
-
-                        canvas.width = size;
-                        canvas.height = size;
-
-                        // 绘制缩放后的图片，保持宽高比
-                        const aspectRatio = img.width / img.height;
-                        let drawWidth = size;
-                        let drawHeight = size;
-                        let offsetX = 0;
-                        let offsetY = 0;
-
-                        if (aspectRatio > 1) {
-                            drawHeight = size / aspectRatio;
-                            offsetY = (size - drawHeight) / 2;
-                        } else {
-                            drawWidth = size * aspectRatio;
-                            offsetX = (size - drawWidth) / 2;
-                        }
-
-                        ctx.fillStyle = '#000000';
-                        ctx.fillRect(0, 0, size, size);
-                        ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
-
-                        // 获取像素数据
-                        const pixelData = ctx.getImageData(0, 0, size, size);
-                        const data = pixelData.data;
-
-                        // 转换为RGB565数组
-                        const rgb565Array: string[] = [];
-                        for (let i = 0; i < data.length; i += 4) {
-                            const r = data[i];
-                            const g = data[i + 1];
-                            const b = data[i + 2];
-
-                            // 转换为RGB565
-                            const r5 = (r >> 3) & 0x1F;
-                            const g6 = (g >> 2) & 0x3F;
-                            const b5 = (b >> 3) & 0x1F;
-                            const rgb565 = (r5 << 11) | (g6 << 5) | b5;
-
-                            rgb565Array.push(`0x${rgb565.toString(16).padStart(4, '0').toUpperCase()}`);
-                        }
-
-                        processedSizes[size] = rgb565Array;
-                        processedCount++;
-                        console.log(`✅ 处理尺寸 ${size}x${size}: ${rgb565Array.length} 像素`);
-
-                    } catch (sizeError) {
-                        console.error(`❌ 处理尺寸 ${size} 时出错:`, sizeError);
-                    }
-                });
-
-                // 存储到全局缓存（使用多个key确保能找到）
-                const cacheKeys = [
-                    resourceId,
-                    fileName,
-                    fileName.toLowerCase(),
-                    fileName.replace(/\s+/g, '_'),
-                ].filter(Boolean);
-                cacheKeys.forEach(key => {
-                    (window as any).tftImageCache[key] = {
-                        fileName,
-                        resourceId,
-                        originalWidth: img.width,
-                        originalHeight: img.height,
-                        processedSizes: processedSizes,
-                        imageElement: img,
-                        processedAt: Date.now(),
-                        processedCount: processedCount
-                    };
-                });
-
-                console.log(`🎉 图片 ${fileName} 处理完成，已缓存 ${processedCount} 个尺寸`);
-                resolveLoading();
-
-            } catch (error) {
-                console.error('处理图片时出错:', error);
-                rejectLoading(error);
-            }
-        };
-
-        img.onerror = () => {
-            const error = new Error(`图片加载失败: ${fileName}`);
-            console.error(error.message);
-            rejectLoading(error);
-        };
-
-        img.src = imageData;
-        return loading;
-    }
 
     /**
      * 更新预览图片
@@ -885,7 +764,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
     /**
      * 更新字段值（包含新的图片数据）
      */
-    private updateValueWithImageData(imageData: string, fileName: string) {
+    private updateValueWithImageData(imageData: string) {
         const parsed = parseImageDataUrl(imageData);
         this.resolvedImageData = imageData;
         const mutation = projectDataRuntime.put({
@@ -909,7 +788,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
                 image,
             };
             this.setValue(newValue);
-            await this.processAndCacheImage(fileName, imageData, image.$ailyData.id);
+            await cacheProjectDataImage(this, image, imageData);
         });
         projectDataRuntime.trackMutation(mutation);
         void mutation.catch((error) => console.error('图片资源保存失败:', error));
@@ -921,6 +800,9 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         if (!ref) return null;
         const refId = ref.$ailyData.id;
         if (this.resolvedImageRefId === refId && this.resolvedImageData) {
+            // A previous decode can fail after the original bytes were retained.
+            // Never treat the preview URL alone as a prepared generator cache.
+            await cacheProjectDataImage(this, ref, this.resolvedImageData);
             return this.resolvedImageData;
         }
         if (this.loadingImage) return this.loadingImage;
@@ -931,7 +813,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
                 throw new Error(`图片资源长度不匹配: ${refId}`);
             }
             const dataUrl = `data:${current.mediaType || 'application/octet-stream'};base64,${bytesToBase64(bytes)}`;
-            await this.processAndCacheImage(current.filePath || refId, dataUrl, refId);
+            await cacheProjectDataImage(this, ref, dataUrl);
             this.resolvedImageData = dataUrl;
             this.resolvedImageRefId = refId;
             this.updatePreview(dataUrl);
@@ -988,7 +870,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
 
         // 初始渲染
         this.updateBlockDisplay();
-        void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
+        if (projectDataRuntime.isConfigured()) void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
     }
 
     /**
@@ -1045,6 +927,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
      * 销毁字段
      */
     override dispose() {
+        releaseProjectDataImage(this);
         // 清理DOM引用
         this.blockDisplayImage = null;
 
@@ -1112,6 +995,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // 注册字段类型
 Blockly.fieldRegistry.register('field_image_preview', FieldImagePreview);
+registerNativeFieldPreparation(FieldImagePreview.prototype, prepareProjectDataImage);
 
 /**
  * CSS样式

@@ -17,6 +17,7 @@ import {
 import { ConfigService, ThemeService } from '@core/preferences/public-api';
 import { TranslateService } from '@ngx-translate/core';
 import { AuthService } from '@core/auth/public-api';
+import { getToolWebUrl } from '../../../configs/api.config';
 import {
   AUTOMATION_UI_PORT,
   type AutomationUiPort,
@@ -281,7 +282,7 @@ export class SchematicMcpRuntimeService {
   }
 
   private buildCircuitWindowUrl(): string {
-    return `https://tool.aily.pro/connection-graph?type=json&theme=${this.themeService.theme()}&lang=${this.translate.currentLang}`;
+    return `${getToolWebUrl()}/connection-graph?type=json&theme=${this.themeService.theme()}&lang=${this.translate.currentLang}`;
   }
 
   private buildCircuitWindowPath(windowUrl = this.buildCircuitWindowUrl()): string {

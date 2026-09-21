@@ -25,7 +25,7 @@
           "builder": "@angular-devkit/build-angular:application",
           "options": {
             "outputPath": "dist/aily-blockly",
-            "preserveSymlinks": true,
+            "preserveSymlinks": false,
             "index": "src/index.html",
             "browser": "src/main.ts",
             "polyfills": [
@@ -48,6 +48,11 @@
                 "glob": "**/*",
                 "input": "node_modules/blockly/media/",
                 "output": "blockly/media"
+              },
+              {
+                "glob": "native-candidate.js",
+                "input": ".generated/blockly-runtime",
+                "output": "blockly/runtime"
               },
               {
                 "glob": "**/*",
@@ -170,14 +175,52 @@
               "zone.js/testing"
             ],
             "inlineStyleLanguage": "scss",
-            "preserveSymlinks": true,
+            "preserveSymlinks": false,
             "builderMode": "application",
             "include": [
               "**/*.spec.ts"
             ],
-            "assets": [],
+            "assets": [
+              {
+                "glob": "native-candidate.js",
+                "input": ".generated/blockly-runtime",
+                "output": "blockly/runtime"
+              }
+            ],
             "styles": [],
             "scripts": []
+          },
+          "configurations": {
+            "abs-sync": {
+              "tsConfig": "tsconfig.abs-sync.spec.json",
+              "include": [
+                "src/app/integrations/blockly/board-config-operation.spec.ts",
+                "src/app/integrations/blockly/board-switch-operation.spec.ts",
+                "src/app/integrations/blockly/project-mode-tool-routing.spec.ts",
+                "src/app/services/domains/project/project-board-switch.spec.ts",
+                "src/app/services/domains/project/project-lifecycle-gate.spec.ts",
+                "src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+                "src/app/editors/blockly-editor/project-board-reload.spec.ts",
+                "src/app/services/domains/project/project-mode.spec.ts",
+                "src/app/integrations/blockly/abs/**/*.spec.ts",
+                "src/app/editors/blockly-editor/services/builder.service.spec.ts",
+                "src/app/editors/blockly-editor/services/blockly-generator-runtime.service.spec.ts",
+                "src/app/services/shared/abs/**/*.spec.ts",
+                "src/app/services/domains/project/project-data/project-data-abs.spec.ts",
+                "src/app/services/domains/project/project-data/project-data-generic-values.spec.ts",
+                "src/app/services/domains/project/project-data/project-data-normalization.spec.ts",
+                "src/app/services/domains/project/project-save-as.spec.ts",
+                "src/app/services/domains/project/project-block-field-updates.spec.ts"
+              ]
+            },
+            "abs-project-load": {
+              "tsConfig": "tsconfig.abs-sync.spec.json",
+              "preserveSymlinks": false,
+              "include": [
+                "src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
+                "src/app/pages/playground/example-list/example-list-import.spec.ts"
+              ]
+            }
           }
         }
       }

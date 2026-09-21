@@ -24,6 +24,14 @@ interface ConfirmationCopy {
   danger: boolean;
 }
 
+export interface ChildAppInterruptionConfirmation {
+  title: string;
+  text: string;
+  confirmText: string;
+  cancelText: string;
+  danger: boolean;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ChildAppSafetyService {
   private readonly preparationHooks = new Map<string, ChildAppSafetyPreparationHook>();
@@ -76,6 +84,7 @@ export class ChildAppSafetyService {
   confirmInterruption(
     reason: ChildAppInterruptionReason,
     toolIds: readonly string[],
+    present?: (confirmation: ChildAppInterruptionConfirmation) => Promise<boolean>,
   ): Promise<boolean> {
     const hasActiveApps = toolIds.length > 0;
     if (reason === 'application-update' && !hasActiveApps) {
@@ -85,6 +94,16 @@ export class ChildAppSafetyService {
     const copy = this.confirmationCopy(reason, hasActiveApps);
     const names = this.getDisplayNames(toolIds).join(this.listSeparator);
     const params = hasActiveApps ? { [copy.interpolationKey]: names } : undefined;
+
+    if (present) {
+      return present({
+        title: this.translate.instant(copy.titleKey),
+        text: this.translate.instant(copy.contentKey, params),
+        confirmText: this.translate.instant(copy.okKey),
+        cancelText: this.translate.instant(copy.cancelKey),
+        danger: copy.danger,
+      });
+    }
 
     return new Promise(resolve => {
       this.modal.confirm({

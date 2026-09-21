@@ -9,7 +9,6 @@ import { ConfigService } from '@core/preferences/public-api';
 import {
   ElectronService,
   CmdService,
-  CrossPlatformCmdService,
   PlatformService,
   AppDataResourceLockService,
 } from '@core/platform/public-api';
@@ -47,7 +46,6 @@ export class SubjectItemComponent {
     private message: NzMessageService,
     private electronService: ElectronService,
     private cmdService: CmdService,
-    private crossPlatformCmdService: CrossPlatformCmdService,
     private playgroundService: PlaygroundService,
     private uiService: UiService,
     private platformService: PlatformService,
@@ -110,10 +108,10 @@ export class SubjectItemComponent {
       const separator = this.platformService.getPlatformSeparator();
       const targetPath = `${this.projectService.projectRootPath}${separator}${targetPathName}`;
       console.log('目标路径: ', targetPath);
-      await this.crossPlatformCmdService.copyItem(examplePath, targetPath, true, true);
+      this.projectService.importProjectDirectory(examplePath, targetPath);
       await this.projectService.initializeProjectDataSchema(targetPath);
       this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_SUCCESS') });
-      this.projectService.projectOpen(targetPath);
+      await this.projectService.projectOpen(targetPath);
     } catch (error) {
       this.message.error(this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_FAILED'));
     } finally {

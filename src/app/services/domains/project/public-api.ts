@@ -7,6 +7,7 @@ export * from './project-data/project-data-codec.registry';
 export * from './project-data/project-data-container';
 export * from './project-data/project-data-file-system';
 export * from './project-data/project-data-generic-values';
+export { collectProjectDataPayloads } from './project-data/project-data-payloads';
 export * from './project-data/project-data-legacy-import';
 export * from './project-data/project-data-policy';
 export * from './project-data/project-data-runtime';

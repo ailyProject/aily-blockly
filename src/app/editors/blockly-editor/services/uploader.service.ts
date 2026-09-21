@@ -16,14 +16,8 @@ import { NoticeService, ActionState, ActionService, WorkflowService, ProcessStat
 import { NzModalService } from "ng-zorro-antd/modal";
 import { CmdOutput, CmdService, LogService, AppDataResourceLockService } from '@core/platform/public-api';
 import { NpmService } from "@domain/dependencies/public-api";
-import {
-  normalizeArduinoGeneratedCode,
-} from "../components/blockly/generators/arduino/arduino";
-import {
-  runWithPreparedActiveProjectGenerator,
-} from './blockly-generator-runtime.service';
 import { BlocklyService } from "./blockly.service";
-import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 
 interface NetworkOtaUploadTarget {
@@ -424,22 +418,12 @@ export class _UploaderService {
             this.coderBuildActive = false;
           }
         } else {
-          const projectDocument = this.blocklyService.getProjectDocument();
-          const generated = await runWithPreparedActiveProjectGenerator(
-            this.blocklyService.workspace,
-            (generator) => ({
-              code: normalizeArduinoGeneratedCode(
-                generator.workspaceToCode(this.blocklyService.workspace),
-              ),
-              generator,
-            }),
-            projectDocument,
-          );
-          const { code, generator } = generated;
-          await writeArduinoGeneratedArtifacts(
-            projectPath,
-            generator,
-          );
+          const code = await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+            if (projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed.');
+            await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
+            assertCurrent();
+            return prepared.code;
+          });
           buildPath = await this.projectService.getBuildPath();
           const needsBuild = !this._builderService.passed ||
                             code !== this._builderService.lastCode ||

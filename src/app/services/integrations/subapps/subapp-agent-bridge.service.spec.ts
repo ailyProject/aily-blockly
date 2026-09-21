@@ -28,6 +28,23 @@ describe('SubappAgentBridgeService dependency materialization', () => {
     expect(service.releaseSession).toHaveBeenCalledTimes(2);
   });
 
+  it('preserves actionable dependency names and constraints instead of a generic readiness failure', async () => {
+    const issues = [{ name: 'Sensor', constraint: '>=2.0.0', requiredBy: 'Driver', reason: 'missing' }];
+    const service = createService({ ok: true, ready: false, dependencyIssues: issues });
+    const error = await service.materializeCoderProjectLibraries('/projects/coder').catch((value: any) => value);
+    expect(error.code).toBe('CODER_LIBRARY_DEPENDENCIES_INCOMPLETE');
+    expect(error.message).toContain('Driver → Sensor (>=2.0.0): missing');
+    expect(error.details.dependencyIssues).toEqual(issues);
+    expect(service.releaseSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not prevent opening a repairable project or installing its SDK after source preparation', async () => {
+    const service = createService({ ok: true, ready: false, sourceReady: true,
+      dependencyIssues: [{ name: 'Wire', requiredBy: 'Driver', reason: 'missing' }] });
+    await expectAsync(service.materializeCoderProjectLibraries('/projects/coder')).toBeResolved();
+    expect(service.releaseSession).toHaveBeenCalledTimes(1);
+  });
+
   it('explains how to recover an old runtime while retaining the original RPC error', async () => {
     const service = createService(null);
     service.request.and.callFake(() => new Promise((_resolve, reject) => {

@@ -11,6 +11,7 @@
 import * as Blockly from 'blockly/core';
 import {createPlusField} from './field_plus';
 import {createMinusField} from './field_minus';
+import {registerStructuralMutator} from './structural-mutators';
 
 // Delete original block because there's no way to unregister it:
 // https://github.com/google/blockly-samples/issues/768#issuecomment-885663394
@@ -177,8 +178,9 @@ const listCreateHelper = function () {
   this.updateShape_(3);
 };
 
-Blockly.Extensions.registerMutator(
+registerStructuralMutator(
   'new_list_create_with_mutator',
   listCreateMutator,
   listCreateHelper,
+  { count: 'itemCount', initial: 3, start: 0, replace: true, repeated: [{ prefix: 'ADD', kind: 'valueInput' }], serialization: 'always' },
 );

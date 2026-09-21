@@ -1,5 +1,5 @@
-import { ChangeDetectorRef, Component, OnDestroy, ViewChild } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { ChangeDetectorRef, Component, OnDestroy, TemplateRef, ViewChild } from '@angular/core';
+import { firstValueFrom, lastValueFrom, reduce, Subject, Subscription, takeUntil } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
@@ -19,7 +19,10 @@ import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { AuthService, switchServiceRegionAndRequestLogin } from '@core/auth/public-api';
-import { NzModalService } from 'ng-zorro-antd/modal';
+import { NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
+import { NzProgressModule } from 'ng-zorro-antd/progress';
+import { BaseDialogComponent, DialogButton } from '../../components/base-dialog/base-dialog.component';
+import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialog/unsave-dialog.component';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { CmdService, ElectronService } from '@core/platform/public-api';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
@@ -33,6 +36,14 @@ import {
 
 type CacheClearOption = 'all' | 'unused-7' | 'unused-30';
 type DependencyRemovalOption = 'all' | 'unused-30' | 'unused-90';
+
+interface CleanupDialogState {
+  kind: 'dependencies' | 'cache';
+  phase: 'confirm' | 'running' | 'success' | 'error';
+  title: string;
+  text: string;
+  percent: number;
+}
 
 interface CacheStats {
   totalFiles: number;
@@ -57,13 +68,16 @@ interface HostAuthState {
     TranslateModule,
     NzSwitchModule,
     NzSelectModule,
-    NzToolTipModule
+    NzToolTipModule,
+    NzProgressModule,
+    BaseDialogComponent
   ],
   templateUrl: './settings.component.html',
   styleUrl: './settings.component.scss',
 })
 export class SettingsComponent implements OnDestroy {
   @ViewChild('scrollContainer', { static: false }) scrollContainer: SimplebarAngularComponent;
+  @ViewChild('cleanupDialogTemplate', { static: true }) cleanupDialogTemplate: TemplateRef<unknown>;
 
   activeSection = 'SETTINGS.SECTIONS.BASIC'; // 当前活动的部分
   private scrollElement: HTMLElement | null = null;
@@ -127,7 +141,12 @@ export class SettingsComponent implements OnDestroy {
   dependencyRemoving: DependencyRemovalOption | null = null;
   private cacheStatsRequestId = 0;
   private _clearCacheSubscription: Subscription | null = null;
-  private _clearCacheLoadingRef: string | null = null;
+  cleanupDialog: CleanupDialogState | null = null;
+  readonly cleanupPercentFormat = (percent: number): string => `${percent}%`;
+  private cleanupModalRef: NzModalRef | null = null;
+  private cacheProgressTimer: ReturnType<typeof setTimeout> | null = null;
+  private destroyed = false;
+  private readonly cleanupDestroyed$ = new Subject<void>();
 
   // 用于跟踪安装/卸载状态
   boardOperations = {};
@@ -242,6 +261,28 @@ export class SettingsComponent implements OnDestroy {
       const confirmed = await this.childAppSafety.confirmInterruption(
         'region-switch',
         hostAuthState.openProtectedToolIds,
+        async confirmation => {
+          const modalRef = this.modal.create({
+            nzContent: UnsaveDialogComponent,
+            nzTitle: null,
+            nzFooter: null,
+            nzClosable: false,
+            nzMaskClosable: false,
+            nzCentered: true,
+            nzWidth: 440,
+            nzBodyStyle: { padding: '0' },
+            nzData: {
+              title: confirmation.title,
+              text: confirmation.text,
+              buttons: [
+                { text: confirmation.cancelText, action: 'cancel' },
+                { text: confirmation.confirmText, action: 'confirm', type: 'primary', danger: confirmation.danger },
+              ],
+            },
+          });
+          const result = await firstValueFrom(modalRef.afterClose);
+          return result?.result === 'confirm';
+        },
       );
       if (!confirmed) {
         this.regionSwitching = false;
@@ -418,6 +459,11 @@ export class SettingsComponent implements OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
+    this.cleanupDestroyed$.next();
+    this.cleanupDestroyed$.complete();
+    this.stopCacheProgress();
+    this.cleanupModalRef?.destroy();
     this.cacheStatsRequestId++;
     this.settingsReadyObserver?.disconnect();
     this.settingsReadyObserver = null;
@@ -429,10 +475,6 @@ export class SettingsComponent implements OnDestroy {
     this._clearCacheSubscription?.unsubscribe();
     this.coderDependencySubscription.unsubscribe();
     this.configReloadSubscription.unsubscribe();
-    if (this._clearCacheLoadingRef) {
-      this.message.remove(this._clearCacheLoadingRef);
-      this._clearCacheLoadingRef = null;
-    }
   }
 
   async ngOnInit() {
@@ -852,15 +894,9 @@ export class SettingsComponent implements OnDestroy {
   }
 
   removeGlobalDependencies(option: DependencyRemovalOption) {
+    if (this.cleanupDialog) return;
     if (option === 'all') {
-      this.modal.confirm({
-        nzTitle: this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_CONFIRM_TITLE'),
-        nzContent: this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_CONFIRM_DESC'),
-        nzOkText: this.translateService.instant('SETTINGS.FIELDS.UNINSTALL'),
-        nzCancelText: this.translateService.instant('SETTINGS.BUTTONS.CANCEL'),
-        nzBodyStyle: { background: 'var(--aily-bg-primary)' },
-        nzOnOk: () => this.doRemoveGlobalDependencies(option)
-      });
+      this.openCleanupDialog('dependencies', true);
       return;
     }
 
@@ -869,15 +905,14 @@ export class SettingsComponent implements OnDestroy {
 
   private async doRemoveGlobalDependencies(option: DependencyRemovalOption): Promise<void> {
     this.dependencyRemoving = option;
-    const loadingRef = this.message.loading(this.translateService.instant('NPM.UNINSTALLING_UNUSED_DEPS'), {
-      nzDuration: 0
-    });
+    this.openCleanupDialog('dependencies');
 
     try {
       const unusedDays = option === 'all' ? null : option === 'unused-30' ? 30 : 90;
-      const removed = await this.npmService.removeGlobalDependencies(unusedDays);
+      const removed = await this.npmService.removeGlobalDependencies(unusedDays, percent => this.updateCleanupProgress(percent));
+      if (this.destroyed) return;
       if (removed.packageNames.length === 0 && removed.resourcePaths.length === 0) {
-        this.message.info(this.translateService.instant('SETTINGS.FIELDS.DEPENDENCY_NONE_REMOVED'));
+        this.finishCleanupDialog(true, 'SETTINGS.FIELDS.DEPENDENCY_NONE_REMOVED');
         return;
       }
 
@@ -887,14 +922,91 @@ export class SettingsComponent implements OnDestroy {
           dependency.installed = false;
         }
       }
-      this.message.success(this.translateService.instant('NPM.DEPS_UNINSTALL_COMPLETE'));
+      this.finishCleanupDialog(true, 'NPM.DEPS_UNINSTALL_COMPLETE');
     } catch (error) {
       console.error('Failed to remove global dependencies', error);
-      this.message.error(this.translateService.instant('NPM.DEPS_UNINSTALL_FAILED'));
+      this.finishCleanupDialog(false, 'NPM.DEPS_UNINSTALL_FAILED');
     } finally {
-      this.message.remove(loadingRef.messageId);
       this.dependencyRemoving = null;
     }
+  }
+
+  get cleanupDialogButtons(): DialogButton[] {
+    if (this.cleanupDialog?.phase === 'running') return [];
+    if (this.cleanupDialog?.phase === 'confirm') {
+      return [
+        { text: 'SETTINGS.BUTTONS.CANCEL', action: 'cancel' },
+        {
+          text: this.cleanupDialog.kind === 'cache' ? 'SETTINGS.FIELDS.CACHE_CONFIRM_OK' : 'SETTINGS.FIELDS.UNINSTALL',
+          type: 'primary', danger: true, action: 'confirm',
+        },
+      ];
+    }
+    return [{ text: 'LOGIN.MODAL_CLOSE', type: 'primary', action: 'close' }];
+  }
+
+  onCleanupDialogAction(action: string) {
+    if (this.cleanupDialog?.phase === 'running') return;
+    if (action === 'confirm' && this.cleanupDialog?.phase === 'confirm') {
+      if (this.cleanupDialog.kind === 'cache') {
+        void this.startClearCacheProcess('all');
+      } else {
+        void this.doRemoveGlobalDependencies('all');
+      }
+      return;
+    }
+    this.cleanupModalRef?.close();
+  }
+
+  private openCleanupDialog(kind: CleanupDialogState['kind'], confirm = false) {
+    this.cleanupDialog = {
+      kind,
+      phase: confirm ? 'confirm' : 'running',
+      title: confirm
+        ? `SETTINGS.FIELDS.${kind === 'cache' ? 'CACHE' : 'DEPENDENCY'}_CONFIRM_TITLE`
+        : kind === 'cache' ? 'SETTINGS.FIELDS.CLEAR_CACHE' : 'SETTINGS.FIELDS.DEPENDENCY_CLEANUP',
+      text: confirm
+        ? `SETTINGS.FIELDS.${kind === 'cache' ? 'CACHE' : 'DEPENDENCY'}_CONFIRM_DESC`
+        : 'SETTINGS.FIELDS.CACHE_CLEARING',
+      percent: 0,
+    };
+    if (this.cleanupModalRef) {
+      this.cleanupModalRef.updateConfig({ nzKeyboard: confirm });
+      return;
+    }
+    const modalRef = this.modal.create({
+      nzContent: this.cleanupDialogTemplate,
+      nzTitle: null,
+      nzFooter: null,
+      nzClosable: false,
+      nzMaskClosable: false,
+      nzKeyboard: confirm,
+      nzCentered: true,
+      nzWidth: 440,
+      nzBodyStyle: { padding: '0' },
+    });
+    this.cleanupModalRef = modalRef;
+    modalRef.afterClose.subscribe(() => {
+      if (this.cleanupModalRef === modalRef) {
+        this.cleanupModalRef = null;
+        this.cleanupDialog = null;
+      }
+    });
+  }
+
+  private updateCleanupProgress(percent: number) {
+    if (this.destroyed || this.cleanupDialog?.phase !== 'running' || !Number.isFinite(percent)) return;
+    this.cleanupDialog.percent = Math.max(this.cleanupDialog.percent, Math.min(99, Math.round(percent)));
+    this.cdr.detectChanges();
+  }
+
+  private finishCleanupDialog(success: boolean, text: string) {
+    if (this.destroyed || !this.cleanupDialog) return;
+    this.cleanupDialog.phase = success ? 'success' : 'error';
+    this.cleanupDialog.text = text;
+    if (success) this.cleanupDialog.percent = 100;
+    this.cleanupModalRef?.updateConfig({ nzKeyboard: true });
+    this.cdr.detectChanges();
   }
 
   onDevModeChange() {
@@ -957,22 +1069,12 @@ export class SettingsComponent implements OnDestroy {
   }
 
   clearCache(option: CacheClearOption) {
+    if (this.cleanupDialog) return;
     if (option === 'all') {
-      this.modal.confirm({
-        nzTitle: this.translateService.instant('SETTINGS.FIELDS.CACHE_CONFIRM_TITLE'),
-        nzContent: this.translateService.instant('SETTINGS.FIELDS.CACHE_CONFIRM_DESC'),
-        nzOkText: this.translateService.instant('SETTINGS.FIELDS.CACHE_CONFIRM_OK'),
-        nzCancelText: this.translateService.instant('SETTINGS.BUTTONS.CANCEL'),
-        nzBodyStyle: { background: 'var(--aily-bg-primary)' },
-        nzOnOk: () => this.doClearCache(option)
-      });
+      this.openCleanupDialog('cache', true);
     } else {
-      this.doClearCache(option);
+      void this.startClearCacheProcess(option);
     }
-  }
-
-  private doClearCache(option: CacheClearOption) {
-    this.startClearCacheProcess(option);
   }
 
   private getCacheClearArgs(option: CacheClearOption): string[] {
@@ -984,33 +1086,88 @@ export class SettingsComponent implements OnDestroy {
     return ['cache', 'clear', optionArgMap[option]];
   }
 
-  private startClearCacheProcess(option: CacheClearOption) {
+  private async startClearCacheProcess(option: CacheClearOption) {
     this.cacheClearing = option;
-    const loadingRef = this.message.loading(this.translateService.instant('SETTINGS.FIELDS.CACHE_CLEARING'), { nzDuration: 0 });
-    this._clearCacheLoadingRef = loadingRef.messageId;
+    this.openCleanupDialog('cache');
 
     const command = 'aily-builder';
     const args = this.getCacheClearArgs(option);
     this.sendLog({ detail: `${command} ${args.join(' ')}`, state: 'doing' });
     const startTime = Date.now();
 
-    this._clearCacheSubscription?.unsubscribe();
-    this._clearCacheSubscription = this.cmdService.spawn(command, args, {}, true).subscribe({
-      next: (output) => {
-        if (output.type === 'stdout' || output.type === 'stderr') {
-          this.logClearCacheOutput(output.data, output.type === 'stderr' ? 'error' : 'doing');
-          return;
-        }
-
-        if (output.type === 'close') {
-          this.finishClearCache(output.code === 0, startTime, output.stderr);
-        }
-      },
-      error: (e) => {
-        console.error('Failed to clear cache', e);
-        this.finishClearCache(false, startTime, String(e));
+    try {
+      // Preview uses the builder's own age rules, including paired cache metadata.
+      const preview = await lastValueFrom(this.cmdService.spawn(command, [...args, '--dry-run', '--json'], {}, true).pipe(
+        reduce((json, output) => {
+          if (output.type === 'error' || (output.type === 'close' && output.code !== 0)) {
+            throw new Error(output.error || output.stderr || 'Cache preview failed');
+          }
+          return output.type === 'stdout' ? json + (output.data || '') : json;
+        }, ''),
+        takeUntil(this.cleanupDestroyed$),
+      ), { defaultValue: null });
+      if (this.destroyed) return;
+      const totalFiles = JSON.parse(preview).total.deletedFiles;
+      if (!Number.isFinite(totalFiles) || totalFiles < 0) {
+        throw new Error('Invalid cache preview file count');
       }
-    });
+      const rootPath = this.getAilyBuilderPath();
+      const initialFiles = rootPath ? (await window['fsp'].directoryStats(rootPath)).count : 0;
+      if (this.destroyed) return;
+      this.updateCleanupProgress(10);
+
+      this._clearCacheSubscription?.unsubscribe();
+      this._clearCacheSubscription = this.cmdService.spawn(command, args, {}, true).subscribe({
+        next: (output) => {
+          if (output.type === 'stdout' || output.type === 'stderr') {
+            this.logClearCacheOutput(output.data, output.type === 'stderr' ? 'error' : 'doing');
+            return;
+          }
+
+          if (output.type === 'close') {
+            this.finishClearCache(output.code === 0, startTime, output.stderr);
+          } else if (output.type === 'error') {
+            this.finishClearCache(false, startTime, output.error);
+          }
+        },
+        error: (e) => {
+          console.error('Failed to clear cache', e);
+          this.finishClearCache(false, startTime, String(e));
+        }
+      });
+      if (rootPath && totalFiles > 0 && this.cacheClearing) {
+        this.trackCacheProgress(rootPath, initialFiles, totalFiles);
+      }
+    } catch (error) {
+      this.finishClearCache(false, startTime, String(error));
+    }
+  }
+
+  private trackCacheProgress(rootPath: string, initialFiles: number, totalFiles: number) {
+    const dialog = this.cleanupDialog;
+    this.cacheProgressTimer = setTimeout(async () => {
+      this.cacheProgressTimer = null;
+      if (this.destroyed || !this.cacheClearing || this.cleanupDialog !== dialog) return;
+      try {
+        const { count } = await window['fsp'].directoryStats(rootPath);
+        if (this.destroyed || !this.cacheClearing || this.cleanupDialog !== dialog) return;
+        // Reserve completion for a successful process exit; scans are approximate
+        // while files are disappearing or another window is compiling.
+        this.updateCleanupProgress(10 + 89 * Math.max(0, initialFiles - count) / totalFiles);
+      } catch (error) {
+        console.warn('Failed to read cache cleanup progress', error);
+      }
+      if (!this.destroyed && this.cacheClearing && this.cleanupDialog === dialog) {
+        this.trackCacheProgress(rootPath, initialFiles, totalFiles);
+      }
+    }, 750);
+  }
+
+  private stopCacheProgress() {
+    if (this.cacheProgressTimer !== null) {
+      clearTimeout(this.cacheProgressTimer);
+      this.cacheProgressTimer = null;
+    }
   }
 
   private logClearCacheOutput(data: string | undefined, state: 'doing' | 'error') {
@@ -1025,23 +1182,20 @@ export class SettingsComponent implements OnDestroy {
   }
 
   private finishClearCache(success: boolean, startTime: number, errorDetail?: string) {
+    if (this.destroyed || !this.cacheClearing) return;
+    this.stopCacheProgress();
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-
-    if (this._clearCacheLoadingRef) {
-      this.message.remove(this._clearCacheLoadingRef);
-      this._clearCacheLoadingRef = null;
-    }
 
     if (success) {
       this.sendLog({ detail: `Cache cleared (${duration}s)`, state: 'done' });
-      this.message.success(this.translateService.instant('SETTINGS.FIELDS.CACHE_CLEARED'));
+      this.finishCleanupDialog(true, 'SETTINGS.FIELDS.CACHE_CLEARED');
     } else {
       this.sendLog({
         title: this.translateService.instant('SETTINGS.FIELDS.CACHE_CLEAR_FAILED'),
         detail: `Cache clear failed (${duration}s) ${errorDetail || ''}`.trim(),
         state: 'error'
       });
-      this.message.error(this.translateService.instant('SETTINGS.FIELDS.CACHE_CLEAR_FAILED'));
+      this.finishCleanupDialog(false, 'SETTINGS.FIELDS.CACHE_CLEAR_FAILED');
     }
 
     this.cacheClearing = null;

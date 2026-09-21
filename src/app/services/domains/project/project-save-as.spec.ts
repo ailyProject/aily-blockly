@@ -35,7 +35,7 @@ describe('ProjectService save as mode isolation', () => {
       }),
       writeFileSync: jasmine.createSpy('write').and.callFake((path: string, content: string) => files.set(path, content)),
       mkdirSync: jasmine.createSpy('mkdirSync').and.callFake((path: string) => directories.add(path)),
-      copySync: jasmine.createSpy('copy').and.callFake((from: string, to: string) => {
+      copyProjectDirectory: jasmine.createSpy('copy').and.callFake((from: string, to: string) => {
         for (const [path, content] of [...files]) {
           if (path.startsWith(`${from}/`)) files.set(to + path.slice(from.length), content);
         }
@@ -124,7 +124,7 @@ describe('ProjectService save as mode isolation', () => {
     service.save.and.resolveTo({ success: false, error: 'dirty editor failed to save' });
     await expectAsync(service.saveAs(target)).toBeRejectedWithError('dirty editor failed to save');
     expect(fsp.mkdir).not.toHaveBeenCalled();
-    expect(fs.copySync).not.toHaveBeenCalled();
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
     expect(service.projectOpen).not.toHaveBeenCalled();
     expect(service.currentProjectPath).toBe(source);
   });
@@ -142,7 +142,7 @@ describe('ProjectService save as mode isolation', () => {
     await expectAsync(service.saveAs(`${source}/copy`)).toBeRejectedWithError(/当前项目内部/);
     fs.realpathAsync.and.callFake(async (path: string) => path === '/alias' ? source : path);
     await expectAsync(service.saveAs('/alias/copy')).toBeRejectedWithError(/当前项目内部/);
-    expect(fs.copySync).not.toHaveBeenCalled();
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
   });
 
   it('does not overwrite a destination created while waiting for the editor', async () => {
@@ -152,7 +152,7 @@ describe('ProjectService save as mode isolation', () => {
       return { success: true };
     });
     await expectAsync(service.saveAs(target)).toBeRejectedWithError('EEXIST');
-    expect(fs.copySync).not.toHaveBeenCalled();
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
     expect(fsp.rm).not.toHaveBeenCalled();
     expect(files.get(`${target}/keep.txt`)).toBe('created during save');
   });
@@ -181,7 +181,7 @@ describe('ProjectService save as mode isolation', () => {
       return { success: true };
     });
     await expectAsync(service.saveAs(target)).toBeRejectedWithError(/当前项目已切换/);
-    expect(fs.copySync).not.toHaveBeenCalled();
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
   });
 
   it('saves manifest-declared Coder projects even when a leftover project.abi exists', async () => {
@@ -218,7 +218,46 @@ describe('ProjectService save as mode isolation', () => {
       validateReferences: async () => ({ valid: false, issues: [{ error: 'missing resource' }] }),
     } as any);
     await expectAsync(service.saveAs(target)).toBeRejectedWithError(/missing resource/);
-    expect(fs.copySync).not.toHaveBeenCalled();
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
     expect(service.currentProjectPath).toBe(source);
+  });
+
+  it('preserves spaces for Blockly destinations and uses the filtered project copy bridge', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
+    await service.saveAs(target);
+    expect(fs.copyProjectDirectory).toHaveBeenCalledOnceWith(source, target);
+    expect(service.currentProjectPath).toBe(target);
+  });
+
+  it('stops a Blockly copy when the runtime is replaced at the same path during resource validation', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    let session = 'a'; spyOn(projectDataRuntime, 'getSessionToken').and.callFake(() => session);
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => { session = 'b'; return { valid: true }; } } as any);
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/会话已切换/);
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled(); expect(fs.mkdirSync).not.toHaveBeenCalled();
+  });
+
+  it('stops a Blockly copy when saving switches the active project', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}');
+    service.save.and.callFake(async () => { service.currentProjectPath = '/new-project'; return { success: true }; });
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/会话已切换/);
+    expect(flush).not.toHaveBeenCalled(); expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
+  });
+
+  it('rejects an old copy host before saving or reserving a destination', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); delete fs.copyProjectDirectory;
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/完整重启/);
+    expect(service.save).not.toHaveBeenCalled(); expect(fs.mkdirSync).not.toHaveBeenCalled();
+  });
+
+  it('does not copy an ABI changed externally during resource validation', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => {
+      files.set(`${source}/project.abi`, '{"external":true}'); return { valid: true };
+    } } as any);
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/project.abi 已被修改/);
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled(); expect(fs.mkdirSync).not.toHaveBeenCalled();
+    expect(files.get(`${source}/project.abi`)).toBe('{"external":true}');
   });
 });

@@ -229,8 +229,16 @@ export class SubappAgentBridgeService implements OnDestroy {
         undefined,
         sessionId,
         { workspaceRoot, developmentMode: 'coder' },
-      ) as { ok?: boolean; ready?: boolean };
-      if (result?.ok !== true || result.ready !== true) {
+      ) as { ok?: boolean; ready?: boolean; sourceReady?: boolean; dependencyIssues?: Array<{ name: string; constraint?: string; requiredBy: string; reason: string }> };
+      // Opening/installing a project prepares sources before its SDK may exist.
+      // Missing Arduino dependencies must remain repairable from that project;
+      // library install/search expose the separate full readiness report.
+      if (result?.ok !== true || (result.sourceReady !== true && result.ready !== true)) {
+        if (result?.dependencyIssues?.length) {
+          throw new SubappRpcError('Coder 库依赖尚未完整：' + result.dependencyIssues.map(issue =>
+            `${issue.requiredBy} → ${issue.name}${issue.constraint ? ` (${issue.constraint})` : ''}: ${issue.reason}`).join('; '),
+          'CODER_LIBRARY_DEPENDENCIES_INCOMPLETE', { dependencyIssues: result.dependencyIssues });
+        }
         throw new Error('Coder dependency library sources are not ready');
       }
     } catch (error) {
