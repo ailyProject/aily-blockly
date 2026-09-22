@@ -1,7 +1,5 @@
-import type {
-  SceneArtifactRebuildRequest,
-  SimulatorSubappHostArtifactDescriptorV1,
-} from '@aily-project/simulator-host-sdk';
+import type { SceneArtifactRebuildRequest } from '@aily-project/simulator-protocol/scene';
+import type { SimulatorSubappHostArtifactDescriptorV1 } from '@aily-project/simulator-protocol/host';
 
 import type {
   SimulatorBuildExecutionObserver,

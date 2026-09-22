@@ -15,6 +15,7 @@ import {
 } from '@domain/dependencies/public-api';
 import { ElectronService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { getLibrarySubmissionErrorMessage } from '../../utils/library-submission-error.utils';
 
 export interface LibraryPublishDialogResult {
   packageJsonPatch: Record<string, unknown>;
@@ -65,6 +66,7 @@ export class LibraryPublishDialogComponent {
   saveToLocalPackageJson = false;
   hardwareTestConfirmed = false;
   isSubmitting = false;
+  submitErrorMessage = '';
   currentPackageNameConflictMessage = '';
   currentPackageNameConflictValue = '';
   packageNameValidationMessage = '';
@@ -135,13 +137,16 @@ export class LibraryPublishDialogComponent {
       this.currentPackageNameConflictValue = this.data.packageNameConflictValue || '';
     } catch (error) {
       this.message.error(this.translate.instant('LIBRARY_PUBLISH.READ_FAILED', {
-        error: error instanceof Error ? error.message : error,
+        error: getLibrarySubmissionErrorMessage(error, this.translate),
       }));
       this.modal.close({ result: 'cancel' });
     }
   }
 
   onCloseDialog(): void {
+    if (this.isSubmitting) {
+      return;
+    }
     this.modal.close({ result: 'cancel' });
   }
 
@@ -321,6 +326,7 @@ export class LibraryPublishDialogComponent {
     }
 
     this.isSubmitting = true;
+    this.submitErrorMessage = '';
     try {
       const submitResult = await this.data.submitPublish(result);
       if (submitResult.success) {
@@ -330,9 +336,13 @@ export class LibraryPublishDialogComponent {
 
       this.currentPackageNameConflictMessage = submitResult.packageNameConflictMessage || '';
       this.currentPackageNameConflictValue = submitResult.packageNameConflictValue || packageName;
-      this.focusPublishField('packageName', true);
+      if (this.currentPackageNameConflictMessage) {
+        this.focusPublishField('packageName', true);
+      }
     } catch (error) {
-      this.message.error(error instanceof Error ? error.message : String(error), { nzDuration: 8000 });
+      this.submitErrorMessage = this.translate.instant('LIBRARY_PUBLISH.SUBMIT_FAILED', {
+        error: getLibrarySubmissionErrorMessage(error, this.translate),
+      });
     } finally {
       this.isSubmitting = false;
     }

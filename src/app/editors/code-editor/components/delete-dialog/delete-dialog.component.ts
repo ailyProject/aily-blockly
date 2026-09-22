@@ -1,16 +1,15 @@
-import { Component, Inject, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { Component, Inject } from '@angular/core';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
-import { NzButtonModule } from 'ng-zorro-antd/button';
-import { NzIconModule } from 'ng-zorro-antd/icon';
+import { BaseDialogComponent, DialogButton } from '../../../../components/base-dialog/base-dialog.component';
 
 @Component({
   selector: 'app-delete-dialog',
-  imports: [NzButtonModule, CommonModule, NzIconModule],
+  imports: [CommonModule, BaseDialogComponent],
   templateUrl: './delete-dialog.component.html',
   styleUrls: ['./delete-dialog.component.scss']
 })
-export class DeleteDialogComponent implements OnInit, OnDestroy {
+export class DeleteDialogComponent {
   title: string;
   text: string;
   nodes: any[];
@@ -25,10 +24,11 @@ export class DeleteDialogComponent implements OnInit, OnDestroy {
     // console.log('DeleteDialogComponent data:', data);
   }
 
-  ngOnInit() {
-  }
-
-  ngOnDestroy() {
+  get buttons(): DialogButton[] {
+    return [
+      { text: '取消', type: 'default', action: 'cancel' },
+      { text: '删除', type: 'primary', danger: true, action: 'confirm' },
+    ];
   }
 
   getFormattedText(): string {
@@ -45,5 +45,13 @@ export class DeleteDialogComponent implements OnInit, OnDestroy {
 
   deleteFile() {
     this.close('confirm');
+  }
+
+  onButtonClick(action: string): void {
+    if (action === 'confirm') {
+      this.deleteFile();
+    } else {
+      this.cancel();
+    }
   }
 }

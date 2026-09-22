@@ -126,7 +126,7 @@ async function loadServiceModule() {
   const result = await esbuild.build({
     stdin: {
       contents: [
-        "export { SubappResourceLifecycleService } from './src/app/services/subapp-resource-lifecycle.service.ts';",
+        "export { SubappResourceLifecycleService } from './src/app/services/integrations/subapps/subapp-resource-lifecycle.service.ts';",
         "export { replaceChildToolConfigs } from './src/app/configs/tool.config.ts';",
       ].join('\n'),
       resolveDir: process.cwd(),

@@ -21,6 +21,7 @@ export interface GlobalDependencyCleanupOptions {
   resourceBasePaths: string[];
   pathApi: GlobalDependencyCleanupPathApi;
   fsApi: GlobalDependencyCleanupFsApi;
+  onResourceRemoved?: (path: string) => void;
 }
 
 export interface GlobalDependencyResourceEntry {
@@ -80,7 +81,7 @@ export async function clearGlobalDependencyResourceDirectories(
 
   const removedPaths: string[] = [];
   for (const basePath of uniqueBasePaths.values()) {
-    removedPaths.push(...await removeMatchingEntries(basePath, () => true, pathApi, fsApi));
+    removedPaths.push(...await removeMatchingEntries(basePath, () => true, pathApi, fsApi, options.onResourceRemoved));
   }
 
   return removedPaths;
@@ -133,6 +134,7 @@ export async function clearGlobalDependencyResources(
     }
     await removeResourcePath(resource.absolutePath, options.fsApi);
     removedPaths.push(resource.absolutePath);
+    options.onResourceRemoved?.(resource.absolutePath);
   }
 
   const remainingKeys = new Set(
@@ -151,6 +153,7 @@ async function removeMatchingEntries(
   matches: (entry: string) => boolean,
   pathApi: GlobalDependencyCleanupPathApi,
   fsApi: GlobalDependencyCleanupFsApi,
+  onResourceRemoved?: (path: string) => void,
 ): Promise<string[]> {
   const entries = await readDirectoryIfPresent(basePath, fsApi);
   const matchingEntries = entries.filter(matches);
@@ -160,6 +163,7 @@ async function removeMatchingEntries(
     const targetPath = pathApi.join(basePath, entry);
     await removeResourcePath(targetPath, fsApi);
     removedPaths.push(targetPath);
+    onResourceRemoved?.(targetPath);
   }
 
   const remainingEntries = (await readDirectoryIfPresent(basePath, fsApi)).filter(matches);

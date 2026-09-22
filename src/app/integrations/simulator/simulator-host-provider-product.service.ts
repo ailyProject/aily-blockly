@@ -2,9 +2,11 @@ import { Injectable, NgZone } from '@angular/core';
 import {
   SimulatorHostProviderOperationError,
   createSimulatorHostProviderDispatcherAdapterBundle,
-  type SimulatorSubappHostProjectDebugConfigurationReadV1,
-  type SimulatorSubappHostProjectDebugConfigurationSnapshotV1,
 } from '@aily-project/simulator-host-sdk';
+import type {
+  SimulatorSubappHostProjectDebugConfigurationReadV1,
+  SimulatorSubappHostProjectDebugConfigurationSnapshotV1,
+} from '@aily-project/simulator-protocol/host';
 
 import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';

@@ -7,6 +7,7 @@ import { TerminalService } from '../../../tools/terminal/terminal.service';
 import { Router } from '@angular/router';
 import { FeedbackDialogComponent } from '../../../components/feedback-dialog/feedback-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
+import { NzMessageService } from 'ng-zorro-antd/message';
 import { ProjectSettingDialogComponent } from '../../../components/project-setting-dialog/project-setting-dialog.component';
 import {
   AuthService,
@@ -27,6 +28,7 @@ import {
   DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
 } from '@integration/subapps/public-api';
 import { closeConnectionGraphSubWindows } from './project-window-lifecycle';
+import { ProcessState, WorkflowService } from './workflow.service';
 
 @Injectable({
   providedIn: 'root',
@@ -76,6 +78,68 @@ export class UiService {
   }
 
 
+  /** Project and device authority for the partition child app. */
+  async partitionManagerRequest(request: any): Promise<any> {
+    const actions = ['partition-manager-load', 'partition-manager-save', 'partition-manager-ports', 'partition-manager-read-device'];
+    if (!actions.includes(request?.action)) return { success: false, error: '未知分区操作。' };
+    if (!this.isMainWindow) {
+      return await window['iWindow']?.send?.({ to: 'main', data: request, timeout: request.action === 'partition-manager-read-device' ? 180000 : 15000 })
+        || { success: false, error: '主窗口未响应，请重新打开分区管理器。' };
+    }
+    let data;
+    if (request?.action === 'partition-manager-load' || request?.action === 'partition-manager-save') {
+      try {
+        const [{ ProjectService }, { BuilderService }, { handlePartitionManagerRequest }] = await Promise.all([
+          import('@domain/project/public-api'),
+          import('@domain/build/public-api'),
+          import('@integration/subapps/partition-manager/public-api'),
+        ]);
+        const project = this.injector.get(ProjectService);
+        data = await handlePartitionManagerRequest(project, this.injector.get(BuilderService), request, () =>
+          ![ProcessState.IDLE, ProcessState.ERROR].includes(this.injector.get(WorkflowService).currentState)
+          || !!project.getCoderOperation(project.currentProjectPath),
+        );
+        if (request.action === 'partition-manager-save' && data.success) {
+          this.injector.get(NzMessageService).success(data.warning || '分区方案已保存。请重新编译，再通过有线烧录使分区变化生效。', { nzDuration: 6000 });
+        }
+      } catch (error) {
+        data = { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    } else if (request?.action === 'partition-manager-ports') {
+      try {
+        const [{ SerialService }, { listPartitionSerialPorts }] = await Promise.all([
+          import('@domain/device/public-api'),
+          import('@integration/subapps/partition-manager/public-api'),
+        ]);
+        data = { success: true, ...await listPartitionSerialPorts(this.injector.get(SerialService)) };
+      } catch (error) {
+        data = { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    } else if (request?.action === 'partition-manager-read-device') {
+      try {
+        const [{ ProjectService }, { SerialService }, { SubappResourceLifecycleService }, { readConnectedDevicePartitions }] = await Promise.all([
+          import('@domain/project/public-api'),
+          import('@domain/device/public-api'),
+          import('@integration/subapps/public-api'),
+          import('@integration/subapps/partition-manager/public-api'),
+        ]);
+        const project = this.injector.get(ProjectService);
+        if (!request.projectPath || project.currentProjectPath !== request.projectPath) throw new Error('当前项目已切换，请重新打开分区管理器。');
+        const device = await readConnectedDevicePartitions(
+          this.injector.get(SerialService), this, this.injector.get(SubappResourceLifecycleService),
+          () => project.currentProjectPath !== request.projectPath
+            || ![ProcessState.IDLE, ProcessState.ERROR].includes(this.injector.get(WorkflowService).currentState)
+            || !!project.getCoderOperation(project.currentProjectPath),
+          request.port,
+        );
+        data = { success: true, device };
+      } catch (error) {
+        data = { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    return data;
+  }
+
   // 初始化UI服务，这个init函数仅供main-window使用
   init(): void {
     if (this.electronService.isElectron) {
@@ -89,9 +153,13 @@ export class UiService {
       });
 
       window['ipcRenderer'].on('window-receive', async (event, message) => {
+        // ProjectService replies only after activation or mode rejection completes.
+        if (message.data?.action === 'open-project') return;
         // console.log('window-receive', message);
         let data;
-        if (message.data?.action === 'get-auth-state') {
+        if (String(message.data?.action || '').startsWith('partition-manager-')) {
+          data = await this.partitionManagerRequest(message.data);
+        } else if (message.data?.action === 'get-auth-state') {
           const initializationState = this.authService.getAuthInitializationState();
           if (initializationState === 'idle' || initializationState === 'checking') {
             await this.authService.initializeAuth();
@@ -231,11 +299,20 @@ export class UiService {
   }
 
   openWindow(opt: WindowOpts) {
+    if (getChildToolConfig(this.resolveToolNameFromWindowPath(opt.path))?.app?.extension === true) {
+      return;
+    }
     this.updateSubWindowState(opt.path, true);
     window['subWindow'].open(opt);
   }
 
   openToolWindow(name: string, options?: Omit<WindowOpts, 'path'>) {
+    const subappConfig = getChildToolConfig(name);
+    if (subappConfig?.app?.extension === true) return false;
+    const isSubappWindow = !!subappConfig;
+    const defaultSurface = subappConfig?.ui?.surfaces?.['default'];
+    const minWidth = options?.minWidth ?? defaultSurface?.minWidth;
+    const minHeight = options?.minHeight ?? defaultSurface?.minHeight;
     const toolWindowPath = this.getToolWindowPath(name);
     if (!toolWindowPath) {
       return false;
@@ -246,6 +323,9 @@ export class UiService {
       title: options?.title || name,
       width: options?.width ?? 1200,
       height: options?.height ?? 800,
+      windowClass: isSubappWindow ? 'subapp' : 'builtin',
+      ...(minWidth !== undefined ? { minWidth } : {}),
+      ...(minHeight !== undefined ? { minHeight } : {}),
       ...(options?.x !== undefined ? { x: options.x } : {}),
       ...(options?.y !== undefined ? { y: options.y } : {}),
       ...(options?.displayId !== undefined ? { displayId: options.displayId } : {}),
@@ -258,6 +338,7 @@ export class UiService {
 
   // 这个方法是给header用的
   turnTool(opt: ToolOpts) {
+    if (getChildToolConfig(opt?.data)?.app?.extension === true) return;
     if (this.requestLoginForProtectedTool(opt?.data)) {
       return;
     }
@@ -270,6 +351,7 @@ export class UiService {
 
   // 如果其它组件/程序要打开工具，调用这个方法
   openTool(name: string) {
+    if (getChildToolConfig(name)?.app?.extension === true) return;
     if (this.requestLoginForProtectedTool(name)) {
       return;
     }
@@ -298,6 +380,7 @@ export class UiService {
    * the requested presentation mode before calling this method.
    */
   openToolEmbedded(name: string): boolean {
+    if (getChildToolConfig(name)?.app?.extension === true) return false;
     if (this.requestLoginForProtectedTool(name)) {
       return false;
     }
@@ -306,6 +389,7 @@ export class UiService {
   }
 
   private openToolInMainWindow(name: string) {
+    if (getChildToolConfig(name)?.app?.extension === true) return;
     if (!name || this.requestLoginForProtectedTool(name)) {
       return;
     }
@@ -354,7 +438,6 @@ export class UiService {
 
     switch (name) {
       case 'code-viewer':
-      case 'serial-monitor':
         return `/${name}`;
       default:
         return null;
@@ -797,9 +880,15 @@ export interface WindowOpts {
   path: string;
   data?: any;
   title?: string;
+  /** 全局置顶；普通独立窗口应保持 false，由用户焦点决定窗口层级。 */
   alwaysOnTop?: boolean;
   width?: number;
   height?: number;
+  /** 窗口可缩放下限；内置窗口和子应用窗口仍受宿主基础下限保护。 */
+  minWidth?: number;
+  minHeight?: number;
+  /** 窗口来源类型，用于宿主尺寸和行为策略；两类独立窗均保持正常顶层窗口语义。 */
+  windowClass?: 'builtin' | 'subapp';
   x?: number;
   y?: number;
   displayId?: string | number;

@@ -17,17 +17,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizeText(value: unknown): string {
+function normalizeText(value: unknown, depth = 0): string {
+  if (depth > 5) {
+    return '';
+  }
+
   if (Array.isArray(value)) {
     return value
-      .map(item => normalizeText(item))
+      .map(item => normalizeText(item, depth + 1))
       .filter(Boolean)
       .join(', ')
       .trim();
   }
 
   if (typeof value === 'string') {
-    return value.trim();
+    const text = value.trim();
+    return text.includes('[object Object]') ? '' : text;
+  }
+
+  if (isRecord(value)) {
+    for (const key of ['errorMessage', 'error_message', 'messages', 'message', 'detail', 'msg', 'data', 'error']) {
+      const text = normalizeText(value[key], depth + 1);
+      if (text) {
+        if (key === 'msg' && Array.isArray(value['loc'])) {
+          const location = value['loc']
+            .filter(part => typeof part === 'string' || typeof part === 'number')
+            .join('.');
+          return location ? `${location}: ${text}` : text;
+        }
+        return text;
+      }
+    }
   }
 
   return '';
@@ -50,7 +70,7 @@ function getNestedPayload(payload: Record<string, unknown> | null): Record<strin
     return null;
   }
 
-  for (const key of ['detail', 'data', 'error']) {
+  for (const key of ['detail', 'data', 'error', 'message']) {
     if (isRecord(payload[key])) {
       return payload[key];
     }
@@ -78,25 +98,9 @@ export function extractApiErrorDetails(source: unknown, fallbackMessage = ''): A
           ? nestedPayload['error_args']
           : {};
 
-  const sourceMessage = normalizeText(isRecord(source) ? source['message'] : undefined);
-  const payloadMessage = normalizeText(
-    payload?.['errorMessage']
-      ?? payload?.['error_message']
-      ?? payload?.['messages']
-      ?? payload?.['message']
-      ?? payload?.['detail'],
-  );
-  const nestedMessage = normalizeText(
-    nestedPayload?.['errorMessage']
-      ?? nestedPayload?.['error_message']
-      ?? nestedPayload?.['messages']
-      ?? nestedPayload?.['message']
-      ?? nestedPayload?.['detail'],
-  );
-
-  const message = payloadMessage
-    || nestedMessage
-    || sourceMessage
+  const message = normalizeText(isRecord(source) ? source['error'] : source)
+    || normalizeText(payload)
+    || normalizeText(source)
     || fallbackMessage;
 
   return {

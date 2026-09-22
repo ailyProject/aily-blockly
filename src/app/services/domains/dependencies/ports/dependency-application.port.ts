@@ -7,6 +7,7 @@ export interface DependencyApplicationPort {
   startInstall(): boolean;
   finishInstall(success: boolean, errorMessage?: string): void;
   updateNotice(options: NoticeOptions): void;
+  materializeCoderProjectLibraries(projectPath: string): Promise<void>;
 }
 
 export const DEPENDENCY_APPLICATION_PORT = new InjectionToken<DependencyApplicationPort>(

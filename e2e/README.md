@@ -302,7 +302,7 @@ e2e/.artifacts/simulator-debug-report.json
 | [tests/smoke.spec.ts](tests/smoke.spec.ts) | 启动、主窗口、标题、版本、无崩溃 | ✅ |
 | [tests/guide.spec.ts](tests/guide.spec.ts) | 指南主页与入口菜单 | ✅ |
 | [tests/project-new.spec.ts](tests/project-new.spec.ts) | 新建项目向导渲染（含已装开发板时的选择） | ✅ |
-| [tests/tools.spec.ts](tests/tools.spec.ts) | 串口监视器 / 终端面板（无需真实设备） | ✅ |
+| [tests/tools.spec.ts](tests/tools.spec.ts) | 终端与底部面板（无需真实设备） | ✅ |
 | [tests/compile-diagnostic.spec.ts](tests/compile-diagnostic.spec.ts) | 编译器根因诊断提取 | ✅ |
 | [tests/electron-app-cleanup.spec.ts](tests/electron-app-cleanup.spec.ts) | Electron 退出清理生命周期 | ✅ |
 | [tests/error-decision.spec.ts](tests/error-decision.spec.ts) | 失败后继续/中止决策逻辑 | ✅ |
@@ -328,6 +328,6 @@ CI、输入或输出不是 TTY，或者直接调用 Playwright CLI 时不会等�
 ## 备注
 
 - Playwright 用例仍串行执行（`workers: 1`）；项目广场通常内部并发处理 2 个隔离 Electron，交互错误决策模式下会临时降为单并发。
-- 选择器优先使用组件标签（如 `app-header`、`app-serial-monitor`）与稳定 CSS 类；
+- 选择器优先使用组件标签（如 `app-header`、`app-terminal`）与稳定 CSS 类；
   应用目前几乎没有 `data-testid`，后续可逐步补充以提升稳定性。
 - `renderer/`、`test-results/`、`playwright-report/` 已加入 `.gitignore`。

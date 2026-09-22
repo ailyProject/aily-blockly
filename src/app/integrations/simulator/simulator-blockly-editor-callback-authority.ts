@@ -1,9 +1,9 @@
+import type { DebugSourceLocation } from '@aily-project/simulator-protocol/debug';
+import type { SimulatorEditorHostProviderAdapterOptions } from '@aily-project/simulator-host-sdk';
 import type {
-  DebugSourceLocation,
-  SimulatorEditorHostProviderAdapterOptions,
   SimulatorSubappDebugLocationHintEvent,
   SimulatorSubappHostEditorSourceLocationRevealV1,
-} from '@aily-project/simulator-host-sdk';
+} from '@aily-project/simulator-protocol/host';
 
 import type {
   SimulatorActiveProjectBindingPort,

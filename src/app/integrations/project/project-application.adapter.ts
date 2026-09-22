@@ -38,8 +38,10 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return this.uiService.closeConnectionGraphWindows();
   }
 
-  hasActiveAiOperation(projectPath: string): boolean {
-    return this.aiOperationRegistry.hasActive(projectPath);
+  hasActiveProjectMutation(projectPath: string): boolean {
+    return this.aiOperationRegistry.hasBlocking(projectPath)
+      || this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)
+        && this.generatorRuntime.isActive() && this.blocklyService.isWorkspaceEditInProgress();
   }
 
   dispatchProjectSave(path: string, timeoutMs: number): Promise<{ success: boolean; error?: string }> {

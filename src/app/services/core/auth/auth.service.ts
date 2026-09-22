@@ -1,6 +1,6 @@
 import { Injectable, inject, ApplicationRef } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, Observable, ReplaySubject, Subject, throwError, from, firstValueFrom } from 'rxjs';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { BehaviorSubject, Observable, ReplaySubject, Subject, TimeoutError, throwError, from, firstValueFrom } from 'rxjs';
 import { catchError, map, switchMap, timeout } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
 import { ElectronService } from '@core/platform/public-api';
@@ -11,8 +11,8 @@ import type {
   AuthSnapshot,
   AuthUserInfo,
 } from './models/auth-snapshot';
-import { withSharedAccessToken } from './models/shared-auth-record';
 import { isDetachedAilyChatRenderer } from './policies/detached-aily-chat-auth';
+import { normalizeAuthCreditSnapshot, normalizeCreditLedgerSnapshot } from './models/auth-credit-snapshot';
 
 export interface CommonResponse {
   status: number;
@@ -111,6 +111,14 @@ export interface AuthSessionInvalidationRequest {
   providedIn: 'root'
 })
 export class AuthService {
+  private get authBridge(): any {
+    return this.electronService.isElectron ? (window as any).electronAPI?.auth : null;
+  }
+
+  private get authDeviceId(): string {
+    return this.authBridge?.deviceId || 'pc:blockly';
+  }
+
   private readonly TOKEN_KEY = 'aily_user_token';
   private readonly REFRESH_TOKEN_KEY = 'aily_refresh_token';
   private readonly USER_INFO_KEY = 'aily_user_info';
@@ -152,7 +160,7 @@ export class AuthService {
   private authQuotaInfoSnapshotOverride: AuthQuotaInfoSnapshot | null = null;
   private authQuotaInfoRefreshRetryHandle: ReturnType<typeof setTimeout> | null = null;
   private authHydrationRetryHandle: ReturnType<typeof setTimeout> | null = null;
-  private readonly authQuotaInfoRefreshRetryDelaysMs = [0, 1000, 5000] as const;
+  private readonly authQuotaInfoRefreshRetryDelaysMs = [1000, 5000] as const;
   private readonly authHydrationRetryDelaysMs = [1000, 5000] as const;
   private readonly authRequestTimeoutMs = 12000;
   private readonly authQuotaRequestTimeoutMs = 8000;
@@ -314,15 +322,12 @@ export class AuthService {
    * 用户登录
    */
   login(loginData: LoginRequest): Observable<LoginResponse> {
-    return this.http.post<LoginResponse>(API.login, { ...loginData, device_id: 'pc' }).pipe(
+    return this.http.post<LoginResponse>(API.login, { ...loginData, device_id: this.authDeviceId }).pipe(
       switchMap((response) => {
         // console.log("登录响应: ", response);
         if (response.status === 200 && response.data) {
           return from((async () => {
-            await this.saveToken2(response.data.access_token);
-            if (response.data.refresh_token) {
-              await this.saveRefreshToken(response.data.refresh_token);
-            }
+            await this.saveToken2(response.data.access_token, response.data.refresh_token);
             await this.handleSuccessfulTokenAcquisition(
               response.data.access_token,
               response.data.user as AuthUserInfo | undefined,
@@ -343,7 +348,7 @@ export class AuthService {
    * 用户注册
    */
   register(registerData: RegisterRequest): Observable<any> {
-    return this.http.post(API.register, registerData).pipe(
+    return this.http.post(API.register, { ...registerData, device_id: this.authDeviceId }).pipe(
       catchError(error => this.handleError(error))
     );
   }
@@ -361,7 +366,7 @@ export class AuthService {
         }, 200);
       });
     }
-    return this.http.post<CommonResponse>(API.sendEmailCode, { email, altcha, device_id: 'pc' }).pipe(
+    return this.http.post<CommonResponse>(API.sendEmailCode, { email, altcha, device_id: this.authDeviceId }).pipe(
       catchError(error => this.handleError(error))
     );
   }
@@ -370,7 +375,7 @@ export class AuthService {
    * 邮箱验证码登录
    */
   loginByEmail(email: string, code: string, inviteCode: string): Observable<LoginResponse> {
-    return this.http.post<LoginResponse>(API.loginByEmail, { email, code, device_id: 'pc', invite_code: inviteCode }).pipe(
+    return this.http.post<LoginResponse>(API.loginByEmail, { email, code, device_id: this.authDeviceId, invite_code: inviteCode }).pipe(
       switchMap((response) => {
         if (response.status === 200 && response.data) {
           // 需要绑定微信时不保存 token
@@ -378,10 +383,7 @@ export class AuthService {
             return from(Promise.resolve(response));
           }
           return from((async () => {
-            await this.saveToken2(response.data!.access_token);
-            if (response.data!.refresh_token) {
-              await this.saveRefreshToken(response.data!.refresh_token);
-            }
+            await this.saveToken2(response.data!.access_token, response.data!.refresh_token);
             await this.handleSuccessfulTokenAcquisition(
               response.data!.access_token,
               response.data!.user as AuthUserInfo | undefined,
@@ -447,40 +449,31 @@ export class AuthService {
   /**
    * 获取当前登录用户信息
    */
-  private getMe(token: string): Promise<AuthUserInfo | null> {
-    return new Promise((resolve, reject) => {
-      this.http.get<CommonResponse>(API.me, {
-        headers: { Authorization: `Bearer ${token}` }
-      }).pipe(
-        timeout(this.authRequestTimeoutMs),
-      ).subscribe({
-        next: async (response) => {
-          if (response.status === 200 && response.data) {
-            const userData = this.mergeCurrentGithubInfo(response.data);
-            try {
-              const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
-              this.setCurrentUserInfo(userData, quotaInfoSnapshot);
-            } catch (quotaError) {
-              console.warn('获取独立配额快照失败，回退到 auth/me:', quotaError);
-              const recoveredQuotaInfoSnapshot = await this.retryAuthQuotaInfoSnapshotImmediately(token);
-              if (recoveredQuotaInfoSnapshot) {
-                this.setCurrentUserInfo(userData, recoveredQuotaInfoSnapshot);
-              } else {
-                this.setCurrentUserInfo(userData, null);
-                if (this.getAuthSnapshot()?.quotaInfoSnapshot?.source !== 'token') {
-                  this.scheduleAuthQuotaInfoSnapshotRetry(token, userData, 1);
-                }
-              }
-            }
-            resolve(userData);
-          } else {
-            console.warn('获取用户信息失败:', response);
-            reject(null);
-          }
-        },
-        error: (error) => reject(error)
-      });
-    });
+  private async getMe(token: string): Promise<AuthUserInfo | null> {
+    const response = await firstValueFrom(this.http.get<CommonResponse>(API.me, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).pipe(timeout(this.authRequestTimeoutMs)));
+    if (this.authSessionInvalidating) return null;
+    if (response.status !== 200 || !response.data) {
+      throw createApiError(response, '获取用户信息失败');
+    }
+
+    const userData = this.mergeCurrentGithubInfo(response.data);
+    this.clearPendingAuthQuotaInfoSnapshotRetry();
+    try {
+      const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
+      if (this.authSessionInvalidating) return null;
+      this.setCurrentUserInfo(userData, quotaInfoSnapshot);
+    } catch (quotaError) {
+      if (this.authSessionInvalidating) return null;
+      console.warn('Credit 额度快照刷新失败，保留同账号已确认的额度:', quotaError);
+      this.setCurrentUserInfo(userData, null);
+      if (isRetryableCreditRequestError(quotaError)
+        && !this.authQuotaInfoSnapshotOverride?.creditSnapshot) {
+        this.scheduleAuthQuotaInfoSnapshotRetry(token, userData);
+      }
+    }
+    return userData;
   }
 
   async refreshCurrentUser(): Promise<any | null> {
@@ -667,20 +660,7 @@ export class AuthService {
    * 检查认证文件是否存在（用于快速判断登录状态）
    */
   async checkAuthFileExists(): Promise<boolean> {
-    try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
-        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
-        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
-        return (window as any).electronAPI.fs.existsSync(authFilePath);
-      } else {
-        // 降级到localStorage检查
-        const token = localStorage.getItem('aily_auth_token');
-        return !!token;
-      }
-    } catch (error) {
-      console.error('检查认证文件失败:', error);
-      return false;
-    }
+    return !!(await this.getToken2());
   }
 
   /**
@@ -720,188 +700,52 @@ export class AuthService {
     }
   }
 
-  async saveToken2(token: string): Promise<void> {
-    try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
-        // 获取AppData路径
-        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
-        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
-
-        // 读取现有文件内容或创建新的
-        let authData: any = {};
-        if ((window as any).electronAPI.fs.existsSync(authFilePath)) {
-          try {
-            const content = (window as any).electronAPI.fs.readFileSync(authFilePath);
-            authData = JSON.parse(content);
-          } catch (error) {
-            console.warn('读取现有认证文件失败，将创建新文件:', error);
-            authData = {};
-          }
-        }
-        const previousAccessToken = typeof authData.access_token === 'string'
-          ? authData.access_token
-          : '';
-
-        // `.aily` remains the host credential store. Managed child runtimes
-        // obtain the access token through the host process bridge instead of
-        // reading or mutating this file directly.
-        authData = withSharedAccessToken(authData, token, new Date().toISOString());
-
-        // 写入文件
-        (window as any).electronAPI.fs.writeFileSync(authFilePath, JSON.stringify(authData, null, 2));
-        if (previousAccessToken !== token) {
-          this.authCredentialGeneration += 1;
-        }
-        // console.log('Token已保存到:', authFilePath);
-      } else {
-        // 降级到localStorage（开发环境或不支持electron）
-        const previousAccessToken = localStorage.getItem('aily_auth_token') || '';
-        localStorage.setItem('aily_auth_token', token);
-        if (previousAccessToken !== token) {
-          this.authCredentialGeneration += 1;
-        }
-        // console.log('Token已保存到localStorage（降级方案）');
-      }
-    } catch (error) {
-      console.error('保存token到.aily文件失败:', error);
-      throw error;
+  async saveToken2(token: string, refreshToken?: string, expectedRefreshToken?: string): Promise<boolean> {
+    if (isDetachedAilyChatRenderer()) return false;
+    if (!token.trim()) throw new Error('Access token cannot be empty');
+    const previousAccessToken = await this.getToken2();
+    if (this.authBridge) {
+      const saved = await this.authBridge.write(
+        { access_token: token, refresh_token: refreshToken },
+        expectedRefreshToken,
+      );
+      if (!saved) return false;
+    } else {
+      if (expectedRefreshToken !== undefined && await this.getRefreshToken() !== expectedRefreshToken) return false;
+      localStorage.setItem('aily_auth_token', token);
+      if (refreshToken) localStorage.setItem(this.REFRESH_TOKEN_KEY, refreshToken);
+      else localStorage.removeItem(this.REFRESH_TOKEN_KEY);
     }
-  }
-
-  private async saveRefreshToken(refreshToken: string): Promise<void> {
-    try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
-        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
-        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
-
-        let authData: any = {};
-        if ((window as any).electronAPI.fs.existsSync(authFilePath)) {
-          try {
-            const content = (window as any).electronAPI.fs.readFileSync(authFilePath);
-            authData = JSON.parse(content);
-          } catch (error) {
-            console.warn('读取现有认证文件失败，将创建新文件:', error);
-            authData = {};
-          }
-        }
-
-        authData.refresh_token = refreshToken;
-        authData.updated_at = new Date().toISOString();
-        (window as any).electronAPI.fs.writeFileSync(authFilePath, JSON.stringify(authData, null, 2));
-      } else {
-        localStorage.setItem(this.REFRESH_TOKEN_KEY, refreshToken);
-      }
-    } catch (error) {
-      console.error('保存刷新 token 失败:', error);
-    }
+    if (previousAccessToken !== token) this.authCredentialGeneration += 1;
+    return true;
   }
 
   private async getRefreshToken(): Promise<string | null> {
     if (isDetachedAilyChatRenderer()) return null;
-
-    try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
-        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
-        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
-
-        if (!(window as any).electronAPI.fs.existsSync(authFilePath)) {
-          return null;
-        }
-
-        const content = (window as any).electronAPI.fs.readFileSync(authFilePath, 'utf8');
-        const authData = JSON.parse(content);
-        return authData.refresh_token || null;
-      }
-
-      return localStorage.getItem(this.REFRESH_TOKEN_KEY);
-    } catch (error) {
-      console.error('获取刷新 token 失败:', error);
-      return null;
-    }
+    if (this.authBridge) return (await this.authBridge.read()).refresh_token || null;
+    return localStorage.getItem(this.REFRESH_TOKEN_KEY);
   }
 
   async getToken2(): Promise<string | null> {
     if (isDetachedAilyChatRenderer()) return null;
-
-    try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
-        // 获取AppData路径
-        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
-        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
-
-        // 检查文件是否存在
-        if ((window as any).electronAPI.fs.existsSync(authFilePath)) {
-          // console.log('认证文件存在，正在读取...');
-          const content = (window as any).electronAPI.fs.readFileSync(authFilePath, 'utf8');
-          const authData = JSON.parse(content);
-
-          // console.log('authData: ', authData);
-
-          return authData.access_token;
-
-          //   // 解密token（如果支持safeStorage）
-          //   if ((window as any).electronAPI?.safeStorage) {
-          //     try {
-          //       console.log('使用safeStorage解密token');
-          //       const buffer = Buffer.from(authData.access_token, 'base64');
-          //       return (window as any).electronAPI.safeStorage.decryptString(buffer);
-          //     } catch (error) {
-          //       console.error('Token解密失败:', error);
-          //       return null;
-          //     }
-          //   } else {
-          //     // 降级到直接返回（开发环境或不支持safeStorage）
-          //     console.log('直接返回未加密的token');
-          //     return authData.access_token;
-          //   }
-        } else {
-          // console.warn('认证文件不存在:', authFilePath);
-          return null;
-        }
-      } else {
-        // console.log('使用localStorage降级模式');
-        // console.log('electronService.isElectron:', this.electronService.isElectron);
-        // console.log('electronAPI.path:', (window as any).electronAPI?.path);
-        // console.log('electronAPI.fs:', (window as any).electronAPI?.fs);
-        // 降级到localStorage（开发环境或不支持electron）
-        return localStorage.getItem('aily_auth_token');
-      }
-    } catch (error) {
-      // console.warn('获取token失败:', error);
-      return null;
-    }
+    if (this.authBridge) return (await this.authBridge.read()).access_token || null;
+    return localStorage.getItem('aily_auth_token');
   }
 
-  /**
-   * 移除.aily文件和localStorage中的认证数据
-   */
-
+  /** Clear this product's credentials without removing its migration marker. */
   async clearAuthDataFile(throwOnError = false): Promise<void> {
     if (isDetachedAilyChatRenderer()) return;
-
     try {
-      if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
-        const appDataPath = (window as any).electronAPI.path.getAppDataPath();
-        const authFilePath = (window as any).electronAPI.path.join(appDataPath, '.aily');
-
-        // 删除.aily文件
-        if ((window as any).electronAPI.fs.existsSync(authFilePath)) {
-          (window as any).electronAPI.fs.unlinkSync(authFilePath);
-          // console.log('已删除认证文件:', authFilePath);
-        }
-      } else {
-        // 降级到localStorage（开发环境或不支持electron）
+      if (this.authBridge) await this.authBridge.clear();
+      else {
         localStorage.removeItem('aily_auth_token');
-        // console.log('已清除localStorage中的认证数据');
+        localStorage.removeItem(this.REFRESH_TOKEN_KEY);
       }
     } catch (error) {
       console.error('清除认证数据失败:', error);
-      if (throwOnError) {
-        throw error;
-      }
+      if (throwOnError) throw error;
     }
   }
-
 
   /**
    * 保存用户信息
@@ -1020,13 +864,12 @@ export class AuthService {
         return false;
       }
 
-      await this.saveToken2(accessToken);
-      if (response.data?.refresh_token) {
-        await this.saveRefreshToken(response.data.refresh_token);
-      }
-      return true;
+      const saved = await this.saveToken2(accessToken, response.data?.refresh_token, refreshToken);
+      // Another instance may have signed in or rotated credentials while this request ran.
+      return saved || !!(await this.getToken2());
     } catch (error) {
       console.warn('刷新 token 失败:', error);
+      if (await this.getRefreshToken() !== refreshToken) return !!(await this.getToken2());
       return false;
     }
   }
@@ -1042,35 +885,15 @@ export class AuthService {
     return Boolean(entitlements[entitlementKey]);
   }
 
-  private async getAuthQuotaInfoSnapshot(token: string): Promise<AuthQuotaInfoSnapshot | null> {
-    return new Promise((resolve, reject) => {
-      this.http.get<CommonResponse>(API.authQuotaInfo, {
-        headers: { Authorization: `Bearer ${token}` }
-      }).pipe(
-        timeout(this.authQuotaRequestTimeoutMs),
-      ).subscribe({
-        next: (response) => {
-          if (response.status !== 200 || !response.data) {
-            resolve(null);
-            return;
-          }
-
-          resolve(normalizeAuthQuotaInfoSnapshotPayload(response.data, { source: 'token' }) ?? null);
-        },
-        error: (error) => reject(error),
-      });
-    });
-  }
-
-  private async retryAuthQuotaInfoSnapshotImmediately(
-    token: string,
-  ): Promise<AuthQuotaInfoSnapshot | null> {
-    try {
-      return await this.getAuthQuotaInfoSnapshot(token);
-    } catch (error) {
-      console.warn('立即重试独立配额快照失败:', error);
-      return null;
+  private async getAuthQuotaInfoSnapshot(token: string): Promise<AuthQuotaInfoSnapshot> {
+    const response = await firstValueFrom(this.http.get<unknown>(API.creditSnapshot, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).pipe(timeout(this.authQuotaRequestTimeoutMs)));
+    const creditSnapshot = normalizeCreditLedgerSnapshot(response);
+    if (!creditSnapshot) {
+      throw new Error('Invalid Credit snapshot from /api/v1/credits/me: expected CreditSnapshotResponse with integer micros; legacy count quotas are not Credits.');
     }
+    return { source: 'token', creditSnapshot };
   }
 
   private scheduleAuthQuotaInfoSnapshotRetry(
@@ -1086,7 +909,9 @@ export class AuthService {
     const retryDelay = this.authQuotaInfoRefreshRetryDelaysMs[attemptIndex];
     this.authQuotaInfoRefreshRetryHandle = setTimeout(() => {
       this.authQuotaInfoRefreshRetryHandle = null;
-      void this.refreshAuthQuotaInfoSnapshotForCurrentUser(token, expectedUserInfo, attemptIndex);
+      if (!this.authSessionInvalidating) {
+        void this.refreshAuthQuotaInfoSnapshotForCurrentUser(token, expectedUserInfo, attemptIndex);
+      }
     }, retryDelay);
   }
 
@@ -1131,16 +956,13 @@ export class AuthService {
       return;
     }
 
-    if (this.authQuotaInfoSnapshotOverride?.source === 'token') {
+    if (this.authQuotaInfoSnapshotOverride?.creditSnapshot) {
       return;
     }
 
     try {
       const quotaInfoSnapshot = await this.getAuthQuotaInfoSnapshot(token);
-      if (!quotaInfoSnapshot) {
-        this.retryAuthQuotaInfoSnapshotIfStillPending(token, expectedUserInfo, attemptIndex + 1);
-        return;
-      }
+      if (this.authSessionInvalidating) return;
 
       const latestUserInfo = this.userInfoSubject.getValue();
       if (!latestUserInfo || !isSameAuthUser(latestUserInfo, expectedUserInfo)) {
@@ -1149,8 +971,11 @@ export class AuthService {
 
       this.setCurrentUserInfo(latestUserInfo, quotaInfoSnapshot);
     } catch (error) {
+      if (this.authSessionInvalidating) return;
       console.warn('后台刷新独立配额快照失败:', error);
-      this.retryAuthQuotaInfoSnapshotIfStillPending(token, expectedUserInfo, attemptIndex + 1);
+      if (isRetryableCreditRequestError(error)) {
+        this.retryAuthQuotaInfoSnapshotIfStillPending(token, expectedUserInfo, attemptIndex + 1);
+      }
     }
   }
 
@@ -1164,7 +989,7 @@ export class AuthService {
       return;
     }
 
-    if (this.authQuotaInfoSnapshotOverride?.source === 'token') {
+    if (this.authQuotaInfoSnapshotOverride?.creditSnapshot) {
       return;
     }
 
@@ -1387,9 +1212,9 @@ export class AuthService {
     const state = this.generateOAuthState(purpose);
 
     const requestData: any = {
-      redirect_uri: 'abis://auth/callback',
+      redirect_uri: this.authBridge?.redirectUri || 'abis://auth/callback',
       state: state,
-      device_id: 'pc',
+      device_id: this.authDeviceId,
       purpose,
     };
     if (inviteCode) {
@@ -1446,7 +1271,7 @@ export class AuthService {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         // 使用共享的AppData路径（不使用实例隔离的路径）
         const originalAppDataPath = await this.getOriginalAppDataPath();
-        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
+        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, 'auth', `${this.authBridge?.product || 'blockly'}.oauth-state`);
 
         const stateData = {
           state,
@@ -1475,7 +1300,7 @@ export class AuthService {
     try {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
-        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
+        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, 'auth', `${this.authBridge?.product || 'blockly'}.oauth-state`);
 
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           const content = (window as any).electronAPI.fs.readFileSync(stateFilePath, 'utf8');
@@ -1575,7 +1400,7 @@ export class AuthService {
     try {
       if (this.electronService.isElectron && (window as any).electronAPI?.path && (window as any).electronAPI?.fs) {
         const originalAppDataPath = await this.getOriginalAppDataPath();
-        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, '.oauth-state');
+        const stateFilePath = (window as any).electronAPI.path.join(originalAppDataPath, 'auth', `${this.authBridge?.product || 'blockly'}.oauth-state`);
 
         if ((window as any).electronAPI.fs.existsSync(stateFilePath)) {
           (window as any).electronAPI.fs.unlinkSync(stateFilePath);
@@ -1594,7 +1419,7 @@ export class AuthService {
     const requestData: any = {
       code: code,
       state: state,
-      device_id: 'pc'
+      device_id: this.authDeviceId
     };
     if (inviteCode) {
       requestData.invite_code = inviteCode;
@@ -1615,7 +1440,7 @@ export class AuthService {
     return this.http.post<CommonResponse>(API.githubBind, {
       code,
       state,
-      device_id: 'pc',
+      device_id: this.authDeviceId,
       client_type: 'electron',
       purpose,
     }).pipe(
@@ -1771,10 +1596,7 @@ export class AuthService {
    */
   async handleGitHubOAuthSuccess(data: { access_token: string; refresh_token?: string; user?: any }): Promise<void> {
     try {
-      await this.saveToken2(data.access_token);
-      if (data.refresh_token) {
-        await this.saveRefreshToken(data.refresh_token);
-      }
+      await this.saveToken2(data.access_token, data.refresh_token);
       await this.handleSuccessfulTokenAcquisition(data.access_token, data.user as AuthUserInfo | undefined);
     } catch (error) {
       console.error('处理 GitHub OAuth 成功数据失败:', error);
@@ -1816,7 +1638,7 @@ export class AuthService {
         }, 400);
       });
     }
-    const params: any = {};
+    const params: any = { device_id: this.authDeviceId };
     if (inviteCode) {
       params.invite_code = inviteCode;
     }
@@ -1875,10 +1697,7 @@ export class AuthService {
    */
   async handleWeChatOAuthSuccess(data: { access_token: string; refresh_token?: string; user?: any }): Promise<void> {
     try {
-      await this.saveToken2(data.access_token);
-      if (data.refresh_token) {
-        await this.saveRefreshToken(data.refresh_token);
-      }
+      await this.saveToken2(data.access_token, data.refresh_token);
       await this.handleSuccessfulTokenAcquisition(data.access_token, data.user as AuthUserInfo | undefined);
     } catch (error) {
       console.error('处理微信 OAuth 成功数据失败:', error);
@@ -2005,7 +1824,7 @@ export class AuthService {
       });
     }
 
-    const body: any = { ticket, email, code };
+    const body: any = { ticket, email, code, device_id: this.authDeviceId };
     if (invite_code) {
       body.invite_code = invite_code;
     }
@@ -2112,6 +1931,12 @@ export class AuthService {
   }
 }
 
+/** Retry transport failures only, never a deterministic schema or permission error. */
+function isRetryableCreditRequestError(error: unknown): boolean {
+  return error instanceof TimeoutError || (error instanceof HttpErrorResponse
+    && (error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500));
+}
+
 export function normalizeAuthQuotaInfoSnapshotPayload(
   value: unknown,
   options?: {
@@ -2121,6 +1946,10 @@ export function normalizeAuthQuotaInfoSnapshotPayload(
   },
 ): AuthQuotaInfoSnapshot | undefined {
   const detailRecord = isRecord(value) ? value : undefined;
+  if (detailRecord?.['unit'] === 'credits') {
+    const creditSnapshot = normalizeAuthCreditSnapshot(detailRecord);
+    return creditSnapshot ? { source: options?.source ?? 'token', creditSnapshot } : undefined;
+  }
   const normalizedQuotaSnapshots = normalizeAuthQuotaSnapshots(
     detailRecord?.['quota_snapshots'] ?? detailRecord?.['quotaSnapshots'],
   );

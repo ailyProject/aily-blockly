@@ -2,21 +2,27 @@ import {
   SimulatorHostArtifactChunkError,
   SimulatorHostProviderOperationError,
   createPortableRandomId,
-  validateProjectSceneNetworkDescriptorV2,
-  validateSimulationArtifact,
-  type ProjectSceneNetworkDescriptorV2,
-  type SimulationArtifact,
   type SimulatorHostArtifactChunk,
   type SimulatorProjectHostProviderAdapterOptions,
-  type SimulatorSubappHostArtifactChunkRequestV1,
-  type SimulatorSubappHostArtifactDescriptorV1,
-  type SimulatorSubappHostProjectArtifactReadV1,
-  type SimulatorSubappHostProjectContextReadV1,
-  type SimulatorSubappHostProjectContextSnapshotV1,
-  type SimulatorSubappHostProjectSceneReadV1,
-  type SimulatorSubappHostProjectSceneReadResultV1,
-  type SimulatorSubappHostProjectSceneWriteV1,
 } from '@aily-project/simulator-host-sdk';
+import {
+  validateProjectSceneNetworkDescriptorV2,
+  type ProjectSceneNetworkDescriptorV2,
+} from '@aily-project/simulator-protocol/scene';
+import {
+  validateSimulationArtifact,
+  type SimulationArtifact,
+} from '@aily-project/simulator-protocol/artifact';
+import type {
+  SimulatorSubappHostArtifactChunkRequestV1,
+  SimulatorSubappHostArtifactDescriptorV1,
+  SimulatorSubappHostProjectArtifactReadV1,
+  SimulatorSubappHostProjectContextReadV1,
+  SimulatorSubappHostProjectContextSnapshotV1,
+  SimulatorSubappHostProjectSceneReadV1,
+  SimulatorSubappHostProjectSceneReadResultV1,
+  SimulatorSubappHostProjectSceneWriteV1,
+} from '@aily-project/simulator-protocol/host';
 
 const EMPTY_STORAGE_REVISION = '0'.repeat(64);
 const DEFAULT_ARTIFACT_REFERENCE_TTL_MS = 5 * 60_000;

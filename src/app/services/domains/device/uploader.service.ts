@@ -1,9 +1,10 @@
-import { Inject, Injectable } from '@angular/core';
+import { Inject, Injectable, Optional } from '@angular/core';
+import { TranslateService } from '@ngx-translate/core';
 import { ElectronService } from '@core/platform/public-api';
 import { BuilderService } from '@domain/build/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
 import { resolveUploadDispatchMode } from './policies/upload-dispatch-policy';
 import {
   DEVICE_APPLICATION_PORT,
@@ -32,6 +33,8 @@ export class UploaderService {
     private serialService: SerialService,
     private projectService: ProjectService,
     private builderService: BuilderService,
+    private translate: TranslateService,
+    @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution?: CoderExecutionPort,
   ) { }
 
   requiresLocalPort(): boolean {
@@ -65,7 +68,7 @@ export class UploaderService {
 
   private async uploadPythonProject(route: LinuxBoardExecutionRoute): Promise<any> {
     const transport = this.currentLinuxBoardTransport(route);
-    if (!transport) throw new Error('Select an SSH or serial connection before running');
+    if (!transport) throw new Error(this.t('SELECT_CONNECTION'));
     const prepared = await this.preparePythonProject(route);
     return this.application.syncAndRunLinuxBoardSource(
       prepared.source,
@@ -85,7 +88,7 @@ export class UploaderService {
     entry: string;
   }> {
     const projectPath = this.projectService.currentProjectPath;
-    if (!projectPath) throw new Error('当前项目路径无效');
+    if (!projectPath) throw new Error(this.t('INVALID_PROJECT_PATH'));
     await this.builderService.build();
     const currentRoute = this.currentLinuxBoardRoute();
     if (
@@ -93,7 +96,7 @@ export class UploaderService {
       || currentRoute?.entry !== route.entry
       || currentRoute?.connectors.join(',') !== route.connectors.join(',')
     ) {
-      throw new Error('Project changed while Python code was being prepared');
+      throw new Error(this.t('PROJECT_CHANGED_DURING_BUILD'));
     }
     const entryPath = this.electronService.pathJoin(projectPath, ...route.entry.split('/'));
     const source = window['fs'].readFileSync(entryPath, 'utf8');
@@ -124,7 +127,7 @@ export class UploaderService {
     };
   }
 
-  private async sendSerialMonitorUploadSignal(
+  private async sendSerialResourceUploadSignal(
     signal: string,
     port: any,
     portType = this.serialService.currentPortInfo?.type,
@@ -136,7 +139,7 @@ export class UploaderService {
       return;
     }
 
-    // 让订阅方（serial-monitor / ffs-manager 等）把"释放串口"的
+    // 让订阅方（AI 串口调试器、文件系统管理器等）把"释放串口"的
     // Promise 推进 waitFor，这里等它们全部完成后再开始处理后续动作。
     const waitFor: Promise<void>[] = [];
     const payload: Record<string, unknown> = {
@@ -163,19 +166,29 @@ export class UploaderService {
     // node-serialport 的 close 回调返回后，Windows 还要短暂窗口才会真正放开
     // 独占句柄；这里给外部 esptool.exe 等 child_process 一点缓冲，避免
     // "Could not open COMx, the port is busy" 报错。即使本次没有订阅方释放
-    // 串口（waitFor=0），上一次 ffs-manager / serial-monitor 的关闭也可能
+    // 串口（waitFor=0），上一次其他串口工具的关闭也可能
     // 刚发生不久，仍然需要这个缓冲。
     if (signal === 'serial-monitor:disconnect') {
       await new Promise(resolve => setTimeout(resolve, 300));
     }
   }
 
-  async upload() {
+  async upload(projectPath = this.projectService.currentProjectPath, port?: string) {
+    if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.upload(projectPath, port);
+    const finish = this.projectService.beginCoderOperation('upload');
+    try {
+      return await this.uploadCurrentProject();
+    } finally {
+      finish();
+    }
+  }
+
+  private async uploadCurrentProject() {
     // Python 将 main.py 交给 Linux connector 同步并运行；其余项目保留原 Arduino 固件上传流程。
     if (this.isPythonProject()) {
       const pythonRoute = this.currentLinuxBoardRoute();
       if (!pythonRoute) {
-        throw new Error('Python board.json 必须配置 mode: ["python"]，connector 必须是 ["ssh"]、["serial"] 或两者');
+        throw new Error(this.t('INVALID_BOARD_CONFIG'));
       }
       return this.uploadPythonProject(pythonRoute);
     }
@@ -185,7 +198,7 @@ export class UploaderService {
     let uploadOutcome = 'failed';
     let resourceRecovery: UploadRecoveryPolicy | undefined;
     try {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:disconnect',
         uploadPort,
         uploadPortType,
@@ -242,7 +255,7 @@ export class UploaderService {
       }
       throw error;
     } finally {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:connect',
         uploadPort,
         uploadPortType,
@@ -255,10 +268,15 @@ export class UploaderService {
     }
   }
 
+  private t(key: string, params?: Record<string, unknown>): string {
+    return this.translate.instant(`AILY_CONNECTOR.${key}`, params);
+  }
+
   /**
   * 取消当前编译过程
   */
-  cancel() {
+  cancel(projectPath = this.projectService.currentProjectPath) {
+    if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) { this.coderExecution.cancel(projectPath, 'upload'); return; }
     if (this.directUploaderActive) {
       this.application.cancelBlocklyEditorUpload();
       return;
@@ -282,7 +300,7 @@ export class UploaderService {
     const operationId = this.createUploadOperationId('flash-softdevice', uploadPort);
     let uploadOutcome = 'failed';
     try {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:disconnect',
         uploadPort,
         uploadPortType,
@@ -305,7 +323,7 @@ export class UploaderService {
       }
       return { success: false, message: error.message || '烧录失败' };
     } finally {
-      await this.sendSerialMonitorUploadSignal(
+      await this.sendSerialResourceUploadSignal(
         'serial-monitor:connect',
         uploadPort,
         uploadPortType,

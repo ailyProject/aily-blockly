@@ -4,7 +4,6 @@ import { ElectronService } from '@core/platform/public-api';
 // import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { UpdateDialogComponent } from '../../../main-window/components/update-dialog/update-dialog.component';
-import { version } from '../../../../../package.json';
 import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { UiService } from './ui.service';
@@ -55,7 +54,9 @@ const APPLICATION_UPDATE_STATUS_TRANSITIONS: Record<
 })
 export class UpdateService {
 
-  currentVersion = version;
+  get currentVersion(): string {
+    return this.electronService.applicationVersion;
+  }
 
   updateProgress = new BehaviorSubject<number>(0);
 

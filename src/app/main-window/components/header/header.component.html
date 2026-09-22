@@ -16,8 +16,17 @@
     <div class="down ccenter"><i class="fa-regular fa-angle-down"></i></div>
   </div>
   }
-  <div class="null-box drag" (dblclick)="maximize()"></div>
-  <div class="project-box ccenter">{{ projectData?.nickname || projectData?.name}}</div>
+  <div class="null-box" [class.drag]="!isEditingProjectTitle" (dblclick)="maximize()"></div>
+  <div class="project-box ccenter">
+    @if (isEditingProjectTitle) {
+    <input #projectTitleInput class="project-title-input" type="text" [value]="projectTitle"
+      [readOnly]="isSavingProjectTitle" [attr.aria-label]="'PROJECT_SETTING_DIALOG.NAME' | translate"
+      (keydown)="onProjectTitleKeydown($event)" (blur)="saveProjectTitle(projectTitleInput.value)">
+    } @else {
+    <button class="project-title" type="button" [disabled]="!canEditProjectTitle"
+      (click)="startEditingProjectTitle()">{{ projectTitle }}</button>
+    }
+  </div>
   <div class="toolbox">
     <div class="zone ccenter">
       @for (btn of headerBtns; track $index) {
@@ -27,13 +36,6 @@
         [attr.data-action]="btn.action">
       </app-act-btn>
       }
-      }
-      <!-- Linux/Python 程序运行时显示停止按钮；Arduino 上传没有持续运行态。 -->
-      @if (connectorState.running) {
-      <app-act-btn [icon]="connectorStopBtn.icon" [color]="connectorStopBtn.color"
-        [(state)]="connectorStopBtn.state" nz-tooltip nzTooltipTitle="停止"
-        (click)="onClick(connectorStopBtn,$event)" data-action="connector-stop">
-      </app-act-btn>
       }
     </div>
     <!-- 动态 App 列表 -->
@@ -79,7 +81,7 @@
 <!-- menu -->
 @if (showMenu) {
 <app-menu class="main-menu-parity" [menuList]="headerMenu" [width]="250" (closeEvent)="closeMenu()" (itemClickEvent)="onMenuClick($event)"
-  (subItemClickEvent)="onHeaderMenuSubItemClick($event)"></app-menu>
+ (subItemClickEvent)="onHeaderMenuSubItemClick($event)"></app-menu>
 }
 <!-- device port list -->
 @if (showPortList) {

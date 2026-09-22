@@ -3,14 +3,14 @@ import { GUIDE_MENU } from '../../configs/menu.config';
 import { UiService, OnboardingService } from '@core/app-shell/public-api';
 import { getGuideRecentProjects, ProjectService } from '@domain/project/public-api';
 import { ConfigService, ThemeService } from '@core/preferences/public-api';
-import packageJson from '../../../../package.json';
 import { TranslateModule } from '@ngx-translate/core';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { ElectronService } from '@core/platform/public-api';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { GUIDE_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { Subscription } from 'rxjs';
 
 @Component({
   selector: 'app-guide',
@@ -19,14 +19,27 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
   styleUrl: './guide.component.scss'
 })
 export class GuideComponent implements OnInit, OnDestroy {
-  version = packageJson.version;
   guideMenu = GUIDE_MENU;
   showMenu = true;
   private readonly guidePageDefaultUrl: SafeResourceUrl;
   private readonly guidePageCnUrl: SafeResourceUrl;
+  private destroyed = false;
+  private projectOpenSubscription: Subscription | null = null;
 
   get logoSrc(): string {
-    return this.themeService.theme() === 'light' ? 'imgs/logo-light.webp' : 'imgs/logo.webp';
+    return this.configService.getApplicationLogoSrc(this.themeService.theme());
+  }
+
+  get applicationName(): string {
+    return this.configService.getApplicationName();
+  }
+
+  get version(): string {
+    return this.electronService.applicationVersion;
+  }
+
+  get coderProduct(): boolean {
+    return this.configService.isCoderProduct();
   }
 
   get sensecraftImg(): string {
@@ -104,7 +117,8 @@ export class GuideComponent implements OnInit, OnDestroy {
     private configService: ConfigService,
     private onboardingService: OnboardingService,
     private themeService: ThemeService,
-    private sanitizer: DomSanitizer
+    private sanitizer: DomSanitizer,
+    private route: ActivatedRoute,
   ) {
     this.guidePageDefaultUrl = this.sanitizer.bypassSecurityTrustResourceUrl('https://guide-page.aily.pro');
     this.guidePageCnUrl = this.sanitizer.bypassSecurityTrustResourceUrl('https://guide-page.yiyu.pro');
@@ -127,12 +141,31 @@ export class GuideComponent implements OnInit, OnDestroy {
     return this.configService.isCnRegion;
   }
 
-  ngOnInit() {
+  async ngOnInit() {
+    await this.configService.init();
+    if (this.destroyed) return;
+    this.electronService.setTitle(this.applicationName);
     this.loadSponsors();
-    this.checkFirstLaunch();
+    // Angular reuses Guide when a deep link is rejected while already on the home page.
+    this.projectOpenSubscription = this.route?.queryParamMap.subscribe((params) => {
+      const projectPath = params.get('openProject');
+      if (projectPath) void this.openRequestedProject(projectPath);
+    }) ?? null;
+    if (!this.route?.snapshot.queryParamMap.get('openProject')) this.checkFirstLaunch();
+  }
+
+  private async openRequestedProject(projectPath: string): Promise<void> {
+    try {
+      await this.router.navigate(['/main/guide'], { replaceUrl: true });
+      await this.projectService.projectOpen(projectPath);
+    } catch (error) {
+      console.error('Unable to open the requested project:', error);
+    }
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
+    this.projectOpenSubscription?.unsubscribe();
     this.stopSponsorCarousel();
   }
 
@@ -267,6 +300,14 @@ export class GuideComponent implements OnInit, OnDestroy {
   removeProject(event: Event, project: any) {
     event.stopPropagation();
     this.projectService.removeRecentlyProject({ path: project.path });
+  }
+
+  unmergeProject(event: Event, project: any) {
+    event.stopPropagation();
+    this.projectService.unmergeCoderWorkspace({
+      workspaceId: project.coderWorkspaceId,
+      path: project.path,
+    });
   }
 
   process(item) {

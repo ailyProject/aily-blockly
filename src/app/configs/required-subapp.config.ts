@@ -1,1 +1,1 @@
-export const AILY_CODER_SUBAPP_ID = 'aily-coder';
+export const AILY_CODER_EDITOR_SUBAPP_ID = 'aily-coder-editor';

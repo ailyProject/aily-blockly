@@ -14,6 +14,7 @@ import { ImageViewerComponent } from '../../../../components/image-viewer/image-
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 import { InstalledChildToolLauncherService } from '../../services/installed-child-tool-launcher.service';
 import { Subscription } from 'rxjs';
+import { getToolWebUrl } from '../../../../configs/api.config';
 import { DevToolDragController, DragBounds, DragPoint } from './dev-tool-drag-controller';
 
 @Component({
@@ -33,6 +34,8 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('dragHandle', { static: true }) private dragHandle!: ElementRef<HTMLElement>;
 
   boardPackagePath = '';
+  private boardPackageProjectPath = '';
+  private currentProjectMode: 'blockly' | 'coder' | null = null;
   isReloading = false;
   isArchitectureGenerating = false;
   isProjectSceneGenerating = false;
@@ -46,13 +49,18 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   private initAnimationFrame: number | null = null;
   private containerResizeObserver: ResizeObserver | null = null;
   private diagramGenerationSubscription: Subscription | null = null;
+  private projectPathSubscription: Subscription | null = null;
+  private boardChangeSubscription: Subscription | null = null;
 
   get autoSave(): boolean {
     return this._autoSave;
   }
 
   get reloadDisabled(): boolean {
-    return this.isReloading || this.projectService.isProjectOpening;
+    const projectPath = this.projectService.currentProjectPath;
+    return this.isReloading || this.projectService.isProjectOpening
+      || !!(projectPath && this.currentProjectMode === 'coder'
+        && this.projectService.getCoderOperation(projectPath));
   }
 
   set autoSave(value: boolean) {
@@ -90,7 +98,16 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     );
     const devmode = this.ensureDevModeConfig();
     this._autoSave = devmode.autoSave ?? true;
-    this.loadBoardInfo();
+    this.projectPathSubscription = this.projectService.currentProjectPath$.subscribe(projectPath => {
+      if (projectPath === this.boardPackageProjectPath) return;
+      this.currentProjectMode = projectPath ? this.projectService.getProjectMode(projectPath) : null;
+      this.boardPackagePath = '';
+      this.boardPackageProjectPath = projectPath;
+      if (projectPath) this.loadBoardInfo();
+    });
+    this.boardChangeSubscription = this.projectService.boardChangeSubject.subscribe(() => {
+      if (this.projectService.currentProjectPath) this.loadBoardInfo();
+    });
   }
 
   ngAfterViewInit() {
@@ -122,6 +139,10 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   ngOnDestroy() {
     this.diagramGenerationSubscription?.unsubscribe();
     this.diagramGenerationSubscription = null;
+    this.projectPathSubscription?.unsubscribe();
+    this.projectPathSubscription = null;
+    this.boardChangeSubscription?.unsubscribe();
+    this.boardChangeSubscription = null;
     const handle = this.dragHandle?.nativeElement;
     handle?.removeEventListener('pointerleave', this.onDragHandleLeave);
     this.dragController?.disconnect();
@@ -231,7 +252,9 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.isReloading = true;
     try {
-      if (this.autoSave) {
+      // Coder's projectOpen(reload) saves every open editor through its own
+      // lifecycle bridge before replacing the iframe.
+      if (this.autoSave && this.projectService.getProjectMode(projectPath) !== 'coder') {
         const result = await this.projectService.save(projectPath);
         if (!result.success) {
           this.messageService.error('Save project failed: ' + (result.error || 'unknown error'));
@@ -250,6 +273,23 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   async clear() {
+    const projectPath = this.projectService.currentProjectPath;
+    if (!projectPath) return;
+    if (this.projectService.getProjectMode(projectPath) === 'coder') {
+      if (this.projectService.getCoderOperation(projectPath)) {
+        this.messageService.warning('Cannot clear cache while compiling or uploading');
+        return;
+      }
+      try {
+        // Coder keeps source files in sketch/; clear only rebuildable outputs.
+        await this.builderService.clearBuildCache(projectPath);
+        this.messageService.success('Clear build folder success');
+      } catch (error) {
+        this.messageService.error('Clear build folder failed: ' + ((error as Error)?.message || String(error)));
+      }
+      return;
+    }
+
     const currentState = this.workflowService.currentState;
     if (currentState === ProcessState.BUILDING || currentState === ProcessState.UPLOADING) {
       this.messageService.warning('Cannot clear cache while compiling or uploading');
@@ -273,7 +313,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         this.electronService.deleteDir(defaultBuildPath);
       }
 
-      const tempDirPath = this.electronService.pathJoin(this.projectService.currentProjectPath, '.temp');
+      const tempDirPath = this.electronService.pathJoin(projectPath, '.temp');
       if (this.electronService.exists(tempDirPath)) {
         console.log('Deleting .temp directory:', tempDirPath);
         this.electronService.deleteDir(tempDirPath);
@@ -304,6 +344,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   loadBoardInfo() {
+    this.boardPackagePath = '';
     if (this.loadBoardInfoTimer) {
       clearTimeout(this.loadBoardInfoTimer);
     }
@@ -499,11 +540,19 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async resolveBoardPackagePath(): Promise<string> {
-    if (!this.boardPackagePath) {
-      this.boardPackagePath = await this.projectService.getBoardPackagePath();
+    const projectPath = this.projectService.currentProjectPath;
+    if (!projectPath) return '';
+    if (this.boardPackageProjectPath === projectPath && this.boardPackagePath) return this.boardPackagePath;
+    try {
+      const boardPackagePath = await this.projectService.getBoardPackagePath();
+      if (this.projectService.currentProjectPath !== projectPath) return '';
+      this.boardPackageProjectPath = projectPath;
+      this.boardPackagePath = boardPackagePath;
+      return boardPackagePath;
+    } catch (error) {
+      console.warn('Board package unavailable:', error);
+      return '';
     }
-
-    return this.boardPackagePath;
   }
 
   private extractMermaidCode(content: string): string {

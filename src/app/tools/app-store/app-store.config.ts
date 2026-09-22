@@ -20,6 +20,10 @@ export const HEADER_APP_LIMIT = 8;
 
 export const APP_STORE_STORAGE_KEY = 'app-store-zones-config';
 export const TOOLBAR_APP_IDS_CONFIG_KEY = 'toolbarAppIds';
+export const SUBAPP_TOOLBAR_DEFAULTS_CONFIG_KEY = 'subappToolbarDefaults';
+
+export type SubappToolbarDefaultOutcome = 'applied' | 'skipped-full' | 'disabled' | 'preserved' | 'manual';
+export type SubappToolbarDefaults = Record<string, SubappToolbarDefaultOutcome>;
 
 export const APP_STORE_ZONES: AppStoreZone[] = [
   {

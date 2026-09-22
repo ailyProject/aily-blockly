@@ -1,8 +1,6 @@
 import { Injectable } from '@angular/core';
-import {
-  buildProjectHardwareIntentSnapshot,
-  type ProjectHardwareIntentSnapshotV1,
-} from '@aily-project/simulator-host-sdk';
+import { buildProjectHardwareIntentSnapshot } from '@aily-project/simulator-host-sdk';
+import type { ProjectHardwareIntentSnapshotV1 } from '@aily-project/simulator-protocol/scene';
 
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { ProjectService } from '@domain/project/public-api';

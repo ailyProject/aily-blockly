@@ -1,4 +1,5 @@
 import { Injectable, NgZone, OnDestroy } from '@angular/core';
+import { TranslateService } from '@ngx-translate/core';
 import { Subject, Subscription } from 'rxjs';
 
 import { UiService } from '@core/app-shell/public-api';
@@ -33,8 +34,7 @@ export interface AilySshConnectOptions {
   username: string;
   password?: string;
   privateKeyPath?: string;
-  hostKey?: string;
-  hostKeyPolicy?: 'trust-on-first-use' | 'strict';
+  hostKeyPolicy?: 'accept-any' | 'trust-on-first-use';
 }
 
 export interface AilySerialConnectOptions {
@@ -87,6 +87,7 @@ export class AilyConnectorService implements OnDestroy {
     private readonly zone: NgZone,
     private readonly uiService: UiService,
     private readonly subappResourceLifecycle: SubappResourceLifecycleService,
+    private readonly translate: TranslateService,
   ) {
     this.resourceSignalSubscription = this.uiService.actionSubject.subscribe(action => {
       this.handleExternalSerialResourceSignal(action as Record<string, unknown>);
@@ -109,7 +110,6 @@ export class AilyConnectorService implements OnDestroy {
   async connectSsh(options: AilySshConnectOptions): Promise<AilyConnectorSession> {
     const credentials = {
       ...(options.password !== undefined ? { password: options.password } : {}),
-      ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
     };
     try {
       const session = await this.requireApi().connect({
@@ -119,7 +119,7 @@ export class AilyConnectorService implements OnDestroy {
           port: options.port ?? 22,
           username: options.username,
           ...(options.privateKeyPath ? { privateKeyPath: options.privateKeyPath } : {}),
-          ...(options.hostKeyPolicy === 'strict' ? { hostKeyPolicy: 'strict' } : {}),
+          hostKeyPolicy: options.hostKeyPolicy ?? 'trust-on-first-use',
         },
         credentials,
       }) as AilyConnectorSession;
@@ -132,7 +132,7 @@ export class AilyConnectorService implements OnDestroy {
 
   async connectSerial(options: AilySerialConnectOptions): Promise<AilyConnectorSession> {
     const port = String(options.port || '').trim();
-    if (!port) throw new Error('Serial port is required');
+    if (!port) throw new Error(this.t('SERIAL_PORT_REQUIRED'));
 
     const lease: SerialConnectorLease = {
       port,
@@ -225,14 +225,18 @@ export class AilyConnectorService implements OnDestroy {
 
   private requireApi(): ConnectorPreloadApi {
     const api = this.api;
-    if (!api) throw new Error('Aily Connector is available only in the Electron application');
+    if (!api) throw new Error(this.t('ELECTRON_ONLY'));
     return api;
   }
 
   private requireKnownSession(sessionId: string): AilyConnectorSession {
     const session = this.sessions.get(sessionId);
-    if (!session) throw new Error('Connector session is not connected');
+    if (!session) throw new Error(this.t('SESSION_NOT_CONNECTED'));
     return session;
+  }
+
+  private t(key: string, params?: Record<string, unknown>): string {
+    return this.translate.instant(`AILY_CONNECTOR.${key}`, params);
   }
 
   private addSession(session: AilyConnectorSession): void {

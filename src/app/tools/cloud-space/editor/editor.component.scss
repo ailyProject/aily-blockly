@@ -1,10 +1,18 @@
 .editor-box {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
     background: var(--aily-bg-tertiary);
+
+    >.content {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
 
     .item {
         display: flex;
@@ -173,10 +181,13 @@
 }
 
 .bottom {
-    margin-top: 15px;
-    text-align: right;
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 16px;
 
     button {
-        margin-left: 15px;
+        margin-left: 0;
     }
 }

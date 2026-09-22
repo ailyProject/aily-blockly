@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 type AnimationMessageParams = Record<string, string | number>;
@@ -367,7 +367,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
     this.updateControlsFromValue();
     this.renderPreviewFrame(this.currentFrame);
     this.updateStatusFromValue();
-    if (nextRefId && this.blockDisplayImage) {
+    if (nextRefId && this.blockDisplayImage && projectDataRuntime.isConfigured()) {
       void this.ensureFramesLoaded().catch((error) => this.reportProjectDataLoadError(error));
     }
     if (dimensionsChanged) this.rerenderSourceBlockAfterResize();
@@ -398,7 +398,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
     ) as SVGImageElement;
     this.updateSize_();
     this.updateBlockDisplayImage();
-    void this.ensureFramesLoaded().catch((error) => this.reportProjectDataLoadError(error));
+    if (projectDataRuntime.isConfigured()) void this.ensureFramesLoaded().catch((error) => this.reportProjectDataLoadError(error));
   }
 
   protected override render_() {
@@ -1309,9 +1309,9 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
       maxFrames,
       frameCount,
       frames,
-      sourceName: value.sourceName,
-      sourceType: value.sourceType,
-      sourcePath: value.sourcePath,
+      ...(value.sourceName === undefined ? {} : { sourceName: value.sourceName }),
+      ...(value.sourceType === undefined ? {} : { sourceType: value.sourceType }),
+      ...(value.sourcePath === undefined ? {} : { sourcePath: value.sourcePath }),
     };
   }
 

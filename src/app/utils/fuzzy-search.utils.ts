@@ -424,3 +424,25 @@ export function searchBoards(db: AnyOrama, term: string, limit: number = 500): s
 
   return rerankBoardHits(results.hits, term).map((hit: any) => hit.document.name as string);
 }
+
+/**
+ * Searches and relevance-sorts a board list while preserving the original
+ * board objects. Both project-creation presentations use this adapter so their
+ * search behavior cannot drift while UI layout remains independent.
+ */
+export function filterAndRankBoards(boards: any[], term: string): any[] {
+  if (!term) {
+    return boards;
+  }
+
+  const matchedNames = searchBoards(createBoardSearchIndex(boards), term);
+  const nameIndexMap = new Map<string, number>();
+  matchedNames.forEach((name, index) => nameIndexMap.set(name, index));
+
+  return boards
+    .filter(board => nameIndexMap.has(board.name))
+    .sort((left, right) => (
+      (nameIndexMap.get(left.name) ?? Number.MAX_SAFE_INTEGER)
+      - (nameIndexMap.get(right.name) ?? Number.MAX_SAFE_INTEGER)
+    ));
+}

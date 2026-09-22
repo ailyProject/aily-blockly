@@ -103,6 +103,8 @@ function pickChildAuthUserIdentity(user: AuthUserInfo | null | undefined): Child
 function buildChildQuotaSnapshots(
   authSnapshot: AuthSnapshot | null | undefined,
 ): Readonly<Record<string, ChildAuthQuotaUsageSnapshot>> | undefined {
+  // Credit balances are fetched by the child; never broadcast an obsolete count fallback.
+  if (authSnapshot?.quotaInfoSnapshot?.creditSnapshot) return undefined;
   const resetAt = authSnapshot?.quotaInfoSnapshot?.quotaResetDate
     ?? authSnapshot?.quotaSummary?.resetTime;
   const quotaSnapshots = Object.fromEntries(

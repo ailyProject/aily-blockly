@@ -1,0 +1,30 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "src/app/integrations/blockly/build-environment.spec.ts",
+    "src/app/integrations/blockly/board-config-operation.spec.ts",
+    "src/app/integrations/blockly/board-switch-operation.spec.ts",
+    "src/app/integrations/blockly/project-mode-tool-routing.spec.ts",
+    "src/app/services/integrations/subapps/subapp-owner-routing.spec.ts",
+    "src/app/services/integrations/subapps/subapp-agent-bridge.service.spec.ts",
+    "src/app/integrations/blockly/abs/**/*.spec.ts",
+    "src/app/services/shared/abs/**/*.spec.ts",
+    "src/app/services/domains/project/project-data/project-data-abs.spec.ts",
+    "src/app/services/domains/project/project-data/project-data-generic-values.spec.ts",
+    "src/app/services/domains/project/project-data/project-data-normalization.spec.ts",
+    "src/app/services/domains/project/legacy-shadow-identities.spec.ts",
+    "src/app/services/domains/project/project-save-as.spec.ts",
+    "src/app/services/domains/project/project-board-switch.spec.ts",
+    "src/app/services/domains/project/project-lifecycle-gate.spec.ts",
+    "src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+    "src/app/editors/blockly-editor/project-board-reload.spec.ts",
+    "src/app/services/domains/project/project-mode.spec.ts",
+    "src/app/services/domains/project/project-block-field-updates.spec.ts",
+    "src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
+    "src/app/editors/blockly-editor/services/builder.service.spec.ts",
+    "src/app/editors/blockly-editor/services/blockly-generator-runtime.service.spec.ts",
+    "src/app/pages/playground/example-list/example-list-import.spec.ts",
+    "src/**/*.d.ts"
+  ],
+  "exclude": []
+}

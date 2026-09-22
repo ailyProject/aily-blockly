@@ -9,7 +9,7 @@ export interface IMenuItem {
   more?: string;
   ai?: boolean;
   sep?: boolean;
-  state?: 'default' | 'doing' | 'done' | 'error' | 'warn';
+  state?: 'default' | 'doing' | 'done' | 'error' | 'warn' | 'running' | 'stopping';
   disabled?: boolean;
   dev?: boolean;
   router?: string[]; // 在指定路由中显示
@@ -48,14 +48,22 @@ export let HEADER_BTNS: IMenuItem[] = [
     color: '#009600',
     state: 'default',
     router: ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']
-  },
-  // {
-  //   name: 'MENU.DEBUG',
-  //   data: { type: 'cmd', data: 'debug' },
-  //   icon: 'fa-regular fa-rocket',
-  //   type: 'act-btn',
-  //   color: '#f18800',
-  // },
+  }
+];
+
+
+export let HEADER_BTNS_LINUX: IMenuItem[] = [
+  {
+    name: 'MENU.PLAY',
+    text: 'F5',
+    action: 'play',
+    data: { type: 'cmd', data: 'play' },
+    icon: 'fa-regular fa-play',
+    type: 'act-btn',
+    color: '#009600',
+    state: 'default',
+    router: ['/main/blockly-editor', '/main/code-editor', '/main/code-editor-pro']
+  }
 ];
 
 
@@ -64,7 +72,7 @@ export let HEADER_MENU: IMenuItem[] = [
     name: 'MENU.PROJECT_NEW',
     text: 'Ctrl + N',
     action: 'project-new',
-    data: { type: 'project-new', path: 'project-new', alwaysOnTop: true, width: 820, height: 550 },
+    data: { type: 'project-new', path: 'project-new', windowClass: 'builtin', width: 820, height: 550 },
     icon: 'fa-light fa-file-circle-plus',
   },
   {
@@ -73,6 +81,12 @@ export let HEADER_MENU: IMenuItem[] = [
     action: 'project-open',
     data: { type: 'project-open', data: 'project-open' },
     icon: 'fa-light fa-folder-open',
+  },
+  {
+    name: 'MENU.PROJECT_ADD',
+    action: 'project-add',
+    icon: 'fa-light fa-folder-plus',
+    router: ['/main/code-editor-pro'],
   },
   /** 子项由 header 打开菜单时动态填充 */
   {
@@ -129,7 +143,7 @@ export let HEADER_MENU: IMenuItem[] = [
   {
     name: 'MENU.SETTINGS',
     action: 'settings-open',
-    data: { type: 'window', path: 'settings', alwaysOnTop: true, width: 700, height: 550 },
+    data: { type: 'window', path: 'settings', windowClass: 'builtin', width: 700, height: 550 },
     icon: 'fa-light fa-gear',
   },
   {
@@ -177,7 +191,7 @@ export let GUIDE_MENU: IMenuItem[] = [
   {
     name: 'MENU.PROJECT_NEW',
     action: 'project-new',
-    data: { type: 'project-new', path: 'project-new', alwaysOnTop: true, width: 820, height: 550 },
+    data: { type: 'project-new', path: 'project-new', windowClass: 'builtin', width: 820, height: 550 },
     icon: 'fa-light fa-file-circle-plus',
   },
   {

@@ -8,7 +8,7 @@ const DEFAULT_FLUSH_INTERVAL = 100;
 /**
  * 跨工具的开口注册表：path -> { port, evict }
  *
- * 同一个渲染进程（如 serial-monitor 、ffs-manager）可能针对同一串口
+ * 同一个渲染进程内的不同工具可能针对同一串口
  * 创建多个 SerialPort 包装。Windows 上 SerialPort 独占句柄，只要前一个未 close，
  * 后者 open() 就会 ACCESS DENIED。这里依赖注册表，在开新串口前先强制驱逐老的。
  */

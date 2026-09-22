@@ -5,6 +5,7 @@ export interface AppItem extends IMenuItem {
   description?: string;
   enabled?: boolean;
   extension?: boolean;
+  only?: string;
   core?: string[];
   lock?: boolean;
   subapp?: {
@@ -13,13 +14,36 @@ export interface AppItem extends IMenuItem {
     availableVersion: string;
     installedVersion?: string | null;
     installed: boolean;
+    uninstalling?: boolean;
     updateAvailable: boolean;
+    updateStatus: {
+      state: 'current' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed';
+      targetVersion: string;
+      progress?: number;
+      ready?: boolean;
+      error?: string;
+      downloadedAt?: string;
+    };
+    updatePolicy?: {
+      download: 'background';
+      install: 'next-launch';
+    };
     installPath?: string;
   };
 }
 
+export function isAppAvailableForApplication(only: unknown, applicationName: string): boolean {
+  const target = typeof only === 'string' && only.trim()
+    ? only.trim().toLowerCase()
+    : 'all';
+  return target === 'all' || target === applicationName.trim().toLowerCase();
+}
+
 export interface ChildToolAppConfig extends Partial<AppItem> {
   available?: boolean;
+  /** Install in the background at startup whenever the app is missing. */
+  autoInstall?: boolean;
+  /** Suggest toolbar placement once on first installation, respecting later user edits. */
   defaultToolbar?: boolean;
 }
 
@@ -43,6 +67,10 @@ export interface ChildToolRuntimeResourceLifecycleConfig {
 }
 
 export interface ChildToolRuntimeConfig {
+  /** Native/headless runtime; no iframe entry or UI surfaces. */
+  headless?: boolean;
+  /** Host-projected observation UI. Never starts or retains the execution Runtime. */
+  observer?: boolean;
   apiServer?: 'optional' | 'required';
   processMessagePort?: {
     transport: 'node-ipc-v1';
@@ -74,6 +102,10 @@ export interface ChildToolAgentLifecycleRequestConfig {
 }
 
 export interface ChildToolAgentLifecycleConfig {
+  /** Called for each departing owner, with its sessionId in RPC context. */
+  ownerRelease?: ChildToolAgentLifecycleRequestConfig;
+  ownerLease?: ChildToolAgentLifecycleRequestConfig & { protocol: 'process-file-v1' };
+  /** Legacy cleanup after the final shared Agent owner leaves. */
   sessionRelease?: ChildToolAgentLifecycleRequestConfig;
 }
 
@@ -174,12 +206,6 @@ export function getChildToolAvailableAppIds(): string[] {
   return getChildToolAppItems().map(app => app.id);
 }
 
-export function getChildToolDefaultToolbarAppIds(): string[] {
-  return Object.values(getChildToolConfigs())
-    .filter(config => config.app?.available !== false && config.app?.defaultToolbar === true)
-    .map(config => config.app?.id || config.id);
-}
-
 function createChildToolAppItem(config: ChildToolConfig): AppItem {
   const app = config.app || {};
   const appId = app.id || config.id;
@@ -219,16 +245,6 @@ export const APP_LIST: AppItem[] = [
     enabled: true
   },
   {
-    id: 'serial-monitor',
-    name: 'MENU.TOOL_SERIAL',
-    description: 'APP_STORE.SERIAL_DESC',
-    action: 'tool-open',
-    data: { type: 'tool', data: 'serial-monitor' },
-    icon: 'fa-light fa-monitor-waveform',
-    enabled: true,
-    lock: true
-  },
-  {
     id: 'cloud-space',
     name: 'MENU.USER_SPACE',
     description: 'APP_STORE.CLOUD_SPACE_DESC',
@@ -253,7 +269,6 @@ export const APP_LIST: AppItem[] = [
 // 子应用（含 aily-simulator）由 SubappManagerService 从远端 subapp-index.json 注入，不在此硬编码。
 export const AVAILABLE_APP_IDS: string[] = [
   'code-viewer',
-  'serial-monitor',
   'cloud-space',
   'user-center',
 ];
@@ -261,7 +276,6 @@ export const AVAILABLE_APP_IDS: string[] = [
 // 软件初始状态 toolbar 显示的 App id。用户调整后会保存到本地配置。
 export const DEFAULT_TOOLBAR_APP_IDS: string[] = [
   'code-viewer',
-  'serial-monitor',
   'cloud-space',
   'user-center'
 ];

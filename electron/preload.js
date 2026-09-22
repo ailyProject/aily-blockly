@@ -1,5 +1,5 @@
 // 通过预加载桥接向渲染进程安全暴露 Electron 和原生能力。
-const { contextBridge, ipcRenderer, shell, safeStorage, webFrame, clipboard } = require("electron");
+const { contextBridge, ipcRenderer, shell, webFrame, clipboard } = require("electron");
 const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
@@ -10,6 +10,11 @@ const { isAbsolute } = require("path");
 const { tmpdir } = require("os");
 const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
+const { createSafeStorageBridge } = require("./safe-storage-bridge");
+const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
+const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
+const { copyProjectDirectory, importProjectDirectory } = require("./project-file-copy");
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource } = require('./build-workspace-publication');
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -224,6 +229,12 @@ function extractLeadingTimestampMs(line) {
 }
 
 contextBridge.exposeInMainWorld("electronAPI", {
+  auth: {
+    ...require('./build-product').getProductAuthConfig(process.env.AILY_BUILD_PRODUCT),
+    read: () => ipcRenderer.invoke('auth-credentials-read'),
+    write: (record, expectedRefreshToken) => ipcRenderer.invoke('auth-credentials-write', record, expectedRefreshToken),
+    clear: () => ipcRenderer.invoke('auth-credentials-clear'),
+  },
   ipcRenderer: {
     send: (channel, data) => ipcRenderer.send(channel, data),
     on: (channel, callback) => {
@@ -345,6 +356,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     fetchPage: (data) => ipcRenderer.invoke("webview-bridge-fetch", data),
     searchWeb: (data) => ipcRenderer.invoke("webview-bridge-search", data),
   },
+  webviewDebuggerSurface: {
+    create: (data) => ipcRenderer.invoke('webview-debugger-surface-create', data),
+    setBounds: (data) => ipcRenderer.invoke('webview-debugger-surface-bounds', data),
+    command: (data) => ipcRenderer.invoke('webview-debugger-surface-command', data),
+    destroy: (data) => ipcRenderer.invoke('webview-debugger-surface-destroy', data),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('webview-debugger-surface-event', listener);
+      return () => ipcRenderer.removeListener('webview-debugger-surface-event', listener);
+    },
+  },
   iWindow: {
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
@@ -454,6 +476,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
     respond: (requestId, result) => ipcRenderer.send('child-app-host-command-response', { requestId, result }),
   },
   childToolSession: {
+    observeNative: (payload) => ipcRenderer.invoke('subapp-native-observer', payload),
+    onNativeObserverChanged: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on('subapp-native-observer-changed', listener);
+      return () => ipcRenderer.removeListener('subapp-native-observer-changed', listener);
+    },
+    invokeNativeAgent: (payload) => ipcRenderer.invoke('subapp-native-agent', payload),
+    superviseOwner: (payload) => ipcRenderer.invoke('subapp-owner-supervision', payload),
+    onHostShutdown: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("child-tool-host-shutdown", listener);
+      return () => ipcRenderer.removeListener("child-tool-host-shutdown", listener);
+    },
     acquire: (toolId) => ipcRenderer.invoke("child-tool-session-acquire", toolId),
     register: (payload) => ipcRenderer.invoke("child-tool-session-register", payload),
     release: (toolIdOrPayload) => ipcRenderer.invoke("child-tool-session-release", toolIdOrPayload),
@@ -474,9 +509,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   subapps: {
+    prepareLaunch: (options) => ipcRenderer.invoke("subapp-manager-prepare-launch", options),
+    finishLaunch: (token) => ipcRenderer.invoke("subapp-manager-finish-launch", token),
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
+    reinstall: (options) => ipcRenderer.invoke("subapp-manager-reinstall", options),
     update: (options) => ipcRenderer.invoke("subapp-manager-update", options),
+    downloadUpdate: (options) => ipcRenderer.invoke("subapp-manager-download-update", options),
+    installUpdate: (options) => ipcRenderer.invoke("subapp-manager-install-update", options),
     uninstall: (options) => ipcRenderer.invoke("subapp-manager-uninstall", options),
     onChanged: (callback) => {
       const listener = (_event, payload) => callback(payload);
@@ -499,6 +539,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   builder: {
+    publishArduinoGeneratedCode,
+    patchBuildMetadata,
+    captureBuildSource,
     status: () => ipcRenderer.invoke("aily-builder-status"),
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),
@@ -528,6 +571,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
+    projectFilePublicationVersion: PROJECT_FILE_PUBLICATION_VERSION,
+    projectShadowIdentityMigrationVersion: PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION,
+    replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
+    projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
+    openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
+    readCodeDeclaration: (candidate, roots) => require('./code-suggestion-declarations').readCodeDeclaration(candidate, roots),
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readFileBufferAsync: async (path) => {
       const buffer = await require("fs").promises.readFile(path);
@@ -566,6 +615,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
+    copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
+    importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);
@@ -808,11 +859,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
   // 安全存储 API
-  safeStorage: {
-    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-    encryptString: (plainText) => safeStorage.encryptString(plainText),
-    decryptString: (encrypted) => safeStorage.decryptString(encrypted)
-  },
+  safeStorage: createSafeStorageBridge(ipcRenderer),
   // 窗口缩放 API
   webFrame: {
     setZoomLevel: (level) => webFrame.setZoomLevel(level),

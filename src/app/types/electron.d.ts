@@ -6,7 +6,7 @@ interface AilyConnectorSshEndpoint {
   port?: number;
   username: string;
   privateKeyPath?: string;
-  hostKeyPolicy?: 'trust-on-first-use' | 'strict';
+  hostKeyPolicy?: 'accept-any' | 'trust-on-first-use' | 'strict';
 }
 
 interface AilyConnectorSerialEndpoint {
@@ -73,6 +73,8 @@ declare global {
         isEncryptionAvailable: () => boolean;
         encryptString: (plainText: string) => Buffer;
         decryptString: (encrypted: Buffer) => string;
+        encryptStringToBase64: (plainText: string) => string;
+        decryptStringFromBase64: (encryptedBase64: string) => string;
       };
       ipcRenderer: any;
       path: any;
@@ -98,22 +100,17 @@ declare global {
         ) => () => void;
       };
       subapps?: {
-        list: (options?: { refresh?: boolean; locale?: string }) => Promise<any>;
-        install: (options: {
-          id: string;
+        list: (options?: {
+          strategy?: 'cache-first' | 'network-first' | 'cache-only';
+          refresh?: boolean;
           locale?: string;
-          forceClose?: boolean;
         }) => Promise<any>;
-        update: (options: {
-          id: string;
-          locale?: string;
-          forceClose?: boolean;
-        }) => Promise<any>;
-        uninstall: (options: {
-          id: string;
-          locale?: string;
-          forceClose?: boolean;
-        }) => Promise<any>;
+        install: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        reinstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        update: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        downloadUpdate: (options: { id: string; locale?: string }) => Promise<any>;
+        installUpdate: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
+        uninstall: (options: { id: string; locale?: string; forceClose?: boolean }) => Promise<any>;
         onChanged: (callback: (payload: any) => void) => () => void;
         onProgress: (callback: (payload: {
           id: string;
@@ -128,6 +125,13 @@ declare global {
       webviewBridge?: {
         fetchPage: (data: any) => Promise<any>;
         searchWeb: (data: any) => Promise<any>;
+      };
+      webviewDebuggerSurface?: {
+        create: (data: any) => Promise<any>;
+        setBounds: (data: any) => Promise<any>;
+        command: (data: any) => Promise<any>;
+        destroy: (data: any) => Promise<any>;
+        onEvent: (callback: (payload: any) => void) => () => void;
       };
       iWindow: any;
       subWindow: any;

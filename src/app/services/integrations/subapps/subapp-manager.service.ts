@@ -9,14 +9,41 @@ import {
 } from '../../../configs/tool.config';
 import { ConfigService } from '@core/preferences/public-api';
 
+export type SubappUpdateState =
+  | 'current'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'installing'
+  | 'failed';
+
+export interface SubappUpdateStatus {
+  state: SubappUpdateState;
+  targetVersion: string;
+  progress?: number;
+  phase?: string;
+  ready?: boolean;
+  error?: string;
+  downloadedAt?: string;
+}
+
+export interface SubappUpdatePolicy {
+  download: 'background';
+  install: 'next-launch';
+}
+
 export interface SubappCatalogItem {
   id: string;
   toolId: string;
+  only: string;
   packageName: string;
   availableVersion: string;
   installedVersion?: string | null;
   installed: boolean;
+  uninstalling?: boolean;
   updateAvailable: boolean;
+  updateStatus: SubappUpdateStatus;
+  updatePolicy?: SubappUpdatePolicy;
   installPath?: string;
   titleKey: string;
   namespace: string;
@@ -67,6 +94,7 @@ export class SubappManagerService implements OnDestroy {
   private readonly stateSubject = new BehaviorSubject<SubappCatalogState>(EMPTY_STATE);
   private readonly progressSubject = new BehaviorSubject<SubappInstallProgress | null>(null);
   private initializePromise: Promise<void> | null = null;
+  private initialCatalogRefresh: Promise<void> | null = null;
   private initialized = false;
   private removeChangedListener: (() => void) | null = null;
   private removeProgressListener: (() => void) | null = null;
@@ -105,6 +133,7 @@ export class SubappManagerService implements OnDestroy {
 
   initialize(): Promise<void> {
     if (this.initializePromise) return this.initializePromise;
+    this.registerDesktopListeners();
     this.configuredIndexUrl = this.configService.getSubappIndexUrl();
     const locale = this.currentLocale();
     this.initializePromise = this.load('cache-first', locale)
@@ -112,17 +141,6 @@ export class SubappManagerService implements OnDestroy {
         this.initialized = true;
         if (this.state.source === 'cache') {
           this.refreshCatalogInBackground(locale);
-        }
-      })
-      .finally(() => {
-        const api = (window as any).electronAPI?.subapps;
-        if (!this.removeChangedListener && api?.onChanged) {
-          this.removeChangedListener = api.onChanged(() => void this.refresh(false));
-        }
-        if (!this.removeProgressListener && api?.onProgress) {
-          this.removeProgressListener = api.onProgress((payload: SubappInstallProgress) => {
-            this.applyProgress(payload);
-          });
         }
       });
     return this.initializePromise;
@@ -132,12 +150,32 @@ export class SubappManagerService implements OnDestroy {
     await this.load(force ? 'network-first' : 'cache-first');
   }
 
+  /** Share startup's existing refresh so defaults see remote entries even when
+   * the initial cache only contains bundled/local apps. The shell does not wait.
+   */
+  async initializeForBootstrap(): Promise<void> {
+    await this.initialize();
+    await this.initialCatalogRefresh;
+  }
+
   install(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
     return this.mutate('install', id, options);
   }
 
+  reinstall(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('reinstall', id, options);
+  }
+
   update(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
     return this.mutate('update', id, options);
+  }
+
+  downloadUpdate(id: string): Promise<void> {
+    return this.mutate('downloadUpdate', id);
+  }
+
+  installUpdate(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
+    return this.mutate('installUpdate', id, options);
   }
 
   uninstall(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
@@ -147,9 +185,12 @@ export class SubappManagerService implements OnDestroy {
   getCatalogApps(): AppItem[] {
     return this.state.apps
       .filter((item) => item.enabled !== false)
+      // Keep native Agent tools in the installed catalog, not in iframe launchers.
+      .filter((item) => item.config?.runtime?.headless !== true || item.config.runtime.observer === true)
       .map((item) => ({
         ...(item.app || {}),
         id: item.toolId,
+        only: item.only,
         name: item.name,
         description: item.description,
         action: 'tool-open',
@@ -165,7 +206,10 @@ export class SubappManagerService implements OnDestroy {
           availableVersion: item.availableVersion,
           installedVersion: item.installedVersion,
           installed: item.installed,
+          uninstalling: item.uninstalling === true,
           updateAvailable: item.updateAvailable,
+          updateStatus: item.updateStatus,
+          updatePolicy: item.updatePolicy,
           installPath: item.installPath,
         },
       }));
@@ -214,20 +258,25 @@ export class SubappManagerService implements OnDestroy {
   }
 
   private refreshCatalogInBackground(locale: string): void {
-    void this.load('network-first', locale, false);
+    this.initialCatalogRefresh = this.load('network-first', locale, false);
   }
 
   private async mutate(
-    action: 'install' | 'update' | 'uninstall',
+    action: 'install' | 'reinstall' | 'update' | 'downloadUpdate' | 'installUpdate' | 'uninstall',
     id: string,
     options: { forceClose?: boolean } = {},
   ): Promise<void> {
     const api = (window as any).electronAPI?.subapps;
     const operation = api?.[action];
     if (!operation) throw new Error('Subapp manager is unavailable outside the desktop app');
+    const progressAction = action === 'downloadUpdate'
+      ? 'download-update'
+      : action === 'installUpdate'
+        ? 'install-update'
+        : action;
     this.progressSubject.next({
       id,
-      action,
+      action: progressAction,
       phase: 'start',
       percent: 1,
       downloadProgress: 0,
@@ -240,30 +289,34 @@ export class SubappManagerService implements OnDestroy {
         forceClose: options.forceClose === true,
       });
       this.applyResult(result);
-      this.progressSubject.next({
+      const completedProgress: SubappInstallProgress = {
         id,
-        action,
+        action: progressAction,
         phase: 'complete',
         percent: 100,
         downloadProgress: 100,
         extractProgress: 100,
-      });
-    } catch (error) {
-      this.progressSubject.next({
-        id,
-        action,
-        phase: 'error',
-        percent: this.progressSubject.value?.id === id ? (this.progressSubject.value.percent || 0) : 0,
-        error: this.errorMessage(error),
-      });
-      throw error;
-    } finally {
-      // 稍延迟清空，避免 UI 在成功瞬间闪回 0%
+      };
+      this.progressSubject.next(completedProgress);
       setTimeout(() => {
-        if (this.progressSubject.value?.id === id) {
+        if (this.progressSubject.value === completedProgress) {
           this.progressSubject.next(null);
         }
       }, 400);
+    } catch (error) {
+      const failedProgress: SubappInstallProgress = {
+        id,
+        action: progressAction,
+        phase: 'error',
+        percent: this.progressSubject.value?.id === id
+          && this.progressSubject.value.action === progressAction
+          ? (this.progressSubject.value.percent || 0)
+          : 0,
+        error: this.errorMessage(error),
+      };
+      this.progressSubject.next(failedProgress);
+      await this.load('cache-first', this.currentLocale(), false);
+      throw error;
     }
   }
 
@@ -272,16 +325,52 @@ export class SubappManagerService implements OnDestroy {
     const percent = Math.max(0, Math.min(100, Math.round(Number(payload.percent) || 0)));
     const previous = this.progressSubject.value;
     const nextPercent = previous?.id === payload.id
+      && previous.action === payload.action
+      && previous.phase === payload.phase
       ? Math.max(previous.percent || 0, percent)
       : percent;
-    this.progressSubject.next({
+    const progress = {
       ...payload,
       percent: payload.phase === 'error' ? percent : nextPercent,
+    };
+    this.progressSubject.next(progress);
+
+    if (payload.action !== 'download-update' && payload.action !== 'install-update') return;
+
+    const currentState = this.stateSubject.value;
+    let changed = false;
+    const apps = currentState.apps.map((item) => {
+      if (item.id !== payload.id) return item;
+
+      changed = true;
+      const failed = payload.phase === 'error';
+      const state: SubappUpdateState = failed
+        ? 'failed'
+        : payload.action === 'download-update'
+          ? 'downloading'
+          : 'installing';
+      return {
+        ...item,
+        updateStatus: {
+          ...item.updateStatus,
+          state,
+          progress: progress.percent,
+          phase: payload.phase,
+          ...(failed && payload.error ? { error: payload.error } : {}),
+          ...(payload.action === 'download-update' ? { ready: false } : {}),
+        },
+      };
     });
+
+    if (changed) {
+      this.stateSubject.next({ ...currentState, apps });
+    }
   }
 
   private applyResult(result: any): void {
-    const apps = Array.isArray(result?.apps) ? result.apps as SubappCatalogItem[] : [];
+    const apps: SubappCatalogItem[] = Array.isArray(result?.apps)
+      ? result.apps.map((item: any) => this.normalizeCatalogItem(item))
+      : [];
     replaceChildToolConfigs(
       apps
         .filter((item) => item.installed && item.config)
@@ -297,6 +386,44 @@ export class SubappManagerService implements OnDestroy {
       installRoot: String(result?.installRoot || ''),
       apps,
     });
+  }
+
+  private registerDesktopListeners(): void {
+    const api = (window as any).electronAPI?.subapps;
+    if (!this.removeChangedListener && api?.onChanged) {
+      this.removeChangedListener = api.onChanged(() => void this.refresh(false));
+    }
+    if (!this.removeProgressListener && api?.onProgress) {
+      this.removeProgressListener = api.onProgress((payload: SubappInstallProgress) => {
+        this.applyProgress(payload);
+      });
+    }
+  }
+
+  private normalizeCatalogItem(item: any): SubappCatalogItem {
+    const availableVersion = String(item?.availableVersion || '');
+    const allowedStates: SubappUpdateState[] = [
+      'current',
+      'available',
+      'downloading',
+      'ready',
+      'installing',
+      'failed',
+    ];
+    const rawStatus = item?.updateStatus;
+    const state = allowedStates.includes(rawStatus?.state)
+      ? rawStatus.state as SubappUpdateState
+      : item?.updateAvailable === true
+        ? 'available'
+        : 'current';
+    return {
+      ...item,
+      updateStatus: {
+        ...rawStatus,
+        state,
+        targetVersion: String(rawStatus?.targetVersion || availableVersion),
+      },
+    } as SubappCatalogItem;
   }
 
   private currentLocale(): string {

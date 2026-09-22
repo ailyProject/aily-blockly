@@ -28,25 +28,17 @@ import {
 } from './app-store.config';
 import { AppStoreService } from './app-store.service';
 import { Subscription } from 'rxjs';
-import { ToolI18nService } from '@core/preferences/public-api';
+import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
   ChildAppHostRegistryService,
+  CoderEditorUpdateService,
 } from '@integration/subapps/public-api';
 import { MainUiAutomationService } from '@integration/automation/public-api';
-
-const SUBAPP_MORE_MENU_VIEWPORT_MARGIN = 8;
-const SUBAPP_MORE_MENU_GAP = 3;
-const SUBAPP_MORE_MENU_ESTIMATED_WIDTH = 148;
-const SUBAPP_MORE_ACTION_HEIGHT = 28;
-const SUBAPP_MORE_MENU_PADDING = 8;
-const SUBAPP_MORE_ACTION_COUNT = 2;
-
-interface SubappMoreMenuPosition {
-  left: number;
-  top: number;
-}
+import { resolveSubappMoreMenuPosition } from './subapp-more-menu-layout';
+import type { SubappMoreMenuPosition } from './subapp-more-menu-layout';
+import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 
 @Component({
   selector: 'app-app-store',
@@ -99,11 +91,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     private toolI18n: ToolI18nService,
     private subappManager: SubappManagerService,
     private childToolProcess: ChildToolProcessService,
+    private coderEditorUpdates: CoderEditorUpdateService,
     private mainUiAutomation: MainUiAutomationService,
     private childHostRegistry: ChildAppHostRegistryService,
     private message: NzMessageService,
     private modal: NzModalService,
     private translate: TranslateService,
+    private configService: ConfigService,
   ) { }
 
   ngOnInit(): void {
@@ -198,6 +192,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   openApp(app: AppItem): void {
+    if (app.subapp?.uninstalling) {
+      void this.runSubappAction('uninstall', app);
+      return;
+    }
     if (app.subapp && !app.subapp.installed) {
       this.installSubapp(app);
       return;
@@ -238,15 +236,31 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId || !app.subapp?.installed || this.pendingCatalogId || this.checkingCatalogId) return;
 
-    if (app.subapp.updateAvailable) {
+    const updateStatus = app.subapp.updateStatus;
+    if (this.isSubappRestartRequired(app)) {
+      this.closeSubappMore();
+      this.confirmSubappRestart(app);
+      return;
+    }
+    if (!app.subapp.updatePolicy && app.subapp.updateAvailable) {
       this.closeSubappMore();
       this.startSubappUpdate(app);
       return;
     }
 
-    if (this.isSubappRestartRequired(app)) {
+    if (updateStatus.state === 'ready' || updateStatus.ready === true) {
       this.closeSubappMore();
-      this.confirmSubappRestart(app);
+      this.startSubappUpdate(app);
+      return;
+    }
+
+    if (updateStatus.state === 'failed') {
+      this.closeSubappMore();
+      void this.retrySubappUpdateDownload(app);
+      return;
+    }
+
+    if (updateStatus.state === 'available' || updateStatus.state === 'downloading') {
       return;
     }
 
@@ -272,6 +286,14 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       && this.childToolProcess.getRuntimeSnapshot(app.id).running;
   }
 
+  isCoderEditorExtension(app: AppItem): boolean {
+    return app.extension === true && app.id === AILY_CODER_EDITOR_SUBAPP_ID;
+  }
+
+  requiresClientRestart(app: AppItem): boolean {
+    return app.extension === true && !this.isCoderEditorExtension(app);
+  }
+
   getExtensionProcessInfo(app: AppItem): { port?: number; pid?: number } | null {
     return app.extension === true
       ? this.childToolProcess.getRuntimeSnapshot(app.id).hostInfo
@@ -289,10 +311,15 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const installedVersion = String(app.subapp?.installedVersion || '').trim();
     const activeVersion = this.getSubappActiveVersion(app);
     const hasOpenUi = this.isSubappActive(app) || this.activeSubappVersions.has(app.id);
+    const preparedVersion = app.subapp?.updateStatus.ready === true
+      || app.subapp?.updateStatus.state === 'ready'
+      ? String(app.subapp?.availableVersion || '').trim()
+      : '';
     return hasOpenUi
-      && !!installedVersion
       && !!activeVersion
-      && activeVersion !== installedVersion;
+      && (preparedVersion
+        ? activeVersion !== preparedVersion
+        : !!installedVersion && activeVersion !== installedVersion);
   }
 
   toggleSubappMore(app: AppItem, event: Event): void {
@@ -314,8 +341,8 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     return !!app.subapp && this.openMoreCatalogId === app.subapp.catalogId;
   }
 
-  getSubappMoreMenuLeft(app: AppItem): number | null {
-    return this.isSubappMoreOpen(app) ? this.subappMoreMenuPosition?.left ?? null : null;
+  getSubappMoreMenuRight(app: AppItem): number | null {
+    return this.isSubappMoreOpen(app) ? this.subappMoreMenuPosition?.right ?? null : null;
   }
 
   getSubappMoreMenuTop(app: AppItem): number | null {
@@ -356,6 +383,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   isCheckingSubapp(app: AppItem): boolean {
     return !!app.subapp && this.checkingCatalogId === app.subapp.catalogId;
+  }
+
+  isSubappUpdatePreparing(app: AppItem): boolean {
+    const state = app.subapp?.updateStatus.state;
+    return (state === 'available' && !!app.subapp?.updatePolicy)
+      || state === 'downloading'
+      || state === 'installing';
   }
 
   isUninstallConfirming(app: AppItem): boolean {
@@ -472,11 +506,39 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private startSubappUpdate(app: AppItem): void {
-    if (!app.subapp?.updateAvailable) return;
+    if (
+      !app.subapp
+      || (app.subapp.updatePolicy
+        && app.subapp.updateStatus.state !== 'ready'
+        && app.subapp.updateStatus.ready !== true)
+    ) return;
     void this.updateSubapp(app);
   }
 
+  private async retrySubappUpdateDownload(app: AppItem): Promise<void> {
+    const catalogId = app.subapp?.catalogId;
+    if (!catalogId) return;
+    try {
+      await this.subappManager.downloadUpdate(catalogId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    }
+  }
+
   private confirmSubappRestart(app: AppItem): void {
+    if (this.isCoderEditorExtension(app)) {
+      this.modal.confirm({
+        nzClassName: 'subapp-service-confirm-modal',
+        nzTitle: this.translate.instant('APP_STORE.RESTART_CONFIRM', { name: app.name }),
+        nzContent: this.translate.instant('APP_STORE.RESTART_HINT', { name: app.name }),
+        nzOkText: this.translate.instant('APP_STORE.CONFIRM_RESTART'),
+        nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+        nzMaskClosable: false,
+        nzOnOk: () => this.updateCoderEditorSubapp(app, true, true),
+      });
+      return;
+    }
     if (app.extension) {
       this.showExtensionClientRestartInfo(app);
       return;
@@ -495,13 +557,27 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private async updateSubapp(app: AppItem): Promise<void> {
     const subapp = app.subapp;
-    if (!subapp?.updateAvailable || this.pendingCatalogId) return;
+    if (
+      !subapp
+      || (subapp.updatePolicy
+        && subapp.updateStatus.state !== 'ready'
+        && subapp.updateStatus.ready !== true)
+      || this.pendingCatalogId
+    ) return;
+
+    if (this.isCoderEditorExtension(app)) {
+      await this.updateCoderEditorSubapp(app);
+      return;
+    }
 
     const wasActive = await this.isSubappUiOpen(app);
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
     let restartTarget: AppItem | null = null;
     let extensionClientRestartRequired = false;
     let forceClose = false;
+    let processStopped = false;
+    let updateInstalled = false;
+    let restartPreviousVersion = false;
 
     if (wasActive) {
       const confirmed = await this.confirmBusyForceClose(app, 'update');
@@ -521,16 +597,23 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         const preparation = await this.mainUiAutomation.controlChildApp({
           toolId: app.id,
           action: 'prepareUpdate',
+          strictLifecycle: true,
         });
         if (preparation['ok'] !== true) {
           throw new Error(String(preparation['message'] || '子应用尚未准备好更新'));
         }
       }
       await this.childToolProcess.forceStop(app.id);
+      processStopped = true;
       if (!wasActive && !app.extension) {
         this.uiService.closeTool(app.id);
       }
-      await this.runSubappMutationWithBusyRetry('update', app, { forceClose });
+      await this.runSubappMutationWithBusyRetry(
+        subapp.updatePolicy ? 'installUpdate' : 'update',
+        app,
+        { forceClose },
+      );
+      updateInstalled = true;
       this.pendingProgress = 100;
       const updatedApp = this.subappManager.getCatalogApps()
         .find((item) => item.subapp?.catalogId === subapp.catalogId);
@@ -554,6 +637,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         const message = error instanceof Error ? error.message : String(error || 'Unknown error');
         this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       }
+      if (wasActive && processStopped && !updateInstalled) {
+        restartPreviousVersion = true;
+      }
     } finally {
       this.pendingCatalogId = '';
       this.pendingProgress = 0;
@@ -564,13 +650,63 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       // 强制更新前已确认关闭进程，更新完成后自动重启，不再二次确认
       await this.restartSubapp(restartTarget);
     }
+    if (restartPreviousVersion) {
+      try {
+        await this.restartSubapp(app);
+      } catch {
+        // restartSubapp already reports the recovery error.
+      }
+    }
     if (extensionClientRestartRequired) {
       this.showExtensionClientRestartInfo(app);
     }
   }
 
+  /**
+   * Coder Editor 虽标记为 extension，但它有宿主内嵌界面和可重启 Runtime。
+   * 因此复用普通子应用的占用确认语义，并由专用协调器保存所有工程、
+   * 停止共享进程、安装一次，再重载全部 Editor surface；无需退出主软件。
+   */
+  private async updateCoderEditorSubapp(
+    app: AppItem,
+    runtimeUseConfirmed = false,
+    restartFlow = false,
+  ): Promise<void> {
+    const subapp = app.subapp;
+    if (!subapp || this.pendingCatalogId) return;
+
+    const wasActive = await this.isSubappUiOpen(app);
+    if (wasActive && !runtimeUseConfirmed) {
+      const confirmed = await this.confirmBusyForceClose(app, 'update');
+      if (!confirmed) return;
+    }
+
+    const restartOnly = restartFlow || (
+      subapp.updateStatus.state === 'current' && this.isSubappRestartRequired(app)
+    );
+    this.pendingCatalogId = subapp.catalogId;
+    this.pendingProgress = 1;
+    this.cdr.markForCheck();
+    try {
+      const updated = await this.coderEditorUpdates.updateAndRestart();
+      if (!updated) return;
+      this.pendingProgress = 100;
+      this.message.success(this.translate.instant(
+        restartOnly ? 'APP_STORE.RESTART_SUCCESS' : 'APP_STORE.UPDATE_SUCCESS',
+        { name: app.name },
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    } finally {
+      this.pendingCatalogId = '';
+      this.pendingProgress = 0;
+      this.cdr.markForCheck();
+    }
+  }
+
   private async runSubappMutationWithBusyRetry(
-    action: 'install' | 'update' | 'uninstall',
+    action: 'install' | 'update' | 'installUpdate' | 'uninstall',
     app: AppItem,
     options: { forceClose?: boolean } = {},
   ): Promise<void> {
@@ -589,7 +725,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         (cancelled as Error & { code?: string }).code = 'EBUSY_CANCELLED';
         throw cancelled;
       }
-      if (action === 'update') {
+      if (action === 'update' || action === 'installUpdate') {
         if (!app.extension) {
           this.uiService.openTool(app.id);
         }
@@ -605,7 +741,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   ): Promise<boolean> {
     const actionLabel = action === 'uninstall'
       ? this.translate.instant('APP_STORE.UNINSTALL')
-      : this.translate.instant('APP_STORE.UPDATE');
+      : this.translate.instant('APP_STORE.INSTALL_UPDATE');
     return new Promise((resolve) => {
       this.modal.confirm({
         nzClassName: 'subapp-service-confirm-modal',
@@ -639,6 +775,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async restartSubapp(app: AppItem): Promise<void> {
+    if (this.isCoderEditorExtension(app)) {
+      await this.updateCoderEditorSubapp(app);
+      return;
+    }
     if (app.extension) {
       this.showExtensionClientRestartInfo(app);
       return;
@@ -656,12 +796,16 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       if (result['ok'] !== true) {
         throw new Error(String(result['message'] || this.translate.instant('APP_STORE.RESTART_FAILED')));
       }
-      const expectedVersion = String(app.subapp?.installedVersion || '').trim();
+      const expectedVersion = app.subapp?.updateStatus.ready === true
+        || app.subapp?.updateStatus.state === 'ready'
+        ? String(app.subapp?.availableVersion || '').trim()
+        : String(app.subapp?.installedVersion || '').trim();
       const restartedHost = result['host'] as Record<string, unknown> | undefined;
       const runningVersion = String(restartedHost?.['version'] || '').trim();
       if (expectedVersion && runningVersion !== expectedVersion) {
         throw new Error(`子应用运行版本校验失败：应为 ${expectedVersion}，实际为 ${runningVersion || '未知'}`);
       }
+      await this.subappManager.refresh(false);
       await this.refreshSubappActiveVersion(app);
       this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', { name: app.name }));
     } catch (error) {
@@ -691,12 +835,30 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         throw new Error(`Installed subapp was not found after refreshing the catalog: ${catalogId}`);
       }
 
-      if (!refreshedApp.subapp.updateAvailable) {
+      const updateStatus = refreshedApp.subapp.updateStatus;
+      if (updateStatus.state === 'current') {
         this.message.info(this.translate.instant('APP_STORE.LATEST_VERSION', { name: refreshedApp.name }));
         return;
       }
 
-      this.startSubappUpdate(refreshedApp);
+      if (updateStatus.state === 'ready' || updateStatus.ready === true) {
+        await this.refreshSubappActiveVersion(refreshedApp);
+        if (this.isSubappRestartRequired(refreshedApp)) {
+          this.confirmSubappRestart(refreshedApp);
+        } else {
+          this.startSubappUpdate(refreshedApp);
+        }
+        return;
+      }
+
+      if (updateStatus.state === 'failed') {
+        await this.retrySubappUpdateDownload(refreshedApp);
+        return;
+      }
+
+      this.message.info(this.translate.instant('APP_STORE.UPDATE_DOWNLOAD_STARTED', {
+        name: refreshedApp.name,
+      }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || 'Unknown error');
       this.message.error(this.translate.instant('APP_STORE.CHECK_UPDATE_FAILED', { message }));
@@ -746,10 +908,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private showExtensionClientRestartInfo(app: AppItem): void {
+    const params = { name: app.name, applicationName: this.configService.getApplicationName() };
     this.modal.info({
       nzClassName: 'subapp-service-confirm-modal',
-      nzTitle: this.translate.instant('APP_STORE.RESTART_CLIENT_TITLE'),
-      nzContent: this.translate.instant('APP_STORE.RESTART_CLIENT_HINT', { name: app.name }),
+      nzTitle: this.translate.instant('APP_STORE.RESTART_CLIENT_TITLE', params),
+      nzContent: this.translate.instant('APP_STORE.RESTART_CLIENT_HINT', params),
       nzOkText: this.translate.instant('APP_STORE.GOT_IT'),
       nzMaskClosable: false,
     });
@@ -774,50 +937,9 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   ): SubappMoreMenuPosition {
     const triggerElement = trigger instanceof HTMLElement ? trigger : null;
     const triggerRect = triggerElement?.getBoundingClientRect();
-    const menuWidth = SUBAPP_MORE_MENU_ESTIMATED_WIDTH;
-    const menuHeight =
-      SUBAPP_MORE_ACTION_COUNT * SUBAPP_MORE_ACTION_HEIGHT + SUBAPP_MORE_MENU_PADDING;
     const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
     const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-
-    if (!triggerRect) {
-      return {
-        left: Math.max(
-          SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
-          viewportWidth - menuWidth - SUBAPP_MORE_MENU_VIEWPORT_MARGIN
-        ),
-        top: SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
-      };
-    }
-
-    const preferredLeft = triggerRect.right - menuWidth;
-    const left = this.clamp(
-      preferredLeft,
-      SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
-      Math.max(
-        SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
-        viewportWidth - menuWidth - SUBAPP_MORE_MENU_VIEWPORT_MARGIN
-      )
-    );
-    const bottomTop = triggerRect.bottom + SUBAPP_MORE_MENU_GAP;
-    const topTop = triggerRect.top - menuHeight - SUBAPP_MORE_MENU_GAP;
-    const top =
-      bottomTop + menuHeight + SUBAPP_MORE_MENU_VIEWPORT_MARGIN <= viewportHeight
-        ? bottomTop
-        : this.clamp(
-          topTop,
-          SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
-          Math.max(
-            SUBAPP_MORE_MENU_VIEWPORT_MARGIN,
-            viewportHeight - menuHeight - SUBAPP_MORE_MENU_VIEWPORT_MARGIN
-          )
-        );
-
-    return { left, top };
-  }
-
-  private clamp(value: number, min: number, max: number): number {
-    return Math.min(Math.max(value, min), max);
+    return resolveSubappMoreMenuPosition(triggerRect ?? null, viewportWidth, viewportHeight);
   }
 
   private createVisibilityContext() {

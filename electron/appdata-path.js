@@ -17,6 +17,17 @@ function resolveAilyAppDataPath(options = {}) {
   return path.resolve(String(configured.linux || '').replace(/^~/, home));
 }
 
+function resolveAilyNpmPrefix(options = {}) {
+  const env = options.env || process.env;
+  const platformPath = (options.platform || process.platform) === 'win32' ? path.win32 : path.posix;
+  const explicit = String(env.AILY_NPM_PREFIX || '').trim();
+  if (explicit) return platformPath.resolve(explicit);
+  const appDataPath = String(options.appDataPath || env.AILY_APPDATA_PATH || '').trim();
+  if (!appDataPath) throw new Error('AILY_APPDATA_PATH is not configured');
+  return platformPath.resolve(appDataPath, 'npm-global');
+}
+
 module.exports = {
   resolveAilyAppDataPath,
+  resolveAilyNpmPrefix,
 };

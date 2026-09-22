@@ -3,15 +3,12 @@
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  margin-bottom: 24px;
 
   label {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    flex-direction: column;
     gap: 5px;
 
-    > span {
+    >span {
       color: var(--aily-text-secondary);
       font-size: 12px;
     }
@@ -26,8 +23,19 @@
 
 .row {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
   gap: 10px;
+}
+
+.host-port-row {
+  grid-template-columns: minmax(0, 1fr) 100px;
+}
+
+.credentials-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.password-input {
+  letter-spacing: -5px;
 }
 
 .path-input {
@@ -54,24 +62,6 @@
   }
 }
 
-.hint {
-  margin: 0;
-  color: var(--aily-text-tertiary);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.host-key-confirmation {
-  display: grid;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid #d9a300;
-  border-radius: 4px;
-  background: rgb(255 193 7 / 10%);
-  font-size: 12px;
-}
-
-.host-key-confirmation code {
-  overflow-wrap: anywhere;
-  user-select: text;
+[nz-checkbox]{
+  margin-left: 0;
 }

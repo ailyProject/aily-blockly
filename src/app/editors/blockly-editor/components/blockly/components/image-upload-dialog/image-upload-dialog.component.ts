@@ -9,6 +9,7 @@ import Cropper from 'cropperjs';
 import { NzSwitchModule } from 'ng-zorro-antd/switch';
 import { NzInputNumberModule } from 'ng-zorro-antd/input-number';
 import { ConverterService } from './converter.service';
+import { BaseDialogComponent } from '../../../../../../components/base-dialog/base-dialog.component';
 
 @Component({
   selector: 'app-image-upload-dialog',
@@ -19,7 +20,8 @@ import { ConverterService } from './converter.service';
     NzButtonModule,
     NzIconModule,
     NzSwitchModule,
-    NzInputNumberModule
+    NzInputNumberModule,
+    BaseDialogComponent,
   ],
   templateUrl: './image-upload-dialog.component.html',
   styleUrls: ['./image-upload-dialog.component.scss']

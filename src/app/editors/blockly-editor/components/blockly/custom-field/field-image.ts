@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 
 /**
  * 自定义图片选择器字段类
@@ -54,7 +54,7 @@ export class FieldImageSelector extends Blockly.FieldImage {
    */
   public override initView() {
     super.initView();
-    void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
+    if (projectDataRuntime.isConfigured()) void this.ensureImageLoaded().catch((error) => console.error('图片资源加载失败:', error));
     if (this.getClickTarget_()) {
       (this.getClickTarget_() as HTMLElement).style.cursor = 'pointer';
     }

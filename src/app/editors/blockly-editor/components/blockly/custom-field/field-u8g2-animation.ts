@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly/core';
-import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/public-api';
+import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 type U8g2AnimationI18nParams = Record<string, string | number>;
@@ -359,7 +359,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         this.updateControlsFromValue();
         this.renderFrameStrip();
         this.updatePlayTestButtonState();
-        if (nextRefId && this.blockDisplayImage) {
+        if (nextRefId && this.blockDisplayImage && projectDataRuntime.isConfigured()) {
             queueMicrotask(() => {
                 void this.ensureFramesLoaded().catch((error) => this.reportProjectDataLoadError(error));
             });
@@ -402,7 +402,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         ) as SVGImageElement;
 
         this.updateBlockDisplayImage();
-        void this.ensureFramesLoaded().catch((error) => this.reportProjectDataLoadError(error));
+        if (projectDataRuntime.isConfigured()) void this.ensureFramesLoaded().catch((error) => this.reportProjectDataLoadError(error));
     }
 
     override updateEditable() {
@@ -782,13 +782,6 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
     }
 
     private applyParameterInputChange() {
-        const operation = this.applyParameterInputChangeAsync();
-        projectDataRuntime.trackMutation(operation);
-        void operation.catch((error) => this.reportProjectDataLoadError(error));
-        return operation;
-    }
-
-    private async applyParameterInputChangeAsync() {
         if (
             !this.widthInput
             || !this.heightInput
@@ -798,6 +791,13 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
             || !this.ditherInput
             || !this.thresholdValueInput
         ) return;
+        const operation = this.applyParameterInputChangeAsync();
+        projectDataRuntime.trackMutation(operation);
+        void operation.catch((error) => this.reportProjectDataLoadError(error));
+        return operation;
+    }
+
+    private async applyParameterInputChangeAsync() {
         if (
             this.widthInput.value === ''
             || this.heightInput.value === ''
@@ -2352,9 +2352,9 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
 
     private pickSourceMetadata(value: U8g2AnimationValue) {
         return {
-            sourceName: value.sourceName,
-            sourceType: value.sourceType,
-            sourcePath: value.sourcePath,
+            ...(value.sourceName === undefined ? {} : { sourceName: value.sourceName }),
+            ...(value.sourceType === undefined ? {} : { sourceType: value.sourceType }),
+            ...(value.sourcePath === undefined ? {} : { sourcePath: value.sourcePath }),
         };
     }
 
@@ -2422,9 +2422,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
             threshold,
             frameCount,
             frames,
-            sourceName: value.sourceName,
-            sourceType: value.sourceType,
-            sourcePath: value.sourcePath,
+            ...this.pickSourceMetadata(value),
         };
     }
 

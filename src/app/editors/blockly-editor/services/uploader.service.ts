@@ -16,15 +16,8 @@ import { NoticeService, ActionState, ActionService, WorkflowService, ProcessStat
 import { NzModalService } from "ng-zorro-antd/modal";
 import { CmdOutput, CmdService, LogService, AppDataResourceLockService } from '@core/platform/public-api';
 import { NpmService } from "@domain/dependencies/public-api";
-import { SerialMonitorService } from "../../../tools/serial-monitor/serial-monitor.service";
-import {
-  normalizeArduinoGeneratedCode,
-} from "../components/blockly/generators/arduino/arduino";
-import {
-  runWithPreparedActiveProjectGenerator,
-} from './blockly-generator-runtime.service';
 import { BlocklyService } from "./blockly.service";
-import { writeArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 
 interface NetworkOtaUploadTarget {
@@ -77,7 +70,6 @@ export class _UploaderService {
     private cmdService: CmdService,
     private logService: LogService,
     private npmService: NpmService,
-    private serialMonitorService: SerialMonitorService,
     private actionService: ActionService,
     private blocklyService: BlocklyService,
     private workflowService: WorkflowService,
@@ -112,6 +104,9 @@ export class _UploaderService {
     /Writing\s+at\s+0x[0-9a-f]+\.\.\.\s+\(\d+\s*%\)/i,
     // Wrote and verified address 0x08001700 (79.31%)
     /Wrote\s+and\s+verified\s+address\s+0x[0-9a-f]+\s+\((\d+(?:\.\d+)?)%\)/i,
+    // stc-cli (STC32): Writing...  50% (93440/186880 bytes)
+    // 限定完整写入格式，避免将其他工具的普通百分比日志识别为上传进度。
+    /^Writing\.\.\.\s+(\d+(?:\.\d+)?)\s*%\s+\(\d+\/\d+\s+bytes\)$/i,
     // 或者只是数字+百分号（例如：[====>    ] 70%）
     /\b(\d+(?:\.\d+)?)%\b/,
     // 70% 13/18
@@ -426,22 +421,12 @@ export class _UploaderService {
             this.coderBuildActive = false;
           }
         } else {
-          const projectDocument = this.blocklyService.getProjectDocument();
-          const generated = await runWithPreparedActiveProjectGenerator(
-            this.blocklyService.workspace,
-            (generator) => ({
-              code: normalizeArduinoGeneratedCode(
-                generator.workspaceToCode(this.blocklyService.workspace),
-              ),
-              generator,
-            }),
-            projectDocument,
-          );
-          const { code, generator } = generated;
-          await writeArduinoGeneratedArtifacts(
-            projectPath,
-            generator,
-          );
+          const code = await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+            if (projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed.');
+            await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
+            assertCurrent();
+            return prepared.code;
+          });
           buildPath = await this.projectService.getBuildPath();
           const needsBuild = !this._builderService.passed ||
                             code !== this._builderService.lastCode ||
@@ -687,7 +672,12 @@ export class _UploaderService {
           return;
         }
 
-        this.cmdService.run(uploadCmd, null, false).subscribe({
+        this.cmdService.spawn(
+          'node',
+          [uploadScriptPath, configFilePath],
+          { shellProfile: false },
+          false,
+        ).subscribe({
           next: async (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -697,7 +687,6 @@ export class _UploaderService {
                 errorText = trailingLine;
                 if (this.isUploadErrorLine(trailingLine)) {
                   fullErrorText += trailingLine + '\n';
-                  this.handleUploadError(trailingLine, this.uploadT('FAILED_TITLE'), fullErrorText);
                 }
                 this.logService.update({
                   detail: trailingLine,
@@ -761,10 +750,10 @@ export class _UploaderService {
                   if (trimmedLine) {
                     errorText = trimmedLine;
 
-                    // 检查是否有错误信息
+                    // 仅收集疑似错误输出作为诊断信息。烧录工具可能输出可恢复的
+                    // failed/error 提示，是否失败应由最终退出码或进程错误决定。
                     if (this.isUploadErrorLine(trimmedLine)) {
                       fullErrorText += trimmedLine + '\n';
-                      this.handleUploadError(trimmedLine, this.uploadT('FAILED_TITLE'), fullErrorText);
                     }
 
                     if (this.isErrored) {

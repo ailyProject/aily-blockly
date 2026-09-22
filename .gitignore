@@ -23,6 +23,7 @@ yarn.lock
 *.launch
 .settings/
 *.sublime-workspace
+.tmp-abs-*
 
 # Visual Studio Code
 .vscode/*
@@ -53,6 +54,8 @@ aily-todos/*.json
 docs/performance-optimization.md
 
 # child
+/child/windows/
+/child/macos/
 child/node*
 child/aily-builder*
 /child/node
@@ -66,6 +69,8 @@ child/aily-builder*
 /child/probe-rs
 /child/tools/*/node_modules/*
 /child/xpm
+/child/aily-coder-editor.tgz
+/child/aily-coder-editor.json
 
 # Playwright E2E
 /renderer
@@ -92,3 +97,5 @@ src/app/tools/aily-chat/tools/new_idea
 src/app/tools/aily-chat/tools/tests
 src/app/tools/aily-chat/tools/自定义库-函数
 todo.md
+plans/
+/.generated/blockly-runtime/

@@ -24,7 +24,7 @@
   </div>
 }
 
-<div #scrollElement class="log-box">
+<div #scrollElement class="log-box" (scroll)="onLogScroll()">
   <div class="log-inner" [style.height.px]="virtualizer.getTotalSize()">
     @for (row of virtualizer.getVirtualItems(); track row.index) {
       @if (logList[row.index]) {

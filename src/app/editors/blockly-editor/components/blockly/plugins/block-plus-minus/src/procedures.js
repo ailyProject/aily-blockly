@@ -681,3 +681,44 @@ const procedureVars = function () {
 };
 
 Blockly.Extensions.register('procedure_vars', procedureVars);
+
+// Registration provenance for the host's pure ABS adapter. Capture at registration,
+// before project libraries run; a same-name replacement is not this implementation.
+const absProcedureTypes = {
+  procedures_defnoreturn: { role: 'definition', returns: false },
+  procedures_defreturn: { role: 'definition', returns: true },
+  procedures_callnoreturn: { role: 'call', returns: false },
+  procedures_callreturn: { role: 'call', returns: true },
+};
+const absExtensions = Blockly.Extensions.TEST_ONLY?.allExtensions;
+const absRegistrations = [Blockly.Procedures, Blockly.Variables, Blockly.Extensions,
+  ...Object.keys(absProcedureTypes).map(type => Blockly.Blocks[type])];
+const absDescriptors = absRegistrations.map(value => value && Object.getOwnPropertyDescriptors(value));
+const absPrototypes = absRegistrations.map(value => value && Object.getPrototypeOf(value));
+const absExtensionNames = ['get_procedure_def_no_return', 'get_procedure_def_return',
+  'procedure_context_menu', 'procedure_def_mutator', 'procedure_rename', 'procedure_vars'];
+const absExtensionCallbacks = absExtensionNames.map(name => absExtensions?.[name]);
+
+export function captureBundledProcedureRegistration(registry) {
+  let used = false;
+  const intact = () => absRegistrations.every((value, index) => {
+    if (!value || Object.getPrototypeOf(value) !== absPrototypes[index]) return false;
+    const current = Object.getOwnPropertyDescriptors(value), original = absDescriptors[index];
+    return Reflect.ownKeys(current).length === Reflect.ownKeys(original).length
+      && Reflect.ownKeys(original).every(key => ['value', 'get', 'set', 'writable', 'enumerable', 'configurable']
+        .every(part => current[key]?.[part] === original[key][part]));
+  }) && Object.keys(absProcedureTypes).every((type, index) => registry[type] === absRegistrations[index + 3])
+    && Blockly.Extensions.TEST_ONLY?.allExtensions === absExtensions
+    && absExtensionNames.every((name, index) => typeof absExtensionCallbacks[index] === 'function'
+      && absExtensions[name] === absExtensionCallbacks[index]);
+  return {
+    get: type => {
+      if (!Object.hasOwn(absProcedureTypes, type) || !intact()) return undefined;
+      used = true;
+      return { ...absProcedureTypes[type] };
+    },
+    assertCurrent: () => {
+      if (used && !intact()) throw new Error('Bundled procedure registration changed during ABS preparation.');
+    },
+  };
+}

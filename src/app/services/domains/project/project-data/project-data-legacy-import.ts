@@ -16,7 +16,7 @@ interface ProjectDataWriter {
   put<TValue>(request: PutProjectDataRequest<TValue>): Promise<AilyDataRef>;
 }
 
-interface ProjectDataImportStore extends ProjectDataWriter {
+export interface ProjectDataImportStore extends ProjectDataWriter {
   flushPending(): Promise<void>;
   collectReferences(value: unknown): AilyDataRef[];
   validateReferences(refs: readonly AilyDataRef[]): Promise<ProjectDataValidationResult>;
@@ -87,9 +87,7 @@ export async function ensureExternalProjectDataDocument(
   }
 
   return {
-    document: hasMarker && migration.migrated.length === 0 && generic.externalized.length === 0
-      ? source
-      : candidate,
+    document: candidate,
     upgradedLegacyDocument: !hasMarker,
     documentChanged: !hasMarker || migration.migrated.length > 0 || generic.externalized.length > 0,
     migration,

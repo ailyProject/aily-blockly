@@ -40,5 +40,22 @@
         </div>
     </div>
     }
+    @case('running'){
+    <div class="ccenter">
+        <div class="qq ccenter" [ngStyle]="{'border-color': 'red'}">
+            <i class="fa-regular fa-stop"></i>
+        </div>
+    </div>
+    }
+    @case('stopping'){
+    <div class="lloading ccenter">
+        <div class="icon ccenter" [ngStyle]="{'color': '#d4380d'}">
+            <i class="fa-regular fa-stop"></i>
+        </div>
+        <div class="qq qq2 ccenter" [ngStyle]="{'color': '#d4380d'}">
+            <i class="fa-regular fa-spinner-third"></i>
+        </div>
+    </div>
+    }
     }
 </div>

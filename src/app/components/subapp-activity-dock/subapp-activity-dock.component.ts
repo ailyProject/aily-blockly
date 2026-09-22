@@ -21,16 +21,19 @@ import {
   type SubappActivity,
 } from '@integration/subapps/public-api';
 import { ChildToolSurfaceHostComponent } from '../../tools/child-tool-surface-host/child-tool-surface-host.component';
+import { ChildToolNativeObserverComponent } from '../../tools/child-tool-native-observer/child-tool-native-observer.component';
+import { getChildToolConfig } from '../../configs/tool.config';
 
 @Component({
   selector: 'app-subapp-activity-dock',
-  imports: [CommonModule, TranslateModule, NzResizableModule, ChildToolSurfaceHostComponent],
+  imports: [CommonModule, TranslateModule, NzResizableModule, ChildToolSurfaceHostComponent, ChildToolNativeObserverComponent],
   templateUrl: './subapp-activity-dock.component.html',
   styleUrl: './subapp-activity-dock.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SubappActivityDockComponent {
   readonly minWidth = 280;
+  isNativeObserver(toolId: string): boolean { return getChildToolConfig(toolId)?.runtime?.observer === true; }
   readonly maxWidth = 480;
   dockWidth = 320;
 

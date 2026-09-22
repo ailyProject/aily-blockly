@@ -20,6 +20,7 @@ export interface HostResourceLifecycleRequest {
   recovery?: UploadRecoveryPolicy;
 }
 
+// 保留历史信号名作为宿主与子应用共享的串口资源协议；不依赖已移除的内置串口工具。
 export function toHostResourceLifecycleRequest(
   signal: string,
   payload: Record<string, unknown> = {},

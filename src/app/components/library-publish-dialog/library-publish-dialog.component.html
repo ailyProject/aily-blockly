@@ -1,4 +1,4 @@
-<app-base-dialog [title]="'LIBRARY_PUBLISH.TITLE' | translate" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
+<app-base-dialog [title]="'LIBRARY_PUBLISH.TITLE' | translate" [buttons]="buttons" [showCloseButton]="!isSubmitting" [showFooter]="true"
   customClass="dialog-scrollable library-publish-dialog" (closeDialog)="onCloseDialog()"
   (buttonClick)="onButtonClick($event)">
   <div class="publish-form">
@@ -72,4 +72,7 @@
       <div>{{ 'LIBRARY_PUBLISH.TIP_3' | translate }}</div>
     </div>
   </div>
+  @if (submitErrorMessage) {
+    <div class="submit-error" role="alert">{{ submitErrorMessage }}</div>
+  }
 </app-base-dialog>

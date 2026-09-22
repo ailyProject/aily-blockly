@@ -83,6 +83,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private boardConfigUpdatedSubscription: Subscription | null = null;
   private runtimeCdcEnabled: boolean | undefined;
   private loadedProjectPath: string | null = null;
+  private projectLoadSequence = 0;
+  private projectRouteSubscription: Subscription | null = null;
 
   devmode;
 
@@ -119,9 +121,18 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   ) { }
 
   ngOnInit(): void {
-    this.activatedRoute.queryParams.subscribe(async (params) => {
+    this.projectRouteSubscription = this.activatedRoute.queryParams.subscribe(async (params) => {
+      const sequence = ++this.projectLoadSequence;
       if (params['path']) {
         const requestedProjectPath = params['path'];
+        let dataSession: string | null = null;
+        const isCurrent = () => sequence === this.projectLoadSequence
+          && (dataSession === null || projectDataRuntime.getSessionToken() === dataSession);
+        const assertCurrent = () => {
+          if (!isCurrent() || this.projectService.currentProjectPath !== requestedProjectPath) {
+            throw new ProjectDataError('cancelled', 'Project load was superseded by another project session.');
+          }
+        };
         console.log('project path', requestedProjectPath);
         try {
           if (
@@ -136,9 +147,14 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           this.projectService.currentProjectPath = requestedProjectPath;
           this.projectService.beginBlocklyProjectLoad(requestedProjectPath);
           projectDataRuntime.configure(params['path']);
-          await this.loadProject(requestedProjectPath);
+          dataSession = projectDataRuntime.getSessionToken();
+          await this.loadProject(requestedProjectPath, assertCurrent);
+          assertCurrent();
           this.loadedProjectPath = requestedProjectPath;
         } catch (error) {
+          // An old normalization/publication may finish after navigation. It must
+          // neither load into nor tear down the new project's workspace/Realm.
+          if (!isCurrent() || (dataSession !== null && this.projectService.currentProjectPath !== requestedProjectPath)) return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
           this.abortFailedProjectLoad();
@@ -203,6 +219,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    ++this.projectLoadSequence;
+    this.projectRouteSubscription?.unsubscribe();
+    this.projectRouteSubscription = null;
     this.boardConfigUpdatedSubscription?.unsubscribe();
     this.boardConfigUpdatedSubscription = null;
     this.uiService.closeTool('code-viewer');
@@ -215,16 +234,18 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this._uploadService.cancel();
     this._uploadService.destroy();
     this.codeViewerIpcService.clear();
-    this.electronService.setTitle('aily blockly');
+    this.electronService.setTitle(this.configService.getApplicationName());
     this.blocklyService.reset();
     projectDataRuntime.reset();
   }
 
-  async loadProject(projectPath) {
+  async loadProject(projectPath, assertCurrent: () => void = () => {}) {
+    assertCurrent();
     this.stopPackageJsonDependencyWatch();
     this.clearProjectLoadedCodeRefreshTimer();
     // 处理 temp 下的 package.json：有则覆盖主项目，无则从主项目复制到 temp
     await this.projectService.syncPackageJsonWithTemp(projectPath);
+    assertCurrent();
     // 加载项目package.json
     let packageJson = JSON.parse(
       this.electronService.readFile(`${projectPath}/package.json`),
@@ -233,8 +254,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     this.devmode = normalizeProjectMode(packageJson) || 'arduino';
     // Python 项目在库管理器使用前按需加载 Linux 目录；Arduino 继续使用启动时的默认目录。
     await this.configService.ensureLibraryListForProject(packageJson);
+    assertCurrent();
 
-    this.electronService.setTitle(`aily blockly - ${packageJson.nickname || packageJson.name}`);
+    this.electronService.setTitle(`${this.configService.getApplicationName()} - ${packageJson.nickname || packageJson.name}`);
     // 添加到最近打开的项目
     this.projectService.addRecentlyProject({
       name: packageJson.name,
@@ -244,13 +266,17 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // 设置当前项目路径和package.json数据
     this.applyProjectPackageJson(packageJson);
     // 与 Aily Code（code-editor-pro）共用：node_modules 不齐则 npm install
-    if (!(await this.npmService.ensureProjectDependenciesInstalled(projectPath))) {
+    const dependenciesInstalled = await this.npmService.ensureProjectDependenciesInstalled(projectPath);
+    assertCurrent();
+    if (!dependenciesInstalled) {
       throw new Error('项目依赖安装未完成，无法继续加载 Blockly 项目。');
     }
 
     const missingDeclaredLibraries: string[] = [];
     let dependencyInstallError = '';
-    if (!(await this.npmService.installedOk(projectPath))) {
+    const initiallyInstalled = await this.npmService.installedOk(projectPath);
+    assertCurrent();
+    if (!initiallyInstalled) {
       // 终端进入项目目录，安装项目依赖
       // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS') });
       setTimeout(() => {
@@ -272,7 +298,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         dependencyInstallError = (error as Error)?.message || String(error);
         console.warn('[ProjectLoad] npm install failed:', error);
       }
-      if (!(await this.npmService.installedOk(projectPath))) {
+      assertCurrent();
+      const installedAfterAttempt = await this.npmService.installedOk(projectPath);
+      assertCurrent();
+      if (!installedAfterAttempt) {
         packageJson = this.readProjectPackageJson(projectPath) || packageJson;
         this.applyProjectPackageJson(packageJson);
 
@@ -318,11 +347,13 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG'),
     });
     const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
     this.blocklyService.boardConfig = boardJson;
     window['boardConfig'] = boardJson;
     await this.projectService.loadBoardMenuConfig();
+    assertCurrent();
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
@@ -333,8 +364,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     let libraryModuleList = (
       await this.npmService.getAllInstalledLibraries(projectPath)
     ).map((item) => item.name);
+    assertCurrent();
 
     await this.blocklyService.waitForWorkspace();
+    assertCurrent();
     this.generatorRuntime.updateContext({
       projectPath,
       boardConfig: boardJson,
@@ -351,6 +384,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         }),
       });
       await this.blocklyService.loadLibrary(libPackageName, projectPath);
+      assertCurrent();
     }
     // 5. 加载project.abi数据
     this.uiService.updateFooterState({
@@ -360,11 +394,13 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
-    } = await this.loadProjectAbiDocument(projectPath);
+    } = await this.loadProjectAbiDocument(projectPath, assertCurrent);
+    assertCurrent();
 
     const missingProjectLibraries = this.getMissingProjectLibraries(projectPath, packageJson, projectDocument);
     if (missingProjectLibraries.length > 0) {
       const restored = await this.restoreMissingProjectLibraries(projectPath, missingProjectLibraries);
+      assertCurrent();
       if (!restored) {
         this.handleMissingProjectLibrariesCancelled(missingProjectLibraries);
         throw new Error(`项目缺少仍在使用的积木库：${missingProjectLibraries.map((lib) => lib.name).join(', ')}`);
@@ -373,9 +409,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
       this.applyProjectPackageJson(packageJson);
       await this.loadInstalledBlocklyLibraries(projectPath);
+      assertCurrent();
     }
 
     await this.waitForNextFrame();
+    assertCurrent();
     this.blocklyService.loadProjectDocument(projectDocument, false);
     if (!usedBoardTemplateAbi) {
       try {
@@ -468,28 +506,37 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
   }
 
-  private async loadProjectAbiDocument(projectPath: string): Promise<{
+  private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
+    assertCurrent();
     let abiContent = await this.electronService.readFileAsync(abiPath);
+    assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent);
+    assertCurrent();
     projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
       abiContent,
+      assertCurrent,
     );
+    assertCurrent();
     abiContent = '';
 
     let usedBoardTemplate = false;
     if (this.hasEmptyLegacyWorkspace(projectAbi)) {
       const boardTemplateAbi = await this.readCurrentBoardTemplateAbi(projectPath);
+      assertCurrent();
       if (boardTemplateAbi && !this.hasEmptyLegacyWorkspace(boardTemplateAbi)) {
         projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
           projectPath,
           boardTemplateAbi,
+          undefined,
+          assertCurrent,
         );
+        assertCurrent();
         usedBoardTemplate = true;
         console.info('[ProjectAbi] project.abi is empty; using the current board template as temporary data.');
       }
@@ -1064,7 +1111,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
       this.copyProjectPackageJsonToTemp(projectPath);
       this.message.success(`开发板已切换为 ${addedBoardNames.join(', ')}，正在重新加载项目`, { nzDuration: 3000 });
-      await this.projectService.projectOpen(projectPath, { reason: 'reload' });
+      await this.projectService.reloadAfterBoardSwitch(projectPath);
       this.projectService.boardChangeSubject.next();
       this.projectService.resolveBoardSwitchReload();
     } catch (error) {

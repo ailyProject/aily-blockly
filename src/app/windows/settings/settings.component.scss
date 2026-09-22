@@ -203,6 +203,7 @@ textarea {
 
 .right {
   height: 100%; // 确保占满整个高度
+  min-width: 0;
 
   .right-inner-container {
     padding-bottom: 100px;
@@ -351,6 +352,10 @@ ngx-simplebar {
   .coder-mode-button {
     border-radius: 0 2px 2px 0;
   }
+
+  .single-mode-button {
+    border-radius: 2px;
+  }
 }
 
 .region-buttons {
@@ -383,4 +388,13 @@ ngx-simplebar {
 
 [disabled] {
   opacity: 0.6;
+}
+
+.cleanup-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--aily-text-primary);
+  line-height: 1.6;
 }

@@ -1,8 +1,8 @@
 import type {
   SimulatorBuildHostProviderAdapterOptions,
   SimulatorProjectHostProviderAdapterOptions,
-  SimulatorSubappHostArtifactDescriptorV1,
 } from '@aily-project/simulator-host-sdk';
+import type { SimulatorSubappHostArtifactDescriptorV1 } from '@aily-project/simulator-protocol/host';
 
 import {
   SimulatorBuildCallbackAuthority,

@@ -618,11 +618,14 @@
   position: fixed;
   z-index: 1200;
   top: 0;
-  left: 0;
+  box-sizing: border-box;
   display: none;
   width: max-content;
-  min-width: 118px;
+  min-width: min(118px, calc(100vw - 16px));
+  max-width: min(220px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
   padding: 4px;
+  overflow-y: auto;
   border: 1px solid var(--aily-border-secondary);
   border-radius: 8px;
   background: var(--aily-bg-primary);
@@ -638,6 +641,7 @@
   display: flex;
   width: 100%;
   height: 28px;
+  flex-shrink: 0;
   align-items: center;
   gap: 8px;
   padding: 0 8px;
@@ -650,6 +654,12 @@
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
+
+  > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   > i {
     display: inline-flex;

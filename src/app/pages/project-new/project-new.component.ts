@@ -5,7 +5,12 @@ import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzStepsModule } from 'ng-zorro-antd/steps';
 import { ElectronService, PlatformService } from '@core/platform/public-api';
-import { ProjectService } from '@domain/project/public-api';
+import {
+  ProjectService,
+  runProjectCreationWorkflow,
+  type ProjectCreationMode,
+  type ProjectCreationTemplateSelection,
+} from '@domain/project/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { NzSelectModule } from 'ng-zorro-antd/select';
 import { NpmService } from '@domain/dependencies/public-api';
@@ -20,8 +25,7 @@ import { CloudService } from '../../tools/cloud-space/services/cloud.service';
 import { SequentialImgDirective } from './sequential-img.directive';
 import { firstValueFrom, Subject } from 'rxjs';
 import { debounceTime, takeUntil } from 'rxjs/operators';
-import { createBoardSearchIndex, searchBoards } from '../../utils/fuzzy-search.utils';
-import type { AnyOrama } from '@orama/orama';
+import { filterAndRankBoards } from '../../utils/fuzzy-search.utils';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import type { NewProjectData } from '../../types/project-new';
 import { NzModalService } from 'ng-zorro-antd/modal';
@@ -90,7 +94,6 @@ export class ProjectNewComponent implements OnDestroy {
 
   private searchSubject = new Subject<string>();
   private destroy$ = new Subject<void>();
-  private searchIndex: AnyOrama | null = null;
   private todoBoardImageClickCount = 0;
 
   /** 基本设定页：Blockly 图形化 / Coder 代码编辑 */
@@ -113,6 +116,10 @@ export class ProjectNewComponent implements OnDestroy {
   /** 只有显式配置 coder.enabled=true 时显示项目类型选择。 */
   get coderEnabled(): boolean {
     return this.configService.isCoderEnabled();
+  }
+
+  get coderProduct(): boolean {
+    return this.configService.isCoderProduct();
   }
 
   // 获取已定义的品牌列表（排除'all'和'other'）
@@ -162,13 +169,16 @@ export class ProjectNewComponent implements OnDestroy {
     // await this.configService.init();
 
     // Blockly / Coder 统一使用 boards.json；具体骨架由板卡包 template/template_arduino 决定。
-    this._blocklyBoardListInConfigOrder = this.process(this.configService.boardList);
+    const boardList = await this.configService.getBoardListWhenReady();
+    this._blocklyBoardListInConfigOrder = this.process(boardList);
     this._blocklyBoardList = this.configService.sortBoardsByUsage(this._blocklyBoardListInConfigOrder);
 
     this.selectedProjectCategory = resolveInitialProjectCategory(
       this.coderEnabled,
       undefined,
       this.configService.getPreferredChatAgentRuntimeMode(),
+      'blockly',
+      this.coderProduct,
     );
     this.syncActiveBoardList();
     this.applyRecommendedProjectName();
@@ -214,6 +224,9 @@ export class ProjectNewComponent implements OnDestroy {
     this.selectedProjectCategory = resolveInitialProjectCategory(
       this.coderEnabled,
       this.selectedProjectCategory,
+      undefined,
+      'blockly',
+      this.coderProduct,
     );
     this.applyRecommendedProjectName();
     this.refreshBoardListForCurrentFilters();
@@ -296,20 +309,10 @@ export class ProjectNewComponent implements OnDestroy {
       return;
     }
 
-    // 使用 Orama 进行模糊搜索
     const localizedList = this.applyLocalization(
       this.filterBoardsForCategory(JSON.parse(JSON.stringify(this._boardList)))
     );
-    this.searchIndex = createBoardSearchIndex(localizedList);
-    const matchedNames = searchBoards(this.searchIndex, keyword);
-
-    // 按 Orama 返回的顺序（相关度排序）还原开发板对象
-    const nameIndexMap = new Map<string, number>();
-    matchedNames.forEach((name, i) => nameIndexMap.set(name, i));
-
-    this.boardList = localizedList
-      .filter(board => nameIndexMap.has(board.name))
-      .sort((a, b) => (nameIndexMap.get(a.name) ?? 0) - (nameIndexMap.get(b.name) ?? 0));
+    this.boardList = filterAndRankBoards(localizedList, keyword);
 
     if (this.boardList.length > 0) {
       this.selectBoard(this.boardList[0]);
@@ -321,11 +324,11 @@ export class ProjectNewComponent implements OnDestroy {
 
   devmodes = [];
   hasExamples = false;
-  myTemplateList: CloudProjectTemplate[] = [];
+  myTemplateList: ProjectCreationTemplateSelection[] = [];
   isLoadingTemplates = false;
   selectedTemplateName = '';
 
-  get selectedTemplate(): CloudProjectTemplate | null {
+  get selectedTemplate(): ProjectCreationTemplateSelection | null {
     return this.myTemplateList.find(template => template.name === this.selectedTemplateName) || null;
   }
 
@@ -482,72 +485,69 @@ export class ProjectNewComponent implements OnDestroy {
   }
 
   async createProject() {
-    // 判断是否有同名项目
-    if (await this.checkPathIsExist()) {
-      return;
-    }
-    // macOS 路径非法字符检查
-    if (this.checkPathInvalidChars()) {
-      return;
-    }
-    this.creatingMode = 'blockly';
-    this.currentStep = 2;
-
-    // 记录开发板使用次数
-    this.configService.recordBoardUsage(this.newProjectData.board.name);
-
-    let success = false;
-    let extractPath = '';
-    try {
-      if (this.selectedTemplateName) {
-        const templateProject = await this.findSelectedTemplateProject();
-        if (!templateProject?.archive_url) {
-          throw new Error('未找到所选模板的归档文件');
-        }
-
-        const archiveUrl = `${this.cloudService.baseUrl}${templateProject.archive_url}`;
-        extractPath = await firstValueFrom(this.cloudService.getProjectArchive(archiveUrl));
-        success = await this.projectService.projectNewFromTemplate(this.newProjectData, extractPath);
-      } else {
-        success = await this.projectService.projectNew(this.newProjectData);
-      }
-    } catch (error: any) {
-      const message = typeof error === 'string' ? error : (error?.message || '创建项目失败');
-      this.message.error(message);
-    } finally {
-      if (extractPath) {
-        this.cloudService.cleanupExtractedFiles(extractPath);
-      }
-    }
-
-    if (!success) {
-      this.currentStep = 1;
-      this.creatingMode = null;
-    }
+    await this.runCreationWorkflow('blockly');
   }
 
   /** 使用所选 Blockly 主板包的 template_arduino 创建工程，再进入 Coder。 */
   async createAilyCodeProject(): Promise<void> {
-    if (await this.checkPathIsExist()) {
-      return;
-    }
-    if (this.checkPathInvalidChars()) {
-      return;
-    }
+    await this.runCreationWorkflow('coder');
+  }
 
-    // 沿用 Blockly：记录开发板使用热度
-    this.configService.recordBoardUsage(this.newProjectData.board.name);
-    this.creatingMode = 'aily';
-    this.currentStep = 2;
+  private async runCreationWorkflow(mode: ProjectCreationMode): Promise<void> {
+    await runProjectCreationWorkflow(
+      {
+        mode,
+        project: this.newProjectData,
+        templateSelected: mode === 'blockly' && !!this.selectedTemplateName,
+        selectedTemplate: mode === 'blockly' ? this.selectedTemplate : null,
+      },
+      {
+        validate: async () => {
+          if (await this.checkPathIsExist()) {
+            return 'path-exists';
+          }
+          return this.checkPathInvalidChars() ? 'invalid-path' : null;
+        },
+        onCreating: creationMode => {
+          this.creatingMode = creationMode === 'coder' ? 'aily' : 'blockly';
+          this.currentStep = 2;
+        },
+        recordBoardUsage: boardName => this.configService.recordBoardUsage(boardName),
+        listTemplateProjects: async (page, pageSize) => {
+          const res = await firstValueFrom(this.cloudService.getProjects(page, pageSize));
+          return {
+            list: Array.isArray(res?.data?.list) ? res.data.list : [],
+            total: Number(res?.data?.total || 0),
+          };
+        },
+        resolveTemplateArchiveUrl: templateProject => templateProject.archive_url
+          ? `${this.cloudService.baseUrl}${templateProject.archive_url}`
+          : '',
+        downloadTemplateArchive: archiveUrl => firstValueFrom(this.cloudService.getProjectArchive(archiveUrl)),
+        cleanupExtractedFiles: extractPath => this.cloudService.cleanupExtractedFiles(extractPath),
+        createProject: creationMode => creationMode === 'coder'
+          ? this.projectService.projectNew(this.newProjectData, {
+            deferActivation: true,
+            templateDirectory: 'template_arduino',
+          })
+          : this.projectService.projectNew(this.newProjectData),
+        createProjectFromTemplate: extractPath => (
+          this.projectService.projectNewFromTemplate(this.newProjectData, extractPath)
+        ),
+        onCreated: creationMode => this.completeProjectCreation(creationMode),
+        onFailed: () => this.resetCreationState(),
+        reportError: error => {
+          const message = typeof error === 'string'
+            ? error
+            : ((error as any)?.message || '创建项目失败');
+          this.message.error(message);
+        },
+      },
+    );
+  }
 
-    const created = await this.projectService.projectNew(this.newProjectData, {
-      deferActivation: true,
-      templateDirectory: 'template_arduino',
-    });
-
-    if (!created) {
-      this.currentStep = 1;
-      this.creatingMode = null;
+  private async completeProjectCreation(mode: ProjectCreationMode): Promise<void> {
+    if (mode !== 'coder') {
       return;
     }
 
@@ -560,12 +560,19 @@ export class ProjectNewComponent implements OnDestroy {
 
     const canSwitch = await this.confirmSwitchWithUnsavedIfNeeded();
     if (!canSwitch) {
-      this.currentStep = 1;
-      this.creatingMode = null;
+      this.resetCreationState();
       return;
     }
 
-    await this.projectService.projectOpen(projectPath);
+    const opened = await this.projectService.projectOpen(projectPath);
+    if (!opened) {
+      this.resetCreationState();
+    }
+  }
+
+  private resetCreationState(): void {
+    this.currentStep = 1;
+    this.creatingMode = null;
   }
 
   /** 若当前在主编辑器且存在未保存，弹窗对齐「打开项目」行为（与 AilyCodeNewDialog 一致） */
@@ -617,38 +624,6 @@ export class ProjectNewComponent implements OnDestroy {
         }
       });
     });
-  }
-
-  private async findSelectedTemplateProject(): Promise<any> {
-    const selectedTemplate = this.selectedTemplate;
-    if (!selectedTemplate) {
-      return null;
-    }
-
-    const pageSize = 100;
-    let page = 1;
-    let total = 0;
-
-    do {
-      const res = await firstValueFrom(this.cloudService.getProjects(page, pageSize));
-      const projects = Array.isArray(res?.data?.list) ? res.data.list : [];
-      total = Number(res?.data?.total || 0);
-
-      const matchedProject = projects.find((project: any) => (
-        project?.is_template === true &&
-        project?.name === selectedTemplate.name &&
-        (project?.nickname || '') === (selectedTemplate.nickname || '') &&
-        (project?.description || '') === (selectedTemplate.description || '')
-      ));
-
-      if (matchedProject) {
-        return matchedProject;
-      }
-
-      page += 1;
-    } while ((page - 1) * pageSize < total);
-
-    throw new Error('未找到所选模板项目');
   }
 
   openUrl(url) {
@@ -824,9 +799,6 @@ export class ProjectNewComponent implements OnDestroy {
 }
 
 
-/** Coder 新建项目可选的 framework 值（来自 coder_board_index.json） */
-export type CoderFramework = string;
-
 export interface BoardInfo {
   "name": string, // 开发板在仓库中的名称开发板名称
   "nickname": string, // 显示的开发板名称
@@ -837,10 +809,4 @@ export interface BoardInfo {
   "brand": string,
   "type"?: string, // 开发板类型/核心架构 (如 esp32:esp32, arduino:avr, etc)
   "mode"?: string[]
-}
-
-interface CloudProjectTemplate {
-  name: string;
-  nickname?: string;
-  description?: string;
 }

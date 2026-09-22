@@ -54,21 +54,12 @@ export function decorateLibraryBlockDefinitionForProjectData(
       if (!argument || typeof argument !== 'object') continue;
       decorateKnownLegacyField(argument, libraryName, blockType);
       const fieldType = typeof argument['type'] === 'string' ? argument['type'] : '';
-      const fieldName = typeof argument['name'] === 'string' ? argument['name'] : '';
-      const kind = PROJECT_DATA_FIELD_TYPES[fieldType];
-      if (!fieldName || !kind) continue;
-
       if (fieldType === 'field_tftespi_image') {
         argument['imageMode'] = true;
         argument['fps'] = 1;
         argument['maxFrames'] = 1;
         hasTftImageField = true;
       }
-      registerProjectDataFieldSlot(blockType, fieldName, {
-        kind: resolveProjectionKind(libraryName, blockType, fieldName, kind),
-        fieldType,
-        libraryName,
-      });
     }
   }
 
@@ -79,7 +70,25 @@ export function decorateLibraryBlockDefinitionForProjectData(
       ? translated
       : 'Upload an image and convert it to RGB565/RGB332 pixel data';
   }
+  registerProjectDataBlockDefinition(definition, libraryName);
   return definition;
+}
+
+/** Record the already-decorated host definition without rewriting replay input. */
+export function registerProjectDataBlockDefinition(definition: BlocklyJsonDefinition, libraryName = ''): void {
+  const blockType = definition['type'];
+  fieldSlots.delete(blockType);
+  for (const [key, args] of Object.entries(definition)) {
+    if (!/^args\d+$/.test(key) || !Array.isArray(args)) continue;
+    for (const argument of args) {
+      const fieldType = argument?.type, fieldName = argument?.name;
+      const kind = PROJECT_DATA_FIELD_TYPES[fieldType];
+      if (typeof fieldName !== 'string' || !fieldName || !kind) continue;
+      registerProjectDataFieldSlot(blockType, fieldName, {
+        kind: resolveProjectionKind(libraryName, blockType, fieldName, kind), fieldType, libraryName,
+      });
+    }
+  }
 }
 
 /** Removes runtime slot metadata when the owning library is unloaded. */
@@ -95,6 +104,7 @@ export function unregisterProjectDataFieldSlots(blockTypes: readonly string[]): 
 export function wrapProjectDataGeneratorFunctions(
   generator: any,
   blockTypes: readonly string[],
+  readPrepared: (ref: AilyDataRef) => unknown = ref => projectDataRuntime.getPrepared(ref),
 ): void {
   if (!generator?.forBlock) return;
   for (const blockType of blockTypes) {
@@ -102,7 +112,7 @@ export function wrapProjectDataGeneratorFunctions(
     if (typeof original !== 'function' || wrappedGeneratorFunctions.has(original)) continue;
 
     const wrapped: GeneratorFunction = function (this: unknown, block, targetGenerator) {
-      return original.call(this, createGeneratorBlockView(block), targetGenerator);
+      return original.call(this, createGeneratorBlockView(block, readPrepared), targetGenerator);
     };
     wrappedGeneratorFunctions.add(wrapped);
     generator.forBlock[blockType] = wrapped;
@@ -214,7 +224,7 @@ function registerProjectDataFieldSlot(
   blockSlots.set(fieldName, slot);
 }
 
-function createGeneratorBlockView(block: Blockly.Block): Blockly.Block {
+function createGeneratorBlockView(block: Blockly.Block, readPrepared: (ref: AilyDataRef) => unknown): Blockly.Block {
   const slots = fieldSlots.get(block.type);
   if (!slots?.size) return block;
 
@@ -225,7 +235,7 @@ function createGeneratorBlockView(block: Blockly.Block): Blockly.Block {
         const rawValue = target.getFieldValue(fieldName);
         const slot = slots.get(fieldName);
         if (!slot) return rawValue;
-        return projectRuntimeFieldValue(slot.kind, rawValue, target, fieldName);
+        return projectRuntimeFieldValue(slot.kind, rawValue, target, fieldName, readPrepared);
       };
     },
   });
@@ -236,13 +246,14 @@ function projectRuntimeFieldValue(
   compactValue: unknown,
   block: Blockly.Block,
   fieldName: string,
+  readPrepared: (ref: AilyDataRef) => unknown,
 ): unknown {
   const state = parseCompactState(compactValue);
   const ref = getSlotReference(kind, state);
   let payload: unknown;
   if (ref) {
     try {
-      payload = projectDataRuntime.getPrepared(ref);
+      payload = readPrepared(ref);
     } catch (error) {
       if (error instanceof ProjectDataError) {
         throw new ProjectDataError(error.code, error.message, {
@@ -402,9 +413,7 @@ function projectImagePreview(state: Record<string, any>): unknown {
   const image = isAilyDataRef(state['image']) ? state['image'] : null;
   return {
     ...state,
-    filePath: typeof state['filePath'] === 'string' && state['filePath'].trim()
-      ? state['filePath']
-      : image?.$ailyData.id || '',
+    filePath: image?.$ailyData.id || (typeof state['filePath'] === 'string' ? state['filePath'] : ''),
   };
 }
 

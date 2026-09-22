@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.94",
+  "version": "0.9.100",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -14,6 +14,7 @@
     ],
     "appId": "blockly.aily.pro",
     "forceCodeSigning": false,
+    "afterPack": "scripts/package-child-resources.js",
     "asar": true,
     "asarUnpack": [
       "electron/preload.js",
@@ -31,6 +32,7 @@
       {
         "name": "Aily Blockly OAuth",
         "schemes": [
+          "abis",
           "ailyblockly"
         ]
       }
@@ -61,10 +63,6 @@
     ],
     "extraResources": [
       {
-        "from": "build/simulator-runtime",
-        "to": "simulator"
-      },
-      {
         "from": "child/scripts",
         "to": "child/scripts"
       },
@@ -91,16 +89,6 @@
           "icon": "public/icon.ico",
           "role": "Editor"
         }
-      ],
-      "extraResources": [
-        {
-          "from": "child/windows",
-          "to": "child",
-          "filter": [
-            "**/*",
-            "!aily-builder-*.7z"
-          ]
-        }
       ]
     },
     "mac": {
@@ -112,16 +100,6 @@
           "name": "Aily Blockly Project",
           "description": "Aily Blockly Project File",
           "role": "Editor"
-        }
-      ],
-      "extraResources": [
-        {
-          "from": "child/macos",
-          "to": "child",
-          "filter": [
-            "**/*",
-            "!aily-builder-*.7z"
-          ]
         }
       ]
     },
@@ -152,11 +130,13 @@
     }
   },
   "scripts": {
-    "ng": "ng",
-    "start": "ng serve",
-    "watch": "ng build --watch --configuration development",
-    "test": "ng test",
-    "test:unit:ci": "ng test --watch=false --browsers=ChromeHeadless",
+    "ng": "node scripts/run-angular.cjs",
+    "start": "node scripts/run-angular.cjs serve",
+    "watch": "node scripts/run-angular.cjs build --watch --configuration development",
+    "test": "node scripts/run-angular.cjs test",
+    "test:unit:ci": "node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless",
+    "test:abs-sync": "node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless",
+    "prepare:blockly-native": "node scripts/blockly-native-bundle.cjs",
     "guard:aily-chat-mainline": "node scripts/guard-aily-chat-mainline.js",
     "test:simulator-host-provider-callbacks": "node --test electron/simulator-host-provider-callback-authorities.test.js electron/subapp-host-provider-dispatcher.test.js electron/subapp-host-provider-product-registry.test.mjs",
     "stage:local-simulator-host-sdk": "node scripts/stage-local-simulator-host-sdk.mjs",
@@ -167,20 +147,22 @@
     "architecture:services": "node scripts/check-angular-service-architecture.mjs",
     "architecture:services:inventory": "node scripts/check-angular-service-architecture.mjs --inventory",
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && node ./scripts/run-electron-dev.js --serve\"",
-    "prepare:simulator-runtime": "node scripts/prepare-simulator-runtime.js",
-    "prepare:simulator-runtime:release": "node scripts/prepare-simulator-runtime.js",
-    "prepare:electron-runtime": "npm run prepare:simulator-runtime",
-    "build": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder build",
+    "electron:coder": "node ./scripts/run-electron-coder-dev.js",
+    "prepare:child": "node scripts/prepare-child-resources.js",
+    "build": "node scripts/run-angular.cjs build --base-href ./ && electron-builder build",
     "build:cn": "node ./scripts/build-electron.js --flavor cn",
     "build:global": "node ./scripts/build-electron.js --flavor global",
-    "build:mac": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder --mac --arm64 --x64",
-    "build:mac:universal": "npm run prepare:electron-runtime && ng build --base-href ./ && electron-builder --mac --universal",
+    "build:coder": "node ./scripts/build-electron.js --product coder",
+    "build:mac": "node scripts/run-angular.cjs build --base-href ./ && electron-builder --mac --arm64 --x64",
+    "build:mac:universal": "node scripts/run-angular.cjs build --base-href ./ && electron-builder --mac --universal",
     "test:e2e": "node ./scripts/run-e2e.mjs test",
     "test:e2e:ui": "node ./scripts/run-e2e.mjs ui",
     "test:e2e:headed": "node ./scripts/run-e2e.mjs headed",
     "test:e2e:fast": "node ./scripts/run-e2e.mjs fast",
     "test:e2e:report": "node ./scripts/run-e2e.mjs report",
-    "setup:external-tools": "node scripts/install-external-tools.js",
+    "test:e2e:serial-product": "node ./electron/test/subapp-product.acceptance.mjs",
+    "test:e2e:serial-owner-crash": "node ./electron/test/subapp-owner-crash.acceptance.mjs",
+    "setup:external-tools": "node scripts/prepare-child-resources.js",
     "setup:local-builder": "node scripts/use-local-builder.mjs",
     "setup:local-connector": "node scripts/use-local-connector.mjs"
   },
@@ -224,11 +206,10 @@
     "install": "^0.13.0",
     "js-base64": "^3.7.8",
     "jsonrepair": "^3.13.0",
-    "lightweight-charts": "^5.1.0",
     "loaders.css": "^0.1.2",
     "marked": "^15.0.12",
     "marked-highlight": "^2.2.1",
-    "mermaid": "^11.9.0",
+    "mermaid": "^11.17.2",
     "monaco-editor": "^0.52.2",
     "mp4box": "^2.3.0",
     "ng-zorro-antd": "^19.0.1",
@@ -244,6 +225,7 @@
     "turndown": "^7.2.4",
     "ua-parser-js": "^2.0.5",
     "uuid": "^11.1.0",
+    "ws": "^8.20.0",
     "zone.js": "~0.15.0"
   },
   "devDependencies": {
@@ -273,5 +255,8 @@
   },
   "overrides": {
     "blockly": "npm:aily-project-blockly@^1.0.2"
+  },
+  "allowScripts": {
+    "electron": true
   }
 }

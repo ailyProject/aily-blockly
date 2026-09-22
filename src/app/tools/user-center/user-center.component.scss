@@ -65,6 +65,7 @@
 
         .item {
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             gap: 10px;
             padding: 10px;
@@ -91,11 +92,13 @@
 
             .content {
                 flex: 1;
+                min-width: 150px;
                 display: flex;
                 flex-direction: column;
                 // gap: 3px;
 
                 .value {
+                    overflow-wrap: anywhere;
                     font-size: 20px;
                     font-weight: 500;
                     color: rgba(255, 166, 0, 0.86);

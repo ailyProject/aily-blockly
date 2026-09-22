@@ -12,6 +12,7 @@
 import * as Blockly from 'blockly/core';
 import { createMinusField } from './field_minus';
 import { createPlusField } from './field_plus';
+import { registerStructuralMutator } from './structural-mutators';
 
 const switchCaseMutator = {
   /**
@@ -60,6 +61,7 @@ const switchCaseMutator = {
         .appendField(Blockly.Msg['CONTROLS_SWITCH_DEFAULT'] || 'default');
     }
     this.updateShape_(targetCaseCount);
+    if (!this.hasDefault_ && this.getInput('DEFAULT')) this.removeInput('DEFAULT');
   },
 
   /**
@@ -89,6 +91,7 @@ const switchCaseMutator = {
         .appendField(Blockly.Msg['CONTROLS_SWITCH_DEFAULT'] || 'default');
     }
     this.updateShape_(targetCount);
+    if (!this.hasDefault_ && this.getInput('DEFAULT')) this.removeInput('DEFAULT');
   },
 
   /**
@@ -241,6 +244,7 @@ const switchCaseMutator = {
  * @this {Blockly.Block}
  */
 const switchCaseHelper = function () {
+  this.hasDefault_ = !!this.getInput('DEFAULT');
   // Add plus button for adding case to the first CASE input (CASE0)
   this.getInput('CASE0').insertFieldAt(0, createPlusField(), 'PLUS');
 };
@@ -250,10 +254,13 @@ if (Blockly.Extensions.isRegistered('switch_case_mutator')) {
   Blockly.Extensions.unregister('switch_case_mutator');
 }
 
-Blockly.Extensions.registerMutator(
+registerStructuralMutator(
   'switch_case_mutator',
   switchCaseMutator,
   switchCaseHelper,
+  { count: 'caseCount', initial: 0, start: 1,
+    repeated: [{ prefix: 'CASE', kind: 'valueInput' }, { prefix: 'DO', kind: 'statementInput' }],
+    optional: { key: 'hasDefault', input: 'DEFAULT', default: true }, serialization: 'all' },
 );
 
 // Export for use in other files

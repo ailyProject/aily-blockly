@@ -2,8 +2,34 @@
 
 > 状态：核心隔离链路与动态库删除后的全量 rebuild 已实施并通过真实项目功能验证；依赖解析与动态库升级待后续完成  
 > 适用仓库：`aily-blockly`  
-> 更新时间：2026-07-17  
+> 更新时间：2026-09-16
 > 约束：不修改任何 Blockly 库包，不使用浏览器整页刷新
+
+## 2026-09-16 单库加载失败恢复
+
+7 月 17 日的 `d31cf7132` 将生成器执行失败升级为整个项目加载失败：runtime 被标记为 inactive，loader 销毁 runtime 并抛出异常。7 月 25 日 `d8fd57ce` 添加的红点/重试仅覆盖完整性校验失败，未覆盖该执行异常分支。
+
+现已保留「失败 Realm 必须替换」的隔离约束，同时恢复单库容错：
+
+- 保存原始错误堆栈，使用旧 context 创建新 Realm，重新注册此前成功的库，再继续加载后续库。
+- 坏库保留红点工具箱入口；可读的 block.json 用于恢复已有积木外观，不执行失败的生成器；使用这些积木生成代码时显式报错，避免悄悄遗漏代码。
+- 点击坏库展示原始错误、安装目录、本地源目录，复用通知的 AI 处理入口；修复后重新读盘加载并恢复工作区，清除红点。
+- 库加载串行化，避免并发安装写入正在替换的 Realm。多坏库的占位和错误在恢复中保留，项目 reset / 显式全量库重建时清理。
+
+验证命令：
+
+```sh
+npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/editors/blockly-editor/services/blockly-library-recovery.spec.ts' --include='src/app/editors/blockly-editor/services/blockly-generator-runtime.service.spec.ts'
+npx tsc --noEmit -p tsconfig.app.json
+# 指向已安装依赖的 NLCS11 复现项目；测试复制后才修改副本。
+AILY_E2E_LIBRARY_RECOVERY_PROJECT=/path/to/nlcs11_project npm run test:e2e -- blockly-library-recovery.spec.ts
+```
+
+浏览器回归覆盖：完整性失败、语法失败、运行时失败、部分注册回滚、多个坏库、并发加载、失败重试、修复后重载和正常库继续生成代码。正式开发窗口实测 NLCS11 的 `ReferenceError: asd is not defined` 已不阻止项目打开，原有积木保留，通知可显示原始错误和 AI 处理入口。AI 实际发起修复不属于本次自动验收。
+
+本次结果：7/7 ChromeHeadless 回归通过；TypeScript 检查、生产构建通过；Electron 生产渲染层 E2E 1/1 通过。E2E 使用隔离项目副本，验证坏库红点、正常库展开、错误通知/AI入口、修复后重加载、全部积木 ID 保留，以及 NLCS11/Serial 代码恢复生成。没有进行硬件编译、上传或真实 AI 对话。
+
+E2E 会在 Playwright 当前运行的输出目录生成 `library-failure.png` 和 `library-recovered.png`；后续测试会清理该临时目录，需要时可通过上述命令重新生成。
 
 ## 0. 2026-07-17 实施结论与方案收敛
 
@@ -43,6 +69,170 @@
 - 动态库升级仍需复用依赖同步 + runtime rebuild 入口；不应扩展为逐 lexical binding 卸载。
 - ProjectService 的宏写入可继续收敛为显式 projectPath API，以覆盖已经进入 `await` 的极端晚到 Promise。
 - checkpoint 方案若未来需要并发 project runtime 或可组合的单库卸载，再升级为 owner journal；当前不提前支付这部分复杂度。
+
+### 0.4 2026-09-14 补充：生成准备与保存边界
+
+ABS / ABI 主线第十七批沿用本方案的项目 iframe、active Generator、session 资源屏障与销毁顺序，不引入新 Realm，也不修改库。新增 `prepared-project-code.ts`：在编辑租约内完成异步资源准备，再以一次同步 `workspaceToCode` 捕获代码、头文件文本和代码映射；允许必要的同步模型注册，之后固定持久化 revision。异步等待期间的文档/上下文变化仍拒绝，不能靠放宽 revision 接受旧结果。
+
+保存只消费已准备输出；ABS 在生成后重新核对请求状态；防抖页面生成、Builder 与 Uploader 通过同一个队列/租约入口消费。生成缓存不再只依赖事件计数，使用完整文档 revision、workspace/page、Generator 实例/配置版本与 Project Data session。Runtime 的配置、库注册、库 i18n 更新推进配置版本，同实例配置变更也会使在途生成及缓存失效。
+
+详细实现、失败语义与真实工程证据见 [主执行方案第 31 节](D:/codes/aily-blockly/docs/abs-abi-lossless-sync-execution-plan.md)。这不将 iframe 提升为恶意库沙箱，也不宣称 `.h` 存在等价于 C++ 编译或硬件播放通过。
+
+### 0.5 2026-09-15 补充：声明式块的准备来源
+
+ABS / ABI 主线第二十批在 `BlocklyService.loadLibBlocks` 完成 i18n、boardConfig、静态路径和 Project Data 内存装饰并实际注册后，记录声明式 JSON 与注册对象/`init` 的对应关系。该目录属于项目 editor，reset 与原地 runtime rebuild 一起清空，不增加全局 Blockly 元数据缓存，也不另建 probe workspace 或 iframe。
+
+候选使用的声明在异步资源准备、实际装载和最终宿主 CAS 前仍需保持原注册来源；定义覆盖、源 JSON 改变或目录重建都会使快照失效。静态合同只覆盖可证明的字段/默认值/连接种类；包含 extension、mutator 或未知字段工厂的定义不能冒充静态合同。实际执行阶段仍受同一租约和完整读回保护，这不是恶意库沙箱，也不允许因为新块而忽略额外 serializer/model 状态。详细记录见 [ABS / ABI 主线第 34 节](D:/codes/aily-blockly/docs/abs-abi-lossless-sync-execution-plan.md)。
+
+### 0.6 2026-09-15 补充：宿主原生过程输入适配
+
+ABS 第二十四批为主程序打包的 legacy 调用提供 `blockly-bundled-procedure-generator.ts`。在既有项目 iframe 的 Generator 脚本加载完成后，针对注册身份仍为宿主实现的调用块包装当前 Generator handler；只读 block view 将库的 INPUT<n> 读取映射到实际 ARG<n>，不修改工作区、库脚本或另一项目的 Generator。保留原 handler 的变量/函数命名、返回类型及代码生成逻辑，不替换为新的代码生成算法。同名块定义被替换时不使用此适配，custom_function_* 不在本合同内。详细验收见 ABS 主执行方案第 38 节。
+
+### 0.7 2026-09-15 补充：自定义函数合同与派生状态
+
+ABS 第二十六批在既有 generator 加载边界，以规范化源码哈希及实际 mutator、调用定义、依赖函数和 extension 注册身份确认有类型函数协议。加载顺序保持 generator.js → block.json：前者验证脚本注册，后者继续由 editor 声明目录证明定义来源，不能在脚本执行时要求声明式定义已注册。异步摘要绑定原 runtime session；旧 session 完成时不能登记或销毁新实例。运行时结束清除所属合同，不增加 iframe，也不修改库包。
+
+ABS 的候选模型/签名准备保持纯数据变换，显式 FUNC/参数模型与工作区通过原事务一起提交。实际加载后及失败回滚后，仅从完整工作区重建该 Realm 内的 customFunctionRegistry 和定义名称缓存；不调用可能创建/删除模型、同步工具箱的库初始化函数。普通工程序列化和 ABS 既有实例采集前，再通过已审计定义的 serializer 准备查找表，覆盖延迟监听器清空注册表的时间窗；不读取调用 serializer 来推断定义，不等待完成事件。普通快照不推进未提交的函数名编辑缓存。派生注册表不能取代持久化状态和完整读回校验。源码更新或注册被覆盖须重新审核，不以版本名作为许可。详细验收见主执行方案第 40 节。
+
+### 0.8 2026-09-15 补充：普通声明模型准备
+
+普通变量声明复用既有 generator 加载/销毁边界登记模型效果，不增加 Realm、probe workspace 或库侧配置。`blockly-variable-declaration-contract.ts` 验证已加载源码摘要、实际 handler/依赖 helper 身份和捕获的入口类型；声明式目录另外证明 block.json 字段/连接与全局容器形状。当前覆盖普通 variable_define 的全局声明，C++ TYPE 与空 native model type 明确分离。已安装预览脚本与库主线仅有两个未使用 GORP 读取的差异，审计后分别绑定摘要，不按包名放行未知代码。
+
+`abs-declaration-intents.ts` 在 detached AST 已完成身份匹配后、引用绑定前复用原模型准备层；加载和生成只消费准备好的模型。前向引用与二次编辑可复用确定性身份，拼错引用不能新建模型；未知作用域、重复存储声明、模型冲突和隐式重命名拒绝。单次验证不执行库回调、不修改真实工作区；完整读回仍拒绝额外模型。所属 runtime 销毁时清理登记，旧异步摘要或旧 owner 不能注册/清除新 session。
+
+### 0.9 2026-09-15 补充：通用结构 mutator 与 generator JSON 声明
+
+宿主打包的五类纯结构 mutator 在原注册点同时提供计数、重复输入、可选分支及序列化规则；不同库复用同一机制，不按库名或块名逐项授权。ABS 在 detached 数据上计算结构；能力查询和 validate 不调用库 init/serializer，不创建试探块。注册函数、mixin、Extensions.apply 和声明来源必须保持一致，实际装载后继续完整读回与 CAS。带模型副作用的函数仍使用各自模型合同，不进入纯结构规则。
+
+既有 iframe Blockly facade 为标准 `defineBlocksWithJsonArray` 增加声明采集回调：在当前 session 中实际注册后，将已求值的 JSON 交给同一个项目声明目录，并推进 runtime revision。所属 editor reset/rebuild 仍负责清空目录；销毁的 session 不得登记。没有增加 Realm、全局目录或库侧配置，也不通过执行任意 `init()` 来猜测结构。动态参数顺序根据该实例的原生 extraState 确定，静态部分仍遵循声明顺序。验收与剩余边界见 [统一落地方案第 13 节](D:/codes/aily-blockly/docs/abs-unified-syntax-landing-plan.md)。
+
+### 0.10 2026-09-15 补充：字段驱动结构与 UI 扩展
+
+新增字段条件规则适配已绑定的原生 mutator；`abs-field-shape.ts` 只依据声明、已验证规则及字段值推导输入顺序和原生冗余 XML。UI 扩展通过有限 AST 效果检查识别只读 tooltip / 已审查的可见性机制，不执行回调探测，不增加 Realm、工作区、注册入口或库侧配置。所用注册身份改变即使合同失效。实例选择器记录在原不可变 generation 合同，不修改公开 map schema。共享模型、异步创建块、全局配置副作用不归入 UI。范围及证据见统一落地方案第 14 节。
+
+### 0.11 2026-09-15 补充：库内条件结构的注册观察
+
+在原 Blockly facade 中观察正常 register/registerMutator，宿主模块及注册方法不替换。仅完整 AST 可证明的字段结构关联到实际注册回调弱引用，闭包 mixin、Realm helper、DOM 创建方法及 Runtime 所属身份均需保持。查询/验证不执行回调探测，不另建 Realm 或工作区；新机制复用 field-shape-v1。原 Runtime 销毁/失败状态和注册恢复使旧证据失效。原型/mixin或helper被替换的反例已覆盖，详见主线第 15 节。
+
+注册装饰器保留属性读取时捕获的函数，不能绕过库包装或递归调用新包装。`Blockly.Extensions` API 方法表已补入原 property-surface journal，与扩展注册项一起恢复；此前仅恢复注册项会把库的 API 包装及旧 Realm 闭包留给下一项目。销毁后方法身份与注册项恢复均有原生反例覆盖。
+
+后续 ABS 动态块以 [原生配置执行主线](./abs-native-runtime-execution-plan.md) 为准。当前普通初始化新增实例级原生结构记录：只观察 append/insert/remove/move，不分析源码、不重复执行 init，不新增 Realm；记录不授予新建/变形许可。静态 JSON 顺序仍是声明实参顺序的事实来源。未来候选执行必须另行证明隔离：当前 Realm 共享宿主 Blockly 注册表，仅增加 Workspace 或备份 ABI 不能把 validate 变成只读沙箱。
+
+### 0.12 2026-09-16 补充：独立原生候选诊断容器
+
+N2-a 为候选诊断增加一次性 opaque-origin iframe，加载独立的同版 Blockly core；与活动项目 iframe 不共享注册表、原型、Generator 或项目服务。当前 runtime 只增加源码/声明/context/i18n 的有序快照，不改变正常执行语义。session 或配置变化使在途候选失效；资源销毁不触碰活动 workspace。
+
+当前只允许同步原生创建/字段与 extraState 配置，并拒绝未声明的模型、子块及异步/I/O。它不是第二个 active Generator，也未接入生产 abs_validate/apply。完整宿主自定义字段/Generator 引导、位置参数绑定、附带状态归属和提交闭环仍待实施。状态隔离不等于可抢占恶意同步死循环；详细边界与测试见新主线第 3、6 节。
+
+### 0.13 2026-09-16 补充：共享原生引导与两阶段 ABS 绑定
+
+N2-b 将主程序字段/结构扩展注册及三模式 Generator 构造器抽成共享模块，再编译为候选 iframe 的独立包。Project Data 字段通过无 Angular 的窄入口访问原实现，位图 UI 服务桥接与 Angular 服务分开；不传宿主单例或 preload。主程序加载候选前核对编译期 SHA256，拒绝热更新期间的旧包。原 N2-a 函数字符串注入与单独 core 资产路径已移除。
+
+ABS 完整语法读取与逐实例绑定分离，但仍使用同一语法和原变量兜底。候选以原生字段/extraState/连接执行后完整读回；argsN 声明顺序及 init 内直接 jsonInit 均记录，动态部分仍来自实际构造。模式、消息、配置及源码快照都有失效边界。
+
+此阶段为同步诊断闭环，不替代活动项目 iframe，不提升 Agent 创建许可，也未打通候选的模型、媒体资源、项目服务或异步任务。完整 DHT/MAX31865 脚本重放不等于全工程回放或编译通过。下一步复用既有身份合并、租约、CAS 和保存链，不增加第二提交通道。实施与证据见 [原生执行主线第 7 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.14 2026-09-16 补充：同步候选接入唯一 ABS 提交链
+
+N2-c 已将原生绑定按源调用关联到原 reconciler 的身份规划；第二次隔离执行使用正式 ID，不持久化诊断 offset ID。保留既有 metadata/保护/disabledReasons/shadow 后，第三次隔离执行加载最终 ABI，调用实际 Generator 并复用完整读回。未知模型、计时器或其他未归属效果在活动工作区变更前拒绝。
+
+生产准备使用活动 runtime 的完整日志，不按库筛选；仅静态语法/结构合同缺失时尝试原生路径，其他校验不得绕过。Project Data 协调器、租约、baseline、CAS、活动完整读回、保存和回滚仍各只有一条实现。没有替换活动 Generator、改变库包或增加 Agent schema。
+
+该同步子集已通过 coordinator 专项；Electron 本批只验证隔离最终 ABI/Generator，不冒充 Agent apply。全工程异步声明、模型、媒体资源和项目服务仍受 N3 限制；范围、测试及剩余项见 [原生执行主线第 8 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.15 2026-09-16 补充：候选模型/大值输入与 JS 注册观察
+
+N3-a 将宿主已确定的变量表和通用 Project Data 大值作为结构化克隆输入；候选复用原符号解析与完整模型读回，不接纳回调产生的额外模型。通用 envelope 由宿主原资源会话 resolve，候选只读取复制的值；原媒体专用字段、异步任务及项目服务仍没有获得新权限。
+
+活动 runtime 的 Blocks facade 在正常 JS 注册时安装实例观察器，补齐直接 jsonInit 的原参数顺序；没有初始化探针或类型合同提升。注册替换/删除推进 runtime revision；catalog 清空及定义/init 失效不能重新使用旧实例记录。候选在完成重放后禁止 Blocks 表写入与 JSON 块注册，错误被库捕获也不能通过准备。
+
+原 active Generator、项目 checkpoint、租约和 ABS 事务保持不变。631 项专项、构建及真实 Electron 候选验证通过；完整 Agent/异步/编译仍待后续。见 [原生主线第 9 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.16 2026-09-16 补充：混合候选声明模型的准备时序
+
+N3-b 的普通声明子集复用既有可信声明合同和纯语法绑定器，在首次隔离绑定前准备临时模型输入，解决新声明与前后向引用的准备环。临时表不参与提交：原身份匹配/声明规划决定正式模型，随后第二次隔离绑定及最终 ABI/Generator 完整读回仍使用正式表。两次规划的模型表必须一致；原重名、作用域、重命名与来源校验均保留。
+
+没有增加模型回调采纳机制、源码摘要白名单或库侧配置；不改变活动 runtime、Generator、注册阶段边界或唯一事务。过程模型、自动子块、异步任务和媒体引用仍按原 N3 边界处理。实现与验证见 [原生主线第 10 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.17 2026-09-16 补充：混合模型准备与普通项目加载
+
+N3-b 允许已有可信纯准备器继续负责过程/自定义函数节点，候选只为未知节点发现结构；内部 hosted 记录不进入 ABS/map，也不授予跳过完整 ABI/Generator 读回的许可。跨边界连接在最终完整工作区验证，未归属模型和自动子块仍拒绝。
+
+候选按与主程序相同的时机复用旧过程 Generator 输入适配，移除对所有内置 init 的提前包装，避免破坏来源证明。普通 `loadWorkspaceJson` 复用声明顺序整理已知字段，修复动态字段早于配置字段被忽略的入口；无声明 JSON 的 JS-only 块仍需后续覆盖。实际活动 runtime、模型同步器、租约及保存链未替换。详见 [原生主线第 11 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.18 2026-09-16 补充：原生字段加载边界统一
+
+普通项目加载、ABS 分片装载和候选完整 ABI 验证共用 `blockly-native-field-loading`，在原生 extraState/父连接之后、子输入之前按实际字段结构恢复保存值。独立模块只临时包装本次 workspace 的创建关联及 detached state 字段读取，不改全局注册表/原型，不运行 probe init，不跨异步任务持有适配。既有 argsN/原生构造顺序仍优先；多级动态字段、同名字段重建及下拉选项未就绪有通用推进/失败边界。
+
+移除第 0.17 节临时使用的普通声明预排序路径。原生装载重建的内存 shadow 默认状态保留本次实际加载顺序，防止断开重生再次丢字段；不增加 ABS/map 或持久化元数据。正式提交的完整读回、模型效果拒绝、活动 Generator 与资源会话边界均不放宽。实现、限制与验证见 [原生主线第 12 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.19 2026-09-16 补充：同步默认子块的临时归属
+
+同步 init/extraState/field.loadState 的新块归属由独立 `blockly-native-block-effects` 记录。候选只有在用户明确覆盖输入、且整个临时实块子树均属当前调用且没有请求块混入时才可清理；未知模型、游离根块、未准备 shadow 和 Generator 副作用仍拒绝。显式已有模型可复用，不能删除新模型以“修复”结果。
+
+加载适配更名为 `blockly-native-state-loading`，完整 ABI 以保存连接为权威；初始化默认块不能替换已保存子块或重新填满空输入。补齐此前遗漏的非分片 ABS 加载入口，与分片、普通加载和候选完整验证共用同一模块。临时创建/方法包装始终按同步作用域清理，无持久化元数据、库侧修改或活动 runtime 替换。任意自动状态采纳和异步任务仍待 N3 后续实现，详见 [原生主线第 13 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.20 2026-09-16 补充：新实例默认子树的持久化证明
+
+N3-b 在同一个一次性候选 Realm 内记录默认块创建，ID 在 init 前注入；第二次绑定重放同一临时创建记录并核对完整默认输入/子树及合同。没有增加 active runtime、库侧模板或持久化 schema。新 owner 可采纳有连接归属的省略输入、可见 shadow 及被显式子块覆盖的 fallback；已有 owner 始终以原 ABI 身份和数据为准。
+
+显式调用及默认子块共用实例合同采集；纯合并之后继续原 Project Data、完整 ABI/实际 Generator、宿主租约/CAS。默认 payload 无源字面量的处理仅按新接纳子块身份豁免源替换，未放宽用户 literal 校验。额外根块/模型、未观察 serializer 状态、异步/I/O 仍拒绝。实现、证据与未完成范围见 [原生主线第 14 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.21 2026-09-16 补充：原生隐藏 shadow 生命周期
+
+N3-b 在一次性候选的同步 owner 作用域中观察原生 shadow 销毁前的实际状态。当前 Blockly 设置隐藏 shadow 时本就临时实例化并销毁；本次记录这段生命周期，不再创建探测实例或执行额外库初始化。最终连接缓存必须与同 owner 的退役实例快照、完整子树及合同一致，嵌套缓存复用相同证据规则；无实例证据、跨 owner 借用、缓存篡改和未知模型仍拒绝。
+
+原生销毁后按保存 ID 重建是合法生命周期，创建日志允许该 ID 再次出现，但构造前拒绝与活块冲突。观察 serializer/contract 时暂停创建归属，getter 副作用不能获得默认块身份。实例方法包装在原生销毁前恢复，候选清理不产生可采纳证据；没有修改活动 runtime、全局原型、库或 ABS/map schema。
+
+隐藏大文本/数组仍经既有 Project Data 外置、materialize 及唯一 ABS 提交链。新 owner 采纳最终 fallback，已有 owner 保留原 ABI 状态；完整 ABI/真实 Generator、两次身份重放和宿主 CAS 均未放宽。711 项 ABS 与 9 项项目加载回归及构建通过，真实 Agent/固件编译仍须独立验收。详见 [原生主线第 15 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.22 2026-09-16 补充：有限注册任务与真实 Agent 准入
+
+完整 runtime 重放暴露了未使用库也会执行的注册定时任务。一次性候选新增独立 `NativeRegistrationTasks`：注册阶段真实 one-shot timer 按待运行/运行中任务归零完成，支持嵌套与取消，限制总数、单次/累计延时，失败清理所有句柄；不固定 sleep、不滤库、不改 active runtime 的任务模型。完成后封闭注册，配置/Generator 定时器、interval、Promise continuation、I/O 和未归属模型仍拒绝。
+
+只读能力查询在完整 runtime 可捕获且请求策略允许时返回 `validate/native-sync-v1`，允许 Agent 提交原生验证而非提前承诺块类型能力。主程序与 lex 规则一致，不修改 ABS/map schema、用户库或唯一保存事务。真实 Agent 已从空白板卡通过两类动态块新建、两次配置切换、保存重开；真实 LLM 也已自主完成 MAX31865 硬件 SPI 新建→软件 SPI 变形、两次正式固件编译及外置文本保存重开。正式编译同时修复旧预处理依赖误用于新代码的问题；证据与未开放的 N3 边界统一记录在 [原生主线第 16 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.23 2026-09-16 补充：媒体资源只读快照与共享投影
+
+候选资源准备扩展为复用 Store 的全部引用发现，宿主在原会话/租约内解析通用大值和媒体引用，仅复制描述与已解析值。一次性 Realm 不连接宿主 Store、文件或服务；每次读取返回副本，缺失、冲突或被捕获的读取错误仍使候选失败。最终合并 ABI 再准备一份覆盖隐藏状态的快照，不能只检查 ABS 显式字段。
+
+来源日志保留定义的 libraryName；候选复用主程序 Project Data 槽位登记和 Generator 投影，不二次改写已装饰的 JSON。内置媒体字段将视图订阅/预览留在视图生命周期，修正 headless 销毁产生空异步提交与可选来源属性输出 undefined 的问题。需要 prepareForCodeGeneration 异步派生缓存的字段仍明确拒绝；不把原始字节存在当作完成解码的证据。
+
+字段和 extraState 的候选读回复用 canonical JSON 比较，避免正式 ABS 导出排序与原生对象属性顺序不同造成误拒绝；数组顺序和全部值仍须相同。宿主/候选也共用字段单引用选择器，不分别猜测 JSON 字符串中的对象或数组。
+
+active runtime、项目 checkpoint、ABS 语法、唯一保存事务及库包均不变。验收结果和已交付/未开放边界集中在 [原生主线第 17 节](./abs-native-runtime-execution-plan.md)，不再以按库追加模板作为后续主线。
+
+### 0.24 2026-09-17 补充：可信字段准备与派生缓存归属
+
+第 0.23 节的原始字节快照不等于异步派生结果。最终候选 ABI 验证现在只调用主程序模块私有注册表中、与原始字段钩子函数身份一致的准备器；它只收到当前快照 reader，前后必须完整 ABI 读回。未知/替换钩子仍拒绝，库配置和 Generator 本身仍必须同步。
+
+内置图片预览字段复用一个独立解码/缩放模块；仅使用 data URI 和解码完成事件，错误、5 秒超时或超过 16M 像素上限拒绝，不发布部分尺寸缓存。缓存由 Field 弱引用持有，发布前检查 owner 和资源、dispose 释放。活动项目 iframe 和候选均用同一 `tftImageCache` getter 读取当前 workspace 的资源 ID 视图，原文件名只作持久化/界面信息，同名图片不再覆盖。过期活动 runtime 无权读取；候选自己解码复制的资源字节，不接收宿主 DOM 或函数。
+
+候选 CSP 仅新增 `img-src data:`，网络/文件及任意库异步权限不变。没有修改库包或 ABS/map/ABI schema，也没有新提交通道。实现、验收与收口边界见 [原生主线第 18 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.25 2026-09-17 补充：撤回通用异步实验，稳定现行边界
+
+保留项目级 runtime 生命周期、候选有限注册定时器和主程序可信字段准备；撤回候选源码 async 改写、Promise/microtask 通用调度、配置异步尾任务和未知字段准备钩子执行。动态结构继续由同步原生配置与完整读回证明，不将任意异步结构加载作为 ABS 落地条件。配置/Generator 中的不支持效果即使被捕获也使候选失败。活动 runtime、租约/CAS、Project Data 和唯一保存链不变。决策、清理与本轮验证见 [原生主线第 19 节](./abs-native-runtime-execution-plan.md)。
+
+### 0.26 2026-09-17 补充：候选中性 UI 任务与真实图形环境边界
+
+第 0.25 节“不恢复任意异步结构”的决策不变。候选不再一律拒绝配置阶段函数型 one-shot timer，而以独立、有界、虚拟同步队列检查每个回调的持久化/结构/字段约束不变，并在最终 ABI 验证中比较实际代码及生成头文件。只允许已观察到的中性 UI 效果；Promise、网络、循环调度、生成阶段 timer 和真正依赖延后任务的结构仍拒绝。注册计时器、活动 runtime 生命周期、唯一租约/CAS/保存链不变。
+
+aily_iic 进一步暴露 headless 与真实 BlockSvg 的差异：默认 shadow 在 `initSvg/render` 处中断，无法靠等待解决。通用方向是隔离图形候选的原生 API 一致性，尚未实现；禁止按库名补连接、删除孤立 shadow 或注入空 UI 方法掩盖问题。实现与证据见 [ABS 主线第 22 节](./abs-native-runtime-execution-plan.md#22-2026-09-17-抽查缺口修复与-i²c-环境一致性定位)。
+
+补充原生对照：第 23.2 节的独立真实 WorkspaceSvg 页面可同步完成完整 I²C 库的 SLAVE 地址默认连接，进一步排除了“必须异步加载”的解释。“I²C 从站模式”不等于“从站视图”；正常主编辑区不新增第二种加载方式，待补齐的是独立验证候选的图形生命周期。第 23.1 节的批量编辑溯源仅扩展纯身份合并，不改变项目 runtime、候选隔离或唯一提交链。
+
+### 0.27 2026-09-17 补充：隔离候选接入真实图形生命周期
+
+第 0.26 节的图形环境待办已进入生产候选：`blockly-native-graphics` 使用实际 `Blockly.inject` 创建独立 WorkspaceSvg；屏外定尺寸 iframe 保证几何测量，不再使用隐藏的 headless Workspace。字段/模型绑定后才初始化视图，使用原生批量加载的连接追踪暂停避免自动推开 scratch 根块。原生连接、创建归属、shadow 证据、身份重放与完整读回仍是同一条链。
+
+requestAnimationFrame 接入已有有界、语义中性的虚拟 UI 队列，不另建通用异步执行器；Promise/网络/任意异步结构依然拒绝。媒体字段只有在项目 Store 已配置时才主动进行编辑器资源加载，候选继续依赖私有资源快照和可信准备器，不能因有 SVG 就取得项目服务权限。图形候选不是活动主题和交互插件的完整镜像，库无需增加适配声明。
+
+详细实施及最终验收以 [ABS 原生主线第 24 节](./abs-native-runtime-execution-plan.md#24-2026-09-17-隔离候选原生图形生命周期接入) 为准；早期失败/控制实验仍保留为历史证据。当前修改不改变 active runtime、ABS/map schema 或唯一保存事务。
+
+### 0.28 2026-09-17 补充：当前收口不重启任意异步
+
+任意异步结构已经排除出当前收口范围，不将“不承诺任意异步”重新列为未完成计划。第 0.27 节的同步原生图形候选、有限中性 UI 任务及可信资源准备保持，本批没有修改候选调度器。Agent 编辑证据新增可丢弃、绑定实际草稿身份的跨进程私有缓存；仍需宿主精确重放与原有 generation/读回/提交链，不扩大 runtime 权限。user-center 的 4 处 Auth 深层引用改走既有公共入口；实施及验收见 [ABS 主线第 25 节](./abs-native-runtime-execution-plan.md#25-2026-09-17-范围校正跨进程编辑证据与架构引用收口)。
 
 ## 目录
 

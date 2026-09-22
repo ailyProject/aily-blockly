@@ -4,6 +4,7 @@ import {
   parseProjectDataContainer,
   ProjectDataContainerHeader,
 } from './project-data-container';
+import { collectProjectDataReferences } from './project-data-references';
 import {
   createDefaultProjectDataCodecRegistry,
   ProjectDataCodecRegistry,
@@ -216,39 +217,7 @@ export class ProjectDataStore {
   }
 
   collectReferences(value: unknown): AilyDataRef[] {
-    const refs = new Map<string, AilyDataRef>();
-    const visited = new Set<object>();
-    const visit = (current: unknown): void => {
-      if (typeof current === 'string' && current.includes('$ailyData') && current.trim().startsWith('{')) {
-        try {
-          visit(JSON.parse(current));
-        } catch (error) {
-          throw new ProjectDataError('invalid-ref', 'String containing reserved $ailyData metadata is invalid JSON.', {
-            cause: String(error),
-          });
-        }
-        return;
-      }
-      if (current && typeof current === 'object' && !Array.isArray(current)
-        && Object.prototype.hasOwnProperty.call(current, '$ailyData')) {
-        assertAilyDataRef(current);
-        const existing = refs.get(current.$ailyData.id);
-        if (existing && !areAilyDataRefsEquivalent(existing, current)) {
-          throw new ProjectDataError('corrupt', `Conflicting metadata for project data ID: ${current.$ailyData.id}`);
-        }
-        refs.set(current.$ailyData.id, current);
-        return;
-      }
-      if (!current || typeof current !== 'object' || visited.has(current)) return;
-      visited.add(current);
-      if (Array.isArray(current)) {
-        for (const item of current) visit(item);
-      } else {
-        for (const item of Object.values(current as Record<string, unknown>)) visit(item);
-      }
-    };
-    visit(value);
-    return [...refs.values()];
+    return collectProjectDataReferences(value);
   }
 
   async flushPending(): Promise<void> {

@@ -1,0 +1,49 @@
+@if (visible) {
+  <aside
+    class="coder-install-notice"
+    [class.has-error]="!installing"
+    role="status"
+    aria-live="polite"
+    [attr.aria-busy]="installing"
+  >
+    <div class="notice-icon" aria-hidden="true">
+      <i
+        [class]="
+          installing
+            ? 'fa-light fa-code fa-beat-fade'
+            : 'fa-light fa-cloud-exclamation'
+        "
+      ></i>
+    </div>
+    <div class="notice-content">
+      <div class="notice-title">
+        {{ "CODER_SUBAPP_INSTALL.TITLE" | translate }}
+      </div>
+      @if (installing) {
+        <div class="notice-message">
+          {{
+            "CODER_SUBAPP_INSTALL.INSTALLING" | translate: { percent: progress }
+          }}
+        </div>
+        <div class="progress-track" aria-hidden="true">
+          <span [style.width.%]="progress"></span>
+        </div>
+      } @else {
+        <div class="notice-message">
+          {{ "CODER_SUBAPP_INSTALL.FAILED" | translate }}
+        </div>
+        @if (state.error) {
+          <div class="notice-error" [title]="state.error">
+            {{ state.error }}
+          </div>
+        }
+      }
+    </div>
+    @if (!installing) {
+      <button type="button" (click)="retry()">
+        <i class="fa-light fa-arrow-rotate-right" aria-hidden="true"></i>
+        <span>{{ "CODER_SUBAPP_INSTALL.RETRY" | translate }}</span>
+      </button>
+    }
+  </aside>
+}

@@ -10,6 +10,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createSubappManager } = require('./subapp-manager');
+const { portableSubappTarball } = require('./tests/npm-tarball-fixture');
 const {
   SUBAPP_RELEASE_SIGNATURE_CONTEXT,
   normalizeSubappReleaseTrustPolicies,
@@ -46,7 +47,7 @@ test('verifies the generic signed Subapp entry against exact downloaded bytes', 
   assert.equal(Object.isFrozen(result), true);
 });
 
-test('manager verifies a signed tarball before npm and never falls back on tampering', async (t) => {
+test('manager verifies signed bytes before extraction and never falls back on tampering', async (t) => {
   const fixture = createSignedFixture(t);
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-signed-install-'));
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
@@ -64,12 +65,9 @@ test('manager verifies a signed tarball before npm and never falls back on tampe
       fs.copyFileSync(fixture.tarballPath, destination);
       if (tamperDownload) fs.appendFileSync(destination, 'tampered');
     },
-    runNpm: async (args) => {
+    runNpm: async () => {
       npmCalls += 1;
-      assert.equal(args[0], 'install');
-      assert.ok(args.at(-1).endsWith('package.tgz'));
-      writeInstalledPackage(rootDir, fixture.entry);
-      return { code: 0, stdout: 'installed', stderr: '' };
+      throw new Error('Portable signed package must not invoke npm');
     },
   });
 
@@ -81,7 +79,7 @@ test('manager verifies a signed tarball before npm and never falls back on tampe
 
   tamperDownload = false;
   const installed = await manager.install({ id: 'aily-simulator', locale: 'en' });
-  assert.equal(npmCalls, 1);
+  assert.equal(npmCalls, 0);
   assert.equal(installed.apps[0].installedVersion, '0.1.0');
 });
 
@@ -134,7 +132,9 @@ function createSignedFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-release-fixture-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const tarballPath = path.join(root, 'aily-simulator-0.1.0.tgz');
-  fs.writeFileSync(tarballPath, 'deterministic signed Subapp tarball\n');
+  fs.writeFileSync(tarballPath, portableSubappTarball({
+    packageName: '@aily-project/aily-simulator', version: '0.1.0', id: 'aily-simulator',
+  }));
   const tarballIntegrity = `sha512-${createHash('sha512')
     .update(fs.readFileSync(tarballPath))
     .digest('base64')}`;
@@ -216,21 +216,4 @@ function createSignedFixture(t) {
       },
     },
   };
-}
-
-function writeInstalledPackage(rootDir, entry) {
-  const packageDir = path.join(
-    rootDir,
-    'node_modules',
-    '@aily-project',
-    'aily-simulator',
-  );
-  fs.mkdirSync(path.join(packageDir, 'ui'), { recursive: true });
-  fs.writeFileSync(path.join(packageDir, 'index.js'), '');
-  fs.writeFileSync(path.join(packageDir, 'ui', 'index.html'), '<!doctype html>');
-  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
-    name: entry.package,
-    version: entry.version,
-    main: 'index.js',
-  }));
 }

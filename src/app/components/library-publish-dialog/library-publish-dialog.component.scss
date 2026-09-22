@@ -115,6 +115,19 @@ textarea.form-control {
   font-size: 12px;
 }
 
+.submit-error {
+  flex-shrink: 0;
+  margin-top: 12px;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #ff4d4f;
+  border: 1px solid #ff4d4f;
+  border-radius: 4px;
+}
+
 .sync-option,
 .confirm-option {
   display: inline-flex;

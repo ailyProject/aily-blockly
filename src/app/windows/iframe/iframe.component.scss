@@ -46,6 +46,19 @@ iframe {
   background-color: rgba(0, 0, 0, 0.02);
 }
 
+.retry-button {
+  padding: 5px 14px;
+  color: #dce7f5;
+  background: #344155;
+  border: 1px solid #52627a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.retry-button:hover {
+  background: #40516a;
+}
+
 // =====================================================
 // 自动更新提示条
 // =====================================================

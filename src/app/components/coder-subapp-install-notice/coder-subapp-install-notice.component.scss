@@ -1,0 +1,115 @@
+:host {
+  position: fixed;
+  z-index: 900;
+  right: 16px;
+  bottom: 38px;
+  display: block;
+  max-width: min(460px, calc(100vw - 32px));
+}
+
+.coder-install-notice {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 420px;
+  max-width: 100%;
+  padding: 12px 14px;
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--aily-color-primary) 42%,
+      var(--aily-border-primary)
+    );
+  border-radius: 8px;
+  color: var(--aily-text-primary);
+  background: color-mix(in srgb, var(--aily-bg-card) 96%, transparent);
+  box-shadow: var(--aily-shadow-lg, 0 12px 32px rgb(0 0 0 / 24%));
+  backdrop-filter: blur(12px);
+}
+
+.coder-install-notice.has-error {
+  border-color: color-mix(
+    in srgb,
+    var(--aily-color-error) 48%,
+    var(--aily-border-primary)
+  );
+}
+
+.notice-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  color: var(--aily-color-primary);
+  background: color-mix(in srgb, var(--aily-color-primary) 12%, transparent);
+  font-size: 16px;
+}
+
+.has-error .notice-icon {
+  color: var(--aily-color-error);
+  background: color-mix(in srgb, var(--aily-color-error) 12%, transparent);
+}
+
+.notice-content {
+  min-width: 0;
+}
+
+.notice-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.notice-message,
+.notice-error {
+  color: var(--aily-text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.notice-error {
+  overflow: hidden;
+  max-width: 290px;
+  margin-top: 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-track {
+  height: 2px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--aily-border-primary) 55%, transparent);
+}
+
+.progress-track span {
+  display: block;
+  min-width: 8px;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--aily-color-primary);
+  transition: width 180ms ease;
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--aily-border-primary);
+  border-radius: 6px;
+  color: var(--aily-text-primary);
+  background: var(--aily-bg-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button:hover,
+button:focus-visible {
+  border-color: var(--aily-color-primary);
+  color: var(--aily-color-primary);
+}

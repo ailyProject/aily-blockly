@@ -2,18 +2,21 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+const { prepareChildResources } = require('../scripts/prepare-child-resources');
+
 /**
  * Playwright global setup.
  *
  * Responsibilities:
- * 1. Run `ng build --base-href ./` to produce `dist/aily-blockly/browser`.
+ * 1. Run the shared Angular/native-candidate build to produce `dist/aily-blockly/browser`.
  * 2. Stage that browser output into `<root>/renderer`, matching the production
  *    electron-builder mapping used by `electron/main.js`.
+ * 3. Prepare the platform's locked child resources before starting Electron.
  *
  * 每次运行都重新构建并暂存 renderer，确保测试使用当前源码。
  */
 const ROOT = path.resolve(__dirname, '..');
-const NG_CLI = path.join(ROOT, 'node_modules', '@angular', 'cli', 'bin', 'ng.js');
+const ANGULAR_RUNNER = path.join(ROOT, 'scripts', 'run-angular.cjs');
 const BUILD_OUTPUT = path.join(ROOT, 'dist', 'aily-blockly', 'browser');
 const RENDERER_DIR = path.join(ROOT, 'renderer');
 
@@ -23,6 +26,8 @@ const BUILD_INPUTS = [
   path.join(ROOT, 'angular.json'),
   path.join(ROOT, 'package.json'),
   path.join(ROOT, 'tsconfig.app.json'),
+  ANGULAR_RUNNER,
+  path.join(ROOT, 'scripts', 'blockly-native-bundle.cjs'),
 ];
 
 const IGNORED_DIRS = new Set([
@@ -36,7 +41,7 @@ const IGNORED_DIRS = new Set([
 
 function runAngularBuild(): void {
   console.log('[e2e] Running ng build --base-href ./ ...');
-  const result = spawnSync(process.execPath, [NG_CLI, 'build', '--base-href', './'], {
+  const result = spawnSync(process.execPath, [ANGULAR_RUNNER, 'build', '--base-href', './'], {
     cwd: ROOT,
     stdio: 'inherit',
     env: { ...process.env, NODE_ENV: 'production' },
@@ -91,7 +96,8 @@ function isFreshAgainstBuildInputs(targetPath: string): boolean {
   return latestMtimeMs(targetPath) >= latestBuildInputMtimeMs();
 }
 
-export default function globalSetup(): void {
+export default async function globalSetup(): Promise<void> {
+  await prepareChildResources({ workspaceRoot: ROOT, development: true });
   runAngularBuild();
   stageRenderer();
 }

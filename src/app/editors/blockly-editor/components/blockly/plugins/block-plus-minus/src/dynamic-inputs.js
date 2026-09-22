@@ -12,6 +12,7 @@
 import * as Blockly from 'blockly/core';
 import { createMinusField } from './field_minus';
 import { createPlusField } from './field_plus';
+import { registerStructuralMutator } from './structural-mutators';
 
 const dynamicInputsMutator = {
   /**
@@ -295,10 +296,11 @@ if (Blockly.Extensions.isRegistered('dynamic_inputs_mutator')) {
   Blockly.Extensions.unregister('dynamic_inputs_mutator');
 }
 
-Blockly.Extensions.registerMutator(
+registerStructuralMutator(
   'dynamic_inputs_mutator',
   dynamicInputsMutator,
   dynamicInputsHelper,
+  { count: 'extraCount', initial: 0, start: 1, repeated: [{ prefix: 'INPUT', kind: 'valueInput' }], serialization: 'sparse' },
 );
 
 // Export for use in other files

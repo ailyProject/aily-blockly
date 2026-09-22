@@ -1,25 +1,23 @@
 <app-base-dialog
-  title="Linux 开发板连接设置"
+  [title]="'SSH_CONNECTION_DIALOG.TITLE' | translate"
   [buttons]="buttons"
-  [loading]="connecting"
   [showCloseButton]="!connecting"
   (closeDialog)="close()"
   (buttonClick)="onButtonClick($event)">
   <form class="connector-form" (submit)="$event.preventDefault()">
-    <label class="wide">
-      <span>SSH 地址</span>
-      <input
-        nz-input
-        name="sshHost"
-        [(ngModel)]="settings.host"
-        autocomplete="off"
-        [disabled]="connecting"
-        placeholder="例如：192.168.1.100" />
-    </label>
-
-    <div class="row">
+    <div class="row host-port-row">
       <label>
-        <span>端口</span>
+        <span>{{ 'SSH_CONNECTION_DIALOG.HOST' | translate }}</span>
+        <input
+          nz-input
+          name="sshHost"
+          [(ngModel)]="settings.host"
+          autocomplete="off"
+          [disabled]="connecting"
+          [placeholder]="'SSH_CONNECTION_DIALOG.HOST_PLACEHOLDER' | translate" />
+      </label>
+      <label>
+        <span>{{ 'SSH_CONNECTION_DIALOG.PORT' | translate }}</span>
         <input
           nz-input
           type="number"
@@ -29,8 +27,11 @@
           [(ngModel)]="settings.port"
           [disabled]="connecting" />
       </label>
+    </div>
+
+    <div class="row credentials-row">
       <label>
-        <span>用户名</span>
+        <span>{{ 'SSH_CONNECTION_DIALOG.USERNAME' | translate }}</span>
         <input
           nz-input
           name="sshUsername"
@@ -38,21 +39,21 @@
           autocomplete="username"
           [disabled]="connecting" />
       </label>
+      <label>
+        <span>{{ 'SSH_CONNECTION_DIALOG.PASSWORD' | translate }}</span>
+        <input
+          nz-input
+          class="password-input"
+          type="password"
+          name="sshPassword"
+          [(ngModel)]="settings.password"
+          autocomplete="current-password"
+          [disabled]="connecting" />
+      </label>
     </div>
 
     <label class="wide">
-      <span>密码</span>
-      <input
-        nz-input
-        type="password"
-        name="sshPassword"
-        [(ngModel)]="settings.password"
-        autocomplete="current-password"
-        [disabled]="connecting" />
-    </label>
-
-    <label class="wide">
-      <span>私钥文件</span>
+      <span>{{ 'SSH_CONNECTION_DIALOG.PRIVATE_KEY_FILE' | translate }}</span>
       <div class="path-input">
         <input
           nz-input
@@ -60,19 +61,27 @@
           [(ngModel)]="settings.privateKeyPath"
           autocomplete="off"
           [disabled]="connecting"
-          placeholder="可选" />
-        <button type="button" (click)="selectPrivateKey()" [disabled]="connecting">浏览</button>
+          [placeholder]="'SSH_CONNECTION_DIALOG.OPTIONAL' | translate" />
+        <button type="button" (click)="selectPrivateKey()" [disabled]="connecting">
+          {{ 'SSH_CONNECTION_DIALOG.BROWSE' | translate }}
+        </button>
       </div>
     </label>
 
-    @if (pendingHostKey) {
-      <div class="host-key-confirmation">
-        <strong>首次连接，请核对 SSH 主机密钥</strong>
-        <code>{{ pendingHostKey }}</code>
-        <span>确认该指纹属于目标开发板后，再次点击连接。</span>
-      </div>
-    }
+    <label
+      nz-checkbox
+      name="sshAutoTrustHostKey"
+      [(ngModel)]="settings.autoTrustHostKey"
+      [disabled]="connecting">
+      {{ 'SSH_CONNECTION_DIALOG.AUTO_TRUST_HOST_KEY' | translate }}
+    </label>
 
-    <p class="hint">密码仅用于本次连接，不写入项目文件或连接状态。</p>
+    <label
+      nz-checkbox
+      name="sshRememberCredentials"
+      [(ngModel)]="settings.rememberCredentials"
+      [disabled]="connecting">
+      {{ 'SSH_CONNECTION_DIALOG.REMEMBER_CREDENTIALS' | translate }}
+    </label>
   </form>
 </app-base-dialog>

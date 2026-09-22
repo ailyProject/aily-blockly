@@ -9,13 +9,5 @@ export interface BlockConfig {
   }>;
   position?: { x: number; y: number };
   next?: { block: BlockConfig };
-  extraState?: {
-    itemCount?: number;
-    elseIfCount?: number;
-    hasElse?: boolean;
-    params?: Array<{ type: string; name: string }>;
-    returnType?: string;
-    extraCount?: number;
-    [key: string]: unknown;
-  };
+  extraState?: unknown;
 }

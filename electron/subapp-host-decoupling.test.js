@@ -6,8 +6,8 @@ const test = require('node:test');
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 const GENERIC_HOST_TARGETS = [
   'electron/subapp-manager.js',
-  'src/app/services/subapp-activity.service.ts',
-  'src/app/services/subapp-agent-bridge.service.ts',
+  'src/app/services/integrations/subapps/subapp-activity.service.ts',
+  'src/app/services/integrations/subapps/subapp-agent-bridge.service.ts',
   'src/app/tools/child-tool-surface-host',
   'src/app/tools/aily-chat/components/subapp-activity',
 ];
@@ -50,6 +50,8 @@ function collectSourceFiles(targetPath) {
     .flatMap(entry => {
       const childPath = path.join(targetPath, entry.name);
       if (entry.isDirectory()) return collectSourceFiles(childPath);
+      // Domain fixtures in tests are not production dependencies.
+      if (/\.(?:spec|test)\.[cm]?[jt]s$/.test(entry.name)) return [];
       return /\.(?:ts|html|scss|js|mjs)$/.test(entry.name) ? [childPath] : [];
     });
 }

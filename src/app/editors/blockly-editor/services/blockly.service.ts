@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject, debounceTime, filter, firstValueFrom, map, switchMap, take, timer } from 'rxjs';
 import * as Blockly from 'blockly';
+import { installBlocklyVariableComparator, loadBlocklyWorkspace } from '../utils/blockly-performance';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService, LogService } from '@core/platform/public-api';
@@ -11,10 +12,10 @@ import {
   CodeLineRange,
   normalizeArduinoGeneratedCode,
 } from '../components/blockly/generators/arduino/arduino';
-import {
-  convertBlockTreeToAbs,
-  convertAbiToAbsWithLineMap,
-} from '../../../integrations/blockly/abs/abi-abs-converter';
+import { AbsBlockContextIndex, truncateAbsContext } from '../../../integrations/blockly/abs/abs-block-context';
+import type { AbsProjection } from '../../../integrations/blockly/abs/abs-state';
+import { nativeFieldOrder } from '../../../integrations/blockly/abs/abs-native-field-order';
+import { withNativeStateLoading } from './blockly-native-state-loading';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
   dragSelectionWeakMap,
@@ -26,44 +27,35 @@ import {
   isAilyProjectDataMarker,
   decorateLibraryBlockDefinitionForProjectData,
   unregisterProjectDataFieldSlots,
+  projectDataRuntime,
 } from '@domain/project/public-api';
-import { BlocklyGeneratorRuntimeService } from './blockly-generator-runtime.service';
+import { BlocklyGeneratorRuntimeService, getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
+import { SerialOperationQueue } from '@shared/public-api';
+import {
+  BlocklyWorkspaceViewState, BlocklySharedModel, BlocklyPageSnapshot, BlocklyProjectDocument,
+  composeBlocklyPage, normalizeBlocklyOwnership, normalizeBlocklyWorkspace, normalizeBlocklyViewState, replaceBlocklyPageWorkspace,
+} from './blockly-project-model';
+import { captureBlocklyRootClassifier } from './blockly-root-role';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
+import { BlocklyProjectRevision } from './blockly-project-revision';
+import { BlocklyProjectCodePreparation, type PreparedBlocklyCode } from './prepared-project-code';
+import { BlocklyWorkspaceEditGate, BlocklyWorkspaceEditLease, fenceBlocklyWorkspaceInput } from './blockly-workspace-edit-lease';
+import { assertAbsProjectSharedChange } from '../../../integrations/blockly/abs/abs-project-references';
+import { AbsReferenceContractCache } from '../../../integrations/blockly/abs/abs-reference-contract-cache';
+import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
+import { captureAbsPageReferenceContract } from '../../../integrations/blockly/abs/abs-runtime-references';
 import {
   changedRuntimeBlockTypes,
   RuntimeBlockMetadata,
   serializeRuntimeBlockMetadata,
 } from './blockly-runtime-block-metadata';
 
+export type { BlocklyWorkspaceViewState, BlocklySharedModel, BlocklyPageSnapshot, BlocklyProjectDocument } from './blockly-project-model';
+
 export interface BlockContextLabel {
   label: string;
   formatted: string;
   blockId: string;
-}
-
-export interface BlocklyWorkspaceViewState {
-  scale: number;
-  scrollX: number;
-  scrollY: number;
-}
-
-export interface BlocklySharedModel {
-  variables?: any;
-  procedureBlocks: any[];
-}
-
-export interface BlocklyPageSnapshot {
-  id: string;
-  title: string;
-  content: any;
-  viewState?: BlocklyWorkspaceViewState;
-}
-
-export interface BlocklyProjectDocument {
-  schemaVersion: number;
-  activePageId: string;
-  openedPageIds: string[];
-  pages: BlocklyPageSnapshot[];
-  sharedModel: BlocklySharedModel;
 }
 
 export interface BlocklyToolboxFacadeItem {
@@ -134,24 +126,44 @@ export interface BlocklyDebugExecutionMarkerState {
   focus: boolean;
 }
 
+interface CodeViewerPublisher {
+  publishCodeState(
+    code: string,
+    blockCodeMap: Map<string, BlockCodeMapping>,
+    selectedBlockId: string | null,
+    selectedBlockIds: readonly string[],
+  ): void;
+}
+
 @Injectable({
   providedIn: 'root'
 })
 export class BlocklyService {
   private readonly projectDocumentSchemaVersion = 3;
-  private readonly sharedProcedureBlockPrefixes = ['procedures_'];
+  private readonly projectOperations = new SerialOperationQueue();
+  private readonly projectRevision = new BlocklyProjectRevision();
+  private readonly projectCodePreparation = new BlocklyProjectCodePreparation();
+  private readonly workspaceEditGate = new BlocklyWorkspaceEditGate();
+  private readonly pageReferenceContracts = new AbsReferenceContractCache();
+  private releaseWorkspaceInputFence?: () => void;
+  private documentMetadata: Record<string, unknown> = {};
   private readonly toolboxSearchKey = BLOCKLY_TOOLBOX_SEARCH_KEY;
 
   private _workspace: Blockly.WorkspaceSvg | null = null;
   private workspaceReadySubject = new BehaviorSubject<Blockly.WorkspaceSvg | null>(null);
-  private workspaceRenderAfterLoadAnimationFrame: number | null = null;
-  private workspaceRenderAfterLoadTimeout: ReturnType<typeof setTimeout> | null = null;
 
   get workspace(): Blockly.WorkspaceSvg {
     return this._workspace as Blockly.WorkspaceSvg;
   }
 
   set workspace(workspace: Blockly.WorkspaceSvg | null) {
+    if (workspace !== this._workspace) {
+      this.releaseWorkspaceInputFence?.();
+      this.workspaceEditGate.reset();
+      this.projectRevision.invalidate();
+      this.projectCodePreparation.clear();
+      this.pageReferenceContracts.clear();
+    }
     this._workspace = workspace;
     this.workspaceReadySubject.next(workspace);
     if (workspace) {
@@ -172,6 +184,13 @@ export class BlocklyService {
 
   iconsMap = new Map();
   blockDefinitionsMap = new Map<string, any>();
+  private readonly declarativeBlocks = new BlocklyDeclarativeBlockCatalog();
+
+  captureDeclarativeBlockDefinitions() { return this.declarativeBlocks.capture(Blockly.Blocks); }
+
+  /** Host transaction only; keeps replay provenance/session ownership in the runtime. */
+  captureNativeReplay() { return this.generatorRuntime.captureNativeReplay(); }
+  recordRuntimeBlockDefinition(source: Record<string, any>, definition: object) { this.declarativeBlocks.record(source, definition); }
   // 追踪加载的generator脚本和它们注册的函数
   loadedGenerators = new Map<string, Set<string>>(); // filePath -> Set of block types
   // 追踪已加载的库,避免重复加载
@@ -179,6 +198,13 @@ export class BlocklyService {
   loadedLibraryInfos = new Map<string, LoadedBlocklyLibraryInfo>(); // libPackagePath -> loaded metadata
   private runtimeDefinedLibraryBlockTypes = new Set<string>();
   private libraryLoadTasks = new Map<string, Promise<void>>();
+  private libraryLoadQueue: Promise<void> = Promise.resolve();
+  private libraryLoadEpoch = 0;
+  private failedLibraryLoads = new Map<string, {
+    snapshot: BlocklyLibraryPackageSnapshot;
+    localPath?: string;
+    errors: string[];
+  }>();
   private libraryIntegrityFailureLogSignatures = new Map<string, string>();
   private libraryIntegrityWarningLogSignatures = new Map<string, string>();
   private rebuildingLibraryRuntime = false;
@@ -203,8 +229,7 @@ export class BlocklyService {
   /** GDB 当前执行块；与 Blockly 用户 selection 完全独立。 */
   debugExecutionMarkerSubject =
     new BehaviorSubject<BlocklyDebugExecutionMarkerState | null>(null);
-  /** block → ABS 行号映射（由 abs-auto-sync 生成 ABS 时同步更新，确保与用户看到的 .abs 文件一致） */
-  absBlockLineMap = new BehaviorSubject<Map<string, { startLine: number; endLine: number }>>(new Map());
+  private absContext?: { index: AbsBlockContextIndex; revision: number; assertCurrent: () => void };
   codeViewerRefreshRequested$ = this.codeViewerRefreshRequestSubject.asObservable();
   pagesSubject = new BehaviorSubject<BlocklyPageSnapshot[]>([]);
   activePageIdSubject = new BehaviorSubject<string>('');
@@ -374,12 +399,32 @@ export class BlocklyService {
     this.codeSubject.next(normalizedCode);
   }
 
+  /**
+   * Publish the live code view from an already prepared snapshot.
+   * Disk publication is separate: a busy build lease must not hide this code.
+   */
+  registerCodeViewerPublisher(publisher: CodeViewerPublisher): () => void {
+    this.codeViewerPublisher = publisher;
+    this.flushCodeViewer();
+    return () => {
+      if (this.codeViewerPublisher === publisher) this.codeViewerPublisher = null;
+    };
+  }
+
+  publishPreparedCodeView(code: string, blockCodeMapText: string | null): void {
+    this.publishGeneratedCode(code);
+    if (blockCodeMapText !== null) {
+      this.blockCodeMapSubject.next(new Map<string, BlockCodeMapping>(JSON.parse(blockCodeMapText)));
+    }
+    this.flushCodeViewer();
+  }
+
   getGeneratedCode(): string {
     return this.latestGeneratedCode || this.codeSubject.value || '';
   }
 
   getReusableGeneratedCode(): string | null {
-    if (this.generatedCodeRevision !== this.workspaceCodeRevision) {
+    if (this.workspaceEditGate.blocked || this.generatedCodeRevision !== this.workspaceCodeRevision) {
       return null;
     }
 
@@ -429,6 +474,18 @@ export class BlocklyService {
 
   requestCodeViewerRefresh(forceGenerate = false): void {
     this.codeViewerRefreshRequestSubject.next(forceGenerate);
+  }
+
+  private codeViewerPublisher: CodeViewerPublisher | null = null;
+
+  private flushCodeViewer(): void {
+    if (!this.codeViewerPublisher || this.generatedCodeRevision !== this.workspaceCodeRevision) return;
+    this.codeViewerPublisher.publishCodeState(
+      this.latestGeneratedCode,
+      this.blockCodeMapSubject.value,
+      this.selectedBlockSubject.value,
+      this.selectedBlockIdsSubject.value,
+    );
   }
 
   private overlayChaffObserver: MutationObserver | null = null;
@@ -592,6 +649,34 @@ export class BlocklyService {
 
   getToolboxFacadeItems(): BlocklyToolboxFacadeItem[] {
     return this.toolboxFacadeItemsSubject.value;
+  }
+
+  getLibraryRuntimeSnapshot(): {
+    active: boolean;
+    loadedLibraries: string[];
+    toolboxLibraries: string[];
+    failedLibraries: string[];
+  } {
+    const toolboxLibraries = new Set<string>();
+    const failedLibraries = new Set<string>();
+    const items = [...this.getToolboxFacadeItems()];
+
+    for (const item of items) {
+      items.push(...item.children);
+      if (!item.libraryName) continue;
+
+      if (item.libraryLoadFailed) failedLibraries.add(item.libraryName);
+      else toolboxLibraries.add(item.libraryName);
+    }
+
+    return {
+      active: !!this.workspace && this.generatorRuntime.isActive() && !this.rebuildingLibraryRuntime,
+      loadedLibraries: [...new Set(
+        Array.from(this.loadedLibraryInfos.values(), (library) => library.packageName),
+      )],
+      toolboxLibraries: [...toolboxLibraries],
+      failedLibraries: [...failedLibraries],
+    };
   }
 
   getToolboxSearchQuery(): string {
@@ -915,12 +1000,38 @@ export class BlocklyService {
     this.loadProjectDocument(document, false);
   }
 
-  loadProjectDocument(document: BlocklyProjectDocument, cloneState = true) {
-    this.applyProjectDocument(document, cloneState);
-    this.loadActivePageIntoWorkspace();
+  loadProjectDocument(document: BlocklyProjectDocument, cloneState = true, owner?: BlocklyWorkspaceEditLease) {
+    this.assertWorkspaceEditAvailable(owner);
+    // Validate ownership before changing the published model or clearing the workspace.
+    this.applyProjectDocument(normalizeBlocklyOwnership(document, captureBlocklyRootClassifier(null, Blockly.Blocks)), cloneState);
+    this.loadActivePageIntoWorkspace(owner);
+  }
+
+  /** ABS mutates the composed active workspace, not titles/tabs or another page's content. */
+  restoreProjectWorkspaceSnapshot(snapshot: BlocklyProjectDocument, owner?: BlocklyWorkspaceEditLease, rootOrder?: readonly string[]): void {
+    this.assertWorkspaceEditAvailable(owner);
+    const current = this.getStoredProjectDocument();
+    if (snapshot.activePageId !== current.activePageId) {
+      throw new Error('Cannot restore a workspace snapshot onto a different page.');
+    }
+    const restored = replaceBlocklyPageWorkspace(
+      current, current.activePageId, composeBlocklyPage(snapshot, current.activePageId),
+      captureBlocklyRootClassifier(null, Blockly.Blocks),
+    );
+    this.applyProjectDocument(restored, false);
+    this.loadActivePageIntoWorkspace(owner, rootOrder);
+  }
+
+  assertWorkspaceSharedChange(snapshot: BlocklyProjectDocument, workspace: any, owner?: BlocklyWorkspaceEditLease): void {
+    this.assertWorkspaceEditAvailable(owner);
+    const candidate = replaceBlocklyPageWorkspace(snapshot, snapshot.activePageId, workspace,
+      captureBlocklyRootClassifier(this.workspace, Blockly.Blocks));
+    this.synchronizeReferenceContractScope();
+    assertAbsProjectSharedChange(snapshot, candidate, snapshot.activePageId, this.pageReferenceContracts.matching(snapshot));
   }
 
   hydrateWorkspaceFromProjectState() {
+    this.assertWorkspaceEditAvailable();
     this.loadActivePageIntoWorkspace();
   }
 
@@ -932,11 +1043,12 @@ export class BlocklyService {
     if (!isAilyProjectDataMarker(jsonData?.$ailyProjectData)) {
       throw new Error('Unsupported project.abi: missing $ailyProjectData external-only schema marker.');
     }
-    return this.normalizeProjectDocument(jsonData, false);
+    return this.normalizeProjectDocument(jsonData);
   }
 
   switchPage(pageId: string): boolean {
-    if (!pageId || pageId === this.activePageIdSubject.value) {
+    this.assertWorkspaceEditAvailable();
+    if (!pageId || pageId === this.activePageIdSubject.value || !this.pagesSubject.value.some(page => page.id === pageId)) {
       return false;
     }
 
@@ -947,6 +1059,7 @@ export class BlocklyService {
   }
 
   createPage(title?: string): BlocklyPageSnapshot {
+    this.assertWorkspaceEditAvailable();
     this.persistActiveWorkspaceToState();
 
     const pages = [...this.pagesSubject.value];
@@ -965,6 +1078,7 @@ export class BlocklyService {
   }
 
   openPage(pageId: string, activate = true): boolean {
+    this.assertWorkspaceEditAvailable();
     const page = this.pagesSubject.value.find((item) => item.id === pageId);
     if (!page) {
       return false;
@@ -995,6 +1109,7 @@ export class BlocklyService {
   }
 
   closePage(pageId: string): string {
+    this.assertWorkspaceEditAvailable();
     const currentOpenedPageIds = this.openedPageIdsSubject.value;
     if (currentOpenedPageIds.length <= 1) {
       return this.activePageIdSubject.value;
@@ -1031,6 +1146,7 @@ export class BlocklyService {
   }
 
   renamePage(pageId: string, title: string) {
+    this.assertWorkspaceEditAvailable();
     const nextTitle = (title || '').trim();
     if (!nextTitle) {
       return;
@@ -1043,10 +1159,114 @@ export class BlocklyService {
     );
   }
 
-  getProjectDocument(): BlocklyProjectDocument {
-    this.persistActiveWorkspaceToState();
+  getProjectDocument(owner?: BlocklyWorkspaceEditLease): BlocklyProjectDocument {
+    this.assertWorkspaceEditAvailable(owner);
+    const document = this.getStoredProjectDocument();
+    return this.workspace ? replaceBlocklyPageWorkspace(
+      document, document.activePageId, this.getWorkspaceJson(),
+      captureBlocklyRootClassifier(this.workspace, Blockly.Blocks), this.captureWorkspaceViewState(),
+    ) : document;
+  }
 
+  /** One renderer queue for ABS import/export and prepared saves; not a host file/edit lock. */
+  runProjectOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.projectOperations.run(() => { this.assertWorkspaceEditAvailable(); return operation(); });
+  }
+
+  captureProjectSnapshot(owner?: BlocklyWorkspaceEditLease) {
+    const document = this.getProjectDocument(owner);
+    return { document, revision: this.projectRevision.observe(document) };
+  }
+
+  /** Call inside the existing operation queue with explicit edit ownership. */
+  prepareProjectCode(assertCurrent: () => void, owner: BlocklyWorkspaceEditLease, force = false) {
+    return this.projectCodePreparation.prepare(() => {
+      assertCurrent(); owner.assertCurrent();
+      return { ...this.captureProjectSnapshot(owner), workspace: this.workspace,
+        generator: getActiveProjectGenerator(), dataSession: projectDataRuntime.getSessionToken(),
+        runtimeRevision: getActiveProjectGeneratorRevision(), pageId: this.getActivePageId() };
+    }, force);
+  }
+
+  /** UI/build consumers share the queue and may only publish the prepared revision. */
+  runWithPreparedProjectCode<T>(
+    operation: (prepared: PreparedBlocklyCode & { code: string }, assertCurrent: () => void) => Promise<T> | T,
+    force = false,
+  ): Promise<T> {
+    const workspace = this.workspace, pageId = this.getActivePageId();
+    const generator = getActiveProjectGenerator(), session = projectDataRuntime.getSessionToken();
+    const runtimeRevision = getActiveProjectGeneratorRevision();
+    const assertContext = () => {
+      if (workspace !== this.workspace || pageId !== this.getActivePageId()
+        || generator !== getActiveProjectGenerator() || session !== projectDataRuntime.getSessionToken()
+        || runtimeRevision !== getActiveProjectGeneratorRevision()) {
+        throw new Error('Project context changed before code publication.');
+      }
+    };
+    return this.runProjectOperation(async () => {
+      assertContext();
+      const lease = this.acquireWorkspaceEditLease();
+      try {
+        const prepared = await this.prepareProjectCode(assertContext, lease, force);
+        if (!prepared || prepared.code === null) throw new Error(prepared?.error ?? 'Blockly generator runtime is not active');
+        const revision = prepared.revision;
+        const assertCurrent = () => {
+          assertContext(); lease.assertCurrent();
+          if (revision !== this.captureProjectSnapshot(lease).revision) throw new Error('Project changed before code publication.');
+        };
+        assertCurrent();
+        const result = await operation(prepared as PreparedBlocklyCode & { code: string }, assertCurrent);
+        assertCurrent();
+        return result;
+      } finally { lease.release(); }
+    });
+  }
+
+  getProjectPersistenceRevision(): number {
+    return this.workspaceEditGate.blocked ? this.projectRevision.current : this.captureProjectSnapshot().revision;
+  }
+
+  assertWorkspaceEditAvailable(owner?: BlocklyWorkspaceEditLease): void {
+    this.workspaceEditGate.assertAvailable(owner);
+  }
+
+  isWorkspaceEditBlocked(): boolean { return this.workspaceEditGate.blocked; }
+  isWorkspaceEditInProgress(): boolean { return this.workspaceEditGate.busy; }
+
+  acquireWorkspaceEditLease(): BlocklyWorkspaceEditLease {
+    const lease = this.workspaceEditGate.acquire();
+    const workspace = this.workspace;
+    let quarantined = false;
+    let cleanup = () => undefined;
+    const release = lease.release;
+    const quarantine = lease.quarantine;
+    try {
+      cleanup = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
+      workspace?.cancelCurrentGesture?.();
+      workspace?.hideChaff?.();
+      this.setAiWritingActive('workspace-edit-lease', true);
+    } catch (error) { cleanup(); release(); throw error; }
+    let releasedInput = false;
+    const releaseInput = () => {
+      if (releasedInput) return;
+      releasedInput = true;
+      cleanup();
+      this.setAiWritingActive('workspace-edit-lease', false);
+      if (this.releaseWorkspaceInputFence === releaseInput) this.releaseWorkspaceInputFence = undefined;
+    };
+    this.releaseWorkspaceInputFence = releaseInput;
+    lease.release = () => { try { if (!quarantined) releaseInput(); } finally { release(); } };
+    lease.quarantine = reason => {
+      try { lease.assertCurrent(); } catch { return; } // Never quarantine a replacement workspace.
+      quarantined = true;
+      quarantine(reason);
+    };
+    return lease;
+  }
+
+  private getStoredProjectDocument(): BlocklyProjectDocument {
     return {
+      ...this.cloneJson(this.documentMetadata),
       schemaVersion: this.projectDocumentSchemaVersion,
       activePageId: this.activePageIdSubject.value,
       openedPageIds: this.cloneJson(this.openedPageIdsSubject.value),
@@ -1056,11 +1276,8 @@ export class BlocklyService {
   }
 
   getProjectAbiForSave(document = this.getProjectDocument()): any {
-    const payload = document.pages.length === 1
-      ? this.composeWorkspacePayload(document.pages[0].content, document.sharedModel)
-      : document;
     return {
-      ...payload,
+      ...this.cloneJson(document),
       $ailyProjectData: createProjectDataMarker(),
     };
   }
@@ -1122,7 +1339,8 @@ export class BlocklyService {
   }
 
   // 加载 blockly 当前工作区的 JSON 数据
-  loadWorkspaceJson(jsonData: any, clone = true) {
+  loadWorkspaceJson(jsonData: any, clone = true, owner?: BlocklyWorkspaceEditLease) {
+    this.assertWorkspaceEditAvailable(owner);
     if (!this.workspace) {
       return;
     }
@@ -1135,42 +1353,18 @@ export class BlocklyService {
       }
     });
 
-    Blockly.serialization.workspaces.load(workspaceJson, this.workspace);
-    this.scheduleWorkspaceRenderAfterLoad();
-  }
-
-  private scheduleWorkspaceRenderAfterLoad(): void {
-    const workspace = this._workspace;
-    if (!workspace) {
-      return;
-    }
-
-    if (this.workspaceRenderAfterLoadAnimationFrame !== null) {
-      cancelAnimationFrame(this.workspaceRenderAfterLoadAnimationFrame);
-      this.workspaceRenderAfterLoadAnimationFrame = null;
-    }
-    if (this.workspaceRenderAfterLoadTimeout !== null) {
-      clearTimeout(this.workspaceRenderAfterLoadTimeout);
-      this.workspaceRenderAfterLoadTimeout = null;
-    }
-
-    const renderWorkspace = () => {
-      this.workspaceRenderAfterLoadAnimationFrame = null;
-      this.workspaceRenderAfterLoadTimeout = null;
-      if (this._workspace === workspace) {
-        workspace.render();
-      }
-    };
-
-    if (typeof requestAnimationFrame === 'function') {
-      this.workspaceRenderAfterLoadAnimationFrame = requestAnimationFrame(renderWorkspace);
-    } else {
-      this.workspaceRenderAfterLoadTimeout = setTimeout(renderWorkspace, 0);
-    }
+    installBlocklyVariableComparator();
+    const definitions = this.captureDeclarativeBlockDefinitions();
+    definitions.assertCurrent();
+    withNativeStateLoading(Blockly, this.workspace, workspaceJson,
+      () => loadBlocklyWorkspace(this.workspace, workspaceJson),
+      block => nativeFieldOrder(block, definitions));
+    captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(this.workspace, true);
   }
 
   // 通过node_modules加载库
   async loadLibrary(libPackageName, projectPath) {
+    this.assertWorkspaceEditAvailable();
     // 统一路径分隔符，确保在Windows上使用反斜杠
     // const normalizedProjectPath = projectPath.replace(/\//g, '\\');
     // const libPackagePath = normalizedProjectPath + '\\node_modules\\' + libPackageName.replace(/\//g, '\\');
@@ -1188,7 +1382,14 @@ export class BlocklyService {
       return;
     }
 
-    const loadTask = this.loadLibraryInternal(libPackageName, projectPath, libPackagePath);
+    // Recovery swaps the shared realm. Serialize different library loads too,
+    // so a concurrent lib_add cannot register into a realm being replaced.
+    const epoch = this.libraryLoadEpoch;
+    const loadTask = this.libraryLoadQueue.then(async () => {
+      if (epoch !== this.libraryLoadEpoch || this.loadedLibraries.has(libPackagePath)) return;
+      await this.loadLibraryInternal(libPackageName, projectPath, libPackagePath);
+    });
+    this.libraryLoadQueue = loadTask.catch(() => undefined);
     this.libraryLoadTasks.set(libPackagePath, loadTask);
     try {
       await loadTask;
@@ -1201,6 +1402,7 @@ export class BlocklyService {
 
   async retryLibrary(libPackageName: string, projectPath: string): Promise<boolean> {
     const libPackagePath = this.blocklyLibraryPackageService.getPackagePath(projectPath, libPackageName);
+    const projectDocument = this.getProjectDocument();
     try {
       await this.loadLibrary(libPackageName, projectPath);
     } catch (error) {
@@ -1219,6 +1421,9 @@ export class BlocklyService {
     const librarySnapshot = this.blocklyLibraryPackageService.readLibraryPackage(projectPath, libPackageName);
     const displayName = this.getLibraryToolboxDisplayName(librarySnapshot, libPackageName);
     if (this.loadedLibraries.has(libPackagePath)) {
+      // Replace instances created from the failed library's display definitions.
+      this.loadProjectDocument(projectDocument, false);
+      this.requestCodeViewerRefresh(true);
       this.noticeService.update({
         title: '库加载成功',
         text: displayName,
@@ -1230,10 +1435,19 @@ export class BlocklyService {
     }
 
     const diagnostics = this.blocklyLibraryPackageService.validateLibraryPackage(librarySnapshot, libPackageName);
-    const errors = diagnostics.errors.length > 0
-      ? diagnostics.errors
-      : [`${displayName} 运行时加载失败，请检查 generator.js 是否能正常执行。`];
-    const detail = errors.map((error) => `- ${error}`).join('\n');
+    const errors = this.failedLibraryLoads.get(libPackagePath)?.errors
+      || (diagnostics.errors.length > 0
+        ? diagnostics.errors
+        : [`${displayName} 运行时加载失败，请检查 generator.js 是否能正常执行。`]);
+    const localPath = this.resolveLibraryLocalPath(projectPath, libPackageName);
+    const detail = [
+      `积木库：${libPackageName}`,
+      `项目：${projectPath}`,
+      `安装目录：${libPackagePath}`,
+      ...(localPath ? [`本地源目录：${localPath}（请在源目录修复）`] : []),
+      ...errors,
+      '修复后点击异常库或通知中的重试，重新加载该库。',
+    ].join('\n');
     this.noticeService.update({
       title: `库加载失败：${displayName}`,
       text: errors[0],
@@ -1241,6 +1455,10 @@ export class BlocklyService {
       state: 'error',
       showProgress: false,
       setTimeout: 10000,
+      onRetry: () => {
+        // An old notification may outlive a project switch or a successful repair.
+        if (this.failedLibraryLoads.has(libPackagePath)) void this.retryLibrary(libPackageName, projectPath);
+      },
     });
     return false;
   }
@@ -1251,7 +1469,10 @@ export class BlocklyService {
     // 检查库的完整性
     const integrityCheck = this.checkLibraryIntegrity(librarySnapshot, libPackageName);
     if (!integrityCheck.valid) {
-      this.loadFailedLibraryToolbox(librarySnapshot, libPackageName, libPackagePath, !!libLocalPath);
+      this.failedLibraryLoads.set(libPackagePath, {
+        snapshot: librarySnapshot, localPath: libLocalPath, errors: integrityCheck.errors,
+      });
+      this.restoreFailedLibraryDisplay(libPackagePath);
       return;
     }
 
@@ -1322,6 +1543,7 @@ export class BlocklyService {
 
       // 仅在 generator 加载成功时才标记为已加载（失败时允许后续重试）
       if (generatorLoadSuccess) {
+        this.failedLibraryLoads.delete(libPackagePath);
         this.loadedLibraries.add(libPackagePath);
         this.loadedLibraryInfos.set(libPackagePath, {
           packageName: libPackageName,
@@ -1333,8 +1555,72 @@ export class BlocklyService {
       this.loadLibraryFinishedLoadingSubject.next();
     } catch (error) {
       console.error('加载库失败:', libPackageName, error);
-      throw error;
+      this.failedLibraryLoads.set(libPackagePath, {
+        snapshot: librarySnapshot,
+        localPath: libLocalPath,
+        errors: [String((error as Error)?.stack || (error as Error)?.message || error)],
+      });
+      await this.recoverLibraryRuntime(projectPath);
     }
+  }
+
+  /** Rebuild only successful libraries in a fresh realm: a failed classic script
+   * may already have registered helpers, extensions, listeners or const bindings. */
+  private async recoverLibraryRuntime(projectPath: string): Promise<void> {
+    const projectDocument = this.getProjectDocument();
+    const libraryNames = Array.from(this.loadedLibraryInfos.values(), info => info.packageName);
+    const wasRebuilding = this.rebuildingLibraryRuntime;
+    const wasReady = this.generatorRuntime.isReady();
+    this.rebuildingLibraryRuntime = true;
+    try {
+      this.generatorRuntime.rebuild({ projectPath });
+      this.clearLoadedLibraryStateForRuntimeRebuild(true);
+      for (const libraryName of libraryNames) {
+        await this.loadLibraryInternal(libraryName, projectPath,
+          this.blocklyLibraryPackageService.getPackagePath(projectPath, libraryName));
+      }
+      for (const libraryPath of this.failedLibraryLoads.keys()) {
+        this.restoreFailedLibraryDisplay(libraryPath);
+      }
+      if (!wasRebuilding) {
+        this.refreshToolboxFromContents();
+        this.loadProjectDocument(projectDocument, false);
+        if (wasReady) this.generatorRuntime.markReady(projectPath);
+      }
+    } finally {
+      this.rebuildingLibraryRuntime = wasRebuilding;
+    }
+  }
+
+  private restoreFailedLibraryDisplay(libraryPath: string): void {
+    const failure = this.failedLibraryLoads.get(libraryPath);
+    if (!failure) return;
+    const { snapshot, localPath } = failure;
+    // Retain readable block shapes so existing project blocks are not discarded.
+    // Explicitly reject code generation instead of silently skipping failed blocks.
+    if (Array.isArray(snapshot.blockJson)) {
+      for (const definition of snapshot.blockJson) {
+        if (!definition?.type || Blockly.Blocks[definition.type]) continue;
+        try {
+          const block = this.cloneJson(definition);
+          if (Array.isArray(block.extensions)) {
+            block.extensions = block.extensions.filter(name => Blockly.Extensions.isRegistered(name));
+          }
+          if (block.mutator && !Blockly.Extensions.isRegistered(block.mutator)) delete block.mutator;
+          this.loadLibBlocks([block], this.electronService.pathJoin(snapshot.ref.path, 'static'), snapshot.ref.name,
+            snapshot.packageJson?.version || '', localPath);
+          const generator = this.generatorRuntime.getActiveGenerator();
+          if (generator) {
+            generator.forBlock[block.type] = () => {
+              throw new Error(`库 ${snapshot.ref.name} 加载失败，修复并重新加载后才能生成代码。\n${failure.errors.join('\n')}`);
+            };
+          }
+        } catch (error) {
+          console.warn('无法恢复异常库的积木外观:', definition.type, error);
+        }
+      }
+    }
+    this.loadFailedLibraryToolbox(snapshot, snapshot.ref.name, libraryPath, !!localPath);
   }
 
   private checkLibraryIntegrity(
@@ -1472,6 +1758,9 @@ export class BlocklyService {
   }
 
   loadLibBlocks(blocks, libStaticPath, libPackageName = '', libVersion = '', libLocalPath?: string) {
+    this.assertWorkspaceEditAvailable();
+    this.projectCodePreparation.clear();
+    this.pageReferenceContracts.clear();
     for (let index = 0; index < blocks.length; index++) {
       let block = blocks[index];
       if (block?.type && block?.icon) {
@@ -1495,6 +1784,8 @@ export class BlocklyService {
       );
       this.registerBlockFieldInputIncrementPolicy(block);
       Blockly.defineBlocksWithJsonArray([block]);
+      this.declarativeBlocks.record(block, Blockly.Blocks[block.type]);
+      this.generatorRuntime.recordNativeBlockDefinitions([block], libPackageName);
     }
   }
 
@@ -1529,19 +1820,6 @@ export class BlocklyService {
     );
   }
 
-  loadLibBlocksJS(filePath) {
-    return new Promise((resolve, reject) => {
-      let script = document.createElement('script');
-      script.type = 'text/javascript';
-      script.src = filePath;
-      script.onload = () => {
-        resolve(true);
-      };
-      script.onerror = (error: any) => resolve(false);
-      document.getElementsByTagName('head')[0].appendChild(script);
-    });
-  }
-
   loadLibToolbox(toolboxItem) {
     // 检查是否已存在相同的toolboxItem
     const existingIndex = this.findToolboxItemIndex(toolboxItem);
@@ -1563,6 +1841,7 @@ export class BlocklyService {
   }
 
   async rebuildLibraryRuntimeInPlace(options: BlocklyLibraryRuntimeRebuildOptions): Promise<void> {
+    this.assertWorkspaceEditAvailable();
     if (this.rebuildingLibraryRuntime) {
       throw new Error('Blockly library runtime rebuild is already in progress');
     }
@@ -1581,6 +1860,7 @@ export class BlocklyService {
         boardConfig: this.boardConfig,
         projectService: options.projectService,
       });
+      this.failedLibraryLoads.clear();
       this.clearLoadedLibraryStateForRuntimeRebuild();
 
       for (const libraryName of options.libraryNames) {
@@ -1607,7 +1887,8 @@ export class BlocklyService {
     }
   }
 
-  private clearLoadedLibraryStateForRuntimeRebuild(): void {
+  private clearLoadedLibraryStateForRuntimeRebuild(preserveLoadTasks = false): void {
+    this.declarativeBlocks.clear();
     unregisterProjectDataFieldSlots(Array.from(this.blockTypeToLibMap.keys()));
     this.iconsMap.clear();
     this.blockDefinitionsMap.clear();
@@ -1615,7 +1896,7 @@ export class BlocklyService {
     this.loadedLibraries.clear();
     this.loadedLibraryInfos.clear();
     this.runtimeDefinedLibraryBlockTypes.clear();
-    this.libraryLoadTasks.clear();
+    if (!preserveLoadTasks) this.libraryLoadTasks.clear();
     this.libraryIntegrityFailureLogSignatures.clear();
     this.libraryIntegrityWarningLogSignatures.clear();
     this.blockTypeToLibMap.clear();
@@ -1811,26 +2092,37 @@ export class BlocklyService {
   }
 
   loadLibGenerator(filePath): Promise<boolean> {
+    this.assertWorkspaceEditAvailable();
     if (this.loadedGenerators.has(filePath)) {
       console.warn(`Generator ${filePath} 已加载,跳过重复加载`);
       return Promise.resolve(true);
     }
 
+    this.pageReferenceContracts.clear();
+    return this.loadGeneratorWithContracts(filePath);
+  }
+
+  private async loadGeneratorWithContracts(filePath: string): Promise<boolean> {
+    const owner = this.generatorRuntime.getActiveGenerator();
     try {
       const source = this.electronService.readFile(filePath);
+      this.projectCodePreparation.clear();
       // Runtime 已按项目模式隔离全局；这里统一登记当前 Python 或 Arduino 脚本实际注册的块。
       const result = this.generatorRuntime.loadGenerator(filePath, source);
+      await result.contractsReady;
+      if (this.generatorRuntime.getActiveGenerator() !== owner) return false;
       const registered = Array.from(new Set([
         ...result.arduinoBlockTypes,
         ...result.micropythonBlockTypes,
         ...result.pythonBlockTypes,
       ]));
       this.loadedGenerators.set(filePath, new Set(registered));
-      return Promise.resolve(true);
+      return true;
     } catch (error) {
       console.error(`Generator loading failed: ${filePath}`, error);
-      this.generatorRuntime.destroy();
-      return Promise.resolve(false);
+      // Keep the failed session context for recoverLibraryRuntime, which
+      // replaces the tainted realm and reloads the other libraries.
+      throw error;
     }
   }
 
@@ -1853,6 +2145,7 @@ export class BlocklyService {
   }
 
   reset() {
+    this.declarativeBlocks.clear();
     console.log('开始重置 BlocklyService...');
 
     // Workspace dispose may call project-defined callbacks, so it must happen
@@ -1862,6 +2155,9 @@ export class BlocklyService {
       this.workspace = null;
     }
     this.generatorRuntime.destroy();
+    this.failedLibraryLoads.clear();
+    this.libraryLoadEpoch += 1;
+    this.libraryLoadQueue = Promise.resolve();
 
     unregisterProjectDataFieldSlots(Array.from(this.blockTypeToLibMap.keys()));
     this.iconsMap.clear();
@@ -1932,7 +2228,7 @@ export class BlocklyService {
     this.selectedBlockIdsSubject.next([]);
     this.debugExecutionMarkerSubject.next(null);
     this.blockCodeMapSubject.next(new Map());
-    this.absBlockLineMap.next(new Map());
+    this.absContext = undefined;
     this.closeWorkspaceBlockSearch();
     this.resetDocumentState();
     this.toolboxSearchQuerySubject.next('');
@@ -1974,11 +2270,11 @@ export class BlocklyService {
 
   getWorkspaceJson() {
     if (this.workspace) {
+      captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(this.workspace);
       return Blockly.serialization.workspaces.save(this.workspace);
     }
 
-    const activePage = this.getActivePage();
-    return this.composeWorkspacePayload(activePage?.content, this.sharedModelSubject.value);
+    return composeBlocklyPage(this.getStoredProjectDocument(), this.activePageIdSubject.value);
   }
 
   collectBlockTypesFromProjectDocument(document: BlocklyProjectDocument): string[] {
@@ -1996,7 +2292,7 @@ export class BlocklyService {
   }
 
   private collectBlockTypesFromWorkspaceContent(content: any, blockTypes: Set<string>) {
-    const workspaceJson = this.normalizeWorkspaceJson(content);
+    const workspaceJson = normalizeBlocklyWorkspace(content);
     const blocks = Array.isArray(workspaceJson.blocks?.blocks) ? workspaceJson.blocks.blocks : [];
     for (const block of blocks) {
       this.collectBlockTypesFromBlock(block, blockTypes);
@@ -2004,21 +2300,18 @@ export class BlocklyService {
   }
 
   private collectBlockTypesFromBlock(block: any, blockTypes: Set<string>) {
-    if (!block || typeof block !== 'object') {
-      return;
+    const pending = [block];
+    while (pending.length) {
+      const current = pending.pop();
+      if (!current || typeof current !== 'object') continue;
+      if (typeof current.type === 'string' && current.type.length > 0) {
+        blockTypes.add(current.type);
+      }
+      pending.push(current.next?.block);
+      for (const input of Object.values(current.inputs || {}) as any[]) {
+        pending.push(input?.block, input?.shadow);
+      }
     }
-
-    if (typeof block.type === 'string' && block.type.length > 0) {
-      blockTypes.add(block.type);
-    }
-
-    const inputs = block.inputs && typeof block.inputs === 'object' ? block.inputs : {};
-    for (const input of Object.values(inputs) as any[]) {
-      this.collectBlockTypesFromBlock(input?.block, blockTypes);
-      this.collectBlockTypesFromBlock(input?.shadow, blockTypes);
-    }
-
-    this.collectBlockTypesFromBlock(block.next?.block, blockTypes);
   }
 
   private getPackageDependencySpec(packageJson: any, packageName: string): string {
@@ -2078,6 +2371,8 @@ export class BlocklyService {
   }
 
   private resetDocumentState() {
+    this.projectCodePreparation.clear();
+    this.documentMetadata = {};
     const initialPage = this.createEmptyPageSnapshot('page-1', this.buildDefaultPageTitle(1));
     this.pagesSubject.next([initialPage]);
     this.activePageIdSubject.next(initialPage.id);
@@ -2181,7 +2476,6 @@ export class BlocklyService {
     this.ensureToolboxItemIds(this.toolbox.contents);
     if (this.workspace) {
       this.workspace.updateToolbox(this.toolbox);
-      this.workspace.render();
     }
     this.rebuildToolboxFacade();
     this.syncToolboxFacadeWithWorkspace();
@@ -2440,37 +2734,31 @@ export class BlocklyService {
     return `page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  private normalizeProjectDocument(jsonData: any, clone = true): BlocklyProjectDocument {
+  private normalizeProjectDocument(jsonData: any): BlocklyProjectDocument {
+    const role = captureBlocklyRootClassifier(null, Blockly.Blocks);
     if (Array.isArray(jsonData?.pages)) {
       const pages = jsonData.pages.length
-        ? jsonData.pages.map((page, index) => this.normalizePageSnapshot(page, index, clone))
+        ? jsonData.pages.map((page, index) => this.normalizePageSnapshot(page, index))
         : [this.createEmptyPageSnapshot('page-1', this.buildDefaultPageTitle(1))];
-      const activePageId = pages.some((page) => page.id === jsonData.activePageId)
-        ? jsonData.activePageId
-        : pages[0].id;
-      const openedPageIds = this.normalizeOpenedPageIds(jsonData?.openedPageIds, pages, activePageId);
-
-      return {
+      const activePageId = pages.some(page => page.id === jsonData.activePageId) ? jsonData.activePageId : pages[0].id;
+      return normalizeBlocklyOwnership({
+        ...jsonData,
         schemaVersion: this.projectDocumentSchemaVersion,
         activePageId,
-        openedPageIds,
+        openedPageIds: this.normalizeOpenedPageIds(jsonData.openedPageIds, pages, activePageId),
         pages,
-        sharedModel: this.normalizeSharedModel(jsonData.sharedModel, clone),
-      };
+        sharedModel: { ...jsonData.sharedModel, procedureBlocks: jsonData.sharedModel?.procedureBlocks ?? [] },
+      }, role);
     }
-
-    const legacyWorkspaceJson = this.normalizeWorkspaceJson(jsonData, clone);
-    const legacyPage = this.createEmptyPageSnapshot('page-1', this.buildDefaultPageTitle(1));
-    const sharedModel = this.extractSharedModel(legacyWorkspaceJson, clone);
-    legacyPage.content = this.stripSharedModel(legacyWorkspaceJson, clone);
-
-    return {
+    const page = this.createEmptyPageSnapshot('page-1', this.buildDefaultPageTitle(1));
+    page.content = normalizeBlocklyWorkspace(jsonData);
+    // The schema marker belongs to the document, not a workspace serializer.
+    delete page.content.$ailyProjectData;
+    return normalizeBlocklyOwnership({
       schemaVersion: this.projectDocumentSchemaVersion,
-      activePageId: legacyPage.id,
-      openedPageIds: [legacyPage.id],
-      pages: [legacyPage],
-      sharedModel,
-    };
+      activePageId: page.id, openedPageIds: [page.id], pages: [page],
+      sharedModel: { procedureBlocks: [] },
+    }, role);
   }
 
   private normalizeOpenedPageIds(openedPageIds: any, pages: BlocklyPageSnapshot[], activePageId: string): string[] {
@@ -2485,81 +2773,69 @@ export class BlocklyService {
     return nextOpenedPageIds.length ? nextOpenedPageIds : [activePageId];
   }
 
-  private normalizePageSnapshot(page: any, index: number, clone = true): BlocklyPageSnapshot {
+  private normalizePageSnapshot(page: any, index: number): BlocklyPageSnapshot {
     return {
+      ...page,
       id: page?.id || this.generatePageId(),
       title: page?.title || this.buildDefaultPageTitle(index + 1),
-      content: this.normalizePageContent(page?.content, clone),
+      content: normalizeBlocklyWorkspace(page?.content),
       viewState: page?.viewState || this.createDefaultViewState(),
     };
   }
 
-  private normalizePageContent(content: any, clone = true): any {
-    const workspaceJson = this.normalizeWorkspaceJson(content, clone);
-    delete workspaceJson.variables;
-    workspaceJson.blocks.blocks = workspaceJson.blocks.blocks.filter(
-      (block) => !this.isSharedProcedureBlock(block),
-    );
-    return workspaceJson;
-  }
-
-  private normalizeWorkspaceJson(workspaceJson: any, clone = true): any {
-    const nextJson = (clone ? this.cloneJson(workspaceJson) : workspaceJson) || this.createEmptyWorkspaceContent();
-
-    if (!nextJson.blocks) {
-      nextJson.blocks = {
-        languageVersion: 0,
-        blocks: [],
-      };
-    }
-
-    if (!Array.isArray(nextJson.blocks.blocks)) {
-      nextJson.blocks.blocks = [];
-    }
-
-    return nextJson;
-  }
-
-  private normalizeSharedModel(sharedModel: any, clone = true): BlocklySharedModel {
-    return {
-      variables: sharedModel?.variables
-        ? clone ? this.cloneJson(sharedModel.variables) : sharedModel.variables
-        : undefined,
-      procedureBlocks: Array.isArray(sharedModel?.procedureBlocks)
-        ? clone ? sharedModel.procedureBlocks.map((block) => this.cloneJson(block)) : sharedModel.procedureBlocks
-        : [],
-    };
-  }
-
   private applyProjectDocument(document: BlocklyProjectDocument, clone = true) {
-    this.pagesSubject.next(clone ? document.pages.map((page) => this.cloneJson(page)) : document.pages);
-    this.activePageIdSubject.next(document.activePageId);
-    this.openedPageIdsSubject.next(clone ? this.cloneJson(document.openedPageIds) : document.openedPageIds);
-    this.sharedModelSubject.next(this.normalizeSharedModel(document.sharedModel, clone));
+    const { pages, activePageId, openedPageIds, sharedModel, schemaVersion, ...metadata } = document;
+    this.documentMetadata = this.cloneJson(metadata);
+    this.pagesSubject.next(clone ? this.cloneJson(pages) : pages);
+    this.activePageIdSubject.next(activePageId);
+    this.openedPageIdsSubject.next(clone ? this.cloneJson(openedPageIds) : openedPageIds);
+    this.sharedModelSubject.next(clone ? this.cloneJson(sharedModel) : sharedModel);
   }
 
-  private persistActiveWorkspaceToState() {
-    if (!this.workspace || !this.activePageIdSubject.value) {
-      return;
+  private persistActiveWorkspaceToState(owner?: BlocklyWorkspaceEditLease) {
+    if (this.workspace && this.activePageIdSubject.value) {
+      const document = this.getProjectDocument(owner);
+      this.capturePageReferenceContract(document, owner);
+      this.applyProjectDocument(document, false);
     }
+  }
 
-    const workspaceJson = this.getWorkspaceJson();
-    const activePageId = this.activePageIdSubject.value;
-    const nextSharedModel = this.extractSharedModel(workspaceJson);
-    const nextPages = this.pagesSubject.value.map((page) => {
-      if (page.id !== activePageId) {
-        return page;
+  private synchronizeReferenceContractScope(): void {
+    this.pageReferenceContracts.setScope(this.workspace, getActiveProjectGenerator(), projectDataRuntime.getSessionToken());
+  }
+
+  private capturePageReferenceContract(document: BlocklyProjectDocument, owner?: BlocklyWorkspaceEditLease): void {
+    this.synchronizeReferenceContractScope();
+    const workspace = this.workspace;
+    const generator = getActiveProjectGenerator();
+    const dataSession = projectDataRuntime.getSessionToken();
+    const pageId = document.activePageId;
+    const contractRevision = this.pageReferenceContracts.revision;
+    const storedState = JSON.stringify(this.getStoredProjectDocument());
+    this.pageReferenceContracts.forget(pageId);
+    const assertCurrent = () => {
+      this.assertWorkspaceEditAvailable(owner);
+      if (workspace !== this.workspace || generator !== getActiveProjectGenerator()
+        || dataSession !== projectDataRuntime.getSessionToken() || pageId !== this.getActivePageId()
+        || contractRevision !== this.pageReferenceContracts.revision) {
+        throw new Error('Reference contract capture belongs to a stale project/page/runtime.');
       }
-
-      return {
-        ...page,
-        content: this.stripSharedModel(workspaceJson),
-        viewState: this.captureWorkspaceViewState(),
-      };
-    });
-
-    this.sharedModelSubject.next(nextSharedModel);
-    this.pagesSubject.next(nextPages);
+    };
+    try {
+      const contract = captureAbsPageReferenceContract(workspace, composeBlocklyPage(document, pageId), assertCurrent, this.captureDeclarativeBlockDefinitions());
+      assertCurrent();
+      this.pageReferenceContracts.remember(document, pageId, contract);
+    } catch (error) {
+      // Unknown library protocols must not block ordinary page editing/opening.
+      // No evidence is retained; shared-model ABS edits will still fail closed.
+      assertCurrent();
+      if ((error as any)?.code === 'ABS_REFERENCE_CAPTURE_CHANGED') throw error;
+    } finally {
+      if (storedState !== JSON.stringify(this.getStoredProjectDocument())) {
+        if (contractRevision === this.pageReferenceContracts.revision) this.pageReferenceContracts.forget(pageId);
+        throw new Error('Project metadata changed during reference capture; stopped publishing the older snapshot.');
+      }
+    }
   }
 
   private captureWorkspaceViewState(): BlocklyWorkspaceViewState {
@@ -2567,36 +2843,43 @@ export class BlocklyService {
       return this.createDefaultViewState();
     }
 
-    return {
+    return normalizeBlocklyViewState({
       scale: this.workspace.scale || 1,
       scrollX: this.workspace.scrollX || 0,
       scrollY: this.workspace.scrollY || 0,
-    };
+    });
   }
 
-  private loadActivePageIntoWorkspace() {
+  private loadActivePageIntoWorkspace(owner?: BlocklyWorkspaceEditLease, rootOrder?: readonly string[]) {
     const activePage = this.getActivePage();
     if (!activePage || !this.workspace) {
       return;
     }
 
-    const workspaceJson = this.composeWorkspacePayload(activePage.content, this.sharedModelSubject.value);
-    const wereEventsEnabled = Blockly.Events.isEnabled();
-
+    const workspaceJson = composeBlocklyPage(this.getStoredProjectDocument(), activePage.id);
+    if (rootOrder) {
+      // Document ownership groups shared definitions first. A transaction rollback
+      // must instead reproduce the captured live root order, without dropping roots.
+      const roots = new Map(workspaceJson.blocks.blocks.map(block => [block.id, block]));
+      if (rootOrder.length !== roots.size || new Set(rootOrder).size !== roots.size || rootOrder.some(id => !roots.has(id))) {
+        throw new Error('Workspace snapshot root identities do not match the restore order.');
+      }
+      workspaceJson.blocks.blocks = rootOrder.map(id => roots.get(id));
+    }
     try {
       Blockly.Events.disable();
       this.workspace.clear();
-      this.loadWorkspaceJson(workspaceJson, false);
+      this.loadWorkspaceJson(workspaceJson, false, owner);
     } finally {
-      if (wereEventsEnabled) {
-        Blockly.Events.enable();
-      }
+      // Blockly uses a nesting counter: always release exactly our own disable.
+      Blockly.Events.enable();
     }
 
     this.selectedBlockSubject.next(null);
     this.selectedBlockIdsSubject.next([]);
-  this.closeWorkspaceBlockSearch();
+    this.closeWorkspaceBlockSearch();
     this.restoreWorkspaceViewState(activePage.viewState);
+    this.persistActiveWorkspaceToState(owner);
     this.mountExternalToolbox();
     this.loadLibraryFinishedLoadingSubject.next();
   }
@@ -2619,53 +2902,6 @@ export class BlocklyService {
 
     workspace.scrollX = viewState.scrollX || 0;
     workspace.scrollY = viewState.scrollY || 0;
-  }
-
-  private composeWorkspacePayload(pageContent: any, sharedModel: BlocklySharedModel): any {
-    const workspaceJson = this.normalizeWorkspaceJson(pageContent);
-    const pageBlocks = Array.isArray(workspaceJson.blocks?.blocks) ? workspaceJson.blocks.blocks : [];
-    const sharedProcedureBlocks = Array.isArray(sharedModel?.procedureBlocks)
-      ? sharedModel.procedureBlocks.map((block) => this.cloneJson(block))
-      : [];
-
-    workspaceJson.blocks.blocks = [...sharedProcedureBlocks, ...pageBlocks.map((block) => this.cloneJson(block))];
-
-    if (sharedModel?.variables) {
-      workspaceJson.variables = this.cloneJson(sharedModel.variables);
-    } else {
-      delete workspaceJson.variables;
-    }
-
-    return workspaceJson;
-  }
-
-  private extractSharedModel(workspaceJson: any, clone = true): BlocklySharedModel {
-    const normalizedWorkspaceJson = this.normalizeWorkspaceJson(workspaceJson, clone);
-    const workspaceBlocks = Array.isArray(normalizedWorkspaceJson.blocks?.blocks)
-      ? normalizedWorkspaceJson.blocks.blocks
-      : [];
-
-    return {
-      variables: normalizedWorkspaceJson.variables
-        ? this.cloneJson(normalizedWorkspaceJson.variables)
-        : undefined,
-      procedureBlocks: workspaceBlocks
-        .filter((block) => this.isSharedProcedureBlock(block))
-        .map((block) => this.cloneJson(block)),
-    };
-  }
-
-  private stripSharedModel(workspaceJson: any, clone = true): any {
-    const normalizedWorkspaceJson = this.normalizeWorkspaceJson(workspaceJson, clone);
-    normalizedWorkspaceJson.blocks.blocks = normalizedWorkspaceJson.blocks.blocks.filter(
-      (block) => !this.isSharedProcedureBlock(block),
-    );
-    delete normalizedWorkspaceJson.variables;
-    return normalizedWorkspaceJson;
-  }
-
-  private isSharedProcedureBlock(block: any): boolean {
-    return this.sharedProcedureBlockPrefixes.some((prefix) => block?.type?.startsWith(prefix));
   }
 
   private cloneJson<T>(value: T): T {
@@ -2901,6 +3137,7 @@ export class BlocklyService {
     absSnippet: string;
     cppLineRange: string;
     absLineRange: string;
+    absGeneration?: string;
     codeRanges: CodeLineRange[];
     formatted: string;
   } | null {
@@ -2912,9 +3149,10 @@ export class BlocklyService {
     const mapping = this.getCodeForBlock(blockId);
     const ranges = mapping?.lineRanges || [];
     const cppLineRange = this._formatCppLineRange(ranges);
-    const absSnippet = this._getBlockAbsSnippet(block);
-    const absLineRange = this._getBlockAbsLineRange(block, absSnippet);
-    const formatted = this._formatBlockContextForLLM(block.type, absSnippet, cppLineRange, absLineRange);
+    const abs = this.readCommittedAbsContext(block.id);
+    const absSnippet = abs?.snippet ?? '当前工作区尚无有效 ABS 映射；请先 abs_export 后按返回的 generation 读取。';
+    const absLineRange = abs?.lineRange ?? '无';
+    const formatted = this._formatBlockContextForLLM(block.type, absSnippet, cppLineRange, absLineRange, 1, 1, abs?.generation);
 
     return {
       blockId,
@@ -2922,6 +3160,7 @@ export class BlocklyService {
       absSnippet,
       cppLineRange,
       absLineRange,
+      absGeneration: abs?.generation,
       codeRanges: ranges,
       formatted,
     };
@@ -2960,32 +3199,30 @@ export class BlocklyService {
     return minLine === maxLine ? `${minLine}` : `${minLine}-${maxLine}`;
   }
 
-  /**
-   * 获取单个块（含子树）的 ABS 代码片段
-   * 通过 Blockly 序列化 API 得到块的 ABI JSON，再用 convertBlockTreeToAbs 转换
-   */
-  private _getBlockAbsSnippet(block: Blockly.Block): string {
+  /** Published only by the canonical coordinator after a complete commit. */
+  publishAbsContext(projection: AbsProjection, revision: number, assertCurrent: () => void): void {
+    assertCurrent();
+    this.absContext = { index: new AbsBlockContextIndex(projection), revision, assertCurrent };
+  }
+
+  private readCommittedAbsContext(blockId: string) {
+    return this.readCommittedAbsIndex()?.get(blockId);
+  }
+
+  /** Advice only, from the same current committed snapshot used by selection context. */
+  describeCommittedAbsSyntax(types: readonly string[]) {
+    return this.readCommittedAbsIndex()?.describeSyntax(types);
+  }
+
+  private readCommittedAbsIndex() {
+    const context = this.absContext;
+    if (!context || this.isWorkspaceEditBlocked()) return undefined;
     try {
-      // 序列化单个块（含子块、shadow 块）为 ABI JSON
-      const blockAbi = (Blockly as any).serialization.blocks.save(block, {
-        addCoordinates: false,
-        addInputBlocks: true,
-        addNextBlocks: false,  // 不包含 next 链中的兄弟块
-        doFullSerialization: false
-      });
-
-      // 获取工作区变量用于 ID → 名称转换
-      const variables = this.workspace!.getAllVariables().map(v => ({
-        id: v.getId(),
-        name: v.name,
-        type: v.type || 'int'
-      }));
-
-      return convertBlockTreeToAbs(blockAbi, variables);
-    } catch (e) {
-      // 序列化失败时返回块类型作为降级
-      return block.type;
-    }
+      context.assertCurrent();
+      if (context.revision === this.getProjectPersistenceRevision()) return context.index;
+    } catch { /* A previous project/page/runtime must never supply selection context. */ }
+    this.absContext = undefined;
+    return undefined;
   }
 
   /**
@@ -2998,74 +3235,18 @@ export class BlocklyService {
     absLineRange: string,
     index = 1,
     total = 1,
+    generation?: string,
   ): string {
     const lines: string[] = [];
     lines.push(total > 1 ? `[用户选中的积木块 ${index}/${total}]` : '[用户选中的积木块]');
     lines.push(`块类型: ${blockType}`);
     lines.push(`ABS代码:`);
-    lines.push(this._truncateAbsSnippet(absSnippet));
+    lines.push(truncateAbsContext(absSnippet));
     if (absLineRange !== '无') {
-      lines.push(`对应ABS代码行数: ${absLineRange}`);
+      lines.push(`ABS 基线代次: ${generation}；对应行数: ${absLineRange}（编辑前请核对当前 generation）`);
     }
     lines.push(`对应C++代码行数: ${cppLineRange}`);
     return lines.join('\n');
-  }
-
-  /**
-   * 截断过长的 ABS 代码片段
-   * 超过 6 行时保留前 3 行和后 3 行，中间用 ... 省略
-   */
-  private _truncateAbsSnippet(abs: string): string {
-    const lines = abs.split('\n');
-    if (lines.length <= 6) return abs;
-    const head = lines.slice(0, 3);
-    const tail = lines.slice(-3);
-    return [...head, `    ... (${lines.length - 6} lines omitted)`, ...tail].join('\n');
-  }
-
-  /**
-   * 从缓存的 ABS blockLineMap 中查找选中块的行号范围
-   * 该 map 由 abs-auto-sync 服务在生成 .abs 文件时同步更新，
-   * 确保行号与用户实际看到的 ABS 文件完全一致。
-   * 若缓存为空（abs-auto-sync 尚未运行），则即时生成作为降级
-   */
-  private _getBlockAbsLineRange(block: Blockly.Block, absSnippet: string): string {
-    try {
-      if (!absSnippet) return '无';
-
-      let blockLineMap = this.absBlockLineMap.value;
-
-      // 缓存为空时即时生成（降级）
-      if (!blockLineMap || blockLineMap.size === 0) {
-        if (!this.workspace) return '无';
-        const workspaceJson = Blockly.serialization.workspaces.save(this.workspace);
-        const result = convertAbiToAbsWithLineMap(workspaceJson, { includeHeader: true });
-        blockLineMap = result.blockLineMap;
-        // 缓存供后续使用
-        this.absBlockLineMap.next(blockLineMap);
-      }
-
-      // 直接查找选中块的行号范围
-      const range = blockLineMap.get(block.id);
-      if (range) {
-        return range.startLine === range.endLine
-          ? `${range.startLine}`
-          : `${range.startLine}-${range.endLine}`;
-      }
-
-      // 值块被内联到父块参数中，通过父块 ID 查找
-      const parentBlock = block.getParent();
-      if (parentBlock) {
-        const parentRange = blockLineMap.get(parentBlock.id);
-        if (parentRange) {
-          return `${parentRange.startLine}`;
-        }
-      }
-
-      return '无';
-    } catch (e) {
-      return '无';
-    }
   }
 
   getBlockContextLabel(blockId: string, index = 1, total = 1): BlockContextLabel | null {
@@ -3088,6 +3269,7 @@ export class BlocklyService {
       ctx.absLineRange,
       index,
       total,
+      ctx.absGeneration,
     );
 
     return {

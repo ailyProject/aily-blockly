@@ -2,9 +2,9 @@
 
 本文用于在外部仓库开发 Aily Blockly child 独立子应用。外部仓库可能无法读取主应用源码，因此下面把主应用已经确定的宿主行为、目录契约、通信协议和验证标准一并写入提示词。
 
-> 发布链路更新：`child/tools/<tool-id>` 只保留为本地开发产物说明。正式交付需发布 `@aily-project/subapp-<tool-id>` npm 包，并将 `id / package / version / app / i18n` 元数据合入当前 `regions.<region>.resource` 下的 `subapp-index.json`（CN 默认为 `https://blockly.yiyu.pro/subapp-index.json`，Global 默认为 `https://rs1.aily.pro/subapp-index.json`）。主软件安装到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`，安装、更新、卸载和启动均以该用户级包为准。
+> 发布链路更新：`child/tools/<tool-id>` 只保留为历史兼容说明。正式交付需发布 `@aily-project/subapp-<tool-id>` npm 包，并将 `id / package / version / app / i18n` 元数据合入当前 `regions.<region>.resource` 下的 `subapp-index.json`（CN 默认为 `https://blockly.yiyu.pro/subapp-index.json`，Global 默认为 `https://rs1.aily.pro/subapp-index.json`）。新版主软件把正式包放在 `${AILY_APPDATA_PATH}/npm-global/app/store/<storeKey>/<version>/source`，旧 `node_modules` 安装只作为兼容入口。
 
-本地主软件联调也使用用户级 npm 安装目录。请在 `aily-subapp` 或 `aily-lex-pro` 源码仓库执行 `npm run dev:link`，将源码包链接到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`；主软件不再克隆或扫描开发源码。联调结束后在对应源码仓库执行 `npm run dev:unlink`。
+本地主软件联调也使用同一用户级多版本目录。源码态执行 `dev:link`，激活 `store/<storeKey>/<version>-dev/source`；打包态执行内置 `build:subapp` 的 `deploy:next`，准备 `store/<storeKey>/<version>-next/source`。本地运行优先级固定为 `dev > next > 线上正式版`。主软件不再克隆或扫描开发源码，也不要求改写 `node_modules`。结束后分别用 `dev:unlink` 或 `deploy:next -- --unlink` 恢复下一级选择。
 
 适用范围：
 
@@ -137,6 +137,9 @@ getHostContext(): {
   lang: string;
   theme: "light" | "dark";
   platform: string;
+  capabilities: {
+    clipboardWrite: true;
+  };
 }
 
 childReady(payload?: {
@@ -165,7 +168,12 @@ reportHostMessage(payload: {
 requestClose(): void
 requestRestart(): void
 openExternal(url: string): void
+writeClipboardText(payload: { text: string }): Promise<{ ok: boolean; message?: string }>
 sendToolSignal(signal: string, payload?: object): Promise<{ ok: boolean; waitFor: number }>
+
+`writeClipboardText()` 是所有子应用都可调用的通用宿主能力。需要复制文本时优先调用该方法，
+不要直接依赖 iframe 内的 `navigator.clipboard`；新增子应用不需要在主软件中登记 tool id。
+宿主只接受非空字符串，并通过统一的平台剪贴板实现完成写入；此能力不包含剪贴板读取。
 
 子应用 UI 需要通过 Penpal 暴露给主应用的方法：
 

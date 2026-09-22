@@ -2,7 +2,6 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const os = require('os');
-const platformRuntime = require('./platform-runtime');
 const ailyCodeProject = require('./aily-code-project');
 
 // 简单的日志工具
@@ -349,12 +348,7 @@ async function main() {
             throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
         }
         const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
-        const platformRef = platformRuntime.readPlatformRefFromProjectPackage(currentProjectPath);
-        const boardDependencies = platformRuntime.resolveEffectiveBoardDependencies(
-            boardPackageJson.boardDependencies,
-            appDataPath,
-            platformRef?.packageName,
-        );
+        const boardDependencies = boardPackageJson.boardDependencies || {};
 
         // 4. 根据烧录方式选择 board.json 中的显式命令；显式命令优先于 builder 解析结果。
         // 调试探针只允许使用 linkUploadParam；串口显式参数为空时才回退到预处理结果。

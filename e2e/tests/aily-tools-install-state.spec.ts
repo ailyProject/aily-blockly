@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const { shouldInstallForAppVersion } = require('../../electron/aily-tools-install-state');
+const { shouldInstallForAppVersion } = require('../../electron/tools/aily-tools-install-state');
 
 test.describe('aily tools startup install policy', () => {
   test('regular startup refreshes latest when the app version changes', () => {

@@ -1,4 +1,5 @@
 import * as Blockly from 'blockly';
+import { cppStringLiteral } from './cpp-string-literal';
 import { applyArduinoEntrypointBlockMappings } from './arduino-entrypoint-mapping';
 
 export enum Order {
@@ -127,6 +128,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   // ==================== Block-to-Code 追踪系统 ====================
   /** 当前正在生成代码的 block id 栈（支持嵌套） */
   private _blockIdStack: string[] = [];
+  private readonly _statementFrames: Array<{ block: Blockly.Block; next: Blockly.Block | null }> = [];
   /** 每个 block 贡献的代码片段 */
   blockCodeFragments = new Map<string, CodeFragment[]>();
   /** 每个 block 的类型 */
@@ -724,9 +726,42 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     block: Blockly.Block | null,
     opt_thisOnly?: boolean
   ): string | [string, number] {
-    if (!block) {
-      return super.blockToCode(block, opt_thisOnly);
+    // A next connection is a sequence, not syntactic nesting. Keep its length
+    // off the JS call stack; nested statement/value inputs still use Blockly's
+    // normal generator contract. scrub_ supplies the continuation only when
+    // the block actually produced code (a null generator result stops a chain).
+    const chunks: string[] = [];
+    while (block) {
+      if (!block.isEnabled() || block.isInsertionMarker()) {
+        if (opt_thisOnly) break;
+        block = block.isInsertionMarker() && block.isEnabled()
+          ? block.getChildren(false)[0] ?? null
+          : block.getNextBlock();
+        continue;
+      }
+      const frame = { block, next: null as Blockly.Block | null };
+      this._statementFrames.push(frame);
+      try {
+        const result = this.generateSingleBlock(block, opt_thisOnly);
+        if (Array.isArray(result)) {
+          // Blockly also permits value blocks with a next connection. Keep the
+          // tuple's precedence while including that trailing statement chain.
+          const nextCode = frame.next ? this.blockToCode(frame.next) : '';
+          return [result[0] + nextCode, result[1]];
+        }
+        chunks.push(result);
+      } finally {
+        this._statementFrames.pop();
+      }
+      block = frame.next;
     }
+    return chunks.join('');
+  }
+
+  private generateSingleBlock(
+    block: Blockly.Block,
+    opt_thisOnly?: boolean,
+  ): string | [string, number] {
 
     // 防御性检查：如果 forBlock 中没有该 block type 的生成器函数，
     // 跳过该块而不是让 super.blockToCode 抛出异常
@@ -742,10 +777,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
       }
       // 语句块：如果不是 thisOnly 模式，继续处理 next 块链
       if (!opt_thisOnly) {
-        const nextBlock = block.getNextBlock();
-        if (nextBlock) {
-          return this.blockToCode(nextBlock);
-        }
+        this._statementFrames[this._statementFrames.length - 1].next = block.getNextBlock();
       }
       return '';
     }
@@ -754,21 +786,23 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     this._blockIdStack.push(block.id);
     this._blockTypes.set(block.id, block.type);
 
-    const result = super.blockToCode(block, opt_thisOnly);
+    try {
+      const result = super.blockToCode(block, opt_thisOnly);
 
-    // 对于值块（返回 [code, order]），记录真实的输入父块关系
-    if (Array.isArray(result)) {
-      this._valueBlockIds.add(block.id);
-      // 通过 Blockly 的 outputConnection 获取真实的输入父块（而非调用栈父块）
-      const parentBlock = block.outputConnection?.targetBlock();
-      if (parentBlock) {
-        this._blockParent.set(block.id, parentBlock.id);
+      // 对于值块（返回 [code, order]），记录真实的输入父块关系
+      if (Array.isArray(result)) {
+        this._valueBlockIds.add(block.id);
+        // 通过 Blockly 的 outputConnection 获取真实的输入父块（而非调用栈父块）
+        const parentBlock = block.outputConnection?.targetBlock();
+        if (parentBlock) {
+          this._blockParent.set(block.id, parentBlock.id);
+        }
       }
-    }
 
-    // 出栈
-    this._blockIdStack.pop();
-    return result;
+      return result;
+    } finally {
+      this._blockIdStack.pop();
+    }
   }
 
   /**
@@ -832,33 +866,24 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 
   /**
-   * Encode a string as a properly escaped JavaScript string, complete with
+   * Encode a string as a properly escaped C++ string, complete with
    * quotes.
    *
    * @param string Text to encode.
-   * @returns JavaScript string.
+   * @returns C++ string literal.
    */
   quote_(string: string): string {
-    // Can't use goog.string.quote since Google's style guide recommends
-    // JS string literals use single quotes.
-    string = string
-      .replace(/\\/g, '\\\\')
-      .replace(/\n/g, '\\\n')
-      .replace(/'/g, "\\'");
-    return "\"" + string + "\"";
+    return cppStringLiteral(string);
   }
 
   /**
-   * Encode a string as a properly escaped multiline JavaScript string, complete
+   * Encode a string as a properly escaped multiline C++ string, complete
    * with quotes.
    * @param string Text to encode.
-   * @returns JavaScript string.
+   * @returns C++ string literal.
    */
   multiline_quote_(string: string): string {
-    // Can't use goog.string.quote since Google's style guide recommends
-    // JS string literals use single quotes.
-    const lines = string.split(/\n/g).map(this.quote_);
-    return lines.join(" + '\\n' +\n");
+    return cppStringLiteral(string);
   }
 
   /**
@@ -907,6 +932,11 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     }
     const nextBlock =
       block.nextConnection && block.nextConnection.targetBlock();
+    const frame = this._statementFrames[this._statementFrames.length - 1];
+    if (frame?.block === block) {
+      frame.next = thisOnly ? null : nextBlock;
+      return commentCode + code;
+    }
     const nextCode = thisOnly ? '' : this.blockToCode(nextBlock);
     return commentCode + code + nextCode;
   }

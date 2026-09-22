@@ -9,7 +9,6 @@ import { ConfigService } from '@core/preferences/public-api';
 import {
   ElectronService,
   CmdService,
-  CrossPlatformCmdService,
   PlatformService,
   AppDataResourceLockService,
 } from '@core/platform/public-api';
@@ -47,7 +46,6 @@ export class SubjectItemComponent {
     private message: NzMessageService,
     private electronService: ElectronService,
     private cmdService: CmdService,
-    private crossPlatformCmdService: CrossPlatformCmdService,
     private playgroundService: PlaygroundService,
     private uiService: UiService,
     private platformService: PlatformService,
@@ -99,8 +97,9 @@ export class SubjectItemComponent {
 
       this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PLAYGROUND.LOADING_EXAMPLE'), timeout: 300000 });
       if (!this.electronService.exists(examplePath) || !this.electronService.exists(abiFilePath)) {
-        await this.appDataResourceLock.runExclusive(`example:install:${this.exampleItem.name}`, () =>
-          this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`)
+        await this.appDataResourceLock.runExclusive(`example:install:${this.exampleItem.name}`, appDataResourceToken =>
+          this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`, undefined, true, false,
+            { appDataResourceToken, appDataResourceMode: 'write' })
         );
       }
 
@@ -110,10 +109,10 @@ export class SubjectItemComponent {
       const separator = this.platformService.getPlatformSeparator();
       const targetPath = `${this.projectService.projectRootPath}${separator}${targetPathName}`;
       console.log('目标路径: ', targetPath);
-      await this.crossPlatformCmdService.copyItem(examplePath, targetPath, true, true);
+      this.projectService.importProjectDirectory(examplePath, targetPath);
       await this.projectService.initializeProjectDataSchema(targetPath);
       this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_SUCCESS') });
-      this.projectService.projectOpen(targetPath);
+      await this.projectService.projectOpen(targetPath);
     } catch (error) {
       this.message.error(this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_FAILED'));
     } finally {

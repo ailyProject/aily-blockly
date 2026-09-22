@@ -1,0 +1,61 @@
+{
+  "baseUrl": "https://dl.aily.pro/child/",
+  "platforms": {
+    "win32-x64": {
+      "node": {
+        "key": "windows/node-v22.19.0-win-x64.7z",
+        "file": "node-v22.19.0-win-x64.7z",
+        "sha256": "d965492d5c63018f6514913181a24d42799d3b1e86e6581d2c61fd5a72ce0cad"
+      },
+      "7zip": {
+        "key": "windows/7za.exe",
+        "file": "7za.exe",
+        "sha256": "31fd52f8996986623cf52c3b4d0f7ac74a9dec63fc16c902cef673eed550c435"
+      },
+      "ripgrep": {
+        "key": "windows/rg.exe",
+        "file": "rg.exe",
+        "sha256": "decdd4992f3f1b9a5ef9898f1b40ab16886d579d6516b4efd3d5eaa19364e408"
+      },
+      "probe-rs": {
+        "key": "windows/probe-rs-0.31.0.7z",
+        "file": "probe-rs-0.31.0.7z",
+        "sha256": "db9e721235624439270439c83fef30f71fff3e08a75a991af581884a3f813768"
+      }
+    },
+    "darwin-arm64": {
+      "node": {
+        "key": "macos/node-v22.21.0-darwin-arm64.7z",
+        "file": "node-v22.21.0-darwin-arm64.7z",
+        "sha256": "62d5856e0e0be7710a79d97fb524b0a5c3b91eb807284d3568f567312585d853"
+      },
+      "7zip": {
+        "key": "macos/7zz",
+        "file": "7zz",
+        "sha256": "5c2fd36f00a66f7787dcf1badd977d44a02b50063fe5678e1f19ff64797432ed"
+      },
+      "ripgrep": {
+        "key": "macos/rg",
+        "file": "rg",
+        "sha256": "4fdf1d8365af224bc70e3c1490d8461d859c37cc70e739a11e987af0215f3e94"
+      },
+      "probe-rs": {
+        "key": "macos/probe-rs-0.31.0.7z",
+        "file": "probe-rs-0.31.0.7z",
+        "sha256": "ef2c16e266a98d15395fd9917f4a18f4b30571610634e0effd6ebed2a4e0791a"
+      }
+    }
+  },
+  "coder": [
+    {
+      "key": "aily-coder-editor.json",
+      "file": "aily-coder-editor.json",
+      "sha256": "5ab5ffcdd43f8047c4ebd8c728be4566bf5845ccb695c4005948b989e343f3de"
+    },
+    {
+      "key": "aily-coder-editor.tgz",
+      "file": "aily-coder-editor.tgz",
+      "sha256": "5ccef908536eabb24e87b9d7d0b888890c793762388d6816256ebc73d1b63c85"
+    }
+  ]
+}

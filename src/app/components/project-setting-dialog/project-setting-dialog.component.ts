@@ -7,7 +7,11 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { BaseDialogComponent, DialogButton } from '../base-dialog/base-dialog.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
-import { ProjectService } from '@domain/project/public-api';
+import {
+  isValidProjectPackageName,
+  normalizeProjectPackageName,
+  ProjectService,
+} from '@domain/project/public-api';
 
 interface ProjectSettings {
   name: string;
@@ -81,9 +85,10 @@ export class ProjectSettingDialogComponent {
       
       if (packageJson) {
         // 保留所有原始属性,只更新我们需要编辑的字段
-        const nm = packageJson.name || '';
+        const originalName = String(packageJson.name || '').trim();
+        const packageName = normalizeProjectPackageName(originalName);
         this.projectSettings = {
-          name: nm,
+          name: packageName,
           version: packageJson.version || '',
           description: packageJson.description || '',
           nickname: (
@@ -91,7 +96,7 @@ export class ProjectSettingDialogComponent {
             String(packageJson.nickname).trim() !== ''
           )
             ? String(packageJson.nickname)
-            : nm,
+            : originalName || packageName,
           doc_url: packageJson.doc_url || '',
         };
       }
@@ -115,6 +120,9 @@ export class ProjectSettingDialogComponent {
 
   // 保存设置
   async saveSettings(): Promise<void> {
+    // 包名只允许小写；保存前统一规范化，也兼容历史项目中的大写包名。
+    this.projectSettings.name = normalizeProjectPackageName(this.projectSettings.name);
+
     // 项目名称（nickname）：支持中文；空则沿用包名
     const nickTrimmed = (this.projectSettings.nickname ?? '').trim();
     this.projectSettings.nickname =
@@ -127,8 +135,7 @@ export class ProjectSettingDialogComponent {
     }
 
     // 验证 name 格式:只能包含小写字母、数字、连字符和下划线
-    const namePattern = /^[a-z0-9_-]+$/;
-    if (!namePattern.test(this.projectSettings.name.trim())) {
+    if (!isValidProjectPackageName(this.projectSettings.name)) {
       this.message.warning(this.translate.instant('PROJECT_SETTING_DIALOG.WARNING_NAME_INVALID_FORMAT'));
       return;
     }

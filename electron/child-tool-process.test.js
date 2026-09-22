@@ -30,6 +30,19 @@ test('child tool startup is single-flight for concurrent acquire calls', async (
   }
 });
 
+test('UI acquisition rejects headless packages before borrowing or spawning a runtime', async () => {
+  const processModule = await processModulePromise, originalWindow = global.window;
+  const harness = createHarness({ ready: true }); global.window = harness.window;
+  processModule.replaceChildToolConfigs([{ ...fixtureConfig(200), runtime: { headless: true } }]);
+  const service = createService(processModule);
+  try {
+    await assert.rejects(service.acquire('fixture'), /headless.*native runtime integration/);
+    assert.equal(harness.acquireCalls, 0);
+    assert.equal(harness.runCalls.length, 0);
+    assert.equal(harness.registerCalls.length, 0);
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
 test('timed out child tool startup kills its exact stream and ignores a late ready event', async () => {
   const processModule = await processModulePromise;
   const originalWindow = global.window;
@@ -211,6 +224,7 @@ function createService(processModule) {
   return new processModule.ChildToolProcessService(
     { getCurrentApiServer: () => '' },
     { currentProjectPath: undefined },
+    { initialize: async () => {}, state: { apps: [] } },
   );
 }
 
@@ -551,7 +565,7 @@ async function loadProcessModule() {
           path: 'angular-core',
           namespace: 'stub',
         }));
-        build.onResolve({ filter: /\/(?:config|project)\.service$/ }, args => ({
+        build.onResolve({ filter: /\/(?:config|project|subapp-manager)\.service$/ }, args => ({
           path: args.path,
           namespace: 'stub',
         }));
@@ -573,7 +587,7 @@ async function loadProcessModule() {
             };
           }
           return {
-            contents: 'export class ConfigService {} export class ProjectService {}',
+            contents: 'export class ConfigService {} export class ProjectService {} export class SubappManagerService {}',
             loader: 'js',
           };
         });

@@ -9,6 +9,7 @@
 .code-editor-pro {
   position: relative;
   display: flex;
+  flex-direction: column;
   flex: 1;
   width: 100%;
   height: 100%;
@@ -18,23 +19,114 @@
   background: var(--aily-bg-primary, #101418);
 }
 
-.coder-embed-frame {
-  flex: 1;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  border: 0;
-  opacity: 0;
-  background: var(--aily-bg-primary, #101418);
-  transition: opacity 220ms ease;
+.coder-project-frames { position: relative; flex: 1; min-height: 0; }
+app-code-editor-frame {
+  position: absolute; inset: 0; visibility: hidden; pointer-events: none;
+  &.is-active { visibility: visible; pointer-events: auto; }
 }
 
-.coder-embed-frame.is-ready {
-  opacity: 1;
-}
+.coder-project-tabs {
+  display: flex;
+  flex: 0 0 34px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--aily-bg-secondary, #252526);
+  border-bottom: 1px solid var(--aily-border-primary, #333);
+  scrollbar-width: thin;
+  scrollbar-color: var(--aily-scrollbar-thumb) transparent;
 
-@media (prefers-reduced-motion: reduce) {
-  .coder-embed-frame {
-    transition: none;
+  &::-webkit-scrollbar {
+    height: 6px;
   }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: var(--aily-scrollbar-thumb);
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: var(--aily-scrollbar-thumb-hover);
+  }
+}
+.coder-project-tab {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  max-width: 320px;
+  border-right: 1px solid var(--aily-border-primary, #333);
+  border-top: 2px solid transparent;
+  color: var(--aily-text-secondary, #999);
+  &.is-active {
+    color: var(--aily-text-primary, #ddd);
+    background: var(--aily-bg-primary, #1e1e1e);
+    border-top-color: var(--aily-primary-color, #3794ff);
+    .project-select > i { color: #73c991; }
+  }
+  button {
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    &:focus-visible { outline: 1px solid var(--aily-primary-color, #3794ff); outline-offset: -2px; }
+    &:disabled { cursor: default; }
+  }
+  .project-select {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    padding: 0 8px 0 12px;
+    .project-operation { flex: 0 0 auto; font-size: 11px; color: #73c991; }
+    span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
+  .project-close {
+    flex: 0 0 24px;
+    padding: 0;
+    opacity: 0;
+    &:hover { background: var(--aily-bg-tertiary, #333); }
+  }
+  &:hover .project-close, &:focus-within .project-close, &.is-active .project-close { opacity: 1; }
+}
+
+// Font Awesome's shared animation can be suppressed or look frozen on some
+// Windows compositors. Keep this functional status indicator on its own GPU
+// transform layer and use a shorter, deterministic cycle.
+.coder-project-spinner {
+  display: inline-block;
+  transform-origin: center;
+  backface-visibility: hidden;
+  will-change: transform;
+  animation: coder-project-spin 0.72s linear infinite;
+}
+
+@keyframes coder-project-spin {
+  from { transform: translateZ(0) rotate(0deg); }
+  to { transform: translateZ(0) rotate(360deg); }
+}
+
+.project-progress-track {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgb(115 201 145 / 18%);
+}
+
+.project-progress-value {
+  display: block;
+  height: 100%;
+  min-width: 1px;
+  background: #73c991;
+  transition: width 120ms linear;
 }

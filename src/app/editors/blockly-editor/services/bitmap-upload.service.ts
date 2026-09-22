@@ -9,7 +9,6 @@ export interface BitmapUploadRequest {
   height: number;             // 高度
   timestamp: number;          // 时间戳
 }
-
 /** 位图上传响应接口 */
 export interface BitmapUploadResponse {
   fieldId?: string;           // 字段唯一ID（用于匹配请求）
@@ -85,41 +84,5 @@ export class BitmapUploadService {
         resolve(response);
       }, 1000); // 模拟处理延迟
     });
-  }
-}
-
-/**
- * 全局服务管理器
- * 用于在非 Angular 环境（如 Blockly 字段）中访问 Angular 服务
- */
-export class GlobalServiceManager {
-  private static instance: GlobalServiceManager;
-  private bitmapUploadService: BitmapUploadService | null = null;
-
-  private constructor() { }
-
-  /**
-   * 获取单例实例
-   */
-  static getInstance(): GlobalServiceManager {
-    if (!GlobalServiceManager.instance) {
-      GlobalServiceManager.instance = new GlobalServiceManager();
-    }
-    return GlobalServiceManager.instance;
-  }
-
-  /**
-   * 设置位图上传服务实例
-   * 这个方法应该在 Angular 组件或服务中调用
-   */
-  setBitmapUploadService(service: BitmapUploadService): void {
-    this.bitmapUploadService = service;
-  }
-
-  /**
-   * 获取位图上传服务实例
-   */
-  getBitmapUploadService(): BitmapUploadService | null {
-    return this.bitmapUploadService;
   }
 }

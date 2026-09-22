@@ -1,28 +1,20 @@
 import { canonicalJsonStringify } from './project-data-codec.registry';
 import { PutProjectDataRequest } from './project-data-store';
 import {
-  AilyDataRef,
-  AilyProjectDataValue,
-  createAilyProjectDataValue,
-  DEFAULT_PROJECT_DATA_THRESHOLD_BYTES,
-  isAilyDataRef,
-  isAilyProjectDataValue,
-  ProjectDataError,
+  assertProjectDataEnvelope, cloneProjectDataJson, collectProjectDataPayloads,
+  containsProjectDataReference, projectDataChildPointer,
+} from './project-data-payloads';
+import {
+  AilyDataRef, AilyProjectDataValue, createAilyProjectDataValue,
+  DEFAULT_PROJECT_DATA_THRESHOLD_BYTES, isAilyDataRef, isAilyProjectDataValue, ProjectDataError,
 } from './project-data.types';
 
 interface GenericProjectDataWriter {
   put<TValue>(request: PutProjectDataRequest<TValue>): Promise<AilyDataRef>;
 }
-
 interface GenericProjectDataReader {
   resolve<TValue>(ref: AilyDataRef): Promise<TValue>;
 }
-
-interface BlockContext {
-  readonly blockId?: string;
-  readonly blockType?: string;
-}
-
 export interface GenericProjectDataValueEntry {
   readonly jsonPointer: string;
   readonly blockId?: string;
@@ -32,288 +24,103 @@ export interface GenericProjectDataValueEntry {
   readonly canonicalLength: number;
   readonly ref: AilyDataRef;
 }
-
 export interface ExternalizeGenericProjectDataResult<TDocument = unknown> {
   readonly document: TDocument;
   readonly externalized: readonly GenericProjectDataValueEntry[];
 }
-
 const encoder = new TextEncoder();
 
-/**
- * Externalizes oversized direct `fields` and `extraState` values without
- * knowing the owning library, block type, field name, or custom field class.
- * Existing refs are never hidden inside a second resource because GC roots
- * must remain directly discoverable in ABI/ABS.
- */
+/** Payloads only: block state, workspace serializers and model extensions; never the graph. */
 export async function externalizeGenericProjectDataValues<TDocument>(
-  document: TDocument,
-  writer: GenericProjectDataWriter,
-  threshold = DEFAULT_PROJECT_DATA_THRESHOLD_BYTES,
+  document: TDocument, writer: GenericProjectDataWriter, threshold = DEFAULT_PROJECT_DATA_THRESHOLD_BYTES,
 ): Promise<ExternalizeGenericProjectDataResult<TDocument>> {
-  const candidate = cloneJsonValue(document) as TDocument;
+  const candidate = cloneProjectDataJson(document);
   const externalized: GenericProjectDataValueEntry[] = [];
-
-  const externalizeCandidate = async (
-    value: unknown,
-    jsonPointer: string,
-    context: BlockContext,
-    fieldName?: string,
-  ): Promise<unknown> => {
-    assertValidEnvelopeIfPresent(value, jsonPointer);
-    if (value === null || value === undefined || isAilyDataRef(value) || isAilyProjectDataValue(value)) {
-      return value;
-    }
-
-    const codec = typeof value === 'string'
-      ? 'utf8-v1' as const
-      : isPlainJsonContainer(value)
-        ? 'canonical-json-v1' as const
-        : null;
-    if (!codec) return value;
-
-    const canonicalLength = getGenericCanonicalLength(value, codec);
-    if (canonicalLength <= threshold) return value;
-    if (containsProjectDataReference(value)) {
-      // A dedicated Data Slot must externalize only the payload subtree. The
-      // final oversized-inline assertion will retain an actionable failure.
-      return value;
-    }
-
-    const ref = codec === 'utf8-v1'
-      ? await writer.put({ codec, storage: 'raw-v1', value: value as string })
-      : await writer.put({ codec, storage: 'raw-v1', value });
-    externalized.push({
-      ...context,
-      fieldName,
-      jsonPointer,
-      codec,
-      canonicalLength,
-      ref,
-    });
-    return createAilyProjectDataValue(ref);
-  };
-
-  const visit = async (value: unknown, pointer: string, inheritedContext: BlockContext): Promise<void> => {
-    assertValidEnvelopeIfPresent(value, pointer);
-    if (!value || typeof value !== 'object' || isAilyDataRef(value) || isAilyProjectDataValue(value)) return;
-
-    if (Array.isArray(value)) {
-      for (let index = 0; index < value.length; index++) {
-        await visit(value[index], `${pointer}/${index}`, inheritedContext);
+  for (const { owner, key, jsonPointer, ...context } of collectProjectDataPayloads(candidate)) {
+    const visit = async (value: unknown, pointer: string): Promise<unknown> => {
+      assertProjectDataEnvelope(value, pointer);
+      if (isAilyDataRef(value) || isAilyProjectDataValue(value)) return value;
+      const codec = typeof value === 'string' ? 'utf8-v1' : isJsonContainer(value) ? 'canonical-json-v1' : null;
+      if (!codec) return value;
+      // Recurse into mixed payloads rather than hiding references in another resource.
+      if (containsProjectDataReference(value)) {
+        for (const [name, member] of Object.entries(value as object)) {
+          setMember(value as object, name, await visit(member, projectDataChildPointer(pointer, name)));
+        }
+        return value;
       }
-      return;
-    }
-
-    const record = value as Record<string, unknown>;
-    const context: BlockContext = {
-      blockId: typeof record['id'] === 'string' ? record['id'] : inheritedContext.blockId,
-      blockType: typeof record['type'] === 'string' ? record['type'] : inheritedContext.blockType,
+      const canonicalLength = encoder.encode(codec === 'utf8-v1' ? value as string : canonicalJsonStringify(value)).byteLength;
+      if (canonicalLength <= threshold) return value;
+      const ref = await writer.put({ codec, storage: 'raw-v1', value });
+      externalized.push({ ...context, jsonPointer: pointer, codec, canonicalLength, ref });
+      return createAilyProjectDataValue(ref);
     };
-    const fields = record['fields'];
-    if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-      for (const [fieldName, fieldValue] of Object.entries(fields as Record<string, unknown>)) {
-        (fields as Record<string, unknown>)[fieldName] = await externalizeCandidate(
-          fieldValue,
-          `${pointer}/fields/${escapePointer(fieldName)}`,
-          context,
-          fieldName,
-        );
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(record, 'extraState')) {
-      record['extraState'] = await externalizeCandidate(
-        record['extraState'],
-        `${pointer}/extraState`,
-        context,
-      );
-    }
-
-    for (const [key, member] of Object.entries(record)) {
-      if (key === 'fields' || key === 'extraState') continue;
-      await visit(member, `${pointer}/${escapePointer(key)}`, context);
-    }
-  };
-
-  await visit(candidate, '', {});
+    setMember(owner, key, await visit(owner[key], jsonPointer));
+  }
   return { document: candidate, externalized };
 }
 
-/** Restores generic persistence envelopes before any Blockly consumer sees them. */
+/** Resolve at the same payload boundaries before any Blockly serializer consumes them. */
 export async function materializeGenericProjectDataValues<TDocument>(
-  document: TDocument,
-  reader: GenericProjectDataReader,
+  document: TDocument, reader: GenericProjectDataReader,
 ): Promise<TDocument> {
-  return transformGenericProjectDataValues(
-    document,
-    (ref) => reader.resolve(ref),
-  );
-}
-
-/**
- * Synchronous counterpart used for dirty-state comparisons after project load.
- * The resolver must read an already prepared value and must not perform I/O.
- */
-export function materializePreparedGenericProjectDataValues<TDocument>(
-  document: TDocument,
-  resolvePrepared: (ref: AilyDataRef) => unknown,
-): TDocument {
-  const candidate = cloneJsonValue(document) as TDocument;
-  transformPreparedValue(candidate, '', resolvePrepared);
+  const candidate = cloneProjectDataJson(document);
+  for (const { owner, key, jsonPointer } of collectProjectDataPayloads(candidate)) {
+    setMember(owner, key, await materializeProjectDataPayload(owner[key], reader, jsonPointer));
+  }
   return candidate;
 }
 
-async function transformGenericProjectDataValues<TDocument>(
-  document: TDocument,
-  resolve: (ref: AilyDataRef) => Promise<unknown>,
-): Promise<TDocument> {
-  const candidate = cloneJsonValue(document) as TDocument;
-
-  const visit = async (value: unknown, pointer: string): Promise<void> => {
-    if (!value || typeof value !== 'object' || isAilyDataRef(value)) return;
-    assertValidEnvelopeIfPresent(value, pointer);
-    if (Array.isArray(value)) {
-      for (let index = 0; index < value.length; index++) await visit(value[index], `${pointer}/${index}`);
-      return;
-    }
-
-    const record = value as Record<string, unknown>;
-    const fields = record['fields'];
-    if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-      for (const [fieldName, fieldValue] of Object.entries(fields as Record<string, unknown>)) {
-        const fieldPointer = `${pointer}/fields/${escapePointer(fieldName)}`;
-        (fields as Record<string, unknown>)[fieldName] = isAilyProjectDataValue(fieldValue)
-          ? await resolveAndValidate(fieldValue, resolve, fieldPointer)
-          : fieldValue;
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(record, 'extraState')) {
-      const extraStatePointer = `${pointer}/extraState`;
-      record['extraState'] = isAilyProjectDataValue(record['extraState'])
-        ? await resolveAndValidate(record['extraState'], resolve, extraStatePointer)
-        : record['extraState'];
-    }
-
-    for (const [key, member] of Object.entries(record)) {
-      if (key === 'fields' || key === 'extraState') continue;
-      await visit(member, `${pointer}/${escapePointer(key)}`);
-    }
+/** One payload or syntax token; does not infer block graphs inside opaque JSON. */
+export async function materializeProjectDataPayload<T>(payload: T, reader: GenericProjectDataReader, pointer = ''): Promise<T> {
+  const visit = async (value: unknown, pointer: string): Promise<unknown> => {
+    assertProjectDataEnvelope(value, pointer);
+    if (isAilyProjectDataValue(value)) return validateResolvedValue(value, await reader.resolve(value.$ailyProjectDataValue.ref), pointer);
+    if (!value || typeof value !== 'object' || isAilyDataRef(value)) return value;
+    for (const [key, member] of Object.entries(value)) setMember(value, key, await visit(member, projectDataChildPointer(pointer, key)));
+    return value;
   };
+  return await visit(cloneProjectDataJson(payload), pointer) as T;
+}
 
-  await visit(candidate, '');
+/** Dirty-state comparison uses only prepared values; no filesystem/runtime dependencies. */
+export function materializePreparedGenericProjectDataValues<TDocument>(
+  document: TDocument, resolvePrepared: (ref: AilyDataRef) => unknown,
+): TDocument {
+  const candidate = cloneProjectDataJson(document);
+  for (const { owner, key, jsonPointer } of collectProjectDataPayloads(candidate)) {
+    setMember(owner, key, materializePreparedProjectDataPayload(owner[key], resolvePrepared, jsonPointer));
+  }
   return candidate;
 }
 
-function transformPreparedValue(
-  value: unknown,
-  pointer: string,
-  resolvePrepared: (ref: AilyDataRef) => unknown,
-): void {
-  if (!value || typeof value !== 'object' || isAilyDataRef(value)) return;
-  assertValidEnvelopeIfPresent(value, pointer);
-  if (Array.isArray(value)) {
-    value.forEach((member, index) => transformPreparedValue(member, `${pointer}/${index}`, resolvePrepared));
-    return;
-  }
-
-  const record = value as Record<string, unknown>;
-  const fields = record['fields'];
-  if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-    for (const [fieldName, fieldValue] of Object.entries(fields as Record<string, unknown>)) {
-      if (!isAilyProjectDataValue(fieldValue)) continue;
-      const fieldPointer = `${pointer}/fields/${escapePointer(fieldName)}`;
-      (fields as Record<string, unknown>)[fieldName] = validateResolvedValue(
-        fieldValue,
-        resolvePrepared(fieldValue.$ailyProjectDataValue.ref),
-        fieldPointer,
-      );
-    }
-  }
-  if (isAilyProjectDataValue(record['extraState'])) {
-    const extraStatePointer = `${pointer}/extraState`;
-    record['extraState'] = validateResolvedValue(
-      record['extraState'],
-      resolvePrepared(record['extraState'].$ailyProjectDataValue.ref),
-      extraStatePointer,
-    );
-  }
-
-  for (const [key, member] of Object.entries(record)) {
-    if (key === 'fields' || key === 'extraState') continue;
-    transformPreparedValue(member, `${pointer}/${escapePointer(key)}`, resolvePrepared);
-  }
+/** Synchronous counterpart for a host-prepared, read-only native candidate snapshot. */
+export function materializePreparedProjectDataPayload<T>(payload: T, resolvePrepared: (ref: AilyDataRef) => unknown, pointer = ''): T {
+  const visit = (value: unknown, pointer: string): unknown => {
+    assertProjectDataEnvelope(value, pointer);
+    if (isAilyProjectDataValue(value)) return validateResolvedValue(value, resolvePrepared(value.$ailyProjectDataValue.ref), pointer);
+    if (!value || typeof value !== 'object' || isAilyDataRef(value)) return value;
+    for (const [key, member] of Object.entries(value)) setMember(value, key, visit(member, projectDataChildPointer(pointer, key)));
+    return value;
+  };
+  return visit(cloneProjectDataJson(payload), pointer) as T;
 }
 
-async function resolveAndValidate(
-  envelope: AilyProjectDataValue,
-  resolve: (ref: AilyDataRef) => Promise<unknown>,
-  pointer: string,
-): Promise<unknown> {
-  return validateResolvedValue(
-    envelope,
-    await resolve(envelope.$ailyProjectDataValue.ref),
-    pointer,
-  );
-}
-
-function validateResolvedValue(
-  envelope: AilyProjectDataValue,
-  value: unknown,
-  pointer: string,
-): unknown {
-  const ref = envelope.$ailyProjectDataValue.ref.$ailyData;
-  if (ref.codec === 'utf8-v1' && typeof value !== 'string') {
-    throw new ProjectDataError('corrupt', `Generic text project data did not resolve to a string at ${pointer}.`);
+function validateResolvedValue(envelope: AilyProjectDataValue, value: unknown, pointer: string): unknown {
+  const codec = envelope.$ailyProjectDataValue.ref.$ailyData.codec;
+  if ((codec === 'utf8-v1' && typeof value !== 'string') || (codec === 'canonical-json-v1' && !isJsonContainer(value))) {
+    throw new ProjectDataError('corrupt', `Generic project data resolved to an invalid ${codec} value at ${pointer}.`);
   }
-  if (ref.codec === 'canonical-json-v1' && !isPlainJsonContainer(value)) {
-    throw new ProjectDataError('corrupt', `Generic JSON project data did not resolve to an array/object at ${pointer}.`);
+  if (containsProjectDataReference(value)) {
+    throw new ProjectDataError('corrupt', `Generic project data hides nested resource references at ${pointer}.`);
   }
-  return value;
+  // Never expose the mutable prepared cache to library loadState callbacks.
+  return cloneProjectDataJson(value);
 }
 
-function getGenericCanonicalLength(
-  value: unknown,
-  codec: 'utf8-v1' | 'canonical-json-v1',
-): number {
-  return encoder.encode(codec === 'utf8-v1' ? value as string : canonicalJsonStringify(value)).byteLength;
+function isJsonContainer(value: unknown): value is unknown[] | Record<string, unknown> {
+  return Array.isArray(value) || (!!value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype);
 }
-
-function isPlainJsonContainer(value: unknown): value is unknown[] | Record<string, unknown> {
-  return Array.isArray(value)
-    || (!!value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype);
-}
-
-function containsProjectDataReference(value: unknown): boolean {
-  const pending = [value];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current || typeof current !== 'object') continue;
-    if (isAilyDataRef(current) || isAilyProjectDataValue(current)) return true;
-    if (Array.isArray(current)) pending.push(...current);
-    else pending.push(...Object.values(current as Record<string, unknown>));
-  }
-  return false;
-}
-
-function assertValidEnvelopeIfPresent(value: unknown, pointer: string): void {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-  const record = value as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(record, '$ailyProjectDataValue')
-    && !isAilyProjectDataValue(value)) {
-    throw new ProjectDataError('invalid-ref', `Invalid generic project data value at ${pointer || '/'}.`);
-  }
-}
-
-function cloneJsonValue<TValue>(value: TValue): TValue {
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch (error) {
-    throw new ProjectDataError('corrupt', 'Project document is not valid serializable JSON.', {
-      cause: String(error),
-    });
-  }
-}
-
-function escapePointer(value: string): string {
-  return value.replace(/~/g, '~0').replace(/\//g, '~1');
+function setMember(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
 }

@@ -1,6 +1,4 @@
-import type {
-  SceneArtifactRebuildRequest,
-} from '@aily-project/simulator-host-sdk';
+import type { SceneArtifactRebuildRequest } from '@aily-project/simulator-protocol/scene';
 
 /**
  * Revision-locked request passed from Build orchestration to the ordinary

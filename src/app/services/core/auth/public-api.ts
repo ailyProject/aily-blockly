@@ -1,6 +1,7 @@
 export * from './auth.service';
 export * from './bridges/aily-chat-host-auth-runtime-bridge';
 export * from './models/auth-quota-info';
+export * from './models/auth-credit-snapshot';
 export * from './models/auth-snapshot';
 export * from './models/shared-auth-record';
 export * from './operations/auth-required-tool-close';

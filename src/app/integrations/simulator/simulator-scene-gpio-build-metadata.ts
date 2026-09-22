@@ -1,7 +1,5 @@
-import {
-  inferArduinoHardwareHints,
-  type ProjectHardwareIntentHintV1,
-} from '@aily-project/simulator-host-sdk';
+import { inferArduinoHardwareHints } from '@aily-project/simulator-host-sdk';
+import type { ProjectHardwareIntentHintV1 } from '@aily-project/simulator-protocol/scene';
 
 export interface SimulatorSceneGpioBuildMetadata {
   readonly directions: Readonly<Record<string, 'input' | 'output'>>;

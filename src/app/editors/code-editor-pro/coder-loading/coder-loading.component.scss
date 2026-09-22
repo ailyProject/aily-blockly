@@ -266,8 +266,10 @@
 .loader-error > i { display: block; margin: 24px 0 14px; color: var(--aily-color-error, #e34d59); font-size: 28px; }
 .loader-error h2 { margin: 0; color: var(--aily-text-primary); font-size: 16px; font-weight: 650; }
 .loader-error p { margin: 9px 0 20px; color: var(--aily-text-tertiary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.error-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .loader-error button { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border: 1px solid var(--aily-border-primary); border-radius: 6px; background: var(--aily-bg-primary); color: var(--aily-text-primary); cursor: pointer; }
 .loader-error button:hover { border-color: var(--aily-color-primary); color: var(--aily-color-primary); }
+.loader-error .reinstall-button { color: var(--aily-text-secondary); }
 
 @keyframes console-enter { from { opacity: 0; transform: translateY(8px); } }
 @keyframes loader-release { to { opacity: 0; visibility: hidden; } }

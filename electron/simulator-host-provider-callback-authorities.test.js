@@ -491,11 +491,12 @@ test('a main-Agent user-edit conflict fails generation before Builder starts', a
 test('Simulator Scene request becomes an ordinary main-Agent message with bounded electrical context', async () => {
   const {
     createSimulatorMainAgentSceneMessage,
+    createSimulatorMainAgentSceneResources,
     createEmptySceneEditorDocumentV2,
   } = await integrationModulePromise;
   const document = await createEmptySceneEditorDocumentV2(sceneId);
   const rebuild = rebuildRequest(document);
-  const message = createSimulatorMainAgentSceneMessage({
+  const request = {
     schemaVersion: 1,
     kind: 'aily-simulator-main-agent-scene-change-request',
     requestId: rebuild.requestId,
@@ -503,12 +504,20 @@ test('Simulator Scene request becomes an ordinary main-Agent message with bounde
     sceneId,
     graphSemanticRevision: rebuild.sceneRevision,
     sceneDocument: rebuild.sceneDocument,
-  });
+  };
+  const message = createSimulatorMainAgentSceneMessage(request);
+  const resources = createSimulatorMainAgentSceneResources(request);
+  const scene = JSON.parse(resources[0].content);
 
-  assert.match(message, /主 Agent/u);
+  assert.match(message, /当前 Blockly 项目代码/u);
   assert.match(message, new RegExp(rebuild.requestId, 'u'));
   assert.match(message, new RegExp(rebuild.sceneRevision, 'u'));
-  assert.match(message, /不要调用任何 subagent/u);
+  assert.match(resources[1].content, /主 Agent/u);
+  assert.match(resources[1].content, /不要调用任何 subagent/u);
+  assert.equal(scene.requestId, rebuild.requestId);
+  assert.equal(scene.graphSemanticRevision, rebuild.sceneRevision);
+  assert.equal(scene.sourcePath, '.aily/simulator/scene-network-v2.json');
+  assert.equal(message.includes(JSON.stringify(rebuild.sceneDocument)), false);
   assert.equal(message.includes('@SceneCodeReconciliationAgent'), false);
   assert.equal(message.includes('connection_output.json'), false);
 });
@@ -1512,13 +1521,14 @@ async function loadIntegrationModule() {
     'src',
     'index.ts',
   );
-  const protocolEntry = path.join(
-    simulatorRoot,
-    'packages',
-    'simulator-protocol',
-    'src',
-    'index.ts',
-  );
+  const protocolRoot = path.join(simulatorRoot, 'packages', 'simulator-protocol');
+  const protocolPackage = JSON.parse(await fs.readFile(path.join(protocolRoot, 'package.json'), 'utf8'));
+  const protocolAliases = Object.fromEntries(Object.entries(protocolPackage.exports)
+    .filter(([, target]) => typeof target?.import === 'string')
+    .map(([subpath, target]) => [
+      `${protocolPackage.name}${subpath === '.' ? '' : subpath.slice(1)}`,
+      path.join(protocolRoot, target.import.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts')),
+    ]));
   const sceneModelEntry = path.join(
     simulatorRoot,
     'packages',
@@ -1593,7 +1603,7 @@ async function loadIntegrationModule() {
     outfile,
     alias: {
       '@aily-project/simulator-host-sdk': sdkEntry,
-      '@aily-project/simulator-protocol': protocolEntry,
+      ...protocolAliases,
       '@aily-project/scene-model': sceneModelEntry,
     },
     logLevel: 'silent',

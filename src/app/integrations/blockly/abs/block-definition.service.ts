@@ -15,38 +15,8 @@ import { ProjectService } from '@domain/project/public-api';
 // 类型定义
 // =============================================================================
 
-/**
- * 块参数定义（来自 block.json 的 args）
- */
-export interface BlockArgDefinition {
-  type: string;           // field_dropdown, field_input, input_value, input_statement 等
-  name: string;           // 参数名称
-  check?: string | string[];  // 类型检查
-  options?: any[];        // 下拉选项（仅 field_dropdown）
-  text?: string;          // 默认文本（field_input）
-  value?: any;            // 默认值
-}
-
-/**
- * 解析后的块元信息
- */
-export interface BlockMeta {
-  type: string;                       // 块类型名
-  fieldNames: string[];               // 字段名列表（按顺序）
-  fieldTypes: Map<string, string>;    // 字段名到类型的映射（field_dropdown, field_variable 等）
-  valueInputNames: string[];          // 值输入名列表（按顺序）
-  statementInputNames: string[];      // 语句输入名列表
-  argsOrder: Array<{ name: string; kind: 'field' | 'valueInput' | 'statementInput' }>; // 所有参数的原始顺序
-  hasOutput: boolean;                 // 是否有输出（值块）
-  outputType?: string | string[];     // 输出类型
-  hasPrevious: boolean;               // 是否有上连接点
-  hasNext: boolean;                   // 是否有下连接点
-  isRootBlock: boolean;               // 是否为根块（无上下连接）
-  library: string;                    // 所属库名
-  mutator?: string;                   // mutator 类型（如 function_params_mutator）
-  // 原始定义（用于调试）
-  raw?: any;
-}
+export type { BlockArgDefinition, BlockMeta } from './block-definition.model';
+import { BlockMeta, parseBlockDefinition } from './block-definition.model';
 
 /**
  * 块定义缓存
@@ -210,7 +180,7 @@ export class BlockDefinitionService {
             
             if (Array.isArray(blockDefs)) {
               for (const blockDef of blockDefs) {
-                const meta = this.parseBlockDefinition(blockDef, libDir);
+                const meta = parseBlockDefinition(blockDef, libDir);
                 if (meta) {
                   blocks.set(meta.type, meta);
                 }
@@ -231,102 +201,7 @@ export class BlockDefinitionService {
     this.cache = { projectPath, blocks, loadedAt: Date.now() };
   }
   
-  /**
-   * 解析单个块定义
-   */
-  private parseBlockDefinition(def: any, library: string): BlockMeta | null {
-    if (!def || !def.type) {
-      return null;
-    }
-    
-    const meta: BlockMeta = {
-      type: def.type,
-      fieldNames: [],
-      fieldTypes: new Map<string, string>(),
-      valueInputNames: [],
-      statementInputNames: [],
-      argsOrder: [],
-      hasOutput: 'output' in def,
-      outputType: def.output,
-      hasPrevious: 'previousStatement' in def,
-      hasNext: 'nextStatement' in def,
-      isRootBlock: false,
-      library,
-      mutator: def.mutator || undefined,
-    };
-    
-    // 检测根块（如 arduino_setup, arduino_loop）
-    // 根块通常没有 previousStatement 但有特定命名模式
-    if (!meta.hasPrevious && !meta.hasNext && !meta.hasOutput) {
-      if (def.type.includes('arduino_') || def.type.includes('_setup') || def.type.includes('_loop')) {
-        meta.isRootBlock = true;
-      }
-    }
-    
-    // 解析所有 args（args0, args1, args2...）
-    for (let i = 0; i <= 10; i++) {
-      const argsKey = i === 0 ? 'args0' : `args${i}`;
-      const args = def[argsKey];
-      
-      if (Array.isArray(args)) {
-        for (const arg of args) {
-          this.categorizeArg(arg, meta);
-        }
-      }
-    }
-    
-    return meta;
-  }
-  
-  /**
-   * 将参数分类到字段或输入
-   */
-  private categorizeArg(arg: BlockArgDefinition, meta: BlockMeta): void {
-    if (!arg || !arg.name) return;
-    
-    switch (arg.type) {
-      // 字段类型
-      case 'field_dropdown':
-      case 'field_input':
-      case 'field_number':
-      case 'field_checkbox':
-      case 'field_colour':
-      case 'field_angle':
-      case 'field_image':
-      case 'field_variable':
-      case 'field_label':
-      case 'field_label_serializable':
-        meta.fieldNames.push(arg.name);
-        meta.fieldTypes.set(arg.name, arg.type);  // 记录字段类型
-        meta.argsOrder.push({ name: arg.name, kind: 'field' });
-        break;
-      
-      // 值输入
-      case 'input_value':
-        meta.valueInputNames.push(arg.name);
-        meta.argsOrder.push({ name: arg.name, kind: 'valueInput' });
-        break;
-      
-      // 语句输入
-      case 'input_statement':
-        meta.statementInputNames.push(arg.name);
-        meta.argsOrder.push({ name: arg.name, kind: 'statementInput' });
-        break;
-      
-      // 虚拟输入（通常用于换行）
-      case 'input_dummy':
-      case 'input_end_row':
-        // 忽略
-        break;
-      
-      default:
-        // 未知类型，记录警告
-        if (arg.type && !arg.type.startsWith('field_') && !arg.type.startsWith('input_')) {
-          console.warn(`[BlockDefinitionService] 未知参数类型: ${arg.type} in ${meta.type}`);
-        }
-        break;
-    }
-  }
+
 }
 
 // =============================================================================
@@ -381,7 +256,7 @@ export function loadBlockDefinitionsFromPath(
           
           if (Array.isArray(blockDefs)) {
             for (const blockDef of blockDefs) {
-              const meta = parseBlockDefSimple(blockDef, libDir);
+              const meta = parseBlockDefinition(blockDef, libDir);
               if (meta) {
                 blocks.set(meta.type, meta);
               }
@@ -397,58 +272,4 @@ export function loadBlockDefinitionsFromPath(
   }
   
   return blocks;
-}
-
-/**
- * 简化版块定义解析（用于同步加载）
- */
-function parseBlockDefSimple(def: any, library: string): BlockMeta | null {
-  if (!def || !def.type) return null;
-  
-  const meta: BlockMeta = {
-    type: def.type,
-    fieldNames: [],
-    fieldTypes: new Map<string, string>(),
-    valueInputNames: [],
-    statementInputNames: [],
-    argsOrder: new Array<{ name: string; kind: 'field' | 'valueInput' | 'statementInput' }>(),
-    hasOutput: 'output' in def,
-    outputType: def.output,
-    hasPrevious: 'previousStatement' in def,
-    hasNext: 'nextStatement' in def,
-    isRootBlock: false,
-    library,
-    mutator: def.mutator || undefined,
-  };
-  
-  // 检测根块
-  if (!meta.hasPrevious && !meta.hasNext && !meta.hasOutput) {
-    if (def.type.includes('arduino_') || def.type.includes('_setup') || def.type.includes('_loop')) {
-      meta.isRootBlock = true;
-    }
-  }
-  
-  // 解析 args
-  for (let i = 0; i <= 10; i++) {
-    const args = def[i === 0 ? 'args0' : `args${i}`];
-    if (Array.isArray(args)) {
-      for (const arg of args) {
-        if (!arg || !arg.name) continue;
-        
-        if (arg.type?.startsWith('field_')) {
-          meta.fieldNames.push(arg.name);
-          meta.fieldTypes.set(arg.name, arg.type);  // 记录字段类型
-          meta.argsOrder.push({ name: arg.name, kind: 'field' });
-        } else if (arg.type === 'input_value') {
-          meta.valueInputNames.push(arg.name);
-          meta.argsOrder.push({ name: arg.name, kind: 'valueInput' });
-        } else if (arg.type === 'input_statement') {
-          meta.statementInputNames.push(arg.name);
-          meta.argsOrder.push({ name: arg.name, kind: 'statementInput' });
-        }
-      }
-    }
-  }
-  
-  return meta;
 }

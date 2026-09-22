@@ -9,10 +9,14 @@ import {
   ElectronService,
   LogService,
   PlatformService,
+  AppDataResourceLockService,
 } from '@core/platform/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { CompileValidationService } from './compile-validation.service';
+import { CoderBuildInfoService } from './coder-build-info.service';
+import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
+import { captureBuildSource } from '../../../utils/build-publication.utils';
 import {
   BUILD_APPLICATION_PORT,
   type BuildActionState,
@@ -32,8 +36,10 @@ import {
 } from '../../../utils/project-log.utils';
 
 interface DiskCompileOptions {
+  preprocessOnly?: boolean;
   projectPath?: string;
   code?: string;
+  recordProjectDelivery?: boolean;
 }
 
 interface DiskCompileProgressState {
@@ -56,6 +62,8 @@ export class CompileService {
   private activeSub: Subscription | null = null;
   private activeStreamId: string | null = null;
   private activeCommandCancel: (() => void) | null = null;
+  private stopPending: Promise<unknown> = Promise.resolve();
+  private resourceWait: AbortController | null = null;
 
   constructor(
     private projectService: ProjectService,
@@ -70,13 +78,16 @@ export class CompileService {
     private compileValidationService: CompileValidationService,
     private logService: LogService,
     private translate: TranslateService,
+    private coderBuildInfo: CoderBuildInfoService,
+    private appDataResourceLock: AppDataResourceLockService,
   ) { }
 
   cancel(): void {
     this.cancelled = true;
+    this.resourceWait?.abort();
     const streamId = this.activeStreamId;
     if (streamId) {
-      void this.cmdService.kill(streamId).catch((error) => {
+      this.stopPending = this.cmdService.kill(streamId).catch((error) => {
         console.warn('Failed to stop the active build process:', error);
       });
       this.activeStreamId = null;
@@ -88,8 +99,6 @@ export class CompileService {
 
   async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
-    const packagePath = this.electronService.pathJoin(root, 'package.json');
-    const isAilyCodeProject = !!root && this.projectService.isAilyCodeProject(root);
 
     if (!root) {
       this.message.warning('No project is currently open.');
@@ -97,12 +106,6 @@ export class CompileService {
         success: false,
         result: { state: 'warn', text: 'No project is currently open; build cannot start.' },
       };
-    }
-
-    const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
-    if (source.success === false) {
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), source.error, source.error);
-      return { success: false, result: { state: 'error', text: source.error } };
     }
 
     if (!this.application.startBuild()) {
@@ -120,12 +123,54 @@ export class CompileService {
     }
 
     this.cancelled = false;
+    this.stopPending = Promise.resolve();
+    const wait = new AbortController();
+    this.resourceWait = wait;
+    this.application.updateNotice({ title: this.t('PREPARING_TITLE'), text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
+      state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
+    try {
+      // Read source/configuration only after installers have released the writer.
+      // Keep the root captured at submission, even if the UI switches projects.
+      return await this.appDataResourceLock.runShared('build:disk-preprocess-and-compile',
+        token => this.runWithResources(root, options, token), wait.signal);
+    } catch (error: any) {
+      const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
+      this.application.finishBuild(false, text);
+      if (this.cancelled) this.updateCancelledNotice(text);
+      else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
+      return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text } };
+    } finally {
+      if (this.resourceWait === wait) this.resourceWait = null;
+    }
+  }
+
+  private async runWithResources(root: string, options: DiskCompileOptions, appDataResourceToken: string): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+    const packagePath = this.electronService.pathJoin(root, 'package.json');
+    const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
+    const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
+    if (source.success === false) {
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), source.error, source.error);
+      this.application.finishBuild(false, source.error);
+      return { success: false, result: { state: 'error', text: source.error } };
+    }
     const started = Date.now();
+    let compiledHash: string | undefined;
+    let buildStatus: 'success' | 'failed' = 'failed';
+    let finishReason: string | undefined;
 
     try {
+      // Ignore only publisher-owned result metadata, which updateCodeHash writes.
+      const assertManifest = captureBuildRequestGuard(() => {
+        const { codeHash: _hash, buildInfo: _info, ...manifest } = JSON.parse(window['fs'].readFileSync(packagePath, 'utf8'));
+        return manifest;
+      });
+      if (isAilyCodeProject) {
+        compiledHash = await this.coderBuildInfo.updateCodeHash(root);
+      }
       const boardModule = await this.resolveBoardModule(root);
+      assertManifest();
       if (!boardModule) {
-        this.application.finishBuild(false, 'Missing board module');
+        finishReason = 'Missing board module';
         const text = 'Cannot resolve board module from the active project.';
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
         return { success: false, result: { state: 'error', text } };
@@ -135,12 +180,9 @@ export class CompileService {
       const ailyBuilderPath = window['path'].getAilyBuilderPath();
       const appDataPath = window['path'].getAppDataPath();
       const ailyChildPath = window['path'].getAilyChildPath();
-      const tempPath = isAilyCodeProject
-        ? this.electronService.pathJoin(root, 'sketch')
-        : this.electronService.pathJoin(root, '.temp');
 
       if (!ailyBuilderPath || !ailyChildPath) {
-        this.application.finishBuild(false, 'Missing builder paths');
+        finishReason = 'Missing builder paths';
         const text = 'aily-builder path is unavailable.';
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
         return { success: false, result: { state: 'error', text } };
@@ -166,54 +208,63 @@ export class CompileService {
         za7Path: this.platformService.za7,
         ailyBuilderPath,
         devmode: this.configService.data.devmode || false,
+        ...(options.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}),
         partitionFilePath: isAilyCodeProject
           ? this.electronService.pathJoin(root, 'sketch', 'src', 'partitions.csv')
           : this.electronService.pathJoin(root, 'partitions.csv'),
       };
-      const configFilePath = this.electronService.pathJoin(tempPath, 'build-config.json');
-      if (!window['path'].isExists(tempPath)) {
-        await this.crossPlatformCmdService.createDirectory(tempPath, true);
-      }
-      window['fs'].writeFileSync(configFilePath, JSON.stringify(buildConfig, null, 2));
-
-      // 每次构建都进入预处理：该阶段会校验本地库内容指纹，内容未变时再安全复用库缓存。
-      const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
-      const preprocessCmd = `node "${preprocessScriptPath}" "${configFilePath}"`;
-      const pre = await this.runOneShotCommand(preprocessCmd, (line) => {
-        this.publishBuildLog(root, line.line, line.type);
+      const sourceCapture = captureBuildSource(buildConfig);
+      const configFilePath = await writeBuildRequest(root, { ...buildConfig, sourceCapture }, {
+        join: (...parts) => this.electronService.pathJoin(...parts),
+        exists: filename => window['path'].isExists(filename),
+        mkdir: directory => this.crossPlatformCmdService.createDirectory(directory, true),
+        write: (filename, text) => window['fs'].writeFileSync(filename, text),
       });
-      if (this.cancelled) {
-        this.application.finishBuild(false, 'Cancelled');
-        const sec = ((Date.now() - started) / 1000).toFixed(2);
-        const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
-        this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
-        this.updateCancelledNotice(text);
-        return { success: false, result: { state: 'warn', text } };
-      }
-      if (pre.exitCode !== 0) {
-        const detail = pre.combined || pre.stderr + pre.stdout;
-        this.application.finishBuild(false, 'Preprocess failed');
-        this.handleFailNotice(
-          root,
-          this.t('PRECOMPILE_FAILED_TITLE'),
-          this.t('PRECOMPILE_FAILED_DETAIL'),
-          detail,
-        );
-        return {
-          success: false,
-          result: {
-            state: 'error',
-            text: this.t('MESSAGE_WITH_DURATION', {
-              message: this.t('PRECOMPILE_FAILED_TITLE'),
-              seconds: ((Date.now() - started) / 1000).toFixed(2),
-            }),
-            fullStdErr: detail,
-          },
-        };
+      assertManifest();
+      if (this.cancelled) throw new Error('Build cancelled before launch.');
+
+      // Normal compile.js owns its preprocessing transaction; do not perform
+      // the same mutable preparation twice with an unlocked gap in between.
+      if (options.preprocessOnly) {
+        const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
+        const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
+          this.publishBuildLog(root, line.line, line.type);
+        }, root, appDataResourceToken);
+        if (this.cancelled) {
+          finishReason = 'Cancelled';
+          const sec = ((Date.now() - started) / 1000).toFixed(2);
+          const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
+          this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
+          this.updateCancelledNotice(text);
+          return { success: false, result: { state: 'warn', text } };
+        }
+        if (pre.exitCode !== 0) {
+          const detail = pre.combined || pre.stderr + pre.stdout;
+          finishReason = 'Preprocess failed';
+          this.handleFailNotice(
+            root,
+            this.t('PRECOMPILE_FAILED_TITLE'),
+            this.t('PRECOMPILE_FAILED_DETAIL'),
+            detail,
+          );
+          return {
+            success: false,
+            result: {
+              state: 'error',
+              text: this.t('MESSAGE_WITH_DURATION', {
+                message: this.t('PRECOMPILE_FAILED_TITLE'),
+                seconds: ((Date.now() - started) / 1000).toFixed(2),
+              }),
+              fullStdErr: detail,
+            },
+          };
+        }
+
+        buildStatus = 'success';
+        return { success: true, result: { state: 'done', text: '预处理完成' } };
       }
 
       const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');
-      const compileCmd = `node "${compileScriptPath}" "${configFilePath}"`;
       const progressState: DiskCompileProgressState = {
         percent: 0,
         text: this.t('FAST_BUILD_HINT'),
@@ -227,16 +278,17 @@ export class CompileService {
         setTimeout: 0,
         stop: () => this.cancel(),
       });
-      const cmp = await this.runOneShotCommand(compileCmd, (line) => {
+      const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath,
+        ...(options.recordProjectDelivery === true ? { buildDeliveryRequest: configFilePath } : {}) }, (line) => {
         if (this.consumeBuildProgressLine(line.line, boardName, progressState)) {
           return;
         }
         this.publishBuildLog(root, line.line, line.type);
-      });
+      }, root, appDataResourceToken);
       const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
 
       if (this.cancelled) {
-        this.application.finishBuild(false, 'Cancelled');
+        finishReason = 'Cancelled';
         const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
         this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
         this.updateCancelledNotice(text);
@@ -245,7 +297,7 @@ export class CompileService {
 
       if (cmp.exitCode !== 0) {
         const detail = cmp.combined || cmp.stderr + cmp.stdout;
-        this.application.finishBuild(false, 'Compile failed');
+        finishReason = 'Compile failed';
         const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
         return {
@@ -254,8 +306,8 @@ export class CompileService {
         };
       }
 
+      buildStatus = 'success';
       this.compileValidationService.triggerAfterSuccessfulCompile();
-      this.application.finishBuild(true);
       const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
       this.application.updateNotice({
         title: this.t('COMPLETE_TITLE'),
@@ -268,10 +320,37 @@ export class CompileService {
       return { success: true, result: { state: 'done', text: completeText } };
     } catch (e: any) {
       const msg = e?.message || String(e);
-      this.application.finishBuild(false, msg);
+      buildStatus = 'failed';
+      finishReason = msg;
       this.message.error(msg);
       this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, msg);
       return { success: false, result: { state: 'error', text: msg, fullStdErr: msg } };
+    } finally {
+      // Cancellation resolves the UI command promptly, but metadata is another
+      // workspace writer: wait for supervised process-tree cleanup first.
+      await this.stopPending;
+      let metadataError: string | undefined;
+      if (compiledHash) {
+        try {
+          await this.coderBuildInfo.saveBuildInfo(
+            root,
+            compiledHash,
+            this.cancelled ? 'cancelled' : buildStatus,
+            Number(((Date.now() - started) / 1000).toFixed(2)),
+          );
+        } catch (error: any) {
+          metadataError = error?.message || 'Failed to save Coder build metadata.';
+          buildStatus = 'failed';
+          finishReason = metadataError;
+        }
+      }
+      // Keep the build lock until metadata is persisted; a second build must
+      // not reset cancellation state or overwrite this build's result midway.
+      this.application.finishBuild(buildStatus === 'success', finishReason);
+      if (metadataError) {
+        this.handleFailNotice(root, this.t('FAILED_TITLE'), metadataError, metadataError);
+        return { success: false, result: { state: 'error', text: metadataError } };
+      }
     }
   }
 
@@ -474,8 +553,10 @@ export class CompileService {
   }
 
   private runOneShotCommand(
-    command: string,
+    request: { scriptPath: string; configFilePath: string; buildDeliveryRequest?: string },
     onLine?: (line: AilyBuilderOutputLine) => void,
+    buildWorkspace?: string,
+    appDataResourceToken?: string,
   ): Promise<OneShotCommandResult> {
     return new Promise((resolve, reject) => {
       let stdout = '';
@@ -519,7 +600,12 @@ export class CompileService {
       };
 
       this.activeCommandCancel = cancelCommand;
-      sub = this.cmdService.run(command, null, false).subscribe({
+      const streamId = `disk_build_${crypto.randomUUID()}`;
+      this.activeStreamId = streamId;
+      sub = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
+        cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId, appDataResourceToken,
+        ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
+      }).subscribe({
         next: (o: CmdOutput) => {
           if (!this.activeStreamId && o.streamId) {
             this.activeStreamId = o.streamId;

@@ -11,7 +11,6 @@ export const TOOL_I18N_NAMESPACES = {
   'log': ['LOG'],
   'mqtt-debugger': ['MQTT_DEBUGGER'],
   'network-debugger': ['NETWORK_DEBUGGER'],
-  'serial-monitor': ['SERIAL'],
   'user-center': ['USER_CENTER'],
 } as const;
 

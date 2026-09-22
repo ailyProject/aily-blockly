@@ -1,16 +1,20 @@
 import {
   SimulatorHostProviderOperationError,
-  validateSimulatorSubappHostArtifactDescriptorV1,
-  type SceneArtifactRebuildAck,
-  type SceneArtifactRebuildRequest,
   type SimulatorBuildHostProviderAdapterOptions,
   type SimulatorBuildProgressSubscription,
+} from '@aily-project/simulator-host-sdk';
+import {
+  validateSimulatorSubappHostArtifactDescriptorV1,
   type SimulatorSubappHostArtifactDescriptorV1,
   type SimulatorSubappHostBuildProgressErrorCode,
   type SimulatorSubappHostBuildProgressStage,
   type SimulatorSubappHostBuildProgressSubscribeV1,
   type SimulatorSubappHostBuildProgressV1,
-} from '@aily-project/simulator-host-sdk';
+} from '@aily-project/simulator-protocol/host';
+import type {
+  SceneArtifactRebuildAck,
+  SceneArtifactRebuildRequest,
+} from '@aily-project/simulator-protocol/scene';
 
 const TERMINAL_STAGES = new Set<SimulatorSubappHostBuildProgressStage>([
   'completed',

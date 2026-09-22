@@ -1,6 +1,6 @@
 # Aily Blockly 工具开发规范
 
-本文档用于后续新增工具时统一架构、集成方式、通信协议、打包和验证流程。这里的“工具”指通过 App Store、顶部/右侧工具栏或独立窗口打开的功能模块，例如串口监视器、网络调试器、BLE 调试器等。
+本文档用于后续新增工具时统一架构、集成方式、通信协议、打包和验证流程。这里的“工具”指通过 App Store、顶部/右侧工具栏或独立窗口打开的功能模块，例如 AI 串口调试器、网络调试器、BLE 调试器等。
 
 > 子应用交付方式已更新：主软件运行时从当前 `regions.<region>.resource` 读取 `subapp-index.json`（CN 默认为 `https://blockly.yiyu.pro/subapp-index.json`，Global 默认为 `https://rs1.aily.pro/subapp-index.json`），并把用户选择的 npm 包安装到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`。下文仍出现的 `child/tools/<tool-id>` 仅用于旧版本兼容和本地子应用开发，不再是发布版主软件的注册、安装或启动来源。新子应用必须发布 npm 包并进入对应区域的远端索引，宿主会从已安装包的绝对路径启动 `package.json.main`。
 
@@ -114,12 +114,12 @@ Angular 内置工具仍然在 src\app\configs\tool.config.ts的`APP_LIST` 中登
 
 ```ts
 {
-  id: 'serial-monitor',
-  name: 'MENU.TOOL_SERIAL',
-  description: 'APP_STORE.SERIAL_DESC',
+  id: 'code-viewer',
+  name: 'MENU.CODE',
+  description: 'APP_STORE.CODE_DESC',
   action: 'tool-open',
-  data: { type: 'tool', data: 'serial-monitor' },
-  icon: 'fa-light fa-monitor-waveform',
+  data: { type: 'tool', data: 'code-viewer' },
+  icon: 'fa-light fa-rectangle-code',
   enabled: true
 }
 ```
@@ -177,8 +177,8 @@ Angular 内置工具需要：
 示例：
 
 ```html
-@case ("serial-monitor") {
-  <app-serial-monitor></app-serial-monitor>
+@case ("code-viewer") {
+  <app-code-viewer></app-code-viewer>
 }
 ```
 
@@ -319,6 +319,9 @@ Penpal 只负责 iframe 生命周期和宿主能力，不承载高频业务数�
     lang: string;
     theme: 'light' | 'dark' | string;
     platform: string;
+    capabilities: {
+      clipboardWrite: true;
+    };
   };
   childReady(payload: {
     wsConnected?: boolean;
@@ -340,10 +343,17 @@ Penpal 只负责 iframe 生命周期和宿主能力，不承载高频业务数�
   requestClose(): void;
   requestRestart(): void;
   openExternal(url: string): void;
+  writeClipboardText(payload: { text: string }): Promise<{
+    ok: boolean;
+    message?: string;
+  }>;
 }
 ```
 
 `childError()` 表示 child UI 已进入不可恢复错误，父页面会切换 host 状态；普通提示、警告、可恢复错误应调用 `reportHostMessage()`。`reportHostMessage()` 只用于低频宿主通知，默认同时弹出 `message` 并写入主应用 log；大量日志流、扫描结果、硬件事件仍必须走 WebSocket 数据面。
+
+`writeClipboardText()` 对所有子应用开放，无需按 tool id 添加宿主白名单。子应用应优先使用该方法写入系统剪贴板，
+避免 iframe 权限策略导致 `navigator.clipboard` 失败；宿主只接受非空字符串，且不向子应用开放剪贴板读取。
 
 child UI 向父页面暴露：
 

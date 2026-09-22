@@ -73,10 +73,12 @@
     width: 100%;
     min-height: 24px;
     box-sizing: border-box;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    padding-left: 10px;
+    // Keep metadata out of the message width, even for long paths and stacks.
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: start;
+    padding: 2px 10px;
     cursor: pointer;
     color: var(--aily-text-tertiary);
     border-left: 5px solid var(--aily-bg-tertiary);
@@ -103,13 +105,23 @@
     }
 
     .date {
-      margin-right: 10px;
+      grid-column: 1;
+      grid-row: 1 / span 2;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
       color: #3f8839;
     }
 
-    .title {
-      margin-right: 10px;
-      flex-shrink: 0;
+    .title,
+    .text {
+      grid-column: 2;
+      min-width: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+
+      &:empty {
+        display: none;
+      }
     }
 
     .icon {
@@ -119,10 +131,6 @@
 
     .text {
       color: var(--aily-text-primary);
-      flex: 1;
-      min-width: 0;
-      word-wrap: break-word;
-      white-space: pre-wrap; // 保留空白并允许换行
     }
 
     .btns {

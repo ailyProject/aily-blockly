@@ -2,10 +2,12 @@ import type {
   SimulatorEntitlementHostLeaseDecision,
   SimulatorEntitlementHostProviderAdapterOptions,
   SimulatorEntitlementHostStatusSubscription,
+} from '@aily-project/simulator-host-sdk';
+import type {
   SimulatorSubappHostEntitlementLeaseRequestV1,
   SimulatorSubappHostEntitlementStatusSubscribeV1,
   SimulatorSubappHostEntitlementStatusV1,
-} from '@aily-project/simulator-host-sdk';
+} from '@aily-project/simulator-protocol/host';
 
 export type SimulatorEntitlementAccountState =
   | 'checking'

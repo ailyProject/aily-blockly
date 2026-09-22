@@ -2,8 +2,10 @@ import {
   AilyDataStorageEncoding,
   DEFAULT_PROJECT_DATA_THRESHOLD_BYTES,
   isAilyDataRef,
+  isAilyProjectDataValue,
   ProjectDataError,
 } from './project-data.types';
+import { assertProjectDataEnvelope, collectProjectDataPayloads, containsProjectDataReference, projectDataChildPointer } from './project-data-payloads';
 
 export interface ProjectDataSlotPolicy<TValue = unknown> {
   readonly id: string;
@@ -36,7 +38,6 @@ export function findOversizedInlineValues(
   threshold = DEFAULT_PROJECT_DATA_THRESHOLD_BYTES,
 ): OversizedInlineValueDiagnostic[] {
   const diagnostics: OversizedInlineValueDiagnostic[] = [];
-  const visited = new WeakSet<object>();
 
   const inspectCandidate = (
     value: unknown,
@@ -44,42 +45,22 @@ export function findOversizedInlineValues(
     context: BlockContext,
     fieldName?: string,
   ) => {
-    if (value === null || value === undefined || isAilyDataRef(value)) return;
+    assertProjectDataEnvelope(value, jsonPointer);
+    if (value === null || value === undefined || isAilyDataRef(value) || isAilyProjectDataValue(value)) return;
+    if (containsProjectDataReference(value)) {
+      for (const [key, member] of Object.entries(value as object)) {
+        inspectCandidate(member, projectDataChildPointer(jsonPointer, key), context, fieldName);
+      }
+      return;
+    }
     const canonicalLength = getCanonicalLength(value);
     if (canonicalLength <= threshold) return;
     diagnostics.push({ ...context, fieldName, jsonPointer, canonicalLength, threshold });
   };
 
-  const visit = (value: unknown, pointer: string, inheritedContext: BlockContext) => {
-    if (!value || typeof value !== 'object' || isAilyDataRef(value)) return;
-    if (visited.has(value)) return;
-    visited.add(value);
-
-    const record = value as Record<string, unknown>;
-    const context: BlockContext = {
-      blockId: typeof record['id'] === 'string' ? record['id'] : inheritedContext.blockId,
-      blockType: typeof record['type'] === 'string' ? record['type'] : inheritedContext.blockType,
-    };
-    const fields = record['fields'];
-    if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-      for (const [fieldName, fieldValue] of Object.entries(fields as Record<string, unknown>)) {
-        inspectCandidate(fieldValue, `${pointer}/fields/${escapePointer(fieldName)}`, context, fieldName);
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(record, 'extraState')) {
-      inspectCandidate(record['extraState'], `${pointer}/extraState`, context);
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((member, index) => visit(member, `${pointer}/${index}`, context));
-    } else {
-      for (const [key, member] of Object.entries(record)) {
-        visit(member, `${pointer}/${escapePointer(key)}`, context);
-      }
-    }
-  };
-
-  visit(document, '', {});
+  for (const { owner, key, jsonPointer, fieldName, ...context } of collectProjectDataPayloads(document)) {
+    inspectCandidate(owner[key], jsonPointer, context, fieldName);
+  }
   return diagnostics;
 }
 
@@ -91,7 +72,7 @@ export function assertNoOversizedInlineValues(
   if (diagnostics.length === 0) return;
   throw new ProjectDataError(
     'too-large',
-    `Project contains ${diagnostics.length} oversized inline field value(s). Register a Project Data Slot before saving.`,
+    `Project contains ${diagnostics.length} oversized inline payload(s). Prepare Project Data before saving.`,
     { diagnostics },
   );
 }
@@ -104,8 +85,4 @@ function getCanonicalLength(value: unknown): number {
   } catch (error) {
     throw new ProjectDataError('corrupt', 'Project contains a non-serializable field value.', { error });
   }
-}
-
-function escapePointer(value: string): string {
-  return value.replace(/~/g, '~0').replace(/\//g, '~1');
 }

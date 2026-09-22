@@ -292,7 +292,7 @@ export class BuilderService {
         let compiler = ""
         let sdk = ""
 
-        const boardDependencies = await this.projectService.getEffectiveBoardDependencies();
+        const boardDependencies = await this.projectService.getBoardDependencies();
 
         Object.entries(boardDependencies).forEach(([key, version]) => {
           if (key.startsWith('@aily-project/compiler-')) {
