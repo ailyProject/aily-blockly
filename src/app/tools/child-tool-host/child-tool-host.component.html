@@ -1,5 +1,5 @@
 @if (isStandalone) {
-<app-sub-window [title]="titleKey | translate" [winBtns]="['go-main', 'minimize', 'maximize']">
+<app-sub-window [title]="titleKey | translate" [winBtns]="['go-main', 'minimize', 'maximize']" (closeEvent)="close()">
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
   </ng-container>

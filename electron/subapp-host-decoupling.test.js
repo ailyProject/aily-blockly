@@ -9,7 +9,7 @@ const GENERIC_HOST_TARGETS = [
   'src/app/services/integrations/subapps/subapp-activity.service.ts',
   'src/app/services/integrations/subapps/subapp-agent-bridge.service.ts',
   'src/app/tools/child-tool-surface-host',
-  'src/app/tools/aily-chat/components/subapp-activity',
+  'src/app/components/subapp-activity-dock',
 ];
 const FORBIDDEN_DOMAIN_PATTERNS = [
   /serial-debugger/i,

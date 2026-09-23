@@ -38,7 +38,10 @@ export function assertAbsBaselineContext(map: AbsIdentityMap, current: AbsBaseli
   }
   if (map.generation !== current.generation || map.baseAbiHash !== current.currentAbiHash
     || map.pageAbiHash !== current.currentPageAbiHash || map.savedAbiHash !== current.savedAbiHash) {
-    throw new AbsSyncError('ABS_BASELINE_STALE', 'Project state changed since this ABS projection was prepared.');
+    const changed = [map.generation !== current.generation && 'generation', map.baseAbiHash !== current.currentAbiHash && 'workspace',
+      map.pageAbiHash !== current.currentPageAbiHash && 'page', map.savedAbiHash !== current.savedAbiHash && 'saved-abi'].filter(Boolean);
+    throw new AbsSyncError('ABS_BASELINE_STALE', 'Project state changed since this ABS projection was prepared.', undefined, [], {
+      reason: changed.join(','), hint: 'Use the generation returned by the latest library/board operation. Otherwise refresh the current projection once and preserve any draft; do not reinstall libraries or infer that the user changed blocks.' });
   }
 }
 

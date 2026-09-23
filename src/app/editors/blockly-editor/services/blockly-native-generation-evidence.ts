@@ -1,12 +1,14 @@
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import type { captureArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import type { GeneratorMacroEffect } from './generator-project-effects';
 
 /** Evidence from exactly one generation in a disposable replay realm. */
 export interface NativeGenerationEvidence {
   code: string;
   artifacts: ReturnType<typeof captureArduinoGeneratedArtifacts>;
   deferredUi: boolean;
+  projectMacros?: readonly GeneratorMacroEffect[];
 }
 
 /** Compare independent first generations, not successive calls on mutable library state. */
@@ -23,6 +25,9 @@ export function assertNativeGenerationStable(before: NativeGenerationEvidence, a
       });
   };
   if (before.code !== after.code) fail('code', before.code, after.code);
+  if (absJson(before.projectMacros ?? []) !== absJson(after.projectMacros ?? [])) {
+    fail('project-macros', absJson(before.projectMacros ?? []), absJson(after.projectMacros ?? []));
+  }
   if (absJson(before.artifacts) !== absJson(after.artifacts)) {
     const left = before.artifacts ?? [], right = after.artifacts ?? [];
     const names = new Set([...left, ...right].map(item => item.fileName));

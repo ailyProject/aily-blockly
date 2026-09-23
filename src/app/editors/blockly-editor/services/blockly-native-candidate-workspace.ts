@@ -161,15 +161,25 @@ export class NativeCandidateWorkspace {
       this.models.assertCurrent();
     };
     const assertValues = () => {
+      const overwritten: string[] = [];
       for (const block of blocks) {
         for (const { name, value } of this.requested.get(block.id)?.fields ?? []) {
-          if (!sameJsonValue(block.getField(name)?.saveState(), value)) throw new Error(`Native configuration overwrote field: ${name}.`);
+          const configured = block.getField(name)?.saveState();
+          if (!sameJsonValue(configured, value)) {
+            const brief = (item: unknown) => String(JSON.stringify(item)).slice(0, 100);
+            overwritten.push(`${block.type}.${name}: requested ${brief(value)}, configured ${brief(configured)}`);
+          }
         }
         for (const [name, id] of this.connections.get(block) ?? []) {
           const target = name === 'next' ? block.getNextBlock() : block.getInputTargetBlock(name);
           if ((target?.id ?? null) !== id) throw new Error(`Native configuration overwrote connection: ${name}.`);
         }
       }
+      if (overwritten.length) throw new AbsSyncError('ABS_NATIVE_CONFIGURATION_CONFLICT',
+        `Native configuration overwrote field values (${overwritten.length}): ${overwritten.slice(0, 12).join('; ')}.`, undefined, [], {
+          reason: 'native-initialization-overwrites-explicit-fields',
+          hint: 'Board/library initialization conflicts with explicit ABS values. Check the listed configured values against the intended board, including hidden fields. Use matching values when intended; do not change generation or upgrade libraries to bypass this conflict.',
+        });
       this.assertClean();
     };
     assertOwnership(); assertValues();

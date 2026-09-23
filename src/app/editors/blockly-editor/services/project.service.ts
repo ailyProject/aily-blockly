@@ -14,6 +14,7 @@ import { sha256Hex } from '../../../utils/crypto.utils';
 import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
+import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave } from './prepared-project-save';
 
 
@@ -190,6 +191,7 @@ export class _ProjectService {
   /** Shared post-commit output publication. No ABI save, Generator execution or clean-state mutation. */
   async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
     assertCurrent();
+    if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
     this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
     await this.publishPreparedCode(path, generated, assertCurrent);
   }

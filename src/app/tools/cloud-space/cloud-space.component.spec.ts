@@ -79,6 +79,8 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(command).not.toContain('"-xr!.*"');
     expect(command).toContain('"-x!sketch/preprocess.json"');
     expect(command).toContain('"-x!sketch/library-cache.json"');
+    expect(command).toContain('"-x!sketch/target-compile.json"');
+    expect(command).toContain('"-x!sketch/compile-preprocess-*.json"');
     expect(command).toContain('"-xr!.build"');
   });
 

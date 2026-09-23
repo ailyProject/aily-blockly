@@ -32,6 +32,7 @@ const {
 const { mergeConfigChanges } = require("./config-persistence");
 const { resolveAilyAppDataPath } = require("./appdata-path");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
+const { refreshApplicationMenu } = require('./application-menu');
 const {
   createDevelopmentProtocolArgs,
   normalizeBuildProduct,
@@ -2929,6 +2930,8 @@ app.on("ready", async () => {
     ensureRosettaIfNeededOnDarwin();
     loadEnv();
     applyAppIdentity(process.env.AILY_BUILD_PRODUCT);
+    // Run after Electron's ready listeners have installed the default native menu.
+    setImmediate(() => refreshApplicationMenu({ app, Menu }));
   } catch (error) {
     console.error("loadEnv error: ", error);
   }

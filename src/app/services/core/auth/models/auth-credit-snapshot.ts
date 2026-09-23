@@ -16,6 +16,8 @@ export function normalizeAuthCreditSnapshot(value: unknown): AuthCreditSnapshot 
 export function normalizeCreditLedgerSnapshot(value: unknown): AuthCreditSnapshot | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const data = value as Record<string, unknown>;
+  // The ledger endpoint returns micros directly; older host snapshots add a unit.
+  // Explicit non-Credit units must never be interpreted as monetary balances.
   if (data['unit'] !== undefined && data['unit'] !== 'credits') return undefined;
   const available = data['available_micros'];
   const reserved = data['reserved_micros'];
@@ -23,9 +25,9 @@ export function normalizeCreditLedgerSnapshot(value: unknown): AuthCreditSnapsho
   const reset = data['next_reset_at'] ?? null;
   const plan = data['subscription_plan'] ?? null;
   if (!isMicros(available) || !isMicros(reserved)) return undefined;
-  if (granted !== null && !isMicros(granted)) return undefined;
-  if (reset !== null && (typeof reset !== 'string' || !Number.isFinite(Date.parse(reset)))) return undefined;
-  if (plan !== null && (typeof plan !== 'string' || !plan.trim())) return undefined;
+  if (granted != null && !isMicros(granted)) return undefined;
+  if (reset != null && (typeof reset !== 'string' || !Number.isFinite(Date.parse(reset)))) return undefined;
+  if (plan != null && (typeof plan !== 'string' || !plan.trim())) return undefined;
   return {
     available_micros: available,
     reserved_micros: reserved,

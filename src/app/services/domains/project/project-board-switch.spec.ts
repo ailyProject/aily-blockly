@@ -120,6 +120,90 @@ describe('board switch project persistence', () => {
     expect(writes.length).toBe(1);
     expect(JSON.parse(writes[0][1]).entry).toBe('firmware/app.cpp');
   });
+  it('replaces only receipted Coder template libraries while retaining user additions and version overrides', async () => {
+    const service: any = fixture();
+    window['path'].isExists = (value: string) => value.endsWith('/template_arduino');
+    window['fs'].readFileSync = jasmine.createSpy('read').and.callFake((value: string) => JSON.stringify(
+      value.includes('/board-old/')
+        ? { dependencies: { '@aily-project/board-old': '1', '@aily-project/lib-onebutton': '^1', '@aily-project/lib-display': '^1' } }
+        : { dependencies: { [target]: '1', '@aily-project/lib-linkbit_onebutton': '^2', '@aily-project/lib-display': '^3' } },
+    ));
+    service.isAilyCodeProject = () => true;
+    service.getPackageJson = async () => ({ name: 'coder-project', type: 'coder', entry: 'firmware/app.cpp',
+      coderBoardTemplateDependencies: { schemaVersion: 1, boardPackageName: '@aily-project/board-old', dependencies: {
+        '@aily-project/lib-onebutton': '^1', '@aily-project/lib-display': '^1',
+      } }, dependencies: {
+        '@aily-project/board-old': '1', '@aily-project/lib-onebutton': '^1', '@aily-project/lib-display': '^2', '@aily-project/lib-user': '4',
+      } });
+    for (const method of ['applyAilyCodeBoardToPackageManifest', 'filterAilyCodeUserPreservedDeps', 'normalizeAilyCodeBoardDepRange']) {
+      service[method] = (ProjectService.prototype as any)[method];
+    }
+    await ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' });
+    const manifest = JSON.parse(window['fs'].writeFileSync.calls.mostRecent().args[1]);
+    expect(manifest.dependencies).toEqual({
+      [target]: '^1', '@aily-project/lib-linkbit_onebutton': '^2', '@aily-project/lib-display': '^2', '@aily-project/lib-user': '4',
+    });
+    expect(manifest.entry).toBe('firmware/app.cpp');
+    expect(manifest.coderBoardTemplateDependencies).toEqual({ schemaVersion: 1, boardPackageName: target,
+      dependencies: { '@aily-project/lib-linkbit_onebutton': '^2' },
+    });
+    expect(window['fs'].readFileSync.calls.allArgs().some(args => args[0].includes('/board-old/'))).toBeFalse();
+    expect(window['fs'].writeFileSync.calls.allArgs().map(args => args[0])).toEqual(['/project/package.json']);
+  });
+
+  it('keeps historical same-range user dependencies unowned across consecutive Coder board switches', async () => {
+    const service: any = fixture();
+    window['path'].isExists = () => true;
+    window['fs'].readFileSync = () => JSON.stringify({ dependencies: {
+      [target]: '1', '@aily-project/lib-onebutton': '^1', '@aily-project/lib-new-template': '^2',
+    } });
+    service.isAilyCodeProject = () => true;
+    service.getPackageJson = async () => ({ name: 'coder-project', type: 'coder', dependencies: {
+      '@aily-project/board-old': '1', '@aily-project/lib-onebutton': '^1',
+    } });
+    for (const method of ['applyAilyCodeBoardToPackageManifest', 'filterAilyCodeUserPreservedDeps', 'normalizeAilyCodeBoardDepRange']) {
+      service[method] = (ProjectService.prototype as any)[method];
+    }
+    await ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' });
+    const manifest = JSON.parse(window['fs'].writeFileSync.calls.mostRecent().args[1]);
+    expect(manifest.dependencies['@aily-project/lib-onebutton']).toBe('^1');
+    expect(manifest.coderBoardTemplateDependencies.dependencies).toEqual({ '@aily-project/lib-new-template': '^2' });
+
+    const next: any = { dependencies: { '@aily-project/board-third': '1' } };
+    service.applyAilyCodeBoardToPackageManifest(next, { name: '@aily-project/board-third', version: '1' }, manifest, target);
+    expect(next.dependencies['@aily-project/lib-onebutton']).toBe('^1');
+    expect(next.dependencies['@aily-project/lib-new-template']).toBeUndefined();
+    expect(next.coderBoardTemplateDependencies.dependencies).toEqual({});
+  });
+
+  it('records template-injected dependencies at the real Coder project creation entry', () => {
+    const service: any = fixture();
+    service.normalizeAilyCodeBoardDepRange = (ProjectService.prototype as any).normalizeAilyCodeBoardDepRange;
+    (ProjectService.prototype as any).updateNewProjectPackageJson.call(service, '/project', {
+      name: 'My Coder Project', board: { name: target, version: '1' },
+    }, { coderTemplate: true });
+    const manifest = JSON.parse(window['fs'].writeFileSync.calls.mostRecent().args[1]);
+    expect(manifest.type).toBe('coder');
+    expect(manifest.coderBoardTemplateDependencies).toEqual({
+      schemaVersion: 1, boardPackageName: target, dependencies: { '@aily-project/lib-core': '1' },
+    });
+  });
+
+  it('does not trust a template receipt belonging to another board', () => {
+    const service: any = fixture();
+    for (const method of ['applyAilyCodeBoardToPackageManifest', 'filterAilyCodeUserPreservedDeps', 'normalizeAilyCodeBoardDepRange']) {
+      service[method] = (ProjectService.prototype as any)[method];
+    }
+    const next: any = { dependencies: { [target]: '1' } };
+    service.applyAilyCodeBoardToPackageManifest(next, { name: target, version: '1' }, {
+      type: 'coder', dependencies: { '@aily-project/board-old': '1', '@aily-project/lib-onebutton': '^1' },
+      coderBoardTemplateDependencies: { schemaVersion: 1, boardPackageName: '@aily-project/board-unrelated', dependencies: {
+        '@aily-project/lib-onebutton': '^1',
+      } },
+    }, '@aily-project/board-old');
+    expect(next.dependencies['@aily-project/lib-onebutton']).toBe('^1');
+  });
+
   it('aborts manifest writes if the project changes during local install', async () => {
     const service = fixture(); let count = 0;
     service.cmdService.runAsyncChecked.and.callFake(async () => { if (++count === 2) service.currentProjectPath = '/other'; });

@@ -11,6 +11,7 @@ import { nativeCandidateValues } from './blockly-native-values';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
 import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
+import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
 import { createNativeCandidateGraphics } from './blockly-native-graphics';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
@@ -142,6 +143,7 @@ export function installNativeCandidateRealm(): void {
       if (workspace.getAllBlocks(false).length || workspace.getAllVariables().length) throw new Error('Native registration created workspace state.');
       registering = false;
       if (generator) wrapProjectDataGeneratorFunctions(generator, Object.keys(generator.forBlock), readPrepared);
+      if (generator) new GeneratorProjectEffects(realm).wrap(generator);
       if (generator) for (const [blockType, handler] of Object.entries(generator.forBlock)) {
         generator.forBlock[blockType] = function (...args) {
           try { const value = handler.apply(this, args); assertClean(); return value; }

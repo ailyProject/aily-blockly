@@ -1,7 +1,7 @@
 import { test as base, _electron, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -38,6 +38,7 @@ export async function launchAilyElectron(options: {
   environment?: Readonly<Record<string, string>>;
   appDataPath?: string;
   logConsole?: boolean;
+  config?: Readonly<Record<string, unknown>>;
 } = {}): Promise<LaunchedAilyElectron> {
   assertElectronCanLaunch();
 
@@ -46,6 +47,9 @@ export async function launchAilyElectron(options: {
 
   let app: ElectronApplication;
   try {
+    if (options.config) {
+      await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(options.config), 'utf8');
+    }
     app = await _electron.launch({
       args: ['.', `--user-data-dir=${userDataDir}`],
       cwd: ROOT,

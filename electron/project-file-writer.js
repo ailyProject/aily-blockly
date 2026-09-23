@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { MAX_PROJECT_FILE_BYTES: MAX_BYTES, projectFileHash: hash, projectFileFault: fault,
   projectFileGuard, createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
-const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
+const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json']);
 const PROJECT_FILE_PUBLICATION_VERSION = 2;
 const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
 

@@ -60,6 +60,73 @@ describe('prepared project code boundary', () => {
     expect(consume).not.toHaveBeenCalled(); expect(generator.workspaceToCode).not.toHaveBeenCalled();
   });
 
+  it('prepares background code without acquiring an exclusive edit lease', async () => {
+    const editor = productEditor();
+    const acquire = spyOn(editor, 'acquireWorkspaceEditLease').and.callThrough();
+    const consume = jasmine.createSpy('consume').and.callFake((_prepared, assertCurrent) => {
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse(); assertCurrent();
+    });
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeTrue();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(consume).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers background work when editing starts while waiting in the project queue', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    let editing = false;
+    const pending = editor.runWithBackgroundProjectCode(consume, () => editing);
+    editing = true;
+    expect(await pending).toBeFalse();
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+    editing = false;
+    expect(await editor.runWithBackgroundProjectCode(consume, () => editing)).toBeTrue();
+  });
+
+  it('lets edits continue during resource preparation and discards stale background results', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => {
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+      workspace.createVariable('typed while preparing');
+    });
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeFalse();
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.resolveTo();
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeTrue();
+  });
+
+  it('rechecks editor activity after resource awaits even when the document has not changed', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    let editing = false;
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => { editing = true; });
+    expect(await editor.runWithBackgroundProjectCode(consume, () => editing)).toBeFalse();
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it('keeps input available during background publication and retries an intervening edit', async () => {
+    const editor = productEditor();
+    expect(await editor.runWithBackgroundProjectCode(async (_prepared, assertCurrent) => {
+      await Promise.resolve();
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+      workspace.createVariable('next edit');
+      assertCurrent();
+    }, () => false)).toBeFalse();
+    expect(await editor.runWithBackgroundProjectCode(() => {}, () => false)).toBeTrue();
+  });
+
+  it('drops background results after a runtime replacement without hiding real generator failures', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => runtime.updateBoardConfig({changed: true}));
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeFalse();
+    expect(consume).not.toHaveBeenCalled();
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.resolveTo();
+    generator.workspaceToCode.and.throwError('bad generator');
+    await expectAsync(editor.runWithBackgroundProjectCode(consume, () => false)).toBeRejectedWithError('bad generator');
+    expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+  });
+
   it('guards consumer continuations and releases the lease after state changes', async () => {
     const editor = productEditor();
     await expectAsync(editor.runWithPreparedProjectCode(async (_prepared, assertCurrent) => {

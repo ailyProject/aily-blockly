@@ -33,6 +33,7 @@ import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-l
 import { createSimulatorSceneGpioBuildMetadata } from '../../../integrations/simulator/simulator-scene-gpio-build-metadata';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
+import { publishGeneratorMacros } from './prepared-generator-config';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
 import {
@@ -223,6 +224,7 @@ export class _BuilderService {
       'workspace_to_code',
       () => this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
         if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed.');
+        await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
         await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, writeSketch ? prepared.code : undefined);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
@@ -257,6 +259,7 @@ export class _BuilderService {
         // The prepared revision is guarded for the entire publication, including
         // artifact writes; record the code/map snapshot before that async I/O.
         if (checkpoint) checkpoint.inputCapturedAt = Date.now();
+        await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
         await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);

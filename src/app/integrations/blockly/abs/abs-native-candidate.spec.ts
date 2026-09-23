@@ -199,7 +199,12 @@ describe('independent native candidate Realm', () => {
     const order = nativeAbsArgumentOrder(definitions.find(block => block.type === rtd.type), rtd.rows as unknown as NativeInputDeclaration[]);
     expect(order?.map(arg => arg.name)).toEqual(['VAR', 'SPI_MODE', 'CS_PIN', 'WIRES', 'SW_SCK_PIN', 'SW_MOSI_PIN', 'SW_MISO_PIN']);
     request.blocks[0].fields = [{ name: 'PIN', value: '18' }, { name: 'TYPE', value: 'DHT22' }];
-    await expectAsync(run(request)).toBeRejectedWithError(/overwrote field/);
+    await run(request).then(() => fail('Expected an explicit configuration conflict'), error => {
+      expect(error.code).toBe('ABS_NATIVE_CONFIGURATION_CONFLICT');
+      expect(error.message).toMatch(/overwrote field/);
+      expect(error.message).toContain('dht_init.PIN: requested "18", configured');
+      expect(error.diagnostic.reason).toBe('native-initialization-overwrites-explicit-fields');
+    });
   });
 
   it('does not silently skip missing fields, invalid values or duplicate identities', async () => {

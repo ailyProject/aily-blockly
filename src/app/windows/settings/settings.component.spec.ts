@@ -6,6 +6,7 @@ describe('SettingsComponent development mode preference', () => {
   function createComponent(configService: {
     getDevelopmentModePreference: jasmine.Spy;
     setDevelopmentModePreference: jasmine.Spy;
+    isCoderProduct?: jasmine.Spy;
   }): SettingsComponent {
     return new SettingsComponent(
       {} as any,
@@ -47,6 +48,24 @@ describe('SettingsComponent development mode preference', () => {
 
     expect(configService.setDevelopmentModePreference).toHaveBeenCalledWith('blockly', 'settings');
   });
+
+  for (const coderProduct of [true, false]) {
+    it(`uses the ${coderProduct ? 'Coder' : 'Blockly'} product identity for settings sections, independently of the shared preference`, () => {
+      const configService = {
+        isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(coderProduct),
+        getDevelopmentModePreference: jasmine.createSpy('getDevelopmentModePreference').and.returnValue(coderProduct ? 'blockly' : 'coder'),
+        setDevelopmentModePreference: jasmine.createSpy('setDevelopmentModePreference'),
+        data: { blockly: { renderer: 'zelos', minimap: true } },
+      };
+      const component = createComponent(configService);
+
+      expect(component.items.some(item => item.name === 'SETTINGS.SECTIONS.BLOCKLY')).toBe(!coderProduct);
+      expect(component.items.some(item => item.name === 'SETTINGS.SECTIONS.THEME')).toBeTrue();
+      expect(configService.data.blockly).toEqual({ renderer: 'zelos', minimap: true });
+      expect(configService.setDevelopmentModePreference).not.toHaveBeenCalled();
+      component.ngOnDestroy();
+    });
+  }
 });
 
 describe('Settings cleanup dialogs', () => {

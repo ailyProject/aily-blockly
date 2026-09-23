@@ -92,7 +92,7 @@ function createController(owner, calls) {
 async function loadRegistryModule() {
   const result = await esbuild.build({
     stdin: {
-      contents: "export { ChildAppHostRegistryService } from './src/app/services/child-app-host-registry.service.ts';",
+      contents: "export { ChildAppHostRegistryService } from './src/app/services/integrations/subapps/child-app-host-registry.service.ts';",
       resolveDir: process.cwd(),
       sourcefile: 'child-app-host-registry-test-entry.ts',
       loader: 'ts',

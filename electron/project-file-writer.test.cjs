@@ -55,7 +55,7 @@ test('legacy shadow migration rechecks ABS context under the publication lock', 
 });
 test('creates missing mirrors and supports exact no-op commits', async () => {
   const root = project();
-  for (const name of ['project.abi', 'project.abs', 'project.abs.map.json']) {
+  for (const name of ['project.abi', 'project.abs', 'project.abs.map.json', 'package.json']) {
     assert.equal((await replaceProjectText(request(root, 'value', null, name), guard)).status, 'COMMITTED');
     assert.equal((await replaceProjectText(request(root, 'value', 'value', name), guard)).status, 'COMMITTED');
   } assertClean(root);
@@ -138,7 +138,7 @@ test('reports UNKNOWN when bytes cannot be inspected after rename', async () => 
 });
 test('rejects traversal, extra files, nonabsolute roots and malformed hashes', async () => {
   const root = project(); initialize(root);
-  for (const name of ['../outside', 'sub/project.abi', 'project.abi:stream', 'C:/outside', 'package.json']) {
+  for (const name of ['../outside', 'sub/project.abi', 'project.abi:stream', 'C:/outside', 'package-lock.json']) {
     assert.equal((await replaceProjectText(request(root, 'after', 'before', name), guard)).code, 'PROJECT_FILE_INVALID');
   }
   for (const value of [{ ...request(root, 'after'), expectedHash: 'invalid' }, { ...request(root, 'after'), projectPath: 'relative' }]) {

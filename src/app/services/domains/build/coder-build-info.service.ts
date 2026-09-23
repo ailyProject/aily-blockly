@@ -8,6 +8,9 @@ const BUILD_MANIFEST_FIELDS = [
 ];
 const GENERATED_SKETCH_FILES = new Set([
   'build-config.json', 'upload-config.json', 'preprocess.json', 'library-cache.json',
+  // Compiler context includes the manifest hash and changes on every build.
+  // It is generated output, never an input to the publication source hash.
+  'target-compile.json',
 ]);
 const CACHE_DIRECTORIES = new Set(['.git', '.aily', '.build', '.temp', 'node_modules']);
 
@@ -52,7 +55,9 @@ export class CoderBuildInfoService {
         const childPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
         if (entry._isDirectory) {
           if (!CACHE_DIRECTORIES.has(entry.name)) collect(childPath);
-        } else if (entry._isFile && (relativePath || !GENERATED_SKETCH_FILES.has(entry.name))) {
+        } else if (entry._isFile && entry.name !== '.DS_Store'
+          && (relativePath || (!GENERATED_SKETCH_FILES.has(entry.name)
+            && !/^compile-preprocess-.+\.json$/.test(entry.name)))) {
           // Base64 preserves binary library inputs as well as text sources.
           files.push([childPath, window['fs'].readFileAsBase64(
             this.electronService.pathJoin(projectPath, 'sketch', childPath),

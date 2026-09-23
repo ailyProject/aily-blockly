@@ -42,6 +42,9 @@ import {
 import {
   CODER_TEMPLATE_DIRECTORY,
   applyCoderProjectPackageConfig,
+  type CoderProjectPackageManifest,
+  readCoderBoardTemplateDependencies,
+  recordCoderBoardTemplateDependencies,
   copyCoderArduinoTemplate,
   isCoderProjectPackage,
   resolveCoderProjectCreationTemplate,
@@ -647,20 +650,21 @@ export class ProjectService {
   }
 
   /**
-   * 切换后保留的用户库：排除主板/模板自带的 lib-core-*（与新建 Coder 仅声明主板一致）。
+   * 切换后保留用户库；仅移除项目来源记录确认且用户未改版本的模板依赖。
    */
   private filterAilyCodeUserPreservedDeps(
     deps: Record<string, string> | undefined,
+    previousTemplateDeps: Record<string, string> = {},
   ): Record<string, string> {
     return Object.fromEntries(
-      Object.entries(deps || {}).filter(([key]) => {
+      Object.entries(deps || {}).filter(([key, version]) => {
         if (isAilyBoardPackageName(key) || key.startsWith('@aily-project/coder-')) {
           return false;
         }
         if (isAilyCoreLibraryPackageName(key)) {
           return false;
         }
-        return true;
+        return previousTemplateDeps[key] !== version;
       }),
     );
   }
@@ -669,10 +673,14 @@ export class ProjectService {
   private applyAilyCodeBoardToPackageManifest(
     packageJson: Record<string, unknown>,
     boardInfo: { name: string; version: string },
-    currentPackageJson?: { dependencies?: Record<string, string> },
+    currentPackageJson?: CoderProjectPackageManifest,
+    previousBoardPackageName?: string,
   ): void {
     const boardRange = this.normalizeAilyCodeBoardDepRange(boardInfo.version);
-    const preserved = this.filterAilyCodeUserPreservedDeps(currentPackageJson?.dependencies);
+    const previousTemplateDeps = readCoderBoardTemplateDependencies(currentPackageJson, previousBoardPackageName);
+    const preserved = this.filterAilyCodeUserPreservedDeps(currentPackageJson?.dependencies, previousTemplateDeps);
+    const templateDependencies = (packageJson['dependencies'] as Record<string, string> | undefined) || {};
+    recordCoderBoardTemplateDependencies(packageJson, boardInfo.name, templateDependencies, preserved);
 
     packageJson['dependencies'] = {
       ...((packageJson['dependencies'] as Record<string, string> | undefined) || {}),
@@ -982,6 +990,7 @@ export class ProjectService {
     if (options?.coderTemplate) {
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
       const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
+      recordCoderBoardTemplateDependencies(packageJson, boardPackageName, packageJson.dependencies || {});
       applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange);
     }
 
@@ -3175,7 +3184,6 @@ export class ProjectService {
       this.configService.recordBoardUsage(normalizedBoardInfo.name);
       const currentBoardModule = await this.getBoardModule();
       assertCurrentProject();
-
       // 1. npm install 安装boardInfo.name@boardInfo.version 到 appDataPath（与 projectNew 一致）
       const appDataPath = window['path'].getAppDataPath();
       const newBoardPackage = this.buildNpmPackageSpec(normalizedBoardInfo.name, normalizedBoardInfo.version);
@@ -3238,7 +3246,7 @@ export class ProjectService {
 
         if (isAilyCode) {
           // template_arduino 决定基础库；用户自装库继续保留，源码不随开发板切换被覆盖。
-          this.applyAilyCodeBoardToPackageManifest(newPackageJson, normalizedBoardInfo, currentPackageJson);
+          this.applyAilyCodeBoardToPackageManifest(newPackageJson, normalizedBoardInfo, currentPackageJson, currentBoardModule);
           applyCoderProjectPackageConfig(
             newPackageJson,
             normalizedBoardInfo.name,

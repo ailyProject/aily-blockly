@@ -30,6 +30,12 @@ export class NativeUiTasks {
     return id;
   }
   clear(id: number): void { this.pending.delete(id); }
+  /** Only the captured Blockly core queueRender implementation uses this scope.
+   * Scheduled work still passes the finite queue and semantic readback checks. */
+  coreRender<T>(action: () => T): T {
+    const previous = this.forbidden; this.forbidden = false;
+    try { return action(); } finally { this.forbidden = previous; }
+  }
   withoutScheduling<T>(action: () => T): T {
     const previous = this.forbidden; this.forbidden = true;
     try { const value = action(); this.assertClean(); return value; }

@@ -38,6 +38,11 @@ const {
     resolveChildWindowClass,
     resolveChildWindowMinimumSize,
 } = require('./child-window-layout');
+const {
+    attachMacWindowCloseBridge,
+    authorizeRendererWindowClose,
+    shouldUseNativeMacFrame,
+} = require('./mac-window-controls');
 const { exec, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -595,13 +600,14 @@ function pushPooledSubWindow(loadBasePage) {
     }
     try {
         const win = new BrowserWindow({
-            frame: false,
+            frame: shouldUseNativeMacFrame(),
             show: false,
             opacity: 0,
             backgroundColor: getSubWindowBackgroundColor(),
             skipTaskbar: true,
             autoHideMenuBar: true,
             thickFrame: true,
+            closable: true,
             titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
             alwaysOnTop: false,
             width: 800,
@@ -1323,6 +1329,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
      */
     const attachSubWindowLifecycleListeners = (subWindow, windowUrl) => {
         subWindow.on('focus', () => moveFocusedWindowToTop(subWindow));
+        attachMacWindowCloseBridge(
+            subWindow,
+            () => {
+                if (!subWindow.isDestroyed() && !subWindow.webContents.isDestroyed()) {
+                    subWindow.webContents.send('window-close-request');
+                }
+            },
+            { isQuitting: () => applicationIsQuitting },
+        );
 
         subWindow.on('enter-full-screen', () => {
             try {
@@ -1397,13 +1412,14 @@ function registerWindowHandlers(mainWindow, options = {}) {
         let win;
         try {
             win = new BrowserWindow({
-                frame: false,
+                frame: shouldUseNativeMacFrame(),
                 show: false,
                 opacity: 0,
                 backgroundColor: getSubWindowBackgroundColor(),
                 skipTaskbar: true,
                 autoHideMenuBar: true,
                 thickFrame: true,
+                closable: true,
                 titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
                 alwaysOnTop: false,
                 width: 700,
@@ -1694,12 +1710,13 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         if (!subWindow) {
             subWindow = new BrowserWindow({
-                frame: false,
+                frame: shouldUseNativeMacFrame(),
                 show: false,
                 opacity: 0,
                 backgroundColor: getSubWindowBackgroundColor(),
                 autoHideMenuBar: true,
                 thickFrame: true,
+                closable: true,
                 titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
                 alwaysOnTop,
                 width,
@@ -2004,6 +2021,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             // Attempt to terminate any residual helper processes on exit.
             terminateAilyProcess();
         } else {
+            authorizeRendererWindowClose(senderWindow);
             senderWindow.close();
         }
     });

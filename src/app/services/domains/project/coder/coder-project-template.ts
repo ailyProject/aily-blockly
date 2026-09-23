@@ -30,6 +30,39 @@ export function isCoderProjectPackage(manifest: unknown): manifest is CoderProje
     && (manifest as CoderProjectPackageManifest).type === 'coder';
 }
 
+const CODER_TEMPLATE_LIBRARY = /^@aily-project(?:-coder)?\/lib-[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Only an explicit project receipt proves that a dependency was injected by its board template. */
+export function readCoderBoardTemplateDependencies(
+  manifest: CoderProjectPackageManifest | undefined,
+  boardPackageName: string | undefined,
+): Record<string, string> {
+  if (!isCoderProjectPackage(manifest) || !boardPackageName || !manifest.dependencies?.[boardPackageName]) return {};
+  const receipt = manifest['coderBoardTemplateDependencies'] as {
+    schemaVersion?: unknown; boardPackageName?: unknown; dependencies?: unknown;
+  } | undefined;
+  if (receipt?.schemaVersion !== 1 || receipt.boardPackageName !== boardPackageName
+    || !receipt.dependencies || typeof receipt.dependencies !== 'object' || Array.isArray(receipt.dependencies)) return {};
+  return Object.fromEntries(Object.entries(receipt.dependencies)
+    .filter(([name, range]) => CODER_TEMPLATE_LIBRARY.test(name) && typeof range === 'string' && range.trim()));
+}
+
+/** Never claim an existing user dependency, even when the new template requests the same version. */
+export function recordCoderBoardTemplateDependencies(
+  manifest: CoderProjectPackageManifest,
+  boardPackageName: string,
+  templateDependencies: Record<string, string>,
+  preservedDependencies: Record<string, string> = {},
+): void {
+  manifest['coderBoardTemplateDependencies'] = {
+    schemaVersion: 1,
+    boardPackageName,
+    dependencies: Object.fromEntries(Object.entries(templateDependencies)
+      .filter(([name, range]) => CODER_TEMPLATE_LIBRARY.test(name) && typeof range === 'string' && range.trim()
+        && !Object.prototype.hasOwnProperty.call(preservedDependencies, name))),
+  };
+}
+
 export function applyCoderProjectPackageConfig(
   manifest: CoderProjectPackageManifest,
   boardPackageName: string,

@@ -89,7 +89,8 @@ describe('Coder build metadata', () => {
   it('ignores generated caches and cloud metadata and normalizes manifest key order', async () => {
     const hash = await metadata.updateCodeHash(root);
     for (const path of ['sketch/build-config.json', 'sketch/preprocess.json', 'sketch/library-cache.json',
-      'sketch/upload-config.json', '.aily/build/main.bin', 'sketch/.build/cache']) files.set(`${root}/${path}`, 'output');
+      'sketch/upload-config.json', 'sketch/target-compile.json', 'sketch/compile-preprocess-abcd.json', 'sketch/.DS_Store',
+      'sketch/src/.DS_Store', '.aily/build/main.bin', 'sketch/.build/cache']) files.set(`${root}/${path}`, 'output');
     const manifest = readManifest();
     writeManifest({ dependencies: manifest.dependencies, entry: manifest.entry, type: manifest.type,
       cloudId: '123', nickname: 'Renamed', buildInfo: { lastBuildTime: 'changed' } });
@@ -159,6 +160,22 @@ describe('Coder build metadata', () => {
     expect((await service.runCompileFromDisk()).success).toBeTrue();
     expect(readManifest().buildInfo.lastBuildCode).toBe(before);
     expect(readManifest().codeHash).not.toBe(before);
+  });
+
+  it('keeps a successful Coder build publishable after compiler context is regenerated and saved', async () => {
+    files.set(`${root}/sketch/target-compile.json`, JSON.stringify({ inputs: [{ sha256: 'previous-manifest' }] }));
+    const service = createCompiler(() => {
+      files.set(`${root}/sketch/target-compile.json`, JSON.stringify({ inputs: [{ sha256: 'current-manifest' }] }));
+      return 0;
+    });
+    expect((await service.runCompileFromDisk()).success).toBeTrue();
+    await metadata.updateCodeHash(root);
+    expect(readManifest().buildInfo.lastBuildStatus).toBe('success');
+    expect(readManifest().codeHash).toBe(readManifest().buildInfo.lastBuildCode);
+    // Same-named files under user sources are not the generated root context.
+    files.set(`${root}/sketch/src/target-compile.json`, 'user input');
+    await metadata.updateCodeHash(root);
+    expect(readManifest().codeHash).not.toBe(readManifest().buildInfo.lastBuildCode);
   });
 
   it('records preprocess-only completion as successful and releases the build lock once', async () => {

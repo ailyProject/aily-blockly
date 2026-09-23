@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "src/app/windows/settings/settings.component.spec.ts",
+    "src/app/utils/application-branding.spec.ts",
+    "src/**/*.d.ts"
+  ]
+}

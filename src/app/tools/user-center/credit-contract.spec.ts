@@ -26,8 +26,24 @@ const payload = {
   next_reset_at: '2026-09-15T00:00:00Z',
 };
 
-// CreditSnapshotResponse from services/auth/src/schemas/credit.py, not ResponseBaseModel.
-const { unit: _unit, ...ledgerPayload } = payload;
+// Public /api/v1/credits/me response, rather than the legacy quota-info route.
+const ledgerPayload = {
+  balance_micros: 29_993_290,
+  reserved_micros: 0,
+  overage_enabled: false,
+  overage_limit_micros: 0,
+  overage_used_micros: 0,
+  spending_cap_micros: 0,
+  grace_per_call_micros: 0,
+  uncovered_micros: 0,
+  available_micros: 29_993_290,
+  included_granted_micros: 30_000_000,
+  included_remaining_micros: 29_993_290,
+  included_used_micros: 6_710,
+  included_percent_used: 0.022366666666666666,
+  next_reset_at: payload.next_reset_at,
+  subscription_plan: 'free',
+};
 
 describe('Credit quota contract', () => {
   it('preserves integer micros and the server reset time', () => {
@@ -36,6 +52,47 @@ describe('Credit quota contract', () => {
     expect(snapshot?.creditSnapshot?.available_micros).toBe(29_993_290);
     expect(snapshot?.creditSnapshot?.next_reset_at).toBe(payload.next_reset_at);
     expect(snapshot?.quotaSnapshots).toBeUndefined();
+  });
+
+  it('accepts the public ledger response without a synthetic unit field', () => {
+    const snapshot = normalizeAuthQuotaInfoSnapshotPayload(ledgerPayload, { source: 'token' });
+    expect(snapshot?.creditSnapshot).toEqual(normalizeAuthCreditSnapshot(payload));
+    expect(snapshot?.quotaSnapshots).toBeUndefined();
+  });
+
+  it('allows absent optional ledger fields without inventing values', () => {
+    expect(normalizeCreditLedgerSnapshot({ available_micros: 1, reserved_micros: 0 })).toEqual({
+      available_micros: 1, reserved_micros: 0,
+      included_granted_micros: null, next_reset_at: null, subscription_plan: null,
+    });
+  });
+
+  it('rejects an explicit non-Credit unit even when micros are present', () => {
+    expect(normalizeAuthCreditSnapshot({ ...ledgerPayload, unit: 'interactions' })).toBeUndefined();
+  });
+
+  for (const response of [ledgerPayload, { status: 200, data: ledgerPayload }]) {
+    it('loads Credit balances from the ledger route with the current credential', async () => {
+      const service = Object.create(AuthService.prototype) as any;
+      service.http = { get: jasmine.createSpy().and.returnValue(of(response)) };
+      service.authQuotaRequestTimeoutMs = 8000;
+      const snapshot = await service.getAuthQuotaInfoSnapshot('test-current-account-token');
+      expect(service.http.get).toHaveBeenCalledOnceWith(API.creditSnapshot, {
+        headers: { Authorization: 'Bearer test-current-account-token' },
+      });
+      expect(API.creditSnapshot).toMatch(/\/api\/v1\/credits\/me$/);
+      expect(snapshot).toEqual({ source: 'token', creditSnapshot: normalizeAuthCreditSnapshot(payload) });
+    });
+  }
+
+  it('rejects legacy counters returned from the ledger route', async () => {
+    const service = Object.create(AuthService.prototype) as any;
+    service.http = { get: () => of({ status: 200, data: {
+      quota_snapshots: { premium_interactions: { entitlement: 30, remaining: 22, percent_remaining: 73.33 } },
+    } }) };
+    service.authQuotaRequestTimeoutMs = 8000;
+    await expectAsync(service.getAuthQuotaInfoSnapshot('test-current-account-token'))
+      .toBeRejectedWithError(/Invalid Credit snapshot from \/api\/v1\/credits\/me/);
   });
 
   it('does not relabel an old count snapshot as Credits', () => {
@@ -75,6 +132,13 @@ describe('Credit quota contract', () => {
   it('never falls back to legacy fields in an invalid Credit response', () => {
     expect(normalizeAuthQuotaInfoSnapshotPayload({
       ...payload, available_micros: 'bad',
+      quota_snapshots: { premium_interactions: { entitlement: 30, remaining: 22, percent_remaining: 73.33 } },
+    })).toBeUndefined();
+  });
+
+  it('never falls back to legacy fields in an invalid unmarked ledger response', () => {
+    expect(normalizeAuthQuotaInfoSnapshotPayload({
+      ...ledgerPayload, available_micros: 'bad',
       quota_snapshots: { premium_interactions: { entitlement: 30, remaining: 22, percent_remaining: 73.33 } },
     })).toBeUndefined();
   });
@@ -198,6 +262,17 @@ describe('Auth Credit HTTP contract and refresh lifecycle', () => {
     expect(warnings).not.toHaveBeenCalled();
   }));
 
+  it('accepts a gateway success envelope without scheduling a retry', fakeAsync(() => {
+    beginRefresh();
+    http.expectOne(API.creditSnapshot).flush({ status: 200, data: ledgerPayload });
+    flushMicrotasks();
+    expect(service.getAuthSnapshot()?.quotaInfoSnapshot?.creditSnapshot)
+      .toEqual(normalizeCreditLedgerSnapshot(ledgerPayload));
+    tick(20000);
+    http.expectNone(API.creditSnapshot);
+    expect(warnings).not.toHaveBeenCalled();
+  }));
+
   for (const endpoint of ['profile', 'credit']) {
     it(`allows the real auth interceptor to refresh an expired token during ${endpoint} loading`, fakeAsync(() => {
       const storedToken = localStorage.getItem('aily_auth_token');
@@ -239,7 +314,8 @@ describe('Auth Credit HTTP contract and refresh lifecycle', () => {
 
   for (const invalid of [
     { quota_snapshots: { premium_interactions: { remaining: 22 } } },
-    { status: 200, data: ledgerPayload },
+    { status: 500, data: ledgerPayload },
+    { status: 200, data: { ...ledgerPayload, available_micros: '30' } },
     { ...ledgerPayload, available_micros: '30' },
   ]) {
     it('keeps the user signed in and never retries an invalid Credit contract', fakeAsync(() => {

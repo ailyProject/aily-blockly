@@ -114,6 +114,27 @@ describe('Project Data normalization publication boundary', () => {
     expect(files.replaceProjectText.calls.mostRecent().args[0].backup).toBeUndefined();
   });
 
+  it('migrates only legacy Arduino String declaration values before strict native loading', async () => {
+    const document = { $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [
+      { type: 'variable_define', id: 'global-string', fields: { VAR: 'name', TYPE: 'string' } },
+      { type: 'variable_define_scoped', id: 'scoped-string', fields: { VAR: 'local', TYPE: 'string' } },
+      { type: 'another_library_block', id: 'unrelated', fields: { TYPE: 'string' } },
+    ] } };
+    disk = JSON.stringify(document); const original = disk;
+
+    const result = await prepare(document);
+    const migrated = result.document as typeof document;
+
+    expect(document.blocks.blocks.map(block => block.fields.TYPE)).toEqual(['string', 'string', 'string']);
+    expect(result.legacyFieldMigration.map(change => change.blockId)).toEqual(['global-string', 'scoped-string']);
+    expect(migrated.blocks.blocks.map(block => block.fields.TYPE)).toEqual(['String', 'String', 'string']);
+    expect(JSON.parse(disk).blocks.blocks.map((block: any) => block.fields.TYPE)).toEqual(['String', 'String', 'string']);
+    expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+    expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+      expectedHash: await digest(original), backup: 'project-data',
+    }));
+  });
+
   for (const stage of ['put', 'flushPending', 'validateReferences', 'resolve'] as const) {
     it(`failure in ${stage} leaves the original ABI and avoids publication`, async () => {
       const original = disk; (store[stage] as jasmine.Spy).and.rejectWith(new Error(stage));

@@ -1,5 +1,9 @@
 import * as Blockly from 'blockly';
-import { installBlocklyVariableComparator, WorkspaceCodeChangeTracker } from './blockly-performance';
+import {
+  installBlocklyVariableComparator,
+  WorkspaceCodeChangeTracker,
+  isBlocklyWorkspaceInteracting,
+} from './blockly-performance';
 import { ArduinoGenerator } from '../components/blockly/generators/arduino/arduino';
 import { findOversizedInlineValues, ProjectDataStore, type ProjectDataFileSystem } from '@domain/project/public-api';
 
@@ -99,6 +103,33 @@ describe('large Blockly workspaces', () => {
     expect(tracker.affectsCode({ type: 'change', element: 'collapsed' }, workspace)).toBeFalse();
     expect(tracker.affectsCode({ type: 'selected' }, workspace)).toBeFalse();
     topBlocks.and.callThrough();
+  });
+
+  it('defers for pointer gestures, editors, dropdowns and focused text including IME pauses', () => {
+    const widget = spyOn(Blockly.WidgetDiv, 'isVisible').and.returnValue(false);
+    const dropdown = spyOn(Blockly.DropDownDiv, 'isVisible').and.returnValue(false);
+    const target = { currentGesture_: null, isDragging: () => false,
+      getInjectionDiv: () => document.body } as any;
+    expect(isBlocklyWorkspaceInteracting(target)).toBeFalse();
+    target.currentGesture_ = {};
+    expect(isBlocklyWorkspaceInteracting(target)).toBeTrue();
+    target.currentGesture_ = null;
+    widget.and.returnValue(true);
+    expect(isBlocklyWorkspaceInteracting(target)).toBeTrue();
+    widget.and.returnValue(false); dropdown.and.returnValue(true);
+    expect(isBlocklyWorkspaceInteracting(target)).toBeTrue();
+    dropdown.and.returnValue(false);
+    for (const tag of ['input', 'textarea', 'select', 'div']) {
+      const input = document.createElement(tag);
+      if (tag === 'div') input.contentEditable = 'true';
+      document.body.append(input);
+      try {
+        input.focus();
+        expect(isBlocklyWorkspaceInteracting(target)).withContext(tag).toBeTrue();
+        input.blur();
+        expect(isBlocklyWorkspaceInteracting(target)).withContext(`${tag} blurred`).toBeFalse();
+      } finally { input.remove(); }
+    }
   });
 
   it('scans deeply nested data without overflowing and keeps diagnostic paths and reference validation', () => {

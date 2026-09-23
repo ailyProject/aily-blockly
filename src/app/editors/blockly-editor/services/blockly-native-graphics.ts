@@ -5,6 +5,10 @@ import type { NativeUiTasks } from './blockly-native-ui-tasks';
  * Animation frames use the same bounded, semantics-checked queue as UI timers;
  * there is no browser frame race or arbitrary asynchronous library completion. */
 export function createNativeCandidateGraphics(native: typeof Blockly, tasks: NativeUiTasks): Blockly.WorkspaceSvg {
+  const queueRender = native.BlockSvg.prototype.queueRender;
+  native.BlockSvg.prototype.queueRender = function() {
+    return tasks.coreRender(() => queueRender.call(this));
+  };
   Object.defineProperty(window, 'requestAnimationFrame', { configurable: false, writable: false,
     value: (callback: FrameRequestCallback) => tasks.set(() => callback(performance.now()), 0) });
   Object.defineProperty(window, 'cancelAnimationFrame', { configurable: false, writable: false,

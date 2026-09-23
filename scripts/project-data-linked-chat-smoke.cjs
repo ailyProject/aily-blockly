@@ -64,8 +64,10 @@ async function testLinkedChat(page, root, chatRoot) {
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   assert.equal(authentication.authenticated, true, `Copied login was not accepted (${authentication.initializationState})`);
-  await page.locator('app-main-window app-header .toolbox .btn:has(i.fa-star-christmas)').click();
   const iframe = page.locator('app-main-window nz-sider app-child-tool-host iframe');
+  if (!await iframe.isVisible()) {
+    await page.locator('app-main-window app-header .toolbox .btn:has(i.fa-star-christmas)').click();
+  }
   await iframe.waitFor({ state: 'visible', timeout: 60000 });
   const frame = await (await iframe.elementHandle()).contentFrame();
   await frame.locator('.aily-chat-composer-input[role="textbox"]').waitFor({ state: 'visible', timeout: 60000 });

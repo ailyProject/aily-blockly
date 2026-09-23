@@ -12,7 +12,7 @@ import type {
   AuthUserInfo,
 } from './models/auth-snapshot';
 import { isDetachedAilyChatRenderer } from './policies/detached-aily-chat-auth';
-import { normalizeAuthCreditSnapshot, normalizeCreditLedgerSnapshot } from './models/auth-credit-snapshot';
+import { normalizeCreditLedgerSnapshot } from './models/auth-credit-snapshot';
 
 export interface CommonResponse {
   status: number;
@@ -889,7 +889,12 @@ export class AuthService {
     const response = await firstValueFrom(this.http.get<unknown>(API.creditSnapshot, {
       headers: { Authorization: `Bearer ${token}` },
     }).pipe(timeout(this.authQuotaRequestTimeoutMs)));
-    const creditSnapshot = normalizeCreditLedgerSnapshot(response);
+    // The deployed ledger is unwrapped; some gateways use a success envelope.
+    // Unwrap only here, then apply the same strict integer-micros validation.
+    const payload = isRecord(response) && response['status'] === 200
+      ? response['data']
+      : response;
+    const creditSnapshot = normalizeCreditLedgerSnapshot(payload);
     if (!creditSnapshot) {
       throw new Error('Invalid Credit snapshot from /api/v1/credits/me: expected CreditSnapshotResponse with integer micros; legacy count quotas are not Credits.');
     }
@@ -1946,8 +1951,9 @@ export function normalizeAuthQuotaInfoSnapshotPayload(
   },
 ): AuthQuotaInfoSnapshot | undefined {
   const detailRecord = isRecord(value) ? value : undefined;
-  if (detailRecord?.['unit'] === 'credits') {
-    const creditSnapshot = normalizeAuthCreditSnapshot(detailRecord);
+  if (detailRecord?.['unit'] === 'credits'
+    || (detailRecord && ('available_micros' in detailRecord || 'reserved_micros' in detailRecord))) {
+    const creditSnapshot = normalizeCreditLedgerSnapshot(detailRecord);
     return creditSnapshot ? { source: options?.source ?? 'token', creditSnapshot } : undefined;
   }
   const normalizedQuotaSnapshots = normalizeAuthQuotaSnapshots(

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "src/app/services/domains/build/coder-build-info.service.spec.ts",
+    "src/app/tools/cloud-space/cloud-space.component.spec.ts",
+    "src/app/tools/cloud-space/services/cloud.service.spec.ts",
+    "src/**/*.d.ts"
+  ]
+}

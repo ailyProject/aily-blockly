@@ -1,6 +1,6 @@
 import { sha256Hex } from '../../../utils/crypto.utils';
 
-export type ProjectMirrorName = 'project.abi' | 'project.abs' | 'project.abs.map.json';
+export type ProjectMirrorName = 'project.abi' | 'project.abs' | 'project.abs.map.json' | 'package.json';
 export interface ProjectFileWriteResult {
   status: 'COMMITTED' | 'CONFLICT' | 'NOT_COMMITTED' | 'UNKNOWN';
   hash?: string;

@@ -1,4 +1,5 @@
 import { _BuilderService } from './builder.service';
+import { createBlocklyBuildSourceMappings } from './blockly-build-source-mappings';
 import { BlocklyService } from './blockly.service';
 import { ProcessState } from '@core/app-shell/public-api';
 import {
@@ -130,7 +131,7 @@ describe('BuilderService background preprocess ownership', () => {
       ],
     ]);
 
-    expect(service.createBlockSourceMappings(exactGeneratorMap)).toEqual([
+    expect(createBlocklyBuildSourceMappings(exactGeneratorMap, service.blocklyService.workspace)).toEqual([
       {
         blockId: 'statement-block',
         executionRole: 'statement',
