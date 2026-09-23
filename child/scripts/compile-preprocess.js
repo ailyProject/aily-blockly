@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 /** Background preprocess output is advisory, never proof for a later source snapshot.
  * Refresh dependency discovery for the exact compile input; keep Builder object/archive caches.
  */
-async function runCompilePreprocess(config, tempPath, resultPath, launch = spawn) {
+async function runCompilePreprocess(config, tempPath, resultPath, launch = spawn, environment = process.env) {
     const snapshot = path.join(tempPath, `compile-preprocess-${randomUUID()}.json`);
     fs.writeFileSync(snapshot, JSON.stringify(config));
     try {
@@ -14,11 +14,16 @@ async function runCompilePreprocess(config, tempPath, resultPath, launch = spawn
         fs.rmSync(resultPath, { force: true });
         await new Promise((resolve, reject) => {
             const child = launch(process.execPath, [path.join(__dirname, 'preprocess.js'), snapshot], {
-                cwd: config.currentProjectPath, stdio: 'inherit', windowsHide: true,
+                cwd: config.currentProjectPath, stdio: 'inherit', windowsHide: true, env: environment,
             });
-            child.once('error', reject);
+            let spawnError;
+            child.once('error', error => {
+                spawnError = error;
+                if (!child.pid) reject(error); // No process was created; otherwise wait for close.
+            });
             child.once('close', (code, signal) => {
-                if (code === 0 && !signal) resolve();
+                if (spawnError) reject(spawnError);
+                else if (code === 0 && !signal) resolve();
                 else reject(new Error(`Compile dependency preprocessing failed (${signal || code}).`));
             });
         });

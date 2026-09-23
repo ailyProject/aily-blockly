@@ -275,10 +275,6 @@
         background: color-mix(in srgb, var(--aily-color-accent) 9%, var(--aily-bg-elevated));
     }
 
-    &:active {
-        transform: translateY(1px);
-    }
-
     &:focus-visible {
         outline: 2px solid var(--aily-color-accent);
         outline-offset: 2px;

@@ -46,7 +46,7 @@ export async function getBoardConfig(projectService: ProjectService, section: un
       appDataPath: window['path'].getAppDataPath(),
       boardModule: boardPackage,
       board,
-      dependencies: await projectService.getEffectiveBoardDependencies(),
+      dependencies: await projectService.getBoardDependencies(),
       packageJson: packageJson || {},
       coder: projectService.isAilyCodeProject(),
     }, { join: (...segments) => window['path'].join(...segments), exists: path => window['fs'].existsSync(path) });

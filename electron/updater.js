@@ -159,7 +159,11 @@ function isChinaTimezone() {
       timezone === 'Asia/Shanghai' ||
       timezone === 'Asia/Chongqing' ||
       timezone === 'Asia/Urumqi' ||
-      timezone === 'Asia/Harbin'
+      timezone === 'Asia/Harbin' ||
+      timezone === 'Asia/Hong_Kong' ||
+      timezone === 'Asia/Macau' ||
+      timezone === 'Asia/Macao' ||
+      timezone === 'Asia/Beijing'
     );
   } catch {
     return new Date().getTimezoneOffset() === -480;

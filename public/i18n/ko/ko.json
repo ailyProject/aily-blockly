@@ -767,6 +767,7 @@
         "CANCEL": "취소"
     },
     "LOGIN": {
+        "EDU_LOGIN": "EDU 로그인",
         "HEADER": "로그인 후 서비스를 이용하실 수 있습니다",
         "PHONE": "전화번호",
         "BENEFITS_TITLE": "로그인 후 가능한 기능:",

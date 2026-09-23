@@ -34,6 +34,7 @@ const {
 const { mergeConfigChanges } = require("./config-persistence");
 const { resolveAilyAppDataPath } = require("./appdata-path");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
+const { refreshApplicationMenu } = require('./application-menu');
 const {
   createDevelopmentProtocolArgs,
   normalizeBuildProduct,
@@ -779,6 +780,7 @@ const {
   forceStopChildToolByCatalogId,
   listChildToolHoldersForCatalogId,
   getRunningSubappConfig,
+  nativeSubappRegistry,
 } = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
@@ -793,6 +795,10 @@ const {
 } = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
 const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks, withAppDataResourceLock } = require("./appdata-resource-lock");
+const { registerAppDataResourceCleanupHandlers } = require('./appdata-resource-cleanup');
+const { createBuildDeliveryAuthority } = require('./build-delivery-authority');
+let buildDeliveryAuthority;
+let simulatorDebugPreviewRegistered = false;
 // debug模块
 const { initLogger, registerLoggerHandlers } = require("./logger");
 // tools
@@ -929,6 +935,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
 
     const listener = (event, message) => {
       if (!isCurrentMainRenderer(event.sender)
+        || event.senderFrame !== mainWindow.webContents.mainFrame
         || rendererGeneration !== requestGeneration
         || readyRendererGeneration !== requestGeneration
         || !message
@@ -1050,6 +1057,8 @@ async function handleCliBridgeCommand(action, payload) {
         'child_app_window_set_bounds',
         'child_app_window_arrange',
         'subapp_agent_call',
+        'subapp_agent_release',
+        'subapp_agent_owner',
       ]);
       if (!dir && !projectOptionalOperations.has(operation)) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       const liveOperationTimeoutMs = operation === 'project_build'
@@ -1068,7 +1077,7 @@ async function handleCliBridgeCommand(action, payload) {
             ? 140000
           : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config'
             ? 120000
-            : operation === 'subapp_agent_call'
+            : operation === 'subapp_agent_call' || operation === 'subapp_agent_release' || operation === 'subapp_agent_owner'
               ? 620000
               : operation === 'child_app_control'
               || operation === 'child_app_open'
@@ -2029,6 +2038,7 @@ function loadEnv() {
   }
 
   registerAppDataResourceLockHandlers();
+  registerAppDataResourceCleanupHandlers();
   const authStore = require('./auth-store').createAuthStore(
     process.env.AILY_APPDATA_PATH,
     buildProduct,
@@ -2607,7 +2617,45 @@ function createWindow() {
     getRendererGeneration: () => rendererGeneration,
   });
   registerNpmHandlers(mainWindow);
-  registerCmdHandlers(mainWindow);
+  if (!buildDeliveryAuthority) {
+    const deliveryChildRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
+    buildDeliveryAuthority = createBuildDeliveryAuthority({
+      childRoot: deliveryChildRoot,
+      getOwner: () => isCurrentRendererGenerationReady() ? { sender: mainWindow.webContents, generation: rendererGeneration } : null,
+      querySource: projectPath => requestMainWindow('build-source-query', 'build-source-query:response', { projectPath }, 5000),
+    });
+    ipcMain.handle('build-delivery-query', (event, request) => {
+      if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Build delivery query requires the current main frame.');
+      return buildDeliveryAuthority.query(event.sender, request);
+    });
+  }
+  // Debugger consumes a selected artifact, independent of build provenance.
+  // Runtime/executable paths remain native configuration, not renderer input.
+  if (!simulatorDebugPreviewRegistered) {
+    const { createBuildDebugPreview, resolvePreviewConfiguration, registerBuildDebugPreview } = require('./build-debug-preview');
+    const { createDebugMonitorPresenter } = require('./simulator-debug-monitor');
+    const { registerNativeObserver } = require('./subapp-native-observer');
+    const presenter = createDebugMonitorPresenter(BrowserWindow, { ipcMain });
+    registerNativeObserver(ipcMain, { presenter, isRenderer: sender => {
+      if (isCurrentMainRenderer(sender)) return true;
+      // Only the host's own standalone observer route, never child iframes or URLs.
+      if (!sender || sender.isDestroyed() || !BrowserWindow.fromWebContents(sender)) return false;
+      try {
+        const source = new URL(sender.getURL()), host = new URL(mainWindow.webContents.getURL());
+        return source.origin === host.origin && source.pathname === host.pathname
+          && /^#\/child-tool\/simulator-debugger(?:\?|$)/.test(source.hash);
+      } catch { return false; }
+    } });
+    const preview = createBuildDebugPreview({ registry: nativeSubappRegistry,
+      present: presenter,
+      configuration: () => resolvePreviewConfiguration({ childRoot: process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child'),
+        appData: resolveAilyAppDataPath(), runtimeManifestPath: process.env.AILY_SIMDEBUG_RUNTIME_MANIFEST,
+        resourcesPath: app.isPackaged ? process.resourcesPath : undefined }) });
+    registerBuildDebugPreview(ipcMain, { isCurrentRenderer: isCurrentMainRenderer, preview,
+      previewEnabled: process.env.AILY_SIMDEBUG_PREVIEW === '1' });
+    simulatorDebugPreviewRegistered = true;
+  }
+  registerCmdHandlers(mainWindow, { buildDeliveryAuthority });
   registerAilyServicesStreamHandlers(mainWindow);
   registerWebviewBridgeHandlers();
   if (!webviewDebuggerSurfaceHandlersRegistered) {
@@ -2912,6 +2960,8 @@ app.on("ready", async () => {
     ensureRosettaIfNeededOnDarwin();
     loadEnv();
     applyAppIdentity(process.env.AILY_BUILD_PRODUCT);
+    // Run after Electron's ready listeners have installed the default native menu.
+    setImmediate(() => refreshApplicationMenu({ app, Menu }));
   } catch (error) {
     console.error("loadEnv error: ", error);
   }

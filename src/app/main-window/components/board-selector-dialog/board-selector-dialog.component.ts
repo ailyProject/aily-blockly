@@ -3,7 +3,6 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzModalRef, NZ_MODAL_DATA } from 'ng-zorro-antd/modal';
 import { NzInputModule } from 'ng-zorro-antd/input';
-import { NzMessageService } from 'ng-zorro-antd/message';
 import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -26,7 +25,6 @@ export class BoardSelectorDialogComponent implements OnInit {
 
   readonly modal = inject(NzModalRef);
   readonly data: { boardList: any[]; isAilyCode?: boolean } = inject(NZ_MODAL_DATA);
-  private message = inject(NzMessageService);
   private cd = inject(ChangeDetectorRef);
 
   boardList: any[] = [];
@@ -150,7 +148,8 @@ export class BoardSelectorDialogComponent implements OnInit {
         this.modal.close();
       } catch (error) {
         console.error('切换开发板失败:', error);
-        this.message.error(this.translate.instant('BOARD_SELECTOR.SWITCH_FAILED'));
+        // ProjectService already reports the actionable failure. Keep the dialog
+        // available for retry without stacking a second generic error message.
         this.isLoading = false;
         this.cd.detectChanges();
       }

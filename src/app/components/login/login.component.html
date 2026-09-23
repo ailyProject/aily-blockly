@@ -163,6 +163,28 @@
                         </div>
                         <p>{{ 'LOGIN.GITHUB_CONTINUE' | translate }}</p>
                     </div>
+                    } @else if (mode === 'edu') {
+                    <form class="mail-login-box" (ngSubmit)="loginByEdu()">
+                        <div class="form-row">
+                            <span class="field-icon"><i class="fa-light fa-envelope"></i></span>
+                            <label class="sr-only" for="edu-email">{{ 'LOGIN.EMAIL_PLACEHOLDER' | translate }}</label>
+                            <input id="edu-email" name="eduEmail" nz-input type="email" [maxLength]="50"
+                                [placeholder]="'LOGIN.EMAIL_PLACEHOLDER' | translate" autocomplete="username"
+                                [(ngModel)]="inputEmail" />
+                        </div>
+                        <div class="form-row">
+                            <span class="field-icon"><i class="fa-light fa-lock"></i></span>
+                            <label class="sr-only" for="edu-password">{{ 'LOGIN.PASSWORD_PLACEHOLDER' | translate }}</label>
+                            <input id="edu-password" name="eduPassword" nz-input type="password"
+                                [placeholder]="'LOGIN.PASSWORD_PLACEHOLDER' | translate" autocomplete="current-password"
+                                [(ngModel)]="inputPassword" />
+                        </div>
+                        <div class="actions">
+                            <button type="submit" nz-button nzType="primary" [nzLoading]="isWaiting" [disabled]="isWaiting">
+                                {{ (isWaiting ? 'LOGIN.LOGGING_IN' : 'LOGIN.LOGIN') | translate }}
+                            </button>
+                        </div>
+                    </form>
                     } @else {
                     <div class="mail-login-box">
                         <div class="form-row">
@@ -233,6 +255,12 @@
                         [attr.aria-label]="'LOGIN.GITHUB_LOGIN' | translate"
                         [title]="'LOGIN.GITHUB_LOGIN' | translate" (click)="select('github'); loginByGithub()">
                         <i class="fa-brands fa-github" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="method-button method-button-icon"
+                        [class.active]="mode === 'edu'" [attr.aria-pressed]="mode === 'edu'"
+                        [attr.aria-label]="'LOGIN.EDU_LOGIN' | translate"
+                        [title]="'LOGIN.EDU_LOGIN' | translate" (click)="select('edu')">
+                        <i class="fa-solid fa-school-flag" aria-hidden="true"></i>
                     </button>
                 </div>
                 }

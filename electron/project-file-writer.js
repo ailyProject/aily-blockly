@@ -4,8 +4,18 @@ const { randomUUID } = require('node:crypto');
 const { MAX_PROJECT_FILE_BYTES: MAX_BYTES, projectFileHash: hash, projectFileFault: fault,
   projectFileGuard, createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
-const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
+const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json']);
 const PROJECT_FILE_PUBLICATION_VERSION = 2;
+const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
+
+function assertNoAbsIdentityContext(access) {
+  const { root, files } = access;
+  for (const relative of ['project.abs', 'project.abs.map.json', path.join('.aily', 'abs-sync')]) {
+    try { files.lstatSync(path.join(root, relative)); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    throw fault('BLOCKLY_IDENTITY_MIGRATION_BLOCKED', `Existing ABS identity context (${relative}); preserve drafts and use explicit recovery before migrating legacy shadow IDs.`);
+  }
+}
 
 /**
  * Preload-owned single-file commit. All cooperating processes use the same project lock.
@@ -15,7 +25,7 @@ const PROJECT_FILE_PUBLICATION_VERSION = 2;
  */
 async function replaceProjectText(request, assertCurrent, options = {}) {
   const files = options.files || fs;
-  const { projectPath, fileName, expectedHash, content, backup } = request || {};
+  const { projectPath, fileName, expectedHash, content, backup, migrateLegacyShadowIds } = request || {};
   const timeoutMs = options.timeoutMs ?? 5000;
   let temporary;
   let temporaryOwned = false;
@@ -32,6 +42,7 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
     if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath) || !FILES.has(fileName)
       || typeof content !== 'string' || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
       || (backup !== undefined && (backup !== 'project-data' || fileName !== 'project.abi' || expectedHash === null))
+      || (migrateLegacyShadowIds !== undefined && (migrateLegacyShadowIds !== true || backup !== 'project-data'))
       || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
       throw fault('PROJECT_FILE_INVALID', 'Expected an absolute project path, a supported mirror name and an exact byte hash.');
     }
@@ -49,6 +60,7 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
     checkRoot();
     // Refuse known conflicts before creating any temporary file or lock directory.
     const original = read();
+    if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
     if (hash(original) !== expectedHash) return { status: 'CONFLICT', error: 'Project file changed; external content was retained.' };
     if (!original?.equals(bytes)) {
       temporary = path.join(root, `.${fileName}.${randomUUID()}.tmp`);
@@ -80,6 +92,7 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
       guard();
       lock.assertOwned();
       assertNoPendingAbsGeneration(access);
+      if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
       const previous = read();
       if (hash(previous) !== expectedHash) result = { status: 'CONFLICT', error: 'Project file changed before commit; external content was retained.' };
       else {
@@ -135,4 +148,4 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
   return { ...result, ...(backupHash ? { backupHash } : {}), ...(warnings.length ? { warnings } : {}) };
 }
 
-module.exports = { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION };
+module.exports = { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION };

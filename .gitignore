@@ -23,6 +23,7 @@ yarn.lock
 *.launch
 .settings/
 *.sublime-workspace
+.tmp-abs-*
 
 # Visual Studio Code
 .vscode/*

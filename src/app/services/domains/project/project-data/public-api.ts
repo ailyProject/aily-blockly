@@ -4,7 +4,7 @@ export { isAilyDataRef } from './project-data.types';
 export type { AilyDataRef } from './project-data.types';
 export { canonicalJsonStringify } from './project-data-codec.registry';
 export { materializeProjectDataPayload, materializePreparedProjectDataPayload } from './project-data-generic-values';
-export { collectProjectBlocks } from './project-data-payloads';
+export { collectProjectBlocks, collectProjectBlockLocations } from './project-data-payloads';
 export { collectProjectDataReferences, projectDataFieldReference } from './project-data-references';
 export { registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions } from './blockly-project-data-adapter';
 export { registerNativeFieldPreparation, prepareNativeProjectDataFields } from './project-data-field-preparation';

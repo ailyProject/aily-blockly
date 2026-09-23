@@ -27,9 +27,35 @@ test('publishes exact UTF-8 bytes, BOM and CRLF and cleans temporary files', asy
   assert.deepEqual(await replaceProjectText(request(root, content), guard), { status: 'COMMITTED', hash: hash(content) });
   assert.equal(read(root), content); assertClean(root);
 });
+test('legacy shadow migration retains a backup and requires an identity-free project', async () => {
+  const root = project(); initialize(root);
+  const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard);
+  assert.equal(result.status, 'COMMITTED'); assert.equal(result.backupHash, hash('before'));
+  assert.equal(fs.readFileSync(path.join(root, '.aily/project-data-backups', hash('before').slice(7) + '.abi'), 'utf8'), 'before');
+  assert.equal(read(root), 'migrated'); assertClean(root);
+});
+for (const context of ['project.abs', 'project.abs.map.json', '.aily/abs-sync/committed.json', '.aily/abs-sync/prepared.json']) {
+  test(`legacy shadow migration preserves existing ${context}`, async () => {
+    const root = project(); initialize(root);
+    const target = path.join(root, context); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, 'keep');
+    const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard);
+    assert.equal(result.status, 'NOT_COMMITTED'); assert.equal(result.code, 'BLOCKLY_IDENTITY_MIGRATION_BLOCKED');
+    assert.equal(read(root), 'before'); assert.equal(fs.readFileSync(target, 'utf8'), 'keep'); assertClean(root);
+  });
+}
+test('legacy shadow migration rechecks ABS context under the publication lock', async () => {
+  const root = project(); initialize(root);
+  const files = { ...fs, writeFileSync(fd, ...args) {
+    fs.writeFileSync(fd, ...args);
+    if (typeof fd === 'number') fs.writeFileSync(path.join(root, 'project.abs'), 'concurrent draft');
+  } };
+  const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard, { files });
+  assert.equal(result.status, 'NOT_COMMITTED'); assert.equal(result.code, 'BLOCKLY_IDENTITY_MIGRATION_BLOCKED');
+  assert.equal(read(root), 'before'); assert.equal(fs.readFileSync(path.join(root, 'project.abs'), 'utf8'), 'concurrent draft'); assertClean(root);
+});
 test('creates missing mirrors and supports exact no-op commits', async () => {
   const root = project();
-  for (const name of ['project.abi', 'project.abs', 'project.abs.map.json']) {
+  for (const name of ['project.abi', 'project.abs', 'project.abs.map.json', 'package.json']) {
     assert.equal((await replaceProjectText(request(root, 'value', null, name), guard)).status, 'COMMITTED');
     assert.equal((await replaceProjectText(request(root, 'value', 'value', name), guard)).status, 'COMMITTED');
   } assertClean(root);
@@ -112,7 +138,7 @@ test('reports UNKNOWN when bytes cannot be inspected after rename', async () => 
 });
 test('rejects traversal, extra files, nonabsolute roots and malformed hashes', async () => {
   const root = project(); initialize(root);
-  for (const name of ['../outside', 'sub/project.abi', 'project.abi:stream', 'C:/outside', 'package.json']) {
+  for (const name of ['../outside', 'sub/project.abi', 'project.abi:stream', 'C:/outside', 'package-lock.json']) {
     assert.equal((await replaceProjectText(request(root, 'after', 'before', name), guard)).code, 'PROJECT_FILE_INVALID');
   }
   for (const value of [{ ...request(root, 'after'), expectedHash: 'invalid' }, { ...request(root, 'after'), projectPath: 'relative' }]) {

@@ -11,6 +11,7 @@ export function updateProjectBlockFields<T>(document: T, updates: ProjectBlockFi
   if (!requested || typeof requested !== 'object' || Array.isArray(requested)) {
     throw new ProjectDataError('corrupt', 'Project field updates must be an object keyed by block ID.');
   }
+  if (!Object.keys(requested).length) return { document: candidate, changed: false };
   const blocks = new Map<string, Record<string, unknown>>();
   for (const { state } of collectProjectBlocks(candidate)) {
     const id = state['id'];

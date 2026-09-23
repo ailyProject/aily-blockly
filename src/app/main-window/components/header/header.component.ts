@@ -29,6 +29,7 @@ import { ConfigService } from '@core/preferences/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { AppItem } from '../../../configs/tool.config';
 import { AppStoreService } from '../../../tools/app-store/app-store.service';
+import { RequiredSubappService } from '@integration/subapps/public-api';
 import { Subscription } from 'rxjs';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import {
@@ -82,6 +83,7 @@ interface NetworkOtaTarget {
 export class HeaderComponent implements OnInit, OnDestroy {
   private readonly coderRuntime = inject(CoderProjectRuntimeService);
   private readonly coderPersistence = inject(CodeEditorProProjectService);
+  private readonly requiredSubapps = inject(RequiredSubappService);
   private readonly coderHeaderButtons = new Map<string, IMenuItem[]>();
 
   headerBtns: IMenuItem[] = HEADER_BTNS;
@@ -112,6 +114,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private networkOtaScanStreamId: string | null = null;
   private unsaveDialogOpen = false; // 标记未保存对话框是否已打开
   private selectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private openingPartitionManager = false;
+  private destroyed = false;
+  private partitionInstallSubscription?: Subscription;
+  private partitionInstallMessageId?: string;
   private unregisterHeaderMenuAutomation: (() => void) | null = null;
   private connectorStateSubscription?: Subscription;
 
@@ -1416,6 +1422,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
+    this.clearPartitionInstallNotice();
     document.removeEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
     this.unregisterHeaderMenuAutomation?.();
     this.unregisterHeaderMenuAutomation = null;
@@ -1881,6 +1889,47 @@ export class HeaderComponent implements OnInit, OnDestroy {
       && String(subItem.data || '').toLowerCase() === 'custom';
   }
 
+  private clearPartitionInstallNotice(): void {
+    this.partitionInstallSubscription?.unsubscribe();
+    this.partitionInstallSubscription = undefined;
+    if (this.partitionInstallMessageId) {
+      this.message.remove(this.partitionInstallMessageId);
+      this.partitionInstallMessageId = undefined;
+    }
+  }
+
+  private async openPartitionManager(): Promise<void> {
+    const projectPath = this.projectService.currentProjectPath;
+    if (!projectPath || this.openingPartitionManager || this.destroyed) return;
+    this.openingPartitionManager = true;
+    this.closePortList();
+    try {
+      this.partitionInstallSubscription = this.requiredSubapps.observe('ffs-manager-child').subscribe(state => {
+        if (!state.installing || this.partitionInstallMessageId) return;
+        this.partitionInstallMessageId = this.message.loading(
+          '正在安装 ESP32 分区管理器…',
+          { nzDuration: 0 },
+        ).messageId;
+      });
+      await this.requiredSubapps.ensureInstalled('ffs-manager-child');
+      // Installation can finish after the user has left the original project/window.
+      if (this.destroyed || this.projectService.currentProjectPath !== projectPath) return;
+      if (!this.uiService.openToolWindow('ffs-manager-child', {
+        title: 'ESP32 分区管理器', width: 920, height: 820, minWidth: 680, minHeight: 560,
+      })) {
+        throw new Error('子应用入口不可用');
+      }
+    } catch (error) {
+      if (!this.destroyed && this.projectService.currentProjectPath === projectPath) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.message.error(`无法打开 ESP32 分区管理器：${detail}。请再次点击“自定义分区”重试。`, { nzDuration: 6000 });
+      }
+    } finally {
+      this.clearPartitionInstallNotice();
+      this.openingPartitionManager = false;
+    }
+  }
+
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
     // console.log('选择子菜单项:', subItem);
@@ -1890,18 +1939,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     if (this.isCustomPartitionSubItem(subItem)) {
       this.selectDebounceTimer = null;
-      const projectPath = this.projectService.currentProjectPath;
-      if (!projectPath || subItem.disabled) return;
-      this.closePortList();
-      this.uiService.openWindow({
-        path: `partition-manager?project=${encodeURIComponent(projectPath)}`,
-        title: 'ESP32 分区管理器',
-        width: 920,
-        height: 820,
-        minWidth: 680,
-        minHeight: 560,
-        windowClass: 'builtin',
-      });
+      if (!subItem.disabled) await this.openPartitionManager();
       return;
     }
 

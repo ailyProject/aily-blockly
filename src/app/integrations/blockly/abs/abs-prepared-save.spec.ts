@@ -227,4 +227,43 @@ describe('prepared Blockly save boundary', () => {
       expect(service.syncUsedLibraryManifest).not.toHaveBeenCalled();
     });
   });
+
+  describe('shared post-commit code publication', () => {
+    let oldBuilder: unknown;
+    let service: _ProjectService;
+    let editor: any;
+    let publishArtifacts: jasmine.Spy;
+    const generated = { code: 'prepared code', artifacts: [],
+      blockCodeMapText: '[["original-id",{"codeSnippet":"prepared code"}]]', revision: 1 } as any;
+    beforeEach(() => {
+      oldBuilder = window['builder'];
+      publishArtifacts = jasmine.createSpy('artifacts');
+      window['builder'] = { publishArduinoGeneratedCode: publishArtifacts };
+      editor = { publishPreparedCodeView: jasmine.createSpy('view'), prepareProjectCode: jasmine.createSpy('mustNotRegenerate') };
+      service = new _ProjectService(editor, {} as any, {} as any);
+      spyOn(service, 'syncUsedLibraryManifest').and.returnValue(false);
+    });
+    afterEach(() => { window['builder'] = oldBuilder; });
+    it('publishes code and its captured block map before disk outputs without regenerating', async () => {
+      publishArtifacts.and.callFake(() => {
+        expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith(generated.code, generated.blockCodeMapText);
+      });
+      await service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined);
+      expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [] });
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('keeps the committed view current even if artifact publication is busy', async () => {
+      publishArtifacts.and.throwError('BUILD_WORKSPACE_BUSY: preprocessing');
+      await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined))
+        .toBeRejectedWithError('BUILD_WORKSPACE_BUSY: preprocessing');
+      expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith(generated.code, generated.blockCodeMapText);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('publishes neither view nor artifacts after the context changes', async () => {
+      await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => { throw new Error('stale context'); }))
+        .toBeRejectedWithError('stale context');
+      expect(editor.publishPreparedCodeView).not.toHaveBeenCalled();
+      expect(publishArtifacts).not.toHaveBeenCalled();
+    });
+  });
 });

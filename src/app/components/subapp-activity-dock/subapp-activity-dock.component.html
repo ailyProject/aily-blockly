@@ -54,6 +54,9 @@
             </div>
 
             <div class="subapp-card-surface">
+              @if (isNativeObserver(activity.toolId)) {
+                <app-child-tool-native-observer [toolId]="activity.toolId" [sessionId]="activity.sessionId" [compact]="true" />
+              } @else {
               <app-child-tool-surface-host
                 [toolId]="activity.toolId"
                 [surface]="activity.presentation?.surface || 'compact'"
@@ -61,6 +64,7 @@
                 [sessionId]="activity.sessionId"
                 [instanceId]="'chat-dock:' + activity.sessionId + ':' + activity.toolId"
                 (closeRequested)="collapse(activity)" />
+              }
             </div>
 
             <footer class="subapp-card-footer">

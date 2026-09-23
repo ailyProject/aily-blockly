@@ -62,7 +62,12 @@ describe('project mode boundaries', () => {
       const service = createService(mode);
       const originalIpc = window['ipcRenderer'];
       window['ipcRenderer'] = { invoke: jasmine.createSpy('invoke').and.resolveTo() };
-      service.routerService = { url: '/main/guide', navigate: jasmine.createSpy('navigate').and.resolveTo(true) };
+      service.routerService = {
+        url: '/main/guide',
+        createUrlTree: jasmine.createSpy('createUrlTree').and.returnValue({}),
+        isActive: jasmine.createSpy('isActive').and.returnValue(false),
+        navigate: jasmine.createSpy('navigate').and.resolveTo(true),
+      };
       Object.defineProperty(service, 'application', { value: { closeConnectionGraphWindows: async () => true } });
       spyOn(service, 'waitForProjectOpenCompletion').and.resolveTo();
       try {

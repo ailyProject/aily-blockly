@@ -67,6 +67,10 @@ export interface ChildToolRuntimeResourceLifecycleConfig {
 }
 
 export interface ChildToolRuntimeConfig {
+  /** Native/headless runtime; no iframe entry or UI surfaces. */
+  headless?: boolean;
+  /** Host-projected observation UI. Never starts or retains the execution Runtime. */
+  observer?: boolean;
   apiServer?: 'optional' | 'required';
   processMessagePort?: {
     transport: 'node-ipc-v1';
@@ -98,6 +102,10 @@ export interface ChildToolAgentLifecycleRequestConfig {
 }
 
 export interface ChildToolAgentLifecycleConfig {
+  /** Called for each departing owner, with its sessionId in RPC context. */
+  ownerRelease?: ChildToolAgentLifecycleRequestConfig;
+  ownerLease?: ChildToolAgentLifecycleRequestConfig & { protocol: 'process-file-v1' };
+  /** Legacy cleanup after the final shared Agent owner leaves. */
   sessionRelease?: ChildToolAgentLifecycleRequestConfig;
 }
 

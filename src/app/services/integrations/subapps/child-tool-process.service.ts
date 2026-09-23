@@ -540,6 +540,7 @@ export class ChildToolProcessService implements OnDestroy {
     session: ChildToolSession,
     options: ChildToolAcquireOptions = {},
   ): Promise<ChildToolHostInfo> {
+    this.assertUiRuntime(config);
     this.ensureSessionStateListener();
     if (this.hostShuttingDown) throw new Error('Host is shutting down');
     if (session.running && session.hostInfo) {
@@ -761,7 +762,15 @@ export class ChildToolProcessService implements OnDestroy {
     }
   }
 
+  private assertUiRuntime(config: ChildToolConfig): void {
+    if (config.runtime?.headless) {
+      throw new Error(`${config.id} is headless; use its native runtime integration, not the UI launcher`);
+    }
+  }
+
   private async startServer(config: ChildToolConfig, session: ChildToolSession): Promise<ChildToolHostInfo> {
+    // prepareLaunch may have selected a newer package than startSession saw.
+    this.assertUiRuntime(config);
     const cmd = window['cmd'];
     const pathApi = window['path'];
     const fsApi = window['fs'];

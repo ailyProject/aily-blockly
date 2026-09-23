@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
 import {
   AfterViewChecked,
+  ChangeDetectorRef,
   Component,
   ElementRef,
   EventEmitter,
@@ -114,7 +115,6 @@ export class MenuComponent implements AfterViewChecked {
   submenuMaxHeight = 'none';
   submenuOverflow = 'visible';
   private submenuInteractionVersion = 0;
-  private submenuGeometryTimeout: ReturnType<typeof setTimeout> | null = null;
   private activeSubmenuAnchor: {
     menuLeft: number;
     menuRight: number;
@@ -125,7 +125,8 @@ export class MenuComponent implements AfterViewChecked {
   constructor(
     private hostRef: ElementRef<HTMLElement>,
     private router: Router,
-    private platformService: PlatformService
+    private platformService: PlatformService,
+    private changeDetector: ChangeDetectorRef,
   ) { }
 
   /** 按平台格式化快捷键显示：macOS 显示 ⌘，Windows 显示 Ctrl */
@@ -350,10 +351,6 @@ export class MenuComponent implements AfterViewChecked {
       this.menuGeometryCorrectionTimeout = null;
     }
     this.cancelSubmenuClose();
-    if (this.submenuGeometryTimeout) {
-      clearTimeout(this.submenuGeometryTimeout);
-      this.submenuGeometryTimeout = null;
-    }
     this.setModelSubmenuBodyState(false);
   }
 
@@ -391,11 +388,7 @@ export class MenuComponent implements AfterViewChecked {
   };
 
   closeMenu() {
-    this.activeSubmenuItem = null;
-    this.setModelSubmenuBodyState(false);
-    this.setSubmenuReady(false);
-    this.pendingSubmenuGeometry = false;
-    this.activeSubmenuAnchor = null;
+    this.clearSubmenu();
     this.closeEvent.emit('');
   }
 
@@ -811,12 +804,8 @@ export class MenuComponent implements AfterViewChecked {
   showSubMenu(event: MouseEvent, item: IMenuItem) {
     this.cancelSubmenuClose();
 
-    if (!this.hasSubmenuContent(item)) {
-      this.activeSubmenuItem = null;
-      this.setModelSubmenuBodyState(false);
-      this.setSubmenuReady(false);
-      this.pendingSubmenuGeometry = false;
-      this.activeSubmenuAnchor = null;
+    if (item.disabled || !this.hasSubmenuContent(item)) {
+      this.clearSubmenu();
       return;
     }
 
@@ -824,6 +813,7 @@ export class MenuComponent implements AfterViewChecked {
       const submenuElement = this.submenuBox?.nativeElement as HTMLElement | undefined;
       if (!submenuElement?.classList.contains('ready')) {
         this.calculateSubmenuPosition(event.currentTarget as HTMLElement | null);
+        this.changeDetector.markForCheck();
       }
       return;
     }
@@ -832,6 +822,9 @@ export class MenuComponent implements AfterViewChecked {
     this.setModelSubmenuBodyState(true);
     this.setSubmenuReady(false);
     this.calculateSubmenuPosition(event.currentTarget as HTMLElement | null);
+    // Menus may be created by an async host callback outside Angular's zone.
+    // Explicitly schedule rendering even when its hover listeners run there.
+    this.changeDetector.markForCheck();
   }
 
   // 计算子菜单位置
@@ -867,21 +860,10 @@ export class MenuComponent implements AfterViewChecked {
         top: top + 'px'
       };
       this.pendingSubmenuGeometry = true;
-      this.scheduleSubmenuGeometryRefinement(this.activeSubmenuItem);
+      // ngAfterViewChecked measures and reveals the newly rendered options.
+      // A zero-delay timer can run before coalesced change detection and expose
+      // the previous menu's options at this menu item's position.
     }
-  }
-
-  private scheduleSubmenuGeometryRefinement(item: IMenuItem | null): void {
-    if (this.submenuGeometryTimeout) {
-      clearTimeout(this.submenuGeometryTimeout);
-    }
-
-    this.submenuGeometryTimeout = setTimeout(() => {
-      this.submenuGeometryTimeout = null;
-      if (this.activeSubmenuItem === item && this.pendingSubmenuGeometry) {
-        this.refineSubmenuPosition();
-      }
-    }, 0);
   }
 
   private estimateSubmenuWidth(item: IMenuItem | null | undefined): number {
@@ -1042,12 +1024,18 @@ export class MenuComponent implements AfterViewChecked {
         return;
       }
 
-      this.activeSubmenuItem = null;
-      this.setModelSubmenuBodyState(false);
-      this.setSubmenuReady(false);
-      this.pendingSubmenuGeometry = false;
-      this.activeSubmenuAnchor = null;
+      this.clearSubmenu();
     }, 100);
+  }
+
+  private clearSubmenu(): void {
+    this.cancelSubmenuClose();
+    this.activeSubmenuItem = null;
+    this.setModelSubmenuBodyState(false);
+    this.setSubmenuReady(false);
+    this.pendingSubmenuGeometry = false;
+    this.activeSubmenuAnchor = null;
+    this.changeDetector.markForCheck();
   }
 
   // 保持子菜单打开

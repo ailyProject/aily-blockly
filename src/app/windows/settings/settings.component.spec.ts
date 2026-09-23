@@ -2,6 +2,72 @@ import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import { Subject } from 'rxjs';
 import { SettingsComponent } from './settings.component';
 
+describe('SettingsComponent development mode preference', () => {
+  function createComponent(configService: {
+    getDevelopmentModePreference: jasmine.Spy;
+    setDevelopmentModePreference: jasmine.Spy;
+    isCoderProduct?: jasmine.Spy;
+  }): SettingsComponent {
+    return new SettingsComponent(
+      {} as any,
+      {} as any,
+      {} as any,
+      { ...configService, configReloaded$: new Subject<void>() } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { observe: () => new Subject() } as any,
+      { markForCheck() {} } as any,
+      {} as any,
+    );
+  }
+
+  it('reads the current preference from ConfigService', () => {
+    const configService = {
+      getDevelopmentModePreference: jasmine.createSpy('getDevelopmentModePreference').and.returnValue('coder'),
+      setDevelopmentModePreference: jasmine.createSpy('setDevelopmentModePreference').and.returnValue(Promise.resolve('coder')),
+    };
+    const component = createComponent(configService);
+
+    expect(component.developmentModePreference).toBe('coder');
+  });
+
+  it('saves preference changes immediately from settings', () => {
+    const configService = {
+      getDevelopmentModePreference: jasmine.createSpy('getDevelopmentModePreference').and.returnValue('auto'),
+      setDevelopmentModePreference: jasmine.createSpy('setDevelopmentModePreference').and.returnValue(Promise.resolve('blockly')),
+    };
+    const component = createComponent(configService);
+
+    component.onDevelopmentModePreferenceChange('blockly');
+
+    expect(configService.setDevelopmentModePreference).toHaveBeenCalledWith('blockly', 'settings');
+  });
+
+  for (const coderProduct of [true, false]) {
+    it(`uses the ${coderProduct ? 'Coder' : 'Blockly'} product identity for settings sections, independently of the shared preference`, () => {
+      const configService = {
+        isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(coderProduct),
+        getDevelopmentModePreference: jasmine.createSpy('getDevelopmentModePreference').and.returnValue(coderProduct ? 'blockly' : 'coder'),
+        setDevelopmentModePreference: jasmine.createSpy('setDevelopmentModePreference'),
+        data: { blockly: { renderer: 'zelos', minimap: true } },
+      };
+      const component = createComponent(configService);
+
+      expect(component.items.some(item => item.name === 'SETTINGS.SECTIONS.BLOCKLY')).toBe(!coderProduct);
+      expect(component.items.some(item => item.name === 'SETTINGS.SECTIONS.THEME')).toBeTrue();
+      expect(configService.data.blockly).toEqual({ renderer: 'zelos', minimap: true });
+      expect(configService.setDevelopmentModePreference).not.toHaveBeenCalled();
+      component.ngOnDestroy();
+    });
+  }
+});
+
 describe('Settings cleanup dialogs', () => {
   let component: any;
   let preview: Subject<any>;

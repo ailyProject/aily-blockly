@@ -78,6 +78,14 @@ export class CodeEditorProProjectService {
     return { ok: true };
   }
 
+  /** Missing/unmounted editors are unknown, never implicitly clean. No save. */
+  async hasSavedProject(path: string): Promise<boolean> {
+    const key = this.key(path), bridge = this.persistenceBridges.get(key);
+    if (!bridge) return false;
+    const dirty = await bridge.hasUnsavedChanges();
+    return this.persistenceBridges.get(key) === bridge && dirty === false;
+  }
+
   private async hasUnsavedChanges(): Promise<boolean> {
     const states = await Promise.all([...this.persistenceBridges.values()].map(bridge => bridge.hasUnsavedChanges()));
     return states.some(Boolean);

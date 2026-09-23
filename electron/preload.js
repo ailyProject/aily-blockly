@@ -11,9 +11,10 @@ const { tmpdir } = require("os");
 const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
-const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION } = require("./project-file-writer");
+const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { copyProjectDirectory, importProjectDirectory } = require("./project-file-copy");
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource } = require('./build-workspace-publication');
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -472,6 +473,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     respond: (requestId, result) => ipcRenderer.send('child-app-host-command-response', { requestId, result }),
   },
   childToolSession: {
+    observeNative: (payload) => ipcRenderer.invoke('subapp-native-observer', payload),
+    onNativeObserverChanged: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on('subapp-native-observer-changed', listener);
+      return () => ipcRenderer.removeListener('subapp-native-observer-changed', listener);
+    },
+    invokeNativeAgent: (payload) => ipcRenderer.invoke('subapp-native-agent', payload),
+    superviseOwner: (payload) => ipcRenderer.invoke('subapp-owner-supervision', payload),
     onHostShutdown: (callback) => {
       const listener = () => callback();
       ipcRenderer.on("child-tool-host-shutdown", listener);
@@ -527,6 +536,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   builder: {
+    publishArduinoGeneratedCode,
+    patchBuildMetadata,
+    captureBuildSource,
     status: () => ipcRenderer.invoke("aily-builder-status"),
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),
@@ -622,6 +634,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   fs: {
     projectFilePublicationVersion: PROJECT_FILE_PUBLICATION_VERSION,
+    projectShadowIdentityMigrationVersion: PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION,
     replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
     projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),

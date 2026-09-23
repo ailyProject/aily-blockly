@@ -18,6 +18,7 @@ export class SubWindowComponent implements OnDestroy {
   isMacFullScreen = false;
   private unsubscribeFullScreenChanged?: () => void;
   private unsubscribeMaximizeChanged?: () => void;
+  private unsubscribeCloseRequest?: () => void;
 
   get isMac() {
     return this.platformService.isMac();
@@ -56,6 +57,10 @@ export class SubWindowComponent implements OnDestroy {
           this.cd.detectChanges();
         }, 0);
       });
+
+      if (this.isMac && window['iWindow']?.onCloseRequest) {
+        this.unsubscribeCloseRequest = window['iWindow'].onCloseRequest(() => this.close());
+      }
     }
   }
 
@@ -68,6 +73,9 @@ export class SubWindowComponent implements OnDestroy {
       // 取消窗口最大化状态变化监听
       if (this.unsubscribeMaximizeChanged) {
         this.unsubscribeMaximizeChanged();
+      }
+      if (this.unsubscribeCloseRequest) {
+        this.unsubscribeCloseRequest();
       }
     }
   }

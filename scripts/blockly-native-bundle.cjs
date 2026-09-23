@@ -26,6 +26,10 @@ async function prepareNativeBundle({ watch = false } = {}) {
     absWorkingDir: root,
     entryPoints: ['src/app/editors/blockly-editor/services/blockly-native-candidate.entry.ts'],
     outfile, bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
+    // Pin the host-owned core's intrinsic in this module scope. Library scripts
+    // execute separately: their scoped legacy macro facade must not replace
+    // Blockly's own rendering Promise constructor.
+    banner: { js: 'const Promise = globalThis.Promise;' },
     minify: true, legalComments: 'eof', metafile: true, write: false,
     tsconfig: 'tsconfig.json', logLevel: 'warning',
     plugins: [{ name: 'independent-native-bundle', setup(build) {

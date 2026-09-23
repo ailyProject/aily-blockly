@@ -1,6 +1,6 @@
 import * as Blockly from 'blockly';
 import 'blockly/blocks';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import {
   BlocklyProjectDocument, BlocklyProjectModelError, BlocklyRootClassifier,
   composeBlocklyPage, normalizeBlocklyOwnership, replaceBlocklyPageWorkspace,
@@ -208,6 +208,7 @@ describe('Blockly service document boundary', () => {
       activePageIdSubject: new BehaviorSubject('one'), openedPageIdsSubject: new BehaviorSubject(['one']),
       selectedBlockSubject: new BehaviorSubject(null), selectedBlockIdsSubject: new BehaviorSubject([]),
       loadLibraryFinishedLoadingSubject: new BehaviorSubject(undefined),
+      workspaceVisualRefreshRequestSubject: new Subject(),
       closeWorkspaceBlockSearch() {}, mountExternalToolbox() {},
       loadWorkspaceJson: state => Blockly.serialization.workspaces.load(state, live),
     });
@@ -248,6 +249,7 @@ describe('Blockly service document boundary', () => {
   });
 
   it('round trips native procedure definitions and page-owned calls across actual page switches', () => {
+    const refresh = spyOn(internal.workspaceVisualRefreshRequestSubject, 'next').and.callThrough();
     const input = source();
     input.sharedModel.procedureBlocks = [{ type: 'procedures_defnoreturn', id: 'd', fields: { NAME: 'work' }, deletable: false }];
     input.pages[0].content = workspace({ type: 'procedures_callnoreturn', id: 'c', extraState: { name: 'work' } });
@@ -262,6 +264,8 @@ describe('Blockly service document boundary', () => {
       expect(live.getBlockById('d')?.isDeletable()).toBeFalse();
       expect(service.switchPage('one')).toBeTrue();
     }
+    expect(refresh).toHaveBeenCalledTimes(7);
+    expect(refresh).toHaveBeenCalledWith(live);
     const saved = service.getProjectDocument();
     expect(saved.sharedModel.procedureBlocks.map(block => block.id)).toEqual(['d']);
     expect(saved.pages[0].content.blocks.blocks.map(block => block.id)).toEqual(['c']);

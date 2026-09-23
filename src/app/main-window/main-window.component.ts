@@ -38,6 +38,7 @@ import { ElectronService } from '@core/platform/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
+  CoderEditorUpdateService,
   RequiredSubappService,
   bootstrapDefaultSubapps,
   DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
@@ -152,6 +153,7 @@ export class MainWindowComponent implements OnDestroy {
     private appStoreService: AppStoreService,
     private subappManager: SubappManagerService,
     private requiredSubapps: RequiredSubappService,
+    private coderEditorUpdates: CoderEditorUpdateService,
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
   ) { }
@@ -313,6 +315,9 @@ export class MainWindowComponent implements OnDestroy {
         install: async catalogId => { await this.requiredSubapps.ensureInstalled(catalogId); },
         onError: (toolId, error) => console.warn(`[Subapp] Default ${toolId} startup setup failed:`, error),
       });
+      if (this.configService.isCoderProduct()) {
+        await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
+      }
     } catch (error) {
       console.warn('[Subapp] Default subapp initialization failed:', error);
     } finally {

@@ -73,10 +73,6 @@ export const routes: Routes = [
         loadComponent: () => import('./windows/project-new/project-new.component').then(m => m.ProjectNewComponent)
     },
     {
-        path: "partition-manager",
-        loadComponent: () => import('./windows/partition-manager/partition-manager.component').then(m => m.PartitionManagerComponent)
-    },
-    {
         path: "settings",
         loadComponent: () => import('./windows/settings/settings.component').then(m => m.SettingsComponent)
     },

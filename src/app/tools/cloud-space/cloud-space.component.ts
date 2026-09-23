@@ -319,6 +319,8 @@ export class CloudSpaceComponent {
         '-xr!.DS_Store', '-xr!.env*',
         '-x!sketch/preprocess.json', '-x!sketch/library-cache.json',
         '-x!sketch/build-config.json', '-x!sketch/upload-config.json',
+        '-x!sketch/target-compile.json',
+        '-x!sketch/compile-preprocess-*.json',
       ];
       packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * ${exclusions.map(value => `"${value}"`).join(' ')}`;
     }

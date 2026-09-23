@@ -19,13 +19,6 @@ import {
   resolvePlatformPackageEntries,
 } from '../../../utils/platform-packages.utils';
 
-import {
-  PlatformPackageRef,
-  readPlatformManifestFromAppData,
-  readPlatformRefFromProjectPackage,
-  runtimeDependenciesToBoardDependencies,
-} from '../../../utils/platform-runtime.utils';
-
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
 
@@ -296,7 +289,7 @@ export class NpmService {
     });
 
     try {
-      await this.appDataResourceLock.runExclusive(`npm:install-board:${board.name}`, () => window['npm'].run({ cmd: cmd }));
+      await this.appDataResourceLock.runExclusive(`npm:install-board:${board.name}`, appDataResourceToken => window['npm'].run({ cmd, appDataResourceToken }));
     } catch (error) {
       const errorMessage = this.getNpmErrorMessage(error);
 
@@ -373,7 +366,7 @@ export class NpmService {
 
   /**
    * Aily Code 切换开发板后：与打开新 Coder 工程一致，
-   * 执行工程目录 npm install，并安装主板 boardDependencies + platform runtimeDependencies。
+   * 执行工程目录 npm install，并安装主板 boardDependencies。
    */
   async reinstallDepsForAilyCodeBoardSwitch(projectPath: string): Promise<boolean> {
     if (!this.isAilyCodeProjectRoot(projectPath)) {
@@ -444,8 +437,6 @@ export class NpmService {
           await this.installBoardDependencies(boardPackageJson, false, true);
         }
       }
-
-      await this.installPlatformPackageForAilyCodeProject({ force: true });
 
       if (installStateStarted && this.application.currentProcessState === "INSTALLING") {
         this.application.finishInstall(true);
@@ -519,9 +510,8 @@ export class NpmService {
         const projectPackageJson = await this.prjService.getPackageJson() || {};
         const boardDependencies: Record<string, string> = boardPackageJson.boardDependencies || {};
         const boardPlatformDepsReady = await this.areBoardPlatformDepsReady(boardDependencies);
-        const isAilyCodeProject = this.isAilyCodeProjectRoot(this.prjService.currentProjectPath);
 
-        if (!boardPlatformDepsReady || isAilyCodeProject) {
+        if (!boardPlatformDepsReady) {
           this.isInstalling = true;
           installStateStarted = this.application.startInstall();
         }
@@ -537,10 +527,6 @@ export class NpmService {
           await this.installBoardDependencies(boardPackageJson, false, true);
         } else {
           console.log('[installBoardDeps] 平台依赖已就绪，跳过安装状态');
-        }
-
-        if (isAilyCodeProject) {
-          await this.installPlatformPackageForAilyCodeProject();
         }
 
         try {
@@ -576,104 +562,6 @@ export class NpmService {
     return this.prjService.isAilyCodeProject(projectPath);
   }
 
-  /**
-   * Aily Code：将 frameworkPlatforms.platform 对应 npm 包安装到 AppData，
-   * 再按 platform.json 的 runtimeDependencies 安装 sdk / compiler / tool（与 Blockly 一致）。
-   */
-  async installPlatformPackageForAilyCodeProject(options?: { force?: boolean }): Promise<void> {
-    const projectPath = this.prjService.currentProjectPath;
-
-    if (!projectPath || !this.isAilyCodeProjectRoot(projectPath)) {
-      return;
-    }
-
-    const platformRef = readPlatformRefFromProjectPackage(projectPath);
-
-    if (!platformRef?.packageName) {
-      console.log('[installPlatformPackageForAilyCodeProject] 未配置 platform，跳过');
-
-      return;
-    }
-
-    await this.ensurePlatformNpmPackageInstalled(platformRef);
-
-    const manifest = readPlatformManifestFromAppData(platformRef.packageName);
-
-    if (!manifest?.runtimeDependencies?.length) {
-      console.log('[installPlatformPackageForAilyCodeProject] platform.json 无 runtimeDependencies，跳过');
-
-      return;
-    }
-
-    const boardDependencies = runtimeDependenciesToBoardDependencies(manifest.runtimeDependencies);
-
-    if (Object.keys(boardDependencies).length === 0) {
-      return;
-    }
-
-    await this.installBoardDependencies({
-      name: manifest.id || platformRef.packageName,
-      version: manifest.version || platformRef.version || '',
-      boardDependencies,
-    }, false, options?.force === true);
-
-    try {
-      const [projectPackageJson, boardPackageJson] = await Promise.all([
-        this.prjService.getPackageJson(),
-        this.prjService.getBoardPackageJson(),
-      ]);
-
-      await this.recordGlobalDependencyUsage(projectPackageJson || {}, boardPackageJson || {});
-    } catch (error) {
-      console.warn('Failed to record installed platform dependency resources:', error);
-    }
-  }
-
-  /** 安装 platform npm 包到 AppData（与 boardDependencies 包相同 prefix） */
-  private async ensurePlatformNpmPackageInstalled(platformRef: PlatformPackageRef): Promise<void> {
-    const appDataPath = window['path'].getAppDataPath();
-    const packageName = String(platformRef.packageName ?? '').trim();
-
-    if (!packageName) {
-      return;
-    }
-
-    const declaredVersion = String(platformRef.version ?? '').trim();
-    const depPath = `${appDataPath}/node_modules/${packageName}`;
-    const depPathPackageJson = `${depPath}/package.json`;
-
-    if (window['path'].isExists(depPathPackageJson)) {
-      try {
-        const installed = JSON.parse(window['fs'].readFileSync(depPathPackageJson, 'utf8'));
-
-        if (!declaredVersion || this.depVersionSatisfiesDecl(installed.version, declaredVersion)) {
-          if (window['path'].isExists(`${depPath}/platform.json`)) {
-            console.log(`[ensurePlatformNpmPackageInstalled] ${packageName} 已安装，跳过`);
-
-            return;
-          }
-        }
-      } catch {
-        /* 继续安装 */
-      }
-    }
-
-    this.application.updateNotice({
-      title: this.translate.instant('NPM.INSTALLING_TITLE'),
-      text: this.translate.instant('NPM.INSTALLING', { name: packageName }),
-      state: 'doing',
-      showProgress: false,
-      setTimeout: 300000,
-    });
-
-    const installSpec = declaredVersion ? `${packageName}@${declaredVersion}` : packageName;
-    const npmCmd = `npm install ${installSpec} --save-exact --prefix "${appDataPath}"`;
-
-    await this.appDataResourceLock.runExclusive(`npm:install-platform:${packageName}`, () =>
-      window['npm'].run({ cmd: npmCmd }),
-    );
-  }
-
   async removeGlobalDependencies(
     unusedDays: 30 | 90 | null,
     onProgress?: (percent: number) => void,
@@ -683,7 +571,7 @@ export class NpmService {
     const bases = await this.getPlatformPathBases();
     const resourceBasePaths = [bases.sdkBase, bases.compilersBase, bases.toolsBase];
 
-    return this.appDataResourceLock.runExclusive(`npm:remove-global-dependencies:${unusedDays ?? 'all'}`, async () => {
+    return this.appDataResourceLock.runExclusive(`npm:remove-global-dependencies:${unusedDays ?? 'all'}`, async appDataResourceToken => {
       const now = Date.now();
       const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
 
@@ -729,18 +617,27 @@ export class NpmService {
         // node_modules during installation. Run their declared cleanup scripts
         // before npm removes the package directory that contains those scripts.
         for (const packageName of packagesToRemove) {
-          await this.runDeclaredUninstallScript(appDataPath, packageName);
+          await this.runDeclaredUninstallScript(appDataPath, packageName, appDataResourceToken);
           onProgress?.(10 + 30 * ++completedScripts / packagesToRemove.length);
         }
       }
       onProgress?.(40);
 
+      // Main owns the asynchronous filesystem operation as well as the lease;
+      // renderer destruction cannot release a still-running recursive removal.
+      const cleanupFs = {
+        readdir: (path: string) => window['fsp'].readdir(path),
+        rm: async (target: string) => {
+          const result = await window['ipcRenderer'].invoke('appdata-resource-remove', { token: appDataResourceToken, target });
+          if (result?.ok !== true) throw new Error('APPDATA_RESOURCE_REMOVE_FAILED');
+        },
+      };
       if (unusedDays === null) {
         resourcePaths = await clearGlobalDependencyResourceDirectories({
           appDataPath,
           resourceBasePaths,
           pathApi: window['path'],
-          fsApi: window['fsp'],
+          fsApi: cleanupFs,
           onResourceRemoved,
         });
       } else if (resourceKeysToRemove.length > 0) {
@@ -749,7 +646,7 @@ export class NpmService {
           resourceBasePaths,
           resourceKeys: resourceKeysToRemove,
           pathApi: window['path'],
-          fsApi: window['fsp'],
+          fsApi: cleanupFs,
           onResourceRemoved,
         });
       }
@@ -757,8 +654,7 @@ export class NpmService {
 
       if (packagesToRemove.length > 0) {
         const cmd = `npm uninstall ${packagesToRemove.join(' ')} --prefix "${appDataPath}"`;
-
-        await window['npm'].run({ cmd });
+        await window['npm'].run({ cmd, appDataResourceToken });
       }
       onProgress?.(90);
 
@@ -815,25 +711,19 @@ export class NpmService {
     const appDataPath = window['path'].getAppDataPath();
     const bases = await this.getPlatformPathBases();
     const resourceBasePaths = [bases.sdkBase, bases.compilersBase, bases.toolsBase];
-    const effectiveBoardDependencies = await this.prjService.getEffectiveBoardDependencies();
+    const boardDependencies = await this.prjService.getBoardDependencies();
 
     const usedNames = new Set<string>([
       ...this.getDependencyNames(projectPackageJson),
-      ...Object.keys(effectiveBoardDependencies || {})
+      ...Object.keys(boardDependencies || {})
     ]);
 
     if (typeof boardPackageJson?.name === 'string' && boardPackageJson.name) {
       usedNames.add(boardPackageJson.name);
     }
 
-    const platformRef = readPlatformRefFromProjectPackage(this.prjService.currentProjectPath);
-
-    if (platformRef?.packageName) {
-      usedNames.add(platformRef.packageName);
-    }
-
     const usedResourceKeys = this.getResourceKeysForBoardDependencies(
-      effectiveBoardDependencies || {},
+      boardDependencies || {},
       bases,
     );
 
@@ -957,7 +847,7 @@ export class NpmService {
     return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name);
   }
 
-  private async runDeclaredUninstallScript(appDataPath: string, packageName: string): Promise<void> {
+  private async runDeclaredUninstallScript(appDataPath: string, packageName: string, appDataResourceToken: string): Promise<void> {
     const packagePath = window['path'].join(appDataPath, 'node_modules', packageName);
     const packageJsonPath = window['path'].join(packagePath, 'package.json');
 
@@ -971,7 +861,7 @@ export class NpmService {
       return;
     }
 
-    await this.cmdService.runAsyncChecked('npm run uninstall', packagePath);
+    await this.cmdService.runAsyncChecked('npm run uninstall', packagePath, true, false, { appDataResourceToken, appDataResourceMode: 'write' });
   }
 
   boardDependenciesChanged = false;
@@ -1170,7 +1060,7 @@ export class NpmService {
       });
 
       for (const [index, [key, version]] of dependencies.entries()) {
-        await this.appDataResourceLock.runExclusive(`npm:board-dependency:${key}`, async () => {
+        await this.appDataResourceLock.runExclusive(`npm:board-dependency:${key}`, async appDataResourceToken => {
           const declaredVersion = String(version);
           const depPath = `${appDataPath}/node_modules/${key}`;
           const depPathPackageJson = `${depPath}/package.json`;
@@ -1207,7 +1097,8 @@ export class NpmService {
               });
 
               try {
-                await this.cmdService.runAsync('npm run postinstall', depPath);
+                await this.cmdService.runAsyncChecked('npm run postinstall', depPath, true, false,
+                  { appDataResourceToken, appDataResourceMode: 'write' });
 
                 if (this.isPlatformPackageOnDisk(key, versionStr, platformBases)) {
                   this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, installedVersion: depPackageJson.version, platformReady: true, afterPostinstall: true });
@@ -1256,7 +1147,7 @@ export class NpmService {
 
             console.log(`执行命令: ${uninstallCmd}, 时间: ${new Date().toISOString()}`);
             this.traceToAppLog('DEP_UNINSTALL_START', { name: dependency.name, version: dependency.version });
-            await window['npm'].run({ cmd: uninstallCmd });
+            await window['npm'].run({ cmd: uninstallCmd, appDataResourceToken });
           }
 
           // --save-exact：与开发板声明版本一致写入 prefix 下 package.json，避免 ^ 导致再次解析到更高版
@@ -1267,7 +1158,7 @@ export class NpmService {
 
           console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
           this.traceToAppLog('DEP_INSTALL_START', { name: dependency.name, version: dependency.version });
-          await window['npm'].run({ cmd: npmCmd });
+          await window['npm'].run({ cmd: npmCmd, appDataResourceToken });
           this.updateBoardDependencyNotice(progress, ((index + 1) / dependencies.length) * 100);
           console.log(`依赖 ${dependency.name} 安装成功, 时间: ${new Date().toISOString()}`);
           this.traceToAppLog('DEP_INSTALL_DONE', { name: dependency.name, version: dependency.version });
@@ -1367,8 +1258,7 @@ export class NpmService {
 
       // 检查每个依赖是否被其他开发板使用
       console.log("installedBoards: ", installedBoards);
-
-      await this.appDataResourceLock.runExclusive(`npm:uninstall-board-dependencies:${depName}`, async () => {
+      await this.appDataResourceLock.runExclusive(`npm:uninstall-board-dependencies:${depName}`, async appDataResourceToken => {
         for (const [depName, depVersion] of Object.entries(boardDependenciesToUninstall)) {
           const isUsedByOtherBoards = installedBoards.some(board =>
             board.dependencies && board.dependencies[depName] !== undefined
@@ -1388,7 +1278,9 @@ export class NpmService {
               const npmCmd = `npm uninstall ${depName} --prefix "${appDataPath}"`;
 
               console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
-              await window['npm'].run({ cmd: npmCmd });
+
+              await window['npm'].run({ cmd: npmCmd, appDataResourceToken });
+
               console.log(`依赖 ${depName} 卸载成功, 时间: ${new Date().toISOString()}`);
             } catch (error) {
               console.error(`依赖 ${depName} 卸载失败:`, error);
@@ -1435,7 +1327,7 @@ export class NpmService {
     });
 
     // 添加超时保护和正确的参数名
-    await this.appDataResourceLock.runExclusive(`npm:uninstall-board:${board.name}`, () => window['npm'].run({ cmd: cmd }));
+    await this.appDataResourceLock.runExclusive(`npm:uninstall-board:${board.name}`, appDataResourceToken => window['npm'].run({ cmd, appDataResourceToken }));
     // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.BOARD_UNINSTALL_COMPLETE') });
     this.application.updateNotice({ 
       title: this.translate.instant('NPM.UNINSTALL_COMPLETE_TITLE'), 
@@ -1456,7 +1348,7 @@ export class NpmService {
     }
 
     try {
-      await this.appDataResourceLock.runExclusive(`npm:install-package:${packageInfo.name}`, async () => {
+      await this.appDataResourceLock.runExclusive(`npm:install-package:${packageInfo.name}`, async appDataResourceToken => {
         if (version) {
           const nmPath = `${appDataPath}/node_modules/${packageInfo.name}`;
           const pjPath = `${nmPath}/package.json`;
@@ -1485,7 +1377,7 @@ export class NpmService {
           ) {
             await this.cmdService.runAsyncChecked(
               `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`,
-              appDataPath
+              appDataPath, true, false, { appDataResourceToken, appDataResourceMode: 'write' }
             );
           }
         }
@@ -1502,7 +1394,7 @@ export class NpmService {
           setTimeout: 300000
         });
 
-        await this.cmdService.runAsyncChecked(cmd, appDataPath);
+        await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false, { appDataResourceToken, appDataResourceMode: 'write' });
       });
 
       // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.INSTALL_COMPLETE', { name: packageInfo.name }) });
@@ -1556,14 +1448,6 @@ export class NpmService {
       return;
     }
 
-    // 尝试执行包的清理脚本
-    // let cmd = `cd /d "${packageNodeModulesPath}" && npm run uninstall`;
-    // try {
-    //   await window['npm'].run({ cmd: cmd });
-    // } catch (error) {
-    //   console.log(`${type}执行清理失败:`, error);
-    // }
-
     // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('NPM.UNINSTALLING', { name: packageInfo.name }), timeout: 300000 });
     this.application.updateNotice({ 
       title: this.translate.instant('NPM.UNINSTALLING_TITLE'), 
@@ -1574,17 +1458,11 @@ export class NpmService {
     });
 
     console.log("PackageNodeModulesPath: ", packageNodeModulesPath);
-
-    await this.appDataResourceLock.runExclusive(
-      `npm:run-uninstall-script:${packageInfo.name}`,
-      () => this.runDeclaredUninstallScript(appDataPath, packageInfo.name)
-    );
-
-    // 卸载包
-    const cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
-
-    // await window['npm'].run({ cmd: cmd });
-    await this.appDataResourceLock.runExclusive(`npm:uninstall-package:${packageInfo.name}`, () => this.cmdService.runAsyncChecked(cmd, appDataPath));
+    await this.appDataResourceLock.runExclusive(`npm:uninstall-package:${packageInfo.name}`, async appDataResourceToken => {
+      await this.runDeclaredUninstallScript(appDataPath, packageInfo.name, appDataResourceToken);
+      const cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
+      await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false, { appDataResourceToken, appDataResourceMode: 'write' });
+    });
     // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.UNINSTALL_COMPLETE', { name: packageInfo.name }) });
     this.application.updateNotice({ 
       title: this.translate.instant('NPM.UNINSTALL_COMPLETE_TITLE'), 

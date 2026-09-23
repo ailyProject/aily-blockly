@@ -209,6 +209,7 @@
                 "src/app/services/domains/project/project-data/project-data-abs.spec.ts",
                 "src/app/services/domains/project/project-data/project-data-generic-values.spec.ts",
                 "src/app/services/domains/project/project-data/project-data-normalization.spec.ts",
+                "src/app/services/domains/project/legacy-shadow-identities.spec.ts",
                 "src/app/services/domains/project/project-save-as.spec.ts",
                 "src/app/services/domains/project/project-block-field-updates.spec.ts"
               ]

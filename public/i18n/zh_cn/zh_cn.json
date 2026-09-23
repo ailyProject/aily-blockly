@@ -882,6 +882,7 @@
         "CANCEL": "取消"
     },
     "LOGIN": {
+        "EDU_LOGIN": "EDU 登录",
         "HEADER": "登录后即可使用我们的服务",
         "PHONE": "手机号",
         "EMAIL": "邮箱",

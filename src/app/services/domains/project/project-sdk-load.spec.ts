@@ -45,7 +45,7 @@ describe('board configuration menu SDK readiness', () => {
     service.electronService = { pathJoin: (...parts: string[]) => parts.join('/') };
     service.translate = { instant: () => 'SDK is not ready' };
     service.getPackageJson = jasmine.createSpy('get package').and.resolveTo(manifest);
-    service.getEffectiveBoardDependencies = jasmine.createSpy('get dependencies').and.resolveTo({
+    service.getBoardDependencies = jasmine.createSpy('get dependencies').and.resolveTo({
       '@aily-project/sdk-esp32': '3.3.10',
     });
     service.setPackageJson = jasmine.createSpy('set package').and.resolveTo();
@@ -119,7 +119,7 @@ describe('board configuration menu SDK readiness', () => {
 
   it('preserves static-board defaults without showing an SDK warning when no SDK is declared', async () => {
     const { service, manifest } = fixture();
-    service.getEffectiveBoardDependencies.and.resolveTo({});
+    service.getBoardDependencies.and.resolveTo({});
     service.currentBoardMenuConfig = service.currentBoardMenuConfig.filter((item: any) => item.key === 'Variant');
 
     const menu = await service.getBoardConfigMenu();

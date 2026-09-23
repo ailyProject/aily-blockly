@@ -1,5 +1,5 @@
 import { Subject } from 'rxjs';
-import { replaceChildToolConfigs } from '../../../configs/tool.config';
+import { getChildToolConfig, getChildToolAppItems, replaceChildToolConfigs } from '../../../configs/tool.config';
 import { SubappManagerService } from './subapp-manager.service';
 
 function deferred<T>() {
@@ -64,5 +64,28 @@ describe('SubappManagerService bootstrap catalog readiness', () => {
     list.and.resolveTo({ source: 'network', apps: [] });
     await service.initializeForBootstrap();
     expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers installed headless Agent tools without exposing an iframe launcher', async () => {
+    list.and.resolveTo({ source: 'network', apps: [{ id: 'native-tool', toolId: 'native-tool',
+      installed: true, enabled: true, app: { enabled: true, ai: true }, config: {
+        id: 'native-tool', runtime: { headless: true }, app: { enabled: false, available: false },
+        agent: { tools: [{ name: 'native_run' }] },
+      } }] });
+    await service.initializeForBootstrap();
+    expect(getChildToolConfig('native-tool')?.agent?.tools[0].name).toBe('native_run');
+    expect(service.state.apps.length).toBe(1);
+    expect(service.getCatalogApps()).toEqual([]);
+    expect(getChildToolAppItems()).toEqual([]);
+  });
+
+  it('exposes an explicitly declared native observer without requiring a UI Runtime', async () => {
+    list.and.resolveTo({ source: 'network', apps: [{ id: 'native-tool', toolId: 'native-tool',
+      installed: true, enabled: true, config: { id: 'native-tool', runtime: { headless: true, observer: true },
+        app: { enabled: true }, routePath: '/child-tool/native-tool' } }] });
+    await service.initializeForBootstrap();
+    expect(service.getCatalogApps().map(app => app.id)).toEqual(['native-tool']);
+    expect(getChildToolAppItems().map(app => app.id)).toEqual(['native-tool']);
+    expect(getChildToolConfig('native-tool')?.uiIndex).toBeUndefined();
   });
 });

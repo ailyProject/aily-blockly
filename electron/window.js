@@ -20,6 +20,7 @@ const {
     classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
+    hasOwnerId: childToolHasOwnerId,
     releaseOwner: releaseChildToolOwner,
     releaseOwnerFromSessions: releaseChildToolOwnerFromSessions,
     setMessageControllerOwner: setChildToolMessageControllerOwner,
@@ -37,6 +38,11 @@ const {
     resolveChildWindowClass,
     resolveChildWindowMinimumSize,
 } = require('./child-window-layout');
+const {
+    attachMacWindowCloseBridge,
+    authorizeRendererWindowClose,
+    shouldUseNativeMacFrame,
+} = require('./mac-window-controls');
 const { exec, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -55,6 +61,13 @@ const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+const { SubappOwnerSupervisor, registerSubappOwnerSupervisor } = require('./subapp-owner-supervisor');
+const subappOwnerSupervisor = new SubappOwnerSupervisor({
+    resolveRuntime: (toolId, ownerId) => {
+        const runtime = childToolSessions.get(toolId);
+        return runtime && childToolHasOwnerId(runtime, ownerId) ? runtime : null;
+    },
+});
 const childToolOwnerCleanupRegistrations = new Set();
 const pendingChildToolProcessMessages = new Map();
 let ailyHostAuthRelay = null;
@@ -187,6 +200,15 @@ async function stopChildToolSessionProcess(session) {
     if (!session) return false;
     session.stopping = true;
     try {
+        if (session.nativeStop) {
+            try { await session.nativeStop(); }
+            catch (error) {
+                console.warn('[ChildToolSession] Native cleanup remains unconfirmed', { streamId: session.streamId, code: error.code || 'SUBAPP_STOP_UNCONFIRMED' });
+                return false;
+            }
+            handleChildToolProcessExit({ streamId: session.streamId, code: 0, signal: null, expected: true });
+            return true;
+        }
         const stopped = await stopChildToolSessionProcessWithDependencies(session, {
             fetchImpl: typeof fetch === 'function' ? fetch : undefined,
             getActiveProcesses: getActiveCmdProcesses,
@@ -341,10 +363,13 @@ function scheduleChildToolRelease(toolId, session) {
             toolId,
             streamId: session.streamId,
         });
-        void stopChildToolSessionProcess(session).finally(() => {
+        void stopChildToolSessionProcess(session).then(stopped => {
+            if (!stopped || childToolSessions.get(toolId) !== session) return;
             pendingChildToolProcessMessages.delete(session.streamId);
             childToolSessions.delete(toolId);
             broadcastChildToolSessionStateChanged();
+        }).catch(() => {
+            console.warn('[ChildToolSession] Release failed; Runtime registration retained', { toolId, streamId: session.streamId });
         });
     }, CHILD_TOOL_RELEASE_GRACE_MS);
 }
@@ -413,6 +438,10 @@ function trackChildToolSessionOwner(webContents) {
         return ownerId;
     }
     childToolOwnerCleanupRegistrations.add(ownerId);
+    webContents.on('render-process-gone', () => releaseChildToolSessionsForOwner(ownerId));
+    webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace) releaseChildToolSessionsForOwner(ownerId);
+    });
     webContents.once('destroyed', () => {
         childToolOwnerCleanupRegistrations.delete(ownerId);
         releaseChildToolSessionsForOwner(ownerId);
@@ -433,19 +462,21 @@ async function restartChildToolSession(toolId) {
         return { success: false, reason: 'process-still-running' };
     }
     pendingChildToolProcessMessages.delete(session.streamId);
-    childToolSessions.delete(normalizedToolId);
+    if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
     return { success: true };
 }
 
-function resolveChildToolIdsForCatalogId(catalogId) {
+function resolveChildToolIdsForCatalogId(catalogId, includeDependencies = false) {
     const id = sanitizeChildToolId(catalogId);
     if (!id) return [];
+    const dependants = includeDependencies ? [...childToolSessions.entries()]
+        .filter(([, session]) => session.nativePackageDependencies?.includes(id)).map(([toolId]) => toolId) : [];
     try {
         const { TOOL_ID_ALIASES } = require('./subapp-manager');
         const aliased = TOOL_ID_ALIASES[id];
-        return Array.from(new Set([id, aliased].filter(Boolean)));
+        return Array.from(new Set([id, aliased, ...dependants].filter(Boolean)));
     } catch (_) {
-        return [id];
+        return [id, ...dependants];
     }
 }
 
@@ -458,7 +489,7 @@ function getRunningSubappConfig(catalogId) {
 }
 
 function listChildToolHoldersForCatalogId(catalogId) {
-    const toolIds = resolveChildToolIdsForCatalogId(catalogId);
+    const toolIds = resolveChildToolIdsForCatalogId(catalogId, true);
     const holders = [];
     for (const toolId of toolIds) {
         const session = childToolSessions.get(toolId);
@@ -477,7 +508,7 @@ function listChildToolHoldersForCatalogId(catalogId) {
 }
 
 async function forceStopChildToolByCatalogId(catalogId) {
-    const toolIds = resolveChildToolIdsForCatalogId(catalogId);
+    const toolIds = resolveChildToolIdsForCatalogId(catalogId, true);
     let stopped = false;
     let failed = false;
     for (const toolId of toolIds) {
@@ -492,7 +523,7 @@ async function forceStopChildToolByCatalogId(catalogId) {
         if (session.streamId) {
             pendingChildToolProcessMessages.delete(session.streamId);
         }
-        childToolSessions.delete(toolId);
+        if (childToolSessions.get(toolId) === session) childToolSessions.delete(toolId);
         stopped = true;
     }
     if (stopped) {
@@ -568,13 +599,14 @@ function pushPooledSubWindow(loadBasePage) {
     }
     try {
         const win = new BrowserWindow({
-            frame: false,
+            frame: shouldUseNativeMacFrame(),
             show: false,
             opacity: 0,
             backgroundColor: getSubWindowBackgroundColor(),
             skipTaskbar: true,
             autoHideMenuBar: true,
             thickFrame: true,
+            closable: true,
             titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
             alwaysOnTop: false,
             width: 800,
@@ -777,6 +809,7 @@ function terminateAilyProcess() {
 }
 
 function registerWindowHandlers(mainWindow, options = {}) {
+    registerSubappOwnerSupervisor(ipcMain, subappOwnerSupervisor);
     const authRelay = new AilyHostAuthRelay({
         sendToRenderer: payload => mainWindow.webContents.send('child-tool-host-auth-request', payload),
         sendToProcess: sendCmdProcessMessage,
@@ -1295,6 +1328,15 @@ function registerWindowHandlers(mainWindow, options = {}) {
      */
     const attachSubWindowLifecycleListeners = (subWindow, windowUrl) => {
         subWindow.on('focus', () => moveFocusedWindowToTop(subWindow));
+        attachMacWindowCloseBridge(
+            subWindow,
+            () => {
+                if (!subWindow.isDestroyed() && !subWindow.webContents.isDestroyed()) {
+                    subWindow.webContents.send('window-close-request');
+                }
+            },
+            { isQuitting: () => applicationIsQuitting },
+        );
 
         subWindow.on('enter-full-screen', () => {
             try {
@@ -1369,13 +1411,14 @@ function registerWindowHandlers(mainWindow, options = {}) {
         let win;
         try {
             win = new BrowserWindow({
-                frame: false,
+                frame: shouldUseNativeMacFrame(),
                 show: false,
                 opacity: 0,
                 backgroundColor: getSubWindowBackgroundColor(),
                 skipTaskbar: true,
                 autoHideMenuBar: true,
                 thickFrame: true,
+                closable: true,
                 titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
                 alwaysOnTop: false,
                 width: 700,
@@ -1666,12 +1709,13 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
         if (!subWindow) {
             subWindow = new BrowserWindow({
-                frame: false,
+                frame: shouldUseNativeMacFrame(),
                 show: false,
                 opacity: 0,
                 backgroundColor: getSubWindowBackgroundColor(),
                 autoHideMenuBar: true,
                 thickFrame: true,
+                closable: true,
                 titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
                 alwaysOnTop,
                 width,
@@ -1937,7 +1981,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             return { success: false, reason: 'process-still-running' };
         }
         pendingChildToolProcessMessages.delete(session.streamId);
-        childToolSessions.delete(normalizedToolId);
+        if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
         notifyChildToolSessionStateChanged();
         return { success: true };
     });
@@ -1969,6 +2013,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             // Attempt to terminate any residual helper processes on exit.
             terminateAilyProcess();
         } else {
+            authorizeRendererWindowClose(senderWindow);
             senderWindow.close();
         }
     });
@@ -2172,4 +2217,27 @@ module.exports = {
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
     getRunningSubappConfig,
+    nativeSubappRegistry: {
+        supervisor: subappOwnerSupervisor,
+        register(sender, { toolId, streamId, publicInfo, stop, packageDependencies = [] }) {
+            const processInfo = getActiveCmdProcesses().find(info => info.streamId === streamId);
+            if (sender.isDestroyed() || !processInfo || processInfo.pid !== publicInfo.pid || typeof stop !== 'function') {
+                throw new Error('Native Runtime must belong to a live supervised process.');
+            }
+            const existing = childToolSessions.get(toolId);
+            if (existing && isChildToolSessionAlive(existing)) throw new Error('Native Runtime is already registered.');
+            cancelChildToolRelease(existing);
+            // Native launch dependencies participate in the existing installer
+            // holders/stop protocol without pretending to be a second UI runtime.
+            const nativePackageDependencies = [...new Set(packageDependencies.map(sanitizeChildToolId).filter(Boolean))];
+            const session = { streamId, hostInfo: publicInfo, nativeOwnerControl: true, nativeStop: stop, nativePackageDependencies,
+                owners: new Map(), releaseTimer: null };
+            acquireChildToolOwner(session, trackChildToolSessionOwner(sender), 'native-runtime');
+            childToolSessions.set(toolId, session); broadcastChildToolSessionStateChanged();
+            return () => {
+                if (childToolSessions.get(toolId) !== session) return;
+                cancelChildToolRelease(session); childToolSessions.delete(toolId); broadcastChildToolSessionStateChanged();
+            };
+        },
+    },
 };

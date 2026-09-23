@@ -9,6 +9,7 @@ import type { PreparedDataReader } from '@domain/project/project-data/public-api
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
 import { captureArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { verifyNativeModelRegistrations } from './blockly-native-model-effects';
+import { captureGeneratorProjectEffects } from './generator-project-effects';
 
 /** Complete merged state, including dormant shadows and metadata, not the scratch tree. */
 export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly.Workspace,
@@ -37,9 +38,11 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
     const code = generator.workspaceToCode(workspace);
     if (typeof code !== 'string') throw new Error('Native generator did not complete synchronously.');
     const artifacts = captureArduinoGeneratedArtifacts(generator);
-    assertClean(); capture(); return { code, artifacts, deferredUi };
+    const projectMacros = captureGeneratorProjectEffects(generator, workspace);
+    assertClean(); capture(); return { code, artifacts, deferredUi: deferredUi || uiTasks.hasPending, projectMacros };
   });
   const generationEvidence = verifyNativeModelRegistrations(window, generator, request.modelDeclarations ?? [], generate);
+  if (request.uiPhase !== 'before-ui') uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
   assertClean();
   const state = capture();
   // Serialization/getters must not hide a deferred synchronous change on the first read.

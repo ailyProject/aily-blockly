@@ -2,6 +2,8 @@ import type * as Blockly from 'blockly';
 import { normalizeArduinoGeneratedCode, type BlockCodeMapping } from '../components/blockly/generators/arduino/arduino';
 import { runWithPreparedActiveProjectGenerator, type ProjectGenerator } from './blockly-generator-runtime.service';
 import { captureArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { canonicalJsonStringify } from '@domain/project/public-api';
+import { captureGeneratorProjectEffects, type GeneratorMacroEffect } from './generator-project-effects';
 
 export interface BlocklyCodeScope {
   readonly workspace: Blockly.Workspace;
@@ -19,10 +21,14 @@ export interface PreparedBlocklyCode {
   readonly code: string | null;
   readonly artifacts: ReturnType<typeof captureArduinoGeneratedArtifacts>;
   readonly blockCodeMapText: string | null;
+  readonly sourceWorkspace?: Readonly<{ documentText: string; revision: number; runtimeRevision: number; pageId: string }>;
   readonly error?: string;
+  readonly projectMacros?: readonly GeneratorMacroEffect[];
 }
 
 type CodeStamp = Omit<BlocklyCodeScope, 'document'>;
+/** Expected when interactive edits supersede an asynchronous preview request. */
+export class BlocklyCodePreparationInvalidatedError extends Error {}
 const sameContext = (a: CodeStamp, b: CodeStamp) => a.workspace === b.workspace && a.generator === b.generator
   && a.runtimeRevision === b.runtimeRevision && a.dataSession === b.dataSession && a.pageId === b.pageId;
 const sameRevision = (a: CodeStamp, b: CodeStamp) => sameContext(a, b) && a.revision === b.revision;
@@ -39,7 +45,7 @@ export class BlocklyProjectCodePreparation {
     if (!force && this.entry && sameRevision(before, this.entry.stamp)) return this.entry.result;
     this.clear();
     const prepared = await runWithPreparedActiveProjectGenerator(before.workspace, generator => {
-      if (!sameRevision(before, capture())) throw new Error('Project changed before code preparation.');
+      if (!sameRevision(before, capture())) throw new BlocklyCodePreparationInvalidatedError('Project changed before code preparation.');
       let result: Omit<PreparedBlocklyCode, 'revision'>;
       try {
         const rawCode = generator.workspaceToCode(before.workspace);
@@ -47,18 +53,21 @@ export class BlocklyProjectCodePreparation {
         const code = normalizeArduinoGeneratedCode(rawCode);
         const map = (generator as { blockCodeMap?: Map<string, BlockCodeMapping> }).blockCodeMap;
         result = Object.freeze({ code, artifacts: captureArduinoGeneratedArtifacts(generator),
+          projectMacros: captureGeneratorProjectEffects(generator, before.workspace),
           blockCodeMapText: map ? JSON.stringify([...map]) : null });
       } catch (error) {
         // Saving editable Blockly does not require compilable code. Never publish partial outputs.
         result = Object.freeze({ code: null, artifacts: null, blockCodeMapText: null,
           error: error instanceof Error ? error.message : String(error) });
       }
-      const { document: _document, ...stamp } = capture();
+      const { document, ...stamp } = capture();
       if (!sameContext(before, stamp)) throw new Error('Project runtime changed during code preparation.');
-      return { stamp, result: Object.freeze({ ...result, revision: stamp.revision }) };
+      return { stamp, result: Object.freeze({ ...result, revision: stamp.revision,
+        ...(result.code !== null ? { sourceWorkspace: Object.freeze({ documentText: canonicalJsonStringify(document),
+          revision: stamp.revision, runtimeRevision: stamp.runtimeRevision, pageId: stamp.pageId }) } : {}) }) };
     }, before.document);
     // Only the synchronous Generator phase may contribute model changes, not async continuations.
-    if (!sameRevision(prepared.stamp, capture())) throw new Error('Project changed after code preparation.');
+    if (!sameRevision(prepared.stamp, capture())) throw new BlocklyCodePreparationInvalidatedError('Project changed after code preparation.');
     this.entry = prepared;
     return prepared.result;
   }

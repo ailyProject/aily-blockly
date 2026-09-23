@@ -2,6 +2,7 @@ export * from './adapters/subapp-resource-lifecycle-adapter';
 export * from './bootstrap/default-subapps-bootstrap';
 export * from './child-app-host-registry.service';
 export * from './child-app-safety.service';
+export * from './coder-editor-update.service';
 export * from './child-tool-process.service';
 export * from './host-provider/subapp-host-provider-dispatcher';
 export * from './models/child-tool-runtime-entry';

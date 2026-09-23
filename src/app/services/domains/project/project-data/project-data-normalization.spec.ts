@@ -59,6 +59,45 @@ describe('Project Data normalization publication boundary', () => {
     expect(store.resolve).not.toHaveBeenCalled(); expect(result.document).toEqual(JSON.parse(disk));
   });
 
+  describe('legacy hidden identity migration publication', () => {
+    const legacy = () => ({ blocks: { blocks: ['a', 'b'].map(id => ({ id, type: 'owner', inputs: { VALUE: {
+      block: { id: `value-${id}`, type: 'number' }, shadow: { id: 'shared-default', type: 'number', fields: { NUM: 1500 } },
+    } } })) } });
+    beforeEach(() => { disk = JSON.stringify(legacy()); files.existsSync = () => false; files.projectShadowIdentityMigrationVersion = 1; });
+    it('publishes exactly once with a recoverable original and a host-locked identity precondition', async () => {
+      const result = await prepare(legacy());
+      expect(result.identityMigration.length).toBe(1);
+      expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+      expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ backup: 'project-data', migrateLegacyShadowIds: true }));
+      expect(JSON.parse(disk).blocks.blocks[1].inputs.VALUE.shadow.id).not.toBe('shared-default');
+    });
+    for (const blocked of ['project.abs', 'project.abs.map.json', '.aily/abs-sync']) it(`preserves ${blocked} and the ABI before any resource write`, async () => {
+      const original = disk; files.existsSync = (file: string) => file.endsWith('/' + blocked);
+      await expectAsync(prepare(legacy())).toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_IDENTITY_MIGRATION_BLOCKED' }));
+      expect(disk).toBe(original); expect(store.flushPending).not.toHaveBeenCalled(); expect(files.replaceProjectText).not.toHaveBeenCalled();
+    });
+    it('rechecks identity context when asynchronous resource work finishes', async () => {
+      const original = disk; (store.flushPending as jasmine.Spy).and.callFake(async () => { files.existsSync = () => true; });
+      await expectAsync(prepare(legacy())).toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_IDENTITY_MIGRATION_BLOCKED' }));
+      expect(disk).toBe(original); expect(files.replaceProjectText).not.toHaveBeenCalled();
+    });
+    it('rejects an older host that cannot enforce the locked precondition', async () => {
+      files.projectShadowIdentityMigrationVersion = undefined; const original = disk;
+      await expectAsync(prepare(legacy())).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_HOST_UNAVAILABLE' }));
+      expect(disk).toBe(original); expect(files.replaceProjectText).not.toHaveBeenCalled();
+    });
+    it('accepts the cloud entry with empty field updates after fixing hidden identities', async () => {
+      const result = await normalizeProjectDataDocument({ projectPath: path, document: legacy(), originalContent: disk, materialize: false, fieldUpdates: {} }, store, guard, files);
+      expect(result.identityMigration.length).toBe(1); expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+    });
+    it('does not guess which occurrence an ambiguous example parameter targets', async () => {
+      await expectAsync(normalizeProjectDataDocument({ projectPath: path, document: legacy(), originalContent: disk, materialize: false,
+        fieldUpdates: { 'shared-default': { field: 'NUM', value: 12 } } }, store, guard, files))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_IDENTITY_REFERENCE_AMBIGUOUS' }));
+      expect(files.replaceProjectText).not.toHaveBeenCalled(); expect(store.flushPending).not.toHaveBeenCalled();
+    });
+  });
+
   it('an in-memory board template never publishes or reads the project mirror', async () => {
     const original = disk;
     const result = await normalizeProjectDataDocument({ projectPath: path, document: source(), materialize: true }, store, guard, files);
@@ -73,6 +112,27 @@ describe('Project Data normalization publication boundary', () => {
     expect(result.migration.documentChanged).toBeFalse(); expect(disk).toBe(original);
     expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ content: original, expectedHash: await digest(original) }));
     expect(files.replaceProjectText.calls.mostRecent().args[0].backup).toBeUndefined();
+  });
+
+  it('migrates only legacy Arduino String declaration values before strict native loading', async () => {
+    const document = { $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [
+      { type: 'variable_define', id: 'global-string', fields: { VAR: 'name', TYPE: 'string' } },
+      { type: 'variable_define_scoped', id: 'scoped-string', fields: { VAR: 'local', TYPE: 'string' } },
+      { type: 'another_library_block', id: 'unrelated', fields: { TYPE: 'string' } },
+    ] } };
+    disk = JSON.stringify(document); const original = disk;
+
+    const result = await prepare(document);
+    const migrated = result.document as typeof document;
+
+    expect(document.blocks.blocks.map(block => block.fields.TYPE)).toEqual(['string', 'string', 'string']);
+    expect(result.legacyFieldMigration.map(change => change.blockId)).toEqual(['global-string', 'scoped-string']);
+    expect(migrated.blocks.blocks.map(block => block.fields.TYPE)).toEqual(['String', 'String', 'string']);
+    expect(JSON.parse(disk).blocks.blocks.map((block: any) => block.fields.TYPE)).toEqual(['String', 'String', 'string']);
+    expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+    expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+      expectedHash: await digest(original), backup: 'project-data',
+    }));
   });
 
   for (const stage of ['put', 'flushPending', 'validateReferences', 'resolve'] as const) {

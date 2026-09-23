@@ -97,8 +97,9 @@ export class SubjectItemComponent {
 
       this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PLAYGROUND.LOADING_EXAMPLE'), timeout: 300000 });
       if (!this.electronService.exists(examplePath) || !this.electronService.exists(abiFilePath)) {
-        await this.appDataResourceLock.runExclusive(`example:install:${this.exampleItem.name}`, () =>
-          this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`)
+        await this.appDataResourceLock.runExclusive(`example:install:${this.exampleItem.name}`, appDataResourceToken =>
+          this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`, undefined, true, false,
+            { appDataResourceToken, appDataResourceMode: 'write' })
         );
       }
 

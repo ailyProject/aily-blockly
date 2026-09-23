@@ -7,6 +7,7 @@ import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-nat
 import * as Blockly from 'blockly';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { GeneratorProjectEffects } from './generator-project-effects';
 import { registerCustomFunctionContract, clearCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { registerVariableDeclarationContract, clearVariableDeclarationRegistration } from './blockly-variable-declaration-contract';
 import { createProjectGenerator, type BlocklyGeneratorMode, type ProjectGenerator } from './blockly-generator-factory';
@@ -68,6 +69,7 @@ interface RuntimeSession {
   resources: RuntimeResources;
   loadedPaths: Set<string>;
   replay: BlocklyNativeReplayJournal;
+  projectEffects: GeneratorProjectEffects;
 }
 
 let activeProjectGenerator: ProjectGenerator | null = null;
@@ -180,6 +182,7 @@ export class BlocklyGeneratorRuntimeService {
       },
       loadedPaths: new Set<string>(),
       replay: new BlocklyNativeReplayJournal(),
+      projectEffects: new GeneratorProjectEffects(realmWindow),
     };
 
     this.session = session;
@@ -299,6 +302,7 @@ export class BlocklyGeneratorRuntimeService {
     activeProjectGeneratorRevision++;
     session.replay.append({ kind: 'script', label: filePath, source });
     const previousTextHandler = session.generator.forBlock['text'];
+    const previousHandlers = { ...session.generator.forBlock };
     const globalsBefore = new Set(Reflect.ownKeys(session.realmWindow).map(String));
     let scriptError: ErrorEvent | null = null;
     const errorHandler = (event: ErrorEvent) => {
@@ -344,9 +348,10 @@ export class BlocklyGeneratorRuntimeService {
       ...result.arduinoBlockTypes,
       ...result.micropythonBlockTypes,
       ...result.pythonBlockTypes,
-    ]);
+    ].filter(type => session.generator.forBlock[type] !== previousHandlers[type]));
     if (session.context.mode === 'arduino') {
       adaptBundledArduinoProcedureCalls(session.generator);
+      session.projectEffects.wrap(session.generator);
     }
     if (session.context.mode === 'arduino') result.contractsReady = Promise.all([
       registerCustomFunctionContract(source, session.realmWindow, Blockly.Blocks, session, () => this.session === session && session.active),

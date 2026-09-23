@@ -79,6 +79,9 @@ export class CodeViewerComponent implements OnDestroy {
   }
 
   ngAfterViewInit(): void {
+    // Opening the viewer should show the latest workspace snapshot, including
+    // code prepared while a build lease blocked an earlier disk write.
+    this.blocklyService.requestCodeViewerRefresh(false);
     if (this.codeViewerIpcService.isAvailable) {
       this.initElectronStateSync();
       return;

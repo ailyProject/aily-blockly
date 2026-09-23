@@ -8,7 +8,7 @@ import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzModalModule, NzModalService } from 'ng-zorro-antd/modal';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MarkdownDialogComponent } from '../../main-window/components/markdown-dialog/markdown-dialog.component';
-import { Subject, takeUntil, interval, Subscription } from 'rxjs';
+import { Subject, takeUntil, interval, Subscription, from, switchMap, finalize } from 'rxjs';
 import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -16,6 +16,9 @@ import { NzConfigService } from 'ng-zorro-antd/core/config';
 import { ElectronService } from '@core/platform/public-api';
 import { AltchaComponent } from './altcha/altcha.component';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
+import { sha256Hex } from '../../utils/crypto.utils';
+
+type LoginMode = 'mail' | 'wechat' | 'github' | 'edu';
 
 @Component({
   selector: 'app-login',
@@ -90,6 +93,7 @@ export class LoginComponent implements OnInit, OnDestroy {
 
   // 邮箱登录相关
   inputEmail = '';
+  inputPassword = '';
   inputCode = '';
   inviteCode = '';
   isSendingCode = false;
@@ -198,8 +202,11 @@ export class LoginComponent implements OnInit, OnDestroy {
     });
   }
 
-  mode = 'mail'; // 默认选中邮箱登录
-  select(mode) {
+  mode: LoginMode = 'mail'; // 默认选中邮箱登录
+  select(mode: LoginMode) {
+    if (this.mode !== mode) {
+      this.inputPassword = '';
+    }
     this.mode = mode;
     // 当选择微信登录时，若已勾选协议则初始化二维码
     if (mode === 'wechat') {
@@ -660,6 +667,52 @@ export class LoginComponent implements OnInit, OnDestroy {
       this.message.error(this.getLoginErrorMessage(error));
       this.isWaiting = false;
     }
+  }
+
+  /**
+   * EDU 邮箱密码登录，沿用现有密码登录接口及 SHA-256 密码摘要。
+   */
+  loginByEdu(): void {
+    if (this.isWaiting) {
+      return;
+    }
+
+    const email = this.inputEmail.trim();
+    if (!email) {
+      this.message.warning(this.loginText('ENTER_EMAIL'));
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      this.message.warning(this.loginText('INVALID_EMAIL'));
+      return;
+    }
+    if (!this.inputPassword) {
+      this.message.warning(this.loginText('PASSWORD_PLACEHOLDER'));
+      return;
+    }
+
+    this.isWaiting = true;
+    from(sha256Hex(this.inputPassword)).pipe(
+      switchMap(password => this.authService.login({ username: email, password })),
+      takeUntil(this.destroy$),
+      finalize(() => {
+        this.isWaiting = false;
+        this.cdr.markForCheck();
+      }),
+    ).subscribe({
+      next: (response) => {
+        if (response.status === 200 && response.data?.access_token) {
+          this.inputEmail = '';
+          this.inputPassword = '';
+          this.message.success(this.loginText('LOGIN_SUCCESS'));
+        } else {
+          this.message.error(this.getLoginErrorMessage(response));
+        }
+      },
+      error: (error) => {
+        this.message.error(this.getLoginErrorMessage(error, this.loginText('LOGIN_NETWORK_ERROR')));
+      },
+    });
   }
 
   ngOnDestroy() {

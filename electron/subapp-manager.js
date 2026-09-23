@@ -5,7 +5,7 @@ const https = require('https');
 const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
-const { exec, execFile, spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { URL } = require('url');
 const semver = require('semver');
 const { killRegisteredProcessTree } = require('./process-tree');
@@ -284,6 +284,20 @@ function isDistRelativePath(value) {
 }
 
 function resolveUiIndex(packagePath, packageJson) {
+  const headless = packageJson?.ailySubapp?.runtime?.headless;
+  const observer = packageJson?.ailySubapp?.runtime?.observer;
+  if (observer !== undefined && (typeof observer !== 'boolean' || (observer && headless !== true))) {
+    throw new Error('runtime.observer must be boolean and requires an explicit headless runtime');
+  }
+  if (headless !== undefined && typeof headless !== 'boolean') {
+    throw new Error('ailySubapp.runtime.headless must be a boolean');
+  }
+  if (headless) {
+    if (packageJson?.ailySubapp?.ui || packageJson?.aily?.uiIndex || packageJson?.ailyBlockly?.uiIndex) {
+      throw new Error('Headless subapps cannot declare UI surfaces or uiIndex');
+    }
+    return null;
+  }
   const configured = typeof packageJson?.aily?.uiIndex === 'string'
     ? packageJson.aily.uiIndex.trim()
     : typeof packageJson?.ailyBlockly?.uiIndex === 'string'
@@ -297,6 +311,15 @@ function resolveUiIndex(packagePath, packageJson) {
   return candidates.find((candidate) => fs.existsSync(path.join(packagePath, candidate)))
     || candidates[0]
     || path.join('ui', 'index.html');
+}
+
+// A missing UI is valid only through the explicit manifest contract above.
+// Share this predicate across discovery, selection and activation.
+function hasRunnableEntries({ packagePath, mainEntry, uiIndex }) {
+  const exists = entry => !isDistRelativePath(entry)
+    && fs.statSync(resolvePackageRelativePath(packagePath, entry, 'Subapp entry').resolved,
+      { throwIfNoEntry: false })?.isFile() === true;
+  return exists(mainEntry) && (uiIndex === null || exists(uiIndex));
 }
 
 /**
@@ -314,12 +337,7 @@ function resolveRunnablePackage(packagePath, catalogId, packageJson) {
         ? nestedPackageJson.main.trim()
         : 'index.js';
       const nestedUiIndex = resolveUiIndex(nestedPortablePath, nestedPackageJson);
-      if (
-        !isDistRelativePath(nestedMain)
-        && !isDistRelativePath(nestedUiIndex)
-        && fs.existsSync(path.join(nestedPortablePath, nestedMain))
-        && fs.existsSync(path.join(nestedPortablePath, nestedUiIndex))
-      ) {
+      if (hasRunnableEntries({ packagePath: nestedPortablePath, mainEntry: nestedMain, uiIndex: nestedUiIndex })) {
         return {
           packagePath: nestedPortablePath,
           packageJson: nestedPackageJson,
@@ -571,25 +589,28 @@ function validateAgentLifecycle(rawLifecycle) {
   if (!isObject(rawLifecycle)) {
     throw new Error('Subapp Agent lifecycle must be an object');
   }
-  if (rawLifecycle.sessionRelease === undefined) return {};
-  if (!isObject(rawLifecycle.sessionRelease)) {
-    throw new Error('Subapp Agent lifecycle.sessionRelease must be an object');
-  }
-  const method = requireText(
-    rawLifecycle.sessionRelease.method,
-    'Subapp Agent lifecycle.sessionRelease.method',
-  );
-  const params = rawLifecycle.sessionRelease.params;
-  if (params !== undefined && !isObject(params)) {
-    throw new Error('Subapp Agent lifecycle.sessionRelease.params must be an object');
-  }
-  return {
-    sessionRelease: {
+  const lifecycle = {};
+  for (const name of ['ownerLease', 'ownerRelease', 'sessionRelease']) {
+    const request = rawLifecycle[name];
+    if (request === undefined) continue;
+    const label = `Subapp Agent lifecycle.${name}`;
+    if (!isObject(request)) throw new Error(`${label} must be an object`);
+    const method = requireText(request.method, `${label}.method`);
+    if (name === 'ownerLease' && (request.protocol !== 'process-file-v1' || !rawLifecycle.ownerRelease)) {
+      throw new Error(`${label} requires process-file-v1 and ownerRelease`);
+    }
+    const params = request.params;
+    if (params !== undefined && !isObject(params)) {
+      throw new Error(`${label}.params must be an object`);
+    }
+    lifecycle[name] = {
       method,
+      ...(name === 'ownerLease' ? { protocol: 'process-file-v1' } : {}),
       ...(params ? { params } : {}),
-      timeoutMs: positiveInteger(rawLifecycle.sessionRelease.timeoutMs, 5000, 30000),
-    },
-  };
+      timeoutMs: positiveInteger(request.timeoutMs, 5000, 30000),
+    };
+  }
+  return lifecycle;
 }
 
 function validateAgentTool(rawTool, index) {
@@ -715,9 +736,7 @@ function resolveInstalledPackagePath(rootDir, entry) {
     selection = versions.readSelection(rootDir, entry, prepared => {
       const manifest = readJson(path.join(prepared.packagePath, 'package.json'));
       const runnable = resolveRunnablePackage(prepared.packagePath, entry.id, manifest);
-      if (isDistRelativePath(runnable.mainEntry) || isDistRelativePath(runnable.uiIndex)
-        || !fs.existsSync(path.join(runnable.packagePath, runnable.mainEntry))
-        || !fs.existsSync(path.join(runnable.packagePath, runnable.uiIndex))) {
+      if (!hasRunnableEntries(runnable)) {
         throw new Error(`Selected subapp runtime is incomplete: ${entry.id}`);
       }
     });
@@ -774,11 +793,9 @@ function readInstalledState(rootDir, entry) {
     const mainEntry = runnable.mainEntry;
     const uiIndex = runnable.uiIndex;
     const rejectsDistLayout = isDistRelativePath(mainEntry) || isDistRelativePath(uiIndex);
-    const complete = !rejectsDistLayout
-      && fs.existsSync(path.join(runnablePackagePath, mainEntry))
-      && fs.existsSync(path.join(runnablePackagePath, uiIndex));
+    const complete = hasRunnableEntries(runnable);
     const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
-    const ui = complete ? readSubappUiConfig(runnablePackagePath, runnablePackageJson, uiIndex) : null;
+    const ui = complete && uiIndex !== null ? readSubappUiConfig(runnablePackagePath, runnablePackageJson, uiIndex) : null;
     const declaredRuntime = isObject(runnablePackageJson?.ailySubapp?.runtime)
       ? runnablePackageJson.ailySubapp.runtime
       : {};
@@ -795,6 +812,8 @@ function readInstalledState(rootDir, entry) {
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
     const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);
     const runtime = {
+      ...(declaredRuntime.headless === true ? { headless: true } : {}),
+      ...(declaredRuntime.observer === true ? { observer: true } : {}),
       ...(apiServer ? { apiServer } : {}),
       ...(processMessagePort ? { processMessagePort } : {}),
       ...(resourceLifecycle ? { resourceLifecycle } : {}),
@@ -831,14 +850,15 @@ function readInstalledState(rootDir, entry) {
             : {}),
         },
         entry: mainEntry,
-        uiIndex,
-        routePath: `/child-tool/${toolId}`,
+        ...(uiIndex !== null ? { uiIndex } : {}),
+        ...(uiIndex !== null || runtime.observer ? { routePath: `/child-tool/${toolId}` } : {}),
         ...(startupTimeoutMs ? { startupTimeoutMs } : {}),
         ...(Object.keys(runtime).length ? { runtime } : {}),
         ...(ui ? { ui } : {}),
         ...(agent ? { agent } : {}),
         app: {
           ...entry.app,
+          ...(uiIndex === null && !runtime.observer ? { enabled: false, available: false } : {}),
           id: toolId,
           extension: entry.app.extension === true || packageApp.extension === true,
           ...(toolId === 'aily-chat' ? { more: 'v2' } : {}),
@@ -1518,9 +1538,7 @@ function validatePreparedPackage(packagePath, entry) {
     throw new Error(`Prepared subapp package identity does not match: ${entry.id}@${entry.version}`);
   }
   const runnable = resolveRunnablePackage(packagePath, entry.id, manifest);
-  if (isDistRelativePath(runnable.mainEntry) || isDistRelativePath(runnable.uiIndex)
-    || !fs.existsSync(path.join(runnable.packagePath, runnable.mainEntry))
-    || !fs.existsSync(path.join(runnable.packagePath, runnable.uiIndex))) {
+  if (!hasRunnableEntries(runnable)) {
     throw new Error(`Prepared subapp runtime is incomplete: ${entry.id}@${entry.version}`);
   }
   return { manifest, runnable };
@@ -1830,7 +1848,7 @@ function listProcessesUsingPath(packagePath, options = {}) {
 
   if (platform !== 'win32') {
     const execFileImpl = options.execFileImpl || execFile;
-    const needle = path.resolve(packagePath);
+    const needle = path.posix.isAbsolute(packagePath) ? path.posix.resolve(packagePath) : path.resolve(packagePath);
     return new Promise((resolve) => {
       execFileImpl(
         'ps',
@@ -1853,7 +1871,7 @@ function listProcessesUsingPath(packagePath, options = {}) {
             const executable = commandLine.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/)?.slice(1).find(Boolean) || '';
             return [{
               pid,
-              name: path.basename(executable) || 'unknown',
+              name: path.posix.basename(executable) || 'unknown',
               commandLine,
               source: 'command-line',
             }];
@@ -1863,22 +1881,17 @@ function listProcessesUsingPath(packagePath, options = {}) {
     });
   }
 
-  const execImpl = options.execImpl || exec;
-  const needle = path.resolve(packagePath).toLowerCase().replace(/'/g, "''");
-  const script = [
-    `$needle = '${needle}'`,
-    'Get-CimInstance Win32_Process | ForEach-Object {',
-    '  $cmd = $_.CommandLine',
-    '  if ($cmd -and $cmd.ToLower().Contains($needle)) {',
-    '    [PSCustomObject]@{ pid = $_.ProcessId; name = $_.Name; commandLine = $cmd }',
-    '  }',
-    '} | ConvertTo-Json -Compress',
-  ].join('; ');
+  const execFileImpl = options.execFileImpl || execFile;
+  const needle = path.resolve(packagePath).toLowerCase();
 
   return new Promise((resolve) => {
-    execImpl(
-      `powershell -NoProfile -ExecutionPolicy Bypass -Command ${JSON.stringify(script)}`,
-      { windowsHide: true, timeout: 15000 },
+    // Do not embed the target path in the inventory command: the scanner and
+    // its shell would match themselves and falsely block an idle uninstall.
+    execFileImpl(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command',
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress'],
+      { windowsHide: true, timeout: 15000, maxBuffer: 8 * 1024 * 1024 },
       (error, stdout) => {
         if (error) {
           console.warn('[subapp-manager] listProcessesUsingPath failed:', error.message || error);
@@ -1896,12 +1909,13 @@ function listProcessesUsingPath(packagePath, options = {}) {
           const selfPid = process.pid;
           resolve(rows
             .map((row) => ({
-              pid: Number.parseInt(row?.pid, 10),
-              name: String(row?.name || '').trim() || 'unknown',
-              commandLine: String(row?.commandLine || ''),
+              pid: Number.parseInt(row?.ProcessId, 10),
+              name: String(row?.Name || '').trim() || 'unknown',
+              commandLine: String(row?.CommandLine || ''),
               source: 'command-line',
             }))
-            .filter((row) => Number.isInteger(row.pid) && row.pid > 0 && row.pid !== selfPid));
+            .filter((row) => Number.isInteger(row.pid) && row.pid > 0 && row.pid !== selfPid
+              && row.commandLine.toLowerCase().includes(needle)));
         } catch (parseError) {
           console.warn('[subapp-manager] listProcessesUsingPath parse failed:', parseError.message || parseError);
           resolve([]);

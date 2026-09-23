@@ -3,6 +3,7 @@ import { RouterOutlet } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { ConfigService, TranslationService, ThemeService } from '@core/preferences/public-api';
 import { SubappManagerService } from '@integration/subapps/public-api';
+import { BuildSourceQueryService } from './integrations/build/build-source-query.service';
 
 @Component({
   selector: 'app-root',
@@ -18,8 +19,10 @@ export class AppComponent implements OnInit, AfterViewInit {
   private translationService = inject(TranslationService);
   private themeService = inject(ThemeService);
   private subappManager = inject(SubappManagerService);
+  private buildSourceQuery = inject(BuildSourceQueryService);
 
   async ngOnInit() {
+    this.buildSourceQuery.initialize();
     await this.configService.init();
     this.title = this.configService.getApplicationName();
     document.title = this.title;

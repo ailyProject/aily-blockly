@@ -21,6 +21,8 @@ Blockly 与 Coder 共用 `boards.json`、主板搜索、版本选择和使用次
 
 `template_arduino/package.json` 是 Coder 工程配置模板，工程类型、入口、框架、主板及依赖信息都保存在复制后的根 `package.json`。`template_arduino/project.aci` 只作为 Arduino 源码模板，保持原始内容并复制为 `sketch/src/main.cpp`，不会生成根 `.aci` 文件。若 `template_arduino/` 整体不存在，宿主会回退读取同一主板的 `template/package.json`，并写入仅含 `Arduino.h`、空 `setup()` 和空 `loop()` 的基础源码；若专用目录存在但文件不完整，仍按无效模板报错。为兼容已发布的旧主板包，宿主仍可识别历史误拼写目录 `template_arrduino/`，新包统一使用 `template_arduino/`。
 
+切换现有 Coder 项目的开发板时沿用相同的配置模板回退顺序，但不会复制或重写源码：优先读取 `template_arduino/package.json`（兼容 `template_arrduino`），专用目录不存在时读取 `template/package.json`。因此切板只要求选中的配置模板存在，当前 `package.json.entry`、`sketch/src/` 与用户安装库继续保留。
+
 ## 2. 创建后的目录
 
 ```text

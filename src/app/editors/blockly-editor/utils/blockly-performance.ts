@@ -33,6 +33,20 @@ export interface WorkspaceCodeEvent {
   newInputName?: string;
 }
 
+/**
+ * Sample live Blockly/DOM state instead of retaining a drag flag which can go
+ * stale after a cancelled gesture. WidgetDiv covers field/custom editors;
+ * DropDownDiv covers menus/sliders; focused editable elements cover comments
+ * and IME composition, including pauses between keystrokes.
+ */
+export function isBlocklyWorkspaceInteracting(workspace: Blockly.WorkspaceSvg): boolean {
+  if ((workspace as any).currentGesture_ || workspace.isDragging()
+    || Blockly.WidgetDiv.isVisible() || Blockly.DropDownDiv.isVisible()) return true;
+  const active = workspace.getInjectionDiv()?.ownerDocument.activeElement;
+  return !!active && (active.matches('input, textarea, select, [role="textbox"]')
+    || (active as HTMLElement).isContentEditable === true);
+}
+
 /** Layout moves only affect code if they change top-level execution order. */
 export class WorkspaceCodeChangeTracker {
   private topBlockOrder: string | null = null;

@@ -7,7 +7,10 @@ export type { AbsArgumentDefinition, AbsSyntaxOptions } from './abs-syntax-bindi
 /** The existing grammar, first read without looking up definitions or executing callbacks. */
 export function readAbsSyntax(source: string): AbsRawNode[] {
   if (!source.split(/\r?\n/).some(line => line.trim() === ABS_SCHEMA_HEADER)) {
-    throw new AbsSyncError('ABS_SCHEMA_UNSUPPORTED', 'Expected ABS Schema: 2.');
+    throw new AbsSyncError('ABS_SCHEMA_UNSUPPORTED', 'Expected ABS Schema: 2.', undefined, [], {
+      reason: 'abs-schema-header',
+      hint: 'Retain any old draft. Use the current host export/recovery workflow for a valid baseline, then transfer intended edits. Do not just add a header, discard the map or initialize over a draft.',
+    });
   }
   return new AbsSyntaxReader(source).read();
 }

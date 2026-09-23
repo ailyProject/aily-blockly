@@ -51,3 +51,15 @@ for (const failure of ['error', 'exit', 'signal', 'launch', 'missing-result', 'f
     if (failure.endsWith('result')) child.emit('close', 0, null);
     await assert.rejects(running); assert.equal(fs.readdirSync(root).some(file => file.startsWith('compile-preprocess-')), false);
 });
+
+test('a created child retains its owner until close even after an error event', async t => {
+    const root = fixture(t), child = new EventEmitter(); child.pid = 123;
+    let settled = false;
+    const environment = { ...process.env, AILY_BUILD_WORKSPACE_OWNER: 'owner' };
+    const running = runCompilePreprocess({ currentProjectPath: root, code: '' }, root, path.join(root, 'result.json'),
+        (_command, _args, options) => { assert.equal(options.env, environment); return child; }, environment);
+    running.then(() => { settled = true; }, () => { settled = true; });
+    child.emit('error', new Error('child error'));
+    await Promise.resolve(); assert.equal(settled, false);
+    child.emit('close', 1, null); await assert.rejects(running, /child error/);
+});

@@ -44,6 +44,33 @@ describe('BlocklyGeneratorRuntimeService', () => {
     expect(generator.forBlock['text'](block as any, generator)).toEqual(['"{\\"city\\":\\"成都\\"}"', 0]);
   });
 
+  it('preserves the published AI-VOX raw header input without weakening ordinary text escaping', () => {
+    activateRuntime();
+    service.loadGenerator('legacy-text/generator.js', `Arduino.forBlock.text = block => ['"' + block.getFieldValue('TEXT') + '"', 0];`);
+    const generator: any = service.getActiveGenerator()!;
+    const rawHeaders = '{{"Authorization", "Bearer test-token"}}';
+    const headerBlock: any = {
+      type: 'text',
+      getFieldValue: () => rawHeaders,
+      getField: () => undefined,
+      outputConnection: {},
+    };
+    let parentBlock: any;
+    const parentConnection: any = { getSourceBlock: () => parentBlock };
+    parentBlock = {
+      type: 'aivox_config_websocket',
+      inputList: [{ name: 'ai_vox_websocket_param', connection: parentConnection }],
+    };
+    headerBlock.outputConnection.targetConnection = parentConnection;
+
+    const legacyCode = generator.forBlock['text'](headerBlock, generator)[0];
+    expect(legacyCode.substring(1, legacyCode.length - 1)).toBe(rawHeaders);
+
+    const ordinaryBlock = { type: 'text', getFieldValue: () => rawHeaders, getField: () => undefined };
+    expect(generator.forBlock['text'](ordinaryBlock as any, generator)[0])
+      .toBe('"{{\\"Authorization\\", \\"Bearer test-token\\"}}"');
+  });
+
   it('captures declarations registered by generator scripts in the same project runtime, without probing instances', () => {
     const catalog = new BlocklyDeclarativeBlockCatalog();
     service.activate({ mode: 'arduino', boardConfig: { label: 'configured' }, getWorkspace: () => null,

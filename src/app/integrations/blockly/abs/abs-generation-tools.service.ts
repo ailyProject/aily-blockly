@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { assertGenerationCandidate, assertGenerationRequest, assertGenerationValidation } from './abs-generation-protocol';
+import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
 import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
@@ -13,16 +13,13 @@ export class AbsGenerationToolsService {
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void) {
+    let applyStarted = false;
     try {
       const { abs, absPath, ...wire } = input;
       const params: Record<string, any> = JSON.parse(absJson(wire));
       assertGenerationRequest(params);
       if (operation === 'abs_projection') {
-        if (!/^sha256:[a-f0-9]{64}$/.test(params['expectedAbiHash'])
-          || ['initialize', 'publish', 'reuseCurrent', 'synchronize'].some(key => params[key] !== undefined && typeof params[key] !== 'boolean')
-          || params['rebind'] !== undefined && (typeof params['rebind'] !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(params['rebind']))) {
-          throw new AbsSyncError('ABS_REQUEST_INVALID', 'Invalid generation export options.');
-        }
+        assertGenerationProjectionRequest(params);
         const result = await this.sync.exportGeneration({ initialize: params['initialize'], publish: params['publish'], expectedAbiHash: params['expectedAbiHash'], rebind: params['rebind'], reuseCurrent: params['reuseCurrent'], synchronize: params['synchronize'] });
         const ok = !!result.evidence && (params['publish'] === false || result.publication.status === 'COMMITTED');
         return { ...result, ok, operation, project: result.evidence?.binding.scope.projectKey,
@@ -61,12 +58,8 @@ export class AbsGenerationToolsService {
           receipt: { ...prepared, validation: { ok: true, scope: 'prepared-generation' } } };
       }
       if (operation !== 'abs_apply') throw new AbsSyncError('ABS_REQUEST_INVALID', 'Unknown ABS generation operation.');
-      const validation: Record<string, any> = params['validation'];
-      assertGenerationValidation(validation);
-      if (validation.requestId !== params.requestId || validation['validation']?.scope !== 'prepared-generation'
-        || validation['validation']?.ok !== true || params['chunk'] !== undefined && typeof params['chunk'] !== 'boolean') {
-        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Apply requires the matching preparation receipt.');
-      }
+      const validation = readGenerationApplyValidation(params);
+      applyStarted = true;
       const result = await this.sync.applyGeneration(source, validation.base.generation, { chunk: params['chunk'] === true, onProgress }, validation);
       const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && result.appliedRevision !== undefined && !!result.evidence;
       return { ...result, ok, operation, project: validation.base.scope.projectKey,
@@ -75,6 +68,7 @@ export class AbsGenerationToolsService {
     } catch (error) {
       const failure = serializeAbsFailure(error);
       return { ok: false, operation, ...failure,
+        ...(operation === 'abs_apply' ? { publication: { status: applyStarted ? 'UNKNOWN' : 'NOT_COMMITTED' } } : {}),
         ...(failure.diagnostic?.hint ? { recovery: failure.diagnostic.hint } : (error as any)?.code === 'ABS_IDENTITY_AMBIGUOUS' ? {
           recovery: 'Identity evidence is ambiguous. Keep the current generation and unapplied draft. Changing field values or querying block_info cannot repair identity. Do not add IDs to ABS, discard the map or force export over the draft.',
         } : {}),

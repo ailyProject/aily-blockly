@@ -3,7 +3,7 @@ import { projectDataRuntime } from '@domain/project/public-api';
 import { BlocklyGeneratorRuntimeService, getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyProjectCodePreparation } from '../../../editors/blockly-editor/services/prepared-project-code';
 import { BlocklyProjectRevision } from '../../../editors/blockly-editor/services/blockly-project-revision';
-import { captureArduinoGeneratedArtifacts, writePreparedArduinoGeneratedArtifacts } from '../../../editors/blockly-editor/services/generated-code-artifacts';
+import { captureArduinoGeneratedArtifacts, isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from '../../../editors/blockly-editor/services/generated-code-artifacts';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { SerialOperationQueue } from '@shared/public-api';
@@ -60,6 +60,73 @@ describe('prepared project code boundary', () => {
     expect(consume).not.toHaveBeenCalled(); expect(generator.workspaceToCode).not.toHaveBeenCalled();
   });
 
+  it('prepares background code without acquiring an exclusive edit lease', async () => {
+    const editor = productEditor();
+    const acquire = spyOn(editor, 'acquireWorkspaceEditLease').and.callThrough();
+    const consume = jasmine.createSpy('consume').and.callFake((_prepared, assertCurrent) => {
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse(); assertCurrent();
+    });
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeTrue();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(consume).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers background work when editing starts while waiting in the project queue', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    let editing = false;
+    const pending = editor.runWithBackgroundProjectCode(consume, () => editing);
+    editing = true;
+    expect(await pending).toBeFalse();
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+    editing = false;
+    expect(await editor.runWithBackgroundProjectCode(consume, () => editing)).toBeTrue();
+  });
+
+  it('lets edits continue during resource preparation and discards stale background results', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => {
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+      workspace.createVariable('typed while preparing');
+    });
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeFalse();
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.resolveTo();
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeTrue();
+  });
+
+  it('rechecks editor activity after resource awaits even when the document has not changed', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    let editing = false;
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => { editing = true; });
+    expect(await editor.runWithBackgroundProjectCode(consume, () => editing)).toBeFalse();
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it('keeps input available during background publication and retries an intervening edit', async () => {
+    const editor = productEditor();
+    expect(await editor.runWithBackgroundProjectCode(async (_prepared, assertCurrent) => {
+      await Promise.resolve();
+      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+      workspace.createVariable('next edit');
+      assertCurrent();
+    }, () => false)).toBeFalse();
+    expect(await editor.runWithBackgroundProjectCode(() => {}, () => false)).toBeTrue();
+  });
+
+  it('drops background results after a runtime replacement without hiding real generator failures', async () => {
+    const editor = productEditor(); const consume = jasmine.createSpy('consume');
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => runtime.updateBoardConfig({changed: true}));
+    expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeFalse();
+    expect(consume).not.toHaveBeenCalled();
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.resolveTo();
+    generator.workspaceToCode.and.throwError('bad generator');
+    await expectAsync(editor.runWithBackgroundProjectCode(consume, () => false)).toBeRejectedWithError('bad generator');
+    expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+  });
+
   it('guards consumer continuations and releases the lease after state changes', async () => {
     const editor = productEditor();
     await expectAsync(editor.runWithPreparedProjectCode(async (_prepared, assertCurrent) => {
@@ -91,6 +158,8 @@ describe('prepared project code boundary', () => {
     expect(capture().revision).toBeGreaterThan(before);
     expect(workspace.getAllVariables().length).toBe(1);
     expect(result.code).toBe('prepared code');
+    expect(result.sourceWorkspace.revision).toBe(capture().revision);
+    expect(result.sourceWorkspace.documentText).toContain('device');
     expect(await preparation.prepare(capture)).toBe(result);
     expect(generator.workspaceToCode).toHaveBeenCalledTimes(1);
   });
@@ -105,6 +174,10 @@ describe('prepared project code boundary', () => {
     expect(result.artifacts[0].content).toBe('original header');
     expect(JSON.parse(result.blockCodeMapText)[0][1].codeSnippet).toBe('original');
     expect(Object.isFrozen(result)).toBeTrue(); expect(Object.isFrozen(result.artifacts[0])).toBeTrue();
+    const capturedText = result.sourceWorkspace.documentText;
+    workspace.createVariable('later edit');
+    expect(result.sourceWorkspace.documentText).toBe(capturedText);
+    expect(result.sourceWorkspace.documentText).not.toContain('later edit');
   });
 
   it('rejects changes during the resource await before executing any generator', async () => {
@@ -169,29 +242,36 @@ describe('prepared project code boundary', () => {
     expect(result.error).toContain('synchronous');
   });
 
-  it('publishes captured headers under src without touching a later generator result or user header', async () => {
-    const oldFs = window['fs']; const oldPath = window['path'];
-    const disk = new Map<string, string>([['D:/project/src/user.h', 'user'], ['D:/project/src/objects_old-abcdef12.h', 'old']]);
-    const dirs = new Set<string>();
-    window['path'] = { join: (...parts: string[]) => parts.join('/') };
-    window['fs'] = {
-      existsSync: path => dirs.has(path) || disk.has(path),
-      mkdirSync: path => dirs.add(path), readdirSync: () => ['user.h', 'objects_old-abcdef12.h'],
-      readFileSync: path => disk.get(path), writeFileSync: (path, value) => disk.set(path, value),
-      renameSync: (from, to) => { disk.set(to, disk.get(from)); disk.delete(from); }, unlinkSync: path => disk.delete(path),
-    };
+  it('publishes the captured headers and sketch through one protected host call', async () => {
+    const oldBuilder = window['builder'];
+    const publish = jasmine.createSpy('publishArduinoGeneratedCode');
+    window['builder'] = { publishArduinoGeneratedCode: publish };
     try {
       const artifact = { fileName: 'variables_data-12345678.h', content: 'prepared header', sourceTag: 'data' };
       const source = { getGeneratedArtifacts: jasmine.createSpy().and.returnValue([artifact]) };
       const captured = captureArduinoGeneratedArtifacts(source);
       artifact.content = 'later output'; source.getGeneratedArtifacts.and.throwError('runtime disposed');
-      await writePreparedArduinoGeneratedArtifacts('D:/project', captured);
-      expect(dirs.has('D:/project/src')).toBeTrue();
-      expect(disk.get('D:/project/src/variables_data-12345678.h')).toBe('prepared header');
-      expect(disk.get('D:/project/src/user.h')).toBe('user');
-      expect(disk.has('D:/project/src/objects_old-abcdef12.h')).toBeFalse();
+      await writePreparedArduinoGeneratedArtifacts('D:/project', captured, 'prepared sketch');
+      expect(publish).toHaveBeenCalledOnceWith('D:/project', {
+        artifacts: [{ fileName: 'variables_data-12345678.h', content: 'prepared header', sourceTag: 'data' }],
+        sketchCode: 'prepared sketch',
+      });
       expect(source.getGeneratedArtifacts).toHaveBeenCalledTimes(1);
-    } finally { window['fs'] = oldFs; window['path'] = oldPath; }
+    } finally { window['builder'] = oldBuilder; }
+  });
+
+  it('does not silently bypass protection when the preload is old', async () => {
+    const oldBuilder = window['builder']; window['builder'] = {};
+    try {
+      await expectAsync(writePreparedArduinoGeneratedArtifacts('D:/project', [])).toBeRejectedWithError(/restart the host/);
+      await expectAsync(writePreparedArduinoGeneratedArtifacts('D:/project', null)).toBeResolved();
+    } finally { window['builder'] = oldBuilder; }
+  });
+
+  it('recognizes a busy build lease without treating other publication failures as retryable', () => {
+    expect(isBuildWorkspaceBusyError(Object.assign(new Error('BUILD_WORKSPACE_BUSY: busy'), { code: 'BUILD_WORKSPACE_BUSY' }))).toBeTrue();
+    expect(isBuildWorkspaceBusyError(new Error('BUILD_WORKSPACE_BUSY: Another host build/preprocess owns this project.'))).toBeTrue();
+    expect(isBuildWorkspaceBusyError(new Error('BUILD_PUBLICATION_INVALID: Invalid generated code.'))).toBeFalse();
   });
 
   it('rejects artifact paths outside the generated header namespace and skips unsupported runtimes', () => {

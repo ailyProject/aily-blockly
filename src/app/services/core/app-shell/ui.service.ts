@@ -78,6 +78,68 @@ export class UiService {
   }
 
 
+  /** Project and device authority for the partition child app. */
+  async partitionManagerRequest(request: any): Promise<any> {
+    const actions = ['partition-manager-load', 'partition-manager-save', 'partition-manager-ports', 'partition-manager-read-device'];
+    if (!actions.includes(request?.action)) return { success: false, error: '未知分区操作。' };
+    if (!this.isMainWindow) {
+      return await window['iWindow']?.send?.({ to: 'main', data: request, timeout: request.action === 'partition-manager-read-device' ? 180000 : 15000 })
+        || { success: false, error: '主窗口未响应，请重新打开分区管理器。' };
+    }
+    let data;
+    if (request?.action === 'partition-manager-load' || request?.action === 'partition-manager-save') {
+      try {
+        const [{ ProjectService }, { BuilderService }, { handlePartitionManagerRequest }] = await Promise.all([
+          import('@domain/project/public-api'),
+          import('@domain/build/public-api'),
+          import('@integration/subapps/partition-manager/public-api'),
+        ]);
+        const project = this.injector.get(ProjectService);
+        data = await handlePartitionManagerRequest(project, this.injector.get(BuilderService), request, () =>
+          ![ProcessState.IDLE, ProcessState.ERROR].includes(this.injector.get(WorkflowService).currentState)
+          || !!project.getCoderOperation(project.currentProjectPath),
+        );
+        if (request.action === 'partition-manager-save' && data.success) {
+          this.injector.get(NzMessageService).success(data.warning || '分区方案已保存。请重新编译，再通过有线烧录使分区变化生效。', { nzDuration: 6000 });
+        }
+      } catch (error) {
+        data = { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    } else if (request?.action === 'partition-manager-ports') {
+      try {
+        const [{ SerialService }, { listPartitionSerialPorts }] = await Promise.all([
+          import('@domain/device/public-api'),
+          import('@integration/subapps/partition-manager/public-api'),
+        ]);
+        data = { success: true, ...await listPartitionSerialPorts(this.injector.get(SerialService)) };
+      } catch (error) {
+        data = { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    } else if (request?.action === 'partition-manager-read-device') {
+      try {
+        const [{ ProjectService }, { SerialService }, { SubappResourceLifecycleService }, { readConnectedDevicePartitions }] = await Promise.all([
+          import('@domain/project/public-api'),
+          import('@domain/device/public-api'),
+          import('@integration/subapps/public-api'),
+          import('@integration/subapps/partition-manager/public-api'),
+        ]);
+        const project = this.injector.get(ProjectService);
+        if (!request.projectPath || project.currentProjectPath !== request.projectPath) throw new Error('当前项目已切换，请重新打开分区管理器。');
+        const device = await readConnectedDevicePartitions(
+          this.injector.get(SerialService), this, this.injector.get(SubappResourceLifecycleService),
+          () => project.currentProjectPath !== request.projectPath
+            || ![ProcessState.IDLE, ProcessState.ERROR].includes(this.injector.get(WorkflowService).currentState)
+            || !!project.getCoderOperation(project.currentProjectPath),
+          request.port,
+        );
+        data = { success: true, device };
+      } catch (error) {
+        data = { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    return data;
+  }
+
   // 初始化UI服务，这个init函数仅供main-window使用
   init(): void {
     if (this.electronService.isElectron) {
@@ -95,55 +157,8 @@ export class UiService {
         if (message.data?.action === 'open-project') return;
         // console.log('window-receive', message);
         let data;
-        if (message.data?.action === 'partition-manager-load' || message.data?.action === 'partition-manager-save') {
-          try {
-            const [{ ProjectService }, { BuilderService }, { handlePartitionManagerRequest }] = await Promise.all([
-              import('@domain/project/public-api'),
-              import('@domain/build/public-api'),
-              import('../../../windows/partition-manager/partition-manager-host'),
-            ]);
-            const project = this.injector.get(ProjectService);
-            data = await handlePartitionManagerRequest(project, this.injector.get(BuilderService), message.data, () =>
-              ![ProcessState.IDLE, ProcessState.ERROR].includes(this.injector.get(WorkflowService).currentState)
-              || !!project.getCoderOperation(project.currentProjectPath),
-            );
-            if (message.data.action === 'partition-manager-save' && data.success) {
-              this.injector.get(NzMessageService).success(data.warning || '分区方案已保存。请重新编译，再通过有线烧录使分区变化生效。', { nzDuration: 6000 });
-            }
-          } catch (error) {
-            data = { success: false, error: error instanceof Error ? error.message : String(error) };
-          }
-        } else if (message.data?.action === 'partition-manager-ports') {
-          try {
-            const [{ SerialService }, { listPartitionSerialPorts }] = await Promise.all([
-              import('@domain/device/public-api'),
-              import('../../../windows/partition-manager/partition-device-host'),
-            ]);
-            data = { success: true, ...await listPartitionSerialPorts(this.injector.get(SerialService)) };
-          } catch (error) {
-            data = { success: false, error: error instanceof Error ? error.message : String(error) };
-          }
-        } else if (message.data?.action === 'partition-manager-read-device') {
-          try {
-            const [{ ProjectService }, { SerialService }, { SubappResourceLifecycleService }, { readConnectedDevicePartitions }] = await Promise.all([
-              import('@domain/project/public-api'),
-              import('@domain/device/public-api'),
-              import('@integration/subapps/public-api'),
-              import('../../../windows/partition-manager/partition-device-host'),
-            ]);
-            const project = this.injector.get(ProjectService);
-            if (!message.data.projectPath || project.currentProjectPath !== message.data.projectPath) throw new Error('当前项目已切换，请重新打开分区管理器。');
-            const device = await readConnectedDevicePartitions(
-              this.injector.get(SerialService), this, this.injector.get(SubappResourceLifecycleService),
-              () => project.currentProjectPath !== message.data.projectPath
-                || ![ProcessState.IDLE, ProcessState.ERROR].includes(this.injector.get(WorkflowService).currentState)
-                || !!project.getCoderOperation(project.currentProjectPath),
-              message.data.port,
-            );
-            data = { success: true, device };
-          } catch (error) {
-            data = { success: false, error: error instanceof Error ? error.message : String(error) };
-          }
+        if (String(message.data?.action || '').startsWith('partition-manager-')) {
+          data = await this.partitionManagerRequest(message.data);
         } else if (message.data?.action === 'get-auth-state') {
           const initializationState = this.authService.getAuthInitializationState();
           if (initializationState === 'idle' || initializationState === 'checking') {

@@ -886,6 +886,7 @@
         "CANCEL": "Cancel"
     },
     "LOGIN": {
+        "EDU_LOGIN": "EDU login",
         "HEADER": "Log in to use our services",
         "PHONE": "Phone",
         "EMAIL": "Email",

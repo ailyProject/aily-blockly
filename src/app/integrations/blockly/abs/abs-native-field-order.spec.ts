@@ -66,6 +66,7 @@ describe('declared field order at normal project load', () => {
     const context: any = { workspace, getActivePage: () => page, getStoredProjectDocument: () => document,
       loadWorkspaceJson: value => Blockly.serialization.workspaces.load(value, workspace),
       selectedBlockSubject: { next() {} }, selectedBlockIdsSubject: { next() {} }, loadLibraryFinishedLoadingSubject: { next() {} },
+      requestWorkspaceVisualRefresh: jasmine.createSpy('visualRefresh'),
       closeWorkspaceBlockSearch() {}, restoreWorkspaceViewState() {}, persistActiveWorkspaceToState() {}, mountExternalToolbox() {} };
     const load = (BlocklyService.prototype as any).loadActivePageIntoWorkspace;
     load.call(context, undefined, ['local-root', 'shared-root']);
@@ -76,5 +77,6 @@ describe('declared field order at normal project load', () => {
       expect(() => load.call(context, undefined, order)).toThrowError(/root identities/);
     }
     expect(clear).not.toHaveBeenCalled();
+    expect(context.requestWorkspaceVisualRefresh).toHaveBeenCalledTimes(1);
   });
 });

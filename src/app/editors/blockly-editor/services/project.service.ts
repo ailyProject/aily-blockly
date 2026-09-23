@@ -12,7 +12,9 @@ import {
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
 import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
+import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave } from './prepared-project-save';
 
 
@@ -189,6 +191,7 @@ export class _ProjectService {
   /** Shared post-commit output publication. No ABI save, Generator execution or clean-state mutation. */
   async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
     assertCurrent();
+    if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
     this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
     await this.publishPreparedCode(path, generated, assertCurrent);
   }
@@ -239,16 +242,16 @@ export class _ProjectService {
       return;
     }
     assertCurrent();
+    // Save/ABS publication owns this exact prepared snapshot too. Updating only
+    // codeSubject leaves the IPC viewer/map on the previous generation until a
+    // later UI debounce happens to regenerate. Disk contention must not hide it.
+    this.blocklyService.publishPreparedCodeView(generated.code, generated.blockCodeMapText);
     await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts);
     assertCurrent();
-    this.blocklyService.publishGeneratedCode(generated.code);
     if (this.electronService?.calculateHash) {
       const codeHash = await this.electronService.calculateHash(generated.code);
       assertCurrent();
-      const packageJsonPath = `${path}/package.json`;
-      const packageJson = JSON.parse(window['fs'].readFileSync(packageJsonPath, 'utf8'));
-      packageJson.codeHash = codeHash;
-      window['fs'].writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+      patchBuildMetadata(path, { codeHash });
     }
   }
 

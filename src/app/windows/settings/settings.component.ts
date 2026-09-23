@@ -91,7 +91,7 @@ export class SettingsComponent implements OnDestroy {
     scrollbarMinSize: 50
   };
 
-  items = [
+  private readonly sectionItems = [
     {
       name: 'SETTINGS.SECTIONS.BASIC',
       icon: 'fa-light fa-gear'
@@ -133,6 +133,13 @@ export class SettingsComponent implements OnDestroy {
     //   icon: 'fa-light fa-gear-code'
     // },
   ];
+
+  get items() {
+    // 独立 Coder 的启动/构建身份决定可用设置，不改写共享 Blockly 配置。
+    return this.coderProduct
+      ? this.sectionItems.filter(item => item.name !== 'SETTINGS.SECTIONS.BLOCKLY')
+      : this.sectionItems;
+  }
 
   // 缓存管理
   cacheStats: CacheStats = { totalFiles: 0, totalSizeFormatted: '0 B' };

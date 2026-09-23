@@ -2,6 +2,8 @@
 const { ipcMain } = require("electron");
 const { spawn } = require('child_process');
 const { killRegisteredProcessTree } = require('./process-tree');
+const { retainAppDataResourceLock } = require('./appdata-resource-lock');
+
 const activeNpmProcesses = new Map();
 const activeNpmRequests = new Set();
 
@@ -98,8 +100,13 @@ function createNpmError(stderr, code) {
     return error;
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+function waitForRetry(ms, signal) {
+    return new Promise(resolve => {
+        if (signal.aborted) return resolve();
+        const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+        const timer = setTimeout(finish, ms);
+        signal.addEventListener('abort', finish, { once: true });
+    });
 }
 
 function getProgressMergeKey(sourceId, line) {
@@ -145,10 +152,9 @@ function logNpmOutput(type, output, mainWindow, sourceId) {
     }
 }
 
-function runNpmCommand(cmd, option, mainWindow) {
+function runNpmCommand(entry, option, mainWindow) {
     return new Promise((resolve, reject) => {
-        const startedAt = Date.now();
-
+        const { cmd, sourceId } = entry;
         const child = spawn(cmd, {
             shell: true,
             windowsHide: true,
@@ -156,13 +162,11 @@ function runNpmCommand(cmd, option, mainWindow) {
         });
 
         const shouldLogOutput = shouldLogStreamingOutput(cmd);
-        const sourceId = `npm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-        activeNpmProcesses.set(sourceId, { process: child, cmd, startedAt });
-
-        // console.info('[PROC_TRACE][NPM_SPAWN]', { sourceId, pid: child.pid, cmd: cmd.slice(0, 1000) });
+        entry.process = child;
+        entry.closed = false;
         let stdout = '';
         let stderr = '';
+        let processError;
 
         child.stdout.on('data', (data) => {
             const output = data.toString();
@@ -185,36 +189,22 @@ function runNpmCommand(cmd, option, mainWindow) {
         });
 
         child.on('error', (error) => {
-            activeNpmProcesses.delete(sourceId);
-
+            processError = error;
             console.error('[PROC_TRACE][NPM_ERROR]', {
                 sourceId,
                 pid: child.pid,
                 error: error.message,
-                durationMs: Date.now() - startedAt
+                durationMs: Date.now() - entry.startedAt
             });
-
-            if (option?.ignoreErr) {
-                return resolve(false);
-            }
-
-            console.error(`执行命令出错: ${error}`);
-            reject(error);
+            // Spawn errors also emit close. An error alone does not prove an
+            // already started process (or its install scripts) has stopped.
         });
 
-        child.on('close', (code) => {
-            activeNpmProcesses.delete(sourceId);
-
-            const busyRename = isBusyRenameError(stderr);
-
-            // console.info('[PROC_TRACE][NPM_CLOSE]', {
-            //     sourceId,
-            //     pid: child.pid,
-            //     code,
-            //     durationMs: Date.now() - startedAt,
-            //     busyRename,
-            //     ...extractBusyRenameDetails(stderr)
-            // });
+        child.once('close', (code, signal) => {
+            entry.closed = true;
+            if (child.pid && (!Number.isInteger(code) || signal)) entry.terminationUnconfirmed = true;
+            if (entry.cancelled) return reject(new Error('NPM_COMMAND_CANCELLED'));
+            if (processError) return option?.ignoreErr ? resolve(false) : reject(processError);
             if (code !== 0) {
                 if (option?.ignoreErr) {
                     return resolve(false);
@@ -226,78 +216,99 @@ function runNpmCommand(cmd, option, mainWindow) {
             if (stderr && !stdout) {
                 return reject(createNpmError(stderr, code));
             }
-
-            try {
-                resolve(stdout);
-            } catch (e) {
-                reject(new Error(e.message));
-            }
+            resolve(stdout);
         });
     });
 }
 
+async function runNpmWithRetries(entry, option, mainWindow) {
+    const { cmd } = entry;
+    const maxBusyRetries = shouldLogStreamingOutput(cmd) ? 2 : 0;
+    for (let attempt = 1; attempt <= maxBusyRetries + 1; attempt++) {
+        if (entry.cancelled) throw new Error('NPM_COMMAND_CANCELLED');
+        try {
+            return await runNpmCommand(entry, option, mainWindow);
+        } catch (error) {
+            if (!entry.cancelled && !entry.terminationUnconfirmed && attempt <= maxBusyRetries && error?.isBusyRename) {
+                const message = `npm 安装目录被占用，等待后重试 (${attempt}/${maxBusyRetries})...`;
+                console.warn(message);
+                console.warn('[PROC_TRACE][NPM_BUSY_RETRY]', {
+                    attempt, maxBusyRetries, cmd: cmd.slice(0, 1000), ...(error.busyRenameDetails || {})
+                });
+                sendRendererLog(mainWindow, message, 'warn', `${cmd}:busy-retry`);
+                await waitForRetry(2000 * attempt, entry.retryAbort.signal);
+                continue;
+            }
+            console.error(`执行命令出错: ${error.message || error}`);
+            throw error;
+        }
+    }
+}
+
 function registerNpmHandlers(mainWindow) {
-    ipcMain.handle('npm-run', async (event, { cmd, option = {} }) => {
+    ipcMain.handle('npm-run', async (event, { cmd, option = {}, appDataResourceToken }) => {
+        if (event.sender.isDestroyed()) throw new Error('NPM_OWNER_DESTROYED');
+        cmd = ensureForegroundScripts(cmd);
+        console.log('npm run cmd: ', cmd);
+        const sourceId = `npm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        // Borrow once for the whole operation, including retry delays. The
+        // renderer may disappear, but that must not free an active installer.
+        const resourceLease = appDataResourceToken === undefined ? undefined
+            : retainAppDataResourceLock(appDataResourceToken, event.sender.id, 'write');
+        const entry = { sourceId, cmd, startedAt: Date.now(), resourceLease, closed: true,
+            retryAbort: new AbortController(), cancelled: false, stopRequested: false };
+        activeNpmProcesses.set(sourceId, entry);
         const owner = event.sender;
-        let cancelled = owner.isDestroyed();
-        const cancel = () => { cancelled = true; };
-
-        const onNavigation = (_event, _url, isInPlace, isMainFrame) => {
-            if (isMainFrame && !isInPlace) cancel();
-        };
-
         let finish;
         const request = { owner, finished: new Promise(resolve => { finish = resolve; }) };
-
         activeNpmRequests.add(request);
+        const onDestroyed = () => { entry.cancelled = true; entry.retryAbort.abort(); };
+        const onNavigation = (_event, _url, isInPlace, isMainFrame) => {
+            if (isMainFrame && !isInPlace) onDestroyed();
+        };
         owner.on('did-start-navigation', onNavigation);
-        owner.on('render-process-gone', cancel);
-        owner.on('destroyed', cancel);
-
+        owner.on('render-process-gone', onDestroyed);
+        owner.on('destroyed', onDestroyed);
         try {
-            cmd = ensureForegroundScripts(cmd);
-
-            console.log('npm run cmd: ', cmd);
-
-            const maxBusyRetries = shouldLogStreamingOutput(cmd) ? 2 : 0;
-
-            for (let attempt = 1; attempt <= maxBusyRetries + 1; attempt++) {
-                if (cancelled) throw new Error('NPM_REQUEST_OWNER_GONE');
-
-                try {
-                    return await runNpmCommand(cmd, option, mainWindow);
-                } catch (error) {
-                    if (!cancelled && attempt <= maxBusyRetries && error?.isBusyRename) {
-                        const message = `npm 安装目录被占用，等待后重试 (${attempt}/${maxBusyRetries})...`;
-
-                        console.warn(message);
-
-                        console.warn('[PROC_TRACE][NPM_BUSY_RETRY]', {
-                            attempt,
-                            maxBusyRetries,
-                            cmd: cmd.slice(0, 1000),
-                            ...(error.busyRenameDetails || {})
-                        });
-
-                        sendRendererLog(mainWindow, message, 'warn', `${cmd}:busy-retry`);
-                        await sleep(2000 * attempt);
-
-                        continue;
-                    }
-
-                    console.error(`执行命令出错: ${error.message || error}`);
-
-                    throw error;
-                }
-            }
+            return await runNpmWithRetries(entry, option, mainWindow);
         } finally {
             owner.removeListener('did-start-navigation', onNavigation);
-            owner.removeListener('render-process-gone', cancel);
-            owner.removeListener('destroyed', cancel);
+            owner.removeListener('render-process-gone', onDestroyed);
+            owner.removeListener('destroyed', onDestroyed);
+            // During cancellation only the process-tree confirmation may
+            // release the lease; parent close can precede descendant exit.
+            if (!entry.stopRequested && !entry.terminationUnconfirmed) releaseNpmEntry(entry);
             activeNpmRequests.delete(request);
             finish();
         }
     });
+}
+
+function releaseNpmEntry(entry) {
+    entry.resourceLease?.release();
+    entry.resourceLease = undefined;
+    if (activeNpmProcesses.get(entry.sourceId) === entry) activeNpmProcesses.delete(entry.sourceId);
+}
+
+async function stopNpmEntry(entry) {
+    if (entry.stopPromise) return entry.stopPromise;
+    entry.cancelled = true;
+    entry.retryAbort.abort();
+    // A closed PID may have been reused. Never kill it to recover a lease.
+    if (entry.closed) {
+        if (entry.terminationUnconfirmed) return false;
+        releaseNpmEntry(entry);
+        return true;
+    }
+    entry.stopRequested = true;
+    entry.stopPromise = (async () => {
+        const stopped = await killRegisteredProcessTree(entry.process?.pid, `npm:${entry.sourceId}`).catch(() => false);
+        if (stopped) releaseNpmEntry(entry);
+        else entry.terminationUnconfirmed = true;
+        entry.stopRequested = false;
+        return stopped;
+    })();
+    try { return await entry.stopPromise; } finally { entry.stopPromise = undefined; }
 }
 
 function getActiveNpmProcesses() {
@@ -313,11 +324,8 @@ async function killAllNpmProcesses() {
     const entries = Array.from(activeNpmProcesses.entries());
 
     console.info('[PROC_TRACE][NPM_KILL_ALL]', { count: entries.length, processes: getActiveNpmProcesses() });
-
-    await Promise.all(entries.map(async ([sourceId, entry]) => {
-        await killRegisteredProcessTree(entry.process?.pid, `npm:${sourceId}`);
-        activeNpmProcesses.delete(sourceId);
-    }));
+    const results = await Promise.all(entries.map(([, entry]) => stopNpmEntry(entry)));
+    return results.every(Boolean);
 }
 
 module.exports = {

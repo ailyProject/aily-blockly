@@ -29,7 +29,13 @@ import { resolveActualBuildOutputs, type BuildArtifactV1 } from '../../utils/bui
 import { resolvePlatformPackagesForCurrentProject } from '../../utils/platform-packages.utils';
 import { UiService } from '@core/app-shell/public-api';
 import { AiCoderDiffBridgeService } from '@integration/automation/public-api';
-import { ChildToolHostInfo, ChildToolProcessService, RequiredSubappService } from '@integration/subapps/public-api';
+import {
+  ChildToolHostInfo,
+  ChildToolProcessService,
+  CoderEditorUpdateService,
+  type CoderEditorUpdateState,
+  RequiredSubappService,
+} from '@integration/subapps/public-api';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   CoderLoadingComponent,
@@ -65,6 +71,9 @@ const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-editor-host-layout-refresh
 const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-editor-native-fs-watch-event';
 const AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL = 'aily-coder-editor-ready-protocol';
 const AILY_CODER_EDITOR_READY_CHANNEL = 'aily-coder-editor-ready';
+const AILY_CODER_EDITOR_UPDATE_STATE_CHANNEL = 'aily-coder-editor-update-state';
+const AILY_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL = 'aily-coder-editor-update-state-request';
+const AILY_CODER_EDITOR_UPDATE_REQUEST_CHANNEL = 'aily-coder-editor-update-request';
 const AILY_CODER_EDITOR_READY_PROTOCOL_VERSION = 1;
 const CODER_LOADER_DELAY_MS = 150;
 const CODER_LEGACY_READY_FALLBACK_MS = 2400;
@@ -205,6 +214,16 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private readonly coderDevEmbedBase = 'http://127.0.0.1:5174/';
   private coderRuntimeHostInfo: ChildToolHostInfo | null = null;
   private coderRuntimeAcquirePromise: Promise<ChildToolHostInfo> | null = null;
+  private coderEditorUpdateState: CoderEditorUpdateState = {
+    state: 'current',
+    visible: false,
+    busy: false,
+    actionable: false,
+    progress: 0,
+    installedVersion: '',
+    availableVersion: '',
+  };
+  private unregisterCoderEditorUpdateClient: (() => void) | null = null;
   private coderBootstrapGeneration = 0;
   private destroyed = false;
 
@@ -266,6 +285,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     private aiCoderDiffBridge: AiCoderDiffBridgeService,
     private cmdService: CmdService,
     private readonly childToolProcess: ChildToolProcessService,
+    private readonly coderEditorUpdates: CoderEditorUpdateService,
     private readonly requiredSubapps: RequiredSubappService,
     private readonly translate: TranslateService,
     private readonly modal: NzModalService,
@@ -287,6 +307,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.npmService = session.injector.get(NpmService);
     this.topBuilderService = session.injector.get(TopBuilderService);
     this.proProject.registerPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
+    this.unregisterCoderEditorUpdateClient = this.coderEditorUpdates.registerClient({
+      prepareForUpdate: async () => {
+        await this.proProject.saveAll(this.projectPath);
+      },
+      reloadAfterUpdate: () => this.reloadAfterCoderEditorUpdate(),
+    });
+    this.componentSubscriptions.add(
+      this.coderEditorUpdates.state$.subscribe((state) => {
+        this.coderEditorUpdateState = state;
+        this.postCoderEditorUpdateState();
+      }),
+    );
     this.componentSubscriptions.add(this.projectService.projectActivation$.subscribe(event => {
       if (event.path === this.projectPath && (event.reason === 'reload' || event.reason === 'chat-tool-reload')) {
         void this.bootstrap(this.projectPath);
@@ -458,6 +490,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.destroyed = true;
     this.clearCoderEmbedLoadingTimers();
     this.proProject.unregisterPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
+    this.unregisterCoderEditorUpdateClient?.();
+    this.unregisterCoderEditorUpdateClient = null;
     this.coderWorkbenchReady = false;
     this.embedHostResizeObserver?.disconnect();
     this.embedHostResizeObserver = undefined;
@@ -629,6 +663,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       if (this.electronService.isElectron) {
         await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
         if (!this.isCurrentCoderWorkspace(projectPath)) return;
+        await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
+        if (!this.isCurrentCoderWorkspace(projectPath)) return;
         this.coderLoadingStage = 'runtime';
         base = (await this.acquireCoderRuntime()).url;
       } else {
@@ -754,6 +790,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     }
     if (this.active) this.aiCoderDiffBridge.registerEmbed(frame?.contentWindow ?? null);
     this.codeSuggestionHostBridge.registerFrame(frame?.contentWindow ?? null);
+    this.postCoderEditorUpdateState();
     if (root) {
       void this.pushAilyCoderHostContext(root);
     }
@@ -800,6 +837,75 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     if (root) {
       void this.initCoderEmbed(root);
     }
+  }
+
+  private postCoderEditorUpdateState(): void {
+    const target = this.coderEmbedFrame?.nativeElement?.contentWindow;
+    if (!target) return;
+    target.postMessage({
+      channel: AILY_CODER_EDITOR_UPDATE_STATE_CHANNEL,
+      payload: this.coderEditorUpdateState,
+    }, '*');
+  }
+
+  private async updateAndRestartCoderEditor(): Promise<void> {
+    if (this.childToolProcess.getRuntimeSnapshot(AILY_CODER_EDITOR_SUBAPP_ID).running) {
+      const confirmed = await this.confirmCoderEditorUpdateRestart(
+        this.coderEditorUpdateState.state === 'restart-required',
+      );
+      if (!confirmed) return;
+    }
+    try {
+      const restartOnly = this.coderEditorUpdateState.state === 'restart-required';
+      const updated = await this.coderEditorUpdates.updateAndRestart();
+      if (updated) {
+        this.message.success(this.translate.instant(
+          restartOnly ? 'APP_STORE.RESTART_SUCCESS' : 'APP_STORE.UPDATE_SUCCESS',
+          { name: 'Aily Coder Editor' },
+        ));
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(detail);
+    }
+  }
+
+  private confirmCoderEditorUpdateRestart(restartFlow: boolean): Promise<boolean> {
+    const name = 'Aily Coder Editor';
+    return new Promise((resolve) => {
+      this.modal.confirm({
+        nzClassName: 'subapp-service-confirm-modal',
+        nzTitle: this.translate.instant(
+          restartFlow ? 'APP_STORE.RESTART_CONFIRM' : 'APP_STORE.BUSY_TITLE',
+          { name },
+        ),
+        nzContent: restartFlow
+          ? this.translate.instant('APP_STORE.RESTART_HINT', { name })
+          : this.translate.instant('APP_STORE.BUSY_MESSAGE', {
+              name,
+              action: this.translate.instant('APP_STORE.INSTALL_UPDATE'),
+            }),
+        nzOkText: this.translate.instant(
+          restartFlow ? 'APP_STORE.CONFIRM_RESTART' : 'APP_STORE.FORCE_CLOSE_CONTINUE',
+        ),
+        nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+        nzOkDanger: !restartFlow,
+        nzMaskClosable: false,
+        nzOnOk: () => resolve(true),
+        nzOnCancel: () => resolve(false),
+      });
+    });
+  }
+
+  private async reloadAfterCoderEditorUpdate(): Promise<void> {
+    const root = this.coderEmbedWorkspaceRoot;
+    if (!root || this.destroyed) return;
+    this.beginCoderEmbedLoading();
+    this.coderEmbedLoaderVisible = true;
+    this.coderLoadingStage = 'runtime';
+    this.coderRuntimeHostInfo = null;
+    this.coderRuntimeAcquirePromise = null;
+    await this.initCoderEmbed(root, false);
   }
 
   confirmReinstallCoderEmbed(): void {
@@ -1179,11 +1285,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     }
   }
 
-  /** 从当前工程有效平台依赖（主板 + platform runtimeDependencies）解析全局 sdk/tools 目录 */
+  /** 从当前主板包的依赖声明解析全局 sdk/tools 目录。 */
   private async loadPlatformPackagesForEmbed() {
     try {
       return await resolvePlatformPackagesForCurrentProject(async () => {
-        return this.projectService.getEffectiveBoardDependencies();
+        return this.projectService.getBoardDependencies();
       });
     } catch (e) {
       console.warn('[CodeEditorPro] loadPlatformPackagesForEmbed', e);
@@ -1926,6 +2032,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       payload?: Record<string, unknown>;
       absPath?: string;
     };
+    if (
+      msg?.channel === AILY_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL
+      || msg?.channel === AILY_CODER_EDITOR_UPDATE_REQUEST_CHANNEL
+    ) {
+      if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
+      if (msg.channel === AILY_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL) {
+        this.postCoderEditorUpdateState();
+      } else {
+        void this.updateAndRestartCoderEditor();
+      }
+      return;
+    }
     if (msg?.channel === AILY_CODER_EDITOR_LIBRARY_OPERATION_FEEDBACK_CHANNEL) {
       if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
       this.handleCoderLibraryOperationFeedback(msg as CoderLibraryOperationFeedback);

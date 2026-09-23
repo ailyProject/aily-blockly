@@ -185,6 +185,8 @@ export class SubappManagerService implements OnDestroy {
   getCatalogApps(): AppItem[] {
     return this.state.apps
       .filter((item) => item.enabled !== false)
+      // Keep native Agent tools in the installed catalog, not in iframe launchers.
+      .filter((item) => item.config?.runtime?.headless !== true || item.config.runtime.observer === true)
       .map((item) => ({
         ...(item.app || {}),
         id: item.toolId,

@@ -16,7 +16,7 @@ describe('board config build facts', () => {
       getPackageJson: async () => ({ dependencies: { '@aily-project/board-test': '1' } }),
       getRuntimeBoardModule: () => '@aily-project/board-test',
       getBoardModule: async () => '@aily-project/board-test',
-      getEffectiveBoardDependencies: async () => ({ '@aily-project/sdk-test': '1.0.0' }),
+      getBoardDependencies: async () => ({ '@aily-project/sdk-test': '1.0.0' }),
       isAilyCodeProject: () => false,
       getBoardConfigMenu: jasmine.createSpy('menu').and.resolveTo([]),
     };
@@ -40,7 +40,7 @@ describe('board config build facts', () => {
 
   it('reports unavailable facts instead of guessing SDK paths or failing unrelated board configuration', async () => {
     const service = project();
-    service.getEffectiveBoardDependencies = async () => { throw new Error('dependencies unavailable'); };
+    service.getBoardDependencies = async () => { throw new Error('dependencies unavailable'); };
     const result = await getBoardConfig(service as any);
     expect(result['ok']).toBeTrue();
     expect((result['buildEnvironment'] as any).status).toBe('unavailable');
@@ -49,7 +49,7 @@ describe('board config build facts', () => {
 
   it('does not mix build facts from a project switched during the query', async () => {
     const service = project();
-    service.getEffectiveBoardDependencies = async () => {
+    service.getBoardDependencies = async () => {
       service.currentProjectPath = '/other';
       return { '@aily-project/sdk-test': '2.0.0' };
     };

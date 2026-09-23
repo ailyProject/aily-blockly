@@ -799,9 +799,6 @@ export class ProjectNewComponent implements OnDestroy {
 }
 
 
-/** Coder 新建项目可选的 framework 值（来自 coder_board_index.json） */
-export type CoderFramework = string;
-
 export interface BoardInfo {
   "name": string, // 开发板在仓库中的名称开发板名称
   "nickname": string, // 显示的开发板名称

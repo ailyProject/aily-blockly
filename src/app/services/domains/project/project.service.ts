@@ -17,10 +17,6 @@ import type { NewProjectData } from '../../../types/project-new';
 import { TranslateService } from '@ngx-translate/core';
 import { NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import {
-  readPlatformRefFromProjectPackage,
-  resolveEffectiveBoardDependencies,
-} from '../../../utils/platform-runtime.utils';
-import {
   PROJECT_APPLICATION_PORT,
   type ProjectApplicationPort,
 } from './ports/project-application.port';
@@ -46,10 +42,12 @@ import {
 import {
   CODER_TEMPLATE_DIRECTORY,
   applyCoderProjectPackageConfig,
+  type CoderProjectPackageManifest,
+  readCoderBoardTemplateDependencies,
+  recordCoderBoardTemplateDependencies,
   copyCoderArduinoTemplate,
   isCoderProjectPackage,
   resolveCoderProjectCreationTemplate,
-  resolveCoderTemplatePath,
 } from './coder/coder-project-template';
 import {
   RecentProject,
@@ -62,7 +60,7 @@ import {
 } from './project-root-path';
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
-import { ProjectBlockFieldUpdates, updateProjectBlockFields } from './project-block-field-updates';
+import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 
 interface ProjectPackageData {
   name: string;
@@ -652,20 +650,21 @@ export class ProjectService {
   }
 
   /**
-   * 切换后保留的用户库：排除主板/模板自带的 lib-core-*（与新建 Coder 仅声明主板一致）。
+   * 切换后保留用户库；仅移除项目来源记录确认且用户未改版本的模板依赖。
    */
   private filterAilyCodeUserPreservedDeps(
     deps: Record<string, string> | undefined,
+    previousTemplateDeps: Record<string, string> = {},
   ): Record<string, string> {
     return Object.fromEntries(
-      Object.entries(deps || {}).filter(([key]) => {
+      Object.entries(deps || {}).filter(([key, version]) => {
         if (isAilyBoardPackageName(key) || key.startsWith('@aily-project/coder-')) {
           return false;
         }
         if (isAilyCoreLibraryPackageName(key)) {
           return false;
         }
-        return true;
+        return previousTemplateDeps[key] !== version;
       }),
     );
   }
@@ -674,10 +673,14 @@ export class ProjectService {
   private applyAilyCodeBoardToPackageManifest(
     packageJson: Record<string, unknown>,
     boardInfo: { name: string; version: string },
-    currentPackageJson?: { dependencies?: Record<string, string> },
+    currentPackageJson?: CoderProjectPackageManifest,
+    previousBoardPackageName?: string,
   ): void {
     const boardRange = this.normalizeAilyCodeBoardDepRange(boardInfo.version);
-    const preserved = this.filterAilyCodeUserPreservedDeps(currentPackageJson?.dependencies);
+    const previousTemplateDeps = readCoderBoardTemplateDependencies(currentPackageJson, previousBoardPackageName);
+    const preserved = this.filterAilyCodeUserPreservedDeps(currentPackageJson?.dependencies, previousTemplateDeps);
+    const templateDependencies = (packageJson['dependencies'] as Record<string, string> | undefined) || {};
+    recordCoderBoardTemplateDependencies(packageJson, boardInfo.name, templateDependencies, preserved);
 
     packageJson['dependencies'] = {
       ...((packageJson['dependencies'] as Record<string, string> | undefined) || {}),
@@ -987,6 +990,7 @@ export class ProjectService {
     if (options?.coderTemplate) {
       const boardPackageName = this.normalizeAilyBoardPackageName(newProjectData.board.name);
       const boardRange = this.normalizeAilyCodeBoardDepRange(newProjectData.board.version);
+      recordCoderBoardTemplateDependencies(packageJson, boardPackageName, packageJson.dependencies || {});
       applyCoderProjectPackageConfig(packageJson, boardPackageName, boardRange);
     }
 
@@ -1024,8 +1028,8 @@ export class ProjectService {
       });
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-      const npmInstallResult = await this.appDataResourceLock.runExclusive(`project:new:install-board:${boardPackage}`, () =>
-        this.cmdService.runAsync(installCommand)
+      const npmInstallResult = await this.appDataResourceLock.runExclusive(`project:new:install-board:${boardPackage}`, appDataResourceToken =>
+        this.cmdService.runAsync(installCommand, undefined, true, false, { appDataResourceToken, appDataResourceMode: 'write' })
       );
       if (npmInstallResult.code !== 0) {
         throw new Error(npmInstallResult.stderr || npmInstallResult.stdout || `npm install failed with exit code ${npmInstallResult.code}`);
@@ -1119,8 +1123,7 @@ export class ProjectService {
     const originalContent = window['fs'].readFileSync(abiPath, 'utf8');
     const abi = JSON.parse(originalContent);
 
-    const updated = fieldUpdates === undefined ? { document: abi, changed: false } : updateProjectBlockFields(abi, fieldUpdates);
-    const result = await normalizeProjectDataDocument({ projectPath, document: updated.document, sourceChanged: updated.changed, originalContent, materialize: false },
+    const result = await normalizeProjectDataDocument({ projectPath, document: abi, fieldUpdates, originalContent, materialize: false },
       this.createProjectDataStore(projectPath), assertCurrent);
     this.reportProjectDataNormalization(projectPath, result);
   }
@@ -1161,6 +1164,9 @@ export class ProjectService {
   private reportProjectDataNormalization(projectPath: string,
     result: Awaited<ReturnType<typeof normalizeProjectDataDocument>>): void {
     if (result.publication && result.migration.documentChanged) this.logProjectDataMigration(projectPath, result.migration);
+    if (result.publication && result.identityMigration.length) {
+      console.info(`[ProjectImport] Migrated ${result.identityMigration.length} legacy hidden shadow identities; original ABI retained in Project Data backups.`, result.identityMigration);
+    }
     for (const warning of result.publication?.warnings ?? []) console.warn('[ProjectData] Publication cleanup:', warning);
   }
 
@@ -1398,6 +1404,13 @@ export class ProjectService {
       this.electronService.setTitle(`${this.configService.getApplicationName()} - ${context.currentPackageData.name}`);
       this.projectActivationSubject.next({ path: projectPath, previousPath: previousProjectPath, reason: activationReason, sessionResource: options.sessionResource ?? null });
       await context.syncCurrentBoardConfig();
+      // The retained Coder frame reloads from projectActivation$, independently
+      // of navigation. Angular skips an already-active URL with `false`; that
+      // is not a refused project reload. A different route must still navigate.
+      const targetRoute = this.router.createUrlTree(['/main/code-editor-pro'], { queryParams: { path: projectPath } });
+      if (this.router.isActive(targetRoute, { paths: 'exact', queryParams: 'exact', fragment: 'ignored', matrixParams: 'ignored' })) {
+        return true;
+      }
       return this.router.navigate(['/main/code-editor-pro'], { queryParams: { path: projectPath }, replaceUrl: true });
     }
 
@@ -2243,18 +2256,11 @@ export class ProjectService {
     return JSON.parse(this.electronService.readFile(boardPackageJsonPath));
   }
 
-  /**
-   * Aily Code：合并主板 boardDependencies 与 platform.json runtimeDependencies，
-   * 供 SDK 路径解析、Platform Packages 树与编译链使用。
-   */
-  async getEffectiveBoardDependencies(): Promise<Record<string, string>> {
+  /** 主板包声明的 SDK、编译器和工具依赖，供配置、编辑器与构建使用。 */
+  async getBoardDependencies(): Promise<Record<string, string>> {
     try {
       const boardPackageJson = await this.getBoardPackageJson();
-      const platformRef = readPlatformRefFromProjectPackage(this.currentProjectPath);
-      return resolveEffectiveBoardDependencies(
-        boardPackageJson?.boardDependencies,
-        platformRef?.packageName,
-      );
+      return { ...(boardPackageJson?.boardDependencies || {}) };
     } catch {
       return {};
     }
@@ -2517,7 +2523,7 @@ export class ProjectService {
   // 获取开发板 SDK 路径
   async getSdkPath(options: { optional?: boolean } = {}) {
     try {
-      const boardDependencies = await this.getEffectiveBoardDependencies();
+      const boardDependencies = await this.getBoardDependencies();
       if (!boardDependencies || Object.keys(boardDependencies).length === 0) {
         throw new Error('未找到开发板 SDK 路径');
       }
@@ -2731,7 +2737,7 @@ export class ProjectService {
     }
 
     const boardName = this.getBoardNameFromBoardJson(this.currentBoardConfig);
-    const boardDependencies = await this.getEffectiveBoardDependencies();
+    const boardDependencies = await this.getBoardDependencies();
     const hasSdk = Object.keys(boardDependencies).some(name => name.startsWith('@aily-project/sdk-'));
     const boardConfig = boardName && hasSdk ? await this.getRawBoardsTxtConfig(boardName, true) : null;
     const sdkUnavailable = hasSdk && !boardConfig;
@@ -3178,7 +3184,6 @@ export class ProjectService {
       this.configService.recordBoardUsage(normalizedBoardInfo.name);
       const currentBoardModule = await this.getBoardModule();
       assertCurrentProject();
-
       // 1. npm install 安装boardInfo.name@boardInfo.version 到 appDataPath（与 projectNew 一致）
       const appDataPath = window['path'].getAppDataPath();
       const newBoardPackage = this.buildNpmPackageSpec(normalizedBoardInfo.name, normalizedBoardInfo.version);
@@ -3190,8 +3195,8 @@ export class ProjectService {
         prefixPath: appDataPath,
         registry: boardRegistry,
       });
-      await this.appDataResourceLock.runExclusive(`project:switch-board:install-appdata:${newBoardPackage}`, () =>
-        this.cmdService.runAsyncChecked(appDataInstallCommand)
+      await this.appDataResourceLock.runExclusive(`project:switch-board:install-appdata:${newBoardPackage}`, appDataResourceToken =>
+        this.cmdService.runAsyncChecked(appDataInstallCommand, undefined, true, false, { appDataResourceToken, appDataResourceMode: 'write' })
       );
       assertCurrentProject();
 
@@ -3213,14 +3218,16 @@ export class ProjectService {
         'node_modules',
         normalizedBoardInfo.name,
       );
+      // Coder switching follows the same compatibility rule as project creation:
+      // prefer template_arduino (including its legacy spelling), but fall back to
+      // the shared template when the board package has no Coder-specific template.
+      // Existing sketch sources are intentionally preserved during a board switch.
       const templatePath = isAilyCode
-        ? resolveCoderTemplatePath(boardPackagePath, window['path'])
+        ? resolveCoderProjectCreationTemplate(boardPackagePath, window['path']).templatePath
         : window['path'].join(boardPackagePath, 'template');
       const templatePackageJsonPath = `${templatePath}${separator}package.json`;
-      const templateSourcePath = `${templatePath}${separator}project.aci`;
 
-      if (window['fs'].existsSync(templatePackageJsonPath)
-        && (!isAilyCode || window['fs'].existsSync(templateSourcePath))) {
+      if (window['fs'].existsSync(templatePackageJsonPath)) {
         // 读取模板package.json
         const templatePackageJson = JSON.parse(window['fs'].readFileSync(templatePackageJsonPath, 'utf8'));
 
@@ -3239,7 +3246,7 @@ export class ProjectService {
 
         if (isAilyCode) {
           // template_arduino 决定基础库；用户自装库继续保留，源码不随开发板切换被覆盖。
-          this.applyAilyCodeBoardToPackageManifest(newPackageJson, normalizedBoardInfo, currentPackageJson);
+          this.applyAilyCodeBoardToPackageManifest(newPackageJson, normalizedBoardInfo, currentPackageJson, currentBoardModule);
           applyCoderProjectPackageConfig(
             newPackageJson,
             normalizedBoardInfo.name,
@@ -3273,7 +3280,7 @@ export class ProjectService {
         }
       } else {
         throw new Error(isAilyCode
-          ? '未找到新开发板的 template_arduino/package.json 或 project.aci，无法更新 Coder 项目配置'
+          ? '未找到新开发板可用的 template_arduino/package.json 或 template/package.json，无法更新 Coder 项目配置'
           : '未找到新开发板的 template/package.json，无法更新项目配置');
       }
 

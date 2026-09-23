@@ -1,9 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const ailyCodeProject = require('./aily-code-project');
 const { runCompilePreprocess } = require('./compile-preprocess');
+const { readBuilderCapabilities } = require('./builder-capabilities');
+const { readLibraryProjections } = require('./library-source-evidence');
+const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, publishBuildDelivery, reportBuildDelivery } = require('./compile-delivery');
+const { acquireBuildWorkspace } = require('./build-workspace-lease');
+const { readBuildRequest } = require('./build-request');
+const { confirmBuildSource } = require('./build-source-capture');
 
 // 简单的日志工具
 const logger = {
@@ -46,7 +52,7 @@ async function main() {
 
     let config;
     try {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        config = readBuildRequest(configPath);
     } catch (error) {
         logger.error('Failed to read config file:', error);
         process.exit(1);
@@ -65,7 +71,12 @@ async function main() {
         }
     }
 
+    let workspace;
     try {
+        workspace = acquireBuildWorkspace(currentProjectPath, 'compile');
+        confirmBuildSource(config);
+        invalidateBuildDelivery(currentProjectPath);
+        const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
         // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
         const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
         const tempPath = isAilyCode
@@ -88,36 +99,13 @@ async function main() {
         const preprocessCachePath = isAilyCode
             ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
             : path.join(tempPath, 'preprocess.json');
-        const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
-        const projectPackageJson = fs.existsSync(projectPackageJsonPath)
-            ? JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'))
-            : {};
-        const projectConfig = projectPackageJson.projectConfig || {};
         let frameworkOutputDir = null;
         if (isAilyCode) {
             frameworkOutputDir = ailyCodeProject.resolveFrameworkBuildDir(currentProjectPath);
         }
 
-        // 2. 确保目录存在并写入最新 Blockly 生成的代码（与 preprocess 同源路径）
+        // Preprocessing exclusively owns source preparation; do not duplicate it here.
         mkdirp(tempPath);
-        mkdirp(sketchPath);
-        mkdirp(path.dirname(compileSourcePath));
-        fs.writeFileSync(compileSourcePath, code);
-        if (!isAilyCode) {
-            await copyProjectSrcToSketch(currentProjectPath, sketchPath);
-        }
-        ensureCustomPartitionFile(
-            projectConfig,
-            currentProjectPath,
-            sketchPath,
-            compileSourcePath,
-            isAilyCode
-        );
-
-        // 纯 Blockly 仍会写 sketch.ino，便于与其它工具对齐；Aily Code 仅以 entry 为准
-        if (!isAilyCode) {
-            fs.writeFileSync(sketchFilePath, code);
-        }
 
         // Never let a previous build's Blockly mapping survive a source change.
         // The Builder independently verifies all source metadata before adding
@@ -156,7 +144,11 @@ async function main() {
 
         // A saved file can belong to the pre-edit workspace. Derive dependencies
         // from this frozen compile input, not the existence of a background cache.
-        await runCompilePreprocess(config, tempPath, preprocessCachePath);
+        await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
+        workspace.assertOwned();
+        confirmBuildSource(config);
+        if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
+        const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
 
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -198,7 +190,11 @@ async function main() {
             '--build-path', `"${buildPath}"`,
             '--preprocess-result', `"${preprocessCachePath}"`,
         ];
-        if (supportsArtifactManifest(builderCommand)) {
+        const capabilities = readBuilderCapabilities(builderCommand);
+        if (projectSnapshot && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace || !capabilities.packages || !capabilities.verification)) {
+            throw new Error('Current Builder cannot record and verify source/package inputs with workspace ownership; upgrade it before requesting project delivery.');
+        }
+        if (capabilities.artifact) {
             args.push(
                 '--emit-artifact-manifest',
                 `"${path.join(buildPath, 'aily-artifact-manifest.json')}"`
@@ -207,7 +203,7 @@ async function main() {
                 if (!/^[a-f0-9]{64}$/.test(config.graphSemanticRevision)) {
                     throw new Error('graphSemanticRevision 必须是小写 SHA-256。');
                 }
-                if (!supportsSceneGraphProvenance(builderCommand)) {
+                if (!capabilities.graph) {
                     throw new Error(
                         '当前 aily-builder 不支持 Scene graph provenance，'
                         + '不能生成可替换的仿真 Artifact。'
@@ -218,14 +214,10 @@ async function main() {
                     config.graphSemanticRevision
                 );
             }
-        } else {
-            // logger.warn(
-            //     '当前 aily-builder 不支持仿真 Artifact 输出；'
-            //     + '普通编译继续执行，仿真前请升级 aily-builder。'
-            // );
         }
+        if (projectSnapshot) args.push('--record-build-inputs', '--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
 
-        if (isDevelopmentEnvironment() || process.env.AILY_E2E === '1') {
+        if (!projectSnapshot && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
             args.push('--generate-archive-cloud-cache');
         }
 
@@ -233,12 +225,13 @@ async function main() {
         const spawnOpts = {
             cwd: currentProjectPath,
             shell: true,
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: workspace.builderEnvironment('compile')
         };
 
         if (frameworkOutputDir) {
             spawnOpts.env = {
-                ...process.env,
+                ...spawnOpts.env,
                 AILY_BUILDER_BUILD_PATH: frameworkOutputDir
             };
         }
@@ -262,47 +255,68 @@ async function main() {
             output.push(`\n[BUILDER_SPAWN_ERROR] ${formatFatalError(error)}\n`);
         });
 
-        child.on('close', (code, signal) => {
-            writeBuilderCompileReport(
-                builderCompileReportPath,
-                buildBuilderCompileReport({
-                    status: !spawnError && !signal && code === 0
-                        ? 'passed'
-                        : 'failed',
-                    builderCommand,
-                    args,
-                    code,
-                    signal,
-                    spawnError,
-                    startedAt,
-                    output: output.join('')
-                })
-            );
-            if (signal) {
-                logger.error(`[ERROR] 编译进程被信号终止: ${signal}`);
-                process.exit(1);
-                return;
-            }
-
-            if (code !== 0) {
-                logger.error(`[ERROR] 编译进程异常退出，退出码: ${code}`);
-                process.exit(code || 1);
-                return;
-            }
-
-            logger.log('编译完成');
-            process.exit(0);
+        const { exitCode, signal } = await new Promise(resolve => {
+            child.once('close', (exitCode, signal) => resolve({ exitCode, signal }));
         });
+        workspace.assertBuilderIdle();
+        let deliveryError = null;
+        try {
+            if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
+            else {
+                confirmBuildSource(config);
+                if (projectSnapshot) {
+                    const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
+                    await reportBuildDelivery(config, receipt);
+                }
+            }
+        } catch (error) {
+            deliveryError = error;
+            invalidateBuildDelivery(currentProjectPath);
+            output.push(`\n[BUILD_DELIVERY_ERROR] ${formatFatalError(error)}\n`);
+        }
+        writeBuilderCompileReport(
+            builderCompileReportPath,
+            buildBuilderCompileReport({
+                status: !spawnError && !signal && !deliveryError && exitCode === 0
+                    ? 'passed'
+                    : 'failed',
+                builderCommand,
+                buildId: workspace.buildId,
+                args,
+                code: exitCode,
+                signal,
+                spawnError: spawnError || deliveryError,
+                startedAt,
+                output: output.join('')
+            })
+        );
+        if (spawnError || deliveryError) {
+            throw spawnError || deliveryError;
+        }
+        if (signal) {
+            throw new Error(`编译进程被信号终止: ${signal}`);
+        }
+
+        if (exitCode !== 0) {
+            throw new Error(`编译进程异常退出，退出码: ${exitCode}`);
+        }
+
+        logger.log('编译完成');
 
     } catch (error) {
         logger.error(`[ERROR] ${error.message}`);
-        process.exit(1);
+        process.exitCode = 1;
+    } finally {
+        // Only the acquiring host releases, after preprocess/compiler close and
+        // delivery/report completion. A rejected contender never owns cleanup.
+        if (workspace) workspace.release();
     }
 }
 
 function buildBuilderCompileReport({
     status,
     builderCommand,
+    buildId,
     args,
     code,
     signal,
@@ -332,6 +346,7 @@ function buildBuilderCompileReport({
     return {
         schemaVersion: 1,
         kind: 'aily-builder-compile-report',
+        buildId,
         status,
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
@@ -438,125 +453,6 @@ function normalizeBlockSourceRanges(value) {
         ));
 }
 
-function supportsArtifactManifest(builderCommand) {
-    try {
-        const capabilitiesResult = spawnSync(
-            builderCommand,
-            ['capabilities', '--json'],
-            {
-                shell: true,
-                encoding: 'utf8',
-                windowsHide: true,
-                timeout: 5000,
-            }
-        );
-        if (capabilitiesResult.status === 0) {
-            const capabilities = JSON.parse(capabilitiesResult.stdout || '{}');
-            if (
-                capabilities?.schemaVersion === 1
-                && capabilities?.capabilities?.simulationArtifactManifest
-                    ?.schemaVersion === 1
-            ) {
-                return true;
-            }
-        }
-
-        const result = spawnSync(
-            builderCommand,
-            ['compile', '--help'],
-            {
-                shell: true,
-                encoding: 'utf8',
-                windowsHide: true,
-                timeout: 5000,
-            }
-        );
-        return `${result.stdout || ''}\n${result.stderr || ''}`
-            .includes('--emit-artifact-manifest');
-    } catch {
-        return false;
-    }
-}
-
-function supportsSceneGraphProvenance(builderCommand) {
-    try {
-        const capabilitiesResult = spawnSync(
-            builderCommand,
-            ['capabilities', '--json'],
-            {
-                shell: true,
-                encoding: 'utf8',
-                windowsHide: true,
-                timeout: 5000,
-            }
-        );
-        if (capabilitiesResult.status === 0) {
-            const capabilities = JSON.parse(capabilitiesResult.stdout || '{}');
-            return (
-                capabilities?.schemaVersion === 1
-                && capabilities?.capabilities?.sceneGraphProvenance
-                    ?.schemaVersion === 1
-                && capabilities.capabilities.sceneGraphProvenance.cliOption
-                    === '--graph-semantic-revision'
-            );
-        }
-        return false;
-    } catch {
-        return false;
-    }
-}
-
 main().catch(e => {
     exitWithFatalError(e);
 });
-
-async function copyProjectSrcToSketch(currentProjectPath, sketchPath) {
-    const projectSrcPath = path.join(currentProjectPath, 'src');
-    if (!fs.existsSync(projectSrcPath)) {
-        return;
-    }
-    if (!fs.statSync(projectSrcPath).isDirectory()) {
-        logger.warn(`Project src path exists but is not a directory: ${projectSrcPath}`);
-        return;
-    }
-    // Bundled Node 22 can crash natively in cpSync on Windows Unicode paths.
-    // The async copy preserves the same options and reports failures to main().
-    await fs.promises.cp(projectSrcPath, sketchPath, { recursive: true });
-}
-
-function ensureCustomPartitionFile(
-    projectConfig,
-    currentProjectPath,
-    sketchPath,
-    compileSourcePath,
-    isAilyCode
-) {
-    if (!projectConfig || projectConfig.PartitionScheme !== 'custom') {
-        return;
-    }
-
-    const sourcePartitionFile = isAilyCode
-        ? path.join(path.dirname(compileSourcePath), 'partitions.csv')
-        : path.join(currentProjectPath, 'src', 'partitions.csv');
-    const legacyPartitionFile = path.join(currentProjectPath, 'partitions.csv');
-    const sketchPartitionFile = isAilyCode
-        ? sourcePartitionFile
-        : path.join(sketchPath, 'partitions.csv');
-
-    if (fs.existsSync(sketchPartitionFile)) {
-        return;
-    }
-
-    if (fs.existsSync(sourcePartitionFile)) {
-        fs.copyFileSync(sourcePartitionFile, sketchPartitionFile);
-        return;
-    }
-
-    if (fs.existsSync(legacyPartitionFile)) {
-        logger.warn(`检测到旧位置分区文件，建议迁移到 ${sourcePartitionFile}`);
-        fs.copyFileSync(legacyPartitionFile, sketchPartitionFile);
-        return;
-    }
-
-    throw new Error(`已选择自定义分区 PartitionScheme=custom，但未找到分区文件。请将 CSV 放到 ${sourcePartitionFile}`);
-}

@@ -835,6 +835,7 @@
         "CANCEL": "取消"
     },
     "LOGIN": {
+        "EDU_LOGIN": "EDU 登入",
         "HEADER": "登入後即可使用我們的服務",
         "PHONE": "手機號碼",
         "BENEFITS_TITLE": "登入後您可以：",

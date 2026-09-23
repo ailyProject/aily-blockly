@@ -767,6 +767,7 @@
         "CANCEL": "Cancelar"
     },
     "LOGIN": {
+        "EDU_LOGIN": "Entrar no EDU",
         "HEADER": "Faça login para usar nossos serviços",
         "PHONE": "Telefone",
         "BENEFITS_TITLE": "Após o login, você pode:",

@@ -78,7 +78,7 @@ export const API = {
   get verifyToken() { return `${getServerUrl()}/api/v1/auth/verify`; },
   get refreshToken() { return `${getServerUrl()}/api/v1/auth/refresh`; },
   get me() { return `${getServerUrl()}/api/v1/auth/me`; },
-  get authQuotaInfo() { return `${getServerUrl()}/api/v1/auth/me/quota-info`; },
+  get creditSnapshot() { return `${getServerUrl()}/api/v1/credits/me`; },
   get changeNickname() { return `${getServerUrl()}/api/v1/auth/me/nickname`; },
   get benefits() { return `${getServerUrl()}/api/v1/entitlements/me/benefits`; },
   // invitation

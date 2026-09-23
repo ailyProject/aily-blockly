@@ -111,7 +111,7 @@ describe('project lifecycle admission across sessions', () => {
       expect(await service.close()).toBeFalse();
       throw new Error('write failed');
     };
-    await expectAsync(bridge.execute({ operation: 'abi_add', path: '/a' })).toBeRejectedWithError('write failed');
+    await expectAsync(bridge.execute({ operation: 'project_save', path: '/a' })).toBeRejectedWithError('write failed');
     expect(registry.hasBlocking('/a')).toBeFalse();
   });
 
@@ -121,7 +121,7 @@ describe('project lifecycle admission across sessions', () => {
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     bridge.projectService = service; bridge.aiOperations = registry;
     bridge.executeOperation = jasmine.createSpy('operation');
-    const result = await bridge.execute({ operation: 'abs_apply', path: '/a' });
+    const result = await bridge.execute({ operation: 'project_save', path: '/a' });
     expect(result.reason).toBe('project_lifecycle_busy');
     expect(bridge.executeOperation).not.toHaveBeenCalled();
     board.release();

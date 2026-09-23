@@ -104,6 +104,9 @@ export class _UploaderService {
     /Writing\s+at\s+0x[0-9a-f]+\.\.\.\s+\(\d+\s*%\)/i,
     // Wrote and verified address 0x08001700 (79.31%)
     /Wrote\s+and\s+verified\s+address\s+0x[0-9a-f]+\s+\((\d+(?:\.\d+)?)%\)/i,
+    // stc-cli (STC32): Writing...  50% (93440/186880 bytes)
+    // 限定完整写入格式，避免将其他工具的普通百分比日志识别为上传进度。
+    /^Writing\.\.\.\s+(\d+(?:\.\d+)?)\s*%\s+\(\d+\/\d+\s+bytes\)$/i,
     // 或者只是数字+百分号（例如：[====>    ] 70%）
     /\b(\d+(?:\.\d+)?)%\b/,
     // 70% 13/18

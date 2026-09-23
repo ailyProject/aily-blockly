@@ -136,7 +136,7 @@ describe('native read-only media snapshot and shared generator projection', () =
     await expectAsync(run(request)).toBeRejectedWithError(/reference is invalid/);
   });
 
-  for (const effect of ['setTimeout(() => {}, 0)', 'queueMicrotask(() => {})', 'Promise.resolve().then(() => {})'])
+  for (const effect of ['setTimeout(() => {}, 0)', 'queueMicrotask(() => {})', 'Promise.resolve().then(() => setTimeout(() => {}, 0))'])
   it('rejects caught asynchronous Generator work after resource preparation: ' + effect, async () => {
     const request = await verify(await imageFixture());
     request.steps.push({ kind: 'script', label: 'late-generator-work', source: `Arduino.forBlock.native_media = () => {

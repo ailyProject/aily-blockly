@@ -26,8 +26,21 @@ export function collectProjectBlocks(document: unknown): Array<{ state: Record<s
   return result;
 }
 
+export interface ProjectBlockLocation {
+  state: Record<string, unknown>;
+  jsonPointer: string;
+  /** Outermost connection whose stored shadow is covered by an actual block. */
+  hiddenOwner?: string;
+}
+
+export function collectProjectBlockLocations(document: unknown): ProjectBlockLocation[] {
+  const result: ProjectBlockLocation[] = [];
+  visitProjectDataDocument(document, () => {}, (state, jsonPointer, hiddenOwner) => result.push({ state, jsonPointer, hiddenOwner }));
+  return result;
+}
+
 function visitProjectDataDocument(document: unknown, onPayload: (payload: ProjectDataPayload) => void,
-  onBlock: (state: Record<string, unknown>, pointer: string) => void = () => {}): void {
+  onBlock: (state: Record<string, unknown>, pointer: string, hiddenOwner?: string) => void = () => {}): void {
   const seen = new WeakSet<object>();
   const record = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -42,19 +55,20 @@ function visitProjectDataDocument(document: unknown, onPayload: (payload: Projec
   const block = (value: unknown, pointer: string) => {
     // Preserve depth-first serialization order without consuming the call stack
     // for long statement chains or deeply nested value/statement inputs.
-    const pending: Array<{ value: unknown; pointer: string; connection: boolean }> = [
+    const pending: Array<{ value: unknown; pointer: string; connection: boolean; hiddenOwner?: string }> = [
       { value, pointer, connection: false },
     ];
     while (pending.length) {
-      const { value, pointer, connection } = pending.pop()!;
+      const { value, pointer, connection, hiddenOwner } = pending.pop()!;
       const state = record(value);
       if (!state) continue;
       if (connection) {
-        if (state['shadow']) pending.push({ value: state['shadow'], pointer: `${pointer}/shadow`, connection: false });
-        if (state['block']) pending.push({ value: state['block'], pointer: `${pointer}/block`, connection: false });
+        if (state['shadow']) pending.push({ value: state['shadow'], pointer: `${pointer}/shadow`, connection: false,
+          hiddenOwner: hiddenOwner ?? (state['block'] ? pointer : undefined) });
+        if (state['block']) pending.push({ value: state['block'], pointer: `${pointer}/block`, connection: false, hiddenOwner });
         continue;
       }
-      onBlock(state, pointer);
+      onBlock(state, pointer, hiddenOwner);
       const context = { blockId: state['id'] as string | undefined, blockType: state['type'] as string | undefined };
       const fields = record(state['fields']);
       if (fields) for (const fieldName of Object.keys(fields)) {
@@ -64,11 +78,11 @@ function visitProjectDataDocument(document: unknown, onPayload: (payload: Projec
         if (Object.hasOwn(state, key)) add(state, key, pointer, context);
       }
       const inputs = record(state['inputs']);
-      pending.push({ value: state['next'], pointer: `${pointer}/next`, connection: true });
+      pending.push({ value: state['next'], pointer: `${pointer}/next`, connection: true, hiddenOwner });
       const entries = inputs ? Object.entries(inputs) : [];
       for (let index = entries.length - 1; index >= 0; index--) {
         const [name, value] = entries[index];
-        pending.push({ value, pointer: projectDataChildPointer(`${pointer}/inputs`, name), connection: true });
+        pending.push({ value, pointer: projectDataChildPointer(`${pointer}/inputs`, name), connection: true, hiddenOwner });
       }
     }
   };

@@ -34,57 +34,22 @@ export function captureArduinoGeneratedArtifacts(generator: unknown): readonly A
  * Artifact emission is an Arduino capability, so non-Arduino generators are a
  * deliberate no-op instead of falling back to the old global generator.
  */
+/** True when another host build/preprocess/publish still owns the project workspace. */
+export function isBuildWorkspaceBusyError(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return code === 'BUILD_WORKSPACE_BUSY' || message.startsWith('BUILD_WORKSPACE_BUSY:');
+}
+
 export async function writePreparedArduinoGeneratedArtifacts(
   projectPath: string | null | undefined,
   artifacts: readonly ArduinoGeneratedArtifact[] | null,
+  sketchCode?: string,
 ): Promise<void> {
-  if (!projectPath || artifacts === null) return;
-  const fsApi = window['fs'];
-  const pathApi = window['path'];
-  const outputDirectory = pathApi.join(projectPath, 'src');
-  if (!artifacts.length && !fsApi.existsSync(outputDirectory)) return;
-  if (!fsApi.existsSync(outputDirectory)) fsApi.mkdirSync(outputDirectory, { recursive: true });
-
-  const requiredNames = new Set(artifacts.map((artifact) => artifact.fileName));
-  const existingNames: string[] = fsApi.existsSync(outputDirectory)
-    ? (fsApi.readdirSync(outputDirectory) || []).map(String)
-    : [];
-  for (const fileName of existingNames) {
-    if (!GENERATED_HEADER_PATTERN.test(fileName) || requiredNames.has(fileName)) continue;
-    fsApi.unlinkSync(pathApi.join(outputDirectory, fileName));
-  }
-
-  for (const artifact of artifacts) {
-    const finalPath = pathApi.join(outputDirectory, artifact.fileName);
-    const current = fsApi.existsSync(finalPath) ? fsApi.readFileSync(finalPath, 'utf8') : null;
-    if (current === artifact.content) continue;
-    const tempPath = `${finalPath}.${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
-    fsApi.writeFileSync(tempPath, artifact.content);
-    fsApi.renameSync(tempPath, finalPath);
-  }
-
-  // Remove headers produced by the previous hidden-directory implementation.
-  // Only files matching our deterministic generated-header namespace qualify.
-  const legacyDirectory = pathApi.join(projectPath, '.temp', 'sketch', 'generated');
-  if (fsApi.existsSync(legacyDirectory)) {
-    for (const fileName of (fsApi.readdirSync(legacyDirectory) || []).map(String)) {
-      if (GENERATED_HEADER_PATTERN.test(fileName)) {
-        fsApi.unlinkSync(pathApi.join(legacyDirectory, fileName));
-      }
-    }
-  }
-}
-
-/** Copy regular project sources into the temporary Arduino sketch root. */
-export function syncArduinoProjectSourceToSketch(
-  projectPath: string | null | undefined,
-  sketchPath: string | null | undefined,
-): void {
-  if (!projectPath || !sketchPath) return;
-  const fsApi = window['fs'];
-  const pathApi = window['path'];
-  const sourceDirectory = pathApi.join(projectPath, 'src');
-  if (!fsApi.existsSync(sourceDirectory)) return;
-  if (!fsApi.existsSync(sketchPath)) fsApi.mkdirSync(sketchPath, { recursive: true });
-  fsApi.copySync(sourceDirectory, sketchPath);
+  if (!projectPath || (artifacts === null && sketchCode === undefined)) return;
+  const publish = window['builder']?.publishArduinoGeneratedCode;
+  if (typeof publish !== 'function') throw new Error('Build publication bridge unavailable; restart the host to load matching scripts.');
+  publish(projectPath, { artifacts, ...(sketchCode !== undefined ? { sketchCode } : {}) });
 }

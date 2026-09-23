@@ -33,10 +33,12 @@ import {
   SubappManagerService,
   ChildToolProcessService,
   ChildAppHostRegistryService,
+  CoderEditorUpdateService,
 } from '@integration/subapps/public-api';
 import { MainUiAutomationService } from '@integration/automation/public-api';
 import { resolveSubappMoreMenuPosition } from './subapp-more-menu-layout';
 import type { SubappMoreMenuPosition } from './subapp-more-menu-layout';
+import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 
 @Component({
   selector: 'app-app-store',
@@ -89,6 +91,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     private toolI18n: ToolI18nService,
     private subappManager: SubappManagerService,
     private childToolProcess: ChildToolProcessService,
+    private coderEditorUpdates: CoderEditorUpdateService,
     private mainUiAutomation: MainUiAutomationService,
     private childHostRegistry: ChildAppHostRegistryService,
     private message: NzMessageService,
@@ -281,6 +284,14 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   isExtensionProcessRunning(app: AppItem): boolean {
     return app.extension === true
       && this.childToolProcess.getRuntimeSnapshot(app.id).running;
+  }
+
+  isCoderEditorExtension(app: AppItem): boolean {
+    return app.extension === true && app.id === AILY_CODER_EDITOR_SUBAPP_ID;
+  }
+
+  requiresClientRestart(app: AppItem): boolean {
+    return app.extension === true && !this.isCoderEditorExtension(app);
   }
 
   getExtensionProcessInfo(app: AppItem): { port?: number; pid?: number } | null {
@@ -516,6 +527,18 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private confirmSubappRestart(app: AppItem): void {
+    if (this.isCoderEditorExtension(app)) {
+      this.modal.confirm({
+        nzClassName: 'subapp-service-confirm-modal',
+        nzTitle: this.translate.instant('APP_STORE.RESTART_CONFIRM', { name: app.name }),
+        nzContent: this.translate.instant('APP_STORE.RESTART_HINT', { name: app.name }),
+        nzOkText: this.translate.instant('APP_STORE.CONFIRM_RESTART'),
+        nzCancelText: this.translate.instant('APP_STORE.CANCEL'),
+        nzMaskClosable: false,
+        nzOnOk: () => this.updateCoderEditorSubapp(app, true, true),
+      });
+      return;
+    }
     if (app.extension) {
       this.showExtensionClientRestartInfo(app);
       return;
@@ -541,6 +564,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         && subapp.updateStatus.ready !== true)
       || this.pendingCatalogId
     ) return;
+
+    if (this.isCoderEditorExtension(app)) {
+      await this.updateCoderEditorSubapp(app);
+      return;
+    }
 
     const wasActive = await this.isSubappUiOpen(app);
     const previousInstalledVersion = String(subapp.installedVersion || '').trim();
@@ -634,6 +662,49 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
+  /**
+   * Coder Editor 虽标记为 extension，但它有宿主内嵌界面和可重启 Runtime。
+   * 因此复用普通子应用的占用确认语义，并由专用协调器保存所有工程、
+   * 停止共享进程、安装一次，再重载全部 Editor surface；无需退出主软件。
+   */
+  private async updateCoderEditorSubapp(
+    app: AppItem,
+    runtimeUseConfirmed = false,
+    restartFlow = false,
+  ): Promise<void> {
+    const subapp = app.subapp;
+    if (!subapp || this.pendingCatalogId) return;
+
+    const wasActive = await this.isSubappUiOpen(app);
+    if (wasActive && !runtimeUseConfirmed) {
+      const confirmed = await this.confirmBusyForceClose(app, 'update');
+      if (!confirmed) return;
+    }
+
+    const restartOnly = restartFlow || (
+      subapp.updateStatus.state === 'current' && this.isSubappRestartRequired(app)
+    );
+    this.pendingCatalogId = subapp.catalogId;
+    this.pendingProgress = 1;
+    this.cdr.markForCheck();
+    try {
+      const updated = await this.coderEditorUpdates.updateAndRestart();
+      if (!updated) return;
+      this.pendingProgress = 100;
+      this.message.success(this.translate.instant(
+        restartOnly ? 'APP_STORE.RESTART_SUCCESS' : 'APP_STORE.UPDATE_SUCCESS',
+        { name: app.name },
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
+    } finally {
+      this.pendingCatalogId = '';
+      this.pendingProgress = 0;
+      this.cdr.markForCheck();
+    }
+  }
+
   private async runSubappMutationWithBusyRetry(
     action: 'install' | 'update' | 'installUpdate' | 'uninstall',
     app: AppItem,
@@ -704,6 +775,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async restartSubapp(app: AppItem): Promise<void> {
+    if (this.isCoderEditorExtension(app)) {
+      await this.updateCoderEditorSubapp(app);
+      return;
+    }
     if (app.extension) {
       this.showExtensionClientRestartInfo(app);
       return;

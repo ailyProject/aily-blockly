@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "src/app/components/menu/menu.component.spec.ts",
+    "src/**/*.d.ts"
+  ]
+}
