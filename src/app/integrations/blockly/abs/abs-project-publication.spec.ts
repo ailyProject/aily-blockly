@@ -6,7 +6,7 @@ describe('project publication host acknowledgement', () => {
     const guard = jasmine.createSpy('guard');
     const port = { replaceProjectText: jasmine.createSpy('replace').and.resolveTo({ status: 'COMMITTED', hash: await hashAbsText('中文\r\n') }) };
     await publishProjectText('D:/project', 'project.abs', '中文\r\n', 'before', guard, port);
-    expect(port.replaceProjectText).toHaveBeenCalledOnceWith({ projectPath: 'D:/project', fileName: 'project.abs', content: '中文\r\n', expectedHash: await hashAbsText('before') }, guard);
+    expect(port.replaceProjectText).toHaveBeenCalledOnceWith({ projectPath: 'D:/project', fileName: 'project.abs', content: '中文\r\n', expectedHash: await hashAbsText('before') }, jasmine.any(Function));
   });
   it('does not fall back to unchecked writes when the host is missing', async () => {
     await expectAsync(publishProjectText('D:/project', 'project.abi', 'after', null, () => undefined, {} as any))
@@ -21,6 +21,25 @@ describe('project publication host acknowledgement', () => {
   it('treats a lost host response as uncertain, not proof of rollback', async () => {
     await expectAsync(publishProjectText('D:/project', 'project.abi', 'after', null, () => undefined,
       { replaceProjectText: async () => { throw new Error('transport lost'); } })).toBeRejectedWith(jasmine.any(ProjectFilePublicationError));
+  });
+  for (const lostResponse of [false, true]) {
+    it(`does not retry a guard failure without proof of non-commit (lost response: ${lostResponse})`, async () => {
+      let current = true;
+      const guard = () => { if (!current) throw new Error('stale'); };
+      await expectAsync(publishProjectText('D:/project', 'package.json', 'after', 'before', guard, {
+        replaceProjectText: async (_request, hostGuard) => {
+          current = false;
+          try { hostGuard(); } catch {}
+          if (lostResponse) throw new Error('transport lost');
+          return { status: 'UNKNOWN' };
+        },
+      })).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_FILE_COMMIT_UNCERTAIN', uncertain: true }));
+    });
+  }
+  it('preserves genuine host write failures when the context guard did not fail', async () => {
+    await expectAsync(publishProjectText('D:/project', 'package.json', 'after', 'before', () => {}, {
+      replaceProjectText: async () => ({ status: 'NOT_COMMITTED', code: 'ENOSPC', error: 'disk full' }),
+    })).toBeRejectedWith(jasmine.objectContaining({ code: 'ENOSPC', message: 'disk full', uncertain: false }));
   });
   it('stops a context change during hashing before dispatching to the host', async () => {
     let current = true;
