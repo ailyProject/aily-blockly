@@ -372,19 +372,21 @@ export class MainWindowComponent implements OnDestroy {
           await this.childToolProcessService.forceStop(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID);
         }
       },
-      clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
+      clearLocalAuthSession: () => this.authService.clearLocalAuthSession(request.expectedAccessToken),
       completeInvalidation: () => {
         this.authService.completeSessionInvalidation();
         // Re-arm prewarming for the next successful host login.
         this.scheduleAilyChatPrewarm();
       },
       showSessionReplacedNotice: () => {
+        if (this.authService.getAuthInitializationState() !== 'signed_out') return;
         this.message.warning(
           this.translate.instant('COMMON.AUTH_SESSION_REPLACED_NOTICE'),
           { nzDuration: 8000 },
         );
       },
       requestLogin: () => {
+        if (this.authService.getAuthInitializationState() !== 'signed_out') return;
         this.authService.requestLogin('auth-token-invalid', { allowSkip: true });
       },
       reportFailure: (stage, error) => {

@@ -18,134 +18,112 @@ function fixture(t) {
     fs.mkdirSync(path.dirname(file(relative)), { recursive: true });
     fs.writeFileSync(file(relative), JSON.stringify(record));
   };
-  const store = product => createAuthStore(root, product, async operation => operation());
+  const store = () => createAuthStore(root, async operation => operation());
   return { file, read, write, store };
 }
 
-test('Blockly mirrors login and refresh while preserving unrelated legacy fields', async t => {
-  const f = fixture(t), store = f.store('blockly');
-  f.write('.aily', { setting: 'keep', refresh_token: 'obsolete' });
-  await store.write({ access_token: 'login', refresh_token: 'refresh-1' });
-  assert.deepEqual(f.read('.aily'), { setting: 'keep', ...f.read('auth/blockly.json') });
+test('both products share login, refresh and logout through .aily', async t => {
+  const f = fixture(t), blockly = f.store(), coder = f.store();
+  f.write('.aily', { setting: 'keep' });
+  await blockly.write({ access_token: 'login', refresh_token: 'refresh-1' });
+  assert.equal((await coder.read()).access_token, 'login');
+  assert.equal(f.read('.aily').setting, 'keep');
 
-  assert.equal(await store.write({ access_token: 'rotated', refresh_token: 'refresh-2' }, 'refresh-1'), true);
-  assert.deepEqual(f.read('.aily'), { setting: 'keep', ...f.read('auth/blockly.json') });
-
-  await store.write({ access_token: 'next-login' });
-  assert.deepEqual(f.read('.aily'), { setting: 'keep', ...f.read('auth/blockly.json') });
+  assert.equal(await coder.write({ access_token: 'rotated', refresh_token: 'refresh-2' }, 'refresh-1'), true);
+  assert.equal((await blockly.read()).refresh_token, 'refresh-2');
+  await coder.write({ access_token: 'next-account' });
+  assert.equal((await blockly.read()).access_token, 'next-account');
   assert.equal(Object.hasOwn(f.read('.aily'), 'refresh_token'), false);
+  assert.equal(fs.existsSync(f.file('auth/blockly.json')), false);
+  assert.equal(fs.existsSync(f.file('auth/coder.json')), false);
+
+  await blockly.clear();
+  assert.deepEqual(await coder.read(), {});
+  assert.equal(fs.existsSync(f.file('.aily')), false);
 });
 
-test('startup and credential reads restore existing Blockly sessions without repeated mirror writes', async t => {
-  const f = fixture(t), store = f.store('blockly');
-  const record = { access_token: 'current', refresh_token: 'refresh', updated_at: '2026-09-24T00:00:00.000Z' };
-  f.write('auth/blockly.json', record);
-  f.write('auth/blockly-migration.json', { completed: true });
-  await store.restoreLegacy();
-  assert.deepEqual(f.read('.aily'), record);
-
-  fs.rmSync(f.file('.aily'));
+test('an existing .aily login is retained, and ordinary reads do not write it', async t => {
+  const f = fixture(t), store = f.store();
+  const record = { access_token: 'legacy', refresh_token: 'refresh', updated_at: '2026-09-24T00:00:00.000Z' };
+  f.write('.aily', { ...record, setting: 'keep' });
   assert.deepEqual(await store.read(), record);
-  assert.deepEqual(f.read('.aily'), record);
-
-  f.write('.aily', { access_token: 'stale', setting: 'keep' });
-  assert.deepEqual(await store.read(), record);
-  assert.deepEqual(f.read('.aily'), { setting: 'keep', ...record });
-
+  assert.deepEqual(f.read('.aily'), { ...record, setting: 'keep' });
   const rename = t.mock.method(fs, 'renameSync');
-  await store.read();
+  assert.deepEqual(await store.read(), record);
   assert.equal(rename.mock.callCount(), 0);
 });
 
-test('legacy migration still works and logout cannot resurrect the old login', async t => {
-  const f = fixture(t), store = f.store('blockly');
-  const legacy = { access_token: 'legacy', refresh_token: 'legacy-refresh' };
-  f.write('.aily', legacy);
-  assert.deepEqual(await store.read(), legacy);
-  assert.deepEqual(f.read('auth/blockly.json'), legacy);
-  await store.clear();
-  assert.equal(fs.existsSync(f.file('.aily')), false);
-  assert.equal(fs.existsSync(f.file('auth/blockly.json')), false);
-  assert.deepEqual(f.read('auth/blockly-migration.json'), { completed: true });
-
-  f.write('.aily', legacy);
-  assert.deepEqual(await store.read(), {});
-  assert.deepEqual(f.read('.aily'), legacy);
-  await store.restoreLegacy();
-  assert.equal(fs.existsSync(f.file('.aily')), false);
-});
-
-test('Coder never imports, mirrors or clears Blockly or legacy credentials', async t => {
-  const f = fixture(t), store = f.store('coder');
-  const legacy = { access_token: 'legacy', setting: 'keep' };
-  const blockly = { access_token: 'blockly' };
-  f.write('.aily', legacy);
+test('migration selects the latest login or refresh across the old credential files', async t => {
+  const f = fixture(t);
+  f.write('.aily', { access_token: 'legacy', updated_at: '2026-09-21T00:00:00Z', setting: 'keep' });
+  const blockly = { access_token: 'blockly', updated_at: '2026-09-22T00:00:00Z' };
+  const coder = { access_token: 'coder', refresh_token: 'coder-refresh', updated_at: '2026-09-23T00:00:00Z' };
   f.write('auth/blockly.json', blockly);
-  await store.restoreLegacy();
-  assert.deepEqual(await store.read(), {});
-  await store.write({ access_token: 'coder', refresh_token: 'coder-refresh' });
-  assert.equal((await store.read()).access_token, 'coder');
-  assert.deepEqual(f.read('.aily'), legacy);
-  await store.clear();
-  assert.deepEqual(f.read('.aily'), legacy);
+  f.write('auth/coder.json', coder);
+  assert.deepEqual(await f.store().read(), coder);
+  assert.deepEqual(f.read('.aily'), { setting: 'keep', ...coder });
   assert.deepEqual(f.read('auth/blockly.json'), blockly);
-  assert.equal(fs.existsSync(f.file('auth/blockly-migration.json')), false);
-  assert.equal(fs.existsSync(f.file('auth/coder.json')), false);
+  assert.deepEqual(f.read('auth/coder.json'), coder);
+
+  await f.store().clear();
+  assert.deepEqual(await f.store().read(), {});
+  assert.deepEqual(f.read('auth/shared-migration.json'), { completed: true });
 });
 
-test('rejected stale refresh leaves both credential files unchanged', async t => {
-  const f = fixture(t), store = f.store('blockly');
-  await store.write({ access_token: 'current', refresh_token: 'current-refresh' });
-  const current = f.read('auth/blockly.json');
-  assert.equal(await store.write({ access_token: 'stale', refresh_token: 'stale-refresh' }, 'old-refresh'), false);
-  assert.deepEqual(f.read('auth/blockly.json'), current);
-  assert.deepEqual(f.read('.aily'), current);
+test('equal or missing migration timestamps prefer the existing .aily account', async t => {
+  const f = fixture(t);
+  f.write('.aily', { access_token: 'legacy' });
+  f.write('auth/blockly.json', { access_token: 'blockly', updated_at: 'invalid' });
+  f.write('auth/coder.json', { access_token: 'coder' });
+  assert.deepEqual(await f.store().read(), { access_token: 'legacy' });
 });
 
-test('failed mirror writes never block reads of the rotated primary credentials', async t => {
-  const f = fixture(t), store = f.store('blockly');
-  await store.write({ access_token: 'before', refresh_token: 'refresh-1' });
+test('old Blockly logout residue cannot restore a signed-out account', async t => {
+  const f = fixture(t);
+  f.write('.aily', { access_token: 'signed-out', updated_at: '2026-09-24T00:00:00Z' });
+  f.write('auth/blockly-migration.json', { completed: true });
+  assert.deepEqual(await f.store().read(), {});
+  assert.equal(fs.existsSync(f.file('.aily')), false);
+  f.write('auth/coder.json', { access_token: 'late-old-file' });
+  assert.deepEqual(await f.store().read(), {});
+});
+
+test('a still-signed-in Coder account survives migration after old Blockly logout', async t => {
+  const f = fixture(t);
+  f.write('.aily', { access_token: 'signed-out', updated_at: '2026-09-24T00:00:00Z' });
+  f.write('auth/blockly-migration.json', { completed: true });
+  f.write('auth/coder.json', { access_token: 'coder', updated_at: '2026-09-23T00:00:00Z' });
+  assert.equal((await f.store().read()).access_token, 'coder');
+});
+
+for (const denied of ['.aily', 'auth/shared-migration.json']) test(`migration retries after a failed ${denied} write`, async t => {
+  const f = fixture(t), store = f.store();
+  const record = { access_token: 'coder', updated_at: '2026-09-23T00:00:00Z' };
+  f.write('auth/coder.json', record);
   const renameSync = fs.renameSync;
-  const failure = Object.assign(new Error('fixture mirror write denied'), { code: 'EACCES' });
-  const warn = t.mock.method(console, 'warn', () => {});
+  const failure = Object.assign(new Error('fixture migration write denied'), { code: 'EACCES' });
   const rename = t.mock.method(fs, 'renameSync', (source, destination) => {
-    if (destination === f.file('.aily')) throw failure;
+    if (destination === f.file(denied)) throw failure;
     return renameSync(source, destination);
   });
-  await assert.rejects(store.write({ access_token: 'after', refresh_token: 'refresh-2' }, 'refresh-1'), failure);
-  assert.equal(f.read('auth/blockly.json').refresh_token, 'refresh-2');
-  assert.equal(f.read('.aily').access_token, 'before');
-  const current = await store.read();
-  assert.equal(current.access_token, 'after');
-  assert.equal(f.read('.aily').access_token, 'before');
-  await assert.rejects(store.restoreLegacy(), failure);
-  assert.deepEqual(await store.read(), current);
-  assert.equal(warn.mock.callCount(), 2);
-  assert.deepEqual(warn.mock.calls[0].arguments, ['[Auth] Failed to sync .aily compatibility file:', 'EACCES']);
+  await assert.rejects(store.read(), failure);
+  assert.equal(fs.existsSync(f.file('auth/shared-migration.json')), false);
   rename.mock.restore();
-
-  assert.deepEqual(await store.read(), current);
-  assert.deepEqual(f.read('.aily'), current);
+  assert.deepEqual(await store.read(), record);
 });
 
-for (const denied of ['.aily', 'auth/blockly.json']) test(`logout attempts both files even when deleting ${denied} fails`, async t => {
-  const f = fixture(t), store = f.store('blockly');
-  await store.write({ access_token: 'current' });
-  const rmSync = fs.rmSync;
-  const failure = Object.assign(new Error('fixture mirror cleanup denied'), { code: 'EACCES' });
-  const remove = t.mock.method(fs, 'rmSync', (target, options) => {
-    if (target === f.file(denied)) throw failure;
-    return rmSync(target, options);
-  });
-  await assert.rejects(store.clear(), failure);
-  for (const relative of ['.aily', 'auth/blockly.json']) {
-    assert.equal(fs.existsSync(f.file(relative)), relative === denied);
-  }
-  if (denied === '.aily') assert.deepEqual(await store.read(), {});
-  assert.deepEqual(f.read('auth/blockly-migration.json'), { completed: true });
-  remove.mock.restore();
-
-  await store.clear();
-  assert.equal(fs.existsSync(f.file('.aily')), false);
-  assert.deepEqual(await store.read(), {});
+test('late refreshes and invalidations cannot overwrite or clear the shared replacement session', async t => {
+  const f = fixture(t), blockly = f.store(), coder = f.store();
+  await blockly.write({ access_token: 'old', refresh_token: 'old-refresh' });
+  await coder.write({ access_token: 'new', refresh_token: 'new-refresh' });
+  const current = await coder.read();
+  assert.equal(await blockly.write({ access_token: 'late', refresh_token: 'late-refresh' }, 'old-refresh'), false);
+  assert.equal(await blockly.clear('old'), false);
+  assert.equal(await blockly.clear(null), false);
+  assert.deepEqual(await coder.read(), current);
+  assert.equal(await blockly.clear('new'), true);
+  assert.equal(await coder.clear('new'), true);
+  assert.equal(await coder.clear(null), true);
+  assert.equal(await coder.write({ access_token: 'late' }, 'new-refresh'), false);
+  assert.deepEqual(await blockly.read(), {});
 });

@@ -48,39 +48,49 @@ test('main initializes the auth store under the explicitly selected data root', 
   assert.equal(processStub.env.AILY_APPDATA_PATH, explicit);
 });
 
-test('main catches legacy restore failures without interrupting credential reads', async () => {
+test('main shares credential locking and forwards credential arguments for both products', async () => {
   const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
   const start = main.indexOf("  const authStore = require('./auth-store').createAuthStore(", main.indexOf('function loadEnv('));
   const end = main.indexOf('  const userConfigPath =', start);
   assert.ok(start >= 0 && end > start);
+  const explicit = path.resolve('isolated-main-appdata');
   const record = { access_token: 'current' };
   const handlers = new Map();
-  const warnings = [];
-  let restoreCalls = 0;
-  const authStore = {
-    read: async () => record,
-    restoreLegacy: () => {
-      restoreCalls++;
-      return Promise.reject(Object.assign(new Error('fixture mirror denied'), { code: 'EACCES' }));
-    },
-  };
-  vm.runInNewContext(main.slice(start, end), {
-    process: { env: { AILY_APPDATA_PATH: path.resolve('isolated-main-appdata') } },
-    buildProduct: 'blockly',
+  const writes = [], clears = [];
+  let lockCalls = 0;
+  const context = vm.createContext({
+    process: { env: { AILY_APPDATA_PATH: explicit } },
     require: module => {
       assert.equal(module, './auth-store');
-      return { createAuthStore: () => authStore };
+      return { createAuthStore: (root, withLock) => {
+        assert.equal(root, explicit);
+        return {
+          read: () => withLock(() => record),
+          write: (...args) => withLock(() => { writes.push(args); return true; }),
+          clear: token => withLock(() => { clears.push(token); return true; }),
+        };
+      } };
+    },
+    withAppDataResourceLock: (scope, operation) => {
+      assert.equal(scope, 'auth-credentials');
+      lockCalls++;
+      return operation();
     },
     ipcMain: {
       removeHandler: channel => handlers.delete(channel),
       handle: (channel, handler) => handlers.set(channel, handler),
     },
-    console: { warn: (...args) => warnings.push(args) },
   });
-  assert.equal(restoreCalls, 1);
-  assert.deepEqual(await handlers.get('auth-credentials-read')(), record);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(warnings, [['[Auth] Failed to restore .aily compatibility file:', 'EACCES']]);
+  for (const product of ['blockly', 'coder']) {
+    context.buildProduct = product;
+    vm.runInContext(`{${main.slice(start, end)}}`, context);
+    assert.equal(await handlers.get('auth-credentials-read')(), record);
+    assert.equal(await handlers.get('auth-credentials-write')(null, record, 'expected-refresh'), true);
+    assert.equal(await handlers.get('auth-credentials-clear')(null, 'expected-access'), true);
+  }
+  assert.equal(lockCalls, 6);
+  assert.deepEqual(writes, [[record, 'expected-refresh'], [record, 'expected-refresh']]);
+  assert.deepEqual(clears, ['expected-access', 'expected-access']);
 });
 
 test('npm prefix preserves explicit macOS and Windows paths including spaces', () => {
