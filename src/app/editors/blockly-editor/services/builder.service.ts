@@ -30,7 +30,7 @@ import {
   parseLegacyAilyBuilderProgressLine
 } from '../../../utils/aily-builder-progress.utils';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
-import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
+import { writeBuildRequest, captureBuildRequestGuard, buildManifestForGuard } from '../../../utils/build-request.utils';
 import { BlocklyCodePreparationInvalidatedError, type PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
@@ -296,6 +296,8 @@ export class _BuilderService {
     isCancelled: () => boolean = () => false,
   ): Promise<{
     code: string;
+    projectMacros: PreparedBlocklyCode['projectMacros'];
+    generatedArtifacts: PreparedBlocklyCode['artifacts'];
     sourceWorkspace: PreparedBlocklyCode['sourceWorkspace'];
     assertFresh: () => void;
     blockSourceMappings: Array<{
@@ -332,7 +334,8 @@ export class _BuilderService {
             throw new Error('BUILD_SOURCE_STALE: Workspace changed after code capture; build again.');
           }
         };
-        return { code: prepared.code, sourceWorkspace: prepared.sourceWorkspace, assertFresh,
+        return { code: prepared.code, projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
+          sourceWorkspace: prepared.sourceWorkspace, assertFresh,
           blockSourceMappings: this.createBlockSourceMappings(
           new Map(prepared.blockCodeMapText ? JSON.parse(prepared.blockCodeMapText) : []), workspace,
         ) };
@@ -417,6 +420,7 @@ export class _BuilderService {
     const shouldCancel = runGeneration !== this.preprocessRunGeneration
       || this.blocklyService.aiWaiting
       || this.getPendingChatBlockingOperationCount() > 0
+      || this.isUploading
       || this.isInstallInProgress()
       || [ProcessState.BUILDING, ProcessState.UPLOADING].includes(this.workflowService.currentState);
     if (shouldCancel) {
@@ -947,6 +951,37 @@ export class _BuilderService {
     return !!(this.preprocessProcess || this.preprocessStreamId);
   }
 
+  /** Upload owns scheduling before it owns the device. Let an already-running
+   * preprocess finish; queued background work must not start during this handoff. */
+  async waitForUploadPreprocess(isCancelled: () => boolean): Promise<void> {
+    ++this.preprocessRunGeneration;
+    const projectPath = this.projectService.currentProjectPath;
+    const startedAt = Date.now();
+    while (this.isPreprocessing()) {
+      if (isCancelled() || projectPath !== this.projectService.currentProjectPath) {
+        throw new Error('Upload cancelled or project changed while waiting for preprocessing.');
+      }
+      if (Date.now() - startedAt >= 60_000) throw new Error('Background preprocessing is still running; retry upload after it finishes.');
+      await this.waitForDelay(100);
+    }
+  }
+
+  async canReuseBuildForUpload(isCancelled: () => boolean): Promise<boolean> {
+    const projectPath = this.projectService.currentProjectPath;
+    if (!this.passed || projectPath !== this.currentProjectPath) return false;
+    const boardModule = await this.projectService.getBoardModule();
+    if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
+    return this.runWithInteractiveProjectCode(this.blocklyService.workspace, async (prepared, assertCurrent) => {
+      assertCurrent();
+      // Pure read: do not publish headers/macros or acquire a build workspace
+      // merely to decide whether to upload an existing firmware.
+      return prepared.code === this.lastCode && window['builder']?.canReuseBlocklyUpload?.({
+        currentProjectPath: projectPath, boardModule, code: prepared.code,
+        projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
+      }) === true;
+    }, false, isCancelled);
+  }
+
   private async waitForAilyBuilderReady(): Promise<void> {
     if (window['builder']?.waitForReady) {
       await window['builder'].waitForReady();
@@ -1161,6 +1196,7 @@ export class _BuilderService {
     }
 
     this.activeBuildRequestId = requestId ?? null;
+    this.passed = false;
     this.buildCompleted = false;
     this.isErrored = false;
     this.cancelled = false;
@@ -1268,8 +1304,9 @@ export class _BuilderService {
         try {
           const projectPath = this.currentProjectPath;
           if (projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed before capture.');
-          const assertPackage = captureBuildRequestGuard(() => ({ path: this.projectService.currentProjectPath,
-            manifest: window['fs'].readFileSync(this.electronService.pathJoin(projectPath, 'package.json'), 'utf8') }));
+          const readManifest = (preparingGenerator = false) => ({ path: this.projectService.currentProjectPath,
+            manifest: buildManifestForGuard(window['fs'].readFileSync(this.electronService.pathJoin(projectPath, 'package.json'), 'utf8'), preparingGenerator) });
+          let assertPackage = captureBuildRequestGuard(() => readManifest(true));
           const boardModule = await this.projectService.getBoardModule();
           assertPackage();
           if (!boardModule || this.projectService.getRuntimeBoardModule() !== boardModule) {
@@ -1283,6 +1320,8 @@ export class _BuilderService {
           // 获取最新代码，并在同一次同步 generator 调用内冻结其块映射。
           const {
             code,
+            projectMacros,
+            generatedArtifacts,
             blockSourceMappings,
             sourceWorkspace,
             assertFresh,
@@ -1293,6 +1332,9 @@ export class _BuilderService {
             () => resourceWait.signal.aborted,
           );
           assertPackage(); assertBoard(); assertFresh();
+          // Generator-owned macros are now published. From here through launch,
+          // all configuration, including those macros, must remain unchanged.
+          assertPackage = captureBuildRequestGuard(() => readManifest());
           this.lastCode = code;
           
           const boardName = boardJson.name;
@@ -1302,7 +1344,7 @@ export class _BuilderService {
           // Only the explicit experimental switch survives; derive all inputs now.
           const savedConfig = window['path'].isExists(savedConfigPath)
             ? JSON.parse(window['fs'].readFileSync(savedConfigPath, 'utf8')) : {};
-          const buildConfig: any = { currentProjectPath: projectPath, boardModule, code, blockSourceMappings,
+          const buildConfig: any = { currentProjectPath: projectPath, boardModule, code, blockSourceMappings, projectMacros, generatedArtifacts,
             appDataPath: window['path'].getAppDataPath(), za7Path: this.platformService.za7,
             devmode: this.configService.data.devmode || false,
             partitionFilePath: this.electronService.pathJoin(projectPath, 'partitions.csv'),
@@ -1563,7 +1605,7 @@ export class _BuilderService {
                 this.buildCompleted = true;
               }
 
-              if (this.buildCompleted) {
+              if (this.buildCompleted && !this.isErrored && !this.cancelled) {
                 console.log('编译命令执行完成');
                 console.log(`编译耗时: ${buildDuration} 秒`);
 

@@ -17,7 +17,6 @@ import { NzModalService } from "ng-zorro-antd/modal";
 import { CmdOutput, CmdService, LogService, AppDataResourceLockService } from '@core/platform/public-api';
 import { NpmService } from "@domain/dependencies/public-api";
 import { BlocklyService } from "./blockly.service";
-import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 
 interface NetworkOtaUploadTarget {
@@ -421,26 +420,35 @@ export class _UploaderService {
             this.coderBuildActive = false;
           }
         } else {
-          const code = await this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
-            if (projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed.');
-            await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
-            assertCurrent();
-            return prepared.code;
-          });
+          this._builderService.isUploading = true;
+          if (this._builderService.isPreprocessing()) {
+            this.safeUpdateNotice({
+              title: this.translate.instant('BLOCKLY_EDITOR.BUILD.PREPARING_TITLE'),
+              text: this.translate.instant('BLOCKLY_EDITOR.BUILD.PRECOMPILE_RUNNING'),
+              state: 'doing', setTimeout: 0, stop: () => this.cancel(),
+            });
+          }
+          await this._builderService.waitForUploadPreprocess(() => this.cancelled);
+          if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
           buildPath = await this.projectService.getBuildPath();
-          const needsBuild = !this._builderService.passed ||
-                            code !== this._builderService.lastCode ||
-                            this.projectService.currentProjectPath !== this._builderService.currentProjectPath ||
-                            window['fs'].existsSync(buildPath) === false;
+          const needsBuild = !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
+          if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
 
           // 如果需要编译，先执行编译
           if (needsBuild) {
             try {
               const buildResult = await this._builderService.build();
               console.log("build result:", buildResult);
+              // The editor may have changed while the compiler was running.
+              // Never upload that older firmware automatically after a build.
+              if (window['builder']?.canReuseBlocklyUpload
+                && !await this._builderService.canReuseBuildForUpload(() => this.cancelled)) {
+                throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
+              }
               // 编译成功，继续上传流程
             } catch (error) {
               this.uploadInProgress = false; // 重置状态
+              this._builderService.isUploading = false;
               // 检查编译是否被取消
               if (this._builderService.cancelled || this.cancelled) {
                 this.noticeService.update({
@@ -1042,7 +1050,13 @@ export class _UploaderService {
         });
         }));
       } catch (error) {
+        this.uploadInProgress = false;
         this._builderService.isUploading = false; // 确保在异常情况下设置为false
+        if (this.cancelled) {
+          this.uploadPromiseReject = null;
+          reject({ state: 'warn', text: this.uploadT('CANCELLED') });
+          return;
+        }
         const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
         this.handleUploadError(error.message || this.uploadT('FAILED_TITLE'), this.uploadT('FAILED_TITLE'), fullErrorMessage);
         this.workflowService.finishUpload(false, error.message || 'Upload failed');

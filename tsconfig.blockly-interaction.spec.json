@@ -5,6 +5,7 @@
     "src/app/integrations/blockly/abs/abs-prepared-code.spec.ts",
     "src/app/editors/blockly-editor/utils/blockly-performance.spec.ts",
     "src/app/editors/blockly-editor/services/builder.service.spec.ts",
+    "src/app/editors/blockly-editor/services/build-upload-flow.spec.ts",
     "src/**/*.d.ts"
   ],
   "exclude": []
