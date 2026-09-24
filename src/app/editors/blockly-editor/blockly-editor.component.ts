@@ -29,6 +29,7 @@ import { MissingLibInfo, PasteInstallDialogComponent } from './components/paste-
 import { Subscription } from 'rxjs';
 import { projectResourceGc } from './services/project-resource-gc.service';
 import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-runtime.service';
+import { isBuildWorkspaceBusyError } from './services/generated-code-artifacts';
 import { AuthService } from '@core/auth/public-api';
 import { boardRequiresCloudAuth } from './board-auth-gate';
 import {
@@ -65,6 +66,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private pendingLibraryLoadTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingBoardReloadTimer: ReturnType<typeof setTimeout> | null = null;
   private projectLoadedCodeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private projectLoadedCodeRefreshSequence = 0;
   private watchedPackageJsonProjectPath: string | null = null;
   private watchedPackageJsonSignature = '';
   private watchedLibraryDependencies = new Map<string, string>();
@@ -454,17 +456,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this.startPackageJsonDependencyWatch(projectPath);
     this.localLibrarySyncService.start(projectPath);
-    // 当前生成器与项目 devmode 一致：Python 写 main.py，其他模式保留 Arduino sketch.ino。
-    setTimeout(() => {
-      if (this.projectService.currentProjectPath !== projectPath) return;
-      const generateSource = this.devmode === 'python'
-        ? this._builderService.generateAndWritePythonEntry()
-        : this._builderService.generateAndWriteSketchIno();
-      generateSource.catch(e => {
-        console.warn('[loadProject] Failed to generate the project source artifact:', e);
-      });
-    }, 600); // 等待 Blockly 渲染完成（debounce 500ms + 余量）
-
     // 检查是否需要显示新手引导
     this.checkBlocklyOnboarding();
 
@@ -658,10 +649,29 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
   private scheduleProjectLoadedCodeRefresh(): void {
     this.clearProjectLoadedCodeRefreshTimer();
-    this.projectLoadedCodeRefreshTimer = setTimeout(() => {
+    const projectPath = this.projectService.currentProjectPath;
+    const sequence = this.projectLoadSequence;
+    const refreshSequence = this.projectLoadedCodeRefreshSequence;
+    const workspace = this.blocklyService.workspace;
+    const isCancelled = () => sequence !== this.projectLoadSequence || refreshSequence !== this.projectLoadedCodeRefreshSequence
+      || projectPath !== this.projectService.currentProjectPath || workspace !== this.blocklyService.workspace;
+    const attempt = async () => {
       this.projectLoadedCodeRefreshTimer = null;
-      this.blocklyService.requestCodeViewerRefresh(true);
-    }, this.projectLoadedCodeRefreshDelayMs);
+      if (isCancelled()) return;
+      let retry = this.blocklyService.isWorkspaceEditBlocked();
+      try {
+        if (!retry) retry = !await this._builderService.generateAndWriteProjectSourceInBackground(isCancelled);
+      } catch (error) {
+        retry = isBuildWorkspaceBusyError(error);
+        if (!retry && !isCancelled()) console.warn('[loadProject] Failed to generate the project source artifact:', error);
+      }
+      if (retry && !isCancelled()) {
+        this.projectLoadedCodeRefreshTimer = setTimeout(attempt, this.projectLoadedCodeRefreshDelayMs);
+      }
+    };
+    // Source publication and preview share an optimistic background read. Opening
+    // a project is not permission for a delayed build lease to cancel user input.
+    this.projectLoadedCodeRefreshTimer = setTimeout(attempt, this.projectLoadedCodeRefreshDelayMs);
   }
 
   private applyRuntimeBoardConfig(boardConfig: any): void {
@@ -688,6 +698,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private clearProjectLoadedCodeRefreshTimer(): void {
+    ++this.projectLoadedCodeRefreshSequence;
     if (this.projectLoadedCodeRefreshTimer) {
       clearTimeout(this.projectLoadedCodeRefreshTimer);
       this.projectLoadedCodeRefreshTimer = null;

@@ -1228,6 +1228,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
       //   break;
       case 'compile':
         if (item.state === 'doing') return;
+        if (this.projectService.isProjectOpening
+          && this.projectService.getProjectMode(this.projectService.currentProjectPath) !== 'coder') {
+          this.message.info(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
+          return;
+        }
         item.state = 'doing';
         this.builderService.build(undefined, { source }).then(result => {
           item.state = result.state || 'done';

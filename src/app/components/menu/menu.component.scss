@@ -286,9 +286,14 @@
 // 独立的子菜单样式
 .submenu-box {
   min-width: 168px;
+  // Share the top boundary with positioning, reserving the host title bar and
+  // an 8px bottom margin while keeping the last option reachable by scrolling.
+  max-height: calc(100vh - var(--submenu-viewport-top, 8px) - 8px);
   padding: 4px 0;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   border-radius: 6px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   z-index: 1000010;
@@ -516,8 +521,6 @@
     margin-left: 0;
     flex-shrink: 0;
   }
-
-  scrollbar-width: none;
 }
 
 @keyframes submenu-hover-scroll-to-end {

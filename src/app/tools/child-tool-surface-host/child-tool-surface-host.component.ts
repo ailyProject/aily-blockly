@@ -29,6 +29,7 @@ import {
   type SubappActivitySummaryState,
 } from '@integration/subapps/public-api';
 import { ElectronService } from '@core/platform/public-api';
+import { UiService } from '@core/app-shell/public-api';
 import { MainUiAutomationService } from '@integration/automation/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { ThemeService } from '@core/preferences/public-api';
@@ -83,6 +84,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     private readonly translate: TranslateService,
     private readonly themeService: ThemeService,
     private readonly ngZone: NgZone,
+    private readonly uiService: UiService,
   ) {}
 
   get isLoading(): boolean {
@@ -290,6 +292,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
         messenger,
         methods: {
           getHostContext: () => this.createHostContext(),
+          partitionManagerRequest: (request: unknown) => this.partitionManagerRequest(request),
           childReady: () => {
             this.ngZone.run(() => {
               this.frameLoaded = true;
@@ -362,6 +365,13 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
         runtimeControl: false,
       },
     };
+  }
+
+  private partitionManagerRequest(request: unknown): unknown {
+    if (this.toolId !== 'ffs-manager-child') {
+      return { success: false, error: '分区项目接口仅供分区管理子应用使用。' };
+    }
+    return this.ngZone.run(() => this.uiService.partitionManagerRequest(request));
   }
 
   private syncHostContext(refreshSnapshot = false): void {

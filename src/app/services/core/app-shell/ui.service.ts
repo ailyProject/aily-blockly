@@ -184,10 +184,15 @@ export class UiService {
           message.data?.action === 'auth-token-invalid'
           && message.data?.errorCode === 'AUTH_TOKEN_INVALID'
         ) {
-          const accepted = this.authService.requestSessionInvalidation(
-            'AUTH_TOKEN_INVALID',
-            'sub-window',
-          );
+          const expectedAccessToken = message.data?.expectedAccessToken;
+          const currentToken = await this.authService.getToken2();
+          const accepted = (typeof expectedAccessToken === 'string' || expectedAccessToken === null)
+            && (!currentToken || expectedAccessToken === currentToken)
+            && this.authService.requestSessionInvalidation(
+              'AUTH_TOKEN_INVALID',
+              'sub-window',
+              expectedAccessToken,
+            );
           data = { success: true, accepted };
         } else if (message.data?.action === 'logout') {
           // 处理登出请求

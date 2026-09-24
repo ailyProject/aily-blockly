@@ -9,11 +9,14 @@ const LOCK_DIR = '.lock';
 const LOCK_ROOT = 'appdata-resource-lock';
 const WRITER_FILE = 'writer.lock';
 const READERS_DIR = 'readers';
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 5000;
 const RETRY_INTERVAL_MS = 500;
 const heldLocks = new Map();
 const pendingRequests = new Map();
+let pendingAcquisitions = 0;
 let handlersRegistered = false;
+let resourceShutdown = false;
+let cleanupScheduled = false;
 
 function getAppDataPath() {
   return process.env.AILY_APPDATA_PATH || app.getPath('userData');
@@ -44,8 +47,9 @@ function isPidAlive(pid) {
     process.kill(pid, 0);
 
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Permission errors do not prove that a lock owner has exited.
+    return error?.code !== 'ESRCH';
   }
 }
 
@@ -111,14 +115,27 @@ function removeStaleLock(lockPath, holder, reason) {
   }
 }
 
-function isLockAlive(lockPath) {
+function isLockAlive(lockPath, reader = false) {
   const holder = readLock(lockPath);
   // A creator may have reserved the file but not finished writing its payload.
   // Unreadable is busy, never permission to unlink another process's lock.
   if (!holder) return { unverified: true };
+  if (holder.released === true) {
+    // Reader filenames are unique. An ended reader no longer protects resources,
+    // even when antivirus temporarily prevents deleting its marker.
+    if (reader) {
+      removeStaleLock(lockPath, holder, 'released');
+      return null;
+    }
+    // A live writer owner alone removes its fixed filename. Letting a second
+    // instance race that unlink could delete a newly acquired writer instead.
+    if (!isPidAlive(Number(holder.pid)) || heldLocks.get(holder.token)?.lockPath === lockPath) {
+      return removeStaleLock(lockPath, holder, 'released') ? null : holder;
+    }
+    return holder;
+  }
   if (isLockStaleAfterReboot(holder) || (!holder.commandBorrowed && !isPidAlive(Number(holder.pid)))) {
-    removeStaleLock(lockPath, holder, isLockStaleAfterReboot(holder) ? 'after-reboot' : 'dead-pid');
-    return null;
+    return removeStaleLock(lockPath, holder, isLockStaleAfterReboot(holder) ? 'after-reboot' : 'dead-pid') ? null : holder;
   }
 
   return holder;
@@ -158,7 +175,7 @@ function getActiveReaders() {
     }
 
     const lockPath = path.join(readersDir, entry);
-    const holder = isLockAlive(lockPath);
+    const holder = isLockAlive(lockPath, true);
 
     if (holder) {
       activeReaders.push({ lockPath, holder });
@@ -192,9 +209,11 @@ function logWait(event, label, mode, startedAt, extra) {
 
 async function acquireReadLock(label, token, startedAt, timeoutMs, options = {}) {
   let lastHolderLogAt = 0;
+  let attempted = false;
 
-  while (Date.now() - startedAt <= timeoutMs) {
-    if (options.isCancelled?.()) {
+  while (!attempted || Date.now() - startedAt < timeoutMs) {
+    attempted = true;
+    if (resourceShutdown || options.isCancelled?.()) {
       return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: 'read' };
     }
 
@@ -212,7 +231,9 @@ async function acquireReadLock(label, token, startedAt, timeoutMs, options = {})
         });
       }
 
-      await sleep(RETRY_INTERVAL_MS);
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) break;
+      await sleep(Math.min(RETRY_INTERVAL_MS, remaining));
 
       continue;
     }
@@ -232,8 +253,6 @@ async function acquireReadLock(label, token, startedAt, timeoutMs, options = {})
     }
 
     if (options.isCancelled?.()) {
-      removeStaleLock(readerLockPath, readLock(readerLockPath), 'owner-destroyed');
-
       return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: 'read' };
     }
 
@@ -242,14 +261,19 @@ async function acquireReadLock(label, token, startedAt, timeoutMs, options = {})
         mode: 'read',
         lockPath: readerLockPath,
         label,
-        ownerWebContentsId: options.ownerWebContentsId
+        ownerWebContentsId: options.ownerWebContentsId,
+        nativeWorkPending: options.nativeWorkPending
       });
 
       return { ok: true, token, mode: 'read', lockPath: readerLockPath, waitMs: Date.now() - startedAt };
     }
 
-    removeStaleLock(readerLockPath, readLock(readerLockPath), 'writer-raced-reader');
-    await sleep(RETRY_INTERVAL_MS);
+    if (!removeStaleLock(readerLockPath, readLock(readerLockPath), 'writer-raced-reader')) {
+      return { ok: false, error: 'APPDATA_RESOURCE_LOCK_RELEASE_FAILED', mode: 'read' };
+    }
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+    await sleep(Math.min(RETRY_INTERVAL_MS, remaining));
   }
 
   return { ok: false, error: 'APPDATA_RESOURCE_LOCK_TIMEOUT', mode: 'read', writer: getActiveWriter()?.holder };
@@ -259,13 +283,11 @@ async function acquireWriteLock(label, token, startedAt, timeoutMs, options = {}
   const writerLockPath = getWriterLockPath();
   let hasWriterLock = false;
   let lastHolderLogAt = 0;
+  let attempted = false;
 
-  while (Date.now() - startedAt <= timeoutMs) {
-    if (options.isCancelled?.()) {
-      if (hasWriterLock) {
-        removeStaleLock(writerLockPath, readLock(writerLockPath), 'owner-destroyed');
-      }
-
+  while (!attempted || Date.now() - startedAt < timeoutMs) {
+    attempted = true;
+    if (resourceShutdown || options.isCancelled?.()) {
       return { ok: false, error: 'APPDATA_RESOURCE_LOCK_OWNER_DESTROYED', mode: 'write' };
     }
 
@@ -291,7 +313,9 @@ async function acquireWriteLock(label, token, startedAt, timeoutMs, options = {}
           });
         }
 
-        await sleep(RETRY_INTERVAL_MS);
+        const remaining = timeoutMs - (Date.now() - startedAt);
+        if (remaining <= 0) break;
+        await sleep(Math.min(RETRY_INTERVAL_MS, remaining));
 
         continue;
       }
@@ -304,7 +328,8 @@ async function acquireWriteLock(label, token, startedAt, timeoutMs, options = {}
         mode: 'write',
         lockPath: writerLockPath,
         label,
-        ownerWebContentsId: options.ownerWebContentsId
+        ownerWebContentsId: options.ownerWebContentsId,
+        nativeWorkPending: options.nativeWorkPending
       });
 
       return { ok: true, token, mode: 'write', lockPath: writerLockPath, waitMs: Date.now() - startedAt };
@@ -321,11 +346,9 @@ async function acquireWriteLock(label, token, startedAt, timeoutMs, options = {}
       });
     }
 
-    await sleep(RETRY_INTERVAL_MS);
-  }
-
-  if (hasWriterLock) {
-    removeStaleLock(writerLockPath, readLock(writerLockPath), 'writer-timeout');
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+    await sleep(Math.min(RETRY_INTERVAL_MS, remaining));
   }
 
   return { ok: false, error: 'APPDATA_RESOURCE_LOCK_TIMEOUT', mode: 'write', readers: getActiveReaders().map((reader) => reader.holder) };
@@ -335,7 +358,13 @@ async function acquireAppDataResourceLock(label, mode = 'write', timeoutMs = DEF
   const startedAt = Date.now();
   const normalizedMode = mode === 'read' ? 'read' : 'write';
   const token = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  if (resourceShutdown) return { ok: false, error: 'APPDATA_RESOURCE_LOCK_SHUTDOWN', mode: normalizedMode };
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    return { ok: false, error: 'APPDATA_RESOURCE_LOCK_INVALID_REQUEST', mode: normalizedMode };
+  }
+  timeoutMs = Math.min(timeoutMs, DEFAULT_TIMEOUT_MS);
 
+  pendingAcquisitions++;
   try {
     const result = normalizedMode === 'read'
       ? await acquireReadLock(label, token, startedAt, timeoutMs, options)
@@ -350,7 +379,7 @@ async function acquireAppDataResourceLock(label, mode = 'write', timeoutMs = DEF
         waitMs: result.waitMs
       });
     } else {
-      console.warn('[PROC_TRACE][APPDATA_FILE_LOCK_TIMEOUT]', {
+      console.warn('[PROC_TRACE][APPDATA_FILE_LOCK_ACQUIRE_FAILED]', {
         label,
         mode: normalizedMode,
         timeoutMs,
@@ -367,6 +396,20 @@ async function acquireAppDataResourceLock(label, mode = 'write', timeoutMs = DEF
     });
 
     throw error;
+  } finally {
+    pendingAcquisitions--;
+    // Failed/cancelled acquisition may have created a reader or writer intent.
+    // Track it before cleanup so a failed unlink remains retryable at shutdown.
+    if (!heldLocks.has(token)) {
+      const lockPath = normalizedMode === 'read'
+        ? path.join(getReadersDirPath(), `${token}.lock`) : getWriterLockPath();
+      const holder = readLock(lockPath);
+      if (holder?.token === token && holder?.pid === process.pid) {
+        heldLocks.set(token, { mode: normalizedMode, lockPath, label,
+          ownerWebContentsId: options.ownerWebContentsId, releaseRequested: true });
+        releaseAppDataResourceLock(token);
+      }
+    }
   }
 }
 
@@ -379,13 +422,30 @@ function releaseAppDataResourceLock(token) {
 
   // A renderer leaving its scope (or being destroyed) does not stop its build.
   lock.releaseRequested = true;
-  if (lock.borrowers > 0 || lock.ownerWorkPending) return { ok: true, retainedByCommand: true };
-
-  lock.removeOwnerListeners?.();
+  if (lock.borrowers > 0 || lock.ownerWorkPending || lock.nativeWorkPending) return { ok: true, retainedByCommand: true };
 
   const holder = readLock(lock.lockPath);
+  if ((!holder && fs.existsSync(lock.lockPath)) || (holder && (holder.pid !== process.pid || holder.token !== token))) {
+    if (lock.released) {
+      heldLocks.delete(token);
+      return { ok: true, alreadyReleased: true };
+    }
+    return { ok: false, error: 'APPDATA_RESOURCE_LOCK_NOT_OWNED' };
+  }
 
   if (holder?.pid === process.pid && holder?.token === token) {
+    // Publish the end of all resource access before unlink. A failed delete
+    // must not leave a completed command pinned after this instance exits.
+    if (!holder.released) {
+      try {
+        persistLockState(lock, token, holder, { released: true, commandBorrowed: false });
+      } catch (error) {
+        console.warn('[APPDATA_FILE_LOCK_RELEASE_MARK_FAILED]', error.message);
+        return { ok: false, error: error?.message || String(error) };
+      }
+    }
+    lock.released = true;
+    lock.removeOwnerListeners?.();
     try {
       fs.unlinkSync(lock.lockPath);
 
@@ -404,20 +464,55 @@ function releaseAppDataResourceLock(token) {
           error: error?.message || String(error)
         });
 
-        return { ok: false, error: error?.message || String(error) };
+        scheduleReleasedLockCleanup();
+        return { ok: true };
       }
     }
   }
 
+  lock.removeOwnerListeners?.();
   heldLocks.delete(token);
 
   return { ok: true };
+}
+
+function scheduleReleasedLockCleanup() {
+  if (cleanupScheduled) return;
+  cleanupScheduled = true;
+  const timer = setTimeout(() => {
+    cleanupScheduled = false;
+    for (const [token, lock] of heldLocks) {
+      if (lock.released) releaseAppDataResourceLock(token);
+    }
+  }, RETRY_INTERVAL_MS);
+  timer?.unref?.();
+}
+
+function persistLockState(lock, token, holder, changes) {
+  const temporary = `${lock.lockPath}.${token}.tmp`;
+  let created = false;
+  try {
+    const descriptor = fs.openSync(temporary, 'wx');
+    created = true;
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify({ ...holder, ...changes }));
+      fs.fsyncSync(descriptor);
+    }
+    finally { fs.closeSync(descriptor); }
+    fs.renameSync(temporary, lock.lockPath);
+  } finally {
+    if (created) {
+      try { fs.unlinkSync(temporary); }
+      catch (error) { if (error.code !== 'ENOENT') console.warn('[APPDATA_FILE_LOCK_TEMP_CLEANUP_FAILED]', error.message); }
+    }
+  }
 }
 
 /** Only main may lend a live lease to a command from its owning renderer.
  * Reuse the granted lock; reacquiring here can deadlock behind our own lease.
  */
 function retainAppDataResourceLock(token, ownerWebContentsId, mode) {
+  if (resourceShutdown) throw new Error('APPDATA_RESOURCE_LOCK_SHUTDOWN');
   const lock = heldLocks.get(token);
   const holder = lock && readLock(lock.lockPath);
   if (!['read', 'write'].includes(mode) || !lock || lock.mode !== mode || lock.releaseRequested
@@ -427,23 +522,52 @@ function retainAppDataResourceLock(token, ownerWebContentsId, mode) {
   }
   // A dead main PID cannot certify that command descendants also stopped.
   // After a host crash, keep handed-off leases until explicit recovery/reboot.
-  if (!holder.commandBorrowed) fs.writeFileSync(lock.lockPath, JSON.stringify({ ...holder, commandBorrowed: true }));
+  if (!holder.commandBorrowed) persistLockState(lock, token, holder, { commandBorrowed: true });
   lock.borrowers = (lock.borrowers || 0) + 1;
   let released = false;
   return { assertOwnerActive() {
     if (lock.releaseRequested || released) throw new Error('APPDATA_RESOURCE_LOCK_CANCELLED');
   }, release() {
-    if (released) return;
-    released = true;
-    lock.borrowers--;
-    if (lock.releaseRequested && lock.borrowers === 0) releaseAppDataResourceLock(token);
+    if (!released) {
+      released = true;
+      lock.borrowers--;
+    }
+    if (lock.borrowers > 0 || !heldLocks.has(token)) return { ok: true };
+    if (lock.releaseRequested) return releaseAppDataResourceLock(token);
+    const current = readLock(lock.lockPath);
+    if (current?.token !== token || current?.pid !== process.pid) {
+      return { ok: false, error: 'APPDATA_RESOURCE_LOCK_NOT_OWNED' };
+    }
+    try {
+      if (current.commandBorrowed) persistLockState(lock, token, current, { commandBorrowed: false });
+      return { ok: true };
+    } catch (error) {
+      console.warn('[APPDATA_FILE_LOCK_BORROW_RETURN_FAILED]', error.message);
+      return { ok: false, error: error.message };
+    }
   } };
 }
 
-function releaseAllAppDataResourceLocks() {
+function releaseAllAppDataResourceLocks(ownerWebContentsId) {
+  const result = { ok: true, retained: pendingAcquisitions, failed: 0 };
   for (const token of Array.from(heldLocks.keys())) {
-    releaseAppDataResourceLock(token);
+    try {
+      const lock = heldLocks.get(token);
+      if (ownerWebContentsId !== undefined && lock.ownerWebContentsId !== ownerWebContentsId) continue;
+      if (Number.isSafeInteger(lock.ownerWebContentsId) && !lock.releaseRequested) {
+        result.retained++;
+        continue;
+      }
+      const released = releaseAppDataResourceLock(token);
+      if (!released.ok) result.failed++;
+      else if (released.retainedByCommand) result.retained++;
+    } catch (error) {
+      result.failed++;
+      console.warn('[APPDATA_FILE_LOCK_RELEASE_FAILED]', error.message);
+    }
   }
+  result.ok = result.retained === 0 && result.failed === 0;
+  return result;
 }
 
 function registerAppDataResourceLockHandlers() {
@@ -522,7 +646,7 @@ function registerAppDataResourceLockHandlers() {
       result = await acquireAppDataResourceLock(
         data.label || 'unknown',
         data.mode || 'write',
-        data.timeoutMs || DEFAULT_TIMEOUT_MS,
+        data.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         {
           ownerWebContentsId: ownerWebContents.id,
           isCancelled: () => request.cancelled || ownerDestroyed || ownerWebContents.isDestroyed()
@@ -582,13 +706,14 @@ function registerAppDataResourceLockHandlers() {
 
 async function withAppDataResourceLock(scope, operation) {
   return lockScope.run(scope, async () => {
-    const lock = await acquireAppDataResourceLock(scope, 'write', 15000);
+    const lock = await acquireAppDataResourceLock(scope, 'write', DEFAULT_TIMEOUT_MS, { nativeWorkPending: true });
 
     if (!lock.ok) throw new Error(lock.error);
 
     try {
       return await operation();
     } finally {
+      heldLocks.get(lock.token).nativeWorkPending = false;
       releaseAppDataResourceLock(lock.token);
     }
   });
@@ -602,13 +727,16 @@ async function withAppDataReadLease(ownerWebContentsId, { signal, timeoutMs }, o
   if (!Number.isSafeInteger(ownerWebContentsId)) throw new TypeError('A native reader requires a window owner.');
   return lockScope.run(LOCK_ROOT, async () => {
     const lock = await acquireAppDataResourceLock('build-input-verification', 'read', timeoutMs, {
-      ownerWebContentsId, isCancelled: () => signal.aborted,
+      ownerWebContentsId, isCancelled: () => signal.aborted, nativeWorkPending: true,
     });
     if (!lock.ok) throw signal.reason || Object.assign(new Error(lock.error), { code: lock.error });
     try {
       signal.throwIfAborted();
       return await operation({ borrow: () => retainAppDataResourceLock(lock.token, ownerWebContentsId, 'read') });
-    } finally { releaseAppDataResourceLock(lock.token); }
+    } finally {
+      heldLocks.get(lock.token).nativeWorkPending = false;
+      releaseAppDataResourceLock(lock.token);
+    }
   });
 }
 
@@ -618,4 +746,8 @@ module.exports = {
   withAppDataResourceLock,
   registerAppDataResourceLockHandlers,
   releaseAllAppDataResourceLocks,
+  beginAppDataResourceShutdown: () => {
+    resourceShutdown = true;
+    for (const request of pendingRequests.values()) request.cancelled = true;
+  },
 };

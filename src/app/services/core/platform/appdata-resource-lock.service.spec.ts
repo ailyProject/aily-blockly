@@ -1,4 +1,5 @@
 import { AppDataResourceLockService } from './appdata-resource-lock.service';
+import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 
 describe('AppData resource lease boundary', () => {
   let original: any;
@@ -75,4 +76,61 @@ describe('AppData resource lease boundary', () => {
     finish(); await first; await next;
     expect(last).toHaveBeenCalledTimes(1);
   });
+
+  it('uses one five-second budget across the local queue and native acquisition', fakeAsync(() => {
+    let finish!: () => void;
+    void service.runExclusive('first', () => new Promise<void>(resolve => { finish = resolve; }));
+    flushMicrotasks();
+    let failure: Error | undefined;
+    invoke.and.callFake((channel: string) => channel.endsWith('acquire') ? new Promise(() => {}) : Promise.resolve({ ok: true }));
+    const task = jasmine.createSpy('second');
+    void service.runExclusive('second', task).catch(error => { failure = error; });
+    tick(4000); finish(); flushMicrotasks();
+    const request = invoke.calls.allArgs().filter(([channel]) => channel.endsWith('acquire')).at(-1)![1];
+    expect(request.timeoutMs).toBe(1000);
+    tick(1000);
+    expect(failure?.message).toBe('APPDATA_RESOURCE_LOCK_TIMEOUT');
+    expect(task).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith('appdata-resource-lock-cancel', { requestId: request.requestId });
+  }));
+
+  it('times out in the local queue without sending another native request or overtaking', fakeAsync(() => {
+    let finish!: () => void;
+    void service.runExclusive('first', () => new Promise<void>(resolve => { finish = resolve; }));
+    flushMicrotasks();
+    const task = jasmine.createSpy('queued');
+    let failure: Error | undefined;
+    void service.runExclusive('second', task).catch(error => { failure = error; });
+    tick(5000);
+    expect(failure?.message).toBe('APPDATA_RESOURCE_LOCK_TIMEOUT');
+    expect(invoke.calls.allArgs().filter(([channel]) => channel.endsWith('acquire')).length).toBe(1);
+    const last = jasmine.createSpy('last');
+    void service.runExclusive('last', last);
+    flushMicrotasks(); expect(last).not.toHaveBeenCalled();
+    finish(); flushMicrotasks(); expect(last).toHaveBeenCalledTimes(1);
+    expect(task).not.toHaveBeenCalled();
+  }));
+
+  it('returns a late grant after timeout and never enters the cancelled task', fakeAsync(() => {
+    let grant!: (result: any) => void;
+    invoke.and.callFake((channel: string) => channel.endsWith('acquire')
+      ? new Promise(resolve => { grant = resolve; }) : Promise.resolve({ ok: true }));
+    const task = jasmine.createSpy('late');
+    let failure: Error | undefined;
+    void service.runShared('late', task).catch(error => { failure = error; });
+    tick(5000);
+    expect(failure?.message).toBe('APPDATA_RESOURCE_LOCK_TIMEOUT');
+    grant({ ok: true, token: 'late-token', commandHandoff: true }); flushMicrotasks();
+    expect(task).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith('appdata-resource-lock-release', { token: 'late-token' });
+  }));
+
+  it('stops the interactive acquisition deadline once its long task starts', fakeAsync(() => {
+    let finish!: () => void;
+    void service.runShared('long-build', () => new Promise<void>(resolve => { finish = resolve; }));
+    flushMicrotasks(); tick(6000);
+    expect(invoke.calls.allArgs().some(([channel]) => channel.endsWith('cancel') || channel.endsWith('release'))).toBeFalse();
+    finish(); flushMicrotasks();
+    expect(invoke).toHaveBeenCalledWith('appdata-resource-lock-release', { token: 'reader' });
+  }));
 });

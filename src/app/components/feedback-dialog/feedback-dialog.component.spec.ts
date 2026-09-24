@@ -289,6 +289,8 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     const libraryName = '@aily-project/lib-alpha';
 
     expect((component as any).readDirectLibraries({ dependencies: [] })).toBeNull();
+    expect((component as any).readBoardDependencies({ boardDependencies: [] })).toBeNull();
+    expect((component as any).readBoardDependencies({})).toEqual({});
     expect((component as any).countDirectDependencies({ dependencies: 'invalid' })).toBeNull();
     expect((component as any).readBuildUploadParameters({ projectConfig: [] })).toBeNull();
     expect((component as any).readLibrarySource({
@@ -364,6 +366,39 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Version | null |');
     expect(payload.content).toContain('| Source | null |');
   });
+
+  for (const type of ['bug', 'build&upload']) {
+    it(`includes the board toolchain dependencies in ${type} feedback`, async () => {
+      projectService.getBoardPackageJson.and.resolveTo({
+        version: '1.2.3',
+        boardDependencies: {
+          '@aily-project/sdk-esp32': '3.3.1',
+          '@aily-project/compiler-xtensa': '14.2.0',
+          '@aily-project/tool-esptool': '^4.9.0',
+          '@aily-project/tool-local': 'file:C:/Users/tester/private-tool',
+          '@aily-project/tool-git': 'git+https://private-token@private.example/tool.git',
+        },
+        dependencies: { 'unrelated-npm-package': '1.0.0' },
+      });
+      const component = createComponent();
+      prepareValidFeedback(component, type);
+
+      await component.submitFeedback();
+
+      const content = String(submittedPayload().content);
+      expect(content).toContain('### Board Dependencies\n\n```json\n{');
+      expect(content).toContain('"@aily-project/sdk-esp32": "3.3.1"');
+      expect(content).toContain('"@aily-project/compiler-xtensa": "14.2.0"');
+      expect(content).toContain('"@aily-project/tool-esptool": "^4.9.0"');
+      expect(content).toContain('"@aily-project/tool-local": null');
+      expect(content).toContain('"@aily-project/tool-git": null');
+      expect(content).not.toContain('private-tool');
+      expect(content).not.toContain('private-token');
+      expect(content).not.toContain('private.example');
+      expect(content).not.toContain('unrelated-npm-package');
+      expect(projectService.getBoardPackageJson).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it('uses only whitelisted build metadata, library dependencies, terminal OTA state, and safe ports', async () => {
     const uploadTime = Date.parse('2026-09-02T08:30:00.000Z');
@@ -650,6 +685,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Board Package | null |');
     expect(payload.content).toContain('| Board Package Version | null |');
     expect(payload.content).toContain('| Port | null |');
+    expect(payload.content).toContain('### Board Dependencies\n\n```json\nnull\n```');
     expect(payload.content).toContain('### Libraries\n\n```json\nnull\n```');
     expect(payload.content).toContain('### Parameters\n\n```json\nnull\n```');
     expect(component.isSubmitting).toBeFalse();

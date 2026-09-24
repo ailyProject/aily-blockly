@@ -48,6 +48,51 @@ test('main initializes the auth store under the explicitly selected data root', 
   assert.equal(processStub.env.AILY_APPDATA_PATH, explicit);
 });
 
+test('main shares credential locking and forwards credential arguments for both products', async () => {
+  const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  const start = main.indexOf("  const authStore = require('./auth-store').createAuthStore(", main.indexOf('function loadEnv('));
+  const end = main.indexOf('  const userConfigPath =', start);
+  assert.ok(start >= 0 && end > start);
+  const explicit = path.resolve('isolated-main-appdata');
+  const record = { access_token: 'current' };
+  const handlers = new Map();
+  const writes = [], clears = [];
+  let lockCalls = 0;
+  const context = vm.createContext({
+    process: { env: { AILY_APPDATA_PATH: explicit } },
+    require: module => {
+      assert.equal(module, './auth-store');
+      return { createAuthStore: (root, withLock) => {
+        assert.equal(root, explicit);
+        return {
+          read: () => withLock(() => record),
+          write: (...args) => withLock(() => { writes.push(args); return true; }),
+          clear: token => withLock(() => { clears.push(token); return true; }),
+        };
+      } };
+    },
+    withAppDataResourceLock: (scope, operation) => {
+      assert.equal(scope, 'auth-credentials');
+      lockCalls++;
+      return operation();
+    },
+    ipcMain: {
+      removeHandler: channel => handlers.delete(channel),
+      handle: (channel, handler) => handlers.set(channel, handler),
+    },
+  });
+  for (const product of ['blockly', 'coder']) {
+    context.buildProduct = product;
+    vm.runInContext(`{${main.slice(start, end)}}`, context);
+    assert.equal(await handlers.get('auth-credentials-read')(), record);
+    assert.equal(await handlers.get('auth-credentials-write')(null, record, 'expected-refresh'), true);
+    assert.equal(await handlers.get('auth-credentials-clear')(null, 'expected-access'), true);
+  }
+  assert.equal(lockCalls, 6);
+  assert.deepEqual(writes, [[record, 'expected-refresh'], [record, 'expected-refresh']]);
+  assert.deepEqual(clears, ['expected-access', 'expected-access']);
+});
+
 test('npm prefix preserves explicit macOS and Windows paths including spaces', () => {
   assert.equal(resolveAilyNpmPrefix({
     env: { AILY_NPM_PREFIX: '/Volumes/Aily Data/npm-global', AILY_APPDATA_PATH: '/Users/test/Library/aily-project' },

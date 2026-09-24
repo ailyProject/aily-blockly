@@ -73,3 +73,71 @@ git diff --check
 - 截图位于 `test-results/blockly-ai-minimap-AI-ABS--ec3e8--code-preview-minimap-true-/ai-minimap-enabled.png` 和 `test-results/blockly-ai-minimap-AI-ABS--4e01f-code-preview-minimap-false-/ai-minimap-disabled.png`；报告内另有结构化状态附件。
 
 边界：本轮没有新增万级积木性能、硬件编译/上传或已安装发行版验收；保留上述构建警告及隔离测试工具下载/退出取消日志。用户原工程和实际配置未改动，测试副本及隔离配置在退出后清理。
+
+## 补充：2026-09-24 新建/打开时的 toolbox 与通知并发交互
+
+### 复现与原因
+
+真实 Electron 中，项目 toolbox 首次可点击后立即展开，启动阶段仍存在一条独立的 600 ms 定时任务：
+
+`loadProject → generateAndWriteSketchIno / generateAndWritePythonEntry → generateWorkspaceCodeForPreprocess → runWithPreparedProjectCode → acquireWorkspaceEditLease → cancelCurrentGesture + hideChaff`
+
+在工作区实例上记录原方法调用和堆栈，修复前可以观察到 flyout 先打开，随后被上述后台任务关闭。此前 `fa158a0bd` 修复了积木变更后的防抖预览路径，但没有覆盖这条项目启动源码落盘路径。
+
+历史定位：600 ms 任务可追溯到 `96c2d2690`（2026-04-18）；源码预处理接入独占 `runWithPreparedProjectCode` 的关键提交是 `edfb88a8f`（2026-09-15 15:36:13 +0800）。这是旧的启动任务与后续独占发布机制组合产生的回归，不是 notification-box 显隐本身已被证明会抢焦点。
+
+通知测试使用真实 `NoticeService.update`，包括首次弹出、完成状态和每 200 ms 更新进度。另在 flyout 拖拽中触发真实 `FinishedLoading`，覆盖库监听器调用 `updateToolbox` 的情况；这些路径本轮未观察到独立中断，因此没有额外包装 `updateToolbox`、修改通知样式或更改库代码。
+
+### 修复边界
+
+- 删除独立的 600 ms 独占生成任务，把启动源码落盘与原 1000 ms 的启动预览刷新合为一次非独占后台发布。
+- 复用 `runWithBackgroundProjectCode` 的项目队列和版本校验；手势、画布拖动、输入、下拉和注释编辑期间等待，空闲后发布同一份源码及 code viewer 快照。
+- Arduino 仍通过宿主发布桥写 `.temp/sketch/sketch.ino` 及生成头文件；Python 原子写 `main.py`，不写 Arduino sketch。生成器宏的发布逻辑保留。
+- 用户编辑使准备结果过期、或构建发布桥返回 `BUILD_WORKSPACE_BUSY` 时，仅重试尚未完成的启动任务；真正生成错误仍记录并停止重试。
+- 项目切换、工作区替换、重复调度和组件销毁都会使旧任务失效，避免异步结束后再次排队或发布旧预览。
+- 显式保存/编译/ABS 的独占事务不变；没有修改 Coder、`aily-npm-blockly`、依赖版本或锁文件，仍为 `aily-project-blockly@1.0.2`。
+
+### 回归方法
+
+```sh
+./node_modules/.bin/tsc -p tsconfig.app.json --noEmit
+./node_modules/.bin/ng test --configuration=abs-sync --ts-config=tsconfig.blockly-interaction.spec.json --include=src/app/integrations/blockly/abs/abs-startup-interaction.spec.ts --include=src/app/integrations/blockly/abs/abs-prepared-code.spec.ts --include=src/app/editors/blockly-editor/utils/blockly-performance.spec.ts --include=src/app/editors/blockly-editor/services/builder.service.spec.ts --watch=false --browsers=ChromeHeadless
+AILY_E2E_PROJECT=/path/to/installed/project ./node_modules/.bin/playwright test e2e/tests/blockly-startup-interaction.spec.ts e2e/tests/blockly-ai-minimap.spec.ts e2e/tests/blockly-interaction-continuity.spec.ts --reporter=line
+git diff --check
+```
+
+定向单元测试覆盖合并/等待/重试/取消/真实错误，以及 Arduino/Python 启动发布边界。Electron 新增两个入口：正常打开，以及真实 `projectNewFromTemplate` 创建后激活；均从 toolbox 首次可点击开始操作，而非等待全部后台任务完成。
+
+每个入口检查：启动后 flyout 保持展开且源码文件与预览一致；通知弹出期间继续展开；从 flyout 拖入积木并跨越库工具箱更新；持续画布平移；连接块拆开后连续拖拽；文本、数字、下拉和注释在进度通知连续更新时保持交互；注释失焦后预览恢复且包含最终内容。整段后台交互中 `cancelCurrentGesture` 调用次数必须为零。
+
+最终结果：类型检查和生产构建通过；ChromeHeadless **48 项通过**；上述三个文件的 Electron 用例合跑 **5 项通过（2.2 min）**，包含两项启动交互、两项 AI 小地图开/关及一项原有连续交互/显式保存回归。已复核真实 toolbox、注释/通知和 AI 小地图截图。构建仍有既有 CommonJS 警告；隔离测试退出时取消工具链下载，部分测试由 fixture 超时清理其自身 Electron 进程树，未计作硬件编译验收。
+
+验收边界：新建用例调用真实创建服务并读取新目录中的发布文件，但没有从新建向导逐项选择板卡或完成网络依赖安装；Python 发布由单元测试覆盖，本轮 Electron 样本为 Linkbit Arduino 工程。未修改用户原工程和配置，未替换已安装发行版，未提交或发布。截图与调用堆栈保留在 `test-results/blockly-startup-interactio-*`；继续适用上述系统输入法、Windows、硬件和超大工作区边界。
+
+## 补充：编译失败通知 `BUILD_SOURCE_STALE` 与正在进行的拖拽
+
+用户进一步提供了具体的“编译失败 / BUILD_SOURCE_STALE: Workspace changed after code capture”截图。本轮不再只测试被动进度通知，而是使用真实 `_BuilderService.handleCompileError`，包含 error 样式、详情、底部日志发布及后续源码过期校验。
+
+修复前的 Electron 对照结果：在按住块时单独调用该错误处理入口，1300 ms 后拖拽仍在继续；随后在下一次按住块时调用正式编译的 `generateWorkspaceBuildSnapshotForPreprocess`，拖拽被终止。工作区实例堆栈记录到 `acquireWorkspaceEditLease → cancelCurrentGesture`，回归测试在“仍在拖拽”断言处明确失败。源码检查同时发现依赖变化后的 `background_preprocess` 也仍共用独占生成入口。
+
+这次补修编译读取边界，而不是隐藏通知或移除错误校验：
+
+- 编译/预处理读取改用带版本校验的非独占后台 reader；等待用户手势和编辑结束后才捕获源码，不获取输入遮罩、不取消手势、不关闭 flyout 或字段编辑器。
+- 等待发生在项目操作队列之外，显式保存仍能提交正在编辑的字段；排队后和异步资源准备后再次检查交互、项目、页面、运行时与版本。
+- 无效快照和宿主发布忙状态可重试；真正的生成错误正常报错。取消构建、项目/工作区/页面切换及编辑器销毁会终止等待；后台预处理被 AI/新请求取代时不再发布旧结果。
+- 保留编译请求写入和子进程启动前的 `assertFresh`。捕获后真正修改源码仍会报 `BUILD_SOURCE_STALE`，但这条错误通知不会终止新的拖拽。没有把过期代码当作有效构建输入。
+- Python `main.py` 也使用编辑结束后捕获的快照版本，避免拿等待前的版本误判新结果；文件异步写入后再次核对版本。
+- 保存和 ABS 的编辑事务、子进程的磁盘来源校验、Coder 路径均未改动。本节对编译读取边界的补修取代上节“显式编译不变”的描述；启动修复本身保留。
+
+新增 `e2e/tests/blockly-build-interaction.spec.ts`：真实错误通知中保持拖拽；编译取快照在拖拽时等待、松手后完成；捕获后修改字段，调用真正的 `assertFresh` 产生同文错误，下一次拖拽仍持续；字段编辑时后台预处理及错误通知并发，输入焦点保持，提交输入后预处理获得最新文本。全过程不允许调用 `cancelCurrentGesture`。
+
+追加验证命令：
+
+```sh
+node --test child/scripts/build-source-capture.test.js
+AILY_E2E_PROJECT=/path/to/installed/project ./node_modules/.bin/playwright test e2e/tests/blockly-build-interaction.spec.ts e2e/tests/blockly-startup-interaction.spec.ts e2e/tests/blockly-ai-minimap.spec.ts e2e/tests/blockly-interaction-continuity.spec.ts --reporter=line
+```
+
+验证结果：定向 ChromeHeadless **59 项通过**，构建来源 Node 测试 **16 项通过**（含 Blockly/Coder 两种来源和源码过期拒绝），四个 Electron 文件合跑 **6 项通过（2.7 min）**；随后调整截图到错误框出现的当刻，新增编译交互用例再次 **1 项通过（42.5 s）**。生产构建、类型检查和差异格式检查通过。最后补测安装打断准备时保留 pending、销毁后不复活任务。
+
+验收边界：该用例覆盖真实 Electron、生成器、编译取快照/错误处理和文件发布路径，不启动硬件编译器，不代表完整 SDK 编译或上传通过；没有更改 notification-box 样式或屏蔽源码过期错误。已复核同文红色错误框与拖拽/输入并存的截图，保存在 `test-results/build-notice-visual/blockly-build-interaction--3ccd1--active-Blockly-interaction/`；旧的全套截图可能显示随后覆盖它的下载进度通知。

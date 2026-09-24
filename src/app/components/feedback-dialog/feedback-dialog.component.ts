@@ -373,8 +373,9 @@ export class FeedbackDialogComponent implements OnDestroy {
   private async buildBugDiagnostics(feedbackTime: string): Promise<string> {
     const now = this.toTimestamp(feedbackTime) ?? Date.now();
     const projectPath = this.readCurrentProjectPath();
-    const [projectPackage, crash] = await Promise.all([
+    const [projectPackage, boardPackage, crash] = await Promise.all([
       this.readProjectPackage(),
+      this.readBoardPackage(),
       this.readLatestCrashDiagnostic(),
     ]);
     const sensitivePaths = this.readSensitivePaths(projectPath, projectPackage);
@@ -386,6 +387,11 @@ export class FeedbackDialogComponent implements OnDestroy {
     });
 
     const blocks = this.applyDiagnosticBudget([
+      {
+        key: 'board-dependencies',
+        kind: 'result',
+        content: this.sanitizeBlock(JSON.stringify(this.readBoardDependencies(boardPackage), null, 2), sensitivePaths),
+      },
       {
         key: 'recent-errors',
         kind: 'log',
@@ -408,6 +414,8 @@ export class FeedbackDialogComponent implements OnDestroy {
         ['Board', this.readBoardName()],
         ['Direct Dependency Count', this.countDirectDependencies(projectPackage)],
       ]),
+      '### Board Dependencies',
+      this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'board-dependencies')),
     ];
 
     if (crash) {
@@ -436,9 +444,9 @@ export class FeedbackDialogComponent implements OnDestroy {
     const projectPath = this.readCurrentProjectPath();
     const projectPackage = await this.readProjectPackage();
     const sensitivePaths = this.readSensitivePaths(projectPath, projectPackage);
-    const [boardPackage, boardPackageVersion, projectLogs] = await Promise.all([
+    const [boardPackageName, boardPackage, projectLogs] = await Promise.all([
       this.readBoardPackageName(),
-      this.readBoardPackageVersion(),
+      this.readBoardPackage(),
       this.readProjectDiagnosticLogs(projectPath, sensitivePaths),
     ]);
     const compileResult = this.readLastCompileResult(projectPackage);
@@ -458,6 +466,11 @@ export class FeedbackDialogComponent implements OnDestroy {
     };
 
     const blocks = this.applyDiagnosticBudget([
+      {
+        key: 'board-dependencies',
+        kind: 'result',
+        content: this.sanitizeBlock(JSON.stringify(this.readBoardDependencies(boardPackage), null, 2), sensitivePaths),
+      },
       {
         key: 'libraries',
         kind: 'result',
@@ -499,10 +512,12 @@ export class FeedbackDialogComponent implements OnDestroy {
       '### Board and Port',
       this.renderTable([
         ['Board', this.readBoardName()],
-        ['Board Package', boardPackage],
-        ['Board Package Version', boardPackageVersion],
+        ['Board Package', boardPackageName],
+        ['Board Package Version', this.readDependencyVersion(boardPackage?.['version'])],
         ['Port', this.readSafeSerialPort()],
       ]),
+      '### Board Dependencies',
+      this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'board-dependencies')),
       '### Libraries',
       this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'libraries')),
       '### Parameters',
@@ -688,13 +703,28 @@ export class FeedbackDialogComponent implements OnDestroy {
     }
   }
 
-  private async readBoardPackageVersion(): Promise<string | null> {
+  private async readBoardPackage(): Promise<UnknownRecord | null> {
     try {
-      const boardPackage = this.asRecord(await this.projectService.getBoardPackageJson());
-      return this.readDependencyVersion(boardPackage?.['version']);
+      return this.asRecord(await this.projectService.getBoardPackageJson());
     } catch {
       return null;
     }
+  }
+
+  private readBoardDependencies(boardPackage: UnknownRecord | null): Record<string, string | null> | null {
+    if (!boardPackage) {
+      return null;
+    }
+    const dependencies = Object.prototype.hasOwnProperty.call(boardPackage, 'boardDependencies')
+      ? this.asRecord(boardPackage['boardDependencies'])
+      : {};
+    if (!dependencies) {
+      return null;
+    }
+    return Object.fromEntries(Object.entries(dependencies)
+      .filter(([name]) => name.trim())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, version]) => [name, this.readDependencyVersion(version)]));
   }
 
   private readSafeSerialPort(): string | null {
