@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "src/app/integrations/blockly/abs/abs-startup-interaction.spec.ts",
+    "src/app/integrations/blockly/abs/abs-prepared-code.spec.ts",
+    "src/app/editors/blockly-editor/utils/blockly-performance.spec.ts",
+    "src/app/editors/blockly-editor/services/builder.service.spec.ts",
+    "src/**/*.d.ts"
+  ],
+  "exclude": []
+}

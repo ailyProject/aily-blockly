@@ -18,7 +18,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 
 import { BlocklyService } from './blockly.service';
 
-import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { CompileValidationService, type BuildCheckpoint } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
@@ -31,12 +31,14 @@ import {
 } from '../../../utils/aily-builder-progress.utils';
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
-import type { PreparedBlocklyCode } from './prepared-project-code';
+import { BlocklyCodePreparationInvalidatedError, type PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
+import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
 import {
   PYTHON_PROJECT_ENTRY,
+  normalizeProjectMode,
   resolveLinuxBoardProjectRoute,
 } from '@shared/public-api';
 
@@ -108,6 +110,7 @@ export class _BuilderService {
   isUploading = false;
 
   private initialized = false; // 防止重复初始化
+  private codePreparationSequence = 0;
 
   private t(key: string, params?: Record<string, any>): string {
     return this.translate.instant(`BLOCKLY_EDITOR.BUILD.${key}`, params);
@@ -211,24 +214,71 @@ export class _BuilderService {
     }
   }
 
+  /** Builds read a stable snapshot; only save/ABS edits may take the input fence.
+   * Wait outside the project queue so an explicit save can still commit an open
+   * editor. Recheck inside the queued reader to cover interactions that start
+   * during resource preparation, not just the first idle check.
+   */
+  private async runWithInteractiveProjectCode<T>(
+    workspace: BlocklyService['workspace'],
+    consume: (prepared: PreparedBlocklyCode & { code: string }, assertCurrent: () => void) => Promise<T>,
+    force: boolean,
+    isCancelled: () => boolean,
+  ): Promise<T> {
+    const projectPath = this.projectService.currentProjectPath;
+    const session = projectDataRuntime.getSessionToken();
+    const runtimeRevision = getActiveProjectGeneratorRevision();
+    const pageId = this.blocklyService.getActivePageId();
+    const sequence = this.codePreparationSequence;
+    const assertContext = () => {
+      if (isCancelled()) throw new BlocklyCodePreparationInvalidatedError(this.t('CANCELLED_TITLE'));
+      if (sequence !== this.codePreparationSequence || projectPath !== this.projectService.currentProjectPath
+        || workspace !== this.blocklyService.workspace || session !== projectDataRuntime.getSessionToken()
+        || runtimeRevision !== getActiveProjectGeneratorRevision() || pageId !== this.blocklyService.getActivePageId()) {
+        throw new BlocklyCodePreparationInvalidatedError('BUILD_SOURCE_STALE: Project context changed while waiting for code capture.');
+      }
+    };
+    const interacting = () => this.blocklyService.isWorkspaceEditBlocked() || isBlocklyWorkspaceInteracting(workspace);
+    while (true) {
+      assertContext();
+      if (!interacting()) {
+        let result: T;
+        try {
+          const ready = await this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
+            assertContext();
+            result = await consume(prepared, () => { assertContext(); assertCurrent(); });
+          }, () => isCancelled() || sequence !== this.codePreparationSequence || interacting(), force);
+          assertContext();
+          if (ready) return result!;
+        } catch (error) {
+          assertContext();
+          if (!isBuildWorkspaceBusyError(error)) throw error;
+        }
+      }
+      await this.waitForDelay(100);
+    }
+  }
+
   private async generateWorkspaceCodeForPreprocess(
-    workspace: unknown,
+    workspace: BlocklyService['workspace'],
     detail?: string,
     forceGenerate = false,
     writeSketch = false,
+    isCancelled: () => boolean = () => false,
   ): Promise<string> {
     await this.waitForOneIdleBoundary();
     const projectPath = this.projectService.currentProjectPath;
     return this.runBuilderPreprocessPhase(
       'workspace_to_code',
-      () => this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+      () => this.runWithInteractiveProjectCode(workspace, async (prepared, assertCurrent) => {
         if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed.');
         await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+        assertCurrent();
         await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, writeSketch ? prepared.code : undefined);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
         return prepared.code;
-      }, forceGenerate),
+      }, forceGenerate, isCancelled),
       detail,
     );
   }
@@ -240,9 +290,10 @@ export class _BuilderService {
    * pair a newer map with older sketch bytes.
    */
   private async generateWorkspaceBuildSnapshotForPreprocess(
-    workspace: unknown,
+    workspace: BlocklyService['workspace'],
     detail?: string,
     checkpoint?: BuildCheckpoint,
+    isCancelled: () => boolean = () => false,
   ): Promise<{
     code: string;
     sourceWorkspace: PreparedBlocklyCode['sourceWorkspace'];
@@ -259,19 +310,20 @@ export class _BuilderService {
     const projectPath = this.projectService.currentProjectPath;
     return this.runBuilderPreprocessPhase(
       'workspace_to_code',
-      () => this.blocklyService.runWithPreparedProjectCode(async (prepared, assertCurrent) => {
+      () => this.runWithInteractiveProjectCode(workspace, async (prepared, assertCurrent) => {
         if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed.');
         // The prepared revision is guarded for the entire publication, including
         // artifact writes; record the code/map snapshot before that async I/O.
         if (checkpoint) checkpoint.inputCapturedAt = Date.now();
         await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+        assertCurrent();
         await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
         const runtimeRevision = getActiveProjectGeneratorRevision();
         const dataSession = projectDataRuntime.getSessionToken(), pageId = this.blocklyService.getActivePageId();
-        // Unlike the callback's owner-bound assertion, this guard can be used
-        // after releasing the edit lease, immediately before launching the child.
+        // Keep checking the exact captured revision through request-file IO and
+        // until child launch. A stale result must never be sent to the compiler.
         const assertFresh = () => {
           if (projectPath !== this.projectService.currentProjectPath || workspace !== this.blocklyService.workspace
             || this.blocklyService.isWorkspaceEditBlocked() || runtimeRevision !== getActiveProjectGeneratorRevision()
@@ -284,7 +336,7 @@ export class _BuilderService {
           blockSourceMappings: this.createBlockSourceMappings(
           new Map(prepared.blockCodeMapText ? JSON.parse(prepared.blockCodeMapText) : []), workspace,
         ) };
-      }),
+      }, false, isCancelled),
       detail,
     );
   }
@@ -361,9 +413,12 @@ export class _BuilderService {
   }
 
   private shouldCancelBackgroundPreprocess(runGeneration: number): boolean {
+    if (!this.initialized) return true;
     const shouldCancel = runGeneration !== this.preprocessRunGeneration
       || this.blocklyService.aiWaiting
-      || this.getPendingChatBlockingOperationCount() > 0;
+      || this.getPendingChatBlockingOperationCount() > 0
+      || this.isInstallInProgress()
+      || [ProcessState.BUILDING, ProcessState.UPLOADING].includes(this.workflowService.currentState);
     if (shouldCancel) {
       this.pendingPrecompile = true;
     }
@@ -578,7 +633,8 @@ export class _BuilderService {
           return;
         }
         
-        const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'background_preprocess');
+        const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'background_preprocess', false, false,
+          () => this.shouldCancelBackgroundPreprocess(runGeneration));
         if (!code) {
           return;
         }
@@ -743,6 +799,7 @@ export class _BuilderService {
         this.preprocessProcess = subscription;
         });
       } catch (error) {
+        if (error instanceof BlocklyCodePreparationInvalidatedError) return;
         console.warn('启动后台预处理失败:', error);
       }
       })
@@ -797,6 +854,7 @@ export class _BuilderService {
   }
 
   destroy() {
+    ++this.codePreparationSequence;
     this.actionService.unlisten('builder-compile-begin');
     this.actionService.unlisten('builder-compile-cancel');
     this.actionService.unlisten('builder-compile-reset');
@@ -904,9 +962,29 @@ export class _BuilderService {
     });
   }
 
+  /** Startup is background publication, not an explicit build/save operation. */
+  async generateAndWriteProjectSourceInBackground(isCancelled: () => boolean): Promise<boolean> {
+    const workspace = this.blocklyService.workspace;
+    const projectPath = this.projectService.currentProjectPath;
+    const python = normalizeProjectMode(this.projectService.currentPackageData) === 'python';
+    if (!workspace || !projectPath || isCancelled()) return false;
+    return this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
+      await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+      assertCurrent();
+      await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, python ? undefined : prepared.code);
+      assertCurrent();
+      if (python) {
+        await this.writeTextFileAtomic(this.electronService.pathJoin(projectPath, PYTHON_PROJECT_ENTRY), prepared.code);
+        assertCurrent();
+      }
+      this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
+    }, () => isCancelled() || projectPath !== this.projectService.currentProjectPath
+      || isBlocklyWorkspaceInteracting(workspace), true);
+  }
+
     /**
      * 从当前工作区生成并写入 sketch.ino 文件（不触发完整预编译）
-     * 在项目打开时调用，确保 sketch.ino 文件可供 AI 工具和代码预览读取
+     * 显式生成入口；项目打开后的自动发布使用非独占的 background 入口。
      */
     async generateAndWriteSketchIno(): Promise<void> {
         try {
@@ -930,7 +1008,6 @@ export class _BuilderService {
   async generateAndWritePythonEntry(): Promise<ActionState> {
     const workspace = this.blocklyService.workspace;
     const currentProjectPath = this.projectService.currentProjectPath;
-    const workspaceRevision = this.blocklyService.getWorkspaceContentRevision();
     // 生成目标由项目 devmode 决定，不要求板卡在线或已选择连接方式。
     const route = resolveLinuxBoardProjectRoute(
       this.projectService.currentPackageData,
@@ -939,16 +1016,13 @@ export class _BuilderService {
       throw new Error('Python project is not ready');
     }
 
-    const code = await this.generateWorkspaceCodeForPreprocess(workspace, 'python_main');
-    if (
-      this.projectService.currentProjectPath !== currentProjectPath
-      || this.blocklyService.workspace !== workspace
-      || this.blocklyService.getWorkspaceContentRevision() !== workspaceRevision
-    ) {
-      throw new Error('Project changed while Python code was being generated');
-    }
+    // Bind freshness to the snapshot captured after editing settles, not to the
+    // revision that existed before waiting for a text/comment editor to close.
+    const { code, assertFresh } = await this.generateWorkspaceBuildSnapshotForPreprocess(workspace, 'python_main');
+    assertFresh();
     const mainFilePath = this.electronService.pathJoin(currentProjectPath, PYTHON_PROJECT_ENTRY);
     await this.writeTextFileAtomic(mainFilePath, code);
+    assertFresh();
     this.lastCode = code;
     console.log('[Builder] main.py generated:', mainFilePath);
     return {
@@ -1216,6 +1290,7 @@ export class _BuilderService {
             this.blocklyService.workspace,
             'compile_config',
             checkpoint,
+            () => resourceWait.signal.aborted,
           );
           assertPackage(); assertBoard(); assertFresh();
           this.lastCode = code;
