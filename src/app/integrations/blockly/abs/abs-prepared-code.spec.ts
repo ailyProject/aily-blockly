@@ -7,6 +7,7 @@ import { captureArduinoGeneratedArtifacts, isBuildWorkspaceBusyError, writePrepa
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { SerialOperationQueue } from '@shared/public-api';
+import { publishProjectText } from '@core/platform/public-api';
 
 describe('prepared project code boundary', () => {
   let runtime: BlocklyGeneratorRuntimeService;
@@ -105,13 +106,20 @@ describe('prepared project code boundary', () => {
     expect(consume).not.toHaveBeenCalled();
   });
 
-  it('keeps input available during background publication and retries an intervening edit', async () => {
+  it('retries an intervening edit when the host serializes the guard failure as not committed', async () => {
     const editor = productEditor();
     expect(await editor.runWithBackgroundProjectCode(async (_prepared, assertCurrent) => {
-      await Promise.resolve();
-      expect(editor.isWorkspaceEditBlocked()).toBeFalse();
-      workspace.createVariable('next edit');
-      assertCurrent();
+      await publishProjectText('D:/project', 'package.json', 'after', 'before', assertCurrent, {
+        replaceProjectText: async (_request, guard) => {
+          await Promise.resolve();
+          expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+          workspace.createVariable('next edit');
+          try { guard(); } catch (error) {
+            return { status: 'NOT_COMMITTED', code: 'PROJECT_FILE_WRITE_FAILED', error: error.message };
+          }
+          throw new Error('Expected the captured revision to be stale');
+        },
+      });
     }, () => false)).toBeFalse();
     expect(await editor.runWithBackgroundProjectCode(() => {}, () => false)).toBeTrue();
   });

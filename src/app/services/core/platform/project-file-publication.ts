@@ -36,15 +36,24 @@ export async function publishProjectText(
   const [expectedHash, outputHash] = await Promise.all([expected === null ? null : sha256Hex(expected), sha256Hex(content)]);
   assertCurrent();
   let result: ProjectFileWriteResult;
+  let guardFailure: { error: unknown } | undefined;
+  const guard = () => {
+    try { return assertCurrent(); } catch (error) {
+      guardFailure = { error };
+      throw error;
+    }
+  };
   try {
     result = await port.replaceProjectText({ projectPath, fileName, content, expectedHash: expectedHash === null ? null : `sha256:${expectedHash}`,
-      ...options }, assertCurrent);
+      ...options }, guard);
   } catch (error) {
     // A broken transport may have lost a successful commit acknowledgement.
     throw new ProjectFilePublicationError('PROJECT_FILE_COMMIT_UNCERTAIN', String(error), true);
   }
   if (result?.status === 'COMMITTED' && result.hash === `sha256:${outputHash}`
     && (!options.backup || (expectedHash !== null && result.backupHash === `sha256:${expectedHash}`))) return result;
+  // The host serializes callback errors. Restore their identity only after it confirms no commit.
+  if (result?.status === 'NOT_COMMITTED' && guardFailure) throw guardFailure.error;
   if (result?.status === 'CONFLICT' || result?.status === 'NOT_COMMITTED') {
     throw new ProjectFilePublicationError(result.code || (result.status === 'CONFLICT' ? 'PROJECT_FILE_CONFLICT' : 'PROJECT_FILE_NOT_COMMITTED'), result.error || 'Project file was not committed.');
   }
