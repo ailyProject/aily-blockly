@@ -5,6 +5,23 @@ describe('CmdService resource handoff', () => {
   beforeEach(() => { oldCmd = window['cmd']; });
   afterEach(() => { window['cmd'] = oldCmd; });
 
+  it('still requests main-process cleanup after the output stream closes', async () => {
+    let listener!: (event: any) => void;
+    const kill = jasmine.createSpy('kill').and.resolveTo({ success: false });
+    window['cmd'] = {
+      run: async () => ({ success: true }), kill,
+      onData: (_id: string, fn: (event: any) => void) => { listener = fn; return () => {}; },
+    };
+    const service = new CmdService({ update() {} } as any);
+    service.spawn('node', [], { streamId: 'preprocess' }).subscribe();
+    listener({ type: 'close', streamId: 'preprocess', code: 1 });
+
+    expect(await service.kill('preprocess')).toBeFalse();
+    kill.and.resolveTo({ success: true });
+    expect(await service.kill('preprocess')).toBeTrue();
+    expect(kill.calls.allArgs()).toEqual([['preprocess'], ['preprocess']]);
+  });
+
   for (const queued of [true, false]) it(`forwards write lease through ${queued ? 'queued' : 'direct'} checked commands`, async () => {
     const listeners = new Map<string, (event: any) => void>();
     const run = jasmine.createSpy('run').and.callFake(async (options: any) => {

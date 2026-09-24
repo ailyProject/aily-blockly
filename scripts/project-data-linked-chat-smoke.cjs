@@ -27,7 +27,7 @@ function assertLinkedAgentResourcesCurrent(agentRoot, chatRoot) {
 /** Opt-in reuse of the user's login, with all writes confined to the fresh test profile.
  * Never copy chat history, log token-bearing URLs, or change the user's development link.
  */
-function prepareLinkedChatProfile(appData, source, agentRoot, credentialFile = 'auth/blockly.json') {
+function prepareLinkedChatProfile(appData, source, agentRoot, credentialFile = '.aily') {
   assert.ok(path.isAbsolute(source) && path.isAbsolute(agentRoot));
   assert.ok(['auth/blockly.json', '.aily'].includes(credentialFile));
   const chatRoot = path.resolve(agentRoot, '../aily-chat');
@@ -38,8 +38,8 @@ function prepareLinkedChatProfile(appData, source, agentRoot, credentialFile = '
   const files = ['config.json', credentialFile];
   const hash = file => createHash('sha256').update(fs.readFileSync(path.join(source, file))).digest('hex');
   const hashes = files.map(hash);
-  fs.mkdirSync(path.join(appData, 'auth'), { recursive: true });
-  fs.copyFileSync(path.join(source, credentialFile), path.join(appData, 'auth/blockly.json'));
+  fs.mkdirSync(appData, { recursive: true });
+  fs.copyFileSync(path.join(source, credentialFile), path.join(appData, '.aily'));
   const install = path.join(appData, 'npm-global/app');
   const link = path.join(install, 'node_modules', pkg.ailySubapp.package);
   fs.mkdirSync(path.dirname(link), { recursive: true });
@@ -49,7 +49,7 @@ function prepareLinkedChatProfile(appData, source, agentRoot, credentialFile = '
   fs.writeFileSync(path.join(install, 'subapp-index.json'), JSON.stringify({ dev: true, 'aily-chat': index['aily-chat'] }));
   return { config, chatRoot, resourceParity, assertSourceUnchanged: () => assert.deepEqual(files.map(hash), hashes),
     assertResourcesCurrent: () => assertLinkedAgentResourcesCurrent(agentRoot, chatRoot),
-    dispose: () => fs.rmSync(path.join(appData, 'auth/blockly.json'), { force: true }) };
+    dispose: () => fs.rmSync(path.join(appData, '.aily'), { force: true }) };
 }
 
 async function testLinkedChat(page, root, chatRoot) {

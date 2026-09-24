@@ -3,11 +3,42 @@ import { fakeAsync, tick } from '@angular/core/testing';
 import * as Blockly from 'blockly';
 import { BlocklyService } from './blockly.service';
 import { ProcessState } from '@core/app-shell/public-api';
+import { Subject } from 'rxjs';
 import {
   type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
 
 describe('BuilderService background preprocess ownership', () => {
+  it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    service.preprocessProcess = { unsubscribe: jasmine.createSpy('unsubscribe') };
+    service.preprocessStreamId = 'preprocess';
+    service.cmdService = { kill: jasmine.createSpy('kill').and.resolveTo(false) };
+    await expectAsync(service.stopPreprocess()).toBeRejectedWithError(/未确认停止/);
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('preprocess');
+    expect(service.preprocessStreamId).toBe('preprocess');
+    service.cmdService.kill.and.resolveTo(true);
+    await service.stopPreprocess();
+    expect(service.cmdService.kill).toHaveBeenCalledTimes(2);
+    expect(service.preprocessStreamId).toBeNull();
+  });
+
+  it('shares an in-flight stop and clears ownership only after confirmation', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    let stopped!: (value: boolean) => void;
+    service.preprocessStreamId = 'preprocess';
+    service.cmdService = { kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; })) };
+
+    const firstStop = service.stopPreprocess();
+    const secondStop = service.stopPreprocess();
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('preprocess');
+    expect(service.preprocessStreamId).toBe('preprocess');
+    stopped(true);
+    await Promise.all([firstStop, secondStop]);
+    expect(service.preprocessStreamId).toBeNull();
+    expect(service.preprocessStop).toBeNull();
+  });
+
   function queuedBuilder() {
     const service = Object.create(_BuilderService.prototype) as any;
     service.projectService = { currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
@@ -20,6 +51,85 @@ describe('BuilderService background preprocess ownership', () => {
     for (const method of ['clearProgressTimer', 'updateCancelledNotice', 'ensureCancelState', 'handleCompileError']) service[method] = jasmine.createSpy(method);
     return service;
   }
+
+  describe('background resource waiting', () => {
+    let oldPath: any;
+    beforeEach(() => {
+      oldPath = window['path'];
+      window['path'] = { getAppDataPath: () => '/sdk', getAilyChildPath: () => '/child', isExists: () => true };
+    });
+    afterEach(() => { window['path'] = oldPath; });
+
+    function backgroundBuilder() {
+      const service = queuedBuilder();
+      service.preprocessRunGeneration = 0;
+      service.actionService = { listen() {}, unlisten() {} };
+      service.ngZone = { runOutsideAngular: (task: () => unknown) => task() };
+      service.blocklyService = { workspace: {}, dependencySubject: new Subject(), aiExecutionActive$: new Subject() };
+      service.workflowService.state$ = new Subject();
+      service.projectService.stateSubject = { value: 'loaded' };
+      service.projectService.getBoardModule = async () => 'board';
+      service.platformService = { za7: '7za' };
+      service.configService = { data: {} };
+      service.isInstallInProgress = () => false;
+      service.getPendingChatBlockingOperationCount = () => 0;
+      service.getMissingBoardDependencies = async () => [];
+      service.generateWorkspaceCodeForPreprocess = async () => 'void setup() {}';
+      service.writeCompileRequest = async () => '/project/request.json';
+      for (const method of ['waitForBackgroundPreprocessIdle', 'waitForOneIdleBoundary', 'waitForAilyBuilderReady', 'writeTextFile']) {
+        service[method] = async () => {};
+      }
+      service.recordPreprocessDuration = () => {};
+      service.cmdService.spawn.and.returnValue(new Subject());
+      service.cmdService.kill = async () => true;
+      return service;
+    }
+
+    it('does not spawn after the project starts closing while a reader is queued', fakeAsync(() => {
+      const service = backgroundBuilder();
+      let grant!: () => void;
+      service.appDataResourceLock = { runShared: (_label: string, task: (token: string) => unknown) =>
+        new Promise(resolve => { grant = () => resolve(task('reader')); }) };
+      service.init();
+      service.blocklyService.dependencySubject.next('changed');
+      tick(500);
+      service.projectService.isProjectTransitionInProgress = () => true;
+      grant();
+      tick();
+      expect(service.cmdService.spawn).not.toHaveBeenCalled();
+      service.destroy();
+    }));
+
+    it('retries automatic preprocessing when shared resources were busy', fakeAsync(() => {
+      const service = backgroundBuilder();
+      let attempts = 0;
+      service.appDataResourceLock = { runShared: async (_label: string, task: (token: string) => unknown) => {
+        if (++attempts === 1) throw new Error('APPDATA_RESOURCE_LOCK_TIMEOUT');
+        return task('reader');
+      } };
+      service.init();
+      service.blocklyService.dependencySubject.next('changed');
+      tick(500);
+      expect(service.pendingPrecompile).toBeTrue();
+      tick(3300);
+      expect(service.cmdService.spawn).toHaveBeenCalledTimes(1);
+      service.destroy();
+      tick();
+    }));
+  });
+
+  it('blocks foreground compilation when a detached background command cannot be stopped', async () => {
+    const service = queuedBuilder();
+    service.preprocessStreamId = 'preprocess';
+    service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(false);
+    service.appDataResourceLock = { runShared: (_label: string, task: (token: string) => unknown) => task('reader') };
+
+    const result = await service.build().catch((error: { text: string }) => error);
+
+    expect(result.text).toContain('未确认停止');
+    expect(service.preprocessStreamId).toBe('preprocess');
+    expect(service.cmdService.spawn).not.toHaveBeenCalled();
+  });
 
   it('cancels resource waiting before preparing or launching a Blockly request', async () => {
     const service = queuedBuilder();
@@ -78,7 +188,7 @@ describe('BuilderService background preprocess ownership', () => {
     expect(result).toBeUndefined();
     expect(service.preprocessRunGeneration).toBe(4);
     expect(service.preprocessProcess).toBeNull();
-    expect(service.preprocessStreamId).toBeNull();
+    expect(service.preprocessStreamId).toBe('builder_preprocess_1');
     expect(service.pendingPrecompile).toBeTrue();
     expect(unsubscribe).toHaveBeenCalled();
     expect(kill).toHaveBeenCalledOnceWith('builder_preprocess_1');
@@ -87,6 +197,7 @@ describe('BuilderService background preprocess ownership', () => {
   it('retains pending preprocessing when installation interrupts preparation, but not after destruction', () => {
     const service = Object.create(_BuilderService.prototype) as any;
     Object.assign(service, { initialized: true, preprocessRunGeneration: 1, pendingPrecompile: false,
+      projectService: { currentProjectPath: '/project', isProjectTransitionInProgress: () => false },
       blocklyService: { aiWaiting: false }, getPendingChatBlockingOperationCount: () => 0,
       isInstallInProgress: () => true, workflowService: { currentState: ProcessState.INSTALLING } });
     expect(service.shouldCancelBackgroundPreprocess(1)).toBeTrue();

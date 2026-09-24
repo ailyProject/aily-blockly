@@ -8,17 +8,41 @@ export class AppDataResourceLockService {
   private queuedCount = 0;
 
   async runExclusive<T>(label: string, task: (token: string) => Promise<T> | T, signal?: AbortSignal): Promise<T> {
-    return this.runWithLocalWriteQueue(label, task, signal);
+    return this.runWithBudget(label, 'write', task, signal);
   }
 
   async runShared<T>(label: string, task: (token: string) => Promise<T> | T, signal?: AbortSignal): Promise<T> {
-    return this.runWithFileLock(label, 'read', task, 0, signal);
+    return this.runWithBudget(label, 'read', task, signal);
   }
 
-  private async runWithLocalWriteQueue<T>(label: string, task: (token: string) => Promise<T> | T, signal?: AbortSignal): Promise<T> {
-    if (signal?.aborted) throw new Error('APPDATA_RESOURCE_LOCK_CANCELLED');
+  private async runWithBudget<T>(label: string, mode: 'read' | 'write', task: (token: string) => Promise<T> | T, signal?: AbortSignal): Promise<T> {
+    const timeoutMs = 5000;
+    const wait = new AbortController();
+    const deadline = Date.now() + timeoutMs;
+    const cancel = () => wait.abort(new Error('APPDATA_RESOURCE_LOCK_CANCELLED'));
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(() => wait.abort(new Error('APPDATA_RESOURCE_LOCK_TIMEOUT')), timeoutMs);
+    const stopWaiting = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+    };
+    const entered = (token: string) => {
+      // The deadline covers acquisition only; a running build keeps its lease.
+      stopWaiting();
+      return task(token);
+    };
+    try {
+      return mode === 'write'
+        ? await this.runWithLocalWriteQueue(label, entered, wait.signal, deadline)
+        : await this.runWithFileLock(label, mode, entered, 0, wait.signal, timeoutMs);
+    } finally { stopWaiting(); }
+  }
+
+  private async runWithLocalWriteQueue<T>(label: string, task: (token: string) => Promise<T> | T, signal: AbortSignal, deadline: number): Promise<T> {
+    if (signal.aborted) throw signal.reason;
     const queuedAt = Date.now();
-    const previous = this.tail.catch(() => undefined);
+    const previous = this.tail;
     let release!: () => void;
 
     this.queuedCount += 1;
@@ -29,13 +53,15 @@ export class AppDataResourceLockService {
     let entered = false;
     let cancel: (() => void) | undefined;
     try {
-      await (signal ? Promise.race([previous, new Promise<never>((_, reject) => {
-        cancel = () => reject(new Error('APPDATA_RESOURCE_LOCK_CANCELLED'));
+      await Promise.race([previous, new Promise<never>((_, reject) => {
+        cancel = () => reject(signal.reason);
         signal.addEventListener('abort', cancel, { once: true });
-      })]) : previous);
+      })]);
       entered = true;
       this.queuedCount -= 1;
-      return await this.runWithFileLock(label, 'write', task, Date.now() - queuedAt, signal);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('APPDATA_RESOURCE_LOCK_TIMEOUT');
+      return await this.runWithFileLock(label, 'write', task, Date.now() - queuedAt, signal, remaining);
     } finally {
       if (cancel) signal!.removeEventListener('abort', cancel);
       if (!entered) this.queuedCount -= 1;
@@ -44,7 +70,7 @@ export class AppDataResourceLockService {
     }
   }
 
-  private async runWithFileLock<T>(label: string, mode: 'read' | 'write', task: (token: string) => Promise<T> | T, localWaitMs = 0, signal?: AbortSignal): Promise<T> {
+  private async runWithFileLock<T>(label: string, mode: 'read' | 'write', task: (token: string) => Promise<T> | T, localWaitMs: number, signal: AbortSignal, timeoutMs: number): Promise<T> {
     const startedAt = Date.now();
     let fileLockToken: string | undefined;
 
@@ -56,7 +82,7 @@ export class AppDataResourceLockService {
     });
 
     try {
-      const fileLock = await this.acquireFileLock(label, mode, signal);
+      const fileLock = await this.acquireFileLock(label, mode, signal, timeoutMs);
       fileLockToken = fileLock.token;
       this.trace('FILE_LOCK_ACQUIRED', {
         label,
@@ -65,7 +91,7 @@ export class AppDataResourceLockService {
         waitMs: fileLock.waitMs
       });
 
-      if (signal?.aborted) throw new Error('APPDATA_RESOURCE_LOCK_CANCELLED');
+      if (signal.aborted) throw signal.reason;
       return await task(fileLockToken);
     } finally {
       if (fileLockToken) {
@@ -81,21 +107,35 @@ export class AppDataResourceLockService {
     }
   }
 
-  private async acquireFileLock(label: string, mode: 'read' | 'write', signal?: AbortSignal): Promise<{ token: string; waitMs: number }> {
-    if (signal?.aborted) throw new Error('APPDATA_RESOURCE_LOCK_CANCELLED');
+  private async acquireFileLock(label: string, mode: 'read' | 'write', signal: AbortSignal, timeoutMs: number): Promise<{ token: string; waitMs: number }> {
+    if (signal.aborted) throw signal.reason;
     if (!window['ipcRenderer']?.invoke) {
       throw new Error('APPDATA_RESOURCE_LOCK_UNAVAILABLE: Restart the desktop host.');
     }
 
     const requestId = crypto.randomUUID();
-    const cancel = () => { void window['ipcRenderer'].invoke('appdata-resource-lock-cancel', { requestId }).catch(() => {}); };
-    signal?.addEventListener('abort', cancel, { once: true });
+    let cancel!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      cancel = () => {
+        void window['ipcRenderer'].invoke('appdata-resource-lock-cancel', { requestId }).catch(() => {});
+        reject(signal.reason);
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+    const acquisition = window['ipcRenderer'].invoke('appdata-resource-lock-acquire', {
+      label, mode, requestId, timeoutMs,
+    });
     let result: any;
     try {
-      result = await window['ipcRenderer'].invoke('appdata-resource-lock-acquire', {
-        label, mode, requestId, timeoutMs: 30 * 60 * 1000,
-      });
-    } finally { signal?.removeEventListener('abort', cancel); }
+      result = await Promise.race([acquisition, cancelled]);
+    } catch (error) {
+      // IPC may deliver a grant after the caller's deadline. Return that token
+      // without ever running its cancelled task.
+      void acquisition.then((late: any) => {
+        if (late?.ok && typeof late.token === 'string') return this.releaseFileLock(late.token, label);
+      }).catch(() => {});
+      throw error;
+    } finally { signal.removeEventListener('abort', cancel); }
 
     if (!result?.ok || typeof result.token !== 'string' || !result.token) {
       throw new Error(result?.error || 'APPDATA_RESOURCE_LOCK_FAILED');
@@ -119,7 +159,7 @@ export class AppDataResourceLockService {
     try {
       const result = await window['ipcRenderer'].invoke('appdata-resource-lock-release', { token });
       if (!result?.ok) throw new Error(result?.error || 'APPDATA_RESOURCE_LOCK_RELEASE_FAILED');
-      this.trace('FILE_LOCK_RELEASED', { label, token });
+      this.trace(result.retainedByCommand ? 'FILE_LOCK_RETAINED' : 'FILE_LOCK_RELEASED', { label, token });
     } catch (error) {
       this.trace('FILE_LOCK_RELEASE_FAILED', {
         label,

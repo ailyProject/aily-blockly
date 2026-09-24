@@ -264,16 +264,13 @@ export class CmdService {
    */
   async kill(streamId: string): Promise<boolean> {
     const subject = this.subjects.get(streamId);
-    if (subject) {
-      const result = await window['cmd'].kill(streamId);
-      // console.log(`Kill command ${streamId}:`, result);
-      if (result.success) {
-        subject.complete();
-        this.subjects.delete(streamId);
-      }
-      return result.success;
+    // The stream may close before main confirms that its process tree and resource lease are released.
+    const result = await window['cmd'].kill(streamId);
+    if (result.success) {
+      subject?.complete();
+      this.subjects.delete(streamId);
     }
-    return false;
+    return result.success;
   }
 
   /**

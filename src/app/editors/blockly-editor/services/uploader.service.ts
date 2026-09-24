@@ -674,7 +674,11 @@ export class _UploaderService {
         }
 
         let bufferData = '';
-        void this.appDataResourceLock.runShared('upload:run', () => new Promise<void>((releaseUploadLock) => {
+        await this.appDataResourceLock.runShared('upload:run', (token) => new Promise<void>((releaseUploadLock) => {
+        if (currentProjectPath !== this.projectService.currentProjectPath
+          || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
+          throw new Error('Upload cancelled: project is closing or has changed.');
+        }
         if (this.cancelled) {
           releaseUploadLock();
           return;
@@ -683,7 +687,7 @@ export class _UploaderService {
         this.cmdService.spawn(
           'node',
           [uploadScriptPath, configFilePath],
-          { shellProfile: false },
+          { shellProfile: false, cwd: currentProjectPath, appDataResourceToken: token, appDataResourceMode: 'read' },
           false,
         ).subscribe({
           next: async (output: CmdOutput) => {
@@ -1048,7 +1052,9 @@ export class _UploaderService {
             }
           }
         });
-        }));
+        })).finally(() => {
+          if (syntheticProgressTimer) clearInterval(syntheticProgressTimer);
+        });
       } catch (error) {
         this.uploadInProgress = false;
         this._builderService.isUploading = false; // 确保在异常情况下设置为false
@@ -1254,13 +1260,17 @@ export class _UploaderService {
         this.logNetworkOtaUpload(trimmedLine);
       };
 
-      void this.appDataResourceLock.runShared('upload:network-ota', () => new Promise<void>((releaseUploadLock) => {
+      void this.appDataResourceLock.runShared('upload:network-ota', (token) => new Promise<void>((releaseUploadLock) => {
+        if (currentProjectPath !== this.projectService.currentProjectPath
+          || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
+          throw new Error('Upload cancelled: project is closing or has changed.');
+        }
         if (this.cancelled) {
           releaseUploadLock();
           return;
         }
 
-        this.cmdService.run(uploadCmd, null, false).subscribe({
+        this.cmdService.run(uploadCmd, currentProjectPath, false, false, { appDataResourceToken: token, appDataResourceMode: 'read' }).subscribe({
           next: (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -1369,7 +1379,12 @@ export class _UploaderService {
             reject({ state: 'error', text: message });
           }
         });
-      }));
+      })).catch(error => {
+        this.uploadInProgress = false;
+        this._builderService.isUploading = false;
+        this.workflowService.finishUpload(false, error.message);
+        reject({ state: 'error', text: error.message });
+      });
     });
   }
 
@@ -1735,8 +1750,12 @@ export class _UploaderService {
         let lastProgress = 0;
         let currentStage = '';
 
-        void this.appDataResourceLock.runShared('upload:softdevice', () => new Promise<void>((releaseUploadLock) => {
-        this.cmdService.run(uploadCmd, null, false).subscribe({
+        void this.appDataResourceLock.runShared('upload:softdevice', (token) => new Promise<void>((releaseUploadLock) => {
+        if (currentProjectPath !== this.projectService.currentProjectPath
+          || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
+          throw new Error('Upload cancelled: project is closing or has changed.');
+        }
+        this.cmdService.run(uploadCmd, currentProjectPath, false, false, { appDataResourceToken: token, appDataResourceMode: 'read' }).subscribe({
           next: (output: CmdOutput) => {
             if (output.type === 'close') {
               if ((output.code ?? 0) !== 0 || output.signal) {
@@ -1876,7 +1895,7 @@ export class _UploaderService {
             }
           }
         });
-        }));
+        })).catch(error => resolve({ success: false, message: error.message }));
       });
     } catch (error: any) {
       console.error('烧录 softdevice 失败:', error);

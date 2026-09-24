@@ -233,7 +233,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ...require('./build-product').getProductAuthConfig(process.env.AILY_BUILD_PRODUCT),
     read: () => ipcRenderer.invoke('auth-credentials-read'),
     write: (record, expectedRefreshToken) => ipcRenderer.invoke('auth-credentials-write', record, expectedRefreshToken),
-    clear: () => ipcRenderer.invoke('auth-credentials-clear'),
+    clear: (expectedAccessToken) => ipcRenderer.invoke('auth-credentials-clear', expectedAccessToken),
   },
   ipcRenderer: {
     send: (channel, data) => ipcRenderer.send(channel, data),
