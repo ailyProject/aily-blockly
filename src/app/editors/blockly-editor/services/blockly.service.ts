@@ -16,6 +16,7 @@ import { AbsBlockContextIndex, truncateAbsContext } from '../../../integrations/
 import type { AbsProjection } from '../../../integrations/blockly/abs/abs-state';
 import { nativeFieldOrder } from '../../../integrations/blockly/abs/abs-native-field-order';
 import { withNativeStateLoading } from './blockly-native-state-loading';
+import { adaptLegacyDhtRuntimeState } from './blockly-legacy-dht-runtime';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
   dragSelectionWeakMap,
@@ -1334,7 +1335,9 @@ export class BlocklyService {
       return;
     }
 
-    const workspaceJson = (clone ? this.cloneJson(jsonData) : jsonData) || this.createEmptyWorkspaceContent();
+    let workspaceJson = (clone ? this.cloneJson(jsonData) : jsonData) || this.createEmptyWorkspaceContent();
+    const definitions = this.captureDeclarativeBlockDefinitions();
+    workspaceJson = adaptLegacyDhtRuntimeState(workspaceJson, definitions);
     workspaceJson.blocks?.blocks?.forEach((block) => {
       const ailyIcons = this.iconsMap.get(block.type);
       if (ailyIcons) {
@@ -1343,7 +1346,6 @@ export class BlocklyService {
     });
 
     installBlocklyVariableComparator();
-    const definitions = this.captureDeclarativeBlockDefinitions();
     definitions.assertCurrent();
     withNativeStateLoading(Blockly, this.workspace, workspaceJson,
       () => loadBlocklyWorkspace(this.workspace, workspaceJson),
@@ -2278,6 +2280,11 @@ export class BlocklyService {
     }
 
     return Array.from(blockTypes).sort();
+  }
+
+  getMissingBlockDefinitions(document: BlocklyProjectDocument): string[] {
+    return this.collectBlockTypesFromProjectDocument(document)
+      .filter(type => typeof Blockly.Blocks[type]?.init !== 'function');
   }
 
   private collectBlockTypesFromWorkspaceContent(content: any, blockTypes: Set<string>) {

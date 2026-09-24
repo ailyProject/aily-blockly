@@ -36,6 +36,9 @@ import {
   normalizeProjectMode,
 } from '@shared/public-api';
 
+/** The libraries and toolbox are valid; the saved workspace must stay unopened. */
+class ProjectToolboxOnlyLoadError extends Error {}
+
 @Component({
   selector: 'app-blockly-editor',
   imports: [
@@ -85,6 +88,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private boardConfigUpdatedSubscription: Subscription | null = null;
   private runtimeCdcEnabled: boolean | undefined;
   private loadedProjectPath: string | null = null;
+  private toolboxOnlyProjectPath: string | null = null;
   private projectLoadSequence = 0;
   private projectRouteSubscription: Subscription | null = null;
 
@@ -137,6 +141,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         };
         console.log('project path', requestedProjectPath);
         try {
+          if (this.toolboxOnlyProjectPath) {
+            this.abortFailedProjectLoad();
+            this.toolboxOnlyProjectPath = null;
+          }
           if (
             this.loadedProjectPath
             && this.loadedProjectPath !== requestedProjectPath
@@ -159,7 +167,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           if (!isCurrent() || (dataSession !== null && this.projectService.currentProjectPath !== requestedProjectPath)) return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
-          this.abortFailedProjectLoad();
+          if (error instanceof ProjectToolboxOnlyLoadError) {
+            this.toolboxOnlyProjectPath = requestedProjectPath;
+            this.clearProjectLoadedCodeRefreshTimer();
+            this.stopPackageJsonDependencyWatch();
+            this.localLibrarySyncService.stop();
+            this.uiService.updateFooterState({ state: 'error', text: error.message });
+          } else {
+            this.abortFailedProjectLoad();
+          }
           this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail);
           this.message.error(detail);
         }
@@ -268,9 +284,13 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // 设置当前项目路径和package.json数据
     this.applyProjectPackageJson(packageJson);
     // 与 Aily Code（code-editor-pro）共用：node_modules 不齐则 npm install
-    const dependenciesInstalled = await this.npmService.ensureProjectDependenciesInstalled(projectPath);
+    const hasMissingLocalLibrary = [...this.getDeclaredBlocklyLibraryDependencies(packageJson)]
+      .some(([name, version]) => version.startsWith('file:')
+        && !this.isBlocklyLibraryPackageReady(projectPath, name));
+    const dependenciesInstalled = hasMissingLocalLibrary
+      ? false : await this.npmService.ensureProjectDependenciesInstalled(projectPath);
     assertCurrent();
-    if (!dependenciesInstalled) {
+    if (!dependenciesInstalled && !hasMissingLocalLibrary) {
       throw new Error('项目依赖安装未完成，无法继续加载 Blockly 项目。');
     }
 
@@ -405,7 +425,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       assertCurrent();
       if (!restored) {
         this.handleMissingProjectLibrariesCancelled(missingProjectLibraries);
-        throw new Error(`项目缺少仍在使用的积木库：${missingProjectLibraries.map((lib) => lib.name).join(', ')}`);
+        throw new ProjectToolboxOnlyLoadError(`项目缺少仍在使用的积木库：${missingProjectLibraries.map((lib) => lib.name).join(', ')}`);
       }
 
       packageJson = this.readProjectPackageJson(projectPath) || packageJson;
@@ -416,6 +436,12 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     await this.waitForNextFrame();
     assertCurrent();
+    const missingBlockDefinitions = this.blocklyService.getMissingBlockDefinitions(projectDocument);
+    if (missingBlockDefinitions.length > 0) {
+      throw new ProjectToolboxOnlyLoadError(
+        `积木定义缺失：${missingBlockDefinitions.join(', ')}。已加载可用工具箱；请恢复对应积木库后重新打开项目。`,
+      );
+    }
     this.blocklyService.loadProjectDocument(projectDocument, false);
     if (!usedBoardTemplateAbi) {
       try {
@@ -1298,9 +1324,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   ): MissingLibInfo[] {
     const manifest = this.normalizeUsedLibraryManifest(packageJson?.[AILY_BLOCKLY_USED_LIBRARIES_FIELD]);
     const manifestEntries = Object.entries(manifest);
-    if (manifestEntries.length === 0) {
-      return [];
-    }
 
     const projectBlockTypes = new Set(this.blocklyService.collectBlockTypesFromProjectDocument(projectDocument));
     const declaredLibraryDependencies = this.getDeclaredBlocklyLibraryDependencies(packageJson);
@@ -1325,7 +1348,21 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         blockType: usedBlockType || entry.blockTypes[0] || '',
         name: packageName,
         version: declaredVersion || entry.version || '',
-        localPath: this.resolveManifestLocalPath(projectPath, entry),
+        localPath: declaredVersion.startsWith('file:')
+          ? this.resolveProjectLocalLibraryPath(projectPath, declaredVersion.slice(5))
+          : this.resolveManifestLocalPath(projectPath, entry),
+      });
+    }
+
+    // Older projects have no usage manifest. A declared but absent library is
+    // still a concrete dependency and must reach the same recovery dialog.
+    for (const [name, version] of declaredLibraryDependencies) {
+      if (this.isBlocklyLibraryPackageReady(projectPath, name)
+        || missingLibraries.some(lib => lib.name === name)) continue;
+      missingLibraries.push({
+        blockType: '', name, version,
+        localPath: version.startsWith('file:')
+          ? this.resolveProjectLocalLibraryPath(projectPath, version.slice(5)) : '',
       });
     }
 
@@ -1372,11 +1409,16 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
 
     const filePath = entry.version.slice(5);
+    return this.resolveProjectLocalLibraryPath(projectPath, filePath);
+  }
+
+  private resolveProjectLocalLibraryPath(projectPath: string, filePath: string): string {
     if (!filePath) {
       return '';
     }
 
-    if (window['path']?.isAbsolute?.(filePath)) {
+    if (window['path']?.isAbsolute?.(filePath) || /^[A-Za-z]:[\\/]/.test(filePath)
+      || /^\\\\[^\\]+\\[^\\]+/.test(filePath)) {
       return filePath;
     }
 
@@ -1395,7 +1437,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           nzData: {
             missingLibs: missingLibraries,
             title: '项目缺少积木库',
-            message: '项目中仍在使用以下积木库，但 package.json 或 node_modules 中已缺失。需要先恢复库，再加载项目。',
+            message: missingLibraries.some(lib => lib.localPath && !this.electronService.exists(lib.localPath))
+              ? '项目依赖原作者电脑上的本地积木库；当前设备没有该路径。请选择本机对应库目录，再恢复并加载项目。'
+              : '项目中仍在使用以下积木库，但 package.json 或 node_modules 中已缺失。需要先恢复库，再加载项目。',
             confirmText: '恢复并加载项目',
             installFn: async (libs: MissingLibInfo[]) => {
               await this.installMissingBlocklyLibraries(projectPath, libs);
@@ -1428,6 +1472,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     for (const lib of localLibraries) {
       if (!lib.localPath || !this.electronService.exists(lib.localPath)) {
         throw new Error(`${lib.name} 的本地库路径不存在: ${lib.localPath || 'unknown'}`);
+      }
+      const localPackagePath = this.electronService.pathJoin(lib.localPath, 'package.json');
+      if (!this.electronService.exists(localPackagePath)
+        || JSON.parse(this.electronService.readFile(localPackagePath))?.name !== lib.name) {
+        throw new Error(`所选目录不是 ${lib.name} 积木库: ${lib.localPath}`);
       }
 
       const folderName = lib.localPath.split(/[/\\]/).pop();
