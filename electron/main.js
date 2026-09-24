@@ -2051,6 +2051,10 @@ function loadEnv() {
   ipcMain.handle('auth-credentials-read', () => authStore.read());
   ipcMain.handle('auth-credentials-write', (_event, record, expectedRefreshToken) => authStore.write(record, expectedRefreshToken));
   ipcMain.handle('auth-credentials-clear', () => authStore.clear());
+  // Restore legacy compatibility during window initialization without blocking credential reads.
+  void authStore.restoreLegacy().catch(error => {
+    console.warn('[Auth] Failed to restore .aily compatibility file:', error?.code || 'UNKNOWN');
+  });
 
   // 检测并读取appdata_path目录下是否有config.json文件
   const userConfigPath = path.join(process.env.AILY_APPDATA_PATH, "config.json");

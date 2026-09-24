@@ -39,34 +39,70 @@ function createAuthStore(appDataPath, product, withLock) {
   const id = normalizeBuildProduct(product);
   const filePath = path.join(appDataPath, 'auth', `${id}.json`);
   const migrationPath = path.join(appDataPath, 'auth', 'blockly-migration.json');
+  const legacyPath = path.join(appDataPath, '.aily');
 
   function initialize() {
     if (id !== 'blockly' || fs.existsSync(migrationPath)) return;
     if (!fs.existsSync(filePath)) {
-      const legacy = credentials(readRecord(path.join(appDataPath, '.aily')));
+      const legacy = credentials(readRecord(legacyPath));
       if (legacy.access_token) writeRecord(filePath, legacy);
     }
     // Keep this marker when credentials are cleared; never resurrect legacy login.
     writeRecord(migrationPath, { completed: true });
   }
 
+  function syncLegacy(record) {
+    if (id !== 'blockly') return;
+    if (!record.access_token) {
+      fs.rmSync(legacyPath, { force: true });
+      return;
+    }
+    const legacy = readRecord(legacyPath);
+    if (['access_token', 'refresh_token', 'updated_at'].every(key => legacy[key] === record[key])) return;
+    writeRecord(legacyPath, {
+      ...legacy,
+      access_token: record.access_token,
+      refresh_token: record.refresh_token,
+      updated_at: record.updated_at,
+    });
+  }
+
   return {
+    restoreLegacy: () => withLock(() => {
+      if (id !== 'blockly') return;
+      initialize();
+      syncLegacy(credentials(readRecord(filePath)));
+    }),
     read: () => withLock(() => {
       initialize();
-      return credentials(readRecord(filePath));
+      const record = credentials(readRecord(filePath));
+      if (record.access_token) {
+        try {
+          syncLegacy(record);
+        } catch (error) {
+          console.warn('[Auth] Failed to sync .aily compatibility file:', error?.code || 'UNKNOWN');
+        }
+      }
+      return record;
     }),
     write: (record, expectedRefreshToken) => withLock(() => {
       initialize();
       const current = readRecord(filePath);
       if (expectedRefreshToken !== undefined && current.refresh_token !== expectedRefreshToken) return false;
-      const next = credentials(record);
+      const next = { ...credentials(record), updated_at: new Date().toISOString() };
       if (!next.access_token) throw new Error('Access token cannot be empty');
-      writeRecord(filePath, { ...next, updated_at: new Date().toISOString() });
+      // Keep rotated refresh tokens authoritative even if the compatibility write fails.
+      writeRecord(filePath, next);
+      syncLegacy(next);
       return true;
     }),
     clear: () => withLock(() => {
       initialize();
-      fs.rmSync(filePath, { force: true });
+      try {
+        fs.rmSync(filePath, { force: true });
+      } finally {
+        syncLegacy({});
+      }
     }),
   };
 }
