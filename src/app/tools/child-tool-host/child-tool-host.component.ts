@@ -1973,11 +1973,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return { ok: true, sessionId: sessionId || null };
   }
 
-  private setSubappSurfaceState(payload: {
+  private async setSubappSurfaceState(payload: {
     sessionId?: string;
     toolId?: string;
     surfaceState?: 'collapsed' | 'expanded';
-  } = {}): Record<string, unknown> {
+  } = {}): Promise<Record<string, unknown>> {
     if (!this.isAilyChatTool()) {
       return { ok: false, message: 'Subapp Dock controls are only available to Aily Chat' };
     }
@@ -1990,6 +1990,21 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     if (surfaceState !== 'collapsed' && surfaceState !== 'expanded') {
       return { ok: false, message: 'Subapp Dock surface state is invalid' };
+    }
+
+    const current = this.subappActivityService.getActivity(sessionId, toolId);
+    if (!current) {
+      return { ok: false, message: 'Subapp activity is unavailable for the active chat session' };
+    }
+    const config = getChildToolConfig(toolId);
+    const surface = current.presentation?.surface || 'compact';
+    if (surfaceState === 'expanded' && !config?.runtime?.observer && !config?.ui?.surfaces?.[surface]?.entry) {
+      // A window-only subapp remains usable from the activity bar without
+      // mounting a Dock iframe for an undeclared surface.
+      const opened = await this.mainUiAutomation.openChildApp({ toolId, mode: 'embedded' });
+      if (opened['ok'] !== true) return opened;
+      this.subappActivityService.setSurfaceState(sessionId, toolId, 'collapsed');
+      return { ok: true, sessionId, toolId, surfaceState: 'collapsed' };
     }
 
     const activity = this.subappActivityService.setSurfaceState(sessionId, toolId, surfaceState);
