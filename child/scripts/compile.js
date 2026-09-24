@@ -10,6 +10,7 @@ const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, p
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
+const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
 
 // 简单的日志工具
 const logger = {
@@ -79,6 +80,7 @@ async function main() {
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
         // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
         const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+        if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
         const tempPath = isAilyCode
             ? ailyCodeProject.resolveCompileWorkspacePath(currentProjectPath)
             : path.join(currentProjectPath, '.temp');
@@ -149,6 +151,7 @@ async function main() {
         confirmBuildSource(config);
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
+        const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
 
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
@@ -268,6 +271,7 @@ async function main() {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
                     await reportBuildDelivery(config, receipt);
                 }
+                if (!isAilyCode) publishBlocklyUploadState(config, uploadInputs);
             }
         } catch (error) {
             deliveryError = error;

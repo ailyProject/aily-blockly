@@ -40,7 +40,8 @@ describe('Uploader AppData ownership during project close', () => {
     };
     service.translate = { instant: (key: string) => key };
     service.serialService = { currentPort: 'COM1', currentPortInfo: { type: 'serial' } };
-    service._builderService = { passed: true, lastCode: 'code', currentProjectPath: '/project' };
+    service._builderService = { passed: true, lastCode: 'code', currentProjectPath: '/project',
+      isPreprocessing: () => false, waitForUploadPreprocess: async () => {}, canReuseBuildForUpload: async () => true };
     service.blocklyService = { runWithPreparedProjectCode: async () => 'code' };
     service.workflowService = { startUpload: () => true, finishUpload: jasmine.createSpy('finishUpload') };
     service.noticeService = { update: jasmine.createSpy('notice') };
