@@ -508,6 +508,7 @@ export class ProjectService {
     if (!folder) return;
     const lease = this.acquireProjectLifecycle([path]);
     try {
+      await this.waitForAppDataCleanup(this.stopProjectResourceCommands(folder.path));
       const group = this.storedCoderWorkspaceFor(folder.path);
       await window['projectLock']?.release(folder.path);
       this.coderProjectsSubject.next(this.coderProjects.filter(item => item !== folder));
@@ -1769,6 +1770,30 @@ export class ProjectService {
     } finally { lease.release(); }
   }
 
+  private async stopProjectResourceCommands(projectPath: string): Promise<void> {
+    if (!this.electronService.isElectron) return;
+    const stopped = await window['ipcRenderer'].invoke('project-commands-stop', { projectPath });
+    if (!stopped?.ok) throw new Error('项目任务未确认停止，保留其 AppData 锁。');
+  }
+
+  private async waitForAppDataCleanup(cleanup: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        cleanup,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('AppData 清理等待已达 5 秒。')), 5000);
+        }),
+      ]);
+    } catch (error) {
+      // Closing the UI must not depend on deleting a lock file. Main retains
+      // any live borrower; late completion only returns its original lease.
+      console.warn('[ProjectService] AppData cleanup deferred:', error);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async closeInternal() {
     if (this.coderOperationsSubject.value.size) {
       this.message.warning('工程正在编译或上传');
@@ -1777,6 +1802,17 @@ export class ProjectService {
     if (this.currentProjectPath && !(await this.application.closeConnectionGraphWindows())) {
       this.warnConnectionGraphWindowCloseFailure();
       return false;
+    }
+
+    if (this.electronService.isElectron) {
+      await this.waitForAppDataCleanup((async () => {
+        // close() holds the project lifecycle gate, so background preprocessing
+        // cannot start again while main stops this project's resource borrowers.
+        const paths = [...new Set([this.currentProjectPath, ...this.coderProjects.map(folder => folder.path)].filter(Boolean))];
+        await Promise.all(paths.map(projectPath => this.stopProjectResourceCommands(projectPath)));
+        const drained = await window['ipcRenderer'].invoke('project-appdata-drain');
+        if (!drained?.ok) throw new Error(drained?.message || '项目共享资源操作尚未结束。');
+      })());
     }
 
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {

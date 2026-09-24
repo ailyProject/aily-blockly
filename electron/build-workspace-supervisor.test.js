@@ -8,6 +8,187 @@ const test = require('node:test');
 const { CommandManager } = require('./cmd');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
 const { acquireBuildWorkspace } = require('../child/scripts/build-workspace-lease');
+const { EventEmitter } = require('node:events');
+const vm = require('node:vm');
+
+// Keep event ordering deterministic without killing real processes or exposing
+// test-only command APIs. Real process-tree/marker integration is covered below.
+function cancellationFixture({ terminate, workspace, release, viaIpc = false } = {}) {
+  const child = Object.assign(new EventEmitter(), { pid: 12345, stdout: new EventEmitter(), stderr: new EventEmitter() });
+  const filename = require.resolve('./cmd');
+  let killCalls = 0, releases = 0;
+  const timers = [], handlers = new Map();
+  const lease = { assertOwnerActive() {}, release: () => { releases++; return release?.(); } };
+  const context = { module: { exports: {} }, process, console: { info() {}, log() {}, warn() {} },
+    setTimeout: callback => { const timer = { callback, unref() {} }; timers.push(timer); return timer; },
+    clearTimeout: timer => { if (timer) timer.cancelled = true; },
+    require: name => {
+      if (name === 'electron') return { ipcMain: { handle: (name, handler) => handlers.set(name, handler) } };
+      if (name === 'child_process') return { spawn: () => child };
+      if (name === './platform') return { isLinux: true };
+      if (name === './process-tree') return { killRegisteredProcessTree: () => { killCalls++; return terminate(); } };
+      if (name === './build-workspace-supervisor') return { createBuildWorkspaceSupervisor: () => workspace };
+      if (name === './appdata-resource-lock' && viaIpc) return { retainAppDataResourceLock: (token, owner, mode) => {
+        assert.equal(token, 'upload-reader'); assert.equal(owner, 7); assert.equal(mode, 'read'); return lease;
+      } };
+      return require(name);
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+  const api = context.module.exports, manager = new api.CommandManager();
+  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false }, lease);
+  return { manager, api, handlers, child, get killCalls() { return killCalls; }, get releases() { return releases; },
+    retryCleanup: () => {
+      const timer = timers.shift();
+      if (timer && !timer.cancelled) timer.callback();
+      return !!timer;
+    },
+  };
+}
+
+test('Windows taskkill has a finite deadline and timeout cannot confirm termination', async () => {
+  const context = { module: { exports: {} }, console: { info() {} },
+    require: name => {
+      if (name === './platform') return { isWin32: true };
+      return { exec: (command, options, done) => {
+        assert.equal(command, 'taskkill /PID 12345 /T /F');
+        assert.equal(options.windowsHide, true);
+        assert.ok(options.timeout > 0 && options.timeout <= 10000);
+        done(Object.assign(new Error('timed out'), { killed: true }), '', '');
+      } };
+    },
+  };
+  const filename = require.resolve('./process-tree');
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+  assert.equal(await context.module.exports.killRegisteredProcessTree(12345, 'timeout-test'), false);
+});
+
+test('concurrent cancellation waits for one tree result even when parent close happens first', async () => {
+  let finish;
+  const f = cancellationFixture({ terminate: () => new Promise(resolve => { finish = resolve; }) });
+  const first = f.manager.killProcess('cancel'), second = f.manager.killProcess('cancel');
+  f.child.emit('close', 1, null);
+  assert.equal(f.killCalls, 1); assert.equal(f.releases, 0);
+  finish(true);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.equal(f.releases, 1); assert.equal(f.manager.getProcess('cancel'), undefined);
+  assert.equal(await f.manager.killProcess('cancel'), true);
+});
+
+test('failed cancellation remains retryable while live and cannot retarget a closed PID', async () => {
+  let stopped = false;
+  const f = cancellationFixture({ terminate: async () => stopped });
+  assert.equal(await f.manager.killProcess('cancel'), false);
+  assert.equal(f.releases, 0);
+  stopped = true;
+  assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(f.killCalls, 2); assert.equal(f.releases, 1);
+
+  const closed = cancellationFixture({ terminate: async () => false });
+  assert.equal(await closed.manager.killProcess('cancel'), false);
+  closed.child.emit('close', 0, null);
+  assert.equal(await closed.manager.killProcess('cancel'), false);
+  assert.equal(closed.killCalls, 1); assert.equal(closed.releases, 0);
+});
+
+test('confirmed termination returns SDK resources before retrying failed marker cleanup', async () => {
+  let finish, attempts = 0, markerPresent = true;
+  const f = cancellationFixture({
+    terminate: () => new Promise(resolve => { finish = resolve; }),
+    workspace: {
+      releaseAfterTermination: () => {
+        if (++attempts === 1) throw Object.assign(new Error('temporary unlink failure'), { code: 'EPERM' });
+        markerPresent = false;
+        return true;
+      },
+      canReleaseResources: () => !markerPresent,
+    },
+  });
+  const first = f.manager.killProcess('cancel');
+  f.child.emit('close', 1, null);
+  finish(true);
+  assert.equal(await first, true); assert.equal(f.releases, 1);
+  assert.equal(f.manager.getProcess('cancel'), f.child);
+  assert.equal(f.retryCleanup(), true);
+  assert.equal(f.killCalls, 1); assert.equal(attempts, 2); assert.equal(f.releases, 1);
+  assert.equal(f.manager.getProcess('cancel'), undefined);
+});
+
+test('persistent marker failure has bounded retries and never pins stopped SDK resources', async () => {
+  let attempts = 0;
+  const f = cancellationFixture({ terminate: async () => true, workspace: {
+    releaseAfterTermination: () => { attempts++; throw new Error('EPERM'); },
+    canReleaseResources: () => false,
+  } });
+  assert.equal(await f.manager.killProcess('cancel'), true);
+  f.child.emit('close', 1, null);
+  while (f.retryCleanup()) {}
+  assert.equal(f.releases, 1); assert.equal(f.killCalls, 1);
+  assert.equal(attempts, 5); // Initial attempt, close event, and three retries.
+  assert.equal(f.manager.getProcess('cancel'), f.child);
+  assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(f.killCalls, 1);
+});
+
+for (const closeFirst of [false, true]) test(`failed cancellation accepts a supervised normal finish ${closeFirst ? 'before' : 'after'} its result`, async () => {
+  let finish, markerPresent = true;
+  const f = cancellationFixture({
+    terminate: () => new Promise(resolve => { finish = resolve; }),
+    workspace: {
+      releaseAfterTermination: () => true,
+      canReleaseResources: () => !markerPresent,
+    },
+  });
+  const stopping = f.manager.killProcess('cancel');
+  if (!closeFirst) {
+    finish(false);
+    assert.equal(await stopping, false);
+    assert.equal(f.releases, 0);
+  }
+  markerPresent = false;
+  f.child.emit('close', 0, null);
+  if (closeFirst) {
+    assert.equal(f.releases, 0);
+    finish(false);
+    assert.equal(await stopping, true);
+  }
+  assert.equal(f.releases, 1); assert.equal(f.killCalls, 1);
+  assert.equal(f.manager.getProcess('cancel'), undefined);
+});
+
+test('upload reader handoff requires no workspace and waits for tree termination after parent close', async () => {
+  let finish;
+  const f = cancellationFixture({ viaIpc: true,
+    terminate: () => new Promise(resolve => { finish = resolve; }) });
+  f.api.registerCmdHandlers(undefined, { buildDeliveryAuthority: {
+    invalidate: () => assert.fail('Uploading must not invalidate compiled delivery'),
+  } });
+  const owner = { id: 7, isDestroyed: () => false, send() {} };
+  const result = await f.handlers.get('cmd-run')({ sender: owner }, {
+    command: process.execPath, streamId: 'upload', shellProfile: false,
+    appDataResourceToken: 'upload-reader', appDataResourceMode: 'read',
+  });
+  assert.equal(result.success, true); assert.equal(f.releases, 0);
+  const stopping = f.api.killCmdProcess('upload');
+  f.child.emit('close', 1, null);
+  assert.equal(f.releases, 0);
+  finish(true);
+  assert.equal(await stopping, true); assert.equal(f.releases, 1);
+  assert.equal(f.api.getCmdProcess('upload'), undefined);
+});
+
+for (const normalExit of [false, true]) test(`failed AppData release remains retryable after ${normalExit ? 'normal close' : 'confirmed cancellation'}`, async () => {
+  let fail = true;
+  const f = cancellationFixture({ terminate: async () => true,
+    release: () => fail ? { ok: false, error: 'EPERM' } : { ok: true } });
+  if (normalExit) f.child.emit('close', 0, null);
+  else assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(f.manager.getProcess('cancel'), f.child);
+  fail = false;
+  assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(f.killCalls, normalExit ? 0 : 1); assert.equal(f.releases, 2);
+  assert.equal(f.manager.getProcess('cancel'), undefined);
+});
 
 test('unrelated commands do not get a build lifecycle; invalid workspace is refused', () => {
   assert.equal(createBuildWorkspaceSupervisor(undefined), undefined);
@@ -107,4 +288,31 @@ test('failed installer termination stays pinned after a later normal parent clos
   assert.equal(manager.getProcess('uncertain-installer'), child);
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
   manager.processes.delete('uncertain-installer'); // Owned fixture has no descendants.
+});
+
+test('project stop only targets its AppData borrowers and excludes nested or unrelated commands', async () => {
+  const manager = new CommandManager(), owner = {}, other = {};
+  const root = path.resolve(os.tmpdir(), 'aily-stop-project');
+  manager.processes.set('project', { ownerWebContents: owner, cwd: root });
+  manager.processes.set('nested', { ownerWebContents: owner, cwd: path.join(root, '.temp') });
+  manager.processes.set('supervised', { ownerWebContents: owner, cwd: os.tmpdir(), buildWorkspacePath: root });
+  manager.processes.set('nested-build', { ownerWebContents: owner, cwd: path.join(root, 'firmware'), buildWorkspacePath: path.join(root, 'firmware') });
+  manager.processes.set('other-workspace', { ownerWebContents: owner, cwd: root, buildWorkspacePath: `${root}-other` });
+  manager.processes.set('other-tab', { ownerWebContents: other, cwd: root });
+  manager.processes.set('prefix-only', { ownerWebContents: owner, cwd: `${root}-other` });
+  for (const entry of manager.processes.values()) entry.resourceLease = {};
+  manager.processes.set('unrelated', { ownerWebContents: owner, cwd: root });
+  const stopped = [];
+  manager.killProcess = async id => { stopped.push(id); return id !== 'supervised'; };
+  assert.equal(await manager.killOwnerProjectProcesses(owner, root), false);
+  assert.deepEqual(stopped, ['project', 'supervised']);
+  assert.equal(await manager.killAllProcesses(), false);
+  manager.processes.clear();
+  assert.equal(await manager.killAllProcesses(), true);
+});
+
+test('command shutdown refuses native launches', () => {
+  const isolated = cancellationFixture({ viaIpc: true });
+  isolated.api.beginCommandShutdown();
+  assert.throws(() => isolated.manager.executeCommand({}), /SHUTDOWN/);
 });

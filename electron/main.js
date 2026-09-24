@@ -784,7 +784,7 @@ const {
 } = require("./window");
 const { registerNpmHandlers, killAllNpmProcesses, getActiveNpmProcesses } = require("./npm");
 const { registerUpdaterHandlers } = require("./updater");
-const { registerCmdHandlers, killAllCmdProcesses, getActiveCmdProcesses } = require("./cmd");
+const { registerCmdHandlers, killAllCmdProcesses, killOwnerProjectCmdProcesses, getActiveCmdProcesses, beginCommandShutdown } = require("./cmd");
 const { registerAilyServicesStreamHandlers, cancelAllAilyServicesStreams, getActiveAilyServicesStreams } = require("./aily-services-stream");
 const {
   executeWebviewFetch,
@@ -794,7 +794,7 @@ const {
   wakeWebviewBridge,
 } = require("./webview-bridge");
 const { registerMCPHandlers } = require("./mcp");
-const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks, withAppDataResourceLock } = require("./appdata-resource-lock");
+const { registerAppDataResourceLockHandlers, releaseAllAppDataResourceLocks, withAppDataResourceLock, beginAppDataResourceShutdown } = require("./appdata-resource-lock");
 const { registerAppDataResourceCleanupHandlers } = require('./appdata-resource-cleanup');
 const { createBuildDeliveryAuthority } = require('./build-delivery-authority');
 let buildDeliveryAuthority;
@@ -2614,6 +2614,7 @@ function createWindow() {
   registerWindowHandlers(mainWindow, {
     resolveRendererUrl: resolveAppRendererUrl,
     getRendererGeneration: () => rendererGeneration,
+    canCloseMainWindow: () => hasProcessCleanupCompleted,
   });
   registerNpmHandlers(mainWindow);
   if (!buildDeliveryAuthority) {
@@ -3090,7 +3091,17 @@ app.on("window-all-closed", () => {
   }
 });
 
-function cleanupRegisteredChildProcesses() {
+async function waitForAppDataResourceCleanup(ownerWebContentsId) {
+  const deadline = Date.now() + 5000;
+  while (true) {
+    const result = releaseAllAppDataResourceLocks(ownerWebContentsId);
+    const remaining = deadline - Date.now();
+    if (result.ok || remaining <= 0) return result;
+    await new Promise(resolve => setTimeout(resolve, Math.min(500, remaining)));
+  }
+}
+
+async function cleanupRegisteredChildProcesses() {
   console.info('[PROC_TRACE][APP_CLEANUP_START]', {
     cmd: getActiveCmdProcesses(),
     npm: getActiveNpmProcesses(),
@@ -3098,18 +3109,38 @@ function cleanupRegisteredChildProcesses() {
     ailyServicesStreams: getActiveAilyServicesStreams()
   });
 
-  return Promise.allSettled([
-    killAllCmdProcesses(),
-    killAllNpmProcesses(),
+  // Close admission before taking a process snapshot. AppData cleanup has a
+  // bounded wait; unfinished borrowers retain their locks after the UI closes.
+  beginCommandShutdown();
+  beginAppDataResourceShutdown();
+  let resourceCleanupTimer;
+  try {
+    await Promise.race([
+      (async () => {
+        const results = await Promise.allSettled([killAllCmdProcesses(), killAllNpmProcesses()]);
+        if (results.some(result => result.status === 'rejected' || result.value === false)) {
+          throw new Error('部分任务未确认停止，保留其 AppData 锁。');
+        }
+        if (!(await waitForAppDataResourceCleanup()).ok) throw new Error('AppData 锁清理尚未完成。');
+      })(),
+      new Promise((_, reject) => {
+        resourceCleanupTimer = setTimeout(() => reject(new Error('AppData 清理等待已达 5 秒。')), 5000);
+      }),
+    ]);
+  } catch (error) {
+    console.warn('[PROC_TRACE][APP_RESOURCE_CLEANUP_DEFERRED]', error?.message || String(error));
+  } finally {
+    clearTimeout(resourceCleanupTimer);
+  }
+
+  await Promise.allSettled([
     killAllTerminals(),
     cancelAllAilyServicesStreams(),
     connector.shutdown(),
     simulatorGateway.stop(),
     simulatorSubappHost.defaultHost.stop(),
     packagedRendererServer.close(),
-  ]).then((results) => {
-    // console.info('[PROC_TRACE][APP_CLEANUP_DONE]', { results });
-  });
+  ]);
 }
 
 app.on("before-quit", (event) => {
@@ -3246,6 +3277,21 @@ ipcMain.handle("select-folder", async (event, data) => {
 });
 
 // 跨版本项目占用：尝试获取 / 释放锁、前置其他进程窗口
+ipcMain.handle('project-commands-stop', async (event, data) => {
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame
+      || typeof data?.projectPath !== 'string' || !path.isAbsolute(data.projectPath)) {
+    return { ok: false, error: 'Invalid project close owner.' };
+  }
+  return { ok: await killOwnerProjectCmdProcesses(event.sender, data.projectPath) };
+});
+
+ipcMain.handle('project-appdata-drain', async (event) => {
+  if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    return { ok: false, error: 'Invalid project close owner.' };
+  }
+  return waitForAppDataResourceCleanup(event.sender.id);
+});
+
 ipcMain.handle("project-lock-try", (event, data) => {
   const { projectPath, force } = data || {};
   const r = projectLock.tryAcquireLock(projectPath, { force: !!force });

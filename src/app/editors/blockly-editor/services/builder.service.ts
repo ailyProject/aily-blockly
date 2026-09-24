@@ -95,6 +95,7 @@ export class _BuilderService {
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
   private preprocessRunGeneration = 0;
   private pendingPrecompileTimer: ReturnType<typeof setTimeout> | null = null;
+  private preprocessStop: Promise<void> | null = null;
   private pendingPrecompileBlockedLogged = false;
   private aiWaitingSubscription: any = null; // 保存 AI 等待状态订阅引用
   private workflowStateSubscription: any = null; // 保存流程状态订阅引用
@@ -303,11 +304,17 @@ export class _BuilderService {
     const subscription = this.preprocessProcess;
     const streamId = this.preprocessStreamId;
     this.preprocessProcess = null;
-    this.preprocessStreamId = null;
 
     subscription?.unsubscribe?.();
-    if (streamId) {
-      void this.cmdService.kill(streamId).catch((error) => {
+    if (streamId && !this.preprocessStop) {
+      const stopping = this.cmdService.kill(streamId).then(stopped => {
+        if (!stopped) throw new Error('预处理任务未确认停止，共享资源锁仍受保护。');
+        if (this.preprocessStreamId === streamId) this.preprocessStreamId = null;
+      }).finally(() => {
+        if (this.preprocessStop === stopping) this.preprocessStop = null;
+      });
+      this.preprocessStop = stopping;
+      void stopping.catch((error) => {
         console.warn('终止预编译进程失败:', error);
       });
     }
@@ -362,6 +369,7 @@ export class _BuilderService {
 
   private shouldCancelBackgroundPreprocess(runGeneration: number): boolean {
     const shouldCancel = runGeneration !== this.preprocessRunGeneration
+      || this.projectService.isProjectTransitionInProgress?.(this.projectService.currentProjectPath)
       || this.blocklyService.aiWaiting
       || this.getPendingChatBlockingOperationCount() > 0;
     if (shouldCancel) {
@@ -541,22 +549,14 @@ export class _BuilderService {
       console.log('检测到依赖变化，准备重新预处理');
 
       // 1. 先终止正在运行的预处理进程（如果有）
-      if (this.preprocessProcess || this.preprocessStreamId) {
+      if (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop) {
         console.log('终止正在运行的预处理进程...');
         const stopStartedAt = Date.now();
         try {
-          // 先取消订阅
-          if (this.preprocessProcess) {
-            this.preprocessProcess.unsubscribe();
-            this.preprocessProcess = null;
-          }
-          // 再 kill 进程
-          if (this.preprocessStreamId) {
-            await this.cmdService.kill(this.preprocessStreamId);
-            this.preprocessStreamId = null;
-          }
+          await this.stopPreprocess();
         } catch (error) {
           console.warn('终止旧的预处理进程失败:', error);
+          return;
         } finally {
           this.recordPreprocessDuration('stop_existing_process', stopStartedAt);
         }
@@ -743,6 +743,12 @@ export class _BuilderService {
         this.preprocessProcess = subscription;
         });
       } catch (error) {
+        if (String(error?.message).includes('APPDATA_RESOURCE_LOCK_TIMEOUT')) {
+          if (!this.shouldCancelBackgroundPreprocess(runGeneration)) {
+            this.schedulePendingPrecompileRetry('resource-ready', '共享资源恢复可用，重试后台预编译');
+          }
+          return;
+        }
         console.warn('启动后台预处理失败:', error);
       }
       })
@@ -762,7 +768,11 @@ export class _BuilderService {
         if (this.preprocessProcess || this.preprocessStreamId) {
           console.log('依赖安装开始，终止正在运行的预编译');
           this.pendingPrecompile = true;
-          await this.stopPreprocess();
+          try {
+            await this.stopPreprocess();
+          } catch (error) {
+            console.warn('依赖安装前终止预编译失败:', error);
+          }
         }
         return;
       }
@@ -809,24 +819,8 @@ export class _BuilderService {
     }
     this.pendingPrecompileBlockedLogged = false;
 
-    // 终止正在运行的预处理进程
-    if (this.preprocessProcess || this.preprocessStreamId) {
-      try {
-        // 先取消订阅
-        if (this.preprocessProcess) {
-          this.preprocessProcess.unsubscribe();
-          this.preprocessProcess = null;
-        }
-        // 再 kill 进程
-        if (this.preprocessStreamId) {
-          this.cmdService.kill(this.preprocessStreamId);
-          this.preprocessStreamId = null;
-        }
-        console.log('已终止预处理进程');
-      } catch (error) {
-        console.warn('终止预处理进程失败:', error);
-      }
-    }
+    this.preprocessRunGeneration++;
+    void this.stopPreprocess().catch(error => console.warn('终止预处理进程失败:', error));
     
     // 取消依赖变化订阅
     if (this.dependencySubscription) {
@@ -859,24 +853,8 @@ export class _BuilderService {
    * 供外部调用（例如清除缓存时）
    */
   async stopPreprocess(): Promise<void> {
-    if (this.preprocessProcess || this.preprocessStreamId) {
-      console.log('停止预编译进程...');
-      try {
-        // 先取消订阅
-        if (this.preprocessProcess) {
-          this.preprocessProcess.unsubscribe();
-          this.preprocessProcess = null;
-        }
-        // 再 kill 进程
-        if (this.preprocessStreamId) {
-          await this.cmdService.kill(this.preprocessStreamId);
-          this.preprocessStreamId = null;
-        }
-        console.log('预编译进程已停止');
-      } catch (error) {
-        console.warn('停止预编译进程失败:', error);
-      }
-    }
+    this.cancelBackgroundPreprocess();
+    await this.preprocessStop;
     // 清理预编译错误状态
     this.preprocessError = null;
     this.preprocessFullError = '';
@@ -1150,24 +1128,13 @@ export class _BuilderService {
             }
           }
           
-          // 超时或完成检查
-          if (this.preprocessProcess || this.preprocessStreamId) {
-            console.warn('等待预编译超时，尝试终止并重新运行');
-            try {
-              if (this.preprocessProcess) {
-                this.preprocessProcess.unsubscribe();
-                this.preprocessProcess = null;
-              }
-              if (this.preprocessStreamId) {
-                await this.cmdService.kill(this.preprocessStreamId);
-                this.preprocessStreamId = null;
-              }
-            } catch (error) {
-              console.warn('终止超时的预编译进程失败:', error);
-            }
-          } else {
+          if (!this.preprocessProcess && !this.preprocessStreamId) {
             console.log('后台预编译已完成，继续编译流程');
           }
+        }
+        if (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop) {
+          console.warn('等待预编译停止后继续编译');
+          await this.stopPreprocess();
         }
 
         // compile.js owns fresh preprocessing in the same supervised transaction.

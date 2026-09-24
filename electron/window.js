@@ -2010,29 +2010,29 @@ function registerWindowHandlers(mainWindow, options = {}) {
         // 检查是否是主窗口，如果是主窗口，关闭整个应用程�?
         if (senderWindow === mainWindow) {
             app.quit();
-            // Attempt to terminate any residual helper processes on exit.
-            terminateAilyProcess();
         } else {
             authorizeRendererWindowClose(senderWindow);
             senderWindow.close();
         }
     });
 
-    // Mac 平台下处理系统关闭按钮的关闭检�?
-    if (process.platform === 'darwin') {
-        mainWindow.on('close', (event) => {
-            event.preventDefault();
+    // Keep the renderer available until main has drained its AppData leases.
+    mainWindow.on('close', (event) => {
+        if (options.canCloseMainWindow?.()) return;
+        event.preventDefault();
+        if (process.platform === 'darwin' && !applicationIsQuitting) {
             mainWindow.webContents.send('window-close-request');
-        });
+        } else {
+            app.quit();
+        }
+    });
 
+    if (process.platform === 'darwin') {
         // 监听渲染进程返回的关闭确认结�?
         ipcMain.on('window-close-confirmed', (event) => {
             const senderWindow = BrowserWindow.fromWebContents(event.sender);
             if (senderWindow === mainWindow) {
-                mainWindow.removeAllListeners('close');
-                mainWindow.close();
                 app.quit();
-                terminateAilyProcess();
             }
         });
     }
