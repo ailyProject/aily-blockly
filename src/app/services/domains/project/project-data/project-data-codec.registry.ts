@@ -12,7 +12,9 @@ export interface ProjectDataCodec<TValue = unknown> {
 }
 
 const DEFAULT_MAX_RAW_LENGTH = 128 * 1024 * 1024;
-const MAX_CANONICAL_JSON_DEPTH = 256;
+// Blockly next-block chains add two JSON levels per block. Keep the input
+// bounded while accepting long, valid workspaces published by older clients.
+const MAX_CANONICAL_JSON_DEPTH = 512;
 const MAX_CANONICAL_JSON_NODES = 2_000_000;
 
 export class ProjectDataCodecRegistry {
