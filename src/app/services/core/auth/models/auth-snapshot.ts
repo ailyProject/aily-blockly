@@ -33,6 +33,8 @@ export interface AuthInvitationInfo {
 }
 
 export interface AuthUserInfo {
+  readonly education_student?: boolean;
+  readonly education_teacher?: boolean;
   readonly id?: string;
   readonly email?: string;
   readonly phone?: string;

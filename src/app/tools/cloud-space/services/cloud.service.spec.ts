@@ -51,6 +51,30 @@ describe('CloudService Coder category isolation', () => {
     expect(http.get).not.toHaveBeenCalled();
   });
 
+  it('requests student projects with pagination and the current product category', () => {
+    service.getStudentProjects(2, 100);
+    expect(http.get.calls.mostRecent().args).toEqual([
+      jasmine.stringMatching(/\/cloud\/projects\/students$/),
+      { params: { page: '2', perPage: '100', category: 'coder' } },
+    ]);
+    config.isCoderProduct.and.returnValue(false);
+    service.getStudentProjects();
+    expect(http.get.calls.mostRecent().args[1].params.category).toBe('blockly');
+  });
+
+  it('uses authenticated HTTP requests for project details, downloads and private covers', () => {
+    service.getProject('student-project');
+    expect(http.get.calls.mostRecent().args[0]).toMatch(/\/projects\/student-project$/);
+    service.downloadProject('student-project');
+    expect(http.get.calls.mostRecent().args).toEqual([
+      jasmine.stringMatching(/\/projects\/student-project\/download$/), { responseType: 'blob' },
+    ]);
+    service.getProjectImage('/files/cover.webp');
+    expect(http.get.calls.mostRecent().args).toEqual([
+      `${service.baseUrl}/files/cover.webp`, { responseType: 'blob' },
+    ]);
+  });
+
   it('sends the Coder upload category as a multipart field alongside projectData and pid', () => {
     const projectData = { name: 'demo', type: 'coder', entry: 'src/main.cpp' };
     service.syncProject({ pid: 'cloud-id', projectData, category: 'coder' });

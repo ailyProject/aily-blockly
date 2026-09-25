@@ -55,7 +55,8 @@ export class EditorComponent implements OnInit {
     // 在 ngOnInit 中初始化图片预览URL,此时 @Input 属性已经被正确设置
     this.imagePreviewUrl = this.projectData.image_url || null;
     // 初始化标签
-    this.tags = JSON.parse(this.projectData.tags) || [];
+    this.tags = typeof this.projectData.tags === 'string'
+      ? JSON.parse(this.projectData.tags) || [] : this.projectData.tags || [];
 
     console.log("Edit Data: ", this.projectData);
   }
