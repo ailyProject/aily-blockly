@@ -13,7 +13,7 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-deliver
 process.env.AILY_APPDATA_PATH = path.join(root, 'appdata');
 process.env.AILY_CHILD_PATH = path.resolve(__dirname, '../../child');
 app.setPath('userData', path.join(root, 'profile')); app.disableHardwareAcceleration();
-const locks = require('../appdata-resource-lock'), cmd = require('../cmd');
+const cmd = require('../cmd');
 const windows = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor(predicate) {
@@ -39,7 +39,7 @@ app.whenReady().then(async () => {
         if (queryHook) await queryHook();
         return { ok: true, source: await main.webContents.executeJavaScript('window.source') };
       } });
-    locks.registerAppDataResourceLockHandlers(); cmd.registerCmdHandlers(undefined, { buildDeliveryAuthority: authority });
+    cmd.registerCmdHandlers(undefined, { buildDeliveryAuthority: authority });
     ipcMain.handle('fixture-query', (event, request) => authority.query(event.sender, request));
     async function prepare(mode = 'blockly', outcome = 'normal') {
       const project = path.join(root, randomUUID());
@@ -53,18 +53,15 @@ app.whenReady().then(async () => {
       const state = { projectPath: project, mode, activationId: randomUUID(), boardModule: config.boardModule,
         ...(mode === 'coder' ? { saved: true } : { workspace: config.sourceCapture.workspace }) };
       await main.webContents.executeJavaScript(`window.source=${JSON.stringify(state)}`);
-      const lease = await invoke(main, 'appdata-resource-lock-acquire', { mode: 'read', requestId: randomUUID(), label: 'delivery fixture', timeoutMs: 5000 });
-      assert.equal(lease.ok, true);
       const options = { command: process.execPath, args: [path.resolve(__dirname, 'fixtures/build-delivery-child/scripts/compile.js'), request],
         streamId: randomUUID(), buildWorkspace: project, buildDeliveryRequest: request, shellProfile: false,
-        env: { ELECTRON_RUN_AS_NODE: '1' }, appDataResourceToken: lease.token };
-      return { project, request, state, lease, options };
+        env: { ELECTRON_RUN_AS_NODE: '1' } };
+      return { project, request, state, options };
     }
     async function finish(f) {
       await main.webContents.executeJavaScript(`window.buildTest.watch(${JSON.stringify(f.options.streamId)})`);
       const result = await invoke(main, 'cmd-run', f.options); assert.equal(result.success, true, result.error);
-      await invoke(main, 'appdata-resource-lock-release', { token: f.lease.token });
-      await waitFor(() => !fs.existsSync(f.lease.lockPath));
+      await waitFor(() => !cmd.getCmdProcess(f.options.streamId));
       assert.throws(() => process.kill(result.pid, 0), { code: 'ESRCH' });
       return result;
     }
@@ -80,26 +77,29 @@ app.whenReady().then(async () => {
       const f = await prepare('blockly', outcome); await finish(f);
       assert.equal((await invoke(main, 'fixture-query', { projectPath: f.project })).status, 'failed'); checks++;
     }
-    {
+    for (const action of ['cancel', 'owner-change']) {
       const f = await prepare(); let resume, entered = false;
       queryHook = () => { entered = true; return new Promise(resolve => { resume = resolve; }); };
       const starting = invoke(main, 'cmd-run', f.options); await waitFor(() => entered);
-      await invoke(main, 'appdata-resource-lock-release', { token: f.lease.token }); resume();
-      const result = await starting; assert.equal(result.success, false); assert.match(result.error, /CANCELLED/);
+      if (action === 'cancel') {
+        assert.equal((await invoke(main, 'cmd-kill', { streamId: f.options.streamId })).success, true);
+      } else generation++;
+      resume();
+      const result = await starting; assert.equal(result.success, false);
+      assert.match(result.error, action === 'cancel' ? /CANCELLED/ : /generation/);
       assert.equal(fs.existsSync(path.join(f.project, '.temp/fixture-pid')), false);
-      assert.equal(fs.existsSync(f.lease.lockPath), false); queryHook = undefined; checks++;
+      queryHook = undefined; checks++;
     }
     {
       const f = await prepare('blockly', 'hold');
       const result = await invoke(main, 'cmd-run', f.options); assert.equal(result.success, true);
       await waitFor(() => fs.existsSync(path.join(f.project, '.temp/fixture-pid')));
-      await invoke(main, 'appdata-resource-lock-release', { token: f.lease.token });
       assert.equal(await cmd.killCmdProcess(f.options.streamId), true);
       assert.throws(() => process.kill(result.pid, 0), { code: 'ESRCH' });
       // OS tree termination may precede Node's queued close notification.
       await waitFor(async () => (await invoke(main, 'fixture-query', { projectPath: f.project })).status !== 'running');
       assert.equal((await invoke(main, 'fixture-query', { projectPath: f.project })).status, 'failed');
-      assert.equal(fs.existsSync(f.lease.lockPath), false); checks++;
+      checks++;
     }
     {
       const f = await prepare(); await finish(f); generation++;
@@ -111,13 +111,13 @@ app.whenReady().then(async () => {
       const frame = main.webContents.mainFrame.frames[0];
       const result = await frame.executeJavaScript(`window.buildTest.invoke('cmd-run',${JSON.stringify(f.options)})`);
       assert.equal(result.success, false); assert.match(result.error, /authority unavailable/);
-      await invoke(main, 'appdata-resource-lock-release', { token: f.lease.token }); checks++;
+      checks++;
     }
     assert.equal(cmd.getActiveCmdProcesses().length, 0);
     console.log(JSON.stringify({ outcome: 'passed', checks, root, hiddenElectron: true, firmwareCompiled: false }));
-    for (const w of windows) if (!w.isDestroyed()) w.destroy(); locks.releaseAllAppDataResourceLocks(); app.exit(0);
+    for (const w of windows) if (!w.isDestroyed()) w.destroy(); app.exit(0);
   } catch (error) {
     console.error(error); await cmd.killAllCmdProcesses();
-    for (const w of windows) if (!w.isDestroyed()) w.destroy(); locks.releaseAllAppDataResourceLocks(); app.exit(1);
+    for (const w of windows) if (!w.isDestroyed()) w.destroy(); app.exit(1);
   }
 }).catch(error => { console.error(error); app.exit(1); });

@@ -10,7 +10,9 @@ const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
 
 function assertNoAbsIdentityContext(access) {
   const { root, files } = access;
-  for (const relative of ['project.abs', 'project.abs.map.json', path.join('.aily', 'abs-sync')]) {
+  // A plain project.abs is a type/field source, without Blockly block IDs.
+  // A projection map or sync journal can bind identities and must still block.
+  for (const relative of ['project.abs.map.json', path.join('.aily', 'abs-sync')]) {
     try { files.lstatSync(path.join(root, relative)); }
     catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     throw fault('BLOCKLY_IDENTITY_MIGRATION_BLOCKED', `Existing ABS identity context (${relative}); preserve drafts and use explicit recovery before migrating legacy shadow IDs.`);

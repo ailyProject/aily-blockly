@@ -48,6 +48,7 @@ import {
 
 /** 与独立 aily-coder-editor 子应用包 src/hostEmbedContext.ts 中 channel 常量一致 */
 const AILY_CODER_EDITOR_HOST_CONTEXT_CHANNEL = 'aily-coder-editor-host-context';
+type ProjectDependencySession = ReturnType<ProjectService['getProjectDependencySession']>;
 /** iframe 已完成监听后主动索要上下文，避免一次性 postMessage 早于子应用监听器。 */
 const AILY_CODER_EDITOR_HOST_CONTEXT_REQUEST_CHANNEL = 'aily-coder-editor-host-context-request';
 /** 内嵌 Coder 请求在系统文件管理器中显示绝对路径 */
@@ -225,6 +226,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   };
   private unregisterCoderEditorUpdateClient: (() => void) | null = null;
   private coderBootstrapGeneration = 0;
+  private dependencySession?: ProjectDependencySession;
   private destroyed = false;
 
   private readonly coderNativeFsBridgeListener = (ev: MessageEvent) => this.onCoderNativeFsMessage(ev);
@@ -455,22 +457,37 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    */
   private async bootstrap(projectPath: string) {
     const generation = ++this.coderBootstrapGeneration;
-    const isCurrent = () => !this.destroyed && generation === this.coderBootstrapGeneration;
+    let session: ProjectDependencySession;
     try {
-      this.beginCoderEmbedLoading();
-      this.coderEmbedSrc = null;
-      const pathApi = window['path'] as { resolve?: (p: string) => string };
-      const resolved = pathApi.resolve ? pathApi.resolve(projectPath) : projectPath;
-      this.coderEmbedWorkspaceRoot = resolved;
-      if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(resolved);
-      await this.ensureProjectPackageJsonExists(resolved);
-      if (!isCurrent()) return;
-      await this.loadProject(resolved);
-      if (!isCurrent()) return;
-      void this.ensureNpmDepsWithRetry(resolved);
-      await this.initCoderEmbed(resolved, false);
-      if (!isCurrent()) return;
-      this.setupBuildOutputsWatch(resolved);
+      session = this.projectService.getProjectDependencySession(projectPath);
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
+      throw error;
+    }
+    this.dependencySession = session;
+    const isCurrent = () => !this.destroyed && generation === this.coderBootstrapGeneration
+      && this.isDependencySessionCurrent(session);
+    try {
+      await this.projectService.runProjectDependencyTask(session, async () => {
+        this.beginCoderEmbedLoading();
+        this.coderEmbedSrc = null;
+        const pathApi = window['path'] as { resolve?: (p: string) => string };
+        const resolved = pathApi.resolve ? pathApi.resolve(projectPath) : projectPath;
+        this.coderEmbedWorkspaceRoot = resolved;
+        if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(resolved);
+        await this.ensureProjectPackageJsonExists(resolved);
+        if (!isCurrent()) return;
+        await this.loadProject(resolved, session);
+        if (!isCurrent()) return;
+        const dependencies = this.ensureNpmDepsWithRetry(resolved, session);
+        try {
+          await this.initCoderEmbed(resolved, false, session);
+          if (!isCurrent()) return;
+          this.setupBuildOutputsWatch(resolved);
+        } finally {
+          await dependencies;
+        }
+      });
     } catch (error: any) {
       if (!isCurrent()) return;
       console.error('加载项目失败', error);
@@ -483,6 +500,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       this.coderEmbedSrc = null;
       this.coderEmbedError = error?.message || String(error || '加载项目失败');
       this.message.error('加载项目失败，请检查项目文件是否完整');
+    } finally {
+      this.projectService.finishProjectDependencyPreparation(session);
     }
   }
 
@@ -602,9 +621,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   /**
-   * 写入工程上下文并标为已加载（不含 npm；依赖安装由 bootstrap 中单独 void 启动）。
+   * 写入工程上下文并标为已加载；bootstrap 等待并行的依赖准备完成。
    */
-  async loadProject(projectPath: string): Promise<void> {
+  async loadProject(projectPath: string, session = this.dependencySession): Promise<void> {
     const packageJson = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
     if (this.active) this.electronService.setTitle(`${this.configService.getApplicationName()} - ${packageJson.name}`);
     this.projectService.currentPackageData = packageJson;
@@ -617,61 +636,63 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.projectService.currentProjectPath = projectPath;
     this.projectService.stateSubject.next('loaded');
     // 依赖已存在时尽早同步，供 Header 串口/开发板菜单使用
-    void this.syncBoardConfigForHeader();
+    await this.syncBoardConfigForHeader(session);
   }
 
   /** 与 Blockly loadProject 一致：写入 ProjectService.currentBoardConfig */
-  private async syncBoardConfigForHeader(): Promise<void> {
-    await this.projectService.syncCurrentBoardConfig();
+  private async syncBoardConfigForHeader(session = this.dependencySession): Promise<void> {
+    await this.projectService.syncCurrentBoardConfig(session);
   }
 
   /**
    * 与 Blockly loadProject 对齐：工程依赖 await 检查；平台 sdk/tool 后台安装且已就绪则跳过。
    */
-  private ensureNpmDepsWithRetry(projectPath: string): void {
-    const refreshEmbedAfterDeps = () => {
-      if (this.coderEmbedWorkspaceRoot !== projectPath) {
-        return;
-      }
-      void this.syncBoardConfigForHeader();
-      void this.writeCoderEmbedHints(projectPath);
-      void this.pushAilyCoderHostContext(projectPath);
+  private ensureNpmDepsWithRetry(projectPath: string, session: ProjectDependencySession): Promise<void> {
+    const refreshEmbedAfterDeps = async () => {
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+      await this.syncBoardConfigForHeader(session);
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+      await this.writeCoderEmbedHints(projectPath, session);
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+      await this.pushAilyCoderHostContext(projectPath, session);
     };
 
     const run = async () => {
-      if (this.coderEmbedWorkspaceRoot !== projectPath) {
-        return;
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
+      try {
+        await this.npmService.ensureProjectAndBoardDeps(projectPath, {
+          onRetryInstall: () => void run(),
+          onBoardDepsSettled: refreshEmbedAfterDeps,
+        }, session);
+      } catch (error) {
+        if (this.isCurrentCoderWorkspace(projectPath, session)) console.error('install board dependencies error', error);
       }
-      await this.npmService.ensureProjectAndBoardDeps(projectPath, {
-        onRetryInstall: () => void run(),
-        onBoardDepsSettled: refreshEmbedAfterDeps,
-      });
     };
-    void run();
+    return run();
   }
 
-  private async initCoderEmbed(projectPath: string, resetLoading = true) {
+  private async initCoderEmbed(projectPath: string, resetLoading = true, session = this.dependencySession) {
     try {
-      if (!this.isCurrentCoderWorkspace(projectPath)) return;
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       if (resetLoading) {
         this.beginCoderEmbedLoading();
       }
-      await this.writeCoderEmbedHints(projectPath);
-      if (!this.isCurrentCoderWorkspace(projectPath)) return;
+      await this.writeCoderEmbedHints(projectPath, session);
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       this.coderLoadingStage = 'dependency';
       let base: string;
       if (this.electronService.isElectron) {
         await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
-        if (!this.isCurrentCoderWorkspace(projectPath)) return;
+        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
         await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
-        if (!this.isCurrentCoderWorkspace(projectPath)) return;
+        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
         this.coderLoadingStage = 'runtime';
         base = (await this.acquireCoderRuntime()).url;
       } else {
         this.coderLoadingStage = 'runtime';
         base = this.coderDevEmbedBase;
       }
-      if (!this.isCurrentCoderWorkspace(projectPath)) return;
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       const u = new URL(base.endsWith('/') ? base : `${base}/`);
       u.searchParams.set('mode', 'full-workbench');
       u.searchParams.set('folder', projectPath);
@@ -691,9 +712,9 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       this.coderEmbedSrc = this.sanitizer.bypassSecurityTrustResourceUrl(u.toString());
       this.coderEmbedError = null;
       // iframe (load) 里会 postMessage；此处若 iframe 已缓存瞬时完成，再补一发
-      setTimeout(() => void this.pushAilyCoderHostContext(projectPath), 0);
+      setTimeout(() => void this.pushAilyCoderHostContext(projectPath, session), 0);
     } catch (e: any) {
-      if (!this.isCurrentCoderWorkspace(projectPath)) return;
+      if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       console.error(e);
       this.detachCoderEmbedFrame();
       this.clearCoderEmbedLoadingTimers();
@@ -1091,19 +1112,21 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    * buildPath 与 buildArtifacts 来自 resolveActualBuildOutputs，覆盖 aily-builder 全局缓存目录。
    * 文件位于 .aily/下，仓库 .gitignore 已忽略 .aily/。
    */
-  private async writeCoderEmbedHints(projectRoot: string): Promise<void> {
-    if (!this.isCurrentCoderWorkspace(projectRoot)) return;
+  private async writeCoderEmbedHints(projectRoot: string, session = this.dependencySession): Promise<void> {
+    if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
     try {
       const pathApi = window['path'] as { join: (...s: string[]) => string };
       const fsAny = window['fs'] as { mkdirSync?: (p: string, o?: { recursive?: boolean }) => void };
       const { buildPath, artifacts, mainHexAbs, mainHexRelPath } =
         await this.resolveEmbedBuildOutputs(projectRoot);
+      if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
       const ailyDir = pathApi.join(projectRoot, '.aily');
       if (!this.electronService.exists(ailyDir) && typeof fsAny?.mkdirSync === 'function') {
         fsAny.mkdirSync(ailyDir, { recursive: true });
       }
       const hintsPath = pathApi.join(projectRoot, '.aily', 'coder-embed-hints.json');
       const platformPackages = await this.loadPlatformPackagesForEmbed();
+      if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
       const boardProfile = await this.buildBoardProfileForEmbed(projectRoot);
       // 无任何真实产物时不写入 buildPath，避免 Coder 侧误展示虚拟节点
       const payload = {
@@ -1122,7 +1145,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         ...(platformPackages.length > 0 ? { platformPackages } : {}),
         ...(boardProfile ? { boardProfile } : {}),
       };
-      if (!this.isCurrentCoderWorkspace(projectRoot)) return;
+      if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
       this.electronService.writeFile(hintsPath, JSON.stringify(payload, null, 2));
     } catch (e) {
       console.warn('[CodeEditorPro] writeCoderEmbedHints', e);
@@ -1133,8 +1156,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    * 先同步注入工作区与语言，再异步补充构建产物和平台包。
    * Coder 库目录由子应用按当前区域独立加载，不再从 Blockly 库目录注入。
    */
-  private async pushAilyCoderHostContext(projectRoot: string): Promise<void> {
-    if (!this.isCurrentCoderWorkspace(projectRoot)) return;
+  private async pushAilyCoderHostContext(projectRoot: string, session = this.dependencySession): Promise<void> {
+    if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
     const generation = ++this.coderHostContextGeneration;
     const win = this.coderEmbedFrame?.nativeElement?.contentWindow;
     if (!win) {
@@ -1143,7 +1166,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const hostLanguage = this.translate.currentLang || this.translate.defaultLang || 'en';
     const appDataPath = window['path'].getAppDataPath() as string;
     if (
-      this.isCurrentCoderWorkspace(projectRoot)
+      this.isCurrentCoderWorkspace(projectRoot, session)
       && win === this.coderEmbedFrame?.nativeElement?.contentWindow
       && (this.coderInitialContextFrame !== win || this.coderInitialContextRoot !== projectRoot)
     ) {
@@ -1165,6 +1188,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         this.loadPlatformPackagesForEmbed(),
         this.buildBoardProfileForEmbed(projectRoot),
       ]);
+      if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
       if (generation === this.coderHostContextGeneration && this.isCurrentCoderWorkspace(projectRoot) && win === this.coderEmbedFrame?.nativeElement?.contentWindow) {
         this.codeSuggestionHostBridge.registerDeclarationRoots(platformPackages);
       }
@@ -1221,8 +1245,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     }
   }
 
-  private isCurrentCoderWorkspace(projectRoot: string): boolean {
-    return !this.destroyed && this.coderEmbedWorkspaceRoot === projectRoot;
+  private isDependencySessionCurrent(session?: ProjectDependencySession): boolean {
+    if (!session) return true;
+    try {
+      this.projectService.assertProjectDependencySession(session);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isCurrentCoderWorkspace(projectRoot: string, session = this.dependencySession): boolean {
+    return !this.destroyed && this.coderEmbedWorkspaceRoot === projectRoot && this.isDependencySessionCurrent(session);
   }
 
   /**

@@ -34,7 +34,7 @@ function fixture(t, coder = false) {
         querySource: async () => state.query ? state.query() : { ok: true, source: state.source } };
     const api = createBuildDeliveryAuthority(dependencies), libraries = createLibraryProjectionRecorder();
     const options = { command: process.execPath, args: [path.join(dependencies.childRoot, 'scripts/compile.js'), request],
-        buildWorkspace: root, buildDeliveryRequest: request, shellProfile: false, appDataResourceToken: 'reader' };
+        buildWorkspace: root, buildDeliveryRequest: request, shellProfile: false };
     const query = () => api.query(sender, { projectPath: root });
     const libraryFile = 'node_modules/@aily-project/lib-fixture/src/helper.h';
     function addLibrary() {

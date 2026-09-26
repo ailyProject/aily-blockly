@@ -27,19 +27,19 @@ export interface CmdOptions {
   forwardStdout?: boolean;
   /** Bind a build marker to this registered command's confirmed tree cancellation. */
   buildWorkspace?: string;
-  /** Main retains this renderer-owned lease until the registered command exits. */
-  appDataResourceToken?: string;
-  appDataResourceMode?: 'read' | 'write';
   /** Experimental full-delivery request; only the host compile entry may attest it. */
   buildDeliveryRequest?: string;
+  projectPath?: string;
+  projectSessionId?: string;
+  signal?: AbortSignal;
 }
-
-type CommandResourceOptions = Pick<CmdOptions, 'appDataResourceToken' | 'appDataResourceMode'>;
 
 interface QueuedTask {
   command: string;
   cwd?: string;
-  resource?: CommandResourceOptions;
+  silent: boolean;
+  options?: Partial<CmdOptions>;
+  removeAbortListener: () => void;
   resolve: (value: CmdOutput) => void;
   reject: (reason?: any) => void;
   subject: Subject<CmdOutput>;
@@ -63,6 +63,8 @@ export class CmdService {
    * @returns Observable<CmdOutput>
    */
   spawn(command: string, args?: string[], options?: Partial<CmdOptions>, silent: boolean = false): Observable<CmdOutput> {
+    const { signal, ...processOptions } = options || {};
+    if (signal?.aborted) return new Observable(observer => observer.error(cancelledCommandError()));
     const requestedStreamId = typeof options?.streamId === 'string' ? options.streamId.trim() : '';
     const streamId = requestedStreamId || `cmd_${Date.now()}_${Math.random()}`;
     const subject = new Subject<CmdOutput>();
@@ -70,16 +72,28 @@ export class CmdService {
     const cmdOptions: CmdOptions = {
       command,
       args: args || [],
-      ...options,
+      ...processOptions,
       streamId
     };
     // 累积 stderr/stdout 输出，在 close 事件时附加到返回数据中
     const MAX_COLLECTED_SIZE = 2000;
     let collectedStderr = '';
     let collectedStdout = '';
+    let settled = false;
+    let removeListener: (() => void) | undefined;
+    const onAbort = () => subject.error(cancelledCommandError());
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      removeListener?.();
+      this.subjects.delete(streamId);
+    };
+    subject.subscribe({ error: cleanup, complete: cleanup });
 
     // 注册数据监听器
-    const removeListener = window['cmd'].onData(streamId, (data: CmdOutput) => {
+    removeListener = window['cmd'].onData(streamId, (data: CmdOutput) => {
+      if (settled || signal?.aborted) return;
       // 累积 stderr/stdout 数据
       if (data.type === 'stderr' && data.data) {
         collectedStderr += data.data;
@@ -117,22 +131,23 @@ export class CmdService {
       // 如果是关闭或错误事件，完成Observable
       if (data.type === 'close' || data.type === 'error') {
         subject.complete();
-        this.subjects.delete(streamId);
-        removeListener();
       }
     });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return subject.asObservable();
+    }
 
     // 执行命令
     window['cmd'].run(cmdOptions).then((result: any) => {
+      if (settled) return;
       if (!result.success) {
         subject.error(new Error(result.error));
-        this.subjects.delete(streamId);
-        removeListener();
       }
     }).catch((error: any) => {
+      if (settled) return;
       subject.error(error);
-      this.subjects.delete(streamId);
-      removeListener();
     });
 
     return subject.asObservable();
@@ -143,20 +158,27 @@ export class CmdService {
    * @param cwd 工作目录
    * @param useQueue 是否使用队列（默认为true）
    */
-  run(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, resource?: CommandResourceOptions): Observable<CmdOutput> {
+  run(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, options?: Partial<CmdOptions>): Observable<CmdOutput> {
     if (!useQueue) {
       // 直接执行，不使用队列
-      return this.executeCommand(command, cwd, silent, resource);
+      return this.executeCommand(command, cwd, silent, options);
     }
 
     // 使用队列机制
     const subject = new Subject<CmdOutput>();
 
     return new Observable<CmdOutput>((observer) => {
+      const signal = options?.signal;
+      if (signal?.aborted) {
+        observer.error(cancelledCommandError());
+        return;
+      }
       const task: QueuedTask = {
         command,
         cwd,
-        resource,
+        silent,
+        options,
+        removeAbortListener: () => signal?.removeEventListener('abort', onAbort),
         resolve: (value: CmdOutput) => {
           observer.next(value);
           if (value.type === 'close' || value.type === 'error') {
@@ -168,9 +190,17 @@ export class CmdService {
         },
         subject
       };
+      const onAbort = () => {
+        const index = this.taskQueue.indexOf(task);
+        if (index < 0) return;
+        this.taskQueue.splice(index, 1);
+        task.reject(cancelledCommandError());
+      };
 
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.taskQueue.push(task);
       this.processQueue();
+      return task.removeAbortListener;
     });
   }
 
@@ -179,7 +209,8 @@ export class CmdService {
    * @param command 命令字符串
    * @param cwd 工作目录
    */
-  private executeCommand(command: string, cwd?: string, silent: boolean = false, resource?: CommandResourceOptions): Observable<CmdOutput> {
+  private executeCommand(command: string, cwd?: string, silent: boolean = false, options?: Partial<CmdOptions>): Observable<CmdOutput> {
+    if (options?.signal?.aborted) return new Observable(observer => observer.error(cancelledCommandError()));
     // console.log(`run command: ${command}`);
     if (!silent) {
       this.logService.update({
@@ -191,7 +222,7 @@ export class CmdService {
     const parts = parseCommand(command);
     const cmd = parts[0];
     const args = parts.slice(1);
-    return this.spawn(cmd, args, { cwd, ...resource }, silent);
+    return this.spawn(cmd, args, { ...options, cwd: cwd ?? options?.cwd }, silent);
   }
 
   /**
@@ -207,12 +238,13 @@ export class CmdService {
     try {
       while (this.taskQueue.length > 0) {
         const task = this.taskQueue.shift()!;
+        task.removeAbortListener();
 
         try {
           // console.log(`Processing queued command: ${task.command}`);
 
           // 执行命令并等待完成
-          const observable = this.executeCommand(task.command, task.cwd, false, task.resource);
+          const observable = this.executeCommand(task.command, task.cwd, task.silent, task.options);
 
           await new Promise<void>((resolve, reject) => {
             observable.subscribe({
@@ -230,7 +262,7 @@ export class CmdService {
           });
 
         } catch (error) {
-          console.error(`Error processing queued command: ${task.command}`, error);
+          if (!task.options?.signal?.aborted) console.error(`Error processing queued command: ${task.command}`, error);
           task.reject(error);
         }
       }
@@ -246,12 +278,12 @@ export class CmdService {
    * @param useQueue 是否使用队列（默认为true）
    * @returns Promise<{success: boolean, output: string, error?: string}>
    */
-  async runAsync(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, resource?: CommandResourceOptions): Promise<CmdOutput> {
-    return lastValueFrom(this.run(command, cwd, useQueue, silent, resource))
+  async runAsync(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, options?: Partial<CmdOptions>): Promise<CmdOutput> {
+    return lastValueFrom(this.run(command, cwd, useQueue, silent, options))
   }
 
-  async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, resource?: CommandResourceOptions): Promise<CmdOutput> {
-    const result = await this.runAsync(command, cwd, useQueue, silent, resource);
+  async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, options?: Partial<CmdOptions>): Promise<CmdOutput> {
+    const result = await this.runAsync(command, cwd, useQueue, silent, options);
     if (result.type === 'error' || (result.code ?? 0) !== 0) {
       throw new Error(result.error || result.stderr || result.stdout || `Command failed with exit code ${result.code ?? 'unknown'}: ${command}`);
     }
@@ -264,7 +296,7 @@ export class CmdService {
    */
   async kill(streamId: string): Promise<boolean> {
     const subject = this.subjects.get(streamId);
-    // The stream may close before main confirms that its process tree and resource lease are released.
+    // The stream may close before main confirms that its process tree has stopped.
     const result = await window['cmd'].kill(streamId);
     if (result.success) {
       subject?.complete();
@@ -286,6 +318,7 @@ export class CmdService {
    */
   clearQueue(): void {
     this.taskQueue.forEach(task => {
+      task.removeAbortListener();
       task.reject(new Error('Queue cleared'));
     });
     this.taskQueue = [];
@@ -316,6 +349,9 @@ export class CmdService {
   }
 }
 
+function cancelledCommandError(): Error {
+  return Object.assign(new Error('Project command was cancelled.'), { name: 'AbortError', code: 'PROJECT_COMMAND_CANCELLED' });
+}
 
 function parseCommand(command: string): string[] {
   const result: string[] = [];

@@ -10,10 +10,12 @@ describe('project lifecycle admission across sessions', () => {
     service.projectLifecycle = new ProjectLifecycleGate();
     service.currentProjectPathSubject = new BehaviorSubject('/a');
     service.coderProjectsSubject = new BehaviorSubject([]);
+    service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
     service.getProjectMode = () => 'blockly';
     service.projectOpenInternal = jasmine.createSpy('open').and.resolveTo(true);
     service.closeInternal = jasmine.createSpy('close').and.resolveTo(true);
+    service.stopProjectCommands = jasmine.createSpy('stopCommands').and.resolveTo();
     Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path) } });
     return { service, registry };
   }

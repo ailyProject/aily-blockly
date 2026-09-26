@@ -139,3 +139,37 @@ describe('ArduinoGenerator generated headers', () => {
     workspace.dispose();
   });
 });
+
+describe('ArduinoGenerator legacy Blinker declarations', () => {
+  for (const section of ['addVariable', 'addObject'] as const) {
+    it(`keeps a callback widget's concrete type when ${section} saw its print block first`, () => {
+      const workspace = new Blockly.Workspace();
+      const generator = new ArduinoGenerator('ArduinoBlinkerDeclarationTest');
+      generator.init(workspace);
+      generator[section]('Blinker_btn_abc', 'BlinkerNumber Blinker_btn_abc("btn-abc");');
+      generator[section]('Blinker_btn_abc', 'BlinkerButton Blinker_btn_abc("btn-abc");');
+
+      const code = generator.finish('');
+      expect(code).toContain('BlinkerButton Blinker_btn_abc("btn-abc");');
+      expect(code).not.toContain('BlinkerNumber Blinker_btn_abc');
+      workspace.dispose();
+    });
+  }
+
+  it('does not replace a declaration for another widget or an unrelated duplicate', () => {
+    const workspace = new Blockly.Workspace();
+    const generator = new ArduinoGenerator('ArduinoBlinkerDeclarationScopeTest');
+    generator.init(workspace);
+    generator.addObject('Blinker_btn_abc', 'BlinkerNumber Blinker_btn_abc("btn-abc");');
+    generator.addObject('Blinker_btn_abc', 'BlinkerButton Blinker_btn_abc("btn-other");');
+    generator.addObject('ordinary', 'int ordinary = 1;');
+    generator.addObject('ordinary', 'int ordinary = 2;');
+
+    const code = generator.finish('');
+    expect(code).toContain('BlinkerNumber Blinker_btn_abc("btn-abc");');
+    expect(code).not.toContain('BlinkerButton Blinker_btn_abc');
+    expect(code).toContain('int ordinary = 1;');
+    expect(code).not.toContain('int ordinary = 2;');
+    workspace.dispose();
+  });
+});

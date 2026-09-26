@@ -13,6 +13,15 @@ describe('generic Project Data payload boundaries', () => {
       expect(() => canonicalJsonStringify(value)).toThrow();
     }
   });
+  it('canonicalizes long Blockly next-block chains within the bounded depth', () => {
+    let block: Record<string, unknown> = { type: 'text' };
+    for (let index = 0; index < 190; index++) {
+      block = { type: 'text', next: { block } };
+    }
+    const document = { pages: [{ content: { blocks: { blocks: [block] } } }] };
+    const canonical = canonicalJsonStringify(document);
+    expect(JSON.parse(canonical).pages[0].content.blocks.blocks[0].type).toBe('text');
+  });
   let values: Map<string, unknown>;
   let put: jasmine.Spy;
   const read = (ref: AilyDataRef) => values.get(ref.$ailyData.id);

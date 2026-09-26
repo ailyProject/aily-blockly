@@ -2,7 +2,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { app, ipcMain } = require('electron');
-const { retainAppDataResourceLock } = require('./appdata-resource-lock');
 let registered = false;
 
 // Only an exact resource under the managed SDK/tools bases can be removed.
@@ -27,13 +26,10 @@ function resolveManagedResource(root, target) {
 function registerAppDataResourceCleanupHandlers() {
     if (registered) return;
     registered = true;
-    ipcMain.handle('appdata-resource-remove', async (event, { token, target }) => {
-        const lease = retainAppDataResourceLock(token, event.sender.id, 'write');
-        try {
-            const absolute = resolveManagedResource(process.env.AILY_APPDATA_PATH || app.getPath('userData'), target);
-            await fs.promises.rm(absolute, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
-            return { ok: true };
-        } finally { lease.release(); }
+    ipcMain.handle('appdata-resource-remove', async (_event, { target }) => {
+        const absolute = resolveManagedResource(process.env.AILY_APPDATA_PATH || app.getPath('userData'), target);
+        await fs.promises.rm(absolute, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+        return { ok: true };
     });
 }
 

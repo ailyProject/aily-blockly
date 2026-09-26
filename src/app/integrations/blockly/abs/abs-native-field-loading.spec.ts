@@ -152,6 +152,127 @@ describe('native dynamic field loading without declaration JSON', () => {
     expect(() => load(input)).toThrowError(/Cannot restore native field/);
   });
 
+  it('retains the exact old U8G2 font symbol only on its matching picker', () => {
+    Blockly.Blocks['u8g2_set_font'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['14px', '14']]), 'SIZE');
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Chinese', 'CHINESE']]), 'FONT_TYPE');
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['new font', 'u8g2_font_wqy14_t_chinese2']]), 'FONT');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_set_font');
+      restoreNativeFields(block, { SIZE: '14', FONT_TYPE: 'CHINESE', FONT: 'u8g2_font_wqy13_t_chinese2' });
+      expect(block.getFieldValue('FONT')).toBe('u8g2_font_wqy13_t_chinese2');
+      expect((block.getField('FONT') as Blockly.FieldDropdown).getOptions(false)
+        .some(option => option[1] === 'u8g2_font_wqy13_t_chinese2')).toBeTrue();
+      expect(() => restoreNativeFields(block, { FONT: 'unrelated-unknown-font' }))
+        .toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['u8g2_set_font']; }
+  });
+
+  it('loads a saved custom SSCMA serial port without changing other dropdowns', () => {
+    Blockly.Blocks['sscma_begin_serial'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Serial', 'Serial']]), 'SERIAL');
+    } };
+    try {
+      const block = workspace.newBlock('sscma_begin_serial');
+      restoreNativeFields(block, { SERIAL: 'SerialCustom' });
+      expect(block.getFieldValue('SERIAL')).toBe('SerialCustom');
+      expect(() => restoreNativeFields(block, { SERIAL: 'UnknownPort' }))
+        .toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['sscma_begin_serial']; }
+  });
+
+  it('adapts normalized U8G2 defaults for an older live library definition', () => {
+    Blockly.Blocks['u8g2_begin'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['SSD1306', 'SSD1306']]), 'TYPE')
+        .appendField(new Blockly.FieldDropdown([['128x64 full', '128X64_NONAME_F']]), 'RESOLUTION')
+        .appendField(new Blockly.FieldDropdown([['I2C', '_HW_I2C']]), 'PROTOCOL');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_begin');
+      const saved = { TYPE: 'SSD1306', MODE: 'FULL_BUFFER', RESOLUTION: '128X64_NONAME',
+        PROTOCOL: '_HW_I2C', SCL_PIN: 'SCL', SDA_PIN: 'SDA', RESET_PIN: 'U8X8_PIN_NONE' };
+      restoreNativeFields(block, saved);
+      expect(block.getFieldValue('RESOLUTION')).toBe('128X64_NONAME_F');
+      expect(saved.RESOLUTION).toBe('128X64_NONAME');
+      expect(() => restoreNativeFields(block, { ...saved, SCL_PIN: '12' }))
+        .toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['u8g2_begin']; }
+  });
+
+  it('loads the exact saved U8G2 font on an older picker without category fields', () => {
+    Blockly.Blocks['u8g2_set_font'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([
+        ['old Chinese font', 'u8g2_font_wqy13_t_chinese2'],
+      ]), 'FONT');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_set_font');
+      restoreNativeFields(block, { SIZE: '14', FONT_TYPE: 'CHINESE', FONT: 'u8g2_font_wqy13_t_chinese2' });
+      expect(block.getFieldValue('FONT')).toBe('u8g2_font_wqy13_t_chinese2');
+      expect(() => restoreNativeFields(block, { SIZE: '15', FONT_TYPE: 'CHINESE',
+        FONT: 'u8g2_font_wqy13_t_chinese2' })).toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['u8g2_set_font']; }
+  });
+
+  it('retains the old Chinese-1 font symbol when an old picker omits it', () => {
+    Blockly.Blocks['u8g2_set_font'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([
+        ['Chinese-2', 'u8g2_font_wqy12_t_chinese2'],
+      ]), 'FONT');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_set_font');
+      restoreNativeFields(block, { SIZE: '8', FONT_TYPE: 'CHINESE', FONT: 'u8g2_font_wqy12_t_chinese1' });
+      expect(block.getFieldValue('FONT')).toBe('u8g2_font_wqy12_t_chinese1');
+      expect((block.getField('FONT') as Blockly.FieldDropdown).getOptions(false)
+        .some(option => option[1] === 'u8g2_font_wqy12_t_chinese1')).toBeTrue();
+    } finally { delete Blockly.Blocks['u8g2_set_font']; }
+  });
+
+  it('loads both published TFT setup shapes against the installed definition', () => {
+    const names = ['WIDTH', 'HEIGHT', 'MISO', 'MOSI', 'SCLK', 'CS', 'DC', 'RST', 'BL'];
+    const values = [240, 240, 0, 10, 12, 13, 14, 11, 16];
+    const base = { VAR: 'tft', MODEL: 'GC9A01_DRIVER' };
+    Blockly.Blocks['math_number'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldNumber(0), 'NUM'); this.setOutput(true);
+    } };
+    const install = (shape: 'inputs' | 'fields') => {
+      Blockly.Blocks['tftespi_setup'] = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldTextInput('tft'), 'VAR')
+          .appendField(new Blockly.FieldDropdown([['GC9A01', 'GC9A01_DRIVER']]), 'MODEL');
+        for (const name of names) {
+          if (shape === 'inputs') this.appendValueInput(name);
+          else this.appendDummyInput(name).appendField(new Blockly.FieldTextInput('0'), name);
+        }
+      } };
+    };
+    try {
+      install('inputs');
+      const old = { blocks: { blocks: [{ type: 'tftespi_setup', id: 'tft', fields: {
+        ...base, ...Object.fromEntries(names.map((name, i) => [name, String(values[i])])),
+        QSPI_CS: '13', QSPI_SCLK: '12', QSPI_RST: '11', D0: '-1', D1: '-1', D2: '-1', D3: '-1', TE: '-1',
+      } }] } };
+      const before = absJson(old);
+      withNativeStateLoading(Blockly, workspace, old, () => Blockly.serialization.workspaces.load(old, workspace));
+      expect(workspace.getBlockById('tft')!.getInputTargetBlock('WIDTH')!.getFieldValue('NUM')).toBe(240);
+      expect(absJson(old)).toBe(before);
+      workspace.clear();
+
+      install('fields');
+      const newer = { blocks: { blocks: [{ type: 'tftespi_setup', id: 'tft', fields: base,
+        inputs: Object.fromEntries(names.map((name, i) => [name, { block: {
+          type: 'math_number', id: `number-${i}`, fields: { NUM: values[i] },
+        } }])),
+      }] } };
+      const newerBefore = absJson(newer);
+      withNativeStateLoading(Blockly, workspace, newer, () => Blockly.serialization.workspaces.load(newer, workspace));
+      expect(workspace.getBlockById('tft')!.getFieldValue('WIDTH')).toBe('240');
+      expect(workspace.getAllBlocks(false).length).toBe(1);
+      expect(absJson(newer)).toBe(newerBefore);
+    } finally { delete Blockly.Blocks['tftespi_setup']; delete Blockly.Blocks['math_number']; }
+  });
+
   it('bounds callbacks that continually replace one another', () => {
     const block = workspace.newBlock(type);
     block.getField = jasmine.createSpy().and.callFake(name => new Blockly.FieldTextInput());

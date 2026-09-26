@@ -3,6 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+// A project-local graphics library can legitimately contain more than 256 MiB
+// of fonts and images. Keep capture bounded without rejecting that source tree.
+const MAX_LIBRARY_SOURCE_BYTES = 512 * 1024 * 1024;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const within = (root, file) => { const rel = path.relative(root, file); return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); };
 const state = s => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs].join(':');
@@ -29,7 +32,7 @@ function captureLibrarySource(sourcePath) {
             for (const name of fs.readdirSync(filename).sort((a, b) => a.localeCompare(b))) visit(path.join(filename, name), path.join(relative, name), depth + 1);
             active.delete(real);
         } else if (before.isFile()) {
-            if (++fileCount > 4096 || (sizeBytes += before.size) > 256 * 1024 * 1024) fail('Source exceeds capture budget.');
+            if (++fileCount > 4096 || (sizeBytes += before.size) > MAX_LIBRARY_SOURCE_BYTES) fail('Source exceeds capture budget.');
             const fd = fs.openSync(filename, 'r');
             try {
                 const opened = fs.fstatSync(fd);
@@ -81,7 +84,7 @@ function createLibraryProjectionRecorder() {
             if (before.fingerprint !== target.fingerprint) fail(`Projection mismatch for ${owner}.`);
             if (entries.has(key) && entries.get(key).owner !== owner && !override) fail('Two packages project into the same library directory.');
             entries.set(key, { owner, source: before, target, inputs });
-            if (entries.size > 128 || [...entries.values()].reduce((n, e) => n + e.source.sizeBytes, 0) > 256 * 1024 * 1024) fail('Projection inventory exceeds budget.');
+            if (entries.size > 128 || [...entries.values()].reduce((n, e) => n + e.source.sizeBytes, 0) > MAX_LIBRARY_SOURCE_BYTES) fail('Projection inventory exceeds budget.');
         },
         snapshot(config) {
             const sorted = [...entries.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);

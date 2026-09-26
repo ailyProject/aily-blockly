@@ -19,6 +19,7 @@ import { AuthService } from '@core/auth/public-api';
 import { LoginDialogComponent } from '../../main-window/components/login-dialog/login-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { distinctUntilChanged } from 'rxjs/operators';
+import { firstValueFrom, Subscription } from 'rxjs';
 import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { TranslateService } from '@ngx-translate/core';
@@ -48,6 +49,14 @@ export class CloudSpaceComponent {
   isLoginDialogOpen = false; // 标记登录对话框是否已打开
 
   openingProjectIds = new Set<string>();
+  projectView: 'mine' | 'students' = 'mine';
+  isStudent = false;
+  isTeacher = false;
+  isLoading = false;
+  private subscriptions = new Subscription();
+  private listSubscription = new Subscription();
+  private editorSubscription = new Subscription();
+  private imageObjectUrls: string[] = [];
 
   constructor(
     private uiService: UiService,
@@ -70,10 +79,10 @@ export class CloudSpaceComponent {
   totalProjects = 0;
 
   ngOnInit(): void {
-    this.projectService.currentProjectPath$.subscribe(path => {
+    this.subscriptions.add(this.projectService.currentProjectPath$.subscribe(path => {
       // console.log('当前项目路径变化:', path);
       this.canSync = !!path;
-    });
+    }));
 
     // this.authService.checkAndSyncAuthStatus().then((res) => {
     //   if (!res) {
@@ -82,13 +91,17 @@ export class CloudSpaceComponent {
     // });
 
     // 检查用户是否登录
-    this.authService.isLoggedIn$
-      .pipe(distinctUntilChanged()) // 只有当登录状态真正改变时才触发
-      .subscribe(isLoggedIn => {
-        if (!isLoggedIn) {
-          this.itemList = [];
-          this.filteredItemList = [];
-        } else {
+    this.subscriptions.add(this.authService.userInfo$
+      .pipe(distinctUntilChanged((previous, current) => previous?.id === current?.id
+        && previous?.education_student === current?.education_student
+        && previous?.education_teacher === current?.education_teacher))
+      .subscribe(user => {
+        this.clearProjects();
+        this.isStudent = user?.education_student === true;
+        this.isTeacher = user?.education_teacher === true;
+        this.projectView = 'mine';
+        this.currentPage = 1;
+        if (user) {
           // 用户已登录时关闭可能存在的登录对话框状态标记
           this.isLoginDialogOpen = false;
           this.getCloudProjects().then(
@@ -97,7 +110,84 @@ export class CloudSpaceComponent {
           // 初始化时显示所有项目
           this.filteredItemList = [...this.itemList];
         }
-      });
+      }));
+  }
+
+  ngOnDestroy(): void {
+    this.subscriptions.unsubscribe();
+    this.clearProjects();
+  }
+
+  private clearProjects(): void {
+    this.listSubscription.unsubscribe();
+    this.editorSubscription.unsubscribe();
+    this.showEditor = false;
+    this.editorProjectData = null;
+    this.imageObjectUrls.forEach(url => URL.revokeObjectURL(url));
+    this.imageObjectUrls = [];
+    this.itemList = [];
+    this.filteredItemList = [];
+    this.totalProjects = 0;
+    this.isLoading = false;
+  }
+
+  switchProjectView(view: 'mine' | 'students'): void {
+    if (view === 'students' && !this.isTeacher) return;
+    this.projectView = view;
+    this.currentPage = 1;
+    this.searchKeyword = '';
+    this.getCloudProjects();
+  }
+
+  changePage(page: number): void {
+    this.currentPage = page;
+    this.getCloudProjects();
+  }
+
+  canEditProject(item): boolean {
+    return !item?.student || (this.isTeacher && item.student.active === true);
+  }
+
+  canPublishProject(item): boolean {
+    return !this.isStudent && this.canEditProject(item);
+  }
+
+  async requestSync(): Promise<void> {
+    if (this.isSyncing || !this.projectService.currentProjectPath) return;
+    const projectPath = this.projectService.currentProjectPath;
+    try {
+      const manifest = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+      let target: any;
+      if (this.isTeacher && manifest.cloudId) {
+        const response = await firstValueFrom(this.cloudService.getProject(manifest.cloudId));
+        if (this.projectService.currentProjectPath !== projectPath
+          || JSON.parse(this.electronService.readFile(`${projectPath}/package.json`)).cloudId !== manifest.cloudId) {
+          throw new Error('当前项目已切换，请重新同步');
+        }
+        if (response.status === 404) {
+          target = null;
+        } else {
+          if (response.status !== 200) throw new Error(response.messages || '无法确认项目权限');
+          target = response.data;
+        }
+      }
+      if (target?.student) {
+        if (!this.canEditProject(target)) {
+          this.message.error('该学生已停用，项目仅可查看和打开');
+          return;
+        }
+        this.modal.confirm({
+          nzTitle: '更新学生原项目',
+          nzContent: `将用当前本地项目更新 ${target.student.nickname || target.student.email} 的“${target.nickname || target.name}”，项目仍归该学生所有。`,
+          nzOkText: '更新原项目',
+          nzOnOk: () => this.syncToCloud(target),
+        });
+      } else {
+        await this.syncToCloud();
+      }
+    } catch (error) {
+      this.message.error('无法同步项目: ' + error);
+    }
   }
 
   // openLoginDialog() {
@@ -126,7 +216,7 @@ export class CloudSpaceComponent {
 
     this.openingProjectIds.add(item.id);
     // console.log('打开云上项目:', item);
-    this.cloudService.getProjectArchive(item.archive_url).subscribe({
+    this.cloudService.openProjectArchive(item.id).subscribe({
       next: async res => {
         try {
           // 直接添加随机数避免重名
@@ -165,28 +255,37 @@ export class CloudSpaceComponent {
 
   // 获取云上项目列表
   async getCloudProjects() {
-    this.cloudService.getProjects(this.currentPage, this.pageSize).subscribe(res => {
+    this.clearProjects();
+    this.isLoading = true;
+    this.listSubscription = new Subscription();
+    const request = this.projectView === 'students'
+      ? this.cloudService.getStudentProjects(this.currentPage, this.pageSize)
+      : this.cloudService.getProjects(this.currentPage, this.pageSize);
+    this.listSubscription.add(request.subscribe({ next: res => {
+      this.isLoading = false;
       if (res && res.status === 200) {
+        const lastPage = Math.max(1, Math.ceil(res.data.total / this.pageSize));
+        if (this.currentPage > lastPage) {
+          this.currentPage = lastPage;
+          this.getCloudProjects();
+          return;
+        }
         this.itemList = [];
         res.data.list.forEach(prj => {
           // 图片url
-          let imageUrl = '';
-          if (prj.image_cdn_url) {
-            imageUrl = prj.image_cdn_url;
-          } else if (prj.image_url) {
-            const timestamp = new Date().getTime();
-            const separator = prj.image_url.includes('?') ? '&' : '?';
-            imageUrl = this.cloudService.baseUrl + prj.image_url + separator + 't=' + timestamp;
-          } else {
-            imageUrl = this.configService.getDefaultProjectImageSrc();
+          const imagePath = prj.image_url;
+          prj.image_url = this.configService.getDefaultProjectImageSrc();
+          if (imagePath) {
+            const separator = imagePath.includes('?') ? '&' : '?';
+            this.listSubscription.add(this.cloudService.getProjectImage(`${imagePath}${separator}t=${Date.now()}`).subscribe({
+              next: blob => {
+                const imageUrl = URL.createObjectURL(blob);
+                this.imageObjectUrls.push(imageUrl);
+                prj.image_url = imageUrl;
+              },
+              error: () => { /* 无权访问或无封面时保留默认图。 */ },
+            }));
           }
-
-          if (prj.archive_url) {
-            prj.archive_url = this.cloudService.baseUrl + prj.archive_url;
-          }
-
-          prj.image_url = imageUrl;
-
           this.itemList.push(prj);
         });
         this.totalProjects = res.data.total;
@@ -194,9 +293,12 @@ export class CloudSpaceComponent {
         // 应用搜索过滤
         this.filterProjects();
       } else {
-        console.error('获取云上项目列表失败, 服务器返回错误:', res);
+        this.message.error(res?.messages || '获取云上项目列表失败');
       }
-    });
+    }, error: error => {
+      this.isLoading = false;
+      this.message.error('获取云上项目列表失败: ' + error);
+    } }));
   }
 
   // 过滤项目列表
@@ -209,7 +311,8 @@ export class CloudSpaceComponent {
         const nickname = (item.nickname || '').toLowerCase();
         const description = (item.description || '').toLowerCase();
         const name = (item.name || '').toLowerCase();
-        return nickname.includes(keyword) || description.includes(keyword) || name.includes(keyword);
+        const student = `${item.student?.nickname || ''} ${item.student?.email || ''}`.toLowerCase();
+        return nickname.includes(keyword) || description.includes(keyword) || name.includes(keyword) || student.includes(keyword);
       });
     }
     // console.log('过滤后的项目列表:', this.filteredItemList);
@@ -430,12 +533,18 @@ export class CloudSpaceComponent {
     await this.projectService.copyPackageJsonToTemp(projectPath);
   }
 
-  async syncToCloud() {
+  async syncToCloud(studentProject?) {
     if (this.isSyncing) return;
     this.isSyncing = true;
     const projectPath = this.projectService.currentProjectPath;
 
     try {
+      if (studentProject) {
+        const manifest = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+        if (manifest.cloudId !== studentProject.id || !this.canEditProject(studentProject)) {
+          throw new Error('当前本地项目与学生项目不一致，请重新打开学生项目');
+        }
+      }
       // 等待保存完成
       const result = await this.projectService.save(projectPath);
       if (result.success) {
@@ -461,6 +570,10 @@ export class CloudSpaceComponent {
       }
       // 使用已打包项目的元数据，避免上传期间切换项目导致分类或云 ID 错配。
       const currentProjectData = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+      if (studentProject && currentProjectData.cloudId !== studentProject.id) {
+        await this.delete7zFile(archivePath);
+        throw new Error('当前本地项目与学生项目不一致，请重新打开学生项目');
+      }
       console.log('当前项目数据:', currentProjectData);
       if (!currentProjectData) {
         this.isSyncing = false;
@@ -510,8 +623,26 @@ export class CloudSpaceComponent {
   showEditor = false;
 
   openEditor(item) {
-    this.showEditor = true;
-    this.editorProjectData = item;
+    if (!this.canEditProject(item)) {
+      this.message.error('该学生已停用，项目仅可查看和打开');
+      return;
+    }
+    this.editorSubscription.unsubscribe();
+    this.editorSubscription = this.cloudService.getProject(item.id).subscribe({
+      next: res => {
+        if (res.status !== 200) {
+          this.message.error(res.messages || '获取项目信息失败');
+          return;
+        }
+        if (!this.canEditProject(res.data)) {
+          this.message.error('该学生已停用，项目仅可查看和打开');
+          return;
+        }
+        this.editorProjectData = { ...res.data, image_url: item.image_url };
+        this.showEditor = true;
+      },
+      error: error => this.message.error('获取项目信息失败: ' + error),
+    });
   }
 
   // 项目保存成功后的回调
@@ -539,12 +670,20 @@ export class CloudSpaceComponent {
   }
 
   toggleVisibility(item) {
+    if (!this.canEditProject(item) || (!item.is_published && !this.canPublishProject(item))) return;
     // 切换公开/私有状态
     // console.log('切换项目可见性:', item);
     if (item.is_published) {
-      this.cloudService.unpublishProject(item.id).subscribe(res => {
-        this.message.info(`项目 "${item.nickname}" 已设为私有`);
-        item.is_published = false;
+      this.cloudService.unpublishProject(item.id).subscribe({
+        next: res => {
+          if (res.status !== 200) {
+            this.message.error(this.getPublishErrorMessage(res));
+            return;
+          }
+          this.message.info(`项目 "${item.nickname}" 已设为私有`);
+          item.is_published = false;
+        },
+        error: error => this.message.error(this.getPublishErrorMessage(error)),
       });
     } else {
       this.cloudService.publishProject(item.id).subscribe({
@@ -564,6 +703,7 @@ export class CloudSpaceComponent {
   }
 
   toggleTemplate(item) {
+    if (item?.student || !this.canEditProject(item)) return;
     if (item.is_template) {
       this.cloudService.unsetTemplate(item.id).subscribe(res => {
         this.message.info(`项目 "${item.nickname}" 已取消模板`);
@@ -582,10 +722,22 @@ export class CloudSpaceComponent {
   }
 
   deleteCloudProject(item) {
-    if (!item || !item.id) return;
-    this.cloudService.deleteProject(item.id).subscribe(res => {
-      this.message.success(`项目 "${item.nickname}" 已删除`);
-      this.getCloudProjects();
+    if (!item?.id || !this.canEditProject(item)) return;
+    this.modal.confirm({
+      nzTitle: '删除云端项目',
+      nzContent: `确定删除“${item.nickname || item.name}”吗？${item.student ? '此操作将删除学生的原项目。' : ''}删除后无法恢复。`,
+      nzOkText: '删除',
+      nzOkDanger: true,
+      nzOnOk: async () => {
+        try {
+          const res = await firstValueFrom(this.cloudService.deleteProject(item.id));
+          if (res.status !== 200) throw new Error(res.messages || '删除失败');
+          this.message.success(`项目 "${item.nickname}" 已删除`);
+          this.getCloudProjects();
+        } catch (error) {
+          this.message.error('删除项目失败: ' + error);
+        }
+      },
     });
   }
 

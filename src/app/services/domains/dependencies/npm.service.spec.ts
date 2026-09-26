@@ -1,28 +1,33 @@
 import { NpmService } from './npm.service';
 import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
+import { ProjectService } from '@domain/project/public-api';
 
-describe('NpmService global writer handoff', () => {
-  let oldPath: any, oldFs: any, oldFsp: any, oldIpc: any, oldNpm: any, service: any, active: boolean;
+function attachProjectDependencies(service: any, projectPath = '/tmp/project') {
+  const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+  const session = lifecycle.beginPreparation(projectPath);
+  service.prjService = {
+    ...service.prjService,
+    getProjectDependencySession: (path = projectPath) => lifecycle.ensure(path),
+    assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current),
+    runProjectDependencyTask: (current: any, work: () => Promise<any>) => lifecycle.run(current, work),
+  };
+  return { lifecycle, session };
+}
+
+describe('NpmService shared dependency operations', () => {
+  let oldPath: any, oldFs: any, oldFsp: any, oldIpc: any, oldNpm: any, service: any;
   beforeEach(() => {
-    oldPath = window['path']; oldFs = window['fs']; oldNpm = window['npm']; active = false;
+    oldPath = window['path']; oldFs = window['fs']; oldNpm = window['npm'];
     oldFsp = window['fsp']; oldIpc = window['ipcRenderer'];
     window['path'] = { getAppDataPath: () => '/app', isExists: () => true,
       join: (...parts: string[]) => parts.join('/'), basename: (s: string) => s.split('/').pop(),
       resolve: (s: string) => s, relative: (root: string, target: string) => target.slice(root.length + 1),
       isAbsolute: (s: string) => s.startsWith('/') };
     window['fs'] = { existsSync: () => true, readFileSync: () => JSON.stringify({ version: '1.0.0', scripts: { uninstall: 'cleanup' } }) };
-    window['npm'] = { run: jasmine.createSpy('npm').and.callFake(async (options: any) => {
-      expect(active).toBeTrue(); expect(options.appDataResourceToken).toBe('writer');
-    }) };
+    window['npm'] = { run: jasmine.createSpy('npm').and.resolveTo() };
     service = Object.create(NpmService.prototype);
-    service.appDataResourceLock = { runExclusive: jasmine.createSpy('exclusive').and.callFake(async (_label: string, task: any) => {
-      expect(active).toBeFalse(); active = true;
-      try { return await task('writer'); } finally { active = false; }
-    }) };
-    service.cmdService = { runAsyncChecked: jasmine.createSpy('cmd').and.callFake(async (...args: any[]) => {
-      expect(active).toBeTrue(); expect(args[4]).toEqual({ appDataResourceToken: 'writer', appDataResourceMode: 'write' });
-    }) };
-    service.application = { updateNotice() {}, startInstall() {}, finishInstall() {} };
+    service.cmdService = { runAsyncChecked: jasmine.createSpy('cmd').and.resolveTo() };
+    service.application = { updateNotice: jasmine.createSpy('notice'), startInstall() {}, finishInstall() {} };
     service.translate = { instant: (s: string) => s };
     service.configService = { withBoardNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
     service.traceToAppLog = () => {};
@@ -32,36 +37,90 @@ describe('NpmService global writer handoff', () => {
     window['fsp'] = oldFsp; window['ipcRenderer'] = oldIpc;
   });
 
-  it('passes the writer to board install and package install', async () => {
+  it('runs board and package installs directly', async () => {
     await service.installBoard({ name: 'board-test', version: '1' });
     await service.installSDK({ name: 'sdk-test' });
-    expect(window['npm'].run).toHaveBeenCalledTimes(1);
-    expect(service.cmdService.runAsyncChecked).toHaveBeenCalledTimes(1);
+    expect(window['npm'].run).toHaveBeenCalledOnceWith({ cmd: 'npm install board-test@1 --prefix "/app"' });
+    expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      'npm install sdk-test --save-exact --prefix "/app"', '/app', true, false,
+    );
   });
 
-  it('runs cleanup and npm uninstall in one writer scope', async () => {
+  it('runs the package cleanup script before npm uninstall', async () => {
     await service.uninstallSDK({ name: 'sdk-test' });
-    expect(service.appDataResourceLock.runExclusive).toHaveBeenCalledTimes(1);
-    expect(service.cmdService.runAsyncChecked.calls.allArgs().map((a: any[]) => a[0])).toEqual([
-      'npm run uninstall', 'npm uninstall sdk-test --prefix "/app"',
+    expect(service.cmdService.runAsyncChecked.calls.allArgs()).toEqual([
+      ['npm run uninstall', '/app/node_modules/sdk-test', true, false],
+      ['npm uninstall sdk-test --prefix "/app"', '/app', true, false],
     ]);
   });
 
-  it('repairs a missing extracted SDK under a writer without nested acquisition', async () => {
+  it('repairs a missing extracted SDK without reinstalling its package', async () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     service.isPlatformPackageOnDisk = jasmine.createSpy('ready').and.returnValues(false, true);
     await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true);
     expect(service.cmdService.runAsyncChecked.calls.first().args[0]).toBe('npm run postinstall');
-    expect(service.appDataResourceLock.runExclusive).toHaveBeenCalledTimes(1);
     expect(window['npm'].run).not.toHaveBeenCalled();
   });
 
-  it('delegates resource removal to main with the same writer instead of deleting in preload', async () => {
+  it('continues checking later dependencies after an installed dependency is skipped', async () => {
+    service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
+    service.isPlatformPackageOnDisk = jasmine.createSpy('ready').and.returnValues(true, false, true);
+    await service.installBoardDependencies({ boardDependencies: {
+      '@aily-project/sdk-ready': '1.0.0', '@aily-project/sdk-missing': '1.0.0',
+    } }, false, true);
+    expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      'npm run postinstall', '/app/node_modules/@aily-project/sdk-missing', true, false, undefined,
+    );
+    expect(window['npm'].run).not.toHaveBeenCalled();
+  });
+
+  it('does not fallback or install the next package after a cancelled postinstall', async () => {
+    const { lifecycle, session } = attachProjectDependencies(service);
+    service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
+    service.isPlatformPackageOnDisk = () => false;
+    let failPostinstall!: (error: Error) => void;
+    service.cmdService.runAsyncChecked.and.returnValue(new Promise((_, reject) => { failPostinstall = reject; }));
+    const install = service.installBoardDependencies({ boardDependencies: {
+      '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
+    } }, false, true, session);
+    await Promise.resolve();
+    expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      'npm run postinstall', '/app/node_modules/@aily-project/sdk-first', true, false, session,
+    );
+    lifecycle.cancel(session.projectPath);
+    failPostinstall(new Error('command stopped'));
+    await expectAsync(install).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'error')).toBeFalse();
+  });
+
+  it('scopes native npm and stops before the next package after cancellation', async () => {
+    const { lifecycle, session } = attachProjectDependencies(service);
+    window['path'].isExists = () => false;
+    service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
+    window['npm'].run.and.callFake(async () => { lifecycle.cancel(session.projectPath); });
+    await expectAsync(service.installBoardDependencies({ boardDependencies: {
+      '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
+    } }, false, true, session)).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+    expect(window['npm'].run).toHaveBeenCalledOnceWith({
+      cmd: 'npm install @aily-project/sdk-first@1.0.0 --save-exact --prefix "/app"',
+      projectPath: session.projectPath, projectSessionId: session.projectSessionId,
+    });
+    expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
+  });
+
+  it('reports an already installed package as complete without reinstalling it', async () => {
+    await service.installSDK({ name: 'sdk-test', version: '1.0.0' });
+    expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
+    expect(service.application.updateNotice).toHaveBeenCalledOnceWith(jasmine.objectContaining({ state: 'done' }));
+  });
+
+  it('delegates resource removal to main instead of deleting in preload', async () => {
     let exists = true;
     window['fsp'] = { readdir: async (path: string) => path === '/app/sdk' && exists ? ['test'] : [], rm: jasmine.createSpy('unsafe') };
     window['ipcRenderer'] = { invoke: jasmine.createSpy('invoke').and.callFake(async (name: string, data: any) => {
-      expect(active).toBeTrue(); expect(name).toBe('appdata-resource-remove');
-      expect(data).toEqual({ token: 'writer', target: '/app/sdk/test' }); exists = false; return { ok: true };
+      expect(name).toBe('appdata-resource-remove');
+      expect(data).toEqual({ target: '/app/sdk/test' }); exists = false; return { ok: true };
     }) };
     service.getPlatformPathBases = async () => ({ sdkBase: '/app/sdk', compilersBase: '/app/tools', toolsBase: '/app/tools' });
     service.getDeclaredGlobalDependencyNames = () => [];
@@ -103,7 +162,6 @@ describe('NpmService global cleanup progress', () => {
     }) };
     service = Object.create(NpmService.prototype);
     Object.assign(service, {
-      appDataResourceLock: { runExclusive: (_key: string, task: () => Promise<any>) => task() },
       getPlatformPathBases: async () => ({ sdkBase: '/app/sdk', compilersBase: '/app/tools', toolsBase: '/app/tools' }),
       getDeclaredGlobalDependencyNames: jasmine.createSpy('getNames').and.returnValues(['@aily/sdk'], []),
       syncGlobalDependencyUsage: () => ({
@@ -158,6 +216,7 @@ describe('NpmService Coder dependency sources', () => {
       materializeCoderProjectLibraries: jasmine.createSpy('materializeCoderProjectLibraries').and.resolveTo(),
       updateNotice: jasmine.createSpy('updateNotice'),
     };
+    attachProjectDependencies(service);
     // Keep notification ordering deterministic without leaving timers after the test.
     spyOn(window, 'setTimeout').and.callFake(((callback: () => void) => {
       callback();
@@ -196,8 +255,10 @@ describe('NpmService Coder dependency sources', () => {
     const onRetryInstall = jasmine.createSpy('retry');
     expect(await service.ensureProjectDependenciesInstalled('/tmp/coder-template', { onRetryInstall })).toBeFalse();
     expect(service.application.updateNotice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
-      state: 'error', detail: 'src.7z is invalid', sendToLog: true, onRetry: onRetryInstall,
+      state: 'error', detail: 'src.7z is invalid', sendToLog: true, onRetry: jasmine.any(Function),
     }));
+    service.application.updateNotice.calls.mostRecent().args[0].onRetry();
+    expect(onRetryInstall).toHaveBeenCalledTimes(1);
     expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
   });
 
@@ -206,6 +267,23 @@ describe('NpmService Coder dependency sources', () => {
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
     expect(service.cmdService.runAsync).toHaveBeenCalled();
     expect(service.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
+  });
+
+  it('invalidates delayed notices and retry callbacks when their project is cancelled', async () => {
+    const service = createService();
+    const { lifecycle, session } = attachProjectDependencies(service);
+    const notices: Array<() => void> = [];
+    (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void) => { notices.push(callback); return 0; });
+    service.application.materializeCoderProjectLibraries.and.rejectWith(new Error('source extraction failed'));
+    const onRetryInstall = jasmine.createSpy('retry');
+    expect(await service.ensureProjectDependenciesInstalled(session.projectPath, { onRetryInstall }, session)).toBeFalse();
+    const retry = service.application.updateNotice.calls.mostRecent().args[0].onRetry;
+    lifecycle.cancel(session.projectPath);
+    service.application.updateNotice.calls.reset();
+    notices.forEach(callback => callback());
+    retry();
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    expect(onRetryInstall).not.toHaveBeenCalled();
   });
 });
 
@@ -238,6 +316,7 @@ describe('NpmService installBoardDeps', () => {
     service.isAilyCodeProjectRoot = jasmine.createSpy('isAilyCodeProjectRoot').and.returnValue(coder);
     service.recordGlobalDependencyUsage = jasmine.createSpy('recordGlobalDependencyUsage').and.resolveTo();
     service.installBoardDependencies = jasmine.createSpy('installBoardDependencies').and.resolveTo();
+    attachProjectDependencies(service, service.prjService.currentProjectPath);
 
     return { service, application };
   }
@@ -264,7 +343,8 @@ describe('NpmService installBoardDeps', () => {
     expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
       { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } },
       false,
-      true
+      true,
+      service.prjService.getProjectDependencySession(),
     );
     expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
     expect(service.isInstalling).toBeFalse();
@@ -287,8 +367,76 @@ describe('NpmService installBoardDeps', () => {
     await service.installBoardDeps();
 
     expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
-      { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true,
+      { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(),
     );
     expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
   });
+
+  it('waits through platform installation and its final refresh before reporting ready', fakeAsync(() => {
+    const { service } = createService(false);
+    const { lifecycle, session } = attachProjectDependencies(service);
+    service.ensureProjectDependenciesInstalled = jasmine.createSpy('projectNpm').and.resolveTo(true);
+    let finishPlatform!: () => void;
+    service.installBoardDependencies.and.returnValue(new Promise<void>(resolve => { finishPlatform = resolve; }));
+    const settled = jasmine.createSpy('settled');
+    let ready = false;
+    const task = service.ensureProjectAndBoardDeps(session.projectPath, { onBoardDepsSettled: settled }, session);
+    task.then(() => { ready = true; });
+    lifecycle.finishPreparation(session);
+    flushMicrotasks();
+    expect(lifecycle.isBusy(session.projectPath)).toBeTrue();
+    expect(ready).toBeFalse();
+    expect(settled).not.toHaveBeenCalled();
+    finishPlatform();
+    flushMicrotasks();
+    expect(ready).toBeTrue();
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(lifecycle.isBusy(session.projectPath)).toBeFalse();
+  }));
+
+  it('does not let an old installation finally clear the next session', fakeAsync(() => {
+    const { service, application } = createService(false);
+    const { lifecycle, session } = attachProjectDependencies(service);
+    const finish: Array<() => void> = [];
+    service.installBoardDependencies.and.callFake(() => new Promise<void>(resolve => { finish.push(resolve); }));
+    const old = service.installBoardDeps(session);
+    let cancelled = false;
+    old.catch(() => { cancelled = true; });
+    flushMicrotasks();
+    lifecycle.cancel(session.projectPath);
+    lifecycle.release(session);
+    const next = lifecycle.beginPreparation(session.projectPath);
+    let currentDone = false;
+    service.installBoardDeps(next).then(() => { currentDone = true; });
+    flushMicrotasks();
+    const currentRecord = service.boardDepsInstallPromise;
+    service.recordGlobalDependencyUsage.calls.reset();
+    application.finishInstall.calls.reset();
+    finish[0]();
+    flushMicrotasks();
+    expect(cancelled).toBeTrue();
+    expect(service.boardDepsInstallPromise).toBe(currentRecord);
+    expect(service.isInstalling).toBeTrue();
+    expect(service.recordGlobalDependencyUsage).not.toHaveBeenCalled();
+    expect(application.finishInstall).not.toHaveBeenCalled();
+    finish[1]();
+    flushMicrotasks();
+    expect(service.boardDepsInstallPromise).toBeUndefined();
+    expect(service.isInstalling).toBeFalse();
+    expect(currentDone).toBeTrue();
+  }));
+
+  it('releases only the install state it acquired when cancellation settles', fakeAsync(() => {
+    const { service, application } = createService(false);
+    const { lifecycle, session } = attachProjectDependencies(service);
+    let finish!: () => void;
+    service.installBoardDependencies.and.returnValue(new Promise<void>(resolve => { finish = resolve; }));
+    service.installBoardDeps(session).catch(() => {});
+    flushMicrotasks();
+    lifecycle.cancel(session.projectPath);
+    finish();
+    flushMicrotasks();
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(false);
+    expect(service.isInstalling).toBeFalse();
+  }));
 });

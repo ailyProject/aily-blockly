@@ -124,7 +124,6 @@ describe('Coder build metadata', () => {
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
-      { runShared: async (_label: string, task: (token: string) => Promise<unknown>) => task('reader-token') } as any,
     );
     let calls = 0;
     spyOn<any>(service, 'runOneShotCommand').and.callFake(async () => ({
@@ -213,7 +212,6 @@ describe('Coder build metadata', () => {
     expect(calls.first().args[0].scriptPath).toContain('compile.js');
     expect(calls.first().args[0].configFilePath).toContain('/.temp/compile-request-');
     expect(calls.first().args[0].buildDeliveryRequest).toBeUndefined();
-    expect(calls.first().args[3]).toBe('reader-token');
   });
 
   it('opts into host delivery for compilation but not preprocess-only commands', async () => {
@@ -236,39 +234,24 @@ describe('Coder build metadata', () => {
     expect(command).toBe('node'); expect(args[0]).toBe('/child/scripts/compile.js');
     expect(args[1]).toContain('/.temp/compile-request-');
     expect(options.cwd).toBe(root); expect(options.shellProfile).toBeFalse();
-    expect(options.appDataResourceToken).toBe('reader-token'); expect(options.buildWorkspace).toBe(root);
+    expect(options.buildWorkspace).toBe(root);
   });
 
-  it('waits before reading inputs and retains the requested root across a project switch', async () => {
+  it('retains the requested root when the UI switches projects during preparation', async () => {
     const service = createCompiler(() => 0);
-    let grant!: () => void;
-    (service as any).appDataResourceLock.runShared = (_label: string, task: (token: string) => Promise<unknown>) =>
-      new Promise(resolve => { grant = () => resolve(task('delayed-reader')); });
-    const read = spyOn<any>(service, 'readCompileSource').and.callThrough();
+    let continuePreparation!: () => void;
+    let enteredPreparation!: () => void;
+    const preparing = new Promise<void>(resolve => { enteredPreparation = resolve; });
+    spyOn<any>(service, 'resolveBoardModule').and.callFake(() => new Promise(resolve => {
+      enteredPreparation();
+      continuePreparation = () => resolve('@aily-project/board-test');
+    }));
     const build = service.runCompileFromDisk();
-    expect(read).not.toHaveBeenCalled();
+    await preparing;
     project.currentProjectPath = '/projects/other';
-    files.set(`${root}/sketch/src/main.cpp`, 'void setup() { /* saved while queued */ }');
-    grant();
+    continuePreparation();
     expect((await build).success).toBeTrue();
-    expect(read.calls.first().args[0]).toBe(root);
-    const request = [...files.entries()].find(([filename]) => filename.includes('compile-request-'))!;
-    expect(JSON.parse(request[1]).code).toContain('saved while queued');
-    expect((service as any).runOneShotCommand.calls.first().args[3]).toBe('delayed-reader');
-  });
-
-  it('cancels a queued build without reading, writing metadata or launching a child', async () => {
-    const service = createCompiler(() => 0);
-    (service as any).appDataResourceLock.runShared = (_label: string, _task: unknown, signal: AbortSignal) =>
-      new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('APPDATA_RESOURCE_LOCK_CANCELLED'))));
-    const read = spyOn<any>(service, 'readCompileSource').and.callThrough();
-    const save = spyOn(metadata, 'saveBuildInfo').and.callThrough();
-    const finish = spyOn((service as any).application, 'finishBuild');
-    const build = service.runCompileFromDisk(); service.cancel();
-    expect((await build).result.state).toBe('warn');
-    expect(read).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
-    expect((service as any).runOneShotCommand).not.toHaveBeenCalled();
-    expect(finish).toHaveBeenCalledTimes(1);
+    expect((service as any).runOneShotCommand.calls.first().args[2]).toBe(root);
   });
 
   it('does not launch when target configuration changes during asynchronous resolution', async () => {
@@ -313,18 +296,11 @@ describe('Coder build metadata', () => {
       compiler.cancel(); return 1;
     });
     const save = spyOn(metadata, 'saveBuildInfo').and.callThrough();
-    let resourceHeld = false;
-    (service as any).appDataResourceLock.runShared = async (_label: string, task: (token: string) => Promise<unknown>) => {
-      resourceHeld = true;
-      try { return await task('reader'); } finally { resourceHeld = false; }
-    };
     const finish = spyOn((service as any).application, 'finishBuild');
     const result = service.runCompileFromDisk();
     await cancelling; await Promise.resolve();
     expect(save).not.toHaveBeenCalled(); expect(finish).not.toHaveBeenCalled();
-    expect(resourceHeld).toBeTrue();
     stopped(); await result;
-    expect(resourceHeld).toBeFalse();
     expect(readManifest().buildInfo.lastBuildStatus).toBe('cancelled');
     expect(finish).toHaveBeenCalledTimes(1);
   });

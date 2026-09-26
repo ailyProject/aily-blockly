@@ -71,8 +71,7 @@ test('main shares credential locking and forwards credential arguments for both 
         };
       } };
     },
-    withAppDataResourceLock: (scope, operation) => {
-      assert.equal(scope, 'auth-credentials');
+    withAuthCredentialsLock: operation => {
       lockCalls++;
       return operation();
     },

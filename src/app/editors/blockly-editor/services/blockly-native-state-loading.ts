@@ -6,12 +6,114 @@ import { NativeOwnedOperation, retireNativeInputDefault, withNativeBlockCreation
 
 type FieldOrder = (block: Blockly.Block) => readonly string[] | undefined;
 
+/** Keep the two observed legacy U8G2 symbols on their live field instances
+ * when a published picker omits them. */
+function retainLegacyU8g2Font(block: Blockly.Block, field: Blockly.Field, name: string, value: unknown): void {
+  if (block.type !== 'u8g2_set_font' || name !== 'FONT') return;
+  const oldPicker = !block.getField('SIZE') && !block.getField('FONT_TYPE');
+  if (!(value === 'u8g2_font_wqy13_t_chinese2'
+    && (oldPicker || block.getFieldValue('SIZE') === '14' && block.getFieldValue('FONT_TYPE') === 'CHINESE'))
+    && !(oldPicker && value === 'u8g2_font_wqy12_t_chinese1')) return;
+  const dropdown = field as Blockly.FieldDropdown;
+  if (typeof dropdown.getOptions !== 'function') return;
+  const options = dropdown.getOptions(false);
+  if (options.some(option => option[1] === value)) return;
+  // Blockly exposes no public method to append one option. This changes only
+  // the live field instance, never the registered library definition.
+  (dropdown as any).menuGenerator_ = [...options, ['旧项目字体', value]];
+}
+
+function retainLegacySscmaSerial(block: Blockly.Block, field: Blockly.Field, name: string, value: unknown): void {
+  if (block.type !== 'sscma_begin_serial' || name !== 'SERIAL' || value !== 'SerialCustom') return;
+  const dropdown = field as Blockly.FieldDropdown;
+  if (typeof dropdown.getOptions !== 'function') return;
+  const options = dropdown.getOptions(false);
+  if (!options.some(option => option[1] === value)) {
+    // The companion serial_begin_esp32_custom block declares this exact port.
+    (dropdown as any).menuGenerator_ = [...options, ['SerialCustom（旧项目）', value]];
+  }
+}
+
+/** A previous U8G2 release stored the buffer mode in RESOLUTION and had no
+ * MODE/pin fields. Reverse only the exact default configuration for that live
+ * definition; newer releases keep the normalized values unchanged. */
+function adaptLegacyU8g2Begin(block: Blockly.Block, values: Record<string, any>): Record<string, any> {
+  if (block.type !== 'u8g2_begin' || block.getField('MODE') || values['TYPE'] !== 'SSD1306'
+    || values['MODE'] !== 'FULL_BUFFER' || values['RESOLUTION'] !== '128X64_NONAME') return values;
+  const resolution = block.getField('RESOLUTION') as Blockly.FieldDropdown | null;
+  if (!resolution || typeof resolution.getOptions !== 'function'
+    || !resolution.getOptions(false).some(option => option[1] === '128X64_NONAME_F')) return values;
+  const adapted = { ...values, RESOLUTION: '128X64_NONAME_F' };
+  delete adapted['MODE'];
+  for (const [name, value] of Object.entries({ SCL_PIN: 'SCL', SDA_PIN: 'SDA', RESET_PIN: 'U8X8_PIN_NONE' })) {
+    if (!block.getField(name) && adapted[name] === value) delete adapted[name];
+  }
+  return adapted;
+}
+
+function adaptLegacyU8g2Font(block: Blockly.Block, values: Record<string, any>): Record<string, any> {
+  if (block.type !== 'u8g2_set_font' || block.getField('SIZE') || block.getField('FONT_TYPE')
+    || values['FONT_TYPE'] !== 'CHINESE'
+    || !(values['SIZE'] === '14' && values['FONT'] === 'u8g2_font_wqy13_t_chinese2'
+      || values['SIZE'] === '8' && values['FONT'] === 'u8g2_font_wqy12_t_chinese1')) return values;
+  const font = block.getField('FONT') as Blockly.FieldDropdown | null;
+  if (!font || typeof font.getOptions !== 'function') return values;
+  const adapted = { ...values };
+  delete adapted['SIZE']; delete adapted['FONT_TYPE'];
+  return adapted;
+}
+
+const TFT_SPI_NUMBERS = ['WIDTH', 'HEIGHT', 'MISO', 'MOSI', 'SCLK', 'CS', 'DC', 'RST', 'BL'] as const;
+
+/** lib-tft-espi published both field-based and value-input-based setup blocks.
+ * Adapt only scalar number children/fields to the shape actually installed for
+ * this project. The saved ABI and library definition remain untouched. */
+function adaptLegacyTftSetup(block: Blockly.Block, savedFields: Record<string, any>, savedInputs: Record<string, any>) {
+  if (block.type !== 'tftespi_setup') return { fields: savedFields, inputs: savedInputs };
+  const fields = { ...savedFields }, inputs = { ...savedInputs };
+  for (const name of TFT_SPI_NUMBERS) {
+    const hasConnection = !!block.getInput(name)?.connection;
+    if (hasConnection && !block.getField(name) && Object.hasOwn(fields, name) && !Object.hasOwn(inputs, name)) {
+      const value = String(fields[name]);
+      if (!/^-?\d+(?:\.\d+)?$/.test(value)) continue;
+      inputs[name] = { shadow: { type: 'math_number', fields: { NUM: Number(value) } } };
+      delete fields[name];
+    } else if (block.getField(name) && !hasConnection && !Object.hasOwn(fields, name)) {
+      const slot = inputs[name];
+      if (!slot || typeof slot !== 'object' || Array.isArray(slot)
+        || Object.keys(slot).length !== 1) continue;
+      const child = slot.block ?? slot.shadow;
+      if (!child || child.type !== 'math_number' || !child.fields
+        || Object.keys(child.fields).length !== 1 || !Object.hasOwn(child.fields, 'NUM')
+        || Object.keys(child).some(key => !['type', 'id', 'fields'].includes(key))) continue;
+      const value = Number(child.fields.NUM);
+      if (!Number.isFinite(value)) continue;
+      fields[name] = String(value);
+      delete inputs[name];
+    }
+  }
+  // Older GC9A01 configurations also saved QSPI defaults, which the newer
+  // SPI-only definition does not expose. Keep non-default or unknown values
+  // strict instead of silently discarding an actual pin choice.
+  if (fields['MODEL'] === 'GC9A01_DRIVER') {
+    const defaults: Record<string, string> = {
+      QSPI_CS: String(savedFields['CS']), QSPI_SCLK: String(savedFields['SCLK']),
+      QSPI_RST: String(savedFields['RST']), D0: '-1', D1: '-1', D2: '-1', D3: '-1', TE: '-1',
+    };
+    for (const [name, value] of Object.entries(defaults)) {
+      if (!block.getField(name) && !block.getInput(name) && fields[name] === value) delete fields[name];
+    }
+  }
+  return { fields, inputs };
+}
+
 /** Restore requested fields against the live shape, never a probe or a guessed slot.
  * A field is loaded once per actual Field instance. A selector may replace an
  * earlier field; that new instance must receive its saved value too.
  */
 export function restoreNativeFields(block: Blockly.Block, values: Record<string, any>, order?: FieldOrder,
   loadState: (field: Blockly.Field, value: unknown) => void = (field, value) => field.loadState(value)): string[] {
+  values = adaptLegacyU8g2Font(block, adaptLegacyU8g2Begin(block, values));
   const names = Object.keys(values);
   const applied = new Map<string, { field: Blockly.Field; value: string }>();
   let remaining = names.length * (names.length + 1);
@@ -21,6 +123,8 @@ export function restoreNativeFields(block: Blockly.Block, values: Record<string,
       if (!Object.hasOwn(values, name)) return false;
       const field = block.getField(name);
       if (!field || applied.get(name)?.field === field) return false;
+      retainLegacyU8g2Font(block, field, name, values[name]);
+      retainLegacySscmaSerial(block, field, name, values[name]);
       const contract = serializeRuntimeFieldContract(field, values[name]);
       // An existing dropdown can depend on a later selector without being
       // replaced. Wait for its requested option instead of accepting a default.
@@ -103,6 +207,8 @@ export function withNativeStateLoading<T>(native: typeof Blockly, workspace: Blo
   try {
     for (const entry of entries) {
       const fields = entry['fields'];
+      const savedInputs = entry['inputs'];
+      let tftView: ReturnType<typeof adaptLegacyTftSetup> | undefined;
       if (!entry['id']) {
         const descriptor = Object.getOwnPropertyDescriptor(entry, 'id');
         let id: string;
@@ -117,6 +223,9 @@ export function withNativeStateLoading<T>(native: typeof Blockly, workspace: Blo
         claimed.add(block);
         return block;
       };
+      const loadingView = (block: Blockly.Block) => tftView ??= adaptLegacyTftSetup(
+        block, fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {},
+        savedInputs && typeof savedInputs === 'object' && !Array.isArray(savedInputs) ? savedInputs : {});
       // An ABI is complete topology, not a new-block template: an absent slot is
       // empty. Discard only new, unclaimed defaults before native child loading.
       const prepared = new WeakSet<Blockly.Block>();
@@ -133,7 +242,8 @@ export function withNativeStateLoading<T>(native: typeof Blockly, workspace: Blo
             });
             prepared.add(block);
           }
-          return value;
+          return key === 'inputs' && block && entry['type'] === 'tftespi_setup'
+            ? loadingView(block).inputs : value;
         } });
         restore.push(() => { if (descriptor) Object.defineProperty(entry, key, descriptor); else delete entry[key]; });
       }
@@ -150,7 +260,8 @@ export function withNativeStateLoading<T>(native: typeof Blockly, workspace: Blo
           loading = true;
           try {
             // Contract/saveState getters do not gain creation ownership.
-            orders.set(block.id, restoreNativeFields(block, fields as Record<string, any>, order,
+            orders.set(block.id, restoreNativeFields(block,
+              entry['type'] === 'tftespi_setup' ? loadingView(block).fields : fields as Record<string, any>, order,
               (field, value) => owned(entry['id'] as string, () => field.loadState(value))));
             loaded.add(block);
           }

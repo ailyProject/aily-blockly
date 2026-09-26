@@ -62,6 +62,16 @@ function importProjectDirectory(source, destination, unwrapArchive = false) {
   fs.mkdirSync(parent, { recursive: true });
   fs.mkdirSync(target);
   copyProjectDirectory(root, target);
+  // Zip archives may mark project metadata read-only. These are fresh copies
+  // that the importer and project-data writer must update; leave the archive
+  // source and installed libraries untouched.
+  for (const name of ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json']) {
+    const file = path.join(target, name);
+    let stat;
+    try { stat = fs.lstatSync(file); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (stat.isFile() && !(stat.mode & 0o200)) fs.chmodSync(file, (stat.mode & 0o7777) | 0o200);
+  }
   return destination;
 }
 

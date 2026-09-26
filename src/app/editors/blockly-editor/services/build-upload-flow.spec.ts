@@ -122,7 +122,6 @@ describe('Blockly compile and upload handoff', () => {
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }) },
       workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
-      appDataResourceLock: { runShared: (_name: string, operation: any) => operation('token') },
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',

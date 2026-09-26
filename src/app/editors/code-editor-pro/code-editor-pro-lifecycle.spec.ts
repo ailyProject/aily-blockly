@@ -1,4 +1,68 @@
 import { CodeEditorFrameComponent } from './code-editor-frame.component';
+import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
+import { ProjectService } from '@domain/project/public-api';
+
+describe('CodeEditorFrameComponent dependency preparation', () => {
+  it('keeps preparation active after the iframe starts until platform dependencies settle', fakeAsync(() => {
+    const originalPath = window['path'];
+    window['path'] = { resolve: (path: string) => path };
+    const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+    const session = lifecycle.beginPreparation('/project');
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    component.coderBootstrapGeneration = 0;
+    component.projectService = {
+      getProjectDependencySession: (path: string) => lifecycle.ensure(path),
+      assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current),
+      runProjectDependencyTask: (current: any, work: () => Promise<any>) => lifecycle.run(current, work),
+      finishProjectDependencyPreparation: (current: any) => lifecycle.finishPreparation(current),
+    };
+    component.beginCoderEmbedLoading = () => {};
+    component.ensureProjectPackageJsonExists = async () => {};
+    component.loadProject = async () => {};
+    component.initCoderEmbed = jasmine.createSpy('initEmbed').and.resolveTo();
+    component.setupBuildOutputsWatch = jasmine.createSpy('watch');
+    let finish!: () => void;
+    component.npmService = { ensureProjectAndBoardDeps: jasmine.createSpy('dependencies').and.returnValue(
+      new Promise<void>(resolve => { finish = resolve; }),
+    ) };
+    let complete = false;
+    try {
+      component.bootstrap('/project').then(() => { complete = true; });
+      flushMicrotasks();
+      expect(component.initCoderEmbed).toHaveBeenCalled();
+      expect(component.setupBuildOutputsWatch).toHaveBeenCalledOnceWith('/project');
+      expect(lifecycle.isBusy('/project')).toBeTrue();
+      expect(complete).toBeFalse();
+      finish();
+      flushMicrotasks();
+      expect(complete).toBeTrue();
+      expect(lifecycle.isBusy('/project')).toBeFalse();
+    } finally { window['path'] = originalPath; }
+  }));
+
+  it('does not write delayed embed hints after its session is cancelled', async () => {
+    const originalPath = window['path'];
+    const originalFs = window['fs'];
+    const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+    const session = lifecycle.beginPreparation('/project');
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    component.coderEmbedWorkspaceRoot = '/project';
+    component.projectService = { assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current) };
+    component.electronService = { exists: () => false, writeFile: jasmine.createSpy('write') };
+    window['path'] = { join: (...paths: string[]) => paths.join('/') };
+    window['fs'] = { mkdirSync: jasmine.createSpy('mkdir') };
+    let finish!: (result: any) => void;
+    component.resolveEmbedBuildOutputs = () => new Promise(resolve => { finish = resolve; });
+    try {
+      const writing = component.writeCoderEmbedHints('/project', session);
+      lifecycle.cancel('/project');
+      finish({ artifacts: [] });
+      await writing;
+      expect(window['fs'].mkdirSync).not.toHaveBeenCalled();
+      expect(component.electronService.writeFile).not.toHaveBeenCalled();
+    } finally { window['path'] = originalPath; window['fs'] = originalFs; }
+  });
+});
 
 describe('CodeEditorFrameComponent ready timeout lifecycle', () => {
   let component: any;

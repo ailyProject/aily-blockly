@@ -59,12 +59,23 @@ describe('legacy hidden shadow identities', () => {
     expect(result.changes.map(x => x.oldId)).toEqual(['fallback', 'nested', 'tail']);
     expect(result.changes.every(x => x.ownerConnection === '/blocks/blocks/1/inputs/VALUE')).toBeTrue();
   });
-  for (const mode of ['active', 'visible-shadow', 'mixed'] as const) {
+  it('keeps a visible shadow identity when an earlier hidden default shares it', () => {
+    const input: any = source();
+    delete input.blocks.blocks[1].inputs.VALUE.block;
+    const before = copy(input);
+    const result = migrateLegacyShadowIdentities(input, generate);
+    expect(input).toEqual(before);
+    expect(result.changes).toEqual([{ jsonPointer: '/blocks/blocks/0/inputs/VALUE/shadow/id', oldId: 'fallback',
+      newId: 'new-1', ownerConnection: '/blocks/blocks/0/inputs/VALUE', reason: 'duplicate-hidden-shadow' }]);
+    expect(result.document.blocks.blocks[0].inputs.VALUE.shadow.id).toBe('new-1');
+    expect(result.document.blocks.blocks[1].inputs.VALUE.shadow.id).toBe('fallback');
+    expect(migrateLegacyShadowIdentities(result.document, generate).changes).toEqual([]);
+  });
+  for (const mode of ['active', 'visible-shadow'] as const) {
     it(`refuses ${mode} collisions without touching the source`, () => {
       const input: any = source();
       if (mode === 'active') input.blocks.blocks[1].id = 'a';
       if (mode === 'visible-shadow') for (const root of input.blocks.blocks) delete root.inputs.VALUE.block;
-      if (mode === 'mixed') delete input.blocks.blocks[1].inputs.VALUE.block;
       const before = copy(input);
       expect(() => migrateLegacyShadowIdentities(input, generate)).toThrowError(/Duplicate identity/);
       expect(input).toEqual(before); expect(next).toBe(0);

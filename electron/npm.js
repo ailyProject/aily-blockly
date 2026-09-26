@@ -2,16 +2,10 @@
 const { ipcMain } = require("electron");
 const { spawn } = require('child_process');
 const { killRegisteredProcessTree } = require('./process-tree');
-const { retainAppDataResourceLock } = require('./appdata-resource-lock');
+const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
 
 const activeNpmProcesses = new Map();
-const activeNpmRequests = new Set();
-
-function waitForOwnerNpmRequests(owner) {
-    return Promise.all(Array.from(activeNpmRequests)
-        .filter(request => request.owner === owner)
-        .map(request => request.finished));
-}
+let npmShutdown = false;
 
 function ensureForegroundScripts(cmd) {
     if (!/^npm(\.cmd)?\s+(install|i)\b/i.test(cmd)) {
@@ -155,6 +149,7 @@ function logNpmOutput(type, output, mainWindow, sourceId) {
 function runNpmCommand(entry, option, mainWindow) {
     return new Promise((resolve, reject) => {
         const { cmd, sourceId } = entry;
+        assertProjectTaskActive(entry.ownerWebContents, entry);
         const child = spawn(cmd, {
             shell: true,
             windowsHide: true,
@@ -202,7 +197,8 @@ function runNpmCommand(entry, option, mainWindow) {
 
         child.once('close', (code, signal) => {
             entry.closed = true;
-            if (child.pid && (!Number.isInteger(code) || signal)) entry.terminationUnconfirmed = true;
+            entry.completedNormally = Number.isInteger(code) && !signal;
+            if (!entry.completedNormally && child.pid && !processError) entry.terminationUnconfirmed = true;
             if (entry.cancelled) return reject(new Error('NPM_COMMAND_CANCELLED'));
             if (processError) return option?.ignoreErr ? resolve(false) : reject(processError);
             if (code !== 0) {
@@ -229,7 +225,7 @@ async function runNpmWithRetries(entry, option, mainWindow) {
         try {
             return await runNpmCommand(entry, option, mainWindow);
         } catch (error) {
-            if (!entry.cancelled && !entry.terminationUnconfirmed && attempt <= maxBusyRetries && error?.isBusyRename) {
+            if (!entry.cancelled && entry.completedNormally && attempt <= maxBusyRetries && error?.isBusyRename) {
                 const message = `npm 安装目录被占用，等待后重试 (${attempt}/${maxBusyRetries})...`;
                 console.warn(message);
                 console.warn('[PROC_TRACE][NPM_BUSY_RETRY]', {
@@ -246,22 +242,18 @@ async function runNpmWithRetries(entry, option, mainWindow) {
 }
 
 function registerNpmHandlers(mainWindow) {
-    ipcMain.handle('npm-run', async (event, { cmd, option = {}, appDataResourceToken }) => {
+    ipcMain.handle('npm-run', async (event, { cmd, option = {}, projectPath, projectSessionId }) => {
+        if (npmShutdown) throw new Error('NPM_SHUTDOWN_IN_PROGRESS');
         if (event.sender.isDestroyed()) throw new Error('NPM_OWNER_DESTROYED');
+        assertProjectTaskActive(event.sender, { projectPath, projectSessionId });
         cmd = ensureForegroundScripts(cmd);
         console.log('npm run cmd: ', cmd);
         const sourceId = `npm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        // Borrow once for the whole operation, including retry delays. The
-        // renderer may disappear, but that must not free an active installer.
-        const resourceLease = appDataResourceToken === undefined ? undefined
-            : retainAppDataResourceLock(appDataResourceToken, event.sender.id, 'write');
-        const entry = { sourceId, cmd, startedAt: Date.now(), resourceLease, closed: true,
+        const entry = { sourceId, cmd, startedAt: Date.now(), closed: true,
+            ownerWebContents: event.sender, projectPath, projectSessionId,
             retryAbort: new AbortController(), cancelled: false, stopRequested: false };
         activeNpmProcesses.set(sourceId, entry);
         const owner = event.sender;
-        let finish;
-        const request = { owner, finished: new Promise(resolve => { finish = resolve; }) };
-        activeNpmRequests.add(request);
         const onDestroyed = () => { entry.cancelled = true; entry.retryAbort.abort(); };
         const onNavigation = (_event, _url, isInPlace, isMainFrame) => {
             if (isMainFrame && !isInPlace) onDestroyed();
@@ -275,18 +267,13 @@ function registerNpmHandlers(mainWindow) {
             owner.removeListener('did-start-navigation', onNavigation);
             owner.removeListener('render-process-gone', onDestroyed);
             owner.removeListener('destroyed', onDestroyed);
-            // During cancellation only the process-tree confirmation may
-            // release the lease; parent close can precede descendant exit.
+            // Keep in-flight cancellation registered until its tree result arrives.
             if (!entry.stopRequested && !entry.terminationUnconfirmed) releaseNpmEntry(entry);
-            activeNpmRequests.delete(request);
-            finish();
         }
     });
 }
 
 function releaseNpmEntry(entry) {
-    entry.resourceLease?.release();
-    entry.resourceLease = undefined;
     if (activeNpmProcesses.get(entry.sourceId) === entry) activeNpmProcesses.delete(entry.sourceId);
 }
 
@@ -294,7 +281,7 @@ async function stopNpmEntry(entry) {
     if (entry.stopPromise) return entry.stopPromise;
     entry.cancelled = true;
     entry.retryAbort.abort();
-    // A closed PID may have been reused. Never kill it to recover a lease.
+    // A closed PID may have been reused. Do not target it during a retry wait.
     if (entry.closed) {
         if (entry.terminationUnconfirmed) return false;
         releaseNpmEntry(entry);
@@ -303,8 +290,8 @@ async function stopNpmEntry(entry) {
     entry.stopRequested = true;
     entry.stopPromise = (async () => {
         const stopped = await killRegisteredProcessTree(entry.process?.pid, `npm:${entry.sourceId}`).catch(() => false);
+        entry.terminationUnconfirmed = !stopped;
         if (stopped) releaseNpmEntry(entry);
-        else entry.terminationUnconfirmed = true;
         entry.stopRequested = false;
         return stopped;
     })();
@@ -328,9 +315,17 @@ async function killAllNpmProcesses() {
     return results.every(Boolean);
 }
 
+async function killOwnerProjectNpmProcesses(owner, projectPath, projectSessionId) {
+    const entries = [...activeNpmProcesses.values()]
+        .filter(entry => matchesProjectTask(entry, owner, projectPath, projectSessionId));
+    const results = await Promise.all(entries.map(stopNpmEntry));
+    return results.every(Boolean);
+}
+
 module.exports = {
     registerNpmHandlers,
     killAllNpmProcesses,
+    killOwnerProjectNpmProcesses,
     getActiveNpmProcesses,
-    waitForOwnerNpmRequests,
+    beginNpmShutdown: () => { npmShutdown = true; },
 };

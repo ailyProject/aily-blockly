@@ -20,9 +20,15 @@
         </div> -->
 
         <div class="section-title">
+            @if (isTeacher) {
+            <div class="project-tabs">
+                <button nz-button [nzType]="projectView === 'mine' ? 'primary' : 'default'" (click)="switchProjectView('mine')">我的项目</button>
+                <button nz-button [nzType]="projectView === 'students' ? 'primary' : 'default'" (click)="switchProjectView('students')">学生项目</button>
+            </div>
+            }
             <div class="search-bar">
                 @if (canSync) {
-                <button class="sync-btn ccenter" nz-button nzType="primary" (click)="syncToCloud()" [disabled]="isSyncing">
+                <button class="sync-btn ccenter" nz-button nzType="primary" (click)="requestSync()" [disabled]="isSyncing">
                     <i class="fa-regular fa-arrows-rotate" [class.spinning]="isSyncing"></i>
                     {{ isSyncing ? '正在同步' : '同步本项目到云端' }}
                 </button>
@@ -50,7 +56,11 @@
                         <div class="title">{{item?.nickname}}</div>
                     </div>
                     <div class="right">
+                        @if (item.student) {
+                        <div class="student-name">{{ item.student.nickname || item.student.email }}{{ item.student.active ? '' : ' · 已停用（只读）' }}</div>
+                        }
                         <div class="text">{{item?.description || '无描述'}}</div>
+                        <div class="text">更新于 {{ item.updated_at | date:'yyyy-MM-dd HH:mm' }}</div>
                         <div class="uuid">ID: {{item?.id || ''}}</div>
                     </div>
                 </div>
@@ -61,10 +71,13 @@
                             [class.fa-spin]="openingProjectIds.has(item.id)"></i>
                         {{ openingProjectIds.has(item.id) ? '打开中...' : '打开' }}
                     </button>
+                    @if (canEditProject(item)) {
                     <button (click)="openEditor(item)">
                         <i class="fa-light fa-pen"></i>
                         编辑
                     </button>
+                    }
+                    @if (canEditProject(item) && (item.is_published || canPublishProject(item))) {
                     <button (click)="toggleVisibility(item)">
                         @if (item?.is_published === false) {
                         <i class="fa-light fa-eye"></i>
@@ -74,6 +87,8 @@
                         私有
                         }
                     </button>
+                    }
+                    @if (!item.student) {
                     <button (click)="toggleTemplate(item)">
                         @if (item?.is_template === false) {
                         <i class="fa-light fa-box-check"></i>
@@ -83,14 +98,29 @@
                         取消模板
                         }
                     </button>
+                    }
+                    @if (canEditProject(item)) {
                     <button class="delete" (click)="deleteCloudProject(item)">
                         <i class="fa-light fa-trash"></i>
                         删除
                     </button>
+                    }
                 </div>
             </div>
             }
+            @if (isLoading) {
+            <div class="project-notice">正在加载项目...</div>
+            } @else if (filteredItemList.length === 0) {
+            <div class="project-notice">暂无项目</div>
+            }
         </div>
+        @if (totalProjects > pageSize) {
+        <div class="pagination">
+            <button nz-button (click)="changePage(currentPage - 1)" [disabled]="currentPage === 1 || isLoading">上一页</button>
+            <span>第 {{ currentPage }} 页 · 共 {{ totalProjects }} 个项目</span>
+            <button nz-button (click)="changePage(currentPage + 1)" [disabled]="currentPage * pageSize >= totalProjects || isLoading">下一页</button>
+        </div>
+        }
         @if(showEditor) {
         <app-cloud-project-editor (close)="showEditor = false" (saved)="onProjectSaved()"
             [projectData]="editorProjectData"></app-cloud-project-editor>

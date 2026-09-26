@@ -52,7 +52,7 @@ describe('BuilderService background preprocess ownership', () => {
     return service;
   }
 
-  describe('background resource waiting', () => {
+  describe('background preparation', () => {
     let oldPath: any;
     beforeEach(() => {
       oldPath = window['path'];
@@ -85,36 +85,20 @@ describe('BuilderService background preprocess ownership', () => {
       return service;
     }
 
-    it('does not spawn after the project starts closing while a reader is queued', fakeAsync(() => {
+    it('does not spawn after the project starts closing during preparation', fakeAsync(() => {
       const service = backgroundBuilder();
-      let grant!: () => void;
-      service.appDataResourceLock = { runShared: (_label: string, task: (token: string) => unknown) =>
-        new Promise(resolve => { grant = () => resolve(task('reader')); }) };
+      let completePreparation!: () => void;
+      service.writeCompileRequest = () => new Promise(resolve => {
+        completePreparation = () => resolve('/project/request.json');
+      });
       service.init();
       service.blocklyService.dependencySubject.next('changed');
       tick(500);
       service.projectService.isProjectTransitionInProgress = () => true;
-      grant();
+      completePreparation();
       tick();
       expect(service.cmdService.spawn).not.toHaveBeenCalled();
       service.destroy();
-    }));
-
-    it('retries automatic preprocessing when shared resources were busy', fakeAsync(() => {
-      const service = backgroundBuilder();
-      let attempts = 0;
-      service.appDataResourceLock = { runShared: async (_label: string, task: (token: string) => unknown) => {
-        if (++attempts === 1) throw new Error('APPDATA_RESOURCE_LOCK_TIMEOUT');
-        return task('reader');
-      } };
-      service.init();
-      service.blocklyService.dependencySubject.next('changed');
-      tick(500);
-      expect(service.pendingPrecompile).toBeTrue();
-      tick(3300);
-      expect(service.cmdService.spawn).toHaveBeenCalledTimes(1);
-      service.destroy();
-      tick();
     }));
   });
 
@@ -122,7 +106,6 @@ describe('BuilderService background preprocess ownership', () => {
     const service = queuedBuilder();
     service.preprocessStreamId = 'preprocess';
     service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(false);
-    service.appDataResourceLock = { runShared: (_label: string, task: (token: string) => unknown) => task('reader') };
 
     const result = await service.build().catch((error: { text: string }) => error);
 
@@ -131,45 +114,27 @@ describe('BuilderService background preprocess ownership', () => {
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
   });
 
-  it('cancels resource waiting before preparing or launching a Blockly request', async () => {
+  it('does not finish workflow while cancelled preparation is pending', async () => {
     const service = queuedBuilder();
-    service.appDataResourceLock = { runShared: (_label: string, _task: unknown, signal: AbortSignal) =>
-      new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('APPDATA_RESOURCE_LOCK_CANCELLED')))) };
-    const result = service.build().catch((error: Error) => error);
-    service.cancel();
-    expect((await result).message).toBe('APPDATA_RESOURCE_LOCK_CANCELLED');
-    expect(service.cmdService.spawn).not.toHaveBeenCalled();
-    expect(service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not release SDK access or finish workflow while cancelled preparation is pending', async () => {
-    const service = queuedBuilder();
-    let resourceHeld = false, completePreparation!: () => void;
+    let completePreparation!: () => void;
     service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); });
-    service.appDataResourceLock = { runShared: async (_label: string, task: (token: string) => Promise<unknown>) => {
-      resourceHeld = true;
-      try { return await task('reader'); } finally { resourceHeld = false; }
-    } };
     const build = service.build().catch((error: unknown) => error);
     service.cancel();
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(resourceHeld).toBeTrue();
     expect(service.workflowService.finishBuild).not.toHaveBeenCalled();
     service.cancelled = false; // The captured signal, not mutable UI state, owns cancellation.
     completePreparation(); await build;
-    expect(resourceHeld).toBeFalse();
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
     expect(service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a project switch while queued instead of building the newly selected project', async () => {
+  it('rejects a project switch during preparation instead of building the newly selected project', async () => {
     const service = queuedBuilder();
-    let grant!: () => void;
-    service.appDataResourceLock = { runShared: (_label: string, task: (token: string) => Promise<unknown>) =>
-      new Promise(resolve => { grant = () => resolve(task('reader')); }) };
+    let completePreparation!: () => void;
+    service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); });
     const build = service.build().catch((error: { text: string }) => error);
-    service.projectService.currentProjectPath = 'D:/other'; grant();
-    expect((await build).text).toContain('BUILD_SOURCE_STALE');
+    service.projectService.currentProjectPath = 'D:/other'; completePreparation();
+    expect((await build).text).toContain('Build project changed before capture');
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
   });
 
