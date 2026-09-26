@@ -60,6 +60,19 @@ test('imports the actual project from a single archive wrapper and filters its l
   assert.equal(fs.readFileSync(path.join(wrapped, '.aily/project-files.write.lock'), 'utf8'), 'source owner');
 });
 
+test('imports read-only archive metadata as writable copies without changing the source', () => {
+  const source = directory(); const parent = directory(); const target = path.join(parent, 'imported');
+  for (const name of ['package.json', 'project.abi']) {
+    fs.writeFileSync(path.join(source, name), '{}'); fs.chmodSync(path.join(source, name), 0o444);
+  }
+  importProjectDirectory(source, target);
+  for (const name of ['package.json', 'project.abi']) {
+    assert.equal(fs.statSync(path.join(source, name)).mode & 0o200, 0);
+    assert.notEqual(fs.statSync(path.join(target, name)).mode & 0o200, 0);
+    fs.writeFileSync(path.join(target, name), '{"opened":true}');
+  }
+});
+
 test('imports reject collisions, ambiguous archives, missing packages and descendants without deleting files', () => {
   const source = directory(); const parent = directory(); const target = path.join(parent, 'target');
   fs.mkdirSync(target); fs.writeFileSync(path.join(target, 'keep'), 'keep');

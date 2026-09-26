@@ -71,7 +71,13 @@ describe('Project Data normalization publication boundary', () => {
       expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ backup: 'project-data', migrateLegacyShadowIds: true }));
       expect(JSON.parse(disk).blocks.blocks[1].inputs.VALUE.shadow.id).not.toBe('shared-default');
     });
-    for (const blocked of ['project.abs', 'project.abs.map.json', '.aily/abs-sync']) it(`preserves ${blocked} and the ABI before any resource write`, async () => {
+    it('retains standalone ABS text while repairing identities in the ABI', async () => {
+      files.existsSync = (file: string) => file.endsWith('/project.abs');
+      const result = await prepare(legacy());
+      expect(result.identityMigration.length).toBe(1);
+      expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+    });
+    for (const blocked of ['project.abs.map.json', '.aily/abs-sync']) it(`preserves ${blocked} and the ABI before any resource write`, async () => {
       const original = disk; files.existsSync = (file: string) => file.endsWith('/' + blocked);
       await expectAsync(prepare(legacy())).toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_IDENTITY_MIGRATION_BLOCKED' }));
       expect(disk).toBe(original); expect(store.flushPending).not.toHaveBeenCalled(); expect(files.replaceProjectText).not.toHaveBeenCalled();
@@ -89,6 +95,20 @@ describe('Project Data normalization publication boundary', () => {
     it('accepts the cloud entry with empty field updates after fixing hidden identities', async () => {
       const result = await normalizeProjectDataDocument({ projectPath: path, document: legacy(), originalContent: disk, materialize: false, fieldUpdates: {} }, store, guard, files);
       expect(result.identityMigration.length).toBe(1); expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+    });
+    it('imports an example whose first duplicated shadow is hidden and second is visible', async () => {
+      const input = legacy();
+      delete input.blocks.blocks[1].inputs.VALUE.block;
+      disk = JSON.stringify(input);
+      const result = await normalizeProjectDataDocument({ projectPath: path, document: input, originalContent: disk,
+        materialize: false, fieldUpdates: {} }, store, guard, files);
+      expect(result.identityMigration.length).toBe(1);
+      const published = JSON.parse(disk);
+      expect(published.blocks.blocks[0].inputs.VALUE.shadow.id).not.toBe('shared-default');
+      expect(published.blocks.blocks[1].inputs.VALUE.shadow.id).toBe('shared-default');
+      expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+        backup: 'project-data', migrateLegacyShadowIds: true,
+      }));
     });
     it('does not guess which occurrence an ambiguous example parameter targets', async () => {
       await expectAsync(normalizeProjectDataDocument({ projectPath: path, document: legacy(), originalContent: disk, materialize: false,
@@ -133,6 +153,88 @@ describe('Project Data normalization publication boundary', () => {
     expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
       expectedHash: await digest(original), backup: 'project-data',
     }));
+  });
+
+  it('migrates only verified serial and U8G2 dropdown values, preserving the original ABI as backup', async () => {
+    const document = { $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [
+      { type: 'serial_read', id: 'old-serial', fields: { SERIAL: 'Serial', TYPE: 'read' } },
+      { type: 'u8g2_begin', id: 'old-display', fields: { TYPE: 'SSD1306', RESOLUTION: '128X64_NONAME_F', PROTOCOL: '_HW_I2C' } },
+      { type: 'serial_read', id: 'other-option', fields: { TYPE: 'parseInt' } },
+      { type: 'u8g2_begin', id: 'different-display', fields: { TYPE: 'SH1106', RESOLUTION: '128X64_NONAME_F' } },
+    ] } };
+    disk = JSON.stringify(document); const original = disk;
+
+    const result = await prepare(document, false);
+    const blocks = (result.document as typeof document).blocks.blocks;
+
+    expect(result.legacyFieldMigration.map(change => `${change.blockId}/${change.field}`))
+      .toEqual(['old-serial/TYPE', 'old-display/RESOLUTION', 'old-display/MODE']);
+    expect(blocks[0].fields.TYPE).toBe('read()');
+    expect(blocks[1].fields).toEqual(jasmine.objectContaining({ RESOLUTION: '128X64_NONAME', MODE: 'FULL_BUFFER' }));
+    expect(blocks[2].fields.TYPE).toBe('parseInt');
+    expect(blocks[3].fields.RESOLUTION).toBe('128X64_NONAME_F');
+    expect(JSON.parse(disk).blocks.blocks).toEqual(blocks);
+    expect(files.replaceProjectText.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+      expectedHash: await digest(original), backup: 'project-data',
+    }));
+  });
+
+  it('translates only corroborated legacy Blinker input counts', async () => {
+    const input = (id: string, count: number, extraState: any) => ({
+      type: 'blinker_widget_print', id, fields: { WIDGET: 'temp' }, extraState,
+      inputs: Object.fromEntries(Array.from({ length: count }, (_, i) => [`INPUT${i}`, { block: { type: 'text', id: `${id}-${i}` } }])),
+    });
+    const document = { $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [
+      input('old', 2, { itemCount: 2 }),
+      input('already-current', 2, { extraCount: 1 }),
+      input('mismatch', 1, { itemCount: 2 }),
+      { ...input('other-type', 2, { itemCount: 2 }), type: 'other_mutator' },
+      input('missing-state', 2, undefined),
+      { type: 'controls_ifelse', id: 'old-else', extraState: { elseIfCount: 1 },
+        inputs: { IF0: {}, DO0: {}, IF1: {}, DO1: {}, ELSE: {} } },
+    ] } };
+    disk = JSON.stringify(document);
+
+    const result = await prepare(document, false);
+    const blocks = (result.document as typeof document).blocks.blocks;
+
+    expect(result.legacyShapeMigration.map(change => change.blockId)).toEqual(['old', 'missing-state', 'old-else']);
+    expect(blocks[0].extraState).toEqual({ extraCount: 1 });
+    expect(blocks[1].extraState).toEqual({ extraCount: 1 });
+    expect(blocks[2].extraState).toEqual({ itemCount: 2 });
+    expect(blocks[3].extraState).toEqual({ itemCount: 2 });
+    expect(blocks[4].extraState).toEqual({ extraCount: 1 });
+    expect(blocks[5].extraState).toEqual({ elseIfCount: 1, hasElse: true });
+    expect(JSON.parse(disk).blocks.blocks).toEqual(blocks);
+    expect(files.replaceProjectText.calls.mostRecent().args[0].backup).toBe('project-data');
+  });
+
+  it('renames only the no-argument legacy FastLED refresh block', async () => {
+    const document = { $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [
+      { type: 'fastled_refresh', id: 'old' },
+      { type: 'fastled_refresh', id: 'unknown-shape', fields: { MODE: 'other' } },
+    ] } };
+    disk = JSON.stringify(document);
+    const result = await prepare(document, false);
+    expect(result.legacyTypeMigration.map(change => change.blockId)).toEqual(['old']);
+    expect((result.document as typeof document).blocks.blocks.map(block => block.type))
+      .toEqual(['fastled_show', 'fastled_refresh']);
+    expect(files.replaceProjectText.calls.mostRecent().args[0].backup).toBe('project-data');
+  });
+
+  it('keeps the exact legacy U8G2 font while adding the new picker categories', async () => {
+    const document = { $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [
+      { type: 'u8g2_set_font', id: 'font', fields: { FONT: 'u8g2_font_wqy13_t_chinese2' } },
+      { type: 'u8g2_set_font', id: 'unknown', fields: { FONT: 'unrelated-font' } },
+    ] } };
+    disk = JSON.stringify(document);
+    const result = await prepare(document, false);
+    const blocks = (result.document as typeof document).blocks.blocks;
+    expect(result.legacyFieldMigration.map(change => `${change.blockId}/${change.field}`)).toEqual(['font/SIZE', 'font/FONT_TYPE']);
+    expect(blocks[0].fields).toEqual(jasmine.objectContaining({
+      FONT: 'u8g2_font_wqy13_t_chinese2', SIZE: '14', FONT_TYPE: 'CHINESE',
+    }));
+    expect(blocks[1].fields).toEqual({ FONT: 'unrelated-font' });
   });
 
   for (const stage of ['put', 'flushPending', 'validateReferences', 'resolve'] as const) {

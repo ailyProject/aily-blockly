@@ -5,6 +5,8 @@ import { AilyDataRef } from './project-data.types';
 import { migrateLegacyShadowIdentities, ProjectBlockIdentityError } from '../legacy-shadow-identities';
 import { ProjectBlockFieldUpdates, updateProjectBlockFields } from '../project-block-field-updates';
 import { migrateLegacyBlockFieldValues } from '../legacy-block-field-values';
+import { migrateLegacyBlockShapeValues } from '../legacy-block-shape-values';
+import { migrateLegacyBlockTypes } from '../legacy-block-types';
 
 export interface ProjectDataNormalizationStore extends ProjectDataImportStore {
   resolve<T>(ref: AilyDataRef): Promise<T>;
@@ -21,11 +23,13 @@ export async function normalizeProjectDataDocument(
   const { projectPath, originalContent, materialize, fieldUpdates } = input;
   const identities = migrateLegacyShadowIdentities(input.document);
   const legacyFields = migrateLegacyBlockFieldValues(identities.document);
+  const legacyShapes = migrateLegacyBlockShapeValues(legacyFields.document);
+  const legacyTypes = migrateLegacyBlockTypes(legacyShapes.document);
   for (const change of identities.changes) if (fieldUpdates && Object.hasOwn(fieldUpdates, change.oldId)) {
     throw new ProjectBlockIdentityError('BLOCKLY_IDENTITY_REFERENCE_AMBIGUOUS', 'A field update targets a duplicated legacy identity.', { blockId: change.oldId });
   }
-  const updated = fieldUpdates === undefined ? { document: legacyFields.document, changed: false }
-    : updateProjectBlockFields(legacyFields.document, fieldUpdates);
+  const updated = fieldUpdates === undefined ? { document: legacyTypes.document, changed: false }
+    : updateProjectBlockFields(legacyTypes.document, fieldUpdates);
   const document = updated.document;
   const check = () => {
     assertCurrent();
@@ -37,7 +41,9 @@ export async function normalizeProjectDataDocument(
     // publication lock, closing races with ABS initialization in another process.
     const io = files as ProjectFilePublicationPort & { existsSync(path: string): boolean };
     if (typeof io.existsSync !== 'function') throw new ProjectBlockIdentityError('PROJECT_FILE_HOST_UNAVAILABLE', 'Identity migration requires filesystem inspection.');
-    for (const name of ['project.abs', 'project.abs.map.json', '.aily/abs-sync']) {
+    // A standalone ABS source has no block-ID binding. Only projection maps or
+    // pending sync state can refer to the identities being repaired.
+    for (const name of ['project.abs.map.json', '.aily/abs-sync']) {
       if (io.existsSync(`${projectPath}/${name}`)) throw new ProjectBlockIdentityError('BLOCKLY_IDENTITY_MIGRATION_BLOCKED',
         `Existing ABS identity context (${name}); preserve drafts and use explicit recovery before migrating legacy shadow IDs.`, { path: name });
     }
@@ -63,7 +69,8 @@ export async function normalizeProjectDataDocument(
   assertCurrent();
   let publication: ProjectFileWriteResult | undefined;
   // Candidate field edits also need publication, even when the schema/payloads are already normalized.
-  const changed = updated.changed || migration.documentChanged || identities.changes.length > 0 || legacyFields.changes.length > 0;
+  const changed = updated.changed || migration.documentChanged || identities.changes.length > 0
+    || legacyFields.changes.length > 0 || legacyShapes.changes.length > 0 || legacyTypes.changes.length > 0;
   if (originalContent !== undefined) {
     // Even an unchanged document must still match the bytes read for this load.
     // Exact no-op publication takes the lock/CAS path without rewriting the file.
@@ -72,5 +79,7 @@ export async function normalizeProjectDataDocument(
   }
   // A confirmed old-context commit stays committed, but its load result is not reusable.
   assertCurrent();
-  return { document: restored, migration, publication, identityMigration: identities.changes, legacyFieldMigration: legacyFields.changes };
+  return { document: restored, migration, publication, identityMigration: identities.changes,
+    legacyFieldMigration: legacyFields.changes, legacyShapeMigration: legacyShapes.changes,
+    legacyTypeMigration: legacyTypes.changes };
 }
