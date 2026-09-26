@@ -10,7 +10,6 @@ import {
   ElectronService,
   CmdService,
   PlatformService,
-  AppDataResourceLockService,
 } from '@core/platform/public-api';
 import { PlaygroundService } from '../playground.service';
 import { UiService } from '@core/app-shell/public-api';
@@ -50,7 +49,6 @@ export class SubjectItemComponent {
     private uiService: UiService,
     private platformService: PlatformService,
     private translate: TranslateService,
-    private appDataResourceLock: AppDataResourceLockService,
   ) { }
 
   ngOnInit() {
@@ -97,10 +95,7 @@ export class SubjectItemComponent {
 
       this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('PLAYGROUND.LOADING_EXAMPLE'), timeout: 300000 });
       if (!this.electronService.exists(examplePath) || !this.electronService.exists(abiFilePath)) {
-        await this.appDataResourceLock.runExclusive(`example:install:${this.exampleItem.name}`, appDataResourceToken =>
-          this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`, undefined, true, false,
-            { appDataResourceToken, appDataResourceMode: 'write' })
-        );
+        await this.cmdService.runAsyncChecked(`npm install ${this.exampleItem.name} --prefix "${appDataPath}"`, undefined, true, false);
       }
 
       // 将path路径中的最后文件夹名添加"_`generateDateString()`"后缀

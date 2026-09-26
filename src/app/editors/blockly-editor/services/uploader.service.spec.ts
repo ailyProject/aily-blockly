@@ -1,17 +1,14 @@
 import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { Subject } from 'rxjs';
-import { AppDataResourceLockService } from '@core/platform/public-api';
 import { _UploaderService } from './uploader.service';
 
-describe('Uploader AppData ownership during project close', () => {
+describe('Uploader command lifecycle during project close', () => {
   let original: any;
   let service: any;
   let output: Subject<any>;
-  let grant: (value: any) => void;
-  let release: jasmine.Spy;
 
   beforeEach(() => {
-    original = { path: window['path'], fs: window['fs'], ipcRenderer: window['ipcRenderer'] };
+    original = { path: window['path'], fs: window['fs'] };
     window['path'] = {
       join: (...parts: string[]) => parts.join('/'),
       basename: (path: string) => path.split('/').pop(),
@@ -22,13 +19,6 @@ describe('Uploader AppData ownership during project close', () => {
       existsSync: () => true, mkdirSync() {}, copySync() {}, writeFileSync() {},
       statSync: () => ({ size: 123 }),
     };
-    release = jasmine.createSpy('release').and.resolveTo({ ok: true });
-    window['ipcRenderer'] = { invoke: (channel: string, data: any) => {
-      if (channel === 'appdata-resource-lock-acquire') return new Promise(resolve => { grant = resolve; });
-      if (channel === 'appdata-resource-lock-release') return release(data);
-      return Promise.resolve();
-    } };
-
     output = new Subject();
     service = Object.create(_UploaderService.prototype);
     service.projectService = {
@@ -50,7 +40,6 @@ describe('Uploader AppData ownership during project close', () => {
       run: jasmine.createSpy('run').and.returnValue(output),
       kill: jasmine.createSpy('kill').and.resolveTo(true),
     };
-    service.appDataResourceLock = new AppDataResourceLockService();
     service.uploaderBleService = { findFirmwareFile: () => '/project/build/firmware.bin' };
     service.getNetworkOtaTarget = () => ({ host: '127.0.0.1', port: 80, username: '', password: '', uploadPath: '/' });
     service.appendUploadLog = () => {};
@@ -66,36 +55,28 @@ describe('Uploader AppData ownership during project close', () => {
       return service.flashSoftdevice('s110', 'COM1');
     }
 
-    it(`${mode} associates the live command with its project and returns the reader on completion`, fakeAsync(() => {
+    it(`${mode} starts the command in its project and reports completion`, fakeAsync(() => {
       let result: any;
       start().then(value => { result = value; });
       flushMicrotasks();
-      grant({ ok: true, token: 'reader', commandHandoff: true });
-      flushMicrotasks();
       if (mode === 'serial') {
         expect(service.cmdService.spawn).toHaveBeenCalledOnceWith('node', jasmine.any(Array),
-          { shellProfile: false, cwd: '/project', appDataResourceToken: 'reader', appDataResourceMode: 'read' }, false);
+          { shellProfile: false, cwd: '/project' }, false);
       } else {
-        expect(service.cmdService.run).toHaveBeenCalledOnceWith(jasmine.any(String), '/project', false, false,
-          { appDataResourceToken: 'reader', appDataResourceMode: 'read' });
+        expect(service.cmdService.run).toHaveBeenCalledOnceWith(jasmine.any(String), '/project', false, false);
       }
-      expect(release).not.toHaveBeenCalled();
       output.complete();
       flushMicrotasks();
-      expect(release).toHaveBeenCalledOnceWith({ token: 'reader' });
       expect(mode === 'softdevice' ? result.success : result.state === 'done').toBeTrue();
     }));
 
-    it(`${mode} returns a queued reader without spawning when its project starts closing`, fakeAsync(() => {
+    it(`${mode} does not spawn when its project starts closing during preparation`, fakeAsync(() => {
       let result: any;
       start().then(value => { result = value; }, error => { result = error; });
-      flushMicrotasks();
       service.projectService.isProjectTransitionInProgress = () => true;
-      grant({ ok: true, token: 'reader', commandHandoff: true });
       flushMicrotasks();
       expect(service.cmdService.spawn).not.toHaveBeenCalled();
       expect(service.cmdService.run).not.toHaveBeenCalled();
-      expect(release).toHaveBeenCalledOnceWith({ token: 'reader' });
       expect(mode === 'softdevice' ? result.success : result.state === 'done').toBeFalse();
       expect(mode === 'softdevice' ? result.message : result.text).toContain('project is closing');
       if (mode !== 'softdevice') {

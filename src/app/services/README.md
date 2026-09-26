@@ -18,7 +18,7 @@ services/
 │   │   ├── operations/           # 鉴权用例操作
 │   │   ├── policies/             # 鉴权判断规则
 │   │   └── public-api.ts
-│   ├── platform/                 # Electron、操作系统、命令、日志和资源锁
+│   ├── platform/                 # Electron、操作系统、命令和日志
 │   │   ├── observability/        # 性能和可观测能力
 │   │   └── public-api.ts
 │   └── preferences/              # 配置、设置、主题、语言和区域

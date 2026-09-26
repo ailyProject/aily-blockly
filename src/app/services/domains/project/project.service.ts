@@ -2,7 +2,6 @@ import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { BehaviorSubject, Subject } from 'rxjs';
 import {
-  AppDataResourceLockService,
   CmdService,
   ElectronService,
   PlatformService,
@@ -508,7 +507,7 @@ export class ProjectService {
     if (!folder) return;
     const lease = this.acquireProjectLifecycle([path]);
     try {
-      await this.waitForAppDataCleanup(this.stopProjectResourceCommands(folder.path));
+      await this.stopProjectCommands(folder.path);
       const group = this.storedCoderWorkspaceFor(folder.path);
       await window['projectLock']?.release(folder.path);
       this.coderProjectsSubject.next(this.coderProjects.filter(item => item !== folder));
@@ -716,7 +715,6 @@ export class ProjectService {
     private configService: ConfigService,
     private platformService: PlatformService,
     private translate: TranslateService,
-    private appDataResourceLock: AppDataResourceLockService,
     private injector: Injector,
   ) {
     this.translate.onLangChange.subscribe((event) => {
@@ -1029,9 +1027,7 @@ export class ProjectService {
       });
 
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
-      const npmInstallResult = await this.appDataResourceLock.runExclusive(`project:new:install-board:${boardPackage}`, appDataResourceToken =>
-        this.cmdService.runAsync(installCommand, undefined, true, false, { appDataResourceToken, appDataResourceMode: 'write' })
-      );
+      const npmInstallResult = await this.cmdService.runAsync(installCommand, undefined, true, false);
       if (npmInstallResult.code !== 0) {
         throw new Error(npmInstallResult.stderr || npmInstallResult.stdout || `npm install failed with exit code ${npmInstallResult.code}`);
       }
@@ -1770,27 +1766,13 @@ export class ProjectService {
     } finally { lease.release(); }
   }
 
-  private async stopProjectResourceCommands(projectPath: string): Promise<void> {
+  private async stopProjectCommands(projectPath: string): Promise<void> {
     if (!this.electronService.isElectron) return;
-    const stopped = await window['ipcRenderer'].invoke('project-commands-stop', { projectPath });
-    if (!stopped?.ok) throw new Error('项目任务未确认停止，保留其 AppData 锁。');
-  }
-
-  private async waitForAppDataCleanup(cleanup: Promise<void>): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        cleanup,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('AppData 清理等待已达 5 秒。')), 5000);
-        }),
-      ]);
+      const stopped = await window['ipcRenderer'].invoke('project-commands-stop', { projectPath });
+      if (!stopped?.ok) throw new Error('项目任务未确认停止。');
     } catch (error) {
-      // Closing the UI must not depend on deleting a lock file. Main retains
-      // any live borrower; late completion only returns its original lease.
-      console.warn('[ProjectService] AppData cleanup deferred:', error);
-    } finally {
-      clearTimeout(timer);
+      console.warn('[ProjectService] Project command stop failed:', error);
     }
   }
 
@@ -1805,14 +1787,9 @@ export class ProjectService {
     }
 
     if (this.electronService.isElectron) {
-      await this.waitForAppDataCleanup((async () => {
-        // close() holds the project lifecycle gate, so background preprocessing
-        // cannot start again while main stops this project's resource borrowers.
-        const paths = [...new Set([this.currentProjectPath, ...this.coderProjects.map(folder => folder.path)].filter(Boolean))];
-        await Promise.all(paths.map(projectPath => this.stopProjectResourceCommands(projectPath)));
-        const drained = await window['ipcRenderer'].invoke('project-appdata-drain');
-        if (!drained?.ok) throw new Error(drained?.message || '项目共享资源操作尚未结束。');
-      })());
+      // close() holds the project lifecycle gate while main stops project commands.
+      const paths = [...new Set([this.currentProjectPath, ...this.coderProjects.map(folder => folder.path)].filter(Boolean))];
+      await Promise.all(paths.map(projectPath => this.stopProjectCommands(projectPath)));
     }
 
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
@@ -3231,9 +3208,7 @@ export class ProjectService {
         prefixPath: appDataPath,
         registry: boardRegistry,
       });
-      await this.appDataResourceLock.runExclusive(`project:switch-board:install-appdata:${newBoardPackage}`, appDataResourceToken =>
-        this.cmdService.runAsyncChecked(appDataInstallCommand, undefined, true, false, { appDataResourceToken, appDataResourceMode: 'write' })
-      );
+      await this.cmdService.runAsyncChecked(appDataInstallCommand, undefined, true, false);
       assertCurrentProject();
 
       // 2. 预安装到当前项目的 node_modules，但不写 package.json；最终 package.json 变更交给 watcher 处理。

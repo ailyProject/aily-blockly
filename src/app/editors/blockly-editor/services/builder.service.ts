@@ -7,7 +7,6 @@ import {
   LogService,
   PlatformService,
   ElectronService,
-  AppDataResourceLockService,
   ChatPerformanceTracer,
 } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -71,7 +70,6 @@ export class _BuilderService {
     private electronService: ElectronService,
     private npmService: NpmService,
     private compileValidationService: CompileValidationService,
-    private appDataResourceLock: AppDataResourceLockService,
     private ngZone: NgZone,
     private projectDebugConfigurationService:
       ProjectDebugConfigurationService,
@@ -81,7 +79,7 @@ export class _BuilderService {
   private streamId: string | null = null;
   private buildSubscription: any = null; // 保存订阅引用
   private buildPromiseReject: any = null; // 保存 Promise 的 reject 函数
-  private buildResourceWait: AbortController | null = null;
+  private buildCancellation: AbortController | null = null;
   private activeBuildRequestId: string | null = null;
   private buildCompleted = false;
   private isErrored = false; // 标识是否为错误状态
@@ -363,7 +361,7 @@ export class _BuilderService {
     subscription?.unsubscribe?.();
     if (streamId && !this.preprocessStop) {
       const stopping = this.cmdService.kill(streamId).then(stopped => {
-        if (!stopped) throw new Error('预处理任务未确认停止，共享资源锁仍受保护。');
+        if (!stopped) throw new Error('预处理任务未确认停止。');
         if (this.preprocessStreamId === streamId) this.preprocessStreamId = null;
       }).finally(() => {
         if (this.preprocessStop === stopping) this.preprocessStop = null;
@@ -710,7 +708,6 @@ export class _BuilderService {
         this.preprocessFullError = '';
 
         // 使用 cmdService 在后台运行预处理脚本，并把标准输出转发到日志面板。
-        await this.appDataResourceLock.runShared('build:background-preprocess', appDataResourceToken => {
         if (this.shouldCancelBackgroundPreprocess(runGeneration) || this.workflowService.currentState === ProcessState.BUILDING) return;
         const spawnStartedAt = Date.now();
         const preprocessStreamId = `builder_preprocess_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -718,7 +715,7 @@ export class _BuilderService {
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
-          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath, appDataResourceToken },
+          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath },
           true,
         ).subscribe({
           next: (output) => {
@@ -801,15 +798,8 @@ export class _BuilderService {
 
         // 保存订阅引用以便后续终止
         this.preprocessProcess = subscription;
-        });
       } catch (error) {
         if (error instanceof BlocklyCodePreparationInvalidatedError) return;
-        if (String(error?.message).includes('APPDATA_RESOURCE_LOCK_TIMEOUT')) {
-          if (!this.shouldCancelBackgroundPreprocess(runGeneration)) {
-            this.schedulePendingPrecompileRetry('resource-ready', '共享资源恢复可用，重试后台预编译');
-          }
-          return;
-        }
         console.warn('启动后台预处理失败:', error);
       }
       })
@@ -1160,10 +1150,7 @@ export class _BuilderService {
 
     if (pythonRoute) {
       try {
-        const result = await this.appDataResourceLock.runShared(
-          'build:python-artifact',
-          () => this.generateAndWritePythonEntry(),
-        );
+        const result = await this.generateAndWritePythonEntry();
         this.workflowService.finishBuild(true);
         return result;
       } catch (error) {
@@ -1185,20 +1172,14 @@ export class _BuilderService {
     this.hasReceivedRealProgress = false; // 重置进度标记
 
     const requestedProjectPath = this.projectService.currentProjectPath;
-    const resourceWait = new AbortController();
-    this.buildResourceWait = resourceWait;
-    const completion = this.appDataResourceLock.runShared('build:preprocess-and-compile', appDataResourceToken => {
-      if (resourceWait.signal.aborted) {
-        return Promise.reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
-      }
-
-      let preparing: Promise<void>;
-      const result = new Promise<ActionState>((resolve, reject) => {
+    const cancellation = new AbortController();
+    this.buildCancellation = cancellation;
+    let preparing: Promise<void>;
+    const result = new Promise<ActionState>((resolve, reject) => {
       // 保存 reject 函数，以便在 cancel 时使用
       this.buildPromiseReject = reject;
       preparing = (async () => {
       try {
-        if (requestedProjectPath !== this.projectService.currentProjectPath) throw new Error('BUILD_SOURCE_STALE: Project changed while waiting for build resources.');
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
         this.buildStartTime = Date.now(); // 记录编译开始时间
@@ -1230,7 +1211,7 @@ export class _BuilderService {
             waited += checkInterval;
             
             // 检查是否被取消
-            if (resourceWait.signal.aborted) {
+            if (cancellation.signal.aborted) {
               console.log('等待预编译时被取消');
               this.workflowService.finishBuild(false, 'Cancelled while waiting for preprocessing');
               reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
@@ -1263,7 +1244,7 @@ export class _BuilderService {
         } catch (error) {
           console.log('首次编译');
         }
-        if (resourceWait.signal.aborted) throw new Error('Build cancelled before source capture.');
+        if (cancellation.signal.aborted) throw new Error('Build cancelled before source capture.');
 
         let compileCommand: string = "";
         let completeTitle: string = this.t('COMPLETE_TITLE');
@@ -1296,7 +1277,7 @@ export class _BuilderService {
             this.blocklyService.workspace,
             'compile_config',
             checkpoint,
-            () => resourceWait.signal.aborted,
+            () => cancellation.signal.aborted,
           );
           assertPackage(); assertBoard(); assertFresh();
           // Generator-owned macros are now published. From here through launch,
@@ -1363,13 +1344,12 @@ export class _BuilderService {
           // Launch Node directly so a native crash keeps its real exit code and
           // project paths are passed as arguments without another shell parser.
           assertPackage(); assertBoard(); assertFresh();
-          if (resourceWait.signal.aborted) throw new Error('Build cancelled before launch.');
+          if (cancellation.signal.aborted) throw new Error('Build cancelled before launch.');
           this.streamId = `blockly_build_${crypto.randomUUID()}`;
           this.buildSubscription = this.cmdService.spawn('node', [compileScriptPath, configFilePath], {
             cwd: this.currentProjectPath,
             shellProfile: false,
             buildWorkspace: this.currentProjectPath,
-            appDataResourceToken,
             ...(buildConfig.recordProjectDelivery ? { buildDeliveryRequest: configFilePath } : {}),
             streamId: this.streamId,
           }).subscribe({
@@ -1678,18 +1658,16 @@ export class _BuilderService {
       }
       })().catch(reject);
       });
-      // Rejecting the UI result must not release SDK access while asynchronous
-      // request preparation is still running. Commands retain their own reader.
-      return result.finally(() => preparing);
-    }, resourceWait.signal);
+    // Wait for asynchronous preparation to stop before completing cancellation.
+    const completion = result.finally(() => preparing);
     return completion.catch(error => {
-      if (this.buildResourceWait === resourceWait && this.workflowService.currentState === ProcessState.BUILDING) {
-        this.workflowService.finishBuild(false, error?.message || error?.text || 'Build resource acquisition failed');
+      if (this.buildCancellation === cancellation && this.workflowService.currentState === ProcessState.BUILDING) {
+        this.workflowService.finishBuild(false, error?.message || error?.text || 'Build preparation failed');
       }
       throw error;
     }).finally(() => {
-      if (this.buildResourceWait === resourceWait) {
-        this.buildResourceWait = null;
+      if (this.buildCancellation === cancellation) {
+        this.buildCancellation = null;
         this.activeBuildRequestId = null;
       }
     });
@@ -1961,7 +1939,7 @@ export class _BuilderService {
     
     // 立即设置取消标志，防止任何后续处理
     this.cancelled = true;
-    this.buildResourceWait?.abort();
+    this.buildCancellation?.abort();
     this.clearProgressTimer(); // 清理定时器
     
     // 计算已经花费的时间

@@ -20,7 +20,7 @@ for (const coder of [false, true]) test(`only an observed successful ${coder ? '
 test('foreign owners, wrong handles and unsupervised launch shapes cannot mint authority', async t => {
     const f = fixture(t);
     await assert.rejects(f.api.begin({ isDestroyed: () => false }, f.options), /main renderer/);
-    for (const patch of [{ shellProfile: true }, { appDataResourceToken: undefined }, { appDataResourceMode: 'write' },
+    for (const patch of [{ shellProfile: true },
         { args: [f.options.args[0], f.request, 'extra'] }]) await assert.rejects(f.api.begin(f.sender, { ...f.options, ...patch }), /supervised/);
     const handle = await f.api.begin(f.sender, f.options); f.publish(handle); handle.onExit(0, null, false);
     await assert.rejects(f.api.query(f.sender, { projectPath: f.root, handle: 'copied-from-another-host' }), /No matching/);

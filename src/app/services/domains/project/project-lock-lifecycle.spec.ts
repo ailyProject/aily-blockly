@@ -1,9 +1,9 @@
-import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { BehaviorSubject } from 'rxjs';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 
-describe('AppData resources during project close', () => {
+describe('Project command lifecycle during close', () => {
   let original: any;
   let service: any;
   let order: string[];
@@ -40,7 +40,7 @@ describe('AppData resources during project close', () => {
   });
   afterEach(() => Object.assign(window, original));
 
-  it('keeps project admission closed and waits for native resources before disposing the project', fakeAsync(() => {
+  it('keeps project admission closed and waits for native commands before disposing the project', fakeAsync(() => {
     let finish!: (value: any) => void;
     window['ipcRenderer'].invoke.and.callFake((channel: string) => channel === 'project-commands-stop'
       ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ ok: true }));
@@ -58,33 +58,12 @@ describe('AppData resources during project close', () => {
     expect(order).toEqual(['release:/active', 'navigate']);
   }));
 
-  it('allows project close when AppData command stop fails, without forcing a lease release', async () => {
+  it('allows project close when command stop fails', async () => {
     window['ipcRenderer'].invoke.and.resolveTo({ ok: false });
     expect(await service.close()).toBeTrue();
     expect(service.currentProjectPath).toBe('');
     expect(service.isProjectTransitionInProgress('/active')).toBeFalse();
-    expect(window['ipcRenderer'].invoke).not.toHaveBeenCalledWith('project-appdata-drain');
   });
-
-  it('bounds AppData cleanup to five seconds and late completion does not close a new project', fakeAsync(() => {
-    let finish!: (value: any) => void;
-    window['ipcRenderer'].invoke.and.callFake((channel: string) => channel === 'project-commands-stop'
-      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ ok: true }));
-    let result: boolean | undefined;
-    service.close().then((value: boolean) => { result = value; });
-    flushMicrotasks();
-    tick(4999);
-    expect(result).toBeUndefined();
-    tick(1);
-    expect(result).toBeTrue();
-    expect(service.currentProjectPath).toBe('');
-    expect(service.isProjectTransitionInProgress('/active')).toBeFalse();
-    service.currentProjectPath = '/new-project';
-    finish({ ok: true }); flushMicrotasks();
-    expect(service.currentProjectPath).toBe('/new-project');
-    expect(service.routerService.navigate).toHaveBeenCalledTimes(1);
-    expect(window['projectLock'].release).toHaveBeenCalledOnceWith('/active');
-  }));
 
   it('stops each project once when closing the workspace', async () => {
     service.coderProjectsSubject.next([{ path: '/active' }, { path: '/tab' }]);
@@ -93,22 +72,7 @@ describe('AppData resources during project close', () => {
     expect(order.indexOf('release:/active')).toBeGreaterThan(order.indexOf('stop:/tab'));
   });
 
-  it('waits for renderer lease return but allows closing on AppData drain failure', fakeAsync(() => {
-    let finish!: (value: any) => void;
-    window['ipcRenderer'].invoke.and.callFake((channel: string) => channel === 'project-appdata-drain'
-      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ ok: true }));
-    let result: boolean | undefined;
-    service.close().then((value: boolean) => { result = value; });
-    flushMicrotasks();
-    expect(service.currentProjectPath).toBe('/active');
-    expect(window['projectLock'].release).not.toHaveBeenCalled();
-    finish({ ok: false, message: '仍有共享资源写入' }); flushMicrotasks();
-    expect(result).toBeTrue();
-    expect(service.currentProjectPath).toBe('');
-    expect(service.routerService.navigate).toHaveBeenCalled();
-  }));
-
-  it('removing a retained Coder tab only stops that tab and AppData failure does not prevent removal', async () => {
+  it('removing a retained Coder tab only stops that tab and stop failure does not prevent removal', async () => {
     const folder = { path: '/tab' };
     service.coderProjectsSubject.next([folder]);
     window['ipcRenderer'].invoke.and.resolveTo({ ok: false });

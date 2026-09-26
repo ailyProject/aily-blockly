@@ -30,7 +30,6 @@ describe('board switch project persistence', () => {
       buildNpmPackageSpec: (name: string) => name,
       application: { updateFooterState: () => {} },
       buildNpmInstallCommand: async () => 'install-board',
-      appDataResourceLock: { runExclusive: async (_key: string, task: (token: string) => Promise<void>) => task('writer-token') },
       cmdService: { runAsyncChecked: jasmine.createSpy('npm').and.resolveTo() },
       finishBoardSwitchWithoutPackageWatcher: jasmine.createSpy('reload').and.resolveTo(),
       rejectBoardSwitchReload: () => {}, waitForBoardSwitchReload: jasmine.createSpy('waiter').and.resolveTo(),
@@ -40,7 +39,7 @@ describe('board switch project persistence', () => {
     const service = fixture();
     await ProjectService.prototype.changeBoard.call(service, { name: target, version: '1' });
     expect(service.cmdService.runAsyncChecked.calls.first().args).toEqual([
-      'install-board', undefined, true, false, { appDataResourceToken: 'writer-token', appDataResourceMode: 'write' },
+      'install-board', undefined, true, false,
     ]);
     const [path, content] = window['fs'].writeFileSync.calls.mostRecent().args;
     expect(path).toBe('/project/package.json');

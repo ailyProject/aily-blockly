@@ -87,7 +87,6 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             const owner = ownerFor(sender);
             const root = fs.realpathSync(options.buildWorkspace), requestPath = options.buildDeliveryRequest;
             if (options.shellProfile !== false || options.args?.length !== 2 || options.args[1] !== requestPath
-                || options.appDataResourceMode === 'write' || !options.appDataResourceToken
                 || !['node', process.execPath].includes(options.command)
                 || key(fs.realpathSync(options.args[0])) !== key(fs.realpathSync(path.join(childRoot, 'scripts/compile.js')))
                 || !/^compile-request-[a-f0-9-]{36}\.json$/.test(path.basename(requestPath))

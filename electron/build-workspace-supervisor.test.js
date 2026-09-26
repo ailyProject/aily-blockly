@@ -13,31 +13,27 @@ const vm = require('node:vm');
 
 // Keep event ordering deterministic without killing real processes or exposing
 // test-only command APIs. Real process-tree/marker integration is covered below.
-function cancellationFixture({ terminate, workspace, release, viaIpc = false } = {}) {
+function cancellationFixture({ terminate, workspace, viaIpc = false } = {}) {
   const child = Object.assign(new EventEmitter(), { pid: 12345, stdout: new EventEmitter(), stderr: new EventEmitter() });
   const filename = require.resolve('./cmd');
-  let killCalls = 0, releases = 0;
+  let killCalls = 0, spawnCalls = 0;
   const timers = [], handlers = new Map();
-  const lease = { assertOwnerActive() {}, release: () => { releases++; return release?.(); } };
-  const context = { module: { exports: {} }, process, console: { info() {}, log() {}, warn() {} },
+  const context = { module: { exports: {} }, process, console: { info() {}, log() {}, warn() {}, error() {} },
     setTimeout: callback => { const timer = { callback, unref() {} }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.cancelled = true; },
     require: name => {
       if (name === 'electron') return { ipcMain: { handle: (name, handler) => handlers.set(name, handler) } };
-      if (name === 'child_process') return { spawn: () => child };
+      if (name === 'child_process') return { spawn: () => { spawnCalls++; return child; } };
       if (name === './platform') return { isLinux: true };
       if (name === './process-tree') return { killRegisteredProcessTree: () => { killCalls++; return terminate(); } };
       if (name === './build-workspace-supervisor') return { createBuildWorkspaceSupervisor: () => workspace };
-      if (name === './appdata-resource-lock' && viaIpc) return { retainAppDataResourceLock: (token, owner, mode) => {
-        assert.equal(token, 'upload-reader'); assert.equal(owner, 7); assert.equal(mode, 'read'); return lease;
-      } };
       return require(name);
     },
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   const api = context.module.exports, manager = new api.CommandManager();
-  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false }, lease);
-  return { manager, api, handlers, child, get killCalls() { return killCalls; }, get releases() { return releases; },
+  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false });
+  return { manager, api, handlers, child, get killCalls() { return killCalls; }, get spawnCalls() { return spawnCalls; },
     retryCleanup: () => {
       const timer = timers.shift();
       if (timer && !timer.cancelled) timer.callback();
@@ -68,10 +64,10 @@ test('concurrent cancellation waits for one tree result even when parent close h
   const f = cancellationFixture({ terminate: () => new Promise(resolve => { finish = resolve; }) });
   const first = f.manager.killProcess('cancel'), second = f.manager.killProcess('cancel');
   f.child.emit('close', 1, null);
-  assert.equal(f.killCalls, 1); assert.equal(f.releases, 0);
+  assert.equal(f.killCalls, 1); assert.equal(f.manager.getProcess('cancel'), f.child);
   finish(true);
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
-  assert.equal(f.releases, 1); assert.equal(f.manager.getProcess('cancel'), undefined);
+  assert.equal(f.manager.getProcess('cancel'), undefined);
   assert.equal(await f.manager.killProcess('cancel'), true);
 });
 
@@ -79,19 +75,19 @@ test('failed cancellation remains retryable while live and cannot retarget a clo
   let stopped = false;
   const f = cancellationFixture({ terminate: async () => stopped });
   assert.equal(await f.manager.killProcess('cancel'), false);
-  assert.equal(f.releases, 0);
+  assert.equal(f.manager.getProcess('cancel'), f.child);
   stopped = true;
   assert.equal(await f.manager.killProcess('cancel'), true);
-  assert.equal(f.killCalls, 2); assert.equal(f.releases, 1);
+  assert.equal(f.killCalls, 2); assert.equal(f.manager.getProcess('cancel'), undefined);
 
   const closed = cancellationFixture({ terminate: async () => false });
   assert.equal(await closed.manager.killProcess('cancel'), false);
   closed.child.emit('close', 0, null);
-  assert.equal(await closed.manager.killProcess('cancel'), false);
-  assert.equal(closed.killCalls, 1); assert.equal(closed.releases, 0);
+  assert.equal(await closed.manager.killProcess('cancel'), true);
+  assert.equal(closed.killCalls, 1); assert.equal(closed.manager.getProcess('cancel'), undefined);
 });
 
-test('confirmed termination returns SDK resources before retrying failed marker cleanup', async () => {
+test('confirmed termination retries failed marker cleanup without killing the process again', async () => {
   let finish, attempts = 0, markerPresent = true;
   const f = cancellationFixture({
     terminate: () => new Promise(resolve => { finish = resolve; }),
@@ -107,14 +103,14 @@ test('confirmed termination returns SDK resources before retrying failed marker 
   const first = f.manager.killProcess('cancel');
   f.child.emit('close', 1, null);
   finish(true);
-  assert.equal(await first, true); assert.equal(f.releases, 1);
+  assert.equal(await first, true);
   assert.equal(f.manager.getProcess('cancel'), f.child);
   assert.equal(f.retryCleanup(), true);
-  assert.equal(f.killCalls, 1); assert.equal(attempts, 2); assert.equal(f.releases, 1);
+  assert.equal(f.killCalls, 1); assert.equal(attempts, 2);
   assert.equal(f.manager.getProcess('cancel'), undefined);
 });
 
-test('persistent marker failure has bounded retries and never pins stopped SDK resources', async () => {
+test('persistent marker failure has bounded cleanup retries and never retargets a stopped process', async () => {
   let attempts = 0;
   const f = cancellationFixture({ terminate: async () => true, workspace: {
     releaseAfterTermination: () => { attempts++; throw new Error('EPERM'); },
@@ -123,7 +119,7 @@ test('persistent marker failure has bounded retries and never pins stopped SDK r
   assert.equal(await f.manager.killProcess('cancel'), true);
   f.child.emit('close', 1, null);
   while (f.retryCleanup()) {}
-  assert.equal(f.releases, 1); assert.equal(f.killCalls, 1);
+  assert.equal(f.killCalls, 1);
   assert.equal(attempts, 5); // Initial attempt, close event, and three retries.
   assert.equal(f.manager.getProcess('cancel'), f.child);
   assert.equal(await f.manager.killProcess('cancel'), true);
@@ -143,20 +139,20 @@ for (const closeFirst of [false, true]) test(`failed cancellation accepts a supe
   if (!closeFirst) {
     finish(false);
     assert.equal(await stopping, false);
-    assert.equal(f.releases, 0);
+    assert.equal(f.manager.getProcess('cancel'), f.child);
   }
   markerPresent = false;
   f.child.emit('close', 0, null);
   if (closeFirst) {
-    assert.equal(f.releases, 0);
+    assert.equal(f.manager.getProcess('cancel'), f.child);
     finish(false);
     assert.equal(await stopping, true);
   }
-  assert.equal(f.releases, 1); assert.equal(f.killCalls, 1);
+  assert.equal(f.killCalls, 1);
   assert.equal(f.manager.getProcess('cancel'), undefined);
 });
 
-test('upload reader handoff requires no workspace and waits for tree termination after parent close', async () => {
+test('upload needs no workspace and cancellation waits for tree termination after parent close', async () => {
   let finish;
   const f = cancellationFixture({ viaIpc: true,
     terminate: () => new Promise(resolve => { finish = resolve; }) });
@@ -166,28 +162,54 @@ test('upload reader handoff requires no workspace and waits for tree termination
   const owner = { id: 7, isDestroyed: () => false, send() {} };
   const result = await f.handlers.get('cmd-run')({ sender: owner }, {
     command: process.execPath, streamId: 'upload', shellProfile: false,
-    appDataResourceToken: 'upload-reader', appDataResourceMode: 'read',
   });
-  assert.equal(result.success, true); assert.equal(f.releases, 0);
+  assert.equal(result.success, true);
   const stopping = f.api.killCmdProcess('upload');
   f.child.emit('close', 1, null);
-  assert.equal(f.releases, 0);
+  assert.equal(f.api.getCmdProcess('upload'), f.child);
   finish(true);
-  assert.equal(await stopping, true); assert.equal(f.releases, 1);
+  assert.equal(await stopping, true);
   assert.equal(f.api.getCmdProcess('upload'), undefined);
 });
 
-for (const normalExit of [false, true]) test(`failed AppData release remains retryable after ${normalExit ? 'normal close' : 'confirmed cancellation'}`, async () => {
-  let fail = true;
-  const f = cancellationFixture({ terminate: async () => true,
-    release: () => fail ? { ok: false, error: 'EPERM' } : { ok: true } });
-  if (normalExit) f.child.emit('close', 0, null);
-  else assert.equal(await f.manager.killProcess('cancel'), true);
-  assert.equal(f.manager.getProcess('cancel'), f.child);
-  fail = false;
-  assert.equal(await f.manager.killProcess('cancel'), true);
-  assert.equal(f.killCalls, normalExit ? 0 : 1); assert.equal(f.releases, 2);
-  assert.equal(f.manager.getProcess('cancel'), undefined);
+for (const cancellation of ['command', 'project', 'shutdown']) test(`${cancellation} cancellation prevents a pending delivery command from launching`, async () => {
+  const f = cancellationFixture({ viaIpc: true });
+  let resume, abandoned = false;
+  f.api.registerCmdHandlers(undefined, { buildDeliveryAuthority: {
+    invalidate() {}, begin: () => new Promise(resolve => { resume = () => resolve({ abandon() { abandoned = true; } }); }),
+  } });
+  const owner = { mainFrame: {}, isDestroyed: () => false, send() {} }, projectPath = path.resolve('pending-build-fixture');
+  const event = { sender: owner, senderFrame: owner.mainFrame };
+  const options = { command: process.execPath, streamId: 'pending-build', shellProfile: false,
+    buildWorkspace: projectPath, buildDeliveryRequest: 'request.json' };
+  const running = f.handlers.get('cmd-run')(event, options);
+  if (cancellation === 'command') assert.equal((await f.handlers.get('cmd-kill')(event, { streamId: options.streamId })).success, true);
+  if (cancellation === 'project') assert.equal(await f.api.killOwnerProjectCmdProcesses(owner, projectPath), true);
+  if (cancellation === 'shutdown') { f.api.beginCommandShutdown(); assert.equal(await f.api.killAllCmdProcesses(), true); }
+  resume();
+  const result = await running;
+  assert.equal(result.success, false); assert.match(result.error, /CANCELLED_BEFORE_LAUNCH/);
+  assert.equal(f.spawnCalls, 0); assert.equal(f.killCalls, 0); assert.equal(abandoned, true);
+  if (cancellation !== 'shutdown') {
+    assert.equal((await f.handlers.get('cmd-run')(event, { command: process.execPath, streamId: options.streamId })).success, true);
+    f.child.emit('close', 0, null);
+  }
+});
+
+test('duplicate pending command streams are rejected without replacing the original cancellation target', async () => {
+  const f = cancellationFixture({ viaIpc: true });
+  let resume;
+  f.api.registerCmdHandlers(undefined, { buildDeliveryAuthority: {
+    begin: () => new Promise(resolve => { resume = () => resolve({ abandon() {} }); }),
+  } });
+  const owner = { mainFrame: {}, isDestroyed: () => false }, event = { sender: owner, senderFrame: owner.mainFrame };
+  const options = { command: process.execPath, streamId: 'duplicate', buildDeliveryRequest: 'request.json' };
+  const running = f.handlers.get('cmd-run')(event, options);
+  const duplicate = await f.handlers.get('cmd-run')(event, options);
+  assert.equal(duplicate.success, false); assert.match(duplicate.error, /already registered/);
+  assert.equal(await f.api.killCmdProcess(options.streamId), true);
+  resume(); assert.match((await running).error, /CANCELLED_BEFORE_LAUNCH/);
+  assert.equal(f.spawnCalls, 0);
 });
 
 test('unrelated commands do not get a build lifecycle; invalid workspace is refused', () => {
@@ -221,18 +243,16 @@ test('registered cancellation stops the owner and descendant before releasing it
   acquireBuildWorkspace(root, 'compile').release();
 });
 
-test('a parent exiting with its build marker cannot release the borrowed SDK reader', async t => {
+test('a parent exiting with its build marker remains unresolved and cannot retarget its closed PID', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
   const manager = new CommandManager(), streamId = 'abandoned-owner';
-  let releases = 0;
   const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
     args: ['-e', 'require(process.argv[1]).acquireBuildWorkspace(process.argv[2], "compile");process.exit(1)',
-      path.resolve(__dirname, '../child/scripts/build-workspace-lease.js'), root] }, { release: () => releases++ }).process;
+      path.resolve(__dirname, '../child/scripts/build-workspace-lease.js'), root] }).process;
   await once(child, 'close');
-  assert.equal(releases, 0); assert.equal(manager.getProcess(streamId), child);
+  assert.equal(manager.getProcess(streamId), child);
   assert.throws(() => manager.executeCommand({ command: process.execPath, streamId }), /already registered/);
   assert.equal(await manager.killProcess(streamId), false);
-  assert.equal(releases, 0);
   // Fixture never spawned descendants. Explicit verified test cleanup only.
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
   manager.processes.delete(streamId);
@@ -241,56 +261,57 @@ test('a parent exiting with its build marker cannot release the borrowed SDK rea
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('SDK reader release follows confirmed tree termination, not the parent close event', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
-  const manager = new CommandManager(), streamId = 'borrowed-reader';
-  let descendant, released = false;
-  const script = `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');
-    const c=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});
-    console.log(c.pid);setInterval(()=>{},1000);`;
-  const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
-    args: ['-e', script, path.resolve(__dirname, '../child/scripts/build-workspace-lease.js'), root] }, {
-      release: () => { assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' }); released = true; },
-    }).process;
-  t.after(async () => {
-    if (manager.getProcess(streamId)) await manager.killProcess(streamId);
+for (const code of [0, 7]) test(`registered installer is removed on a completed exit (${code})`, async () => {
+  const manager = new CommandManager();
+  const child = manager.executeCommand({ command: process.execPath, args: ['-e', `process.exit(${code})`],
+    streamId: 'installer', shellProfile: false }).process;
+  await once(child, 'close');
+  assert.equal(manager.getProcess('installer'), undefined);
+});
+
+test('legacy borrowed AppData markers do not block a command without a token', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-legacy-appdata-'));
+  const previousAppData = process.env.AILY_APPDATA_PATH;
+  process.env.AILY_APPDATA_PATH = root;
+  t.after(() => {
+    if (previousAppData === undefined) delete process.env.AILY_APPDATA_PATH;
+    else process.env.AILY_APPDATA_PATH = previousAppData;
     assert.equal(path.dirname(fs.realpathSync(root)), fs.realpathSync(os.tmpdir()));
-    assert.ok(path.basename(root).startsWith('aily-supervised-build-'));
+    assert.ok(path.basename(root).startsWith('aily-legacy-appdata-'));
     fs.rmSync(root, { recursive: true, force: true });
   });
-  descendant = Number(String((await once(child.stdout, 'data'))[0]).trim());
-  assert.equal(released, false);
-  assert.equal(await manager.killProcess(streamId), true); assert.equal(released, true);
+  const lockRoot = path.join(root, '.lock/appdata-resource-lock');
+  fs.mkdirSync(path.join(lockRoot, 'readers'), { recursive: true });
+  const marker = JSON.stringify({ pid: process.pid, commandBorrowed: true, startedAt: Date.now() });
+  const markers = [path.join(lockRoot, 'writer.lock'), path.join(lockRoot, 'readers/legacy.lock')];
+  for (const filename of markers) fs.writeFileSync(filename, marker);
+  const manager = new CommandManager();
+  const child = manager.executeCommand({ command: process.execPath, args: ['-e', 'process.exit(0)'],
+    streamId: 'legacy-markers', shellProfile: false }).process;
+  const [code] = await once(child, 'close');
+  assert.equal(code, 0); assert.equal(manager.getProcess('legacy-markers'), undefined);
+  for (const filename of markers) assert.equal(fs.readFileSync(filename, 'utf8'), marker);
 });
 
-for (const code of [0, 7]) test(`registered installer returns its writer on a completed exit (${code})`, async () => {
-  const manager = new CommandManager(); let releases = 0;
-  const child = manager.executeCommand({ command: process.execPath, args: ['-e', `process.exit(${code})`],
-    streamId: 'installer', shellProfile: false }, { release: () => releases++ }).process;
-  await once(child, 'close');
-  assert.equal(releases, 1); assert.equal(manager.getProcess('installer'), undefined);
-});
-
-test('failed installer termination stays pinned after a later normal parent close', async () => {
-  const manager = new CommandManager(); let releases = 0;
+test('failed installer termination never retargets a subsequently closed PID', async () => {
+  const manager = new CommandManager();
   const child = manager.executeCommand({ command: process.execPath,
     args: ['-e', 'console.log("ready");setTimeout(()=>process.exit(0),200)'],
-    streamId: 'uncertain-installer', shellProfile: false }, { release: () => releases++ }).process;
+    streamId: 'uncertain-installer', shellProfile: false }).process;
   const closed = once(child, 'close');
   await once(child.stdout, 'data');
   // Deterministic failed-stop injection: never target a foreign PID. The real
-  // fixture exits on its own; the manager must not infer descendant cleanup.
+  // fixture exits on its own; the manager must not retarget its closed PID.
   const entry = manager.processes.get('uncertain-installer'); entry.process = { pid: 0 };
   assert.equal(await manager.killProcess('uncertain-installer'), false);
   entry.process = child;
   await closed;
-  assert.equal(releases, 0); assert.equal(await manager.killProcess('uncertain-installer'), false);
-  assert.equal(manager.getProcess('uncertain-installer'), child);
+  assert.equal(await manager.killProcess('uncertain-installer'), true);
+  assert.equal(manager.getProcess('uncertain-installer'), undefined);
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
-  manager.processes.delete('uncertain-installer'); // Owned fixture has no descendants.
 });
 
-test('project stop only targets its AppData borrowers and excludes nested or unrelated commands', async () => {
+test('project stop targets its owner and exact project, including commands without a build workspace', async () => {
   const manager = new CommandManager(), owner = {}, other = {};
   const root = path.resolve(os.tmpdir(), 'aily-stop-project');
   manager.processes.set('project', { ownerWebContents: owner, cwd: root });
@@ -300,12 +321,11 @@ test('project stop only targets its AppData borrowers and excludes nested or unr
   manager.processes.set('other-workspace', { ownerWebContents: owner, cwd: root, buildWorkspacePath: `${root}-other` });
   manager.processes.set('other-tab', { ownerWebContents: other, cwd: root });
   manager.processes.set('prefix-only', { ownerWebContents: owner, cwd: `${root}-other` });
-  for (const entry of manager.processes.values()) entry.resourceLease = {};
-  manager.processes.set('unrelated', { ownerWebContents: owner, cwd: root });
+  manager.processes.set('upload', { ownerWebContents: owner, cwd: root });
   const stopped = [];
   manager.killProcess = async id => { stopped.push(id); return id !== 'supervised'; };
   assert.equal(await manager.killOwnerProjectProcesses(owner, root), false);
-  assert.deepEqual(stopped, ['project', 'supervised']);
+  assert.deepEqual(stopped, ['project', 'supervised', 'upload']);
   assert.equal(await manager.killAllProcesses(), false);
   manager.processes.clear();
   assert.equal(await manager.killAllProcesses(), true);

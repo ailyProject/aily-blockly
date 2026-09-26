@@ -14,7 +14,7 @@ import { _BuilderService } from "./builder.service";
 import { BuilderService as HostBuilderService } from "@domain/build/public-api";
 import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { NzModalService } from "ng-zorro-antd/modal";
-import { CmdOutput, CmdService, LogService, AppDataResourceLockService } from '@core/platform/public-api';
+import { CmdOutput, CmdService, LogService } from '@core/platform/public-api';
 import { NpmService } from "@domain/dependencies/public-api";
 import { BlocklyService } from "./blockly.service";
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
@@ -72,8 +72,7 @@ export class _UploaderService {
     private actionService: ActionService,
     private blocklyService: BlocklyService,
     private workflowService: WorkflowService,
-    private uploaderBleService: UploaderBleService,
-    private appDataResourceLock: AppDataResourceLockService
+    private uploaderBleService: UploaderBleService
   ) { }
 
   uploadInProgress = false;
@@ -674,20 +673,20 @@ export class _UploaderService {
         }
 
         let bufferData = '';
-        await this.appDataResourceLock.runShared('upload:run', (token) => new Promise<void>((releaseUploadLock) => {
+        await new Promise<void>((completeCommand) => {
         if (currentProjectPath !== this.projectService.currentProjectPath
           || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
           throw new Error('Upload cancelled: project is closing or has changed.');
         }
         if (this.cancelled) {
-          releaseUploadLock();
+          completeCommand();
           return;
         }
 
         this.cmdService.spawn(
           'node',
           [uploadScriptPath, configFilePath],
-          { shellProfile: false, cwd: currentProjectPath, appDataResourceToken: token, appDataResourceMode: 'read' },
+          { shellProfile: false, cwd: currentProjectPath },
           false,
         ).subscribe({
           next: async (output: CmdOutput) => {
@@ -937,7 +936,7 @@ export class _UploaderService {
           },
           error: (error: any) => {
             if (syntheticProgressTimer) { clearInterval(syntheticProgressTimer); syntheticProgressTimer = null; }
-            releaseUploadLock();
+            completeCommand();
             console.log("上传命令错误:", error);
             this.uploadInProgress = false; // 确保重置上传状态
             this._builderService.isUploading = false;
@@ -953,7 +952,7 @@ export class _UploaderService {
           },
           complete: () => {
             if (syntheticProgressTimer) { clearInterval(syntheticProgressTimer); syntheticProgressTimer = null; }
-            releaseUploadLock();
+            completeCommand();
             console.log("上传命令完成，cancelled:", this.cancelled, "isErrored:", this.isErrored, "uploadCompleted:", this.uploadCompleted, "processExitCode:", this.processExitCode);
             
             // 确保 uploadInProgress 在所有情况下都被重置
@@ -1052,7 +1051,7 @@ export class _UploaderService {
             }
           }
         });
-        })).finally(() => {
+        }).finally(() => {
           if (syntheticProgressTimer) clearInterval(syntheticProgressTimer);
         });
       } catch (error) {
@@ -1260,17 +1259,17 @@ export class _UploaderService {
         this.logNetworkOtaUpload(trimmedLine);
       };
 
-      void this.appDataResourceLock.runShared('upload:network-ota', (token) => new Promise<void>((releaseUploadLock) => {
+      try {
         if (currentProjectPath !== this.projectService.currentProjectPath
           || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
           throw new Error('Upload cancelled: project is closing or has changed.');
         }
         if (this.cancelled) {
-          releaseUploadLock();
+          reject({ state: 'warn', text: this.networkT('CANCELLED') });
           return;
         }
 
-        this.cmdService.run(uploadCmd, currentProjectPath, false, false, { appDataResourceToken: token, appDataResourceMode: 'read' }).subscribe({
+        this.cmdService.run(uploadCmd, currentProjectPath, false, false).subscribe({
           next: (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -1312,7 +1311,6 @@ export class _UploaderService {
             }
           },
           error: (error: any) => {
-            releaseUploadLock();
             this.uploadInProgress = false;
             this._builderService.isUploading = false;
             const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
@@ -1321,7 +1319,6 @@ export class _UploaderService {
             reject({ state: 'error', text: error.message || this.networkT('UPLOAD_FAILED_FALLBACK') });
           },
           complete: () => {
-            releaseUploadLock();
             if (bufferData.trim()) {
               handleLine(bufferData);
               bufferData = '';
@@ -1379,12 +1376,12 @@ export class _UploaderService {
             reject({ state: 'error', text: message });
           }
         });
-      })).catch(error => {
+      } catch (error) {
         this.uploadInProgress = false;
         this._builderService.isUploading = false;
         this.workflowService.finishUpload(false, error.message);
         reject({ state: 'error', text: error.message });
-      });
+      }
     });
   }
 
@@ -1750,12 +1747,12 @@ export class _UploaderService {
         let lastProgress = 0;
         let currentStage = '';
 
-        void this.appDataResourceLock.runShared('upload:softdevice', (token) => new Promise<void>((releaseUploadLock) => {
+        try {
         if (currentProjectPath !== this.projectService.currentProjectPath
           || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
           throw new Error('Upload cancelled: project is closing or has changed.');
         }
-        this.cmdService.run(uploadCmd, currentProjectPath, false, false, { appDataResourceToken: token, appDataResourceMode: 'read' }).subscribe({
+        this.cmdService.run(uploadCmd, currentProjectPath, false, false).subscribe({
           next: (output: CmdOutput) => {
             if (output.type === 'close') {
               if ((output.code ?? 0) !== 0 || output.signal) {
@@ -1864,7 +1861,6 @@ export class _UploaderService {
           },
           error: (error: any) => {
             console.error('Softdevice 烧录错误:', error);
-            releaseUploadLock();
             this.noticeService.update({
               title: errorTitle,
               text: this.uploadT('SOFTDEVICE_FLASH_FAILED_WITH_MESSAGE', { message: error.message || error }),
@@ -1875,7 +1871,6 @@ export class _UploaderService {
           },
           complete: () => {
             console.log('Softdevice 烧录命令执行完成, hasError:', hasError, 'uploadCompleted:', uploadCompleted);
-            releaseUploadLock();
             if (hasError) {
               this.noticeService.update({
                 title: errorTitle,
@@ -1895,7 +1890,9 @@ export class _UploaderService {
             }
           }
         });
-        })).catch(error => resolve({ success: false, message: error.message }));
+        } catch (error) {
+          resolve({ success: false, message: error.message });
+        }
       });
     } catch (error: any) {
       console.error('烧录 softdevice 失败:', error);

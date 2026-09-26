@@ -27,19 +27,13 @@ export interface CmdOptions {
   forwardStdout?: boolean;
   /** Bind a build marker to this registered command's confirmed tree cancellation. */
   buildWorkspace?: string;
-  /** Main retains this renderer-owned lease until the registered command exits. */
-  appDataResourceToken?: string;
-  appDataResourceMode?: 'read' | 'write';
   /** Experimental full-delivery request; only the host compile entry may attest it. */
   buildDeliveryRequest?: string;
 }
 
-type CommandResourceOptions = Pick<CmdOptions, 'appDataResourceToken' | 'appDataResourceMode'>;
-
 interface QueuedTask {
   command: string;
   cwd?: string;
-  resource?: CommandResourceOptions;
   resolve: (value: CmdOutput) => void;
   reject: (reason?: any) => void;
   subject: Subject<CmdOutput>;
@@ -143,10 +137,10 @@ export class CmdService {
    * @param cwd 工作目录
    * @param useQueue 是否使用队列（默认为true）
    */
-  run(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, resource?: CommandResourceOptions): Observable<CmdOutput> {
+  run(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false): Observable<CmdOutput> {
     if (!useQueue) {
       // 直接执行，不使用队列
-      return this.executeCommand(command, cwd, silent, resource);
+      return this.executeCommand(command, cwd, silent);
     }
 
     // 使用队列机制
@@ -156,7 +150,6 @@ export class CmdService {
       const task: QueuedTask = {
         command,
         cwd,
-        resource,
         resolve: (value: CmdOutput) => {
           observer.next(value);
           if (value.type === 'close' || value.type === 'error') {
@@ -179,7 +172,7 @@ export class CmdService {
    * @param command 命令字符串
    * @param cwd 工作目录
    */
-  private executeCommand(command: string, cwd?: string, silent: boolean = false, resource?: CommandResourceOptions): Observable<CmdOutput> {
+  private executeCommand(command: string, cwd?: string, silent: boolean = false): Observable<CmdOutput> {
     // console.log(`run command: ${command}`);
     if (!silent) {
       this.logService.update({
@@ -191,7 +184,7 @@ export class CmdService {
     const parts = parseCommand(command);
     const cmd = parts[0];
     const args = parts.slice(1);
-    return this.spawn(cmd, args, { cwd, ...resource }, silent);
+    return this.spawn(cmd, args, { cwd }, silent);
   }
 
   /**
@@ -212,7 +205,7 @@ export class CmdService {
           // console.log(`Processing queued command: ${task.command}`);
 
           // 执行命令并等待完成
-          const observable = this.executeCommand(task.command, task.cwd, false, task.resource);
+          const observable = this.executeCommand(task.command, task.cwd, false);
 
           await new Promise<void>((resolve, reject) => {
             observable.subscribe({
@@ -246,12 +239,12 @@ export class CmdService {
    * @param useQueue 是否使用队列（默认为true）
    * @returns Promise<{success: boolean, output: string, error?: string}>
    */
-  async runAsync(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, resource?: CommandResourceOptions): Promise<CmdOutput> {
-    return lastValueFrom(this.run(command, cwd, useQueue, silent, resource))
+  async runAsync(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false): Promise<CmdOutput> {
+    return lastValueFrom(this.run(command, cwd, useQueue, silent))
   }
 
-  async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, resource?: CommandResourceOptions): Promise<CmdOutput> {
-    const result = await this.runAsync(command, cwd, useQueue, silent, resource);
+  async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false): Promise<CmdOutput> {
+    const result = await this.runAsync(command, cwd, useQueue, silent);
     if (result.type === 'error' || (result.code ?? 0) !== 0) {
       throw new Error(result.error || result.stderr || result.stdout || `Command failed with exit code ${result.code ?? 'unknown'}: ${command}`);
     }
@@ -264,7 +257,7 @@ export class CmdService {
    */
   async kill(streamId: string): Promise<boolean> {
     const subject = this.subjects.get(streamId);
-    // The stream may close before main confirms that its process tree and resource lease are released.
+    // The stream may close before main confirms that its process tree has stopped.
     const result = await window['cmd'].kill(streamId);
     if (result.success) {
       subject?.complete();

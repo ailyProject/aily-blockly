@@ -7,7 +7,6 @@ const path = require('path');
 const { isWin32, isDarwin, isLinux } = require('./platform');
 const { killRegisteredProcessTree } = require('./process-tree');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
-const { retainAppDataResourceLock } = require('./appdata-resource-lock');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -379,12 +378,13 @@ function logCommandOutput(streamId, type, output, targetWebContents) {
 class CommandManager {
   constructor() {
     this.processes = new Map(); // 存储进程
+    this.pendingCommands = new Map();
     this.processMessageListeners = new Set();
     this.processExitListeners = new Set();
   }
 
   // 执行命令并返回流式数据
-  executeCommand(options, resourceLease) {
+  executeCommand(options) {
     if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
     let {
       command,
@@ -512,8 +512,6 @@ class CommandManager {
         });
 
     const startedAt = Date.now();
-    const finished = new Promise(resolve => child.once('close', resolve));
-
     const entry = {
       process: child,
       command,
@@ -525,11 +523,8 @@ class CommandManager {
       messagePort,
       buildWorkspace,
       buildWorkspacePath: options.buildWorkspace,
-      resourceLease,
       startedAt,
       ownerWebContents: options.ownerWebContents,
-      isNpmCmd,
-      finished,
       stopRequested: false,
     };
 
@@ -537,15 +532,15 @@ class CommandManager {
 
     child.once('close', (code, signal) => {
       entry.closed = true;
-      // During termination the tree cleanup, not the parent's close event,
-      // decides when SDK writers may proceed. Interrupted build markers pin it.
+      // During cancellation, wait for the tree result before forgetting the
+      // command. Interrupted build markers still require confirmed cleanup.
       const safeExit = !child.pid || (Number.isInteger(code) && !signal);
       entry.completedNormally = safeExit;
-      if (!entry.resourceLease || (!entry.stopRequested && (!entry.terminationUnconfirmed || entry.buildWorkspace) && safeExit
-          && (!entry.buildWorkspace || entry.buildWorkspace.canReleaseResources()))) {
+      if (entry.terminationConfirmed || (!entry.stopRequested && (!entry.buildWorkspace
+          || (safeExit && entry.buildWorkspace.canReleaseResources())))) {
         entry.terminationConfirmed = true;
         this.releaseCommandResources(streamId, entry);
-      } else if (entry.resourceLease) {
+      } else {
         console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
           streamId, pid: child.pid, reason: entry.stopRequested ? 'termination-pending' : 'termination-unconfirmed',
         });
@@ -608,6 +603,11 @@ class CommandManager {
 
   // 终止进程
   async killProcess(streamId) {
+    const pending = this.pendingCommands.get(streamId);
+    if (pending) {
+      pending.cancelled = true;
+      return true;
+    }
     const entry = this.processes.get(streamId);
     // A normal close may have already finished between the caller's snapshot
     // and this request. Cleanup is idempotent.
@@ -636,7 +636,6 @@ class CommandManager {
             const completedBuild = entry.closed && entry.completedNormally
               && entry.buildWorkspace?.canReleaseResources();
             if (!stopped && !completedBuild) {
-              entry.terminationUnconfirmed = true;
               console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
                 streamId, pid: entry.process.pid, reason: 'termination-failed',
               });
@@ -648,13 +647,15 @@ class CommandManager {
           this.releaseCommandResources(streamId, entry);
           return true;
         } catch (error) {
-          if (!entry.terminationConfirmed) entry.terminationUnconfirmed = true;
           console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
             streamId, pid: entry.process.pid, reason: 'cleanup-failed', error: error.message,
           });
           return false;
         } finally {
-          if (!entry.terminationConfirmed) entry.stopRequested = false;
+          if (!entry.terminationConfirmed) {
+            entry.stopRequested = false;
+            if (entry.closed && !entry.buildWorkspace) this.releaseCommandResources(streamId, entry);
+          }
         }
       })().finally(() => { entry.stopPromise = undefined; });
       return entry.stopPromise;
@@ -664,17 +665,6 @@ class CommandManager {
   }
 
   releaseCommandResources(streamId, entry) {
-    // Once the tree is stopped, marker-file cleanup is independent of SDK
-    // ownership. A temporary unlink failure must not pin global AppData.
-    try {
-      const result = entry.resourceLease?.release();
-      if (result?.ok === false) throw new Error(result.error || 'AppData lease release failed');
-      entry.resourceLease = undefined;
-    } catch (error) {
-      console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
-        streamId, pid: entry.process.pid, reason: 'lease-release-failed', error: error.message,
-      });
-    }
     if (entry.workspaceCleanupPending) {
       try {
         entry.buildWorkspace.releaseAfterTermination(true);
@@ -683,7 +673,7 @@ class CommandManager {
         console.warn('[BUILD_WORKSPACE] Stopped command cleanup pending:', error.message);
       }
     }
-    if (!entry.resourceLease && !entry.workspaceCleanupPending) {
+    if (!entry.workspaceCleanupPending) {
       clearTimeout(entry.cleanupTimer);
       if (this.processes.get(streamId) === entry) this.processes.delete(streamId);
     } else if (!entry.cleanupTimer && (entry.cleanupAttempts || 0) < 3) {
@@ -699,12 +689,6 @@ class CommandManager {
   // 获取进程
   getProcess(streamId) {
     return this.processes.get(streamId)?.process;
-  }
-
-  waitForOwnerNpmProcesses(owner) {
-    return Promise.all(Array.from(this.processes.values())
-      .filter(entry => entry.ownerWebContents === owner && entry.isNpmCmd)
-      .map(entry => entry.finished));
   }
 
   getActiveProcessSummaries() {
@@ -808,7 +792,7 @@ class CommandManager {
   }
 
   async killAllProcesses() {
-    const entries = Array.from(this.processes.entries());
+    const entries = [...this.processes, ...this.pendingCommands];
 
     console.info('[PROC_TRACE][CMD_KILL_ALL]', { count: entries.length, processes: this.getActiveProcessSummaries() });
     const stopped = await Promise.all(entries.map(([streamId]) => this.killProcess(streamId)));
@@ -821,9 +805,9 @@ class CommandManager {
     const root = normalize(projectPath);
     const matches = entry => {
       const project = entry.buildWorkspacePath || entry.cwd;
-      return !!entry.resourceLease && entry.ownerWebContents === owner && project && normalize(project) === root;
+      return entry.ownerWebContents === owner && project && normalize(project) === root;
     };
-    const entries = Array.from(this.processes.entries()).filter(([, entry]) => matches(entry));
+    const entries = [...this.processes, ...this.pendingCommands].filter(([, entry]) => matches(entry));
     const stopped = await Promise.all(entries.map(([streamId]) => this.killProcess(streamId)));
     return stopped.every(Boolean);
   }
@@ -847,29 +831,26 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
   ipcMain.handle('cmd-run', async (event, options) => {
     const streamId = options.streamId || `cmd_${Date.now()}_${Math.random()}`;
     const senderWindow = event.sender; // 获取发送请求的窗口
-    let resourceLease;
     let delivery;
+    const pending = { ownerWebContents: senderWindow, cwd: options.cwd || process.cwd(),
+      buildWorkspacePath: options.buildWorkspace, cancelled: false };
 
     try {
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
-      if (options.appDataResourceToken !== undefined) {
-        const mode = options.appDataResourceMode || 'read';
-        // Uploaders also borrow SDK tools but do not own build workspaces or
-        // invalidate compiled deliveries. Their lease follows the command tree.
-        if (mode === 'write' && options.buildWorkspace) throw new Error('AppData writer cannot be a build reader.');
-        resourceLease = retainAppDataResourceLock(options.appDataResourceToken, senderWindow.id, mode);
+      if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)) {
+        throw new Error('Command stream is already registered.');
       }
+      commandManager.pendingCommands.set(streamId, pending);
       if (options.buildWorkspace) buildDeliveryAuthority?.invalidate(options.buildWorkspace);
       if (options.buildDeliveryRequest !== undefined) {
         if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
         delivery = await buildDeliveryAuthority.begin(senderWindow, options);
-        if (senderWindow.isDestroyed()) throw new Error('Build owner was destroyed before launch.');
       }
-      resourceLease?.assertOwnerActive();
+      if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
+      if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
       const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
-      }, resourceLease);
-      resourceLease = undefined; // Ownership transferred to the registered command.
+      });
       const process = result.process;
       if (delivery) {
         process.on('message', message => {
@@ -965,7 +946,6 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       };
     } catch (error) {
       delivery?.abandon();
-      resourceLease?.release();
       const formattedError = formatSpawnError(error);
 
       console.error('[PROC_TRACE][CMD_START_ERROR]', {
@@ -978,6 +958,8 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         error: formattedError,
         streamId
       };
+    } finally {
+      if (commandManager.pendingCommands.get(streamId) === pending) commandManager.pendingCommands.delete(streamId);
     }
   });
 
@@ -1011,8 +993,8 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
 
 module.exports = {
   CommandManager,
-  // Native consumers share shutdown/termination and lease accounting with IPC commands.
-  executeCmdCommand: (options, lease) => commandManager.executeCommand(options, lease),
+  // Native consumers share shutdown and termination with IPC commands.
+  executeCmdCommand: (options) => commandManager.executeCommand(options),
   getCmdProcess: (streamId) => commandManager.getProcess(streamId),
   registerCmdHandlers,
   getCmdProcessMessagePortInfo: (streamId) => commandManager.getProcessMessagePortInfo(streamId),
@@ -1021,7 +1003,6 @@ module.exports = {
   killOwnerProjectCmdProcesses: (owner, projectPath) => commandManager.killOwnerProjectProcesses(owner, projectPath),
   beginCommandShutdown: () => { commandShutdown = true; },
   getActiveCmdProcesses: () => commandManager.getActiveProcessSummaries(),
-  waitForOwnerCmdNpmProcesses: (owner) => commandManager.waitForOwnerNpmProcesses(owner),
   onCmdProcessMessage: (listener) => commandManager.onProcessMessage(listener),
   onCmdProcessExit: (listener) => commandManager.onProcessExit(listener),
   sendCmdProcessMessage: (streamId, message) => commandManager.sendProcessMessage(streamId, message),
