@@ -4,6 +4,9 @@ const { Worker } = require('worker_threads');
 function extractNpmTarballInBackground(tarballPath, destination, options = {}) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, 'subapp-package-worker.js'), {
+      // Eval starts the main process under --inspect-brk. A Worker inheriting
+      // that debugger state pauses before extracting and never reports progress.
+      execArgv: [],
       workerData: {
         tarballPath,
         destination,
