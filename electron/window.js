@@ -17,6 +17,7 @@ const {
 const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
+    authorizeExclusiveRestart: authorizeChildToolExclusiveRestart,
     classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
@@ -450,12 +451,16 @@ function trackChildToolSessionOwner(webContents) {
     return ownerId;
 }
 
-async function restartChildToolSession(toolId) {
-    const normalizedToolId = sanitizeChildToolId(toolId);
+async function restartChildToolSession(toolIdOrPayload, ownerId) {
+    const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
+        ? toolIdOrPayload : { toolId: toolIdOrPayload };
+    const normalizedToolId = sanitizeChildToolId(payload.toolId);
     const session = childToolSessions.get(normalizedToolId);
     if (!session) {
         return { success: false, reason: 'not-found' };
     }
+    const authorization = authorizeChildToolExclusiveRestart(session, ownerId, payload);
+    if (!authorization.success) return authorization;
 
     cancelChildToolRelease(session);
     const stopped = await stopChildToolSessionProcess(session);
@@ -537,7 +542,7 @@ async function forceStopChildToolByCatalogId(catalogId) {
 }
 
 function isChildToolSessionAlive(session) {
-    if (!session || session.exit) {
+    if (!session || session.exit || session.stopping) {
         return false;
     }
     if (session.streamId && getActiveCmdProcesses().some(processInfo => processInfo.streamId === session.streamId)) {
@@ -1952,8 +1957,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
         return result;
     });
 
-    ipcMain.handle("child-tool-session-restart", async (_event, toolId) => {
-        const result = await restartChildToolSession(toolId);
+    ipcMain.handle("child-tool-session-restart", async (event, toolId) => {
+        const result = await restartChildToolSession(toolId, event.sender?.id);
         notifyChildToolSessionStateChanged();
         return result;
     });

@@ -147,6 +147,17 @@ function ownerCount(session) {
   return session?.owners instanceof Map ? session.owners.size : 0;
 }
 
+function authorizeExclusiveRestart(session, ownerId, payload = {}) {
+  if (!session) return { success: false, reason: 'not-found' };
+  if (payload.streamId && payload.streamId !== session.streamId) {
+    return { success: false, reason: 'stale-session' };
+  }
+  if (ownerCount(session) > 1 || (ownerCount(session) > 0 && !hasOwner(session, ownerId, payload.leaseId))) {
+    return { success: false, reason: 'shared-runtime-in-use' };
+  }
+  return { success: true };
+}
+
 function classifyRegistration(existing, candidateStreamId, existingAlive) {
   if (!existing) return 'register';
   if (String(existing.streamId || '') === String(candidateStreamId || '')) return 'same-stream';
@@ -155,6 +166,7 @@ function classifyRegistration(existing, candidateStreamId, existingAlive) {
 
 module.exports = {
   acquireOwner,
+  authorizeExclusiveRestart,
   authorizeMessagePortSend,
   classifyRegistration,
   electMessageControllerOwner,
