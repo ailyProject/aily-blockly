@@ -3,6 +3,8 @@ import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
 import { NativeOwnedOperation, retireNativeInputDefault, withNativeBlockCreation } from './blockly-native-block-effects';
+import { nativeFieldDependencies, withNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 
 type FieldOrder = (block: Blockly.Block) => readonly string[] | undefined;
 
@@ -39,6 +41,25 @@ export function restoreNativeFields(block: Blockly.Block, values: Record<string,
   }
   for (const name of names) {
     const field = block.getField(name), saved = applied.get(name);
+    if (field && !saved) {
+      const contract = serializeRuntimeFieldContract(field, values[name]);
+      const dependencies = nativeFieldDependencies(block.workspace);
+      if (dependencies && contract.type === 'field_dropdown') {
+        dependencies.defer(block, name, () => {
+          const current = block.getField(name);
+          const options = current && serializeRuntimeFieldContract(current, values[name]).options;
+          if (!options?.some(option => option[1] === values[name])) {
+            throw new AbsSyncError('ABS_FIELD_OPTION_INVALID', `Cannot restore native field: ${block.type}/${block.id}/${name}; requested option is unavailable after initialization.`, undefined, [], {
+              blockType: block.type, field: name, received: values[name], allowedValues: options?.map(option => option[1]) ?? [],
+              hint: 'Keep the matching initializer in this workspace and use an exact option it provides. Do not retry unchanged input.',
+            });
+          }
+          loadState(current!, structuredClone(values[name]));
+          if (absJson(current!.saveState()) !== absJson(values[name])) throw new Error(`Native dropdown rejected saved value: ${block.type}/${block.id}/${name}.`);
+        });
+        continue;
+      }
+    }
     if (!field || !saved) throw new Error(`Cannot restore native field: ${block.type}/${block.id}/${name}.`);
     if (saved.field !== field || saved.value !== absJson(field.saveState())) {
       throw new Error(`Native field changed during restoration: ${block.type}/${block.id}/${name}.`);
@@ -84,6 +105,11 @@ function orderShadowDefaults(blocks: Iterable<Blockly.Block>, orders: ReadonlyMa
  * All accessors and the workspace method are restored in finally, including errors.
  */
 export function withNativeStateLoading<T>(native: typeof Blockly, workspace: Blockly.Workspace,
+  state: unknown, load: () => T, order?: FieldOrder): T {
+  return withNativeFieldDependencies(native, workspace, () => loadNativeState(native, workspace, state, load, order));
+}
+
+function loadNativeState<T>(native: typeof Blockly, workspace: Blockly.Workspace,
   state: unknown, load: () => T, order?: FieldOrder): T {
   const entries = collectProjectBlocks(state).map(({ state }) => state);
   const ids = new Set<string>();

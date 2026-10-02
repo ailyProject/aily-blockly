@@ -10,6 +10,7 @@ import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tas
 import { captureArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { verifyNativeModelRegistrations } from './blockly-native-model-effects';
 import { captureGeneratorProjectEffects } from './generator-project-effects';
+import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
 
 /** Complete merged state, including dormant shadows and metadata, not the scratch tree. */
 export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly.Workspace,
@@ -21,7 +22,8 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
   if (!generator) throw new Error('Native ABI verification requires the actual project generator.');
   const detached = structuredClone(expected);
   orderAbsNativeFields(detached, request.contracts);
-  withNativeStateLoading(native, workspace, detached, () => native.serialization.workspaces.load(detached, workspace));
+  withNativeFieldDependencies(native, workspace, () => withNativeStateLoading(native, workspace, detached,
+    () => native.serialization.workspaces.load(detached, workspace)), uiTasks);
   assertClean();
   const capture = () => uiTasks.withoutScheduling(() => {
     const state = normalizeAbsSerializedWorkspace(native.serialization.workspaces.save(workspace));

@@ -17,6 +17,7 @@ import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { prepareAbsStructuralSyntax } from '../../../integrations/blockly/abs/abs-structural-syntax';
 import { captureStructuralMutators } from '../components/blockly/plugins/block-plus-minus/src/structural-mutators';
 import { prepareNativeModels } from './blockly-native-model-preparation';
+import { nativeFieldDependencies } from './blockly-native-field-dependencies';
 
 /** Native binding has no library/shape templates. Only the shared grammar knows ABS spelling. */
 export function bindNativeAbs(source: string, execution: NativeCandidateWorkspace, declarations: Map<string, Record<string, any>>,
@@ -70,6 +71,10 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
       const value = normalizeAbsSerializedField(definition.symbol ? execution.models.resolve(token, definition) : resolveAbsFieldValue(resolvedToken, definition), definition);
       execution.field(block, name, value);
     } catch (error) {
+      const dependencies = nativeFieldDependencies(execution.workspace);
+      if (dependencies && !bindingReferences && error instanceof AbsSyncError && error.code === 'ABS_FIELD_OPTION_INVALID') {
+        dependencies.defer(block, name, () => setField(block, node, name, token)); return;
+      }
       if (modelPreparation && !bindingReferences && error instanceof AbsSyncError && error.code === 'ABS_SYMBOL_MISSING') {
         pending.push({ block, node, name, token }); return;
       }
@@ -139,7 +144,9 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
         if (!(error instanceof AbsSyncError) || error.code !== 'ABS_SYMBOL_MISSING') throw error;
       }
     }
-    return new Set(pending.map(item => item.block));
+    const dependencies = nativeFieldDependencies(execution.workspace);
+    if (!pending.length) dependencies?.settle(false);
+    return new Set([...pending.map(item => item.block), ...dependencies?.blocks ?? []]);
   };
   const modelDeclarations = modelPreparation ? prepareNativeModels(execution, modelPreparation.generator, blocks,
     resolvePending, modelPreparation.requestId) : [];

@@ -57,7 +57,10 @@ export function resolveAbsFieldValue(token: AbsFieldToken, definition?: AbsField
     throw new Error('An omitted argument is only valid for a dropdown with an empty option.');
   }
   const { value, quoted } = token;
-  if (token.reference) throw new Error('A variable reference requires a variable field or a value input. Quote literal text.');
+  if (token.reference) throw new AbsSyncError('ABS_FIELD_REFERENCE_INVALID',
+    'A variable reference requires a variable field or a value input. This field does not accept a Blockly variable reference.', undefined, [],
+    { received: token.raw, ...(definition?.options ? { allowedValues: definition.options.map(option => option[1]) } : {}),
+      hint: definition?.type === 'field_dropdown' ? 'Use the exact option name without $ for this dropdown.' : 'Quote literal text. Keep $name for field_variable and variables_get($name) for value inputs.' });
   if (!definition) return value;
   if (definition.type === 'field_dropdown' && Array.isArray(definition.options)) {
     const allowed = definition.options.map(option => option[1]);

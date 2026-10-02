@@ -11,6 +11,7 @@ import { GeneratorProjectEffects } from './generator-project-effects';
 import { registerCustomFunctionContract, clearCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { registerVariableDeclarationContract, clearVariableDeclarationRegistration } from './blockly-variable-declaration-contract';
 import { createProjectGenerator, type BlocklyGeneratorMode, type ProjectGenerator } from './blockly-generator-factory';
+import { nativeFieldDependencies, registerNativeFieldInitializer } from './blockly-native-field-dependencies';
 export type { BlocklyGeneratorMode, ProjectGenerator } from './blockly-generator-factory';
 import {
   prepareBlocklyProjectDataForCodeGeneration,
@@ -55,6 +56,7 @@ interface RuntimeResources {
   idleCallbacks: Set<number>;
   workspaceListeners: Map<Blockly.Workspace, Set<(event: any) => void>>;
   workspaceFacades: WeakMap<Blockly.Workspace, Blockly.Workspace>;
+  fieldInitializers: Set<() => void>;
 }
 
 interface RuntimeSession {
@@ -189,6 +191,7 @@ export class BlocklyGeneratorRuntimeService {
         animationFrames: new Set<number>(),
         idleCallbacks: new Set<number>(),
         workspaceListeners: new Map<Blockly.Workspace, Set<(event: any) => void>>(),
+        fieldInitializers: new Set(),
         workspaceFacades: new WeakMap<Blockly.Workspace, Blockly.Workspace>(),
       },
       loadedPaths: new Set<string>(),
@@ -200,6 +203,14 @@ export class BlocklyGeneratorRuntimeService {
     activeProjectGenerator = generator;
     activeProjectGeneratorRevision++;
     this.installRealmBridge(session);
+    session.resources.fieldInitializers.add(registerNativeFieldInitializer(() => session.context.getWorkspace(), workspace => {
+      if (!this.isCurrent(session)) throw new Error('Native field preparation belongs to an inactive runtime.');
+      const RealmFunction = (session.realmWindow as any).Function;
+      const listeners = new Set([...(session.resources.workspaceListeners.get(workspace) ?? []),
+        ...((workspace as any).listeners ?? []).filter((listener: unknown) => RealmFunction && listener instanceof RealmFunction)]);
+      const event = new Blockly.Events.FinishedLoading(workspace);
+      for (const listener of listeners) listener(event);
+    }));
     return generator;
   }
 
@@ -530,17 +541,32 @@ export class BlocklyGeneratorRuntimeService {
   }
 
   private installTimerBridge(session: RuntimeSession, realm: Record<string, any>): void {
+    const fieldTimers = new Map<number, () => void>();
     realm['setTimeout'] = (callback: (...args: unknown[]) => void, delay = 0, ...args: unknown[]) => {
-      const id = window.setTimeout(() => {
+      let called = false;
+      const invoke = () => {
+        if (called) return;
+        called = true;
         session.resources.timeouts.delete(id);
+        fieldTimers.get(id)?.(); fieldTimers.delete(id);
         if (this.isCurrent(session)) {
           callback(...args);
         }
-      }, delay);
+      };
+      const id = window.setTimeout(invoke, delay);
       session.resources.timeouts.add(id);
+      const workspace = session.context.getWorkspace();
+      const dependencies = workspace && nativeFieldDependencies(workspace);
+      if (dependencies) {
+        const token = dependencies.trackTimer(invoke, delay, () => {
+          window.clearTimeout(id); session.resources.timeouts.delete(id);
+        }, () => fieldTimers.delete(id));
+        fieldTimers.set(id, () => dependencies.cancelTimer(token));
+      }
       return id;
     };
     realm['clearTimeout'] = (id: number) => {
+      fieldTimers.get(id)?.(); fieldTimers.delete(id);
       session.resources.timeouts.delete(id);
       window.clearTimeout(id);
     };
@@ -639,6 +665,8 @@ export class BlocklyGeneratorRuntimeService {
   }
 
   private clearResources(session: RuntimeSession): void {
+    session.resources.fieldInitializers.forEach(dispose => dispose());
+    session.resources.fieldInitializers.clear();
     session.resources.timeouts.forEach((id) => window.clearTimeout(id));
     session.resources.intervals.forEach((id) => window.clearInterval(id));
     session.resources.animationFrames.forEach((id) => window.cancelAnimationFrame(id));

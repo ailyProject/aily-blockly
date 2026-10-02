@@ -14,6 +14,7 @@ import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
 import { createNativeCandidateGraphics } from './blockly-native-graphics';
+import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 
 /** Bundled with the actual host implementations into an independent JavaScript realm. */
@@ -159,9 +160,9 @@ export function installNativeCandidateRealm(): void {
       const models = new NativeCandidateModels(workspace, request.variables);
       if (!request.verify) models.load();
       const execution = new NativeCandidateWorkspace(native, workspace, observer, assertClean, models, request.creations, declarations);
-      const binding = request.abs !== undefined ? bindNativeAbs(request.abs, execution, declarations, request.identities, values.materialize, request.hostCalls,
+      const binding = request.abs !== undefined ? withNativeFieldDependencies(native, workspace, () => bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
         request.modelRequestId && generator
-          ? { generator, requestId: request.modelRequestId } : undefined) : undefined;
+          ? { generator, requestId: request.modelRequestId } : undefined), uiTasks) : undefined;
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
         execution.initializeViews();

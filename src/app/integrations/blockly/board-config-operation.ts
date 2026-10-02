@@ -38,7 +38,8 @@ export async function getBoardConfig(projectService: ProjectService, section: un
     return { ok: false, operation: 'get_board_config', project, reason: 'board_state_mismatch', boardPackage, declaredBoards,
       message: 'The loaded board does not match the project manifest. Complete board_switch/reload before using board options or build facts.' };
   }
-  if (section === 'pins') return { ok: true, operation: 'get_board_config', project, boardPackage };
+  const mcu = board['mcu'] ?? null;
+  if (section === 'pins') return { ok: true, operation: 'get_board_config', project, boardPackage, mcu };
   let buildEnvironment: Record<string, unknown>;
   try {
     buildEnvironment = describeBuildEnvironment({
@@ -56,7 +57,7 @@ export async function getBoardConfig(projectService: ProjectService, section: un
   if (projectService.currentProjectPath !== project || projectService.currentBoardConfig !== board) {
     return { ok: false, operation: 'get_board_config', reason: 'project_changed', message: 'Project/board changed during inspection; query the current project again.' };
   }
-  if (section === 'build') return { ok: true, operation: 'get_board_config', project, boardPackage, buildEnvironment };
+  if (section === 'build') return { ok: true, operation: 'get_board_config', project, boardPackage, mcu, buildEnvironment };
   const menu = await projectService.getBoardConfigMenu({ persistDefaults: false });
   if (projectService.currentProjectPath !== project || projectService.currentBoardConfig !== board) {
     return { ok: false, reason: 'project_changed', message: 'Project/board changed during menu inspection.' };
@@ -71,6 +72,7 @@ export async function getBoardConfig(projectService: ProjectService, section: un
     board: board['description'] || '',
     core: board['core'] || '',
     config_type: board['type'] || '',
+    mcu,
     buildEnvironment,
     config_items: menu.filter(item => !item.sep && configOptions([item]).length > 0).map(item => {
       const options = configOptions([item]);
