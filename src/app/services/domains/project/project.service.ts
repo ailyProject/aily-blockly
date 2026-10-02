@@ -1,3 +1,4 @@
+import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
@@ -61,6 +62,7 @@ import {
 } from './project-root-path';
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
+import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 
 interface ProjectPackageData {
@@ -751,6 +753,15 @@ export class ProjectService {
     return this.dependencyLifecycle.ensure(projectPath);
   }
 
+  /** A delayed UI answer belongs to one activation, not just its reusable path. */
+  captureCurrentProjectGuard(): () => boolean {
+    const path = this.currentProjectPath;
+    const session = this.dependencyLifecycleState?.get(path);
+    return () => this.currentProjectPath === path
+      && this.dependencyLifecycleState?.get(path) === session
+      && !session?.signal.aborted;
+  }
+
   assertProjectDependencySession(session: ProjectDependencySession): void {
     this.dependencyLifecycle.assertCurrent(session);
   }
@@ -765,6 +776,25 @@ export class ProjectService {
 
   isProjectDependencyPreparationInProgress(projectPath = this.currentProjectPath): boolean {
     return this.dependencyLifecycle.isBusy(projectPath);
+  }
+
+  setProjectDependencyResult(session: ProjectDependencySession, ready: boolean): void {
+    this.dependencyLifecycle.setResult(session, ready);
+  }
+
+  getProjectDependencyStatus(projectPath = this.currentProjectPath) {
+    return this.dependencyLifecycle.getStatus(projectPath);
+  }
+
+  getProjectDependencyBlockMessage(projectPath = this.currentProjectPath): string | undefined {
+    if (!this.configService.isCoderProduct()) return undefined;
+    const status = this.dependencyLifecycle.getStatus(projectPath);
+    if (status === 'idle' || status === 'ready') return undefined;
+    // Blockly retains its existing editor preparation and compile workflow.
+    if (!this.isAilyCodeProject(projectPath)) return undefined;
+    if (status === 'installing') return this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS');
+    if (status === 'error') return this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
+    return undefined;
   }
 
   get projectDependencyChanges() {
@@ -1183,6 +1213,7 @@ export class ProjectService {
     document: unknown,
     originalContent?: string,
     assertCurrent: () => void = () => {},
+    onPublished?: (text: string) => void,
   ): Promise<Record<string, unknown>> {
     const session = projectDataRuntime.getSessionToken();
     const currentPath = this.currentProjectPath;
@@ -1197,6 +1228,7 @@ export class ProjectService {
     const result = await normalizeProjectDataDocument({ projectPath, document, originalContent, materialize: true },
       this.createProjectDataStore(projectPath), check);
     this.reportProjectDataNormalization(projectPath, result);
+    if (result.persistedText !== undefined) onPublished?.(result.persistedText);
     return result.document;
   }
 
@@ -1228,6 +1260,7 @@ export class ProjectService {
 
   // 打开项目
   async projectOpen(projectPath = this.currentProjectPath, options: ProjectOpenOptions = {}) {
+    projectPath = normalizeProjectOpenPath(projectPath);
     if (this.projectOpenTask) {
       if (this.isSameProjectPath(this.projectOpenTask.path, projectPath)) {
         return this.projectOpenTask.promise;
@@ -1451,6 +1484,12 @@ export class ProjectService {
           const lock = await window['projectLock'].tryAcquire(projectPath);
           if (!lock.ok) { this.message.error('工程已被其他窗口占用'); return false; }
         }
+        try {
+          if (findArduinoSketchEntry(projectPath)) prepareArduinoSketchProject(projectPath);
+        } catch (error) {
+          await window['projectLock']?.release(projectPath);
+          throw error;
+        }
         this.registerCoderProject(projectPath);
         await this.restoreCoderWorkspaceTabs(projectPath);
       }
@@ -1652,7 +1691,8 @@ export class ProjectService {
   }
 
   // 保存项目
-  save(path = this.currentProjectPath, feedbackTimeoutMs = 5000) {
+  async save(path = this.currentProjectPath, feedbackTimeoutMs = 5000): Promise<{ success: boolean; error?: string; path?: string }> {
+    if (!path) return { success: false, error: '没有可保存的项目', path };
     if (this.isProjectOpening && this.getProjectMode(path) !== 'coder') {
       return Promise.resolve({
         success: false,
@@ -1675,21 +1715,31 @@ export class ProjectService {
       }
     }
 
-    return new Promise<{ success: boolean; error?: string; path?: string }>((resolve) => {
-      this.stateSubject.next('saving');
-      void this.application.dispatchProjectSave(path, feedbackTimeoutMs).then(async result => {
-        if (result.success) {
-          await this.copyPackageJsonToTemp(path);
-          this.currentPackageData = await this.getPackageJson();
-          this.stateSubject.next('saved');
-          resolve({ success: true, path });
-        } else {
-          console.warn('项目保存失败:', result.error);
-          this.stateSubject.next('error');
-          resolve({ success: false, error: result.error, path });
+    const session = this.dependencyLifecycle.get(path);
+    const current = () => this.currentProjectPath === path && this.dependencyLifecycle.get(path) === session;
+    if (current()) this.stateSubject.next('saving');
+    try {
+      const result = await this.application.dispatchProjectSave(path, feedbackTimeoutMs);
+      if (result?.success !== true) throw new Error(result?.error || '编辑器未确认保存成功');
+      // Saving an inactive Coder tab is valid. Its acknowledgement must not
+      // change a replacement project's status or read that project's manifest.
+      if (current()) {
+        await this.copyPackageJsonToTemp(path);
+        if (current()) {
+          const manifest = await this.getPackageJson();
+          if (current()) {
+            this.currentPackageData = manifest;
+            this.stateSubject.next('saved');
+          }
         }
-      });
-    });
+      }
+      return { success: true, path };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('项目保存失败:', message);
+      if (current()) this.stateSubject.next('error');
+      return { success: false, error: message, path };
+    }
   }
 
 
@@ -1707,7 +1757,7 @@ export class ProjectService {
     };
     path = await this.resolveSaveAsTarget(sourceProjectPath, path);
     assertCurrent();
-    const saveResult = await this.save(sourceProjectPath);
+    const saveResult = await this.save(sourceProjectPath, 15_000);
     assertCurrent();
     if (!saveResult.success) {
       throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
@@ -1726,30 +1776,37 @@ export class ProjectService {
     if (window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8') !== sourceContent) {
       throw new Error('资源校验期间 project.abi 已被修改，请重新执行另存为');
     }
-    //在当前路径下创建一个新的目录
-    window['fs'].mkdirSync(path);
-    // 复制项目目录到新路径
-    window['fs'].copyProjectDirectory(sourceProjectPath, path);
-    // 修改package.json文件
-    const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
-    // 另存为时去掉cloudId
-    if (packageJson.cloudId) {
+    // Reserve a new directory; never merge into a concurrently created target.
+    await window['fsp'].mkdir(path);
+    try {
+      assertCurrent();
+      window['fs'].copyProjectDirectory(sourceProjectPath, path);
+      const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
       delete packageJson.cloudId;
+      const name = window['path'].basename(path);
+      packageJson.name = deriveProjectPackageName(name);
+      packageJson.nickname = name;
+      if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
+      window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
+      for (const directory of ['.temp', '.log', '.build']) {
+        await window['fsp'].rm(window['path'].join(path, directory), { recursive: true, force: true });
+      }
+    } catch (error) {
+      try { await window['fsp'].rm(path, { recursive: true, force: true }); }
+      catch (cleanupError) { console.warn('清理未完成的 Blockly 另存为目录失败:', path, cleanupError); }
+      throw error;
     }
-    // 获取新的项目名称（文件夹名）
-    const name = window['path'].basename(path);
-    packageJson.name = deriveProjectPackageName(name);
-    packageJson.nickname = name;
-    window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
-    // 清除副本的旧配置快照、日志和编译缓存，避免重开时恢复源项目的 cloudId。
-    for (const directory of ['.temp', '.log', '.build']) {
-      await window['fsp'].rm(window['path'].join(path, directory), { recursive: true, force: true });
+    // A complete copy survives activation failure. Reopen through the normal
+    // lifecycle so route, locks, editor path, runtime and clean state agree.
+    assertCurrent();
+    const edited = await this.hasUnsavedChanges();
+    assertCurrent();
+    if (edited || window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8') !== sourceContent) {
+      throw new Error(`项目已复制至 ${path}，但原项目在复制期间有新修改，已保留当前工作区；请保存后重试或手动打开副本`);
     }
-    // 修改当前项目路径
-    this.currentProjectPath = path;
-    projectDataRuntime.configure(path);
-    this.currentPackageData = packageJson;
-    this.addRecentlyProject({ name: this.currentPackageData.name, path: path, nickname: this.currentPackageData.nickname || this.currentPackageData.name });
+    if (!(await this.projectOpen(path))) {
+      throw new Error(`项目已另存至 ${path}，但未能切换，请手动打开该项目`);
+    }
   }
 
   private async resolveSaveAsTarget(sourceProjectPath: string, targetPath: string): Promise<string> {
@@ -1985,6 +2042,7 @@ export class ProjectService {
   getProjectMode(projectPath: string): ProjectMode | null {
     if (!projectPath || !this.electronService.isElectron) return null;
     try {
+      projectPath = normalizeProjectOpenPath(projectPath);
       const packagePath = window['path'].join(projectPath, 'package.json');
       const manifest = window['fs'].existsSync(packagePath)
         ? JSON.parse(window['fs'].readFileSync(packagePath, 'utf8')) : undefined;
@@ -1992,6 +2050,7 @@ export class ProjectService {
         manifest,
         hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
         hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
+        hasArduinoSketch: !!findArduinoSketchEntry(projectPath),
       });
     } catch {
       return null;
@@ -2406,6 +2465,7 @@ export class ProjectService {
       throw new Error('开发板配置文件不存在: ' + boardJsonPath);
     }
     const board = JSON.parse(this.electronService.readFile(boardJsonPath));
+    normalizeBoardMcuDeclaration(board);
     this.runtimeBoardModules.set(board, boardModule);
     return board;
   }
@@ -2417,6 +2477,12 @@ export class ProjectService {
   async syncCurrentBoardConfig(session?: ProjectDependencySession): Promise<boolean> {
     try {
       if (session) this.assertProjectDependencySession(session);
+      if (this.isAilyCodeProject() && !await this.getBoardModule()) {
+        this.currentBoardConfig = null;
+        window['boardConfig'] = null;
+        this.boardConfigUpdatedSubject.next(null);
+        return false;
+      }
       const boardJson = await this.getBoardJson();
       if (session) this.assertProjectDependencySession(session);
       this.currentBoardConfig = boardJson;
@@ -2433,6 +2499,7 @@ export class ProjectService {
   async resolveBoardConfigForRuntime(rawBoardJson?: any): Promise<any> {
     const boardJson = rawBoardJson ?? await this.getBoardJson();
     const resolvedBoardJson = JSON.parse(JSON.stringify(boardJson));
+    normalizeBoardMcuDeclaration(resolvedBoardJson);
     const boardModule = this.runtimeBoardModules.get(boardJson);
     if (boardModule) this.runtimeBoardModules.set(resolvedBoardJson, boardModule);
     const cdcEnabled = await this.isCdcOnBootEnabledForProject(resolvedBoardJson);
@@ -3444,6 +3511,15 @@ export class ProjectService {
     const owner = this.boardSwitchLifecycle;
     if (!this.isSameProjectPath(projectPath, this.currentProjectPath)) {
       throw new ProjectLifecycleError('PROJECT_RELOAD_REJECTED', '切板重载前活动项目已改变；已停止后续操作。');
+    }
+    // Installation leaves Blockly editable. Both watcher and direct switch
+    // paths save the latest canvas after all package IO, immediately before reload.
+    if (this.getProjectMode(projectPath) !== 'coder') {
+      const saved = await this.save(projectPath);
+      if (!saved.success) throw new ProjectLifecycleError('PROJECT_RELOAD_REJECTED', `切板重载前保存失败：${saved.error || '未确认保存完成'}`);
+      if (!this.isSameProjectPath(projectPath, this.currentProjectPath)) {
+        throw new ProjectLifecycleError('PROJECT_RELOAD_REJECTED', '切板保存期间活动项目已改变；已停止重载。');
+      }
     }
     const opened = await this.projectOpen(projectPath, {
       reason: 'reload',

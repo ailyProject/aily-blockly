@@ -30,6 +30,22 @@ describe('board config build facts', () => {
     expect(service.getBoardConfigMenu).not.toHaveBeenCalled();
   });
 
+  for (const coder of [false, true]) it('reports the declared MCU in every section without requiring an SDK; coder=' + coder, async () => {
+    const service = project(); service.isAilyCodeProject = () => coder;
+    service.currentBoardConfig = { core: 'other-sdk', compilerParam: '', mcu: 'esp32s3' } as any;
+    service.getBoardDependencies = async () => ({} as any);
+    window['fs'].existsSync = () => false;
+    for (const section of ['all', 'build', 'pins']) {
+      const result = await getBoardConfig(service as any, section);
+      expect(result['ok']).toBeTrue();
+      expect(result['mcu']).toBe('esp32s3');
+    }
+  });
+
+  it('does not invent an MCU for a legacy board package', async () => {
+    expect((await getBoardConfig(project() as any))['mcu']).toBeNull();
+  });
+
   it('the existing all response retains configuration and adds facts without persisting defaults', async () => {
     const service = project();
     const result = await getBoardConfig(service as any);

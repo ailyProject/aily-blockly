@@ -188,6 +188,25 @@ async function preprocessProject(config, workspace) {
             localLibrariesPath,
             libraryEvidence
         );
+        if (projectPackageJson.arduinoSketch === true) {
+            const arduinoLibraries = [
+                path.join(require('node:os').homedir(), 'Documents', 'Arduino', 'libraries'),
+                path.join(path.dirname(currentProjectPath), 'libraries'),
+                path.join(currentProjectPath, 'libraries'),
+            ].filter(directory => fs.existsSync(directory) && fs.statSync(directory).isDirectory());
+            // Arduino sketchbooks may contain symlinked library folders. Record
+            // each canonical library independently, rather than rejecting links
+            // merely because they leave the sketchbook's parent directory.
+            if (libraryEvidence) for (const directory of arduinoLibraries) {
+                for (const name of fs.readdirSync(directory)) {
+                    const libraryPath = path.join(directory, name);
+                    if (!fs.existsSync(libraryPath) || !fs.statSync(libraryPath).isDirectory()) continue;
+                    const canonical = fs.realpathSync(libraryPath);
+                    libraryEvidence.add(`arduino:${canonical}`, libraryEvidence.capture(canonical), canonical);
+                }
+            }
+            librarySearchPaths = [...new Set([...arduinoLibraries, ...librarySearchPaths])];
+        }
     } else {
         const componentLibraries = collectComponentLibraries(currentProjectPath);
         copiedLibraries = await processLibrariesParallel(

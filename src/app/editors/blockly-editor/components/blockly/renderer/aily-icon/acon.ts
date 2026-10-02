@@ -169,14 +169,13 @@ export class AilyIcon extends Blockly.icons.Icon {
    * 加载状态配置
    */
   loadState(state: Partial<AilyIconState> | string): void {
-    if (typeof state === 'string') {
-      this.state = { ...this.state, src: state };
-    } else {
-      this.state = { ...this.state, ...state };
-    }
-    if (!this.state.color) {
-      this.state.color = 'white';
-    }
+    const next = { ...this.state, ...(typeof state === 'string' ? { src: state } : state) };
+    if (!next.color) next.color = 'white';
+    // Renderers supply the same icon on every measurement. Unchanged data must
+    // not tear down/recreate its DOM; real source/style/size changes still do.
+    const keys = Object.keys(next) as Array<keyof AilyIconState>;
+    if (keys.length === Object.keys(this.state).length && keys.every(key => next[key] === this.state[key])) return;
+    this.state = next;
 
     if (this.svgRoot) {
       this.svgRoot.innerHTML = '';
@@ -239,12 +238,10 @@ export function addAilyIconToBlock(
  * @param blockType
  */
 export function getBlockDefinition(blockType: string): any {
-  const blockDefinitionsMap = (window as any).__ailyBlockDefinitionsMap as Map<
-    string,
-    any
-  >;
-  if (blockDefinitionsMap) {
-    return blockDefinitionsMap.get(blockType);
-  }
-  return null;
+  return getBlockIconDefinitions()?.get(blockType) ?? null;
+}
+
+/** Actual host icon inputs; values are icon data, not complete block definitions. */
+export function getBlockIconDefinitions(): Map<string, unknown> | undefined {
+  return (window as any).__ailyBlockDefinitionsMap;
 }

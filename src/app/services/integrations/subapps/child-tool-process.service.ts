@@ -262,7 +262,6 @@ export class ChildToolProcessService implements OnDestroy {
       this.publishRuntimeState(config.id, 'stopped', session);
       return;
     }
-    await window['childToolSession']?.stop?.(config?.id || toolId);
     this.publishRuntimeState(config?.id || toolId, 'stopped');
   }
 
@@ -367,12 +366,9 @@ export class ChildToolProcessService implements OnDestroy {
       }
 
       const runtime = this.getRuntimeSnapshot(toolId);
-      if (runtime.running && runtime.refCount > 0) {
-        return;
-      }
-      if (runtime.running) {
-        await this.forceStop(toolId);
-      }
+      // The running process keeps its pinned package until its last lease
+      // ends. A prepared update must not evict another window's Runtime.
+      if (runtime.running) return;
 
       await this.subappManager.installUpdate(item.id);
     } catch (error) {
@@ -583,6 +579,10 @@ export class ChildToolProcessService implements OnDestroy {
       if (this.hostShuttingDown) throw new Error('Host is shutting down');
       const latestConfig = prepared.config as ChildToolConfig;
       session.version = latestConfig.version || '';
+      // Another renderer can register the Runtime while prepareLaunch waits on
+      // the shared install lock. Reuse its pinned package before spawning.
+      const readySession = await this.acquireSharedSession(latestConfig, session);
+      if (readySession) return readySession;
       return await this.startServer(latestConfig, session);
     } finally {
       await api.finishLaunch(prepared.token);
@@ -609,7 +609,7 @@ export class ChildToolProcessService implements OnDestroy {
           streamId,
           leaseId: session.leaseId,
         });
-        if (!result?.success && result?.reason !== 'lease-not-found') {
+        if (!result?.success && result?.reason !== 'lease-not-found' && session.removeListener) {
           await window['cmd']?.kill?.(streamId);
         }
       }
@@ -629,7 +629,11 @@ export class ChildToolProcessService implements OnDestroy {
     this.rejectReady(session, new Error(`${config.id} startup stopped: ${reason}`));
 
     const stopGlobally = () => reason === 'restart'
-      ? window['childToolSession']?.restart?.(config.id)
+      ? window['childToolSession']?.restart?.({
+        toolId: config.id,
+        streamId,
+        leaseId: session.leaseId,
+      })
       : window['childToolSession']?.stop?.(config.id);
 
     let result: any;
@@ -639,7 +643,12 @@ export class ChildToolProcessService implements OnDestroy {
       this.logError(config, 'global process-tree stop failed', error);
     }
 
-    if (result?.success !== true && result?.reason !== 'not-found' && streamId) {
+    if (result?.reason === 'shared-runtime-in-use') {
+      session.expectedStopReason = null;
+      throw new Error(`${config.id} Runtime is in use by another window`);
+    }
+    if (result?.success !== true && result?.reason !== 'not-found' && streamId
+      && (reason === 'shutdown' || session.removeListener)) {
       await window['cmd']?.kill?.(streamId);
       try {
         result = await stopGlobally();
@@ -675,17 +684,21 @@ export class ChildToolProcessService implements OnDestroy {
         sharedApiServer: sharedApiServer || null,
         streamId: String(sharedSession.streamId || ''),
       });
-      await window['childToolSession']?.restart?.(config.id);
+      await this.discardIncompatibleSharedSession(config, session, sharedSession);
       return null;
     }
 
-    if (await this.sharedSessionUsesStaleEntry(config, hostInfo, String(sharedSession.streamId || ''))) {
+    // A registered Runtime retains the package and UI version it started with.
+    // An activated update is selected only after the last owner releases it.
+    const pinnedVersion = hostInfo.runtimeConfig?.version;
+    const versionChanged = pinnedVersion && config.version && pinnedVersion !== config.version;
+    if (!versionChanged && await this.sharedSessionUsesStaleEntry(config, hostInfo, String(sharedSession.streamId || ''))) {
       this.log(config, 'discard shared session with stale package entry', {
         expectedEntry: config.entry || 'index.js',
         packagePath: config.packagePath || null,
         streamId: String(sharedSession.streamId || ''),
       });
-      await window['childToolSession']?.restart?.(config.id);
+      await this.discardIncompatibleSharedSession(config, session, sharedSession);
       return null;
     }
 
@@ -696,6 +709,23 @@ export class ChildToolProcessService implements OnDestroy {
     this.publishRuntimeState(config.id, 'ready', session);
     this.log(config, 'shared session acquired', this.sanitizeHostInfo(hostInfo));
     return hostInfo;
+  }
+
+  private async discardIncompatibleSharedSession(config: ChildToolConfig, session: ChildToolSession, shared: any): Promise<void> {
+    const streamId = String(shared.streamId || '');
+    if (Number(shared.refCount) > 1) {
+      await window['childToolSession']?.release?.({ toolId: config.id, streamId, leaseId: session.leaseId });
+      throw new Error(`${config.id} Runtime is in use by another window; close it before changing its service region or development entry`);
+    }
+    const stopped = await window['childToolSession']?.restart?.({
+      toolId: config.id,
+      streamId,
+      leaseId: session.leaseId,
+    });
+    if (stopped?.success !== true) {
+      await window['childToolSession']?.release?.({ toolId: config.id, streamId, leaseId: session.leaseId });
+      throw new Error(`${config.id} Runtime could not be safely replaced: ${stopped?.reason || 'unknown error'}`);
+    }
   }
 
   private async sharedSessionUsesStaleEntry(
@@ -1153,6 +1183,13 @@ export class ChildToolProcessService implements OnDestroy {
       const sharedStreamId = String(shared?.streamId || '');
       const sharedHostInfo = shared?.hostInfo as ChildToolHostInfo | undefined;
       if (!sharedStreamId || !sharedHostInfo?.url) return;
+      const selectedApiServer = this.selectedApiServerFor(config);
+      if (selectedApiServer && this.normalizeApiServer(sharedHostInfo.apiServer) !== selectedApiServer) {
+        await window['childToolSession']?.release?.({
+          toolId: config.id, streamId: sharedStreamId, leaseId: session.leaseId,
+        });
+        return;
+      }
       if (session.refCount === 0) {
         await window['childToolSession']?.release?.({
           toolId: config.id,

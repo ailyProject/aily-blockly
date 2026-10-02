@@ -19,6 +19,8 @@ export interface DeclarativeBlockSnapshot {
   customFunctions?: CustomFunctionRegistration;
   variableDeclarations?: VariableDeclarationRegistration;
   assertCurrent(): void;
+  /** Pure synchronous reads may share complete declaration checks at their boundaries. */
+  withSynchronousRead?<T>(read: () => T): T;
 }
 
 /** Registration provenance, not inferred metadata or a workspace of probe blocks.
@@ -56,12 +58,15 @@ export class BlocklyDeclarativeBlockCatalog {
     const variableDeclarations = captureVariableDeclarationRegistration(registry);
     const revision = this.revision;
     const used = new Map<string, object>();
+    let reading = 0;
     const intact = (type: string, entry: ReturnType<typeof this.entries.get>) => !!entry
       && registry[type] === entry.definition && Reflect.ownKeys(entry.definition).length === 1
       && Object.getPrototypeOf(entry.definition) === entry.prototype
       && Object.getOwnPropertyDescriptor(entry.definition, 'init')?.value === entry.init
       && typeof entry.init === 'function' && JSON.stringify(entry.source) === entry.json;
     const assertCurrent = () => {
+      if (revision !== this.revision) throw new Error('Declarative Blockly definitions changed during candidate preparation.');
+      if (reading) return;
       extensions.assertCurrent();
       mutations.assertCurrent();
       fieldShapes.assertCurrent();
@@ -82,6 +87,14 @@ export class BlocklyDeclarativeBlockCatalog {
       types: Object.keys(registry).sort(),
       registered: type => typeof Object.getOwnPropertyDescriptor(registry[type] ?? {}, 'init')?.value === 'function',
       assertCurrent,
+      withSynchronousRead: read => {
+        assertCurrent(); reading++;
+        try {
+          const result = read();
+          if (result && typeof (result as any).then === 'function') throw new Error('Declaration read must be synchronous.');
+          return result;
+        } finally { reading--; assertCurrent(); }
+      },
       supportsUiExtension: extensions.supports,
       structuralMutator: mutations.get,
       fieldShape: fieldShapes.get,

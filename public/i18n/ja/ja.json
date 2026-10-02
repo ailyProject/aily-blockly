@@ -7,6 +7,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "先にプロジェクトをビルドして同期してください"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "エディターのサイドバーを表示",
+        "HIDE_CODER_SIDEBAR": "エディターのサイドバーを非表示",
         "MENU": "メニュー",
         "PROJECT_NEW": "新規プロジェクト",
         "PROJECT_OPEN": "プロジェクトを開く",
@@ -887,6 +889,9 @@
         "REINSTALL_CONFIRM": "再インストール"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "依存関係の準備ができていません。インストール失敗通知の「再試行」をクリックしてください。",
+        "PREPARING_LIBRARY_SOURCES": "依存ライブラリのソースを準備しています…",
+        "DEPENDENCY_INCOMPLETE": "{{name}} のインストール後も必要なファイルが不足しています。再試行してください。",
         "INSTALLING": "{{name}}をインストール中...",
         "INSTALLING_DEPENDENCY": "{{name}}の依存関係をインストール中...",
         "INSTALL_COMPLETE": "{{name}}のインストールが完了しました",

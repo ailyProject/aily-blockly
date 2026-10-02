@@ -12,16 +12,16 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
-test('project copies exclude only writer-owned transient files and preserve recovery/resource data', () => {
+test('project copies exclude only writer/lifecycle transient files and preserve recovery/resource data', () => {
   const source = directory(); const target = directory();
   const id = '12345678-1234-1234-1234-123456789abc';
-  const excluded = ['.aily/project-files.write.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
+  const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
     `.project.abs.map.json.${id}.tmp`, `.project-data-backup.${id}.tmp`, `.abs-sync-${id}.tmp`,
     `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`];
   const included = ['project.abi', 'project.abs', 'project.abs.map.json', 'project.abi.pre-project-data.bak', 'user.tmp',
     '.aily/abs-sync/recovery.json', '.aily/abs-sync/prepared.json', '.aily/abs-sync/baselines/g1.json',
     '.aily/abs-sync/user.tmp', `nested/.abs-sync-${id}.tmp`, '.aily/project-data-backups/original.abi', 'assets/project-data/ab/resource.bin',
-    'src/user.lock', 'nested/.aily/project-files.write.lock', `.project.abi.${'a'.repeat(36)}.tmp`];
+    'src/user.lock', 'nested/.aily/project-files.write.lock', 'nested/.aily/project-open.lock', `.project.abi.${'a'.repeat(36)}.tmp`];
   for (const file of [...excluded, ...included]) {
     const full = path.join(source, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
   }

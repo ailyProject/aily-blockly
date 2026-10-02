@@ -13,6 +13,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "請先編譯並同步專案"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "展開編輯器左側欄",
+        "HIDE_CODER_SIDEBAR": "收起編輯器左側欄",
         "MENU": "選單",
         "PROJECT_NEW": "新建專案",
         "PROJECT_OPEN": "開啟專案",
@@ -957,6 +959,9 @@
         }
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "依賴尚未安裝完成，請在安裝失敗通知中點擊「重試」",
+        "PREPARING_LIBRARY_SOURCES": "正在準備依賴庫原始碼…",
+        "DEPENDENCY_INCOMPLETE": "{{name}} 安裝後仍缺少必要檔案，請重試",
         "INSTALLING": "正在安裝{{name}}...",
         "INSTALLING_DEPENDENCY": "正在安裝{{name}}依賴...",
         "INSTALL_COMPLETE": "{{name}}安裝完成",

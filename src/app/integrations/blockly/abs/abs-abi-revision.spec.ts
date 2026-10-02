@@ -25,6 +25,17 @@ describe('saved ABI revision resource resolution', () => {
     expect(projectDataRuntime.getPrepared).not.toHaveBeenCalled();
     expect(projectDataRuntime.resolve).toHaveBeenCalledWith(ref);
   });
+  it('does a bounded number of whole-project reads regardless of resource count', async () => {
+    const editor = (service as any).blocklyService;
+    const snapshots = spyOn(editor, 'captureProjectSnapshot').and.callThrough();
+    const reads = spyOn(window['fs'], 'readFileSync').and.callThrough();
+    disk = JSON.stringify({ fields: Array.from({ length: 12 }, () => createAilyProjectDataValue(ref)) });
+    editor.getProjectAbiForSave = () => ({ fields: Array(12).fill('payload') });
+    expect((await service.getAbiRevisionSnapshot()).changed).toBeFalse();
+    expect(projectDataRuntime.resolve).toHaveBeenCalledTimes(12);
+    expect(snapshots.calls.count()).toBeLessThanOrEqual(3);
+    expect(reads.calls.count()).toBeLessThanOrEqual(3);
+  });
   for (const phase of ['disk', 'revision', 'runtime']) {
     it(`rejects ${phase} changes during asynchronous materialization`, async () => {
       (projectDataRuntime.resolve as jasmine.Spy).and.callFake(async () => {

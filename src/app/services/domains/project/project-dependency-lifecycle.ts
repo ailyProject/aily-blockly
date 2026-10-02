@@ -11,6 +11,7 @@ interface DependencyEntry {
   controller: AbortController;
   preparing: boolean;
   pending: number;
+  result?: 'ready' | 'error';
   idleWaiters: Array<() => void>;
 }
 
@@ -78,6 +79,17 @@ export class ProjectDependencyLifecycle {
     if (entry?.session !== session || !entry.preparing) return;
     entry.preparing = false;
     this.changesSubject.next();
+  }
+
+  setResult(session: ProjectDependencySession, ready: boolean): void {
+    this.assertCurrent(session);
+    this.entries.get(this.normalize(session.projectPath))!.result = ready ? 'ready' : 'error';
+    this.changesSubject.next();
+  }
+
+  getStatus(projectPath: string): 'idle' | 'installing' | 'ready' | 'error' {
+    if (this.isBusy(projectPath)) return 'installing';
+    return this.entries.get(this.normalize(projectPath))?.result ?? 'idle';
   }
 
   cancel(projectPath: string): ProjectDependencySession | undefined {

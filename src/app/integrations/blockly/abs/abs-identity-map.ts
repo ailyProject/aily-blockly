@@ -68,17 +68,78 @@ export function indexAbsSyntax(roots: AbsSyntaxNode[]): AbsSyntaxEntry[] {
 
 
 export async function fingerprintAbsNodes(entries: AbsSyntaxEntry[]): Promise<Map<string, string>> {
-  const result = new Map<string, string>();
-  for (const { path, node } of [...entries].reverse()) {
-    const fields = Object.fromEntries(Object.entries(node.fields).map(([key, token]) => [key, token.value]));
-    const inputs = Object.fromEntries(Object.keys(node.inputs).sort().map(name => [name, result.get(absInputPath(path, name)) ?? null]));
-    result.set(path, await hashAbsText(absJson({
-      type: node.type, fields, inputs, disabled: node.disabled,
-      ...(Object.hasOwn(node, 'extraState') ? { extraState: node.extraState } : {}),
-      next: result.get(`${path}/next`) ?? null,
-    })));
+  return (await fingerprintAbsNodeGroups([entries]))[0];
+}
+
+/** Reuse exact canonical hash inputs only within this pure calculation. Each
+ * tree still has its own path index; no persisted fingerprint is trusted here. */
+export async function fingerprintAbsNodeGroups(groups: readonly (readonly AbsSyntaxEntry[])[]): Promise<Map<string, string>[]> {
+  return fingerprintNodeGroups(groups);
+}
+
+/** Owned by one exact baseline/runtime analysis, never shared process-wide.
+ * Only complete canonical hash inputs and successful digests are retained.
+ * Child fingerprints form the dependency key, so edits invalidate ancestors,
+ * not unrelated branches. This is not cached native or validation evidence. */
+export function createAbsNodeFingerprinter(): typeof fingerprintAbsNodeGroups {
+  const completed = new Map<string, string>();
+  const maxEntries = 4096, maxBytes = 4 * 1024 * 1024;
+  let bytes = 0;
+  return groups => fingerprintNodeGroups(groups, completed, entries => {
+    for (const [text, hash] of entries) {
+      const size = 2 * (text.length + hash.length);
+      if (size > maxBytes || completed.has(text)) continue;
+      while (completed.size && (completed.size >= maxEntries || bytes + size > maxBytes)) {
+        const key = completed.keys().next().value!;
+        bytes -= 2 * (key.length + completed.get(key)!.length); completed.delete(key);
+      }
+      completed.set(text, hash); bytes += size;
+    }
+  });
+}
+
+async function fingerprintNodeGroups(groups: readonly (readonly AbsSyntaxEntry[])[],
+  completed?: ReadonlyMap<string, string>, publish?: (entries: Array<[string, string]>) => void): Promise<Map<string, string>[]> {
+  type Work = { entry: AbsSyntaxEntry; inputs: Array<[string, Work | undefined]>; next?: Work; level: number; hash?: string };
+  const waves: Work[][] = [], trees: Work[][] = [];
+  // Capture traversal/dependencies synchronously. Children and next links must
+  // finish before their parent; unrelated subtrees do not need serial awaits.
+  for (const entries of groups.map(entries => [...entries])) {
+    const paths = new Map<string, Work>(), tree: Work[] = [];
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index], { path, node } = entry;
+      const inputs: Work['inputs'] = Object.keys(node.inputs).sort().map(name => [name, paths.get(absInputPath(path, name))]);
+      const next = paths.get(`${path}/next`);
+      const level = 1 + inputs.reduce((depth, [, child]) => Math.max(depth, child?.level ?? -1), next?.level ?? -1);
+      const work: Work = { entry, inputs, next, level };
+      paths.set(path, work); tree.push(work); (waves[level] ??= []).push(work);
+    }
+    trees.push(tree);
   }
-  return result;
+  // Invocation-local promises coalesce equal inputs even inside the same wave.
+  // Bound outstanding digests; a failed invocation never seeds another cache.
+  const hashes = new Map<string, Promise<string>>();
+  for (const wave of waves) for (let start = 0; start < wave.length; start += 64) {
+    await Promise.all(wave.slice(start, start + 64).map(async work => {
+      const { node } = work.entry;
+      const text = absJson({ type: node.type,
+        fields: Object.fromEntries(Object.entries(node.fields).map(([name, token]) => [name, token.value])),
+        inputs: Object.fromEntries(work.inputs.map(([name, child]) => [name, child?.hash ?? null])),
+        disabled: node.disabled,
+        ...(Object.hasOwn(node, 'extraState') ? { extraState: node.extraState } : {}),
+        next: work.next?.hash ?? null,
+      });
+      const cached = completed?.get(text);
+      if (cached !== undefined) { work.hash = cached; return; }
+      let hash = hashes.get(text);
+      if (!hash) { hash = hashAbsText(text); hashes.set(text, hash); }
+      work.hash = await hash;
+    }));
+  }
+  // A failed traversal cannot publish partially computed or pending results.
+  if (publish) publish(await Promise.all([...hashes].map(async ([text, hash]): Promise<[string, string]> => [text, await hash])));
+  // Preserve the previous reverse-traversal insertion order, not completion order.
+  return trees.map(tree => new Map(tree.map(({ entry, hash }) => [entry.path, hash!])));
 }
 
 /** Resource preparation and full-project page composition belong to the caller. */

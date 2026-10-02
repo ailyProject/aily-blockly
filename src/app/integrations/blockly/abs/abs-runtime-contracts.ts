@@ -33,8 +33,11 @@ export function captureAbsRuntimeContracts(
     contracts.fields[block.id] = fields;
     // Static JSON provides original args order; visual inputList order is not equivalent.
     const shape = declared?.get(block.type, state.extraState, state.fields);
-    const native = definitions?.nativeStructure?.(block);
-    const declaration = definitions?.get(block.type) ?? definitions?.nativeJson?.(block);
+    // A proven declaration already owns argument order. Only the fallback
+    // needs native structure/JSON; re-reading both for every known block adds
+    // repeated registration checks and copies without contributing evidence.
+    const native = shape?.argumentOrder ? undefined : definitions?.nativeStructure?.(block);
+    const declaration = native ? definitions?.get(block.type) ?? definitions?.nativeJson?.(block) : undefined;
     const order = shape?.argumentOrder ?? (native ? nativeAbsArgumentOrder(declaration ?? { type: block.type }, native) : undefined);
     if (order && Object.keys(fields).every(name => order.some(arg => arg.kind === 'field' && arg.name === name))
       && Object.keys(state.inputs ?? {}).every(name => order.some(arg => arg.kind !== 'field' && arg.name === name))) {

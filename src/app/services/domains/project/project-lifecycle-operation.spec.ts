@@ -13,6 +13,7 @@ describe('project lifecycle admission across sessions', () => {
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
     service.getProjectMode = () => 'blockly';
+    service.save = jasmine.createSpy('save').and.resolveTo({ success: true });
     service.projectOpenInternal = jasmine.createSpy('open').and.resolveTo(true);
     service.closeInternal = jasmine.createSpy('close').and.resolveTo(true);
     service.stopProjectCommands = jasmine.createSpy('stopCommands').and.resolveTo();
@@ -57,6 +58,25 @@ describe('project lifecycle admission across sessions', () => {
     service.projectOpenInternal.and.resolveTo(false);
     await expectAsync(service.reloadAfterBoardSwitch('/a')).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_RELOAD_REJECTED' }));
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
+  });
+
+  it('waits for the latest Blockly edits to save before board reload', async () => {
+    const { service } = fixture();
+    let finishSave!: (value: { success: boolean }) => void;
+    service.save.and.returnValue(new Promise(resolve => { finishSave = resolve; }));
+    const reload = service.reloadAfterBoardSwitch('/a');
+    expect(service.save).toHaveBeenCalledOnceWith('/a');
+    expect(service.projectOpenInternal).not.toHaveBeenCalled();
+    finishSave({ success: true });
+    await reload;
+    expect(service.projectOpenInternal).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the edited workspace when saving before board reload fails', async () => {
+    const { service } = fixture();
+    service.save.and.resolveTo({ success: false, error: 'disk full' });
+    await expectAsync(service.reloadAfterBoardSwitch('/a')).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_RELOAD_REJECTED' }));
+    expect(service.projectOpenInternal).not.toHaveBeenCalled();
   });
 
   it('allows activating retained Coder projects during another project write, but not reload/disposal', async () => {
@@ -149,7 +169,8 @@ describe('project lifecycle admission across sessions', () => {
       const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
       bridge.projectService = service; bridge.aiOperations = registry;
       bridge.configService = { init: async () => {}, boardDict: { [target]: { version: '1' } } };
-      bridge.runBlockWritingOperation = (task: () => Promise<unknown>) => task();
+      bridge.blocklyEditor = { setAiWritingActive: jasmine.createSpy('canvasMask') };
+      bridge.aiWritingDepth = 0;
       bridge.executeLibraryRuntimeSync = async () => {
         expect(registry.hasBlocking('/a')).toBeTrue();
         expect(await service.close()).toBeFalse();
@@ -157,6 +178,7 @@ describe('project lifecycle admission across sessions', () => {
       };
       registry.setActive('chat', true, { projectPath: '/a' });
       expect((await bridge.executeBoardSwitch({ boardName: target })).ok).toBeTrue();
+      expect(bridge.blocklyEditor.setAiWritingActive).not.toHaveBeenCalled();
       expect(registry.hasActive('/a')).toBeTrue();
       expect(registry.hasBlocking('/a')).toBeFalse();
       expect(service.isProjectTransitionInProgress('/a')).toBeFalse();

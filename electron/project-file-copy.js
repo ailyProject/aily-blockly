@@ -1,12 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// Only artifacts owned by the project writer. Do not exclude all .aily, *.tmp,
+// Only transient artifacts owned by project writers/lifecycle. Do not exclude all .aily, *.tmp,
 // backups, resource files or future sync recovery records.
 function isProjectWriterTransient(relativePath) {
   const normalized = relativePath.split(path.sep).join('/');
   const name = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
   return name === '.aily/project-files.write.lock'
+    || name === '.aily/project-open.lock'
     || /^(?:\.aily\/abs-sync\/(?:baselines\/)?)?\.abs-sync-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name)
     || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);
 }

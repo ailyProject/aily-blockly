@@ -39,7 +39,9 @@ function resolveCompileSourcePath(projectRoot) {
     if (entry.startsWith('/') || /^[A-Za-z]:\//.test(entry) || segments.includes('..')) {
         throw new Error(`package.json entry escapes the sketch workspace: ${entry}`);
     }
-    return path.normalize(path.join(resolveCompileWorkspacePath(projectRoot), ...segments));
+    const manifest = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+    const sourceRoot = manifest.arduinoSketch === true ? projectRoot : resolveCompileWorkspacePath(projectRoot);
+    return path.normalize(path.join(sourceRoot, ...segments));
 }
 
 function resolveLibrariesPath(projectRoot) {

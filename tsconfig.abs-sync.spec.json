@@ -19,6 +19,7 @@
     "src/app/services/domains/project/project-lifecycle-operation.spec.ts",
     "src/app/editors/blockly-editor/project-board-reload.spec.ts",
     "src/app/services/domains/project/project-mode.spec.ts",
+    "src/app/services/domains/project/board-mcu.spec.ts",
     "src/app/services/domains/project/project-block-field-updates.spec.ts",
     "src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
     "src/app/editors/blockly-editor/services/builder.service.spec.ts",

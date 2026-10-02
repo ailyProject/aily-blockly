@@ -4,6 +4,8 @@ import * as zhHans from 'blockly/msg/zh-hans';
 import { BlocklyGeneratorRuntimeService } from './blockly-generator-runtime.service';
 import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
 import { describeAbsBlockCapability } from '../../../integrations/blockly/abs/abs-block-capabilities';
+import { withNativeStateLoading } from './blockly-native-state-loading';
+import { loadAbsWorkspaceState } from '../../../integrations/blockly/abs/abs-workspace-state';
 
 describe('BlocklyGeneratorRuntimeService', () => {
   let service: BlocklyGeneratorRuntimeService;
@@ -31,6 +33,79 @@ describe('BlocklyGeneratorRuntimeService', () => {
       getWorkspace: () => null,
     });
   }
+
+  for (const chunk of [false, true]) it('settles project-owned dropdown tasks across an entire load; chunk=' + chunk, async () => {
+    const container = document.createElement('div'); document.body.appendChild(container);
+    const workspace = Blockly.inject(container, { toolbox: null });
+    const previousBlockly = window['Blockly']; window['Blockly'] = Blockly;
+    service.activate({ mode: 'arduino', getWorkspace: () => workspace as Blockly.WorkspaceSvg });
+    service.loadGenerator('dynamic-devices/generator.js', `
+      Blockly.Blocks.runtime_config = { init() { this.appendDummyInput().appendField(new Blockly.FieldTextInput('Device'), 'NAME'); } };
+      Blockly.Blocks.runtime_use = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Default','default']]), 'DEVICE');
+        setTimeout(() => {
+          const configs = Blockly.getMainWorkspace().getBlocksByType('runtime_config', false);
+          this.getField('DEVICE').menuGenerator_ = [['Default','default'], ...configs.map(b => [b.getFieldValue('NAME'),b.getFieldValue('NAME')])];
+        }, 1000);
+      } };
+    `);
+    const blocks = [{ type: 'runtime_use', id: 'consumer', fields: { DEVICE: 'Sensor' } },
+      ...Array.from({ length: 70 }, (_, index) => ({ type: 'runtime_config', id: 'config-' + index, fields: { NAME: index === 69 ? 'Sensor' : 'Device' + index } }))];
+    const state = { blocks: { blocks } };
+    try {
+      if (chunk) await loadAbsWorkspaceState(state, workspace as Blockly.WorkspaceSvg, { chunk }, () => {});
+      else withNativeStateLoading(Blockly, workspace, state, () => Blockly.serialization.workspaces.load(state, workspace));
+      expect(workspace.getBlockById('consumer')!.getFieldValue('DEVICE')).toBe('Sensor');
+      expect(workspace.getAllBlocks(false).length).toBe(71);
+      expect((service as any).session.resources.timeouts.size).toBe(0);
+    } finally { workspace.dispose(); container.remove(); window['Blockly'] = previousBlockly; }
+  });
+
+  it('notifies library-owned loading listeners without invoking host save/generation listeners', () => {
+    const workspace = new Blockly.Workspace(), hostListener = jasmine.createSpy('hostListener');
+    workspace.addChangeListener(hostListener);
+    service.activate({ mode: 'arduino', getWorkspace: () => workspace as Blockly.WorkspaceSvg });
+    service.loadGenerator('dependent-listener/generator.js', `
+      Blockly.Blocks.runtime_listener_use = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Default','default']]), 'DEVICE');
+        this.workspace.addChangeListener(event => {
+          if (event.type === Blockly.Events.FINISHED_LOADING) {
+            const canceled = setTimeout(() => { throw new Error('Canceled callback ran'); }, 0);
+            clearTimeout(canceled);
+            setTimeout(() => { this.getField('DEVICE').menuGenerator_ = [['Sensor','Sensor']]; }, 50);
+          }
+        });
+      } };
+    `);
+    const state = { blocks: { blocks: [{ type: 'runtime_listener_use', id: 'consumer', fields: { DEVICE: 'Sensor' } }] } };
+    Blockly.Events.disable();
+    try {
+      withNativeStateLoading(Blockly, workspace, state, () => Blockly.serialization.workspaces.load(state, workspace));
+      expect(workspace.getBlockById('consumer')!.getFieldValue('DEVICE')).toBe('Sensor');
+      expect(hostListener).not.toHaveBeenCalled();
+      expect((service as any).session.resources.timeouts.size).toBe(0);
+    } finally { workspace.dispose(); Blockly.Events.enable(); }
+  });
+
+  it('does not drain ordinary host timers when all saved fields are already available', async () => {
+    const workspace = new Blockly.Workspace();
+    service.activate({ mode: 'arduino', getWorkspace: () => workspace as Blockly.WorkspaceSvg });
+    service.loadGenerator('ordinary-timer/generator.js', `
+      window.timerRuns = 0;
+      window.readTimerRuns = () => window.timerRuns;
+      Blockly.Blocks.runtime_timer = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Default','default']]), 'DEVICE');
+        setTimeout(() => { window.timerRuns++; }, 10);
+      } };
+    `);
+    const state = { blocks: { blocks: [{ type: 'runtime_timer', fields: { DEVICE: 'default' } }] } };
+    try {
+      withNativeStateLoading(Blockly, workspace, state, () => Blockly.serialization.workspaces.load(state, workspace));
+      expect(service.invokeGlobal('readTimerRuns')).toBe(0);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(service.invokeGlobal('readTimerRuns')).toBe(1);
+    } finally { workspace.dispose(); }
+  });
 
   it('encodes legacy text before Project Data wrapping without adding wrappers on unrelated library loads', () => {
     activateRuntime();
@@ -83,6 +158,16 @@ describe('BlocklyGeneratorRuntimeService', () => {
     expect(describeAbsBlockCapability(snapshot, 'runtime_declared_shape').level).toBe('create');
     expect(probe).not.toHaveBeenCalled();
     service.destroy(); expect(() => snapshot.assertCurrent()).toThrow();
+  });
+
+  it('passes declared MCU to libraries and candidate replay without retaining it across board changes', () => {
+    service.activate({ mode: 'arduino', boardConfig: { type: 'vendor:sdk:alias', mcu: 'esp32s3' }, getWorkspace: () => null });
+    service.loadGenerator('read-board/generator.js', 'window.readBoardMcu = () => boardConfig.mcu;');
+    expect(service.invokeGlobal('readBoardMcu')).toBe('esp32s3');
+    expect(service.captureNativeReplay().steps.filter(step => step.kind === 'context').at(-1)?.['boardConfig']['mcu']).toBe('esp32s3');
+    service.updateBoardConfig({ type: 'other:sdk:legacy' });
+    expect(service.invokeGlobal('readBoardMcu')).toBeUndefined();
+    expect(service.captureNativeReplay().steps.filter(step => step.kind === 'context').at(-1)?.['boardConfig']['mcu']).toBeUndefined();
   });
 
   it('preserves the current host locale across a runtime rebuild', () => {

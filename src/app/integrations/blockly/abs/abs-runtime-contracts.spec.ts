@@ -6,6 +6,7 @@ import { AbsAbiWorkspace } from './abs-state';
 import { readAbsFieldToken, resolveAbsFieldValue } from './abs-field-values';
 import { createAbsProjection } from './abs-identity-map';
 import { reconcileAbs } from './abs-reconciler';
+import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 
 describe('ABS instance-bound runtime field contracts and readback', () => {
   let workspace: Blockly.Workspace;
@@ -24,6 +25,38 @@ describe('ABS instance-bound runtime field contracts and readback', () => {
     };
   });
   afterEach(() => { workspace.dispose(); delete Blockly.Blocks['abs_dynamic_contract']; });
+
+  it('uses proven argument order without redundant native metadata reads, retaining instance field checks', () => {
+    const json = { type: 'abs_static_contract', message0: '%1', args0: [{ type: 'field_number', name: 'NUM', value: 1 }] };
+    const catalog = new BlocklyDeclarativeBlockCatalog();
+    Blockly.defineBlocksWithJsonArray([json]); catalog.record(json, Blockly.Blocks[json.type]);
+    try {
+      const first = workspace.newBlock(json.type, 'first'), second = workspace.newBlock(json.type, 'second');
+      (second.getField('NUM') as Blockly.FieldNumber).setMax(9);
+      const definitions = catalog.capture(Blockly.Blocks);
+      const declaration = spyOn(definitions, 'get').and.callThrough();
+      const native = spyOn(definitions, 'nativeStructure').and.callThrough();
+      const capture = definitions.withSynchronousRead!(() => captureAbsRuntimeContracts(workspace, save(), () => {}, definitions));
+      expect(declaration).toHaveBeenCalledTimes(2);
+      expect(native).not.toHaveBeenCalled();
+      expect(capture.contracts.syntax!['first']).toEqual([{ name: 'NUM', kind: 'field' }]);
+      expect(capture.fieldDefinition(first.type, 'NUM', 'first')?.max).toBeUndefined();
+      expect(capture.fieldDefinition(second.type, 'NUM', 'second')?.max).toBe(9);
+    } finally { workspace.clear(); delete Blockly.Blocks[json.type]; }
+  });
+
+  it('still reads native structure for an unproven dynamic block', () => {
+    const block = workspace.newBlock('abs_dynamic_contract', 'dynamic');
+    const native = jasmine.createSpy('nativeStructure').and.callFake(value =>
+      value.inputList.map(input => ({ input, fields: input.fieldRow })));
+    const definitions = { assertCurrent: () => {}, get: () => undefined, nativeStructure: native, nativeJson: () => ({
+      type: block.type, message0: '%1 %2 %3 %4', args0: ['FAMILY', 'MODE', 'NUM', 'CHECK'].map(name => ({ type: 'field_input', name })),
+    }) } as any;
+    const capture = captureAbsRuntimeContracts(workspace, save(), () => {}, definitions);
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(capture.contracts.syntax!['dynamic'].map(arg => arg.name)).toEqual(['FAMILY', 'MODE', 'NUM', 'CHECK']);
+    expect(capture.fieldDefinition(block.type, 'MODE', block.id)?.options).toEqual([['A mode', 'a']]);
+  });
 
   it('captures different options for two instances of the same block type', () => {
     const a = workspace.newBlock('abs_dynamic_contract', 'a');

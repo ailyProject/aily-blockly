@@ -7,6 +7,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "먼저 프로젝트를 빌드하고 동기화하세요"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "편집기 사이드바 표시",
+        "HIDE_CODER_SIDEBAR": "편집기 사이드바 숨기기",
         "MENU": "메뉴",
         "PROJECT_NEW": "새 프로젝트",
         "PROJECT_OPEN": "프로젝트 열기",
@@ -887,6 +889,9 @@
         "REINSTALL_CONFIRM": "재설치"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "의존성이 준비되지 않았습니다. 설치 실패 알림에서 재시도를 클릭하세요.",
+        "PREPARING_LIBRARY_SOURCES": "의존 라이브러리 소스 준비 중…",
+        "DEPENDENCY_INCOMPLETE": "{{name}} 설치 후에도 필수 파일이 누락되어 있습니다. 다시 시도하세요.",
         "INSTALLING": "{{name}} 설치 중...",
         "INSTALLING_DEPENDENCY": "{{name}} 의존성 설치 중...",
         "INSTALL_COMPLETE": "{{name}} 설치 완료",

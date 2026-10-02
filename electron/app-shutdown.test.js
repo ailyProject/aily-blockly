@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
 const ts = require('typescript');
+const { createApplicationQuitCoordinator } = require('./application-quit');
 
 function source(file) {
   return ts.createSourceFile(file, fs.readFileSync(path.join(__dirname, file), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -19,8 +20,8 @@ function select(root, predicate) {
 }
 const main = source('main.js');
 const cleanup = select(main, node => ts.isFunctionDeclaration(node) && node.name?.text === 'cleanupRegisteredChildProcesses');
-const beforeQuit = select(main, node => ts.isCallExpression(node) && node.expression.getText(main) === 'app.on'
-  && node.arguments[0]?.text === 'before-quit' && node.arguments[1]?.parameters?.length === 1);
+const quitSetup = select(main, node => ts.isVariableStatement(node)
+  && node.declarationList.declarations.some(declaration => declaration.name.getText(main) === 'applicationQuit'));
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function host(overrides = {}) {
@@ -30,6 +31,9 @@ function host(overrides = {}) {
   app.quit = () => { quits++; };
   const sandbox = vm.createContext({
     app, console: { info() {}, warn() {} },
+    ipcMain: new EventEmitter(), mainWindow: null, createApplicationQuitCoordinator,
+    isCurrentRendererGenerationReady: () => false,
+    beginWindowShutdown: () => calls.push('notify-windows'), cliBridge: { close: () => calls.push('stop-cli') },
     beginCommandShutdown: () => calls.push('block-commands'),
     beginNpmShutdown: () => calls.push('block-npm'),
     beginAuthCredentialsShutdown: () => calls.push('block-auth'),
@@ -44,10 +48,9 @@ function host(overrides = {}) {
     packagedRendererServer: { close: async () => {} },
     ...overrides,
   });
-  vm.runInContext('let hasProcessCleanupCompleted = false; let isProcessCleanupInProgress = false;\n'
-    + cleanup + '\n' + beforeQuit + ';', sandbox);
+  vm.runInContext(cleanup + '\n' + quitSetup, sandbox);
   return { calls, get quits() { return quits; },
-    get completed() { return vm.runInContext('hasProcessCleanupCompleted', sandbox); },
+    get completed() { return vm.runInContext('applicationQuit.canClose()', sandbox); },
     begin() { let prevented = false; app.emit('before-quit', { preventDefault() { prevented = true; } }); return prevented; },
   };
 }
@@ -56,7 +59,7 @@ test('quit blocks new commands and installers before stopping registered process
   const h = host();
   assert.equal(h.begin(), true);
   await settle();
-  assert.deepEqual(h.calls, ['block-commands', 'block-npm', 'block-auth', 'stop-commands', 'stop-npm', 'release-auth']);
+  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth', 'stop-commands', 'stop-npm', 'release-auth']);
   assert.equal(h.completed, true);
   assert.equal(h.quits, 1);
   assert.equal(h.begin(), false);

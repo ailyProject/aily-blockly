@@ -35,8 +35,6 @@ import {
   type ProjectUploadDiagnosticEvidence,
 } from '../../utils/project-log.utils';
 
-import packageJson from '../../../../package.json';
-
 type UnknownRecord = Record<string, unknown>;
 
 interface FeedbackResultSnapshot {
@@ -289,8 +287,9 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   getBasicInfo(feedbackTime: string): string {
-    let softwareVersion: string | null = String(packageJson.version || '').trim() || null;
+    let softwareVersion: string | null = null;
     try {
+      softwareVersion = String(this.electronService.applicationVersion || '').trim() || null;
       if (this.isCnRegion && softwareVersion !== null) {
         softwareVersion += '-cn';
       }
@@ -628,6 +627,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       const content = await this.buildIssueContent(feedbackTime);
       // 构建反馈数据
       const feedbackData = {
+        product: this.configService.isCoderProduct() ? 'coder' : 'blockly',
         label: this.feedbackType,
         title: this.feedbackTitle.trim(),
         content,
@@ -1409,6 +1409,9 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   openUrl() {
-    this.electronService.openUrl('https://github.com/ailyProject/aily-blockly/issues');
+    const repository = this.configService.isCoderProduct()
+      ? `aily-coder${this.feedbackType === 'library' ? '-libraries' : ''}`
+      : 'aily-blockly';
+    this.electronService.openUrl(`https://github.com/ailyProject/${repository}/issues`);
   }
 }

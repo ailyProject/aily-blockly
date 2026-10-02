@@ -57,7 +57,8 @@ describe('Coder build metadata', () => {
         return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       },
     };
-    project = { currentProjectPath: root, isAilyCodeProject: () => true, copyPackageJsonToTemp: async () => true };
+    project = { currentProjectPath: root, isAilyCodeProject: () => true, copyPackageJsonToTemp: async () => true,
+      getProjectDependencyBlockMessage: () => undefined };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
       patchBuildMetadata: (projectPath: string, patch: any) => {
@@ -84,6 +85,22 @@ describe('Coder build metadata', () => {
     }
     writeManifest({ ...readManifest(), projectConfig: { CPUFreq: '240' } });
     expect(await metadata.updateCodeHash(root)).not.toBe(previous);
+  });
+
+  it('hashes native Arduino tabs and recursive sources without hashing its own metadata or caches', async () => {
+    writeManifest({ ...readManifest(), arduinoSketch: true, entry: 'Blink.ino' });
+    files.set(`${root}/Blink.ino`, 'void setup() {}');
+    files.set(`${root}/Configuration.h`, '#define USER_SETTING 1');
+    files.set(`${root}/src/core.cpp`, 'void loop() {}');
+    const first = await metadata.updateCodeHash(root);
+    files.set(`${root}/sketch/preprocess.json`, 'generated');
+    files.set(`${root}/sketch/build-config.json`, 'generated');
+    files.set(`${root}/package-lock.json`, 'npm metadata');
+    files.set(`${root}/.log/compile/latest.log`, 'build output');
+    files.set(`${root}/.workspace-history/snapshot.ino`, 'editor history');
+    expect(await metadata.updateCodeHash(root)).toBe(first);
+    files.set(`${root}/src/core.cpp`, 'void loop() { delay(1); }');
+    expect(await metadata.updateCodeHash(root)).not.toBe(first);
   });
 
   it('ignores generated caches and cloud metadata and normalizes manifest key order', async () => {
@@ -119,11 +136,12 @@ describe('Coder build metadata', () => {
     const service = new CompileService(
       project, {} as any, { createDirectory: async () => {} } as any, electron,
       { startBuild: () => true, finishBuild: () => {}, updateNotice: () => {} } as any,
-      { za7: '/7z' } as any, { data: {} } as any,
+      { za7: '/7z' } as any, { data: {}, isCoderProduct: () => true } as any,
       { warning: () => {}, error: () => {} } as any,
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
+      { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() } as any,
     );
     let calls = 0;
     spyOn<any>(service, 'runOneShotCommand').and.callFake(async () => ({
@@ -134,6 +152,52 @@ describe('Coder build metadata', () => {
     spyOn<any>(service, 'handleFailNotice');
     return service;
   }
+
+  for (const reason of ['installing', 'retry required']) {
+    it(`rejects direct disk compilation while dependencies report ${reason}`, async () => {
+      project.getProjectDependencyBlockMessage = jasmine.createSpy('block').and.returnValue(reason);
+      const command = jasmine.createSpy('command').and.returnValue(0);
+      const compiler = createCompiler(command);
+      const result = await compiler.runCompileFromDisk({ projectPath: root });
+      expect(result).toEqual({ success: false, result: { state: 'warn', text: reason } });
+      expect(project.getProjectDependencyBlockMessage).toHaveBeenCalledOnceWith(root);
+      expect(command).not.toHaveBeenCalled();
+      expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
+    });
+  }
+
+  it('waits for disk dependency verification before acquiring the build lock or starting a compiler', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    let checked!: () => void;
+    (compiler as any).npmService.assertCoderDependenciesReady.and.returnValue(new Promise<void>(resolve => { checked = resolve; }));
+    const start = spyOn((compiler as any).application, 'startBuild').and.returnValue(true);
+    const pending = compiler.runCompileFromDisk();
+    expect(start).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+    checked();
+    expect((await pending).success).toBeTrue();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a compiler when files are missing despite an earlier ready state', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('SDK incomplete'));
+    const start = spyOn((compiler as any).application, 'startBuild');
+    expect(await compiler.runCompileFromDisk()).toEqual({ success: false, result: { state: 'warn', text: 'SDK incomplete' } });
+    expect(start).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+    expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
+  });
+
+  it('keeps Blockly disk compilation outside the Coder preflight', async () => {
+    const compiler = createCompiler(() => 0);
+    (compiler as any).configService.isCoderProduct = () => false;
+    (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('must not run'));
+    expect((await compiler.runCompileFromDisk()).success).toBeTrue();
+    expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+  });
 
   it('records successful compilation against the captured project even after a project switch', async () => {
     const service = createCompiler(() => {

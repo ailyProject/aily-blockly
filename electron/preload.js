@@ -410,15 +410,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.on("window-maximize-changed", listener);
       return () => ipcRenderer.removeListener("window-maximize-changed", listener);
     },
-    // 监听 Mac 平台下系统关闭按钮的关闭请求
+    // Main-window quit uses the same confirmation on every platform.
     onCloseRequest: (callback) => {
-      const listener = () => callback();
+      const listener = (_event, request) => {
+        if (request?.requestId) ipcRenderer.send('window-close-checking', { requestId: request.requestId });
+        callback(request);
+      };
       ipcRenderer.on("window-close-request", listener);
       return () => ipcRenderer.removeListener("window-close-request", listener);
     },
-    // 确认关闭窗口（Mac 平台使用）
-    confirmClose: () => {
-      ipcRenderer.send("window-close-confirmed");
+    confirmClose: (requestId, allowed) => {
+      ipcRenderer.send("window-close-confirmed", { requestId, allowed });
     },
   },
   projectLock: {

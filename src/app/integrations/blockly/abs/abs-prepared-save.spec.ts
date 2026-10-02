@@ -1,6 +1,6 @@
 import { prepareBlocklySave, commitPreparedBlocklySave, PreparedBlocklySave } from '../../../editors/blockly-editor/services/prepared-project-save';
 import { _ProjectService } from '../../../editors/blockly-editor/services/project.service';
-import { projectDataRuntime, ProjectDataStore, materializeGenericProjectDataValues, materializePreparedGenericProjectDataValues } from '@domain/project/public-api';
+import { projectDataRuntime, ProjectDataStore, materializeGenericProjectDataValues } from '@domain/project/public-api';
 import { SerialOperationQueue } from '@shared/public-api';
 import { BlocklyProjectRevision } from '../../../editors/blockly-editor/services/blockly-project-revision';
 import { hashAbsText } from './abs-identity-map';
@@ -61,8 +61,7 @@ describe('prepared Blockly save boundary', () => {
     expect(store.validateReferences).toHaveBeenCalledOnceWith([ref]);
     await commitPreparedBlocklySave('D:/project', result, 'original', files, () => undefined);
     const saved = JSON.parse(disk.get('D:/project/project.abi')!);
-    expect(await materializeGenericProjectDataValues(saved, { resolve: async () => payload as any })).toEqual(source);
-    expect(materializePreparedGenericProjectDataValues(saved, () => payload)).toEqual(source);
+    expect(await materializeGenericProjectDataValues(saved, { resolve: async <T>() => payload as T })).toEqual(source);
     expect(JSON.parse(result.documentText)).toEqual(source);
   });
   it('stops before another resource write if the source changes between oversized payloads', async () => {
@@ -121,7 +120,8 @@ describe('prepared Blockly save boundary', () => {
         runProjectOperation: operation => operations.run(() => { gate.assertAvailable(); return operation(); }),
         acquireWorkspaceEditLease: () => gate.acquire(), isWorkspaceEditBlocked: () => gate.blocked,
         captureProjectSnapshot: () => ({ document: editor.getProjectDocument(), revision: revision.observe(editor.getProjectDocument()) }),
-        getProjectDocument: () => JSON.parse(JSON.stringify(source)), getProjectAbiForSave: value => value };
+        getProjectDocument: () => JSON.parse(JSON.stringify(source)), getProjectAbiForSave: value => value,
+        normalizeProjectAbi: value => value };
       service = new _ProjectService(editor, {} as any, {} as any);
       service.currentProjectPath = 'D:/project';
       spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
@@ -230,6 +230,7 @@ describe('prepared Blockly save boundary', () => {
 
   describe('shared post-commit code publication', () => {
     let oldBuilder: unknown;
+    let oldFs: unknown;
     let service: _ProjectService;
     let editor: any;
     let publishArtifacts: jasmine.Spy;
@@ -237,20 +238,51 @@ describe('prepared Blockly save boundary', () => {
       blockCodeMapText: '[["original-id",{"codeSnippet":"prepared code"}]]', revision: 1 } as any;
     beforeEach(() => {
       oldBuilder = window['builder'];
+      oldFs = window['fs']; window['fs'] = files;
       publishArtifacts = jasmine.createSpy('artifacts');
       window['builder'] = { publishArduinoGeneratedCode: publishArtifacts };
-      editor = { publishPreparedCodeView: jasmine.createSpy('view'), prepareProjectCode: jasmine.createSpy('mustNotRegenerate') };
+      editor = { publishPreparedCodeView: jasmine.createSpy('view'), prepareProjectCode: jasmine.createSpy('mustNotRegenerate'),
+        getProjectAbiForSave: value => value, normalizeProjectAbi: value => value };
       service = new _ProjectService(editor, {} as any, {} as any);
+      service.currentProjectPath = 'D:/project';
+      disk.set('D:/project/project.abi', prepared.abiText);
       spyOn(service, 'syncUsedLibraryManifest').and.returnValue(false);
     });
-    afterEach(() => { window['builder'] = oldBuilder; });
+    afterEach(() => { window['builder'] = oldBuilder; window['fs'] = oldFs; });
     it('publishes code and its captured block map before disk outputs without regenerating', async () => {
       publishArtifacts.and.callFake(() => {
         expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith(generated.code, generated.blockCodeMapText);
       });
       await service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined);
-      expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [] });
+      expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [], sketchCode: generated.code });
       expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('publishes the same prepared sketch and headers together, including an empty sketch', async () => {
+      const artifacts = [{ fileName: 'variables_test-12345678.h', content: 'const int data[] = {1};', sourceTag: 'test' }];
+      publishArtifacts.and.callFake((path, request) => {
+        disk.set(`${path}/.temp/sketch/sketch.ino`, request.sketchCode);
+        for (const artifact of request.artifacts) disk.set(`${path}/src/${artifact.fileName}`, artifact.content);
+      });
+      disk.set('D:/project/.temp/sketch/sketch.ino', 'old code');
+      await service.publishPreparedSaveOutputs('D:/project', prepared, { ...generated, artifacts }, () => undefined);
+      expect(disk.get('D:/project/.temp/sketch/sketch.ino')).toBe(generated.code);
+      expect(disk.get('D:/project/src/variables_test-12345678.h')).toBe(artifacts[0].content);
+      await service.publishPreparedSaveOutputs('D:/project', prepared, { ...generated, code: '' }, () => undefined);
+      expect(disk.get('D:/project/.temp/sketch/sketch.ino')).toBe('');
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('does not publish another generator language to an Arduino sketch', async () => {
+      disk.set('D:/project/.temp/sketch/sketch.ino', 'old Arduino code');
+      await service.publishPreparedSaveOutputs('D:/project', prepared, { ...generated, code: 'print(1)', artifacts: null }, () => undefined);
+      expect(publishArtifacts).not.toHaveBeenCalled();
+      expect(editor.publishPreparedCodeView).toHaveBeenCalledOnceWith('print(1)', generated.blockCodeMapText);
+      expect(disk.get('D:/project/.temp/sketch/sketch.ino')).toBe('old Arduino code');
+    });
+    it('does not overwrite the last sketch with an unsuccessful generation', async () => {
+      disk.set('D:/project/.temp/sketch/sketch.ino', 'last complete code');
+      await service.publishPreparedSaveOutputs('D:/project', prepared, { ...generated, code: null, artifacts: null }, () => undefined);
+      expect(publishArtifacts).not.toHaveBeenCalled(); expect(editor.publishPreparedCodeView).not.toHaveBeenCalled();
+      expect(disk.get('D:/project/.temp/sketch/sketch.ino')).toBe('last complete code');
     });
     it('keeps the committed view current even if artifact publication is busy', async () => {
       publishArtifacts.and.throwError('BUILD_WORKSPACE_BUSY: preprocessing');

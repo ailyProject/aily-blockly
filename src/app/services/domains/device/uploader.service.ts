@@ -2,6 +2,8 @@ import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService } from '@core/platform/public-api';
 import { BuilderService } from '@domain/build/public-api';
+import { NpmService } from '@domain/dependencies/public-api';
+import { ConfigService } from '@core/preferences/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
 import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
@@ -34,7 +36,9 @@ export class UploaderService {
     private projectService: ProjectService,
     private builderService: BuilderService,
     private translate: TranslateService,
-    @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution?: CoderExecutionPort,
+    @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution: CoderExecutionPort | null,
+    private npmService: NpmService,
+    private configService: ConfigService,
   ) { }
 
   requiresLocalPort(): boolean {
@@ -175,6 +179,7 @@ export class UploaderService {
 
   async upload(projectPath = this.projectService.currentProjectPath, port?: string) {
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.upload(projectPath, port);
+    if (this.configService.isCoderProduct()) await this.npmService.assertCoderDependenciesReady(projectPath);
     const finish = this.projectService.beginCoderOperation('upload');
     try {
       return await this.uploadCurrentProject();
@@ -295,6 +300,13 @@ export class UploaderService {
    * @returns Promise 表示烧录结果
    */
   async flashSoftdevice(softdeviceName: string, serialPort: string): Promise<{ success: boolean; message: string }> {
+    if (this.configService.isCoderProduct()) {
+      try {
+        await this.npmService.assertCoderDependenciesReady(this.projectService.currentProjectPath);
+      } catch (error) {
+        return { success: false, message: error instanceof Error ? error.message : String(error) };
+      }
+    }
     const uploadPort = serialPort || this.serialService.currentPort;
     const uploadPortType = this.serialService.currentPortInfo?.type;
     const operationId = this.createUploadOperationId('flash-softdevice', uploadPort);

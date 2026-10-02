@@ -43,6 +43,13 @@ import {
 type GlobalDependencyUsageFile = GlobalDependencyUsageState;
 type ProjectDependencySession = ReturnType<ProjectService['getProjectDependencySession']>;
 
+interface ProjectDependencyInstallOptions {
+  onRetryInstall?: () => void;
+  /** The complete project workflow prepares sources after the SDK and tools. */
+  deferCoderSources?: boolean;
+  deferSuccessNotice?: boolean;
+}
+
 export interface GlobalDependencyRemovalResult {
   packageNames: string[];
   resourcePaths: string[];
@@ -75,6 +82,8 @@ export class NpmService {
   isInstalling = false;
   private boardDependencyInstallProgress?: BoardDependencyInstallProgress;
   private boardDepsInstallPromise?: { session: ProjectDependencySession; promise: Promise<void> };
+  private projectDepsInstallPromises?: Map<ProjectDependencySession, Promise<boolean>>;
+  private projectNpmFailures?: WeakSet<ProjectDependencySession>;
 
   private isDependencySessionCurrent(session?: ProjectDependencySession): boolean {
     if (!session) return true;
@@ -135,7 +144,10 @@ export class NpmService {
       return { phase: 'download', percent: 100 };
     }
 
-    const match = text.match(/^(下载进度|Download progress|解压进度|Extract progress)[:：]?\s*(\d+(?:\.\d+)?)/i);
+    const pattern = this.configService.isCoderProduct()
+      ? /^(下载进度|Download progress|解压进度|Extract(?:ion)? progress)[:：]?\s*(\d+(?:\.\d+)?)/i
+      : /^(下载进度|Download progress|解压进度|Extract progress)[:：]?\s*(\d+(?:\.\d+)?)/i;
+    const match = text.match(pattern);
 
     if (!match) {
       return null;
@@ -493,23 +505,141 @@ export class NpmService {
     }
   }
 
+  private getDependencyProject(session: ProjectDependencySession): ProjectService {
+    return this.configService.isCoderProduct() && this.prjService.isAilyCodeProject(session.projectPath)
+      ? this.prjService.getCoderProjectContext(session.projectPath)
+      : this.prjService;
+  }
+
+  /** Coder execution preflight: completed preparation plus the current files on disk. */
+  async assertCoderDependenciesReady(projectPath: string): Promise<void> {
+    if (!this.configService.isCoderProduct() || !this.prjService.isAilyCodeProject(projectPath)) return;
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const blocked = () => this.prjService.getProjectDependencyBlockMessage(projectPath);
+    const reject = (message: string) => Object.assign(new Error(message), { state: 'warn' });
+    const initialBlock = blocked();
+    if (initialBlock) throw reject(initialBlock);
+
+    try {
+      // An idle/unknown session is not evidence that SDK and source preparation succeeded.
+      if (this.prjService.getProjectDependencyStatus(projectPath) !== 'ready'
+        || !await this.installedOk(projectPath)) {
+        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      }
+      this.assertDependencySession(session);
+      const project = this.getDependencyProject(session);
+      const boardModule = await project.getBoardModule();
+      this.assertDependencySession(session);
+      if (boardModule) {
+        const boardPackage = await project.getBoardPackageJson();
+        this.assertDependencySession(session);
+        // Use the same version check as Blockly's build preflight, plus extracted SDK/tools.
+        const missing = this.getMissingBoardDependencies(boardPackage);
+        if (missing.length || !await this.areBoardPlatformDepsReady(boardPackage?.boardDependencies || {})) {
+          throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
+            name: missing.length ? missing.join(', ') : boardModule,
+          }));
+        }
+      }
+      this.assertDependencySession(session);
+      const latestBlock = blocked();
+      if (latestBlock) throw reject(latestBlock);
+    } catch (error) {
+      this.assertDependencySession(session);
+      // A new install may have started during the async reads. Preserve its state and notice.
+      const latestBlock = blocked();
+      if (latestBlock) throw reject(latestBlock);
+      this.prjService.setProjectDependencyResult(session, false);
+      const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+        text: message,
+        detail: this.getNpmErrorMessage(error),
+        state: 'error',
+        onRetry: () => {
+          if (!this.isDependencySessionCurrent(session)
+            || this.prjService.isProjectDependencyPreparationInProgress(projectPath)) return;
+          void this.ensureProjectAndBoardDeps(projectPath, {
+            onBoardDepsSettled: async () => { await this.getDependencyProject(session).syncCurrentBoardConfig(session); },
+          }, session).catch(() => {});
+        },
+      });
+      throw reject(message);
+    }
+  }
+
   /** Blockly / Aily Code 共用：等待工程 npm 和主板平台依赖全部完成。 */
   async ensureProjectAndBoardDeps(
     projectPath: string,
     options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void> },
     session = this.prjService.getProjectDependencySession(projectPath),
   ): Promise<boolean> {
-    return this.prjService.runProjectDependencyTask(session, async () => {
-      if (!(await this.ensureProjectDependenciesInstalled(projectPath, options, session))) return false;
-      this.assertDependencySession(session);
-      await this.installBoardDeps(session);
-      this.assertDependencySession(session);
-      await options?.onBoardDepsSettled?.();
-      return true;
+    // Software identity is intentional: Blockly can also open Coder projects.
+    if (!this.configService.isCoderProduct()) {
+      return this.prjService.runProjectDependencyTask(session, async () => {
+        if (!(await this.ensureProjectDependenciesInstalled(projectPath, options, session))) return false;
+        this.assertDependencySession(session);
+        if (this.prjService.isAilyCodeProject(projectPath) && !await this.prjService.getBoardModule()) return true;
+        await this.installBoardDeps(session);
+        this.assertDependencySession(session);
+        await options?.onBoardDepsSettled?.();
+        return true;
+      });
+    }
+
+    const pending = this.projectDepsInstallPromises ??= new Map();
+    const existing = pending.get(session);
+    if (existing) return existing;
+    const onRetryInstall = () => {
+      if (this.isDependencySessionCurrent(session) && !pending.has(session)) {
+        if (options?.onRetryInstall) options.onRetryInstall();
+        else void this.ensureProjectAndBoardDeps(projectPath, options, session).catch(() => {});
+      }
+    };
+    const promise = this.prjService.runProjectDependencyTask(session, async () => {
+      let ready = false;
+      try {
+        // One owner reports completion; npm success alone does not unlock builds.
+        if (!await this.ensureProjectDependenciesInstalled(projectPath, {
+          onRetryInstall, deferCoderSources: true, deferSuccessNotice: true,
+        }, session)) return false;
+        this.assertDependencySession(session);
+        const hasBoard = !this.prjService.isAilyCodeProject(projectPath) || await this.getDependencyProject(session).getBoardModule();
+        this.assertDependencySession(session);
+        if (hasBoard) await this.installBoardDeps(session, false);
+        this.assertDependencySession(session);
+        if (!await this.ensureCoderDependencyLibrarySources(projectPath, { onRetryInstall }, session)) return false;
+        await options?.onBoardDepsSettled?.();
+        this.assertDependencySession(session);
+        ready = true;
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+          state: 'done', progress: 100, setTimeout: 3000,
+        });
+        return true;
+      } catch (error) {
+        this.assertDependencySession(session);
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+          text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+          detail: this.getNpmErrorMessage(error),
+          state: 'error', onRetry: onRetryInstall,
+        });
+        return false;
+      } finally {
+        if (this.isDependencySessionCurrent(session)) this.prjService.setProjectDependencyResult(session, ready);
+      }
     });
+    pending.set(session, promise);
+    try {
+      return await promise;
+    } finally {
+      if (pending.get(session) === promise) pending.delete(session);
+    }
   }
 
-  async installBoardDeps(session = this.prjService.getProjectDependencySession()) {
+  async installBoardDeps(session = this.prjService.getProjectDependencySession(), showSuccessNotice = true) {
     this.assertDependencySession(session);
     if (this.boardDepsInstallPromise?.session === session) {
       return this.boardDepsInstallPromise.promise;
@@ -519,9 +649,10 @@ export class NpmService {
       let installStateStarted = false;
 
       try {
-        const boardPackageJson = await this.prjService.getBoardPackageJson() || {};
+        const project = this.getDependencyProject(session);
+        const boardPackageJson = await project.getBoardPackageJson() || {};
         this.assertDependencySession(session);
-        const projectPackageJson = await this.prjService.getPackageJson() || {};
+        const projectPackageJson = await project.getPackageJson() || {};
         this.assertDependencySession(session);
         const boardDependencies: Record<string, string> = boardPackageJson.boardDependencies || {};
         const boardPlatformDepsReady = await this.areBoardPlatformDepsReady(boardDependencies);
@@ -542,7 +673,7 @@ export class NpmService {
 
         // console.log("boardPackageJson: ", boardPackageJson);
         if (!boardPlatformDepsReady) {
-          await this.installBoardDependencies(boardPackageJson, false, true, session);
+          await this.installBoardDependencies(boardPackageJson, false, true, session, showSuccessNotice);
         } else {
           console.log('[installBoardDeps] 平台依赖已就绪，跳过安装状态');
         }
@@ -974,7 +1105,30 @@ export class NpmService {
     version: string,
     bases: { sdkBase: string; compilersBase: string; toolsBase: string },
   ): boolean {
-    return !!resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    const directory = resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    if (!directory) return false;
+    // Arduino SDK extraction can leave a directory behind after a failed install.
+    if (this.configService.isCoderProduct() && packageName.startsWith('@aily-project/sdk-')) {
+      return ['boards.txt', 'platform.txt'].every(name => window['path'].isExists(window['path'].join(directory, name)));
+    }
+    return true;
+  }
+
+  private async removeIncompleteSdkDirectory(
+    packageName: string,
+    version: string,
+    bases: { sdkBase: string; compilersBase: string; toolsBase: string },
+    session?: ProjectDependencySession,
+  ): Promise<void> {
+    if (!this.configService.isCoderProduct() || !packageName.startsWith('@aily-project/sdk-')) return;
+    const directory = resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    if (!directory || ['boards.txt', 'platform.txt'].every(name => window['path'].isExists(window['path'].join(directory, name)))) return;
+    this.assertDependencySession(session);
+    // SDK postinstall skips an existing directory, including an interrupted extraction.
+    // Use the main-process allowlist to remove only this incomplete generated version.
+    const result = await window['ipcRenderer'].invoke('appdata-resource-remove', { target: directory });
+    this.assertDependencySession(session);
+    if (result?.ok !== true) throw new Error(result?.error || this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: packageName }));
   }
 
   /**
@@ -1052,7 +1206,7 @@ export class NpmService {
     return missingDependencies;
   }
   // 安装开发板依赖
-  async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession) {
+  async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession, showSuccessNotice = true) {
     this.assertDependencySession(session);
     const boardDependencies: Record<string, string> = packageJson.boardDependencies || {};
 
@@ -1096,6 +1250,11 @@ export class NpmService {
         const depPathPackageJson = `${depPath}/package.json`;
         let installedVersionWhenMismatch: string | undefined;
         const versionStr = String(version);
+
+        if (this.configService.isCoderProduct()) {
+          await this.removeIncompleteSdkDirectory(key, versionStr, platformBases, session);
+          this.assertDependencySession(session);
+        }
 
         // npm 包版本满足声明时，仍须检查 sdk/tools 解压目录（postinstall 可能未跑）
         if (window['path'].isExists(depPathPackageJson)) {
@@ -1197,13 +1356,19 @@ export class NpmService {
           projectPath: session.projectPath, projectSessionId: session.projectSessionId,
         } : {}) });
         this.assertDependencySession(session);
+        if (this.configService.isCoderProduct()) {
+          if (!await this.areBoardPlatformDepsReady({ [key]: versionStr })) {
+            throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: key }));
+          }
+          this.assertDependencySession(session);
+        }
         this.updateBoardDependencyNotice(progress, ((index + 1) / dependencies.length) * 100);
         console.log(`依赖 ${dependency.name} 安装成功, 时间: ${new Date().toISOString()}`);
         this.traceToAppLog('DEP_INSTALL_DONE', { name: dependency.name, version: dependency.version });
       }
 
       // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_COMPLETE') });
-      this.application.updateNotice({
+      if (showSuccessNotice) this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
         text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_COMPLETE'),
         state: 'done',
@@ -1631,10 +1796,10 @@ export class NpmService {
    */
   async ensureProjectDependenciesInstalled(
     projectPath: string,
-    options?: { onRetryInstall?: () => void },
+    options?: ProjectDependencyInstallOptions,
     session = this.prjService.getProjectDependencySession(projectPath),
   ): Promise<boolean> {
-    const guardedOptions = options?.onRetryInstall ? { onRetryInstall: () => {
+    const guardedOptions = options?.onRetryInstall ? { ...options, onRetryInstall: () => {
       if (this.isDependencySessionCurrent(session)) options.onRetryInstall();
     } } : options;
     return this.prjService.runProjectDependencyTask(session, () => this.installProjectDependencies(projectPath, guardedOptions, session));
@@ -1645,6 +1810,10 @@ export class NpmService {
     options: { onRetryInstall?: () => void } | undefined,
     session: ProjectDependencySession,
   ): Promise<boolean> {
+    if (this.configService.isCoderProduct()) {
+      return this.installCoderProjectDependencies(projectPath, options, session);
+    }
+
     // 已完整安装则不再跑 npm install，缩短冷启动
     const installed = await this.installedOk(projectPath);
     this.assertDependencySession(session);
@@ -1721,6 +1890,78 @@ export class NpmService {
     return true;
   }
 
+  private async installCoderProjectDependencies(
+    projectPath: string,
+    options: ProjectDependencyInstallOptions | undefined,
+    session: ProjectDependencySession,
+  ): Promise<boolean> {
+    // 已完整安装则不再跑 npm install，缩短冷启动
+    const installed = await this.installedOk(projectPath);
+    this.assertDependencySession(session);
+    if (installed && !this.projectNpmFailures?.has(session)) {
+      return options?.deferCoderSources || this.ensureCoderDependencyLibrarySources(projectPath, options, session);
+    }
+
+    this.application.updateNotice({
+      title: this.translate.instant('NPM.INSTALLING_TITLE'),
+      text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+      state: 'doing',
+      icon: 'fa-light fa-cubes',
+      showProgress: false,
+    });
+
+    let projectPackageJson: Record<string, unknown> = {};
+
+    try {
+      projectPackageJson = JSON.parse(
+        window['fs'].readFileSync(window['path'].join(projectPath, 'package.json'), 'utf8'),
+      );
+    } catch {
+      // installedOk() will report the missing or invalid manifest below.
+    }
+
+    // 修复项目依赖时仍按当前项目 devmode 选择仓库，避免混装两类板包。
+    try {
+      const npmResult = await this.cmdService.runAsync(
+        this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
+        projectPath, true, false, session,
+      );
+      this.assertDependencySession(session);
+      if (npmResult?.type === 'error' || (npmResult?.code ?? 0) !== 0 || !await this.installedOk(projectPath)) {
+        throw new Error(npmResult?.error || npmResult?.stderr || 'npm install 执行完成但依赖检查未通过');
+      }
+      this.assertDependencySession(session);
+      this.projectNpmFailures?.delete(session);
+    } catch (error) {
+      this.assertDependencySession(session);
+      (this.projectNpmFailures ??= new WeakSet()).add(session);
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+        text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+        detail: this.getNpmErrorMessage(error),
+        state: 'error',
+        sendToLog: true,
+        ...(options?.onRetryInstall ? { onRetry: options.onRetryInstall } : {}),
+      });
+      return false;
+    }
+
+    if (!options?.deferCoderSources && !(await this.ensureCoderDependencyLibrarySources(projectPath, options, session))) {
+      return false;
+    }
+    this.assertDependencySession(session);
+
+    if (!options?.deferSuccessNotice) this.application.updateNotice({
+      title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+      text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+      state: 'done',
+      showProgress: false,
+      setTimeout: 3000,
+    });
+
+    return true;
+  }
+
   private async ensureCoderDependencyLibrarySources(
     projectPath: string,
     options?: { onRetryInstall?: () => void },
@@ -1729,6 +1970,14 @@ export class NpmService {
     if (!this.isAilyCodeProjectRoot(projectPath)) return true;
 
     try {
+      if (this.configService.isCoderProduct()) {
+        this.assertDependencySession(session);
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.INSTALLING_TITLE'),
+          text: this.translate.instant('NPM.PREPARING_LIBRARY_SOURCES'),
+          state: 'doing', showProgress: false,
+        });
+      }
       await this.application.materializeCoderProjectLibraries(projectPath);
       this.assertDependencySession(session);
 

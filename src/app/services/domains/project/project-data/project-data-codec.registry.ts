@@ -133,17 +133,30 @@ export function createDefaultProjectDataCodecRegistry(): ProjectDataCodecRegistr
 
 export function canonicalJsonStringify(value: unknown): string {
   const active = new Set<object>();
+  // Keep error locations lazy: successful traversal should not allocate and
+  // escape a complete JSON pointer (or a closure) for every member of a tree.
+  const path: Array<string | number> = [];
+  const location = () => '$' + path.map(key => '/' + escapeJsonPointer(String(key))).join('');
   let nodeCount = 0;
 
-  const normalize = (current: unknown, path: string, depth: number): unknown => {
+  const member = (value: unknown, key: string | number): unknown => {
+    path.push(key);
+    try {
+      if (value === undefined || typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
+        throw new ProjectDataError('corrupt', `Unsupported JSON member at ${location()}.`);
+      }
+      return normalize(value);
+    } finally { path.pop(); }
+  };
+  const normalize = (current: unknown): unknown => {
     nodeCount++;
     if (nodeCount > MAX_CANONICAL_JSON_NODES) {
       throw new ProjectDataError('too-large', 'Canonical JSON exceeds the node limit.', {
         maxNodes: MAX_CANONICAL_JSON_NODES,
       });
     }
-    if (depth > MAX_CANONICAL_JSON_DEPTH) {
-      throw new ProjectDataError('too-large', `Canonical JSON exceeds the depth limit at ${path}.`, {
+    if (path.length > MAX_CANONICAL_JSON_DEPTH) {
+      throw new ProjectDataError('too-large', `Canonical JSON exceeds the depth limit at ${location()}.`, {
         maxDepth: MAX_CANONICAL_JSON_DEPTH,
       });
     }
@@ -152,60 +165,40 @@ export function canonicalJsonStringify(value: unknown): string {
     }
     if (typeof current === 'number') {
       if (!Number.isFinite(current)) {
-        throw new ProjectDataError('corrupt', `Non-finite JSON number at ${path}.`);
+        throw new ProjectDataError('corrupt', `Non-finite JSON number at ${location()}.`);
       }
       return current;
     }
     if (Array.isArray(current)) {
       if (active.has(current)) {
-        throw new ProjectDataError('corrupt', `Circular JSON array at ${path}.`);
+        throw new ProjectDataError('corrupt', `Circular JSON array at ${location()}.`);
       }
       active.add(current);
-      const normalized = current.map((item, index) => (
-        normalizeJsonMember(item, `${path}/${index}`, (member, memberPath) => (
-          normalize(member, memberPath, depth + 1)
-        ))
-      ));
+      const normalized = current.map((item, index) => member(item, index));
       active.delete(current);
       return normalized;
     }
     if (current && typeof current === 'object') {
       if (active.has(current)) {
-        throw new ProjectDataError('corrupt', `Circular JSON object at ${path}.`);
+        throw new ProjectDataError('corrupt', `Circular JSON object at ${location()}.`);
       }
       const prototype = Object.getPrototypeOf(current);
       // Blockly serializers also produce data-only dictionaries with no prototype.
       if (prototype !== null && prototype !== Object.prototype) {
-        throw new ProjectDataError('corrupt', `Unsupported JSON object at ${path}.`);
+        throw new ProjectDataError('corrupt', `Unsupported JSON object at ${location()}.`);
       }
       active.add(current);
       const normalized: Record<string, unknown> = Object.create(null);
       for (const key of Object.keys(current as Record<string, unknown>).sort()) {
-        const member = (current as Record<string, unknown>)[key];
-        normalized[key] = normalizeJsonMember(
-          member,
-          `${path}/${escapeJsonPointer(key)}`,
-          (value, memberPath) => normalize(value, memberPath, depth + 1),
-        );
+        normalized[key] = member((current as Record<string, unknown>)[key], key);
       }
       active.delete(current);
       return normalized;
     }
-    throw new ProjectDataError('corrupt', `Unsupported JSON value at ${path}.`);
+    throw new ProjectDataError('corrupt', `Unsupported JSON value at ${location()}.`);
   };
 
-  return JSON.stringify(normalize(value, '$', 0));
-}
-
-function normalizeJsonMember(
-  value: unknown,
-  path: string,
-  normalize: (value: unknown, path: string) => unknown,
-): unknown {
-  if (value === undefined || typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
-    throw new ProjectDataError('corrupt', `Unsupported JSON member at ${path}.`);
-  }
-  return normalize(value, path);
+  return JSON.stringify(normalize(value));
 }
 
 function escapeJsonPointer(value: string): string {

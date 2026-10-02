@@ -1,4 +1,4 @@
-import { absJson, fingerprintAbsNodes, indexAbsSyntax } from './abs-identity-map';
+import { absJson, fingerprintAbsNodeGroups, indexAbsSyntax } from './abs-identity-map';
 import { inspectAbsSourceEdits, type AbsSourceEdits } from './abs-edit-provenance';
 import { AbsSyncError, type AbsSyntaxNode } from './abs-state';
 
@@ -21,12 +21,14 @@ function group<T>(items: readonly T[], key: (item: T) => string): Map<string, T[
  * type-only updates remain scoped to already matched owners. No ABI/UI access. */
 export async function matchAbsIdentities(beforeText: string, afterText: string,
   original: Node[], edited: Node[], sourceEdits?: AbsSourceEdits,
-  requiresIdentity: (node: Node) => boolean = () => false): Promise<ReadonlyMap<Node, Node>> {
-  const oldNodes = indexAbsSyntax(original).map(entry => entry.node);
-  const newNodes = indexAbsSyntax(edited).map(entry => entry.node);
+  requiresIdentity: (node: Node) => boolean = () => false,
+  fingerprint: typeof fingerprintAbsNodeGroups = fingerprintAbsNodeGroups): Promise<ReadonlyMap<Node, Node>> {
+  const groups = [indexAbsSyntax(original), indexAbsSyntax(edited)];
+  const [oldNodes, newNodes] = groups.map(entries => entries.map(entry => entry.node));
   const signatures = new Map<Node, string>();
-  for (const roots of [original, edited]) {
-    const entries = indexAbsSyntax(roots), fingerprints = await fingerprintAbsNodes(entries);
+  const groupedFingerprints = await fingerprint(groups);
+  for (let index = 0; index < groups.length; index++) {
+    const entries = groups[index], fingerprints = groupedFingerprints[index];
     const byNode = new Map(entries.map(entry => [entry.node, fingerprints.get(entry.path)!]));
     for (const { node } of entries) signatures.set(node, absJson({
       type: node.type, fields: Object.fromEntries(Object.entries(node.fields).map(([name, token]) => [name, token.value])),

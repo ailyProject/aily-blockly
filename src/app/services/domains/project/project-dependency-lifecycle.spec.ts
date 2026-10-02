@@ -1,6 +1,26 @@
 import { ProjectDependencyLifecycle } from './project-dependency-lifecycle';
 
 describe('project dependency session lifecycle', () => {
+  it('retains failure after work settles and only clears it after a successful retry', async () => {
+    const lifecycle = new ProjectDependencyLifecycle();
+    const session = lifecycle.beginPreparation('/project');
+    lifecycle.setResult(session, false);
+    expect(lifecycle.getStatus('/project')).toBe('installing');
+    lifecycle.finishPreparation(session);
+    expect(lifecycle.isBusy('/project')).toBeFalse();
+    expect(lifecycle.getStatus('/project')).toBe('error');
+    expect(lifecycle.getStatus('/other')).toBe('idle');
+    await lifecycle.run(session, async () => {
+      expect(lifecycle.getStatus('/project')).toBe('installing');
+      lifecycle.setResult(session, true);
+    });
+    expect(lifecycle.getStatus('/project')).toBe('ready');
+    lifecycle.cancel('/project');
+    lifecycle.release(session);
+    const replacement = lifecycle.ensure('/project');
+    expect(() => lifecycle.setResult(session, false)).toThrow();
+    expect(lifecycle.getStatus(replacement.projectPath)).toBe('idle');
+  });
   function deferred() {
     let resolve!: () => void;
     const promise = new Promise<void>(done => { resolve = done; });

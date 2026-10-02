@@ -14,6 +14,9 @@ import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
 import { createNativeCandidateGraphics } from './blockly-native-graphics';
+import type { NativeCandidateProgress } from './blockly-native-progress';
+import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
+import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 
 /** Bundled with the actual host implementations into an independent JavaScript realm. */
@@ -25,12 +28,18 @@ export function installNativeCandidateRealm(): void {
   window.addEventListener('message', async (event: MessageEvent<NativeCandidateRequest>) => {
     if (consumed || event.source !== window.parent || event.ports.length !== 1) return;
     consumed = true;
-    const port = event.ports[0], send = port.postMessage.bind(port);
+    const port = event.ports[0], started = performance.now();
+    // Realm-local time: host message delivery may wait until synchronous native
+    // work finishes. Timing is diagnostic only, never candidate authority.
+    const send = (value: Record<string, unknown>) => port.postMessage({ ...value, elapsedMs: performance.now() - started });
     const request = event.data;
+    const progress: NativeCandidateProgress = phase => send({ phase });
     const errors: Error[] = [];
     let workspace: any;
     let phase = 'initialization';
     let registering = true;
+    let replayStep = 0;
+    const observeReplay = (replay: NativeReplayEvent) => send({ phase: 'replay', replay });
     const tasks = new NativeRegistrationTasks(realm.setTimeout.bind(realm), realm.clearTimeout.bind(realm));
     const uiTasks = new NativeUiTasks();
     const deny = (name: string) => () => {
@@ -45,11 +54,13 @@ export function installNativeCandidateRealm(): void {
       if (typeof callback !== 'function') return deny('string timer callbacks')();
       if (!registering) return uiTasks.set(() => Reflect.apply(callback, realm, args), delay);
       const origin = phase;
+      const originStep = replayStep;
       return tasks.set(() => {
-        const previous = phase; phase = `deferred ${origin}`;
+        const previous = phase, previousStep = replayStep;
+        phase = `deferred ${origin}`; replayStep = originStep;
         try { const value = Reflect.apply(callback, realm, args); assertClean(); return value; }
-        finally { phase = previous; }
-      }, delay);
+        finally { phase = previous; replayStep = previousStep; }
+      }, delay, event => observeReplay({ ...event, step: originStep }));
     } });
     Object.defineProperty(realm, 'clearTimeout', { configurable: false, writable: false, value: (id: number) => {
       if (id < 0) uiTasks.clear(id); else tasks.clear(id);
@@ -98,7 +109,7 @@ export function installNativeCandidateRealm(): void {
       }) });
       values.assertReferences(request.verify?.state ?? request.abs ?? request.blocks);
       native.Events.disable();
-      workspace = createNativeCandidateGraphics(native, uiTasks);
+      workspace = createNativeCandidateGraphics(native, uiTasks, request.graphics);
       installProjectDataImageCache(realm, () => workspace, assertClean);
       native.getMainWorkspace = () => workspace;
       realm.global = window;
@@ -108,7 +119,10 @@ export function installNativeCandidateRealm(): void {
       // Observe only replay registrations and blocks actually created for native
       // discovery. Wrapping every bundled init would invalidate host provenance
       // even for model blocks that are deliberately prepared by pure adapters.
-      for (const step of request.steps) {
+      progress('replay');
+      for (const [index, step] of request.steps.entries()) {
+        replayStep = index;
+        observeReplay({ event: 'step-start', step: index });
         phase = step.kind === 'script' ? `replay ${step.label}` : `replay ${step.kind}`;
         if (step.kind === 'script') {
           const script = document.createElement('script');
@@ -137,8 +151,11 @@ export function installNativeCandidateRealm(): void {
         else if (step.kind === 'i18n') realm.__BLOCKLY_LIB_I18N__[step.packageName] = step.value;
         else throw new Error('Unknown native replay step.');
         assertClean();
+        observeReplay({ event: 'step-end', step: index });
       }
+      observeReplay({ event: 'drain-start', step: replayStep });
       await tasks.drain();
+      observeReplay({ event: 'drain-end', step: replayStep });
       assertClean();
       if (workspace.getAllBlocks(false).length || workspace.getAllVariables().length) throw new Error('Native registration created workspace state.');
       registering = false;
@@ -159,19 +176,24 @@ export function installNativeCandidateRealm(): void {
       const models = new NativeCandidateModels(workspace, request.variables);
       if (!request.verify) models.load();
       const execution = new NativeCandidateWorkspace(native, workspace, observer, assertClean, models, request.creations, declarations);
-      const binding = request.abs !== undefined ? bindNativeAbs(request.abs, execution, declarations, request.identities, values.materialize, request.hostCalls,
+      progress('binding');
+      const binding = request.abs !== undefined ? withNativeFieldDependencies(native, workspace, () => bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
         request.modelRequestId && generator
-          ? { generator, requestId: request.modelRequestId } : undefined) : undefined;
+          ? { generator, requestId: request.modelRequestId } : undefined), uiTasks) : undefined;
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
+        progress('views');
         execution.initializeViews();
+        progress('ui');
         uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
       }
-      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks)
-        : uiTasks.withoutScheduling(() => ({ ...execution.result(), ...(binding ? { binding: binding() } : {}) }));
+      progress('readback');
+      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress)
+        : uiTasks.withoutScheduling(() => binding ? binding() : execution.result());
       assertClean();
       values.assertReferences(result.state);
       phase = 'candidate cleanup';
+      progress('cleanup');
       workspace.dispose(); workspace = undefined; assertClean();
       send({ ok: true, result });
     } catch (error) {

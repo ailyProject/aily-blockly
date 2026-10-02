@@ -1,6 +1,6 @@
 import { retireEmptyProjectModels } from './abs-empty-project-models';
 import { createAbsProjection } from './abs-identity-map';
-import { reconcileAbs } from './abs-reconciler';
+import { createAbsReconciler, reconcileAbs } from './abs-reconciler';
 import { AbsProjection } from './abs-state';
 import { prepareAbsNativeReconciliation } from './abs-native-reconciliation';
 import { evaluateNativeCandidate } from '../../../editors/blockly-editor/services/blockly-native-candidate';
@@ -76,8 +76,8 @@ describe('blank project variable retirement', () => {
         original.workspace.blocks.blocks.map(block => `Arduino.forBlock.${block.type} = () => '';`).join('\n') }];
     const before = JSON.stringify(base);
     const requests: any[] = [];
-    const prepared = await prepareAbsNativeReconciliation(base,
-      base.abs + '\ntest_object_init("device", Sensor)\ntest_object_read($device)', {}, async request => {
+    const prepared = await prepareAbsNativeReconciliation(createAbsReconciler(base,
+      base.abs + '\ntest_object_init("device", Sensor)\ntest_object_read($device)'), {}, async request => {
         requests.push(request);
         return evaluateNativeCandidate({ ...request, steps }, { assertCurrent: () => {} });
       }, () => {});

@@ -3,7 +3,7 @@ import { ElectronService } from '@core/platform/public-api';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 
 const BUILD_MANIFEST_FIELDS = [
-  'type', 'entry', 'framework', 'devmode',
+  'type', 'entry', 'framework', 'devmode', 'arduinoSketch',
   'dependencies', 'devDependencies', 'boardDependencies', 'projectConfig', 'macros', 'MACROS',
 ];
 const GENERATED_SKETCH_FILES = new Set([
@@ -12,7 +12,7 @@ const GENERATED_SKETCH_FILES = new Set([
   // It is generated output, never an input to the publication source hash.
   'target-compile.json',
 ]);
-const CACHE_DIRECTORIES = new Set(['.git', '.aily', '.build', '.temp', 'node_modules']);
+const CACHE_DIRECTORIES = new Set(['.git', '.aily', '.build', '.temp', '.log', '.workspace-history', 'node_modules']);
 
 @Injectable({ providedIn: 'root' })
 export class CoderBuildInfoService {
@@ -49,24 +49,25 @@ export class CoderBuildInfoService {
         .map(key => [key, manifest[key]]),
     );
     const files: [string, string][] = [];
+    const sourceRoot = manifest.arduinoSketch === true ? projectPath : this.electronService.pathJoin(projectPath, 'sketch');
     const collect = (relativePath: string) => {
-      const absolutePath = this.electronService.pathJoin(projectPath, 'sketch', relativePath);
+      const absolutePath = this.electronService.pathJoin(sourceRoot, relativePath);
       for (const entry of window['fs'].readDirSync(absolutePath)) {
         const childPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
         if (entry._isDirectory) {
           if (!CACHE_DIRECTORIES.has(entry.name)) collect(childPath);
         } else if (entry._isFile && entry.name !== '.DS_Store'
-          && (relativePath || (!GENERATED_SKETCH_FILES.has(entry.name)
+          && !(manifest.arduinoSketch === true && !relativePath && ['package.json', 'package-lock.json'].includes(entry.name))
+          && ((relativePath && !(manifest.arduinoSketch === true && relativePath === 'sketch')) || (!GENERATED_SKETCH_FILES.has(entry.name)
             && !/^compile-preprocess-.+\.json$/.test(entry.name)))) {
           // Base64 preserves binary library inputs as well as text sources.
           files.push([childPath, window['fs'].readFileAsBase64(
-            this.electronService.pathJoin(projectPath, 'sketch', childPath),
+            this.electronService.pathJoin(sourceRoot, childPath),
           )]);
         }
       }
     };
-    // Coder's persistent sources and libraries live in sketch/. Legacy .aci
-    // projects are migrated into this layout when opened by ProjectService.
+    // Native Arduino projects retain root sources; other Coder projects use sketch/.
     collect('');
     if (manifest.projectConfig?.PartitionScheme === 'custom') {
       const entry = typeof manifest.entry === 'string' && manifest.entry.trim()

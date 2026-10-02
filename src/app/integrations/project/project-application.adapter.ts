@@ -53,11 +53,15 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   hasUnsavedBlocklyChanges(): Promise<boolean> {
-    return new Promise((resolve) => {
+    const path = this.projectService.currentProjectPath;
+    return new Promise((resolve, reject) => {
       this.actionService.dispatch('project-check-unsaved', {}, (result) => {
-        console.log(result);
-        resolve(!!result.data?.hasUnsavedChanges);
-      });
+        if (path !== this.projectService.currentProjectPath) return reject(new Error('Project changed during the unsaved-state check.'));
+        if (!result.success || typeof result.data?.hasUnsavedChanges !== 'boolean') {
+          return reject(new Error(result.error || 'The editor did not return a valid unsaved-state result.'));
+        }
+        resolve(result.data.hasUnsavedChanges);
+      }, 15000);
     });
   }
 
@@ -82,8 +86,13 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     }
 
     const packageJson = JSON.parse(packageContent);
+    const workspace = this.blocklyService.workspace;
     const libraryNames = (await this.npmService.getAllInstalledLibraries(projectPath))
       .map((item) => item.name);
+    if (workspace !== this.blocklyService.workspace
+      || !this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) {
+      throw new Error('Project changed while discovering libraries for runtime rebuild.');
+    }
     const loadedLibraryNames = Array.from(this.blocklyService.loadedLibraryInfos.values())
       .map((item) => item.packageName);
     const declaredLibraryNames = new Set(
@@ -119,7 +128,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     this.blocklyEditorProjectService.currentPackageData = packageJson;
     window['packageJson'] = packageJson;
     this.blocklyService.setToolboxSortOrder(packageJson?.blocklyToolboxOrder);
-    await this.blocklyService.rebuildLibraryRuntimeInPlace({
+    await this.blocklyEditorProjectService.rebuildLibraryRuntime({
       projectPath,
       packageJson,
       libraryNames: orderedLibraryNames,

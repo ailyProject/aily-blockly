@@ -1,6 +1,18 @@
-import { absProgramDocument, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
+import { absProgramDocument, orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
 
 describe('ABS layout-neutral program comparison', () => {
+  it('uses the same stable shared-root partition for native verification and persistence', () => {
+    const state = { blocks: { blocks: ['page-a', 'shared-old', 'page-b', 'shared-new', 'caller'].map(id => ({ id, type: 'root', x: 30, y: 60 })) } };
+    const document = { sharedModel: { procedureBlocks: [{ id: 'shared-old' }] } };
+    const contracts: any = { fields: {}, procedures: { 'shared-new': { role: 'definition' }, caller: { role: 'call' } } };
+    orderAbsSharedRoots(state, document, contracts);
+    expect(state.blocks.blocks.map(block => block.id)).toEqual(['shared-old', 'shared-new', 'page-a', 'page-b', 'caller']);
+    const ordered = JSON.stringify(state);
+    orderAbsSharedRoots(state, document, contracts);
+    expect(JSON.stringify(state)).toBe(ordered);
+    expect(document.sharedModel.procedureBlocks).toEqual([{ id: 'shared-old' }]);
+    expect(state.blocks.blocks.every(block => block.x === 30 && block.y === 60)).toBeTrue();
+  });
   const document = () => ({ pages: [{ id: 'main', content: { value: 1 }, viewState: { scale: 1, scrollX: 10, scrollY: 20 } }], sharedModel: {} });
   it('ignores only known numeric viewport values without mutating either document', () => {
     const a = document(), b = document(); b.pages[0].viewState = { scale: 0.5, scrollX: 20, scrollY: 30 };

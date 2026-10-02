@@ -1,5 +1,6 @@
 import type * as Blockly from 'blockly';
 import type { AbsNativeCreation } from '../../../integrations/blockly/abs/abs-native-binding';
+import { assertNativeBudget } from './blockly-native-budget';
 
 /** A transaction-local birth journal. IDs reach init, not a post-serialization rewrite. */
 export class NativeDefaultCreations {
@@ -24,7 +25,7 @@ export class NativeDefaultCreations {
     const ordinal = this.counts.get(owner) ?? 0;
     this.counts.set(owner, ordinal + 1);
     const planned = this.planned?.get(this.key(owner, ordinal));
-    if (this.entries.length >= 2000) throw new Error('Native default creation exceeds block limits.');
+    assertNativeBudget('defaultCreations', this.entries.length + 1, 'creation');
     if (this.planned && (!planned || planned.type !== type || id !== undefined && id !== planned.id)) {
       throw new Error('Native default creation changed during identity replay.');
     }

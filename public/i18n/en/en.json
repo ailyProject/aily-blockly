@@ -13,6 +13,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "Build and sync the project first"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "Show editor sidebar",
+        "HIDE_CODER_SIDEBAR": "Hide editor sidebar",
         "MENU": "Menu",
         "PROJECT_NEW": "New Project",
         "PROJECT_NEW_AILY_CODE": "New Aily Code Project",
@@ -1028,6 +1030,9 @@
         "REINSTALL_CONFIRM": "Reinstall"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "Dependencies are not ready. Click Retry in the installation failure notification.",
+        "PREPARING_LIBRARY_SOURCES": "Preparing dependency library sources…",
+        "DEPENDENCY_INCOMPLETE": "{{name}} is still missing required files after installation. Please retry.",
         "INSTALLING": "Installing {{name}}...",
         "INSTALLING_DEPENDENCY": "Installing {{name}} dependency...",
         "INSTALL_COMPLETE": "{{name}} installed successfully",

@@ -130,6 +130,20 @@ test('headless portable packages install, select and rediscover without dummy UI
   assert.equal((await createSubappManager(f.managerOptions).list()).apps[0].installed, true);
 });
 
+test('installs a remote app while an unrelated local development catalog exists', async t => {
+  const f = fixture(t);
+  const localEntry = { ...f.entry, id: 'serial-debugger', package: '@aily-project/subapp-serial-debugger' };
+  fs.writeFileSync(path.join(f.rootDir, 'subapp-index.json'), JSON.stringify({
+    [localEntry.id]: localEntry,
+    dev: true,
+  }));
+
+  const catalog = await f.manager.list({ refresh: true });
+  assert.equal(catalog.source, 'network');
+  await f.manager.install({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, true);
+});
+
 test('headless declaration is explicit and cannot mask invalid backend or contradictory UI', t => {
   const f = fixture(t), root = packagePathFor(f.rootDir, PACKAGE);
   fs.mkdirSync(root, { recursive: true });

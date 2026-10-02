@@ -7,6 +7,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "Compila y sincroniza primero el proyecto"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "Mostrar barra lateral del editor",
+        "HIDE_CODER_SIDEBAR": "Ocultar barra lateral del editor",
         "MENU": "Menú",
         "PROJECT_NEW": "Nuevo Proyecto",
         "PROJECT_OPEN": "Abrir Proyecto",
@@ -887,6 +889,9 @@
         "REINSTALL_CONFIRM": "Reinstalar"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "Las dependencias aún no están listas. Pulsa Reintentar en la notificación de error de instalación.",
+        "PREPARING_LIBRARY_SOURCES": "Preparando las fuentes de las bibliotecas…",
+        "DEPENDENCY_INCOMPLETE": "Todavía faltan archivos necesarios tras instalar {{name}}. Vuelve a intentarlo.",
         "INSTALLING": "Instalando {{name}}...",
         "INSTALLING_DEPENDENCY": "Instalando dependencia {{name}}...",
         "INSTALL_COMPLETE": "{{name}} instalado correctamente",

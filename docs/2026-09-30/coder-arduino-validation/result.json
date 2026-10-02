@@ -1,0 +1,39 @@
+{
+  "date": "2026-09-30",
+  "hostBuild": {
+    "state": "done",
+    "text": "编译完成 (耗时: 1.17s)"
+  },
+  "codeHash": "5d123906708baeaa456f18e00b4b044cd5b6437c848854fbba30c34007a5888b",
+  "lastBuildCode": "5d123906708baeaa456f18e00b4b044cd5b6437c848854fbba30c34007a5888b",
+  "buildHashMatches": true,
+  "firmware": [
+    {
+      "name": "Blink",
+      "bytes": 2615,
+      "sha256": "b0486f73bf131e0d2b2cc49db0591a8cf96aa885c3ea7405a7d58d61fe86c7d0"
+    },
+    {
+      "name": "Marlin",
+      "bytes": 550794,
+      "sha256": "6f5f41102023f80319c3e2059dcd9c2f3f8baa35d294ccfdac3c24a452c181d7"
+    },
+    {
+      "name": "MultiTab",
+      "bytes": 2079,
+      "sha256": "401682f76489363d61707c86cacbecc41a076daec241ce4bd4ce276f0914bbb9"
+    }
+  ],
+  "tests": {
+    "hostNode": 44,
+    "hostBuildMetadata": 20,
+    "hostModeAndBoardSwitch": 33,
+    "editorLibraries": 21,
+    "builder": 5
+  },
+  "hardwareFlashed": false,
+  "packagedFileAssociationInstalled": false,
+  "originalBlinkInoMatches": true,
+  "marlinOriginalFilesCompared": 2152,
+  "marlinOriginalDifferences": []
+}

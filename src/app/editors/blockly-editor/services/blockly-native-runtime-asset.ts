@@ -1,6 +1,21 @@
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import type { AbsResourceDiagnostic } from '../../../integrations/blockly/abs/abs-diagnostics';
 
+/** Only immutable, verified build bytes are shared. Each execution still gets
+ * a fresh realm. A one-entry cache is bounded and never retains failures or an
+ * in-flight fetch tied to another candidate's cancellation signal. */
+export function createNativeRuntimeAssetLoader() {
+  let cached: { baseURI: string; hash: string; source: string } | undefined;
+  return async (baseURI: string, hash: string, signal: AbortSignal): Promise<string> => {
+    signal.throwIfAborted();
+    if (cached?.baseURI === baseURI && cached.hash === hash) return cached.source;
+    const source = await loadNativeRuntimeAsset(baseURI, hash, signal);
+    signal.throwIfAborted();
+    cached = { baseURI, hash, source };
+    return source;
+  };
+}
+
 /** Loading the host's build artifact is separate from parsing/running a candidate.
  * No fallback, retry, project mutation or third-party library request belongs here. */
 export async function loadNativeRuntimeAsset(baseURI: string, expectedHash: string, signal: AbortSignal): Promise<string> {

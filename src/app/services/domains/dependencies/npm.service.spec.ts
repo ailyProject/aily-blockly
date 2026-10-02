@@ -10,6 +10,8 @@ function attachProjectDependencies(service: any, projectPath = '/tmp/project') {
     getProjectDependencySession: (path = projectPath) => lifecycle.ensure(path),
     assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current),
     runProjectDependencyTask: (current: any, work: () => Promise<any>) => lifecycle.run(current, work),
+    setProjectDependencyResult: (current: any, ready: boolean) => lifecycle.setResult(current, ready),
+    getCoderProjectContext: () => service.prjService,
   };
   return { lifecycle, session };
 }
@@ -29,7 +31,7 @@ describe('NpmService shared dependency operations', () => {
     service.cmdService = { runAsyncChecked: jasmine.createSpy('cmd').and.resolveTo() };
     service.application = { updateNotice: jasmine.createSpy('notice'), startInstall() {}, finishInstall() {} };
     service.translate = { instant: (s: string) => s };
-    service.configService = { withBoardNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
+    service.configService = { isCoderProduct: () => false, withBoardNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
     service.traceToAppLog = () => {};
   });
   afterEach(() => {
@@ -79,11 +81,16 @@ describe('NpmService shared dependency operations', () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     service.isPlatformPackageOnDisk = () => false;
     let failPostinstall!: (error: Error) => void;
-    service.cmdService.runAsyncChecked.and.returnValue(new Promise((_, reject) => { failPostinstall = reject; }));
+    let postinstallStarted!: () => void;
+    const started = new Promise<void>(resolve => { postinstallStarted = resolve; });
+    service.cmdService.runAsyncChecked.and.callFake(() => new Promise((_, reject) => {
+      failPostinstall = reject;
+      postinstallStarted();
+    }));
     const install = service.installBoardDependencies({ boardDependencies: {
       '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
     } }, false, true, session);
-    await Promise.resolve();
+    await started;
     expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
       'npm run postinstall', '/app/node_modules/@aily-project/sdk-first', true, false, session,
     );
@@ -210,7 +217,7 @@ describe('NpmService Coder dependency sources', () => {
     );
     service.isAilyCodeProjectRoot = jasmine.createSpy('isAilyCodeProjectRoot').and.returnValue(coder);
     service.cmdService = { runAsync: jasmine.createSpy('runAsync').and.resolveTo({ code: 0 }) };
-    service.configService = { withProjectNpmRegistry: (command: string) => command };
+    service.configService = { isCoderProduct: () => coder, withProjectNpmRegistry: (command: string) => command };
     service.translate = { instant: (key: string) => key };
     service.application = {
       materializeCoderProjectLibraries: jasmine.createSpy('materializeCoderProjectLibraries').and.resolveTo(),
@@ -269,6 +276,38 @@ describe('NpmService Coder dependency sources', () => {
     expect(service.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
   });
 
+  it('preserves Blockly installation notices at the existing 0 and 100 ms delays', async () => {
+    const service = createService(false);
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
+    (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void, delay: number) => {
+      scheduled.push({ callback, delay }); return 0;
+    });
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    expect(scheduled.map(item => item.delay)).toEqual([0, 100]);
+    scheduled.forEach(item => item.callback());
+    expect(service.application.updateNotice.calls.allArgs().map(([notice]: any[]) => notice.state)).toEqual(['doing', 'done']);
+  });
+
+  it('preserves the delayed Blockly failure notice and its existing retry callback', async () => {
+    const service = createService(false);
+    service.installedOk.and.resolveTo(false);
+    service.cmdService.runAsync.and.resolveTo({ code: 1, stderr: 'install failed' });
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
+    (window.setTimeout as unknown as jasmine.Spy).and.callFake((callback: () => void, delay: number) => {
+      scheduled.push({ callback, delay }); return 0;
+    });
+    const retry = jasmine.createSpy('retry');
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template', { onRetryInstall: retry })).toBeFalse();
+    expect(service.application.updateNotice).not.toHaveBeenCalled();
+    expect(scheduled.map(item => item.delay)).toEqual([0, 1000]);
+    scheduled.forEach(item => item.callback());
+    const notice = service.application.updateNotice.calls.mostRecent().args[0];
+    expect(notice).toEqual(jasmine.objectContaining({ state: 'error', detail: 'install failed', sendToLog: false }));
+    notice.onRetry();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
   it('invalidates delayed notices and retry callbacks when their project is cancelled', async () => {
     const service = createService();
     const { lifecycle, session } = attachProjectDependencies(service);
@@ -291,6 +330,7 @@ describe('NpmService installBoardDeps', () => {
   function createService(boardPlatformDepsReady: boolean, coder = false) {
     const service = Object.create(NpmService.prototype) as any;
     const application = {
+      updateNotice: jasmine.createSpy('notice'),
       currentProcessState: 'IDLE',
       startInstall: jasmine.createSpy('startInstall').and.callFake(() => {
         application.currentProcessState = 'INSTALLING';
@@ -301,17 +341,21 @@ describe('NpmService installBoardDeps', () => {
       })
     };
 
+    service.configService = { isCoderProduct: () => coder };
     service.isInstalling = false;
     service.boardDepsInstallPromise = undefined;
     service.boardDependencyInstallProgress = undefined;
     service.prjService = {
       currentProjectPath: '/tmp/blockly-project',
+      isAilyCodeProject: () => coder,
+      getBoardModule: async () => '@aily-project/board-test',
       getBoardPackageJson: jasmine.createSpy('getBoardPackageJson').and.resolveTo({
         boardDependencies: { '@aily-project/sdk-test': '1.0.0' }
       }),
       getPackageJson: jasmine.createSpy('getPackageJson').and.resolveTo({})
     };
     service.application = application;
+    service.translate = { instant: (key: string) => key };
     service.areBoardPlatformDepsReady = jasmine.createSpy('areBoardPlatformDepsReady').and.resolveTo(boardPlatformDepsReady);
     service.isAilyCodeProjectRoot = jasmine.createSpy('isAilyCodeProjectRoot').and.returnValue(coder);
     service.recordGlobalDependencyUsage = jasmine.createSpy('recordGlobalDependencyUsage').and.resolveTo();
@@ -345,6 +389,7 @@ describe('NpmService installBoardDeps', () => {
       false,
       true,
       service.prjService.getProjectDependencySession(),
+      true,
     );
     expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
     expect(service.isInstalling).toBeFalse();
@@ -367,7 +412,7 @@ describe('NpmService installBoardDeps', () => {
     await service.installBoardDeps();
 
     expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
-      { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(),
+      { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(), true,
     );
     expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
   });

@@ -32,8 +32,19 @@ describe('project load normalization context', () => {
     component.readCurrentBoardTemplateAbi = jasmine.createSpy('template').and.resolveTo(template);
     const result = await component.loadProjectAbiDocument('D:/project', guard);
     expect(result.usedBoardTemplate).toBeTrue();
+    expect(result.diskText).toBe('{"blocks":{"blocks":[]}}');
     expect(component.projectService.ensureProjectDataSchemaForLoad.calls.argsFor(0)[3]).toBe(guard);
     expect(component.projectService.ensureProjectDataSchemaForLoad.calls.argsFor(1)).toEqual(['D:/project', template, undefined, guard]);
+  });
+  it('anchors exact migration publication bytes rather than rereading a possible external edit', async () => {
+    component.projectService.ensureProjectDataSchemaForLoad.and.callFake(async (_path, document, _text, check, published) => {
+      check(); published('{"migrated":true}');
+      component.electronService.readFileAsync.and.resolveTo('{"external":true}');
+      return document;
+    });
+    const result = await component.loadProjectAbiDocument('D:/project', guard);
+    expect(result.diskText).toBe('{"migrated":true}');
+    expect(component.electronService.readFileAsync).toHaveBeenCalledTimes(1);
   });
   it('does not return an old document after normalization completes in a new context', async () => {
     component.projectService.ensureProjectDataSchemaForLoad.and.callFake(async () => { current = false; return {}; });

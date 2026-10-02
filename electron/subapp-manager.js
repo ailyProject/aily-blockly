@@ -2775,11 +2775,12 @@ function createSubappManager(options = {}) {
           }
         }
         releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
-        // A local dev/next selection may have been added while downloading; do not supersede it.
+        // A local dev/next selection may have been added for this app while
+        // downloading; other local apps must not block this install.
         const current = readInstalledState(rootDir, entry);
 
         if (action !== 'uninstall'
-          && (current.development || current.localNext || readDevelopmentIndexCache(rootDir))) {
+          && (current.development || current.localNext)) {
           throw new Error('Local subapps cannot be changed');
         }
         if (action === 'uninstall') {

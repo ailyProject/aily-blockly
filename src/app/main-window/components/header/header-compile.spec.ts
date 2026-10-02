@@ -9,10 +9,13 @@ describe('Header compile readiness', () => {
       currentProjectPath: '/projects/current',
       isProjectOpening: true,
       getProjectMode: jasmine.createSpy('mode').and.returnValue('blockly'),
+      getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
     };
     header.builderService = { build: jasmine.createSpy('build').and.resolveTo({ state: 'done' }) };
     header.translate = { instant: (key: string) => key };
     header.message = { info: jasmine.createSpy('info') };
+    header.connectorState = { running: false };
+    header.configService = { isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(false) };
   });
 
   it('does not dispatch while Blockly is loading and can compile once loading finishes', async () => {
@@ -48,5 +51,40 @@ describe('Header compile readiness', () => {
     await header.process({ action: 'compile', state: 'default' });
     expect(header.builderService.build).toHaveBeenCalledTimes(1);
     expect(header.message.info).not.toHaveBeenCalled();
+  });
+
+  for (const action of ['compile', 'play', 'upload']) {
+    it(`blocks ${action} during dependency installation and after failure`, async () => {
+      header.configService.isCoderProduct.and.returnValue(true);
+      header.projectService.getProjectMode.and.returnValue('coder');
+      const item = { action, state: 'default' };
+      for (const reason of ['installing', 'retry required']) {
+        header.projectService.getProjectDependencyBlockMessage.and.returnValue(reason);
+        await header.process(item);
+        expect(header.message.info).toHaveBeenCalledWith(reason);
+        expect(header.builderService.build).not.toHaveBeenCalled();
+        expect(item.state).toBe('default');
+      }
+    });
+  }
+
+  it('does not apply Coder dependency blocking to Blockly software even when opening a Coder project', async () => {
+    header.projectService.getProjectMode.and.returnValue('coder');
+    header.projectService.getProjectDependencyBlockMessage.and.returnValue('retry required');
+    for (const action of ['compile', 'play', 'upload']) {
+      expect(header.dependencyBlockMessage({ action })).toBeUndefined();
+    }
+    await header.process({ action: 'compile', state: 'default' });
+    expect(header.projectService.getProjectDependencyBlockMessage).not.toHaveBeenCalled();
+    expect(header.builderService.build).toHaveBeenCalledTimes(1);
+    expect(header.message.info).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stop action available during dependency repair', () => {
+    header.configService.isCoderProduct.and.returnValue(true);
+    header.connectorState.running = true;
+    header.projectService.getProjectDependencyBlockMessage.and.returnValue('installing');
+    expect(header.dependencyBlockMessage({ action: 'play', state: 'running' })).toBeUndefined();
+    expect(header.dependencyBlockMessage({ action: 'upload', state: 'running' })).toBeUndefined();
   });
 });

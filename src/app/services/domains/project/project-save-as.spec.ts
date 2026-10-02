@@ -88,6 +88,7 @@ describe('ProjectService save as mode isolation', () => {
       return true;
     });
     service.addRecentlyProject = jasmine.createSpy('recent');
+    service.hasUnsavedChanges = jasmine.createSpy('dirty').and.resolveTo(false);
     flush = spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     configure = spyOn(projectDataRuntime, 'configure');
     getStore = spyOn(projectDataRuntime, 'getStore').and.throwError('Blockly runtime is not configured');
@@ -195,18 +196,18 @@ describe('ProjectService save as mode isolation', () => {
     expect(service.getBlocklyProjectLoadStatus).not.toHaveBeenCalled();
   });
 
-  it('preserves Blockly flush, resource validation, copying and in-place activation', async () => {
+  it('activates a Blockly copy through normal loading instead of rebinding only the resource store', async () => {
     files.set(`${source}/package.json`, '{"name":"source"}');
     files.set(`${source}/project.abi`, '{"blocks":{}}');
     const validate = jasmine.createSpy('validate').and.resolveTo({ valid: true });
     getStore.and.returnValue({ collectReferences: () => [], validateReferences: validate } as any);
     await service.saveAs('/blockly-copy');
-    expect(service.save).toHaveBeenCalledOnceWith(source);
+    expect(service.save).toHaveBeenCalledOnceWith(source, 15_000);
     expect(flush).toHaveBeenCalledTimes(1);
     expect(validate).toHaveBeenCalledTimes(1);
-    expect(configure).toHaveBeenCalledOnceWith('/blockly-copy');
+    expect(configure).not.toHaveBeenCalled();
     expect(files.get('/blockly-copy/project.abi')).toBe('{"blocks":{}}');
-    expect(service.projectOpen).not.toHaveBeenCalled();
+    expect(service.projectOpen).toHaveBeenCalledOnceWith('/blockly-copy');
     expect(service.currentProjectPath).toBe('/blockly-copy');
   });
 
@@ -220,6 +221,49 @@ describe('ProjectService save as mode isolation', () => {
     await expectAsync(service.saveAs(target)).toBeRejectedWithError(/missing resource/);
     expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
     expect(service.currentProjectPath).toBe(source);
+  });
+
+  it('keeps a complete Blockly copy and the original context if activation is refused', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
+    service.projectOpen.and.resolveTo(false);
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/项目已另存至/);
+    expect(files.get(`${target}/project.abi`)).toBe('{}');
+    expect(service.currentProjectPath).toBe(source); expect(configure).not.toHaveBeenCalled();
+    expect(fsp.rm).not.toHaveBeenCalledWith(target, jasmine.anything());
+  });
+
+  it('does not merge a Blockly copy into a concurrently created directory', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => {
+      directories.add(target); files.set(`${target}/keep`, 'external'); return { valid: true };
+    } } as any);
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError('EEXIST');
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled(); expect(fsp.rm).not.toHaveBeenCalled();
+    expect(files.get(`${target}/keep`)).toBe('external');
+  });
+
+  it('cleans up only the reserved incomplete Blockly copy on publication failure', async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
+    fs.writeFileSync.and.throwError('disk full');
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError('disk full');
+    expect(fsp.rm).toHaveBeenCalledOnceWith(target, { recursive: true, force: true });
+    expect(files.get(`${source}/project.abi`)).toBe('{}'); expect(service.projectOpen).not.toHaveBeenCalled();
+  });
+
+  for (const change of ['workspace', 'disk', 'failed-check']) it(`retains the original and completed copy after a late ${change} change`, async () => {
+    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
+    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
+    service.hasUnsavedChanges.and.callFake(async () => {
+      if (change === 'failed-check') throw new Error('comparison unavailable');
+      if (change === 'disk') files.set(`${source}/project.abi`, '{"external":true}');
+      return change === 'workspace';
+    });
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(change === 'failed-check' ? /comparison unavailable/ : /复制期间有新修改/);
+    expect(service.projectOpen).not.toHaveBeenCalled(); expect(service.currentProjectPath).toBe(source);
+    expect(files.get(`${target}/project.abi`)).toBe('{}');
+    expect(fsp.rm).not.toHaveBeenCalledWith(target, jasmine.anything());
   });
 
   it('preserves spaces for Blockly destinations and uses the filtered project copy bridge', async () => {

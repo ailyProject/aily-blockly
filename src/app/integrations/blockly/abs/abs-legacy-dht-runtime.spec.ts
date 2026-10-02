@@ -1,4 +1,5 @@
 import { adaptLegacyDhtRuntimeState } from '../../../editors/blockly-editor/services/blockly-legacy-dht-runtime';
+import { assertProjectLoadPreserved } from '../../../editors/blockly-editor/services/blockly-project-clean-state';
 
 describe('saved DHT variable graph against the installed library shape', () => {
   const types = ['dht_init', 'dht_read_temperature', 'dht_read_humidity', 'dht_read_success'];
@@ -25,6 +26,20 @@ describe('saved DHT variable graph against the installed library shape', () => {
   it('retains the variable graph when the installed library supports it', () => {
     const input = source();
     expect(adaptLegacyDhtRuntimeState(input, definitions(['VAR', 'TYPE', 'PIN']))).toBe(input);
+  });
+
+  it('admits the existing load adapter without suppressing actual field loss or adapting inactive pages', () => {
+    const workspace = source();
+    const before: any = { schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'],
+      pages: ['main', 'other'].map(id => ({ id, title: id, content: { blocks: structuredClone(workspace.blocks) } })),
+      sharedModel: { procedureBlocks: [], variables: workspace.variables } };
+    const after = structuredClone(before);
+    const view = value => adaptLegacyDhtRuntimeState(value, definitions(['TYPE', 'PIN']));
+    after.pages[0].content.blocks = view(workspace).blocks;
+    expect(() => assertProjectLoadPreserved(before, after)).toThrow();
+    expect(() => assertProjectLoadPreserved(before, after, view)).not.toThrow();
+    after.pages[0].content.blocks.blocks[1].fields.PIN = '3';
+    expect(() => assertProjectLoadPreserved(before, after, view)).toThrow();
   });
 
   it('leaves ambiguous or unresolved sensors untouched', () => {

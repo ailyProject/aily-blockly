@@ -438,6 +438,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
+      diskText,
     } = await this.loadProjectAbiDocument(projectPath, assertCurrent, session.signal);
     assertCurrent();
 
@@ -465,6 +466,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       );
     }
     this.blocklyService.loadProjectDocument(projectDocument, false);
+    this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument);
     if (!usedBoardTemplateAbi) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
@@ -550,6 +552,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
+    diskText: string;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
@@ -557,13 +560,16 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
+    let diskText = abiContent;
     projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
       abiContent,
       assertCurrent,
+      text => { diskText = text; },
     );
     assertCurrent();
+    // Anchor the exact acknowledged publication, not a later external writer.
     abiContent = '';
 
     let usedBoardTemplate = false;
@@ -586,6 +592,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     return {
       document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
       usedBoardTemplate,
+      diskText,
     };
   }
 

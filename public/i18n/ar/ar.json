@@ -7,6 +7,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "قم ببناء المشروع ومزامنته أولاً"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "إظهار الشريط الجانبي للمحرر",
+        "HIDE_CODER_SIDEBAR": "إخفاء الشريط الجانبي للمحرر",
         "MENU": "قائمة الطعام",
         "PROJECT_NEW": "مشروع جديد",
         "PROJECT_OPEN": "فتح مشروع",
@@ -887,6 +889,9 @@
         "REINSTALL_CONFIRM": "إعادة التثبيت"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "التبعيات غير جاهزة. انقر على إعادة المحاولة في إشعار فشل التثبيت.",
+        "PREPARING_LIBRARY_SOURCES": "جارٍ إعداد مصادر المكتبات المطلوبة…",
+        "DEPENDENCY_INCOMPLETE": "لا تزال ملفات مطلوبة مفقودة بعد تثبيت {{name}}. يرجى إعادة المحاولة.",
         "INSTALLING": "جاري تثبيت {{name}}...",
         "INSTALLING_DEPENDENCY": "جاري تثبيت التبعية {{name}}...",
         "INSTALL_COMPLETE": "تم تثبيت {{name}} بنجاح",

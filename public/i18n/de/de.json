@@ -7,6 +7,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "Erstellen und synchronisieren Sie zuerst das Projekt"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "Editor-Seitenleiste anzeigen",
+        "HIDE_CODER_SIDEBAR": "Editor-Seitenleiste ausblenden",
         "MENU": "Menü",
         "PROJECT_NEW": "Neues Projekt",
         "PROJECT_OPEN": "Projekt öffnen",
@@ -887,6 +889,9 @@
         "REINSTALL_CONFIRM": "Neu installieren"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "Abhängigkeiten sind noch nicht bereit. Klicken Sie in der Fehlermeldung auf Erneut versuchen.",
+        "PREPARING_LIBRARY_SOURCES": "Bibliotheksquellen werden vorbereitet…",
+        "DEPENDENCY_INCOMPLETE": "Nach der Installation von {{name}} fehlen noch erforderliche Dateien. Bitte erneut versuchen.",
         "INSTALLING": "{{name}} wird installiert...",
         "INSTALLING_DEPENDENCY": "{{name}}-Abhängigkeit wird installiert...",
         "INSTALL_COMPLETE": "{{name}} erfolgreich installiert",

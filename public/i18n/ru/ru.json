@@ -7,6 +7,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "Сначала соберите и синхронизируйте проект"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "Показать боковую панель редактора",
+        "HIDE_CODER_SIDEBAR": "Скрыть боковую панель редактора",
         "MENU": "Меню",
         "PROJECT_NEW": "Новый проект",
         "PROJECT_OPEN": "Открыть проект",
@@ -887,6 +889,9 @@
         "REINSTALL_CONFIRM": "Переустановить"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "Зависимости ещё не готовы. Нажмите «Повторить» в уведомлении об ошибке установки.",
+        "PREPARING_LIBRARY_SOURCES": "Подготовка исходного кода библиотек…",
+        "DEPENDENCY_INCOMPLETE": "После установки {{name}} всё ещё отсутствуют необходимые файлы. Повторите попытку.",
         "INSTALLING": "Установка {{name}}...",
         "INSTALLING_DEPENDENCY": "Установка зависимости {{name}}...",
         "INSTALL_COMPLETE": "{{name}} успешно установлен",

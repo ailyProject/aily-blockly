@@ -14,8 +14,56 @@ describe('declaration-backed prepared ABS shapes', () => {
     { type: 'input_value', name: 'VALUE' },
   ], output: 'String' });
   const empty = { blocks: { blocks: [] } };
+  for (const change of ['init', 'source', 'prototype', 'reset'])
+  it(`rejects ${change} changes before a batched synchronous read can escape`, () => {
+    const catalog = new BlocklyDeclarativeBlockCatalog(), source = definition();
+    const entry = { init() {} }, registry = { abs_decl: entry };
+    catalog.record(source, entry); const snapshot = catalog.capture(registry);
+    expect(() => snapshot.withSynchronousRead!(() => {
+      snapshot.get('abs_decl');
+      if (change === 'init') entry.init = () => {};
+      if (change === 'source') source.message0 = 'changed';
+      if (change === 'prototype') Object.setPrototypeOf(entry, {});
+      if (change === 'reset') catalog.clear();
+      return 'must not escape';
+    })).toThrowError(/definitions changed/);
+  });
+  it('does not extend a synchronous declaration read over an async boundary', () => {
+    const snapshot = new BlocklyDeclarativeBlockCatalog().capture({});
+    expect(() => snapshot.withSynchronousRead!(() => Promise.resolve())).toThrowError(/must be synchronous/);
+    expect(() => snapshot.assertCurrent()).not.toThrow();
+  });
   const baseline = () => createAbsProjection(empty, { document: empty, generation: 'base', baselineRef: 'baselines/base.json',
     savedAbiHash: null, scope: { projectKey: 'p', pageId: 'main' } });
+
+  it('checks declaration integrity at traversal boundaries instead of rescanning every used type for every block', async () => {
+    const catalog = new BlocklyDeclarativeBlockCatalog(), registry = {}, sources = new Set<object>();
+    for (let i = 0; i < 40; i++) {
+      const source = { type: `perf_${i}`, message0: '%1', args0: [{ type: 'field_number', name: 'NUM', value: 0 }] };
+      sources.add(source); registry[source.type] = { init() {} }; catalog.record(source, registry[source.type]);
+    }
+    const snapshot = catalog.capture(registry), shapes = captureAbsDeclarativeContracts(snapshot);
+    const projection = await baseline();
+    const stringify = spyOn(JSON, 'stringify').and.callThrough();
+    const result = await reconcileAbsDraft(projection,
+      '# ABS Schema: 2\n' + Array.from({ length: 400 }, (_, i) => `perf_${i % 40}(NUM=${i})`).join('\n'),
+      { blockContract: shapes.get, withSynchronousRead: snapshot.withSynchronousRead });
+    expect(result.added.length).toBe(400);
+    expect(result.workspace.blocks.blocks[399].fields!['NUM']).toBe(399);
+    // Count actual source serialization, not elapsed time or copied guard logic.
+    expect(stringify.calls.allArgs().filter(args => sources.has(args[0])).length).toBeLessThan(2400);
+  });
+
+  it('rejects declarations changed by a preparation callback before the reconciled tree escapes', async () => {
+    const catalog = new BlocklyDeclarativeBlockCatalog(), source = definition();
+    const entry = { init() {} }, registry = { abs_decl: entry };
+    catalog.record(source, entry);
+    const snapshot = catalog.capture(registry), shapes = captureAbsDeclarativeContracts(snapshot);
+    await expectAsync(reconcileAbsDraft(await baseline(), '# ABS Schema: 2\nabs_decl(NUM=3)', {
+      blockContract: shapes.get, withSynchronousRead: snapshot.withSynchronousRead,
+      prepareBlock: () => { source.message0 = 'changed during traversal'; },
+    })).toBeRejectedWithError(/definitions changed/);
+  });
 
   it('compiles fields, exact serialized defaults and connection kinds without constructing blocks', () => {
     const probe = spyOn(Blockly.Workspace.prototype, 'newBlock').and.callThrough();

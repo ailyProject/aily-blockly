@@ -64,7 +64,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       this.logs.setDisplaySource(session.log);
       this.notices.clear();
       const notice = session.state.notice;
-      if (notice && (notice.state === 'doing' || !session.noticePresented)) {
+      if (notice && (notice.state === 'doing' || (notice.state === 'error' && notice.onRetry && this.projects.getProjectDependencyBlockMessage(path)) || !session.noticePresented)) {
         this.notices.update({ ...notice, sendToLog: false });
         session.noticePresented = true;
       }
@@ -137,6 +137,8 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
   }
 
   private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>): Promise<any> {
+    const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
+    if (dependencyBlock) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
     const session = this.getSession(path);
     if (session.busy) throw new Error(`工程正在${session.busy === 'build' ? '编译' : '上传'}: ${path}`);
     session.busy = kind;

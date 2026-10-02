@@ -30,6 +30,79 @@ test('child tool startup is single-flight for concurrent acquire calls', async (
   }
 });
 
+test('a running shared Runtime keeps its pinned package after an update activates', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  const oldConfig = { ...fixtureConfig(200), version: '1.0.0', packagePath: '/subapps/v1' };
+  const newConfig = { ...fixtureConfig(200), version: '2.0.0', packagePath: '/subapps/v2' };
+  processModule.replaceChildToolConfigs([newConfig]);
+  harness.share('pinned-v1', { packagePath: oldConfig.packagePath, runtimeConfig: oldConfig });
+  const service = createService(processModule);
+  try {
+    const host = await service.acquire('fixture');
+    assert.equal(host.runtimeConfig.version, '1.0.0');
+    assert.equal(harness.runCalls.length, 0);
+    assert.equal(harness.restartCalls.length, 0);
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
+test('stopping a window with no lease does not stop another window Runtime', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  harness.share('other-window-stream');
+  const service = createService(processModule);
+  try {
+    await service.stop('fixture');
+    assert.equal(harness.stopCalls, 0);
+    assert.equal(harness.runCalls.length, 0);
+  } finally { global.window = originalWindow; }
+});
+
+test('a second owner prevents a stale shared Runtime from being restarted', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([{ ...fixtureConfig(200), packagePath: '/subapps/new-entry' }]);
+  harness.share('old-entry', { packagePath: '/subapps/old-entry' }, 2);
+  const service = createService(processModule);
+  try {
+    await assert.rejects(service.acquire('fixture'), /in use by another window/);
+    assert.equal(harness.restartCalls.length, 0);
+    assert.equal(harness.runCalls.length, 0);
+    assert.equal(harness.releaseCalls, 1);
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
+test('launch lock acquisition rechecks a Runtime registered by another renderer', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  const config = { ...fixtureConfig(200), catalogId: 'fixture' };
+  let finished = false;
+  harness.window.electronAPI = { subapps: {
+    async prepareLaunch() {
+      harness.share('registered-during-prepare');
+      return { config, token: 'launch-token' };
+    },
+    async finishLaunch(token) { assert.equal(token, 'launch-token'); finished = true; },
+  } };
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([config]);
+  const service = createService(processModule);
+  try {
+    const host = await service.acquire('fixture');
+    assert.equal(host.port, 4200);
+    assert.equal(harness.runCalls.length, 0);
+    assert.equal(finished, true);
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
 test('UI acquisition rejects headless packages before borrowing or spawning a runtime', async () => {
   const processModule = await processModulePromise, originalWindow = global.window;
   const harness = createHarness({ ready: true }); global.window = harness.window;
@@ -420,10 +493,12 @@ function createHarness(options) {
     releaseCalls: 0,
     sendMessageCalls: [],
     stateSubscriptions: 0,
-    share(streamId) {
+    restartCalls: [],
+    stopCalls: 0,
+    share(streamId, hostOverrides = {}, refCount = 1) {
       registered.set('fixture', {
-        toolId: 'fixture', streamId, running: true,
-        hostInfo: { ...JSON.parse(readyOutput(4200).data).data, entry: 'index.js', packagePath: '/subapps/fixture' },
+        toolId: 'fixture', streamId, running: true, refCount,
+        hostInfo: { ...JSON.parse(readyOutput(4200).data).data, entry: 'index.js', packagePath: '/subapps/fixture', ...hostOverrides },
       });
     },
     publishState(rows = [...registered.values()]) { stateListener?.(rows); },
@@ -478,10 +553,12 @@ function createHarness(options) {
         }
         return { success: false, reason: 'not-found' };
       },
-      async restart() {
+      async restart(payload) {
+        harness.restartCalls.push(payload);
         return { success: true };
       },
       async stop() {
+        harness.stopCalls += 1;
         return { success: true };
       },
       async sendMessage(payload) {

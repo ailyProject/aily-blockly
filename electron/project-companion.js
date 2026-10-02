@@ -24,6 +24,12 @@ function readProjectMode(projectPath) {
   if (manifest?.type === 'coder') return 'coder';
   if (fs.existsSync(path.join(projectPath, 'project.abi'))) return 'blockly';
   if (fs.existsSync(path.join(projectPath, 'project.aci'))) return 'coder';
+  if (!manifest) {
+    const sketches = fs.readdirSync(projectPath, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /\.ino$/i.test(entry.name));
+    if (sketches.length === 1 || sketches.some(entry =>
+      entry.name.toLowerCase() === `${path.basename(projectPath)}.ino`.toLowerCase())) return 'coder';
+  }
   throw new Error('Unknown project type');
 }
 

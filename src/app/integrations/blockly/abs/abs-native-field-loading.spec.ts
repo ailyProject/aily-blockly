@@ -2,7 +2,8 @@ import * as Blockly from 'blockly';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { observeNativeBlockDefinition } from '../../../editors/blockly-editor/services/blockly-native-structure';
-import { restoreNativeFields, withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
+import { nativeLoadedStateView, restoreNativeFields, withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
+import { assertAbsReadback } from './abs-readback';
 import { absJson } from './abs-json';
 
 describe('native dynamic field loading without declaration JSON', () => {
@@ -11,6 +12,7 @@ describe('native dynamic field loading without declaration JSON', () => {
   const blockState = (id = 'kept') => ({ type, id, fields: { A_TEXT: 'saved text', M_CHOICE: 'C', Z_MODE: 'B' }, deletable: false });
   const state = () => ({ blocks: { blocks: [blockState()] } });
   const load = (value: any) => BlocklyService.prototype.loadWorkspaceJson.call({
+    adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
     workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value), assertWorkspaceEditAvailable() {},
     captureDeclarativeBlockDefinitions: () => catalog.capture(Blockly.Blocks), scheduleWorkspaceRenderAfterLoad() {},
   } as any, value);
@@ -36,6 +38,28 @@ describe('native dynamic field loading without declaration JSON', () => {
     Blockly.Blocks[parentType] = { init() { this.appendValueInput('VALUE'); } };
   });
   afterEach(() => { workspace.dispose(); delete Blockly.Blocks[type]; delete Blockly.Blocks[parentType]; });
+
+  it('preserves malformed legacy JSON mutation input on failure and can reopen valid XML state afterwards', () => {
+    Blockly.Blocks[type] = {
+      init() { this.appendDummyInput().appendField(new Blockly.FieldTextInput(''), 'TEXT'); },
+      domToMutation(xml) { this.setFieldValue(xml.getAttribute('text') || '', 'TEXT'); },
+      mutationToDom() {
+        const xml = Blockly.utils.xml.createElement('mutation');
+        xml.setAttribute('text', this.getFieldValue('TEXT')); return xml;
+      },
+    };
+    const broken = { blocks: { blocks: [{ type, id: 'legacy', extraState: { text: 'saved' } }] } };
+    const before = absJson(broken);
+    expect(() => load(broken)).toThrowError(/DOMParser was unable to parse/);
+    expect(absJson(broken)).toBe(before);
+    // There is no generic, lossless JSON-to-XML conversion. Only a known valid
+    // archive supplied by the caller can replace this malformed legacy state.
+    const valid = { blocks: { blocks: [{ type, id: 'legacy', extraState: '<mutation text="saved"></mutation>' }] } };
+    load(valid);
+    expect(workspace.getBlockById('legacy')!.getFieldValue('TEXT')).toBe('saved');
+    load(Blockly.serialization.workspaces.save(workspace));
+    expect(workspace.getBlockById('legacy')!.getFieldValue('TEXT')).toBe('saved');
+  });
 
   it('restores multiple selector levels in the ordinary load entry, then saves and reopens', () => {
     const input = state(), before = absJson(input);
@@ -231,6 +255,7 @@ describe('native dynamic field loading without declaration JSON', () => {
   });
 
   it('loads both published TFT setup shapes against the installed definition', () => {
+    const previous = { tftespi_setup: Blockly.Blocks['tftespi_setup'], math_number: Blockly.Blocks['math_number'] };
     const names = ['WIDTH', 'HEIGHT', 'MISO', 'MOSI', 'SCLK', 'CS', 'DC', 'RST', 'BL'];
     const values = [240, 240, 0, 10, 12, 13, 14, 11, 16];
     const base = { VAR: 'tft', MODEL: 'GC9A01_DRIVER' };
@@ -256,6 +281,10 @@ describe('native dynamic field loading without declaration JSON', () => {
       const before = absJson(old);
       withNativeStateLoading(Blockly, workspace, old, () => Blockly.serialization.workspaces.load(old, workspace));
       expect(workspace.getBlockById('tft')!.getInputTargetBlock('WIDTH')!.getFieldValue('NUM')).toBe(240);
+      const runtimeView = nativeLoadedStateView(old, workspace);
+      expect(() => assertAbsReadback(runtimeView as any, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).not.toThrow();
+      workspace.getBlockById('tft')!.getInputTargetBlock('WIDTH')!.setFieldValue(999, 'NUM');
+      expect(() => assertAbsReadback(runtimeView as any, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).toThrow();
       expect(absJson(old)).toBe(before);
       workspace.clear();
 
@@ -269,8 +298,15 @@ describe('native dynamic field loading without declaration JSON', () => {
       withNativeStateLoading(Blockly, workspace, newer, () => Blockly.serialization.workspaces.load(newer, workspace));
       expect(workspace.getBlockById('tft')!.getFieldValue('WIDTH')).toBe('240');
       expect(workspace.getAllBlocks(false).length).toBe(1);
+      expect(() => assertAbsReadback(nativeLoadedStateView(newer, workspace) as any,
+        Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).not.toThrow();
       expect(absJson(newer)).toBe(newerBefore);
-    } finally { delete Blockly.Blocks['tftespi_setup']; delete Blockly.Blocks['math_number']; }
+    } finally {
+      for (const type of ['tftespi_setup', 'math_number']) {
+        if (previous[type]) Blockly.Blocks[type] = previous[type];
+        else delete Blockly.Blocks[type];
+      }
+    }
   });
 
   it('bounds callbacks that continually replace one another', () => {

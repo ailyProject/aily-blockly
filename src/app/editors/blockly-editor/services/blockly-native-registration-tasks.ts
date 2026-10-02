@@ -1,7 +1,15 @@
 /** Own only finite, one-shot registration timers. Configuration and generation
  * stay synchronous; this is not a general library async scheduler. */
+export interface NativeRegistrationTaskEvent {
+  event: 'timer-scheduled' | 'timer-start' | 'timer-end' | 'timer-cancel';
+  id: number;
+  delayMs: number;
+  elapsedMs: number;
+  pending: number;
+}
+
 export class NativeRegistrationTasks {
-  private readonly pending = new Set<number>();
+  private readonly pending = new Map<number, () => void>();
   private count = 0;
   private delayBudget = 0;
   private running = false;
@@ -12,22 +20,29 @@ export class NativeRegistrationTasks {
   private wake?: () => void;
 
   constructor(private readonly schedule: (callback: () => void, delay: number) => number,
-    private readonly cancel: (id: number) => void) {}
+    private readonly cancel: (id: number) => void,
+    private readonly now: () => number = () => performance.now()) {}
 
   assertClean(): void {
     if (this.failed) throw this.failure;
     if (this.disposed) throw new Error('Native registration tasks are disposed.');
   }
 
-  set(callback: () => unknown, delay = 0): number {
+  set(callback: () => unknown, delay = 0, observe?: (event: NativeRegistrationTaskEvent) => void): number {
     this.assertClean();
     if (this.closed || typeof callback !== 'function' || typeof delay !== 'number' || !Number.isFinite(delay)
       || delay < 0 || delay > 2000 || ++this.count > 128 || (this.delayBudget += delay) > 5000) {
       const error = new Error('Native candidate does not support registration tasks outside the finite callback/delay budget or after registration.');
       this.fail(error); throw error;
     }
+    const scheduledAt = observe ? this.now() : 0;
+    const emit = (event: NativeRegistrationTaskEvent['event']) => {
+      // Diagnostics cannot turn a valid registration into a failure.
+      try { observe?.({ event, id, delayMs: delay, elapsedMs: this.now() - scheduledAt, pending: this.pending.size }); } catch {}
+    };
     const id = this.schedule(() => {
       this.pending.delete(id); this.running = true;
+      emit('timer-start');
       try {
         this.assertClean();
         const result = callback();
@@ -35,14 +50,16 @@ export class NativeRegistrationTasks {
           throw new Error('Native candidate does not support asynchronous registration callbacks.');
         }
       } catch (error) { this.fail(error); }
-      finally { this.running = false; this.wake?.(); }
+      finally { this.running = false; emit('timer-end'); this.wake?.(); }
     }, delay);
-    this.pending.add(id);
+    this.pending.set(id, () => emit('timer-cancel'));
+    emit('timer-scheduled');
     return id;
   }
 
   clear(id: number): void {
-    if (this.pending.delete(id)) { this.cancel(id); this.wake?.(); }
+    const onCancel = this.pending.get(id);
+    if (this.pending.delete(id)) { this.cancel(id); onCancel?.(); this.wake?.(); }
   }
 
   async drain(): Promise<void> {
@@ -62,7 +79,7 @@ export class NativeRegistrationTasks {
 
   dispose(): void {
     this.disposed = this.closed = true;
-    for (const id of [...this.pending]) this.clear(id);
+    for (const id of [...this.pending.keys()]) this.clear(id);
     this.wake?.();
   }
 }

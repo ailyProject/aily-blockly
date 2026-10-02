@@ -1,7 +1,7 @@
 import { assertNoOversizedInlineValues, collectProjectDataPayloads } from '@domain/project/public-api';
 import { AbsFieldDefinition, normalizeAbsSerializedField, resolveAbsFieldValue } from './abs-field-values';
 import { serializeAbsFailure } from './abs-diagnostics';
-import { absJson, indexAbsAbi, indexAbsSyntax, validateAbsProjection } from './abs-identity-map';
+import { absJson, indexAbsAbi, indexAbsSyntax } from './abs-identity-map';
 import { assertAbsProtectedBlocks } from './abs-import-policy';
 import { AbsSyntaxOptions, parseAbsSyntax } from './abs-syntax';
 import { AbsAbiBlock, AbsAbiWorkspace, AbsProjection, AbsProjectionContracts, AbsSourceRange, AbsSyntaxNode, AbsSyncError, getAbsFieldDefinition } from './abs-state';
@@ -17,11 +17,13 @@ import type { AbsNativeBinding } from './abs-native-binding';
 import { adoptAbsNativeDefaults } from './abs-native-defaults';
 import { adoptAbsNativeModels } from './abs-native-model-declarations';
 import type { AbsSourceEdits } from './abs-edit-provenance';
-import { matchAbsIdentities } from './abs-identity-matcher';
-import { absIdentityPolicy } from './abs-identity-policy';
+import { createAbsReconcileAnalysis, createAbsReconcileAnalysisFactory } from './abs-reconcile-analysis';
 import { retireEmptyProjectModels } from './abs-empty-project-models';
+import { copyAbsBlockForRebuild } from './abs-reconciled-block';
 
 export interface AbsReconcileOptions extends AbsSyntaxOptions {
+  /** Share declaration integrity checks only inside a pure synchronous traversal. */
+  withSynchronousRead?: <T>(read: () => T) => T;
   /** Exact text-edit provenance, replayed against the immutable generation. */
   sourceEdits?: AbsSourceEdits;
   /** Pure definitions captured for this runtime session, never a global Blockly lookup. */
@@ -35,7 +37,8 @@ export interface AbsReconcileOptions extends AbsSyntaxOptions {
   blockContract?: (type: string, extraState?: unknown, fields?: Readonly<Record<string, unknown>>) => AbsBlockShapeContract | undefined;
   /** Pure host adapter; may prepare only this detached block, never live state. */
   prepareBlock?: (block: AbsAbiBlock, previous: AbsAbiBlock | undefined, workspace: AbsAbiWorkspace, contracts: AbsProjectionContracts) => void;
-  /** Captured pure adapter coverage, not permission to omit final native ABI verification. */
+  /** Exact captured adapter coverage. Absent means unknown; false skips only the
+   * host adapter, never native execution or final ABI verification. */
   hostPrepared?: (type: string) => boolean;
 }
 export interface AbsReconcileResult {
@@ -76,13 +79,39 @@ export async function reconcileAbsDraft(
   editedAbs: string,
   options: AbsReconcileOptions = {},
 ): Promise<AbsReconcileDraft> {
+  return createAbsReconciler(baseline, editedAbs).draft(options);
+}
+
+/** Fixed baseline/source, no trust flag or external cache. Native identity replay
+ * may reuse only pure analysis; every pass rebuilds its own draft and contracts. */
+export function createAbsReconciler(baseline: AbsProjection, source: string) {
+  return reconciler(createAbsReconcileAnalysis(baseline, source), source);
+}
+
+/** Service-owned, pure cross-candidate reuse. Runtime callbacks and all mutable
+ * drafts remain transaction-owned, regardless of a baseline-analysis cache hit. */
+export function createAbsReconcilerFactory() {
+  const analyze = createAbsReconcileAnalysisFactory();
+  return (baseline: AbsProjection, source: string, scope: string) => reconciler(analyze(baseline, source, scope), source);
+}
+
+function reconciler(analysis: ReturnType<typeof createAbsReconcileAnalysis>, source: string) {
+  return Object.freeze({ source, snapshot: analysis.snapshot,
+    draft: (options: AbsReconcileOptions = {}) => reconcileDraft(analysis, source, options) });
+}
+
+async function reconcileDraft(
+  analysis: ReturnType<typeof createAbsReconcileAnalysis>, editedAbs: string, options: AbsReconcileOptions,
+): Promise<AbsReconcileDraft> {
   // Detach before awaiting; mutable caller state cannot race baseline validation.
-  baseline = JSON.parse(absJson(baseline));
+  const baseline = analysis.snapshot();
+  options = { ...options };
   const variableCreation = options.variableCreation ? JSON.parse(absJson(options.variableCreation)) : undefined;
   const nativeBinding = options.nativeBinding ? structuredClone(options.nativeBinding) : undefined;
   const sourceEdits = options.sourceEdits ? structuredClone(options.sourceEdits) : undefined;
   if (nativeBinding && nativeBinding.source !== editedAbs) throw new AbsSyncError('ABS_NATIVE_BINDING_STALE', 'Native binding belongs to different ABS bytes.');
-  await validateAbsProjection(baseline);
+  await analysis.validate();
+  const readDefinitions = options.withSynchronousRead ?? (<T>(read: () => T) => read());
   const candidate: AbsAbiWorkspace = JSON.parse(absJson(baseline.workspace));
   const retiredModels = editedAbs !== baseline.abs ? retireEmptyProjectModels(baseline, candidate, editedAbs) : [];
   prepareAbsVariableCreations(candidate, variableCreation);
@@ -99,34 +128,32 @@ export async function reconcileAbsDraft(
       return prepareAbsStructuralSyntax(node, shape?.mutation, shape?.argumentOrder);
     },
   });
-  const original = parseAbsSyntax(baseline.abs, absSyntaxOptions(baseline.workspace, baseline.contracts));
-  const edited = nativeBinding?.syntax ?? parseAbsSyntax(editedAbs, syntax);
+  // Pure syntax adapters may return object-valued state. Own it before the
+  // asynchronous matcher so callbacks cannot mutate cached evidence in flight.
+  const edited = readDefinitions(() => nativeBinding?.syntax ?? structuredClone(parseAbsSyntax(editedAbs, syntax)));
+  const newEntries = indexAbsSyntax(edited);
   const nativeInstances = new Map(nativeBinding?.instances.map(instance => [instance.start, instance]));
   const hostCalls = new Map(nativeBinding?.hostCalls?.map(call => [call.start, call]));
   if (nativeBinding && (nativeInstances.size !== nativeBinding.instances.length
     || hostCalls.size !== (nativeBinding.hostCalls?.length ?? 0)
-    || nativeInstances.size + hostCalls.size !== indexAbsSyntax(edited).length
-    || indexAbsSyntax(edited).some(({ node }) => {
+    || nativeInstances.size + hostCalls.size !== newEntries.length
+    || newEntries.some(({ node }) => {
       const hosted = hostCalls.get(node.start), native = nativeInstances.get(node.start);
       return hosted ? !!native || hosted.type !== node.type || !options.prepareBlock || !options.hostPrepared?.(node.type)
         : !native || native.type !== node.type;
     }))) throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Each call requires native evidence or a captured host preparation adapter.');
-  const bindings = new Map(baseline.map.nodes.map(binding => [binding.astPath, binding.blockId]));
-  const originalIds = new Map(indexAbsSyntax(original).map(entry => [entry.node, bindings.get(entry.path)!]));
   const abiBlocks = indexAbsAbi(baseline.workspace);
-  const identity = absIdentityPolicy(baseline, originalIds, abiBlocks);
-  const matches = await matchAbsIdentities(baseline.abs, editedAbs, original, edited, sourceEdits, identity.requiresIdentity);
-  const newEntries = indexAbsSyntax(edited);
+  const { matches, originalIds, identity } = await analysis.match(edited, sourceEdits);
 
   const contracts = baseline.contracts;
   if (options.declaration) {
     const requestId = await absDeclarationRequestId(baseline.map.generation, editedAbs);
-    prepareAbsDeclarationIntents(edited, candidate, node => {
+    readDefinitions(() => prepareAbsDeclarationIntents(edited, candidate, node => {
       const old = matches.get(node);
       return old ? abiBlocks.get(originalIds.get(old)!) : undefined;
-    }, options.declaration, requestId);
+    }, options.declaration!, requestId));
   }
-  for (const effect of options.nativeBinding?.modelDeclarations ?? []) {
+  for (const effect of nativeBinding?.modelDeclarations ?? []) {
     const owner = newEntries.find(({ node }) => node.start === effect.start && node.type === effect.blockType && !node.disabled)?.node;
     if (!owner) {
       throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', 'A model declaration has no matching active ABS producer.');
@@ -135,7 +162,7 @@ export async function reconcileAbsDraft(
       throw new AbsSyncError('ABS_MODEL_DECLARATION_RENAME_UNSUPPORTED', 'A retained initializer cannot implicitly introduce a replacement model. Preserve its name/type or use an explicit model operation.', owner);
     }
   }
-  adoptAbsNativeModels(candidate, options.nativeBinding?.modelDeclarations);
+  adoptAbsNativeModels(candidate, nativeBinding?.modelDeclarations);
   const symbols = new AbsSymbols(candidate, baseline.document, baseline.contracts);
   const ids = new Set(abiBlocks.keys());
   const added: string[] = [];
@@ -152,7 +179,10 @@ export async function reconcileAbsDraft(
     (previous ? retained : added).push(id);
     const nativeInstance = nativeInstances.get(node.start);
     if (nativeBinding && !nativeInstance && !hostCalls.has(node.start)) throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Native instance does not match this call.', node);
-    const block: AbsAbiBlock = previous ? JSON.parse(absJson(previous)) : { ...structuredClone(nativeInstance?.seed), type: node.type, id };
+    const prepareBlock = options.prepareBlock && options.hostPrepared?.(node.type) !== false ? options.prepareBlock : undefined;
+    const block: AbsAbiBlock = previous
+      ? prepareBlock ? JSON.parse(absJson(previous)) : copyAbsBlockForRebuild(previous)
+      : { ...structuredClone(nativeInstance?.seed), type: node.type, id };
     if (node.disabled !== (matched?.disabled ?? false)) {
       throw new AbsSyncError('ABS_STATE_EDIT_REQUIRES_HOST', 'Change disabled state through an explicit host operation.', node, [id]);
     }
@@ -196,7 +226,7 @@ export async function reconcileAbsDraft(
       if (preparedShape.extraState === undefined) delete block.extraState;
       else block.extraState = preparedShape.extraState;
     }
-    options.prepareBlock?.(block, previous, candidate, contracts);
+    prepareBlock?.(block, previous, candidate, contracts);
     const defaultInputs = previous ? new Set<string>() : adoptAbsNativeDefaults(nativeBinding, node, block, { ids, contracts, added, defaultIds });
     const inputs = { ...block.inputs };
     for (const name of new Set([...Object.keys(inputs), ...Object.keys(node.inputs)])) {
@@ -231,7 +261,7 @@ export async function reconcileAbsDraft(
     if (!Object.keys(block.fields).length && !previous?.fields) delete block.fields;
     return block;
   };
-  candidate.blocks.blocks = edited.map(node => build(node, true));
+  candidate.blocks.blocks = readDefinitions(() => edited.map(node => build(node, true)));
   assertAbsProtectedBlocks(baseline.workspace, candidate);
   getAbsProcedureReferences(candidate, baseline.contracts.procedures);
   const afterIds = indexAbsAbi(candidate);

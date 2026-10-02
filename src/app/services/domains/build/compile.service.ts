@@ -10,7 +10,8 @@ import {
   LogService,
   PlatformService,
 } from '@core/platform/public-api';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, coderSourceDirectory } from '@domain/project/public-api';
+import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
@@ -77,6 +78,7 @@ export class CompileService {
     private logService: LogService,
     private translate: TranslateService,
     private coderBuildInfo: CoderBuildInfoService,
+    private npmService: NpmService,
   ) { }
 
   cancel(): void {
@@ -102,6 +104,22 @@ export class CompileService {
         success: false,
         result: { state: 'warn', text: 'No project is currently open; build cannot start.' },
       };
+    }
+
+    const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
+    if (dependencyBlock) {
+      this.message.warning(dependencyBlock);
+      return { success: false, result: { state: 'warn', text: dependencyBlock } };
+    }
+
+    if (this.configService.isCoderProduct()) {
+      try {
+        await this.npmService.assertCoderDependenciesReady(root);
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        this.message.warning(text);
+        return { success: false, result: { state: 'warn', text } };
+      }
     }
 
     if (!this.application.startBuild()) {
@@ -161,7 +179,7 @@ export class CompileService {
       assertManifest();
       if (!boardModule) {
         finishReason = 'Missing board module';
-        const text = 'Cannot resolve board module from the active project.';
+        const text = isAilyCodeProject ? '请先在顶部选择开发板，再编译或上传 Arduino 工程。' : 'Cannot resolve board module from the active project.';
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
         return { success: false, result: { state: 'error', text } };
       }
@@ -368,7 +386,7 @@ export class CompileService {
         ) {
           return { success: false, error: `Invalid Coder entry outside sketch workspace: ${entryRel}` };
         }
-        const sourcePath = this.electronService.pathJoin(projectPath, 'sketch', ...segments);
+        const sourcePath = this.electronService.pathJoin(projectPath, coderSourceDirectory(manifest), ...segments);
         if (!window['path'].isExists(sourcePath)) {
           return { success: false, error: `Entry file does not exist: ${entryRel}` };
         }

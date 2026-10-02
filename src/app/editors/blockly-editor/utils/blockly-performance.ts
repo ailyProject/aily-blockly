@@ -1,16 +1,5 @@
 import * as Blockly from 'blockly';
 
-let variableComparatorInstalled = false;
-
-/** Keep Blockly's case-insensitive locale ordering without constructing a
- * collator for every comparison in every variable dropdown. */
-export function installBlocklyVariableComparator(): void {
-  if (variableComparatorInstalled) return;
-  const collator = new Intl.Collator(undefined, { sensitivity: 'base' });
-  Blockly.VariableModel.compareByName = (left, right) => collator.compare(left.name, right.name);
-  variableComparatorInstalled = true;
-}
-
 /** Blockly queues renders during JSON loading, but closes its text cache before
  * the animation frame runs. Flush that batch while the cache is still active;
  * do not render the entire workspace a second time after loading. */

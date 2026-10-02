@@ -834,4 +834,5 @@ module.exports = {
     hasFatalUploadOutput,
     normalizeUploadExitCode,
     selectUploadParamForPort,
+    processUploadParams,
 };

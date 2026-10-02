@@ -1,7 +1,8 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject, debounceTime, filter, firstValueFrom, fromEvent, map, switchMap, take, takeUntil, timer } from 'rxjs';
 import * as Blockly from 'blockly';
-import { installBlocklyVariableComparator, loadBlocklyWorkspace } from '../utils/blockly-performance';
+import { loadBlocklyWorkspace } from '../utils/blockly-performance';
+import { installBlocklyVariableComparator } from '../utils/blockly-variable-order';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService, LogService } from '@core/platform/public-api';
@@ -15,7 +16,7 @@ import {
 import { AbsBlockContextIndex, truncateAbsContext } from '../../../integrations/blockly/abs/abs-block-context';
 import type { AbsProjection } from '../../../integrations/blockly/abs/abs-state';
 import { nativeFieldOrder } from '../../../integrations/blockly/abs/abs-native-field-order';
-import { withNativeStateLoading } from './blockly-native-state-loading';
+import { nativeLoadedStateView, withNativeStateLoading } from './blockly-native-state-loading';
 import { adaptLegacyDhtRuntimeState } from './blockly-legacy-dht-runtime';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
@@ -39,6 +40,7 @@ import {
 import { captureBlocklyRootClassifier } from './blockly-root-role';
 import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { BlocklyProjectRevision } from './blockly-project-revision';
+import { assertProjectLoadPreserved } from './blockly-project-clean-state';
 import { BlocklyCodePreparationInvalidatedError, BlocklyProjectCodePreparation, type PreparedBlocklyCode } from './prepared-project-code';
 import { BlocklyWorkspaceEditGate, BlocklyWorkspaceEditLease, fenceBlocklyWorkspaceInput } from './blockly-workspace-edit-lease';
 import { assertAbsProjectSharedChange } from '../../../integrations/blockly/abs/abs-project-references';
@@ -139,6 +141,7 @@ interface CodeViewerPublisher {
   providedIn: 'root'
 })
 export class BlocklyService {
+  readonly projectPageHydrated = new Subject<{ before: BlocklyProjectDocument; after: BlocklyProjectDocument }>();
   private readonly projectDocumentSchemaVersion = 3;
   private readonly projectOperations = new SerialOperationQueue();
   private readonly projectRevision = new BlocklyProjectRevision();
@@ -1331,6 +1334,15 @@ export class BlocklyService {
   }
 
   // 加载 blockly 当前工作区的 JSON 数据
+  adaptWorkspaceToRuntime(jsonData: any, definitions = this.captureDeclarativeBlockDefinitions()): any {
+    definitions.assertCurrent();
+    return adaptLegacyDhtRuntimeState(jsonData, definitions);
+  }
+
+  getWorkspaceLoadReadbackView(jsonData: any): any {
+    return nativeLoadedStateView(this.adaptWorkspaceToRuntime(jsonData), this.workspace);
+  }
+
   loadWorkspaceJson(jsonData: any, clone = true, owner?: BlocklyWorkspaceEditLease) {
     this.assertWorkspaceEditAvailable(owner);
     if (!this.workspace) {
@@ -1339,7 +1351,7 @@ export class BlocklyService {
 
     let workspaceJson = (clone ? this.cloneJson(jsonData) : jsonData) || this.createEmptyWorkspaceContent();
     const definitions = this.captureDeclarativeBlockDefinitions();
-    workspaceJson = adaptLegacyDhtRuntimeState(workspaceJson, definitions);
+    workspaceJson = this.adaptWorkspaceToRuntime(workspaceJson, definitions);
     workspaceJson.blocks?.blocks?.forEach((block) => {
       const ailyIcons = this.iconsMap.get(block.type);
       if (ailyIcons) {
@@ -1356,8 +1368,10 @@ export class BlocklyService {
   }
 
   // 通过node_modules加载库
-  async loadLibrary(libPackageName, projectPath) {
-    this.assertWorkspaceEditAvailable();
+  whenLibraryLoadsSettled(): Promise<void> { return this.libraryLoadQueue; }
+
+  async loadLibrary(libPackageName, projectPath, owner?: BlocklyWorkspaceEditLease) {
+    this.assertWorkspaceEditAvailable(owner);
     // 统一路径分隔符，确保在Windows上使用反斜杠
     // const normalizedProjectPath = projectPath.replace(/\//g, '\\');
     // const libPackagePath = normalizedProjectPath + '\\node_modules\\' + libPackageName.replace(/\//g, '\\');
@@ -1379,8 +1393,9 @@ export class BlocklyService {
     // so a concurrent lib_add cannot register into a realm being replaced.
     const epoch = this.libraryLoadEpoch;
     const loadTask = this.libraryLoadQueue.then(async () => {
+      this.assertWorkspaceEditAvailable(owner);
       if (epoch !== this.libraryLoadEpoch || this.loadedLibraries.has(libPackagePath)) return;
-      await this.loadLibraryInternal(libPackageName, projectPath, libPackagePath);
+      await this.loadLibraryInternal(libPackageName, projectPath, libPackagePath, owner);
     });
     this.libraryLoadQueue = loadTask.catch(() => undefined);
     this.libraryLoadTasks.set(libPackagePath, loadTask);
@@ -1456,12 +1471,16 @@ export class BlocklyService {
     return false;
   }
 
-  private async loadLibraryInternal(libPackageName: string, projectPath: string, libPackagePath: string): Promise<void> {
+  private async loadLibraryInternal(libPackageName: string, projectPath: string, libPackagePath: string,
+    owner?: BlocklyWorkspaceEditLease): Promise<void> {
+    this.assertWorkspaceEditAvailable(owner);
+    const generatorOwner = getActiveProjectGenerator();
     const librarySnapshot = this.blocklyLibraryPackageService.readLibraryPackage(projectPath, libPackageName);
     const libLocalPath = this.resolveLibraryLocalPath(projectPath, libPackageName);
     // 检查库的完整性
     const integrityCheck = this.checkLibraryIntegrity(librarySnapshot, libPackageName);
     if (!integrityCheck.valid) {
+      if (owner) throw new Error(integrityCheck.errors.join('\n'));
       this.failedLibraryLoads.set(libPackagePath, {
         snapshot: librarySnapshot, localPath: libLocalPath, errors: integrityCheck.errors,
       });
@@ -1497,7 +1516,11 @@ export class BlocklyService {
           const blockDefinitionsBeforeGenerator = new Map<string, unknown>(
             Object.entries(Blockly.Blocks || {}),
           );
-          generatorLoadSuccess = await this.loadLibGenerator(generatorFilePath);
+          generatorLoadSuccess = await this.loadLibGenerator(generatorFilePath, owner);
+          this.assertWorkspaceEditAvailable(owner);
+          if (owner && generatorOwner !== getActiveProjectGenerator()) {
+            throw new Error('Library load belongs to a replaced generator runtime.');
+          }
           if (!generatorLoadSuccess) {
             throw new Error(`[loadLibrary] generator.js 加载失败: ${libPackageName}`);
           }
@@ -1508,7 +1531,7 @@ export class BlocklyService {
         }
         // 替换block中静态图片路径
         const staticFileIsExist = this.electronService.exists(this.electronService.pathJoin(libPackagePath, 'static'));
-        this.loadLibBlocks(blocks, staticFileIsExist ? this.electronService.pathJoin(libPackagePath, 'static') : null, libPackageName, libVersion, libLocalPath);
+        this.loadLibBlocks(blocks, staticFileIsExist ? this.electronService.pathJoin(libPackagePath, 'static') : null, libPackageName, libVersion, libLocalPath, owner);
         for (const blockType of runtimeDefinedBlockTypes) {
           this.runtimeDefinedLibraryBlockTypes.add(blockType);
           this.blockTypeToLibMap.set(blockType, {
@@ -1547,6 +1570,8 @@ export class BlocklyService {
       // 补发Blockly.Events.FINISHED_LOADING
       this.loadLibraryFinishedLoadingSubject.next();
     } catch (error) {
+      // The owning rebuild handles recovery; never start a nested realm replacement.
+      if (owner) throw error;
       console.error('加载库失败:', libPackageName, error);
       this.failedLibraryLoads.set(libPackagePath, {
         snapshot: librarySnapshot,
@@ -1750,8 +1775,9 @@ export class BlocklyService {
     }
   }
 
-  loadLibBlocks(blocks, libStaticPath, libPackageName = '', libVersion = '', libLocalPath?: string) {
-    this.assertWorkspaceEditAvailable();
+  loadLibBlocks(blocks, libStaticPath, libPackageName = '', libVersion = '', libLocalPath?: string,
+    owner?: BlocklyWorkspaceEditLease) {
+    this.assertWorkspaceEditAvailable(owner);
     this.projectCodePreparation.clear();
     this.pageReferenceContracts.clear();
     for (let index = 0; index < blocks.length; index++) {
@@ -1833,13 +1859,17 @@ export class BlocklyService {
     }
   }
 
-  async rebuildLibraryRuntimeInPlace(options: BlocklyLibraryRuntimeRebuildOptions): Promise<void> {
-    this.assertWorkspaceEditAvailable();
+  /** Called by the project persistence coordinator under its queue and edit lease. */
+  async rebuildLibraryRuntimeInPlace(options: BlocklyLibraryRuntimeRebuildOptions,
+    owner: BlocklyWorkspaceEditLease, assertCurrent: () => void): Promise<void> {
+    this.assertWorkspaceEditAvailable(owner);
+    assertCurrent();
     if (this.rebuildingLibraryRuntime) {
       throw new Error('Blockly library runtime rebuild is already in progress');
     }
 
-    const projectDocument = this.getProjectDocument();
+    const snapshot = this.captureProjectSnapshot(owner);
+    const projectDocument = snapshot.document;
     this.hideChaff(true);
     this.rebuildingLibraryRuntime = true;
 
@@ -1847,7 +1877,7 @@ export class BlocklyService {
       // Replacing the iframe restores the host Blockly checkpoint first. The
       // workspace DOM stays mounted; only the project-owned library layer is
       // registered again from the dependencies that still exist on disk.
-      this.generatorRuntime.rebuild({
+      const generator = this.generatorRuntime.rebuild({
         projectPath: options.projectPath,
         packageJson: options.packageJson,
         boardConfig: this.boardConfig,
@@ -1856,8 +1886,22 @@ export class BlocklyService {
       this.failedLibraryLoads.clear();
       this.clearLoadedLibraryStateForRuntimeRebuild();
 
+      const assertRuntimeCurrent = () => {
+        assertCurrent(); owner.assertCurrent();
+        if (generator !== getActiveProjectGenerator()) {
+          throw new Error('Runtime changed during library loading; stopped replacing the workspace.');
+        }
+      };
+
       for (const libraryName of options.libraryNames) {
-        await this.loadLibrary(libraryName, options.projectPath);
+        await this.loadLibrary(libraryName, options.projectPath, owner);
+        assertRuntimeCurrent();
+      }
+
+      assertRuntimeCurrent();
+      // Serialize once at the replacement boundary, not once per installed library.
+      if (snapshot.revision !== this.captureProjectSnapshot(owner).revision) {
+        throw new Error('Project changed during library loading; stopped replacing the workspace.');
       }
 
       const missingBlockTypes = this.collectBlockTypesFromProjectDocument(projectDocument)
@@ -1872,7 +1916,10 @@ export class BlocklyService {
       this.refreshToolboxFromContents();
       // Recreate block instances so extensions/callbacks owned by the old
       // iframe Realm cannot survive through the in-place runtime swap.
-      this.loadProjectDocument(projectDocument, false);
+      this.loadProjectDocument(projectDocument, true, owner);
+      assertCurrent(); owner.assertCurrent();
+      assertProjectLoadPreserved(projectDocument, this.getProjectDocument(owner),
+        workspace => this.getWorkspaceLoadReadbackView(workspace));
       this.generatorRuntime.markReady(options.projectPath);
       this.requestCodeViewerRefresh(true);
     } finally {
@@ -2084,8 +2131,8 @@ export class BlocklyService {
     return blockTypes.some((blockType) => usedBlockTypes.has(blockType));
   }
 
-  loadLibGenerator(filePath): Promise<boolean> {
-    this.assertWorkspaceEditAvailable();
+  loadLibGenerator(filePath, owner?: BlocklyWorkspaceEditLease): Promise<boolean> {
+    this.assertWorkspaceEditAvailable(owner);
     if (this.loadedGenerators.has(filePath)) {
       console.warn(`Generator ${filePath} 已加载,跳过重复加载`);
       return Promise.resolve(true);
@@ -2754,6 +2801,7 @@ export class BlocklyService {
     delete page.content.$ailyProjectData;
     return normalizeBlocklyOwnership({
       schemaVersion: this.projectDocumentSchemaVersion,
+      ...(jsonData?.$ailyProjectData ? { $ailyProjectData: this.cloneJson(jsonData.$ailyProjectData) } : {}),
       activePageId: page.id, openedPageIds: [page.id], pages: [page],
       sharedModel: { procedureBlocks: [] },
     }, role);
@@ -2854,7 +2902,8 @@ export class BlocklyService {
       return;
     }
 
-    const workspaceJson = composeBlocklyPage(this.getStoredProjectDocument(), activePage.id);
+    const before = this.getStoredProjectDocument();
+    const workspaceJson = composeBlocklyPage(before, activePage.id);
     if (rootOrder) {
       // Document ownership groups shared definitions first. A transaction rollback
       // must instead reproduce the captured live root order, without dropping roots.
@@ -2878,6 +2927,7 @@ export class BlocklyService {
     this.closeWorkspaceBlockSearch();
     this.restoreWorkspaceViewState(activePage.viewState);
     this.persistActiveWorkspaceToState(owner);
+    this.projectPageHydrated?.next({ before, after: this.getStoredProjectDocument() });
     this.mountExternalToolbox();
     this.loadLibraryFinishedLoadingSubject.next();
     this.requestWorkspaceVisualRefresh();

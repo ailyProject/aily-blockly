@@ -1,4 +1,4 @@
-import { externalizeGenericProjectDataValues, materializeGenericProjectDataValues, materializePreparedGenericProjectDataValues } from './project-data-generic-values';
+import { externalizeGenericProjectDataValues, materializeGenericProjectDataValues, materializePreparedProjectDataPayload } from './project-data-generic-values';
 import { assertNoOversizedInlineValues, findOversizedInlineValues } from './project-data-policy';
 import { AilyDataRef, createAilyProjectDataValue } from './project-data.types';
 import { canonicalJsonStringify } from './project-data-codec.registry';
@@ -6,6 +6,22 @@ import * as Blockly from 'blockly';
 import { ProjectDataStore } from './project-data-store';
 
 describe('generic Project Data payload boundaries', () => {
+  it('preserves canonical bytes, repeated references, sparse arrays and numeric key ordering', () => {
+    const shared = { z: '界😀', a: -0 };
+    const value = { z: [shared, shared], a: { 10: true, 2: false }, b: new Array(2) };
+    expect(canonicalJsonStringify(value)).toBe('{"a":{"2":false,"10":true},"b":[null,null],"z":[{"a":0,"z":"界😀"},{"a":0,"z":"界😀"}]}');
+  });
+  it('retains precise escaped paths for invalid values and cycles with lazy error locations', () => {
+    for (const value of [undefined, Symbol('x'), BigInt(1), () => {}]) {
+      expect(() => canonicalJsonStringify({ valid: 1, 'a/~': [value] })).toThrowError(/Unsupported JSON member at \$\/a~1~0\/0\./);
+    }
+    expect(() => canonicalJsonStringify({ x: [Infinity] })).toThrowError(/Non-finite JSON number at \$\/x\/0\./);
+    const cyclic: any = { ok: { x: 1 } }; cyclic['a/~'] = cyclic;
+    expect(() => canonicalJsonStringify(cyclic)).toThrowError(/Circular JSON object at \$\/a~1~0\./);
+    let deep: unknown = 0;
+    for (let i = 0; i < 513; i++) deep = [deep];
+    expect(() => canonicalJsonStringify(deep)).toThrowError(/Canonical JSON exceeds the depth limit/);
+  });
   it('canonicalizes null-prototype serializer dictionaries without accepting class instances', () => {
     const data = Object.assign(Object.create(null), JSON.parse('{"z":1,"__proto__":{"safe":true}}'));
     expect(canonicalJsonStringify(data)).toBe('{"__proto__":{"safe":true},"z":1}');
@@ -46,7 +62,6 @@ describe('generic Project Data payload boundaries', () => {
     expect(prepared.externalized.length).toBe(5);
     expect(() => assertNoOversizedInlineValues(prepared.document)).not.toThrow();
     expect(await materializeGenericProjectDataValues(prepared.document, reader)).toEqual(document);
-    expect(materializePreparedGenericProjectDataValues(prepared.document, read)).toEqual(document);
     expect(document.blocks.blocks[0]['data']).toBe(large);
     expect(prepared.document.blocks.blocks[0].id).toBe('a');
   });
@@ -80,7 +95,6 @@ describe('generic Project Data payload boundaries', () => {
     expect(prepared.externalized[0].blockId).toBeUndefined();
     expect(prepared.externalized[0].codec).toBe('canonical-json-v1');
     expect(await materializeGenericProjectDataValues(prepared.document, reader)).toEqual(document);
-    expect(materializePreparedGenericProjectDataValues(prepared.document, read)).toEqual(document);
   });
 
   it('handles inactive pages/shared block payloads while leaving page and document metadata alone', async () => {
@@ -152,9 +166,8 @@ describe('generic Project Data payload boundaries', () => {
 
   it('does not leak mutable prepared objects into field loadState', async () => {
     const ref = await put({ codec: 'canonical-json-v1', value: { frames: [1, 2] } });
-    const document = workspace({ extraState: createAilyProjectDataValue(ref) });
-    const restored = materializePreparedGenericProjectDataValues(document, read) as any;
-    restored.blocks.blocks[0].extraState.frames[0] = 999;
+    const restored = materializePreparedProjectDataPayload(createAilyProjectDataValue(ref), read) as any;
+    restored.frames[0] = 999;
     expect(read(ref)).toEqual({ frames: [1, 2] });
   });
 
@@ -177,7 +190,7 @@ describe('generic Project Data payload boundaries', () => {
     const text = await put({ codec: 'utf8-v1', value: 42 });
     await expectAsync(materializeGenericProjectDataValues(workspace({ data: createAilyProjectDataValue(text) }), reader)).toBeRejected();
     const nested = await put({ codec: 'canonical-json-v1', value: { ref: text } });
-    expect(() => materializePreparedGenericProjectDataValues(workspace({ extraState: createAilyProjectDataValue(nested) }), read)).toThrow();
+    expect(() => materializePreparedProjectDataPayload(createAilyProjectDataValue(nested), read)).toThrow();
     values.clear();
     await expectAsync(materializeGenericProjectDataValues(workspace({ data: createAilyProjectDataValue(text) }), reader)).toBeRejected();
   });

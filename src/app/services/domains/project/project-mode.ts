@@ -5,6 +5,7 @@ export function detectProjectMode(input: {
   manifest?: unknown;
   hasAbi: boolean;
   hasAci: boolean;
+  hasArduinoSketch?: boolean;
 }): ProjectMode | null {
   if (input.manifest && typeof input.manifest === 'object'
     && (input.manifest as { type?: unknown }).type === 'coder') {
@@ -12,6 +13,7 @@ export function detectProjectMode(input: {
   }
   if (input.hasAbi) return 'blockly';
   if (input.hasAci) return 'coder';
+  if (!input.manifest && input.hasArduinoSketch) return 'coder';
   return null;
 }
 

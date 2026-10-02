@@ -1,4 +1,4 @@
-import { loadNativeRuntimeAsset } from '../../../editors/blockly-editor/services/blockly-native-runtime-asset';
+import { createNativeRuntimeAssetLoader, loadNativeRuntimeAsset } from '../../../editors/blockly-editor/services/blockly-native-runtime-asset';
 import { serializeAbsFailure } from './abs-diagnostics';
 
 describe('native runtime asset loading', () => {
@@ -15,6 +15,23 @@ describe('native runtime asset loading', () => {
     try { await operation; fail('expected asset failure'); } catch (error) { return serializeAbsFailure(error); }
     throw new Error('unreachable');
   };
+
+  it('shares verified build bytes, not failures, across fresh candidate realms', async () => {
+    const cached = createNativeRuntimeAssetLoader(), signal = new AbortController().signal;
+    const fetch = spyOn(window, 'fetch').and.rejectWith(new TypeError('Failed to fetch'));
+    expect((await failure(cached(base, hash, signal))).code).toBe('ABS_NATIVE_ASSET_UNAVAILABLE');
+    fetch.and.callFake(async () => new Response(source));
+    expect(await cached(base, hash, signal)).toBe(source);
+    expect(await cached(base, hash, signal)).toBe(source);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const abort = new AbortController(), reason = new Error('cancelled'); abort.abort(reason);
+    await expectAsync(cached(base, hash, abort.signal)).toBeRejectedWith(reason);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(await cached(base + 'other/', hash, signal)).toBe(source);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect((await failure(cached(base + 'other/', '0'.repeat(64), signal))).code).toBe('ABS_NATIVE_ASSET_MISMATCH');
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
 
   it('returns only verified source and requests the build resource once without stale-cache preference', async () => {
     const fetch = spyOn(window, 'fetch').and.resolveTo(new Response(source));

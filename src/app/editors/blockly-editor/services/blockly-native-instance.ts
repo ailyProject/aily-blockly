@@ -9,7 +9,11 @@ export function captureNativeBlock(execution: NativeCandidateWorkspace, declarat
   block: Blockly.Block, state: AbsNativeBlock['seed']): AbsNativeBlock {
   const trace = execution.observer.readNativeBlockStructure(block);
   if (!trace || !state || state.id !== block.id || state.type !== block.type) throw new Error('Native candidate lost its declaration trace or identity.');
-  const seed = structuredClone(state);
+  // A seed owns this block's attributes, not its descendant graph. Copying an
+  // entire subtree for every node made long chains quadratic, only to discard
+  // that topology below. Connections/shadows have separate ownership evidence.
+  const { inputs: _inputs, next: _next, x: _x, y: _y, ...attributes } = state;
+  const seed = structuredClone(attributes);
   const fields = Object.create(null), inputs = Object.create(null);
   for (const { input, fields: row } of trace) {
     for (const field of row) if (field.name && field.SERIALIZABLE !== false) fields[field.name] = captureAbsFieldContract(field, seed.fields?.[field.name]);
@@ -18,8 +22,6 @@ export function captureNativeBlock(execution: NativeCandidateWorkspace, declarat
   const argumentOrder = nativeAbsArgumentOrder(execution.observer.readNativeBlockJson(block) ?? declarations.get(block.type) ?? { type: block.type }, trace);
   if (!argumentOrder) throw new Error('Native candidate has an incomplete or ambiguous argument declaration.');
   if (Object.keys(fields).some(name => !Object.hasOwn(seed.fields ?? {}, name))) throw new Error('Native candidate has incomplete field serialization.');
-  // Topology has separate ownership evidence; layout is always host-owned.
-  delete seed.inputs; delete seed.next; delete seed['x']; delete seed['y'];
   return { id: block.id, type: block.type, seed,
     shape: { fields, defaults: structuredClone(seed.fields ?? {}), inputs, argumentOrder,
       output: !!block.outputConnection, previous: !!block.previousConnection, next: !!block.nextConnection,

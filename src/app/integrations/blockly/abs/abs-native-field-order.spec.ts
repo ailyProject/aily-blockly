@@ -26,6 +26,7 @@ describe('declared field order at normal project load', () => {
   it('uses the real ordinary load entry and preserves a later-created field without mutating saved input', () => {
     const input = state(), before = absJson(input);
     BlocklyService.prototype.loadWorkspaceJson.call({ workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value),
+      adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
       assertWorkspaceEditAvailable() {}, captureDeclarativeBlockDefinitions: () => catalog.capture(Blockly.Blocks),
       scheduleWorkspaceRenderAfterLoad() {},
     } as any, input);
@@ -45,6 +46,7 @@ describe('declared field order at normal project load', () => {
   it('checks declaration freshness before clearing a live workspace', () => {
     workspace.newBlock(type, 'original');
     expect(() => BlocklyService.prototype.loadWorkspaceJson.call({ workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value),
+      adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
       assertWorkspaceEditAvailable() {}, captureDeclarativeBlockDefinitions: () => ({ assertCurrent() { throw Error('stale'); } }),
     } as any, state())).toThrowError('stale');
     expect(workspace.getBlockById('original')).not.toBeNull();

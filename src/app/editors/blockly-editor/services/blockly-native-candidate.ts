@@ -3,19 +3,22 @@ import { restoreAbsFailure } from '../../../integrations/blockly/abs/abs-diagnos
 import nativeBuild from '../../../../../.generated/blockly-runtime/manifest.json';
 import type { NativeCandidateOptions, NativeCandidateRequest, NativeCandidateResult } from './blockly-native-candidate-protocol';
 import { assertNativeGenerationStable } from './blockly-native-generation-evidence';
-import { loadNativeRuntimeAsset } from './blockly-native-runtime-asset';
+import { createNativeRuntimeAssetLoader } from './blockly-native-runtime-asset';
+import { NATIVE_CANDIDATE_PHASES, nativeCandidateBudget, nativeCandidateTimeout, type NativeCandidatePhase } from './blockly-native-progress';
+import { nativeReplayEvent, describeNativeReplayEvent, type NativeReplayEvent } from './blockly-native-replay-diagnostics';
+
+const loadNativeRuntimeAsset = createNativeRuntimeAssetLoader();
 
 /** Disposable state isolation, not an adversarial JavaScript CPU/security sandbox. */
 export async function evaluateNativeCandidate(request: NativeCandidateRequest, options: NativeCandidateOptions): Promise<NativeCandidateResult> {
   const detached = structuredClone(request);
   if (!detached.verify) return evaluateNativeCandidatePass(detached, options);
-  const timeoutMs = options.timeoutMs ?? 10000;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60000) throw new Error('Invalid native candidate timeout.');
-  const deadline = Date.now() + timeoutMs;
+  const budget = nativeCandidateBudget(options.timeoutMs, 2);
+  const deadline = Date.now() + budget.totalMs;
   const pass = (uiPhase: 'before-ui' | 'settled') => {
     options.signal?.throwIfAborted(); options.assertCurrent();
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('Native candidate timed out.');
+    const remaining = Math.min(budget.perPassMs, deadline - Date.now());
+    if (remaining <= 0) throw nativeCandidateTimeout('realm', budget.totalMs);
     return evaluateNativeCandidatePass({ ...detached, verify: { ...detached.verify!, uiPhase } }, { ...options, timeoutMs: remaining });
   };
   // Library handlers may keep counters on the generator, in closures or globals.
@@ -38,16 +41,27 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
   // Snapshot before the first await: callers cannot change the request during asset loading.
   const detached = structuredClone(request);
   assertSynchronousNativeCandidate(detached);
-  const timeoutMs = options.timeoutMs ?? 10000;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60000) throw new Error('Invalid native candidate timeout.');
+  const { perPassMs: timeoutMs } = nativeCandidateBudget(options.timeoutMs, 1);
   const abort = new AbortController();
+  let phase: NativeCandidatePhase = 'asset';
+  let replayObservation: { detail: string; realmMs: number; receivedAt: number } | undefined;
+  const outstandingRegistration = new Map<number, NativeReplayEvent>();
   const onAbort = () => abort.abort(options.signal?.reason);
   options.signal?.addEventListener('abort', onAbort, { once: true });
-  const timer = setTimeout(() => abort.abort(new Error('Native candidate timed out.')), timeoutMs);
+  const timer = setTimeout(() => {
+    const error = nativeCandidateTimeout(phase, timeoutMs);
+    if (phase === 'replay' && replayObservation) {
+      error.message += ` Last observed: ${replayObservation.detail}; realm=${Math.round(replayObservation.realmMs)}ms, received ${Math.round(performance.now() - replayObservation.receivedAt)}ms ago. This is the last delivered observation, not proof of the current execution point.`;
+      if (outstandingRegistration.size) error.message += ' Outstanding registration observations: '
+        + [...outstandingRegistration.values()].slice(0, 4).map(event => describeNativeReplayEvent(event, detached.steps)).join('; ') + '.';
+    }
+    abort.abort(error);
+  }, timeoutMs);
   let frame: HTMLIFrameElement | undefined, channel: MessageChannel | undefined;
   try {
     const source = await loadNativeRuntimeAsset(document.baseURI, nativeBuild.sha256, abort.signal);
     assertCurrent(); abort.signal.throwIfAborted();
+    phase = 'realm';
     frame = document.createElement('iframe');
     // Keep real SVG geometry available; display:none makes native measurements invalid.
     frame.style.cssText = 'position:fixed;left:-11000px;top:0;width:1024px;height:768px;border:0;pointer-events:none;';
@@ -63,8 +77,23 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
       abort.signal.addEventListener('abort', fail, { once: true });
       channel!.port1.onmessage = event => {
         try {
-          assertCurrent(); abort.signal.throwIfAborted();
           const reply = event.data;
+          if (NATIVE_CANDIDATE_PHASES.includes(reply?.phase)) {
+            phase = reply.phase;
+            const replay = phase === 'replay' ? nativeReplayEvent(reply.replay) : undefined;
+            if (replay && Number.isFinite(reply.elapsedMs) && reply.elapsedMs >= 0) {
+              const detail = describeNativeReplayEvent(replay, detached.steps);
+              if (detail) {
+                replayObservation = { detail, realmMs: reply.elapsedMs, receivedAt: performance.now() };
+                if ('id' in replay) {
+                  if (replay.event === 'timer-end' || replay.event === 'timer-cancel') outstandingRegistration.delete(replay.id);
+                  else if (outstandingRegistration.has(replay.id) || outstandingRegistration.size < 128) outstandingRegistration.set(replay.id, replay);
+                }
+              }
+            }
+            return;
+          }
+          assertCurrent(); abort.signal.throwIfAborted();
           if (!reply?.ok) throw restoreAbsFailure(reply?.error || 'Native candidate failed.');
           if (!reply.result?.state || !Array.isArray(reply.result.structures)) throw new Error('Invalid native candidate response.');
           resolve(reply.result);

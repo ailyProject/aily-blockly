@@ -1,6 +1,8 @@
-/** Native fields and structural extensions shared by UI and isolated candidate bundles.
+/** Native fields, renderers and structural extensions shared by UI and isolated candidate bundles.
  * Keep application UI components, Angular services and preload out of this entry.
  */
+import './renderer/aily-thrasos/thrasos';
+import './renderer/aily-zelos/zelos';
 import './plugins/block-plus-minus/src/index.js';
 import './custom-field/field-bitmap';
 import './custom-field/field-u8g2-bitmap';
