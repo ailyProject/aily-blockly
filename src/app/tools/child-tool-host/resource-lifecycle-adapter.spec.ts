@@ -1,4 +1,4 @@
-import { toHostResourceLifecycleRequest } from '../../services/subapp-resource-lifecycle-adapter';
+import { toHostResourceLifecycleRequest } from '../../services/integrations/subapps/adapters/subapp-resource-lifecycle-adapter';
 
 describe('resource lifecycle upload adapter', () => {
   it('maps a serial monitor disconnect signal to a generic suspend request', () => {
