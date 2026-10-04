@@ -5,6 +5,10 @@ import type { NativeUiTasks } from './blockly-native-ui-tasks';
  * Animation frames use the same bounded, semantics-checked queue as UI timers;
  * there is no browser frame race or arbitrary asynchronous library completion. */
 export function createNativeCandidateGraphics(native: typeof Blockly, tasks: NativeUiTasks): Blockly.WorkspaceSvg {
+  // The isolated realm has no pointer interaction. Core rendering must not bump
+  // overlapping scratch roots and create an unrelated persisted-layout change.
+  // This prototype is local to the disposable realm, never the editor.
+  native.BlockSvg.prototype.bumpNeighbours = function() {};
   const queueRender = native.BlockSvg.prototype.queueRender;
   native.BlockSvg.prototype.queueRender = function() {
     return tasks.coreRender(() => queueRender.call(this));

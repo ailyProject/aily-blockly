@@ -11,6 +11,7 @@ import { captureArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { verifyNativeModelRegistrations } from './blockly-native-model-effects';
 import { captureGeneratorProjectEffects } from './generator-project-effects';
 import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { retainAbsRootLayout } from '../../../integrations/blockly/abs/abs-program-state';
 
 /** Complete merged state, including dormant shadows and metadata, not the scratch tree. */
 export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly.Workspace,
@@ -27,6 +28,9 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
   assertClean();
   const capture = () => uiTasks.withoutScheduling(() => {
     const state = normalizeAbsSerializedWorkspace(native.serialization.workspaces.save(workspace));
+    // Detached candidate graphics do not own the editor's saved root layout.
+    // Normalize only the readback, not the live candidate used by callbacks.
+    retainAbsRootLayout(state, expected);
     assertClean();
     assertAbsReadback(expected, state, { fieldDefinition: (_type, name, id) => request.contracts.fields[id]?.[name] });
     return state;
