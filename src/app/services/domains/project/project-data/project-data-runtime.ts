@@ -133,9 +133,10 @@ class ProjectDataRuntime {
     const cached = this.takePrepared<TValue>(ref);
     if (cached !== undefined) return cached;
     const session = this.captureSession('resolve');
-    const value = await session.store.resolve<TValue>(ref);
+    const snapshot = { $ailyData: { ...ref.$ailyData } };
+    const value = await session.store.resolve<TValue>(snapshot);
     this.assertCurrentSession(session, 'resolve');
-    this.setPrepared(ref, value);
+    this.setPrepared(snapshot, value);
     return value;
   }
 
@@ -159,7 +160,7 @@ class ProjectDataRuntime {
       if (existing && !areAilyDataRefsEquivalent(existing, ref)) {
         throw new ProjectDataError('corrupt', `Conflicting metadata for project data ID: ${ref.$ailyData.id}`);
       }
-      unique.set(ref.$ailyData.id, ref);
+      unique.set(ref.$ailyData.id, { $ailyData: { ...ref.$ailyData } });
     }
     const requiredBytes = [...unique.values()].reduce((total, ref) => total + ref.$ailyData.rawLength, 0);
     if (requiredBytes > this.maxPreparedBytes) {
@@ -327,7 +328,7 @@ class ProjectDataRuntime {
       this.preparedValues.delete(ref.$ailyData.id);
     }
     const size = ref.$ailyData.rawLength;
-    this.preparedValues.set(ref.$ailyData.id, { ref, value, size });
+    this.preparedValues.set(ref.$ailyData.id, { ref: { $ailyData: { ...ref.$ailyData } }, value, size });
     this.preparedBytes += size;
     while (this.preparedBytes > this.maxPreparedBytes) {
       const oldest = this.preparedValues.entries().next().value as [string, PreparedValueEntry] | undefined;

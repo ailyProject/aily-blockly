@@ -12,16 +12,16 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
-test('project copies exclude only writer-owned transient files and preserve recovery/resource data', () => {
+test('project copies exclude only writer/lifecycle transient files and preserve recovery/resource data', () => {
   const source = directory(); const target = directory();
   const id = '12345678-1234-1234-1234-123456789abc';
-  const excluded = ['.aily/project-files.write.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
+  const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
     `.project.abs.map.json.${id}.tmp`, `.project-data-backup.${id}.tmp`, `.abs-sync-${id}.tmp`,
     `.aily/abs-sync/.abs-sync-${id}.tmp`, `.aily/abs-sync/baselines/.abs-sync-${id}.tmp`];
   const included = ['project.abi', 'project.abs', 'project.abs.map.json', 'project.abi.pre-project-data.bak', 'user.tmp',
     '.aily/abs-sync/recovery.json', '.aily/abs-sync/prepared.json', '.aily/abs-sync/baselines/g1.json',
     '.aily/abs-sync/user.tmp', `nested/.abs-sync-${id}.tmp`, '.aily/project-data-backups/original.abi', 'assets/project-data/ab/resource.bin',
-    'src/user.lock', 'nested/.aily/project-files.write.lock', `.project.abi.${'a'.repeat(36)}.tmp`];
+    'src/user.lock', 'nested/.aily/project-files.write.lock', 'nested/.aily/project-open.lock', `.project.abi.${'a'.repeat(36)}.tmp`];
   for (const file of [...excluded, ...included]) {
     const full = path.join(source, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
   }
@@ -58,6 +58,19 @@ test('imports the actual project from a single archive wrapper and filters its l
   assert.equal(fs.readFileSync(path.join(target, 'project.abi'), 'utf8'), 'original');
   assert.equal(fs.existsSync(path.join(target, '.aily/project-files.write.lock')), false);
   assert.equal(fs.readFileSync(path.join(wrapped, '.aily/project-files.write.lock'), 'utf8'), 'source owner');
+});
+
+test('imports read-only archive metadata as writable copies without changing the source', () => {
+  const source = directory(); const parent = directory(); const target = path.join(parent, 'imported');
+  for (const name of ['package.json', 'project.abi']) {
+    fs.writeFileSync(path.join(source, name), '{}'); fs.chmodSync(path.join(source, name), 0o444);
+  }
+  importProjectDirectory(source, target);
+  for (const name of ['package.json', 'project.abi']) {
+    assert.equal(fs.statSync(path.join(source, name)).mode & 0o200, 0);
+    assert.notEqual(fs.statSync(path.join(target, name)).mode & 0o200, 0);
+    fs.writeFileSync(path.join(target, name), '{"opened":true}');
+  }
 });
 
 test('imports reject collisions, ambiguous archives, missing packages and descendants without deleting files', () => {

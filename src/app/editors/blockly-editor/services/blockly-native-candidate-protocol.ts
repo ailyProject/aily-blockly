@@ -4,6 +4,7 @@ import type { AbsAbiWorkspace, AbsProjectionContracts } from '../../../integrati
 import type { AilyDataRef } from '@domain/project/project-data/public-api';
 import type { AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
 import type { NativeGenerationEvidence } from './blockly-native-generation-evidence';
+import type { NativeGraphicsContext } from './blockly-native-graphics-context';
 
 /** Data-only boundary. No host objects, functions, paths-to-load or filesystem APIs. */
 export type NativeReplayStep =
@@ -22,6 +23,8 @@ export interface NativeCandidateBlock {
 }
 
 export interface NativeCandidateRequest {
+  /** Host visual configuration, independent of library replay and project semantics. */
+  graphics?: NativeGraphicsContext;
   /** Internal deterministic namespace, never an Agent model-creation permission. */
   modelRequestId?: string;
   steps: NativeReplayStep[];
@@ -40,6 +43,8 @@ export interface NativeCandidateRequest {
   values?: Array<{ ref: AilyDataRef; value: unknown }>;
   /** Verify the final merged ABI and actual code generation before touching the host. */
   verify?: { state: AbsAbiWorkspace; contracts: AbsProjectionContracts;
+    /** Reconciled new roots only; apply the host placement policy before UI/generation. */
+    newRootIds?: string[];
     /** Internal pass selection; the host evaluator always owns both passes. */
     uiPhase?: 'before-ui' | 'settled';
     modelDeclarations?: Array<AbsNativeModelDeclaration & { ownerId: string }> };
@@ -62,5 +67,7 @@ export interface NativeCandidateResult {
 export interface NativeCandidateOptions {
   assertCurrent: () => void;
   signal?: AbortSignal;
+  /** Explicit overall deadline; defaults to 10s per independent realm (at most
+   * two realms for before/settled verification), not an unbounded retry budget. */
   timeoutMs?: number;
 }

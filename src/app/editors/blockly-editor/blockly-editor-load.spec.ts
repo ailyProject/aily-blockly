@@ -1,6 +1,7 @@
-import { Subject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { BlocklyEditorComponent } from './blockly-editor.component';
-import { projectDataRuntime } from '@domain/project/public-api';
+import { ProjectService, projectDataRuntime } from '@domain/project/public-api';
+import { BlocklyService } from './services/blockly.service';
 
 describe('project load normalization context', () => {
   let component: any;
@@ -31,8 +32,19 @@ describe('project load normalization context', () => {
     component.readCurrentBoardTemplateAbi = jasmine.createSpy('template').and.resolveTo(template);
     const result = await component.loadProjectAbiDocument('D:/project', guard);
     expect(result.usedBoardTemplate).toBeTrue();
+    expect(result.diskText).toBe('{"blocks":{"blocks":[]}}');
     expect(component.projectService.ensureProjectDataSchemaForLoad.calls.argsFor(0)[3]).toBe(guard);
     expect(component.projectService.ensureProjectDataSchemaForLoad.calls.argsFor(1)).toEqual(['D:/project', template, undefined, guard]);
+  });
+  it('anchors exact migration publication bytes rather than rereading a possible external edit', async () => {
+    component.projectService.ensureProjectDataSchemaForLoad.and.callFake(async (_path, document, _text, check, published) => {
+      check(); published('{"migrated":true}');
+      component.electronService.readFileAsync.and.resolveTo('{"external":true}');
+      return document;
+    });
+    const result = await component.loadProjectAbiDocument('D:/project', guard);
+    expect(result.diskText).toBe('{"migrated":true}');
+    expect(component.electronService.readFileAsync).toHaveBeenCalledTimes(1);
   });
   it('does not return an old document after normalization completes in a new context', async () => {
     component.projectService.ensureProjectDataSchemaForLoad.and.callFake(async () => { current = false; return {}; });
@@ -64,5 +76,66 @@ describe('project load normalization context', () => {
       expect(component.projectService.markBlocklyProjectLoadFailed).not.toHaveBeenCalled();
       expect(component.message.error).not.toHaveBeenCalled();
     } finally { component.projectRouteSubscription.unsubscribe(); component.boardConfigUpdatedSubscription.unsubscribe(); }
+  });
+});
+
+describe('Blockly dependency preparation cancellation', () => {
+  it('unsubscribes a workspace readiness wait when its session is aborted', async () => {
+    const service: any = Object.create(BlocklyService.prototype);
+    const ready = new BehaviorSubject(null);
+    service.workspaceReadySubject = ready;
+    const controller = new AbortController();
+    const waiting = service.waitForWorkspace(controller.signal);
+    expect(ready.observers.length).toBe(1);
+    controller.abort();
+    await expectAsync(waiting).toBeRejected();
+    expect(ready.observers.length).toBe(0);
+  });
+
+  it('cancels a suspended animation frame instead of waiting for it on close', async () => {
+    const component: any = Object.create(BlocklyEditorComponent.prototype);
+    const controller = new AbortController();
+    spyOn(window, 'requestAnimationFrame').and.returnValue(42);
+    const cancel = spyOn(window, 'cancelAnimationFrame');
+    const waiting = component.waitForNextFrame(controller.signal);
+    controller.abort();
+    await expectAsync(waiting).toBeRejected();
+    expect(cancel).toHaveBeenCalledOnceWith(42);
+  });
+
+  it('terminates a cancelled parser worker without starting the main-thread fallback', async () => {
+    const component: any = Object.create(BlocklyEditorComponent.prototype);
+    const worker = { postMessage: jasmine.createSpy('post'), terminate: jasmine.createSpy('terminate') };
+    spyOn(window, 'Worker').and.returnValue(worker as any);
+    component.parseProjectAbiContentOnMainThread = jasmine.createSpy('fallback');
+    const controller = new AbortController();
+    const parsing = component.parseProjectAbiContent('{}', controller.signal);
+    controller.abort();
+    await expectAsync(parsing).toBeRejected();
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+    expect(component.parseProjectAbiContentOnMainThread).not.toHaveBeenCalled();
+  });
+
+  it('settles a missing-library dialog on close and rejects its old install callback', async () => {
+    const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+    const session = lifecycle.beginPreparation('/project');
+    const component: any = Object.create(BlocklyEditorComponent.prototype);
+    component.projectService = {
+      assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current),
+      runProjectDependencyTask: (current: any, work: () => Promise<any>) => lifecycle.run(current, work),
+    };
+    const closed = new Subject<any>();
+    const modal = { afterClose: closed, destroy: jasmine.createSpy('destroy').and.callFake(() => closed.next(undefined)) };
+    let install!: () => Promise<void>;
+    component.modal = { create: (options: any) => { install = () => options.nzData.installFn([]); return modal; } };
+    component.installMissingBlocklyLibraries = jasmine.createSpy('install').and.resolveTo();
+    const waiting = lifecycle.run(session, () => component.restoreMissingProjectLibraries('/project', [], session));
+    lifecycle.cancel('/project');
+    await expectAsync(waiting).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+    await lifecycle.waitForIdle(session);
+    expect(modal.destroy).toHaveBeenCalledTimes(1);
+    await expectAsync(install()).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+    expect(component.installMissingBlocklyLibraries).not.toHaveBeenCalled();
+    closed.complete();
   });
 });

@@ -5,6 +5,19 @@ interface BuildRequestFiles {
   write: (path: string, text: string) => unknown | Promise<unknown>;
 }
 
+/** Result metadata is not configuration. Only during generator preparation may
+ * its owned macro fields change; freeze all macro inputs again before launch. */
+export function buildManifestForGuard(text: string, preparingGenerator = false): unknown {
+  const manifest = JSON.parse(text);
+  delete manifest.codeHash;
+  delete manifest.buildInfo;
+  if (preparingGenerator) {
+    delete manifest.MACROS;
+    delete manifest.ailyGeneratorMacros;
+  }
+  return manifest;
+}
+
 /** Guard the small live configuration used to create a request across awaits.
  * This is a capture boundary, not a lock for the compiler's entire lifetime.
  */

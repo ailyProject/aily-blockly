@@ -49,6 +49,116 @@ describe('MenuComponent submenu switching', () => {
     return fixture.nativeElement.querySelector('.submenu-box');
   }
 
+  for (const mainMenu of [true, false]) {
+    it(`keeps long ${mainMenu ? 'host' : 'shared'} submenus inside the viewport and the last option clickable`, fakeAsync(() => {
+      tick();
+      fixture.nativeElement.classList.toggle('main-menu-parity', mainMenu);
+      fixture.componentRef.setInput('position', { x: 20, y: 72 });
+      fixture.detectChanges();
+      items[0].children = Array.from({ length: 100 }, (_, index) => ({
+        name: `Partition ${index + 1}`, key: 'PartitionScheme', data: index,
+      }));
+      const selected = jasmine.createSpy('selected');
+      menu.subItemClickEvent.subscribe(selected);
+      enter(0);
+      fixture.detectChanges();
+      const popup = submenu()!;
+      const bounds = popup.getBoundingClientRect();
+      const primaryBounds = menu.menuBox.nativeElement.getBoundingClientRect();
+      expect(bounds.top).toBe(mainMenu ? primaryBounds.top : 8);
+      expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight - 8);
+      expect(popup.scrollHeight).toBeGreaterThan(popup.clientHeight);
+      popup.scrollTop = popup.scrollHeight;
+      expect(popup.scrollTop).toBeGreaterThan(0);
+      const last = popup.querySelector<HTMLElement>('.menu-item:last-child')!;
+      const lastBounds = last.getBoundingClientRect();
+      expect(lastBounds.top).toBeGreaterThanOrEqual(bounds.top);
+      expect(lastBounds.bottom).toBeLessThanOrEqual(bounds.bottom);
+      last.click();
+      expect(selected).toHaveBeenCalledOnceWith(items[0].children[99]);
+      tick();
+    }));
+  }
+
+  it('keeps the first option below the real header and updates the boundary on resize', fakeAsync(() => {
+    tick();
+    const host = document.createElement('app-header');
+    const header = document.createElement('div');
+    header.className = 'header-box';
+    header.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 56px;';
+    document.body.appendChild(host);
+    host.append(header, fixture.nativeElement);
+    try {
+      fixture.componentRef.setInput('position', { x: 20, y: 56 });
+      fixture.detectChanges();
+      items[0].children = Array.from({ length: 100 }, (_, index) => ({ name: `Partition ${index + 1}` }));
+      const selected = jasmine.createSpy('selected');
+      menu.subItemClickEvent.subscribe(selected);
+      enter(0);
+      fixture.detectChanges();
+      const popup = submenu()!;
+      expect(popup.getBoundingClientRect().top).toBe(56);
+      expect(popup.getBoundingClientRect().top).toBe(menu.menuBox.nativeElement.getBoundingClientRect().top);
+      expect(popup.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight - 8);
+      const first = popup.querySelector<HTMLElement>('.menu-item')!;
+      expect(first.getBoundingClientRect().top).toBeGreaterThan(header.getBoundingClientRect().bottom);
+      popup.dispatchEvent(new MouseEvent('mouseenter'));
+      tick(150);
+      expect(popup.classList.contains('ready')).toBeTrue();
+      first.click();
+      expect(selected).toHaveBeenCalledOnceWith(items[0].children[0]);
+      header.style.height = '40px';
+      fixture.componentRef.setInput('position', { x: 20, y: 40 });
+      fixture.detectChanges();
+      window.dispatchEvent(new Event('resize'));
+      fixture.detectChanges();
+      expect(popup.getBoundingClientRect().top).toBe(40);
+      expect(popup.getBoundingClientRect().top).toBe(menu.menuBox.nativeElement.getBoundingClientRect().top);
+      expect(popup.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight - 8);
+    } finally {
+      document.body.appendChild(fixture.nativeElement);
+      host.remove();
+    }
+    tick();
+  }));
+
+  it('resets scrolling between long lists and preserves natural height for short lists', fakeAsync(() => {
+    tick();
+    for (const item of items.slice(0, 2)) {
+      item.children = Array.from({ length: 100 }, (_, index) => ({ name: `${item.name} ${index}` }));
+    }
+    enter(0);
+    fixture.detectChanges();
+    submenu()!.scrollTop = submenu()!.scrollHeight;
+    expect(submenu()!.scrollTop).toBeGreaterThan(0);
+    enter(1);
+    fixture.detectChanges();
+    expect(submenu()!.scrollTop).toBe(0);
+    expect(submenu()!.textContent).toContain('闪存模式 0');
+    enter(2);
+    fixture.detectChanges();
+    expect(submenu()!.scrollHeight).toBe(submenu()!.clientHeight);
+    expect(submenu()!.getBoundingClientRect().height).toBeLessThan(120);
+    const activeRow = fixture.nativeElement.querySelector('.menu-box:not(.submenu-box) > .active');
+    expect(submenu()!.getBoundingClientRect().top).toBe(activeRow.getBoundingClientRect().top);
+    tick();
+  }));
+
+  it('realigns an open submenu to its current row after the viewport changes', fakeAsync(() => {
+    tick();
+    enter(0);
+    fixture.detectChanges();
+    fixture.componentRef.setInput('position', { x: 20, y: 180 });
+    fixture.detectChanges();
+    window.dispatchEvent(new Event('resize'));
+    fixture.detectChanges();
+    const row = fixture.nativeElement.querySelector('.menu-box:not(.submenu-box) > .active');
+    expect(submenu()!.getBoundingClientRect().top).toBe(row.getBoundingClientRect().top);
+    expect(submenu()!.classList.contains('ready')).toBeTrue();
+    expect(menu.activeSubmenuItem).toBe(items[0]);
+    tick();
+  }));
+
   it('switches the rendered options and selected row together', fakeAsync(() => {
     tick();
     for (const index of [0, 1, 2, 0, 2, 1]) {

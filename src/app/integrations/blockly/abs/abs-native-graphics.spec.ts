@@ -1,3 +1,4 @@
+import * as Blockly from 'blockly';
 import { evaluateNativeCandidate } from '../../../editors/blockly-editor/services/blockly-native-candidate';
 import type { NativeCandidateRequest } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
 
@@ -89,10 +90,55 @@ describe('isolated native graphical candidate', () => {
     expect(roots.map(block => [block.x, block.y])).toEqual([[0, 0], [0, 0]]);
   });
 
+  it('preserves adjacent saved roots when a later render runs after native connection tracking resumes', async () => {
+    const editorBump = Blockly.BlockSvg.prototype.bumpNeighbours;
+    const state = { blocks: { blocks: [
+      { type: 'adjacent_statement', id: 'upper', x: 0, y: 0 },
+      { type: 'adjacent_statement', id: 'lower', x: 0, y: 25 },
+    ] } };
+    const value: NativeCandidateRequest = { blocks: [], steps: [
+      { kind: 'context', mode: 'arduino' }, { kind: 'script', label: 'adjacent-roots', source: `
+        Blockly.Blocks.adjacent_statement = { init() {
+          this.appendDummyInput().appendField('step');
+          this.setPreviousStatement(true); this.setNextStatement(true);
+          // Deserialization restores connection tracking at t=1. A field or
+          // generator can request another genuine render after that point.
+          setTimeout(() => { this.queueRender(); }, 2);
+        } };
+        Arduino.forBlock.adjacent_statement = () => '';
+      ` },
+    ], verify: { state, contracts: { fields: { upper: {}, lower: {} } } } };
+    const result = await run(value);
+    expect(result.state['blocks'].blocks.map(block => [block.id, block.x, block.y]))
+      .toEqual([['upper', 0, 0], ['lower', 0, 25]]);
+    expect(Blockly.BlockSvg.prototype.bumpNeighbours).toBe(editorBump);
+  });
+
+  for (const changesCode of [false, true])
+  it('separates candidate layout from program semantics, code depends on layout: ' + changesCode, async () => {
+    const value = request(); delete value.abs;
+    value.steps.push({ kind: 'script', label: 'move-saved-root', source: `
+      const init = Blockly.Blocks.graphical_owner.init;
+      Blockly.Blocks.graphical_owner.init = function() {
+        init.call(this); setTimeout(() => { this.moveBy(40, 0); }, 2);
+      };
+      Arduino.forBlock.graphical_owner = block => {
+        ${changesCode ? "Arduino.addSetup('position', String(block.getRelativeToSurfaceXY().x) + ';');" : ''}
+        return '';
+      };
+    ` });
+    value.verify = { state: { blocks: { blocks: [
+      { type: 'graphical_owner', id: 'root', x: 30, y: 60, fields: { MODE: 'OFF' } },
+    ] } }, contracts: { fields: { root: {
+      MODE: { type: 'field_dropdown', options: [['off', 'OFF'], ['on', 'ON']] },
+    } } } };
+    if (changesCode) await expectAsync(run(value)).toBeRejectedWithError(/changed generated code/);
+    else expect((await run(value)).state['blocks'].blocks[0]).toEqual(jasmine.objectContaining({ x: 30, y: 60 }));
+  });
+
   for (const effect of [
     `this.setFieldValue('OFF', 'MODE')`,
     `this.appendValueInput('UNREQUESTED')`,
-    `this.moveBy(40, 0)`,
     `try { fetch('https://example.invalid/'); } catch {}`,
     `try { Promise.resolve().then(() => {}); } catch {}`,
     `const repeat = () => requestAnimationFrame(repeat); repeat()`,

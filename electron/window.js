@@ -121,17 +121,19 @@ function readSubWindowMinimumSize(win) {
     }
 }
 
-/** 首次 before-quit 即置位；池窗�?closed �?Electron �?app.isQuitting 在实测中仍为 false */
+/** Set only after the user accepts quit; a cancelled request must leave subapps alive. */
 let applicationIsQuitting = false;
-app.once('before-quit', () => {
+function beginWindowShutdown() {
+    if (applicationIsQuitting) return;
     applicationIsQuitting = true;
     // Notify every renderer in this host before main.js terminates its child processes.
     for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
-            win.webContents.send('child-tool-host-shutdown');
+            try { win.webContents.send('child-tool-host-shutdown'); }
+            catch (error) { console.warn('Shutdown notification failed:', error.message); }
         }
     }
-});
+}
 
 function isDevServeSubWindow() {
     return process.env.DEV === 'true' || process.env.DEV === true;
@@ -759,7 +761,25 @@ function clampNumber(value, min, max) {
     return Math.min(Math.max(value, min), max);
 }
 
-function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeight) {
+function waitForWindowEvent(senderWindow, event, action) {
+    let settle;
+    const happened = new Promise(resolve => {
+        settle = resolve;
+    });
+    senderWindow.once(event, settle);
+    try {
+        action();
+    } catch (error) {
+        senderWindow.removeListener(event, settle);
+        throw error;
+    }
+    return Promise.race([
+        happened,
+        new Promise(resolve => setTimeout(resolve, 1000)),
+    ]).finally(() => senderWindow.removeListener(event, settle));
+}
+
+async function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeight) {
     if (!senderWindow || senderWindow.isDestroyed()) {
         return { success: false, error: 'window-not-found' };
     }
@@ -778,35 +798,47 @@ function setCurrentWindowSize(senderWindow, requestedWidth, requestedHeight) {
     const currentBounds = senderWindow.getBounds();
     const centerX = currentBounds.x + currentBounds.width / 2;
     const centerY = currentBounds.y + currentBounds.height / 2;
-    const nextX = clampNumber(
-        Math.round(centerX - nextWidth / 2),
-        workArea.x,
-        workArea.x + workArea.width - nextWidth
-    );
-    const nextY = clampNumber(
-        Math.round(centerY - nextHeight / 2),
-        workArea.y,
-        workArea.y + workArea.height - nextHeight
-    );
 
     if (senderWindow.isFullScreen()) {
-        senderWindow.setFullScreen(false);
+        await waitForWindowEvent(senderWindow, 'leave-full-screen', () => senderWindow.setFullScreen(false));
     }
     if (senderWindow.isMaximized()) {
-        senderWindow.unmaximize();
+        await waitForWindowEvent(senderWindow, 'unmaximize', () => senderWindow.unmaximize());
     }
 
-    senderWindow.setBounds({
-        x: nextX,
-        y: nextY,
-        width: nextWidth,
-        height: nextHeight,
-    });
+    // setBounds changes the outer frame. On a frameless Windows window the web
+    // page keeps its previous size, and getBounds is a couple of pixels larger
+    // than the requested content. Size the client area, then apply once more
+    // after the native resize has been processed.
+    const apply = () => {
+        senderWindow.setContentBounds({
+            x: clampNumber(
+                Math.round(centerX - nextWidth / 2),
+                workArea.x,
+                workArea.x + workArea.width - nextWidth
+            ),
+            y: clampNumber(
+                Math.round(centerY - nextHeight / 2),
+                workArea.y,
+                workArea.y + workArea.height - nextHeight
+            ),
+            width: nextWidth,
+            height: nextHeight,
+        });
+    };
+    apply();
+    if (process.platform === 'win32') {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        if (!senderWindow.isDestroyed()) apply();
+    }
+    if (senderWindow.isDestroyed()) return { success: false, error: 'window-not-found' };
 
+    const [contentWidth, contentHeight] = senderWindow.getContentSize();
     return {
         success: true,
         requested: { width, height },
         bounds: senderWindow.getBounds(),
+        content: { width: contentWidth, height: contentHeight },
     };
 }
 
@@ -2023,32 +2055,18 @@ function registerWindowHandlers(mainWindow, options = {}) {
         // 检查是否是主窗口，如果是主窗口，关闭整个应用程�?
         if (senderWindow === mainWindow) {
             app.quit();
-            // Attempt to terminate any residual helper processes on exit.
-            terminateAilyProcess();
         } else {
             authorizeRendererWindowClose(senderWindow);
-            senderWindow.close();
+            senderWindow?.close();
         }
     });
 
-    // Mac 平台下处理系统关闭按钮的关闭检�?
-    if (process.platform === 'darwin') {
-        mainWindow.on('close', (event) => {
-            event.preventDefault();
-            mainWindow.webContents.send('window-close-request');
-        });
-
-        // 监听渲染进程返回的关闭确认结�?
-        ipcMain.on('window-close-confirmed', (event) => {
-            const senderWindow = BrowserWindow.fromWebContents(event.sender);
-            if (senderWindow === mainWindow) {
-                mainWindow.removeAllListeners('close');
-                mainWindow.close();
-                app.quit();
-                terminateAilyProcess();
-            }
-        });
-    }
+    // Keep the renderer available until main has drained its AppData leases.
+    mainWindow.on('close', (event) => {
+        if (options.canCloseMainWindow?.()) return;
+        event.preventDefault();
+        app.quit();
+    });
 
     // 修改为同步处理程�?
     ipcMain.on("window-is-maximized", (event) => {
@@ -2193,6 +2211,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 
 module.exports = {
+    beginWindowShutdown,
     registerWindowHandlers,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,

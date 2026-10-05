@@ -122,6 +122,31 @@ export class CloudService {
       );
   }
 
+  getStudentProjects(page: number = 1, perPage: number = 100): Observable<any> {
+    return this.http.get<any>(`${this.cloudProjectsUrl}/students`, {
+      params: {
+        page: String(page), perPage: String(perPage),
+        category: this.configService.isCoderProduct() ? 'coder' : 'blockly',
+      },
+    }).pipe(catchError(this.handleError));
+  }
+
+  getProject(projectId: string): Observable<any> {
+    return this.http.get<any>(`${this.cloudProjectsUrl}/${projectId}`)
+      .pipe(catchError(this.handleError));
+  }
+
+  getProjectImage(imageUrl: string): Observable<Blob> {
+    return this.http.get(`${this.baseUrl}${imageUrl}`, { responseType: 'blob' })
+      .pipe(catchError(this.handleError));
+  }
+
+  openProjectArchive(projectId: string): Observable<string> {
+    return this.downloadProject(projectId).pipe(
+      switchMap(blob => from(this.downloadAndExtractArchive(blob))),
+    );
+  }
+
   /**
    * 云上项目基础信息编辑接口
    * @param projectId 项目ID

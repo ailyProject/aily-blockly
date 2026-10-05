@@ -1,5 +1,6 @@
 import type * as Blockly from 'blockly';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
+import { absProgramWorkspace } from '../../../integrations/blockly/abs/abs-program-state';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
 
 /** Candidate-local, virtual one-shot tasks. No event loop, waiting or arbitrary
@@ -22,8 +23,8 @@ export class NativeUiTasks {
     this.assertClean();
     if (this.forbidden) return this.reject('Native candidate does not support timers during generation.');
     if (typeof callback !== 'function' || typeof delay !== 'number' || !Number.isFinite(delay)
-      || delay < 0 || delay > 2000 || ++this.sequence > 128 || (this.delayBudget += delay) > 5000) {
-      return this.reject('Native UI tasks exceed the finite callback/delay budget.');
+      || delay < 0 || delay > 2000 || ++this.sequence > 512 || (this.delayBudget += delay) > 5000) {
+      return this.reject(`Native UI tasks exceed the finite callback/delay budget (${this.sequence} callbacks, ${this.delayBudget}ms total delay).`);
     }
     const id = -this.sequence;
     this.pending.set(id, { due: this.now + delay, callback });
@@ -43,16 +44,19 @@ export class NativeUiTasks {
   }
   drain(snapshot: () => string): void {
     this.assertClean();
+    // No event can interleave this synchronous queue. Reuse each verified
+    // post-callback snapshot as the next precondition, without skipping a task.
+    let before = this.pending.size ? this.withoutScheduling(snapshot) : '';
     while (this.pending.size) {
       // Stable Map order breaks ties; nested tasks use virtual due time.
       const [id, task] = [...this.pending].sort((a, b) => a[1].due - b[1].due)[0];
-      const before = this.withoutScheduling(snapshot);
       this.pending.delete(id); this.now = task.due;
       try {
         const value: any = task.callback(); this.assertClean();
         if (value && typeof value.then === 'function') this.reject('Native candidate does not support asynchronous UI callbacks.');
         const after = this.withoutScheduling(snapshot);
         if (after !== before) this.reject('Native deferred UI task changed persisted state, structure or field constraints' + semanticDifferencePath(before, after) + '.');
+        before = after;
       } catch (error) { this.reject(String(error)); }
     }
     this.assertClean();
@@ -78,7 +82,7 @@ function semanticDifferencePath(before: string, after: string): string {
 /** Exclude display labels/tooltips, but include empty sockets, option keys,
  * checks, and all serializers. Empty inputs are not necessarily present in ABI. */
 export function nativeUiSemanticSnapshot(native: typeof Blockly, workspace: Blockly.Workspace): string {
-  return absJson({ state: native.serialization.workspaces.save(workspace),
+  return absJson({ state: absProgramWorkspace(native.serialization.workspaces.save(workspace)),
     shapes: workspace.getAllBlocks(false).map(block => ({ id: block.id,
       connections: [block.outputConnection, block.previousConnection, block.nextConnection].map(value => value && [value.type, value.getCheck()]),
       inputs: block.inputList.map(input => ({ name: input.name, connection: input.connection && [input.connection.type, input.connection.getCheck()],

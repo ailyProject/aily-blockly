@@ -14,7 +14,7 @@ import { BuilderService } from '@domain/build/public-api';
 import { MainUiAutomationService } from './main-ui-automation.service';
 import { AiOperationRegistryService } from './ai-operation-registry.service';
 import { SubappAgentBridgeService } from '@integration/subapps/public-api';
-import { isAilyLibraryPackageName } from '@shared/public-api';
+import { isAilyLibraryPackageName, isAilyScopedPackageName } from '@shared/public-api';
 import {
   selectSerialPort,
   SerialService,
@@ -22,6 +22,7 @@ import {
   UploaderService,
 } from '@domain/device/public-api';
 import { AbsGenerationToolsService } from '../../../integrations/blockly/abs/abs-generation-tools.service';
+import { sameAbsProjectDirectory } from '../../../integrations/blockly/abs/abs-project-path';
 import { checkAbsDocumentation } from '../../../integrations/blockly/abs/abs-documentation';
 import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
@@ -242,12 +243,14 @@ export class BlocklyLiveOperationBridgeService {
       return this.executeCoderProjectOperation(coderPath, payload.operation, payload.params || {});
     }
 
-    const requestedProject = this.normalizePath(payload.path);
-    const currentProject = this.normalizePath(this.projectService.currentProjectPath);
+    const requestedProject = payload.path;
+    const currentProject = this.projectService.currentProjectPath;
     if (!currentProject) {
       return { ok: false, message: '当前主程序未打开项目' };
     }
-    if (requestedProject && requestedProject !== currentProject) {
+    const matchesProject = !requestedProject || await sameAbsProjectDirectory(requestedProject, currentProject,
+      window['fs']?.realpathAsync, window['platform']?.isWindows === true);
+    if (!matchesProject || currentProject !== this.projectService.currentProjectPath) {
       return {
         ok: false,
         message: `当前打开项目不匹配: ${this.projectService.currentProjectPath}`,
@@ -309,7 +312,9 @@ export class BlocklyLiveOperationBridgeService {
       case 'block_metadata_snapshot':
         return this.executeBlockMetadataSnapshot();
       case 'library_runtime_sync':
-        return this.runBlockWritingOperation(() => this.executeLibraryRuntimeSync(payload.params || {}));
+        // The native rebuild owns its workspace edit lease. Discovery and
+        // dependency waits must leave the existing canvas interactive.
+        return this.executeLibraryRuntimeSync(payload.params || {});
       case 'project_abi_check':
         return this.executeProjectAbiCheck();
       case 'project_build':
@@ -331,7 +336,7 @@ export class BlocklyLiveOperationBridgeService {
       case 'project_save':
         return this.runBlockWritingOperation(() => this.executeProjectSave());
       case 'project_reload':
-        return this.runBlockWritingOperation(() => this.executeProjectReload());
+        return this.executeProjectReload();
       default:
         return { ok: false, message: `不支持的 live Blockly 操作: ${payload.operation || ''}` };
     }
@@ -636,7 +641,9 @@ export class BlocklyLiveOperationBridgeService {
         },
         isReady: project => this.getProjectRuntimeStatus(project).ready,
       });
-      const result = developmentMode === 'coder' ? await operation() : await this.runBlockWritingOperation(operation);
+      // Board installation can take minutes. Native save/rebuild operations
+      // protect their own writes; the download must not own the canvas mask.
+      const result = await operation();
       return { ...result, developmentMode };
     } finally {
       this.aiOperations.setActive('live-board-switch', false);
@@ -1187,7 +1194,7 @@ export class BlocklyLiveOperationBridgeService {
     if (!normalized) {
       return normalized;
     }
-    if (normalized.startsWith('@aily-project/')) {
+    if (isAilyScopedPackageName(normalized)) {
       return normalized;
     }
     if (normalized.startsWith('board-')) {

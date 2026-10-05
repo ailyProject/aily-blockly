@@ -8,6 +8,7 @@ import type { NativeCandidateRequest } from '../../../editors/blockly-editor/ser
 import { absJson } from './abs-json';
 import { createAbsProjection } from './abs-identity-map';
 import { prepareAbsNativeReconciliation } from './abs-native-reconciliation';
+import { createAbsReconciler } from './abs-reconciler';
 
 describe('native temporary child ownership', () => {
   let workspace: Blockly.Workspace;
@@ -170,7 +171,7 @@ describe('native temporary child ownership', () => {
     const baseline = await createAbsProjection(workspace, { document: workspace, contracts: { fields: {} },
       generation: 'g', baselineRef: 'b', savedAbiHash: null, scope: { projectKey: 'p', pageId: 'main' } });
     const calls: NativeCandidateRequest[] = [];
-    await expectAsync(prepareAbsNativeReconciliation(baseline, value.abs!, {}, async input => {
+    await expectAsync(prepareAbsNativeReconciliation(createAbsReconciler(baseline, value.abs!), {}, async input => {
       const next = { ...value, ...input }; calls.push(next); return run(next);
     }, () => {})).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_NATIVE_BINDING_CHANGED' }));
     expect(calls.length).toBe(2); expect(calls.some(call => !!call.verify)).toBeFalse();

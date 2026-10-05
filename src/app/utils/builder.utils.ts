@@ -76,8 +76,8 @@ const BUILD_ARTIFACT_EXACT_NAMES = [
   'main.partitions.bin',
 ] as const;
 
-/** 与 upload.js 一致：ESP32 等板卡常见通配符命名 */
-const BUILD_ARTIFACT_GLOB_PATTERNS = ['*.bootloader.bin', '*.partitions.bin'] as const;
+/** Arduino 固件采用工程名；同时包含 ESP32 的 bootloader / partitions。 */
+const BUILD_ARTIFACT_GLOB_PATTERNS = ['*.hex', '*.bin'] as const;
 
 /**
  * 在编译输出目录中按文件名解析单个产物：根目录直连后再递归查找。
@@ -101,10 +101,11 @@ export async function resolveBuildArtifactAbsolutePath(
 }
 
 /**
- * 在编译输出目录中解析 main.hex：根目录直连后再递归查找（与烧录前解析产物一致）。
+ * 优先解析 main.hex，再兼容原生 Arduino 工程名对应的应用 HEX。
  */
 export async function resolveMainHexAbsolutePath(buildPath: string): Promise<string | undefined> {
-  return resolveBuildArtifactAbsolutePath(buildPath, 'main.hex');
+  return await resolveBuildArtifactAbsolutePath(buildPath, 'main.hex')
+    || (await findAllFiles(buildPath, '*.hex')).find(file => !/with_bootloader\.hex$/i.test(file));
 }
 
 /**
@@ -120,7 +121,7 @@ export async function findAllFiles(basePath: string, fileNamePattern: string): P
   const findRes = await window['tools'].findFileByName(basePath, fileNamePattern);
   let filteredRes = findRes;
   if (fileNamePattern.includes('*')) {
-    const pattern = fileNamePattern.replace(/\*/g, '([^.]+)').replace(/\./g, '\\.');
+    const pattern = fileNamePattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
     const regex = new RegExp(`^${pattern}$`);
     filteredRes = findRes.filter((filePath: string) => {
       const baseName = window['path'].basename(filePath);
@@ -263,14 +264,14 @@ export async function resolveActualBuildOutputs(
 }
 
 /**
- * 工程层面解析 main.hex 真实落点：优先项目预期 buildPath，否则按 aily-builder 实际命名回探缓存子目录。
- * 候选 sketch 入口与 compile.js 一致：Coder -> `sketch/src/main.cpp`；Blockly -> `.temp/sketch/sketch.ino`。
+ * 工程层面解析应用 HEX 真实落点：优先项目预期 buildPath，再回探传统入口的缓存子目录。
  */
 export async function resolveActualMainHexLocation(
   projectRoot: string,
   primaryBuildPath: string
 ): Promise<{ abs?: string; buildPath: string }> {
   const { buildPath, artifacts } = await resolveActualBuildOutputs(projectRoot, primaryBuildPath);
-  const hex = artifacts.find((a) => a.label === 'main.hex');
+  const hex = artifacts.find((a) => a.label === 'main.hex')
+    || artifacts.find((a) => /\.hex$/i.test(a.label) && !/with_bootloader\.hex$/i.test(a.label));
   return { abs: hex?.abs, buildPath };
 }

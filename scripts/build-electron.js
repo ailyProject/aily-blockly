@@ -55,6 +55,12 @@ function withoutFileAssociations(options = {}) {
 
 function createBuilderConfig(plan, baseConfig) {
   const product = plan.product;
+  const coderAssociations = plan.buildProduct === 'coder' ? {
+    fileAssociations: [
+      { ext: 'aci', name: 'Aily Coder Project', role: 'Editor', mimeType: 'application/x-aily-coder-project' },
+      { ext: 'ino', name: 'Arduino Sketch', role: 'Editor', mimeType: 'text/x-arduino', rank: 'Alternate' },
+    ],
+  } : {};
   return {
     ...baseConfig,
     appId: product.appId,
@@ -92,14 +98,17 @@ function createBuilderConfig(plan, baseConfig) {
     })),
     win: {
       ...withoutFileAssociations(baseConfig.win),
+      ...coderAssociations,
       artifactName: `${plan.artifactPrefix}-\${version}.\${ext}`,
     },
     mac: {
       ...withoutFileAssociations(baseConfig.mac),
+      ...coderAssociations,
       artifactName: `${plan.artifactPrefix}-macos-\${version}-\${arch}.\${ext}`,
     },
     linux: {
       ...withoutFileAssociations(baseConfig.linux),
+      ...coderAssociations,
       artifactName: `${plan.artifactPrefix}-linux-\${version}-\${arch}.\${ext}`,
     },
     nsis: {

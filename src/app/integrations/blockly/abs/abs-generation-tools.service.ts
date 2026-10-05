@@ -4,6 +4,7 @@ import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGen
 import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
+import { AbsApplicationFailure } from './abs-application-failure';
 
 /** Wire adaptation only. Preparation, leases, publication and recovery belong to the coordinator. */
 @Injectable({ providedIn: 'root' })
@@ -68,7 +69,10 @@ export class AbsGenerationToolsService {
     } catch (error) {
       const failure = serializeAbsFailure(error);
       return { ok: false, operation, ...failure,
-        ...(operation === 'abs_apply' ? { publication: { status: applyStarted ? 'UNKNOWN' : 'NOT_COMMITTED' } } : {}),
+        ...(operation === 'abs_apply' ? {
+          publication: { status: !applyStarted || error instanceof AbsApplicationFailure ? 'NOT_COMMITTED' : 'UNKNOWN' },
+          application: { status: error instanceof AbsApplicationFailure ? error.applicationStatus : applyStarted ? 'UNKNOWN' : 'NOT_STARTED' },
+        } : {}),
         ...(failure.diagnostic?.hint ? { recovery: failure.diagnostic.hint } : (error as any)?.code === 'ABS_IDENTITY_AMBIGUOUS' ? {
           recovery: 'Identity evidence is ambiguous. Keep the current generation and unapplied draft. Changing field values or querying block_info cannot repair identity. Do not add IDs to ABS, discard the map or force export over the draft.',
         } : {}),

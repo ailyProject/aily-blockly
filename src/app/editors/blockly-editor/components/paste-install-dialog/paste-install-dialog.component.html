@@ -11,6 +11,9 @@
             <div class="lib-item">
                 <nz-tag nzColor="processing">{{ lib.name }}</nz-tag>
                 <span class="version">{{ getVersionDisplay(lib) }}</span>
+                @if (lib.localPath) {
+                <button type="button" class="local-library-picker" [disabled]="installing" (click)="selectLocalLibrary(lib)">选择本机目录</button>
+                }
             </div>
             }
         </div>

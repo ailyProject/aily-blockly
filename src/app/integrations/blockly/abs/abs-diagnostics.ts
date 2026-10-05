@@ -14,6 +14,7 @@ export interface AbsDiagnostic {
   reason?: string;
   identity?: AbsIdentityDiagnostic;
   resource?: AbsResourceDiagnostic;
+  capacity?: { phase: string; resource: string; actual: number; limit: number };
   truncated?: boolean;
 }
 
@@ -68,6 +69,13 @@ export function serializeAbsFailure(error: unknown): AbsFailure {
   const input = value['diagnostic'];
   if (!input || typeof input !== 'object' || Array.isArray(input)) return result;
   const diagnostic: AbsDiagnostic = {};
+  const capacity = input.capacity;
+  if (capacity && typeof capacity.phase === 'string' && /^[a-z-]{1,40}$/.test(capacity.phase)
+    && typeof capacity.resource === 'string' && /^[a-zA-Z]{1,40}$/.test(capacity.resource)
+    && Number.isSafeInteger(capacity.actual) && capacity.actual >= 0
+    && Number.isSafeInteger(capacity.limit) && capacity.limit > 0) {
+    diagnostic.capacity = { phase: capacity.phase, resource: capacity.resource, actual: capacity.actual, limit: capacity.limit };
+  }
   let truncated = input.truncated === true;
   const text = (value: string) => { if (value.length > 256) truncated = true; return value.slice(0, 256); };
   for (const key of ['blockType', 'parentBlockType', 'field', 'modelName', 'availableName', 'hint', 'reason'] as const) {

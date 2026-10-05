@@ -11,7 +11,7 @@ process.env.AILY_NPM_PREFIX = prefix;
 process.env.AILY_CHILD_PATH = childRoot;
 app.setPath('userData', path.join(root, 'profile')); app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
-const locks = require('../appdata-resource-lock'), cmd = require('../cmd');
+const cmd = require('../cmd');
 const { createBuildDebugPreview, resolvePreviewConfiguration, registerBuildDebugPreview } = require('../build-debug-preview');
 const { nativeSubappRegistry, listChildToolHoldersForCatalogId } = require('../window');
 const { prepareS3Project } = require('./fixtures/s3-project.cjs');
@@ -39,21 +39,18 @@ app.whenReady().then(async () => {
         await foreign.loadURL('data:text/html,<title>Foreign test owner</title>');
         const project = path.join(root, 'project');
         const { config } = prepareS3Project({ mode, project, appData, fixtureSource });
-        locks.registerAppDataResourceLockHandlers(); cmd.registerCmdHandlers();
+        cmd.registerCmdHandlers();
         const preview = createBuildDebugPreview({ registry: nativeSubappRegistry,
             configuration: () => resolvePreviewConfiguration({ childRoot, appData: path.join(root, 'evidence'), runtimeManifestPath }) });
         registerBuildDebugPreview(ipcMain, { preview, isCurrentRenderer: sender => sender === window.webContents });
         const request = path.join(project, `.temp/compile-request-${randomUUID()}.json`);
         fs.mkdirSync(path.dirname(request), { recursive: true }); write(request, config);
-        const lease = await invoke(window, 'appdata-resource-lock-acquire', { mode: 'read', requestId: randomUUID(), label: 'Native S3 acceptance', timeoutMs: 60000 });
-        assert.equal(lease.ok, true, JSON.stringify(lease));
         const streamId = `native-s3-${mode}-${randomUUID()}`, closed = Promise.withResolvers();
         removeExit = cmd.onCmdProcessExit(event => { if (event.streamId === streamId) closed.resolve(event); });
         const compileStart = Date.now(); progress('compile');
         const started = await invoke(window, 'cmd-run', { command: 'node', args: [path.join(childRoot, 'scripts/compile.js'), request],
             cwd: project, shellProfile: false, streamId, buildWorkspace: project,
-            appDataResourceToken: lease.token, env: { PATH: settings.commandPath, DEV: 'false', AILY_E2E: '0' } });
-        await invoke(window, 'appdata-resource-lock-release', { token: lease.token });
+            env: { PATH: settings.commandPath, DEV: 'false', AILY_E2E: '0' } });
         assert.equal(started.success, true, started.error);
         const child = cmd.getCmdProcess(streamId), log = fs.createWriteStream(path.join(root, 'compile.log'));
         child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });

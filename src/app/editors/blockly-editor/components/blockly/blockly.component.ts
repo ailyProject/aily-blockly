@@ -67,8 +67,6 @@ import {
 } from '@domain/project/public-api';
 
 import './renderer/aily-icon';
-import './renderer/aily-thrasos/thrasos';
-import './renderer/aily-zelos/zelos';
 import './custom-category';
 import { setU8g2AnimationFieldTranslator } from './custom-field/field-u8g2-animation';
 import { setTftEsPiAnimationFieldTranslator } from './custom-field/field-tftespi-animation';

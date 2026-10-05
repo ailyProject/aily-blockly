@@ -1,8 +1,8 @@
 import type { NativeCandidateRequest, NativeCandidateResult } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
 import { absJson } from './abs-json';
 import { indexAbsAbi } from './abs-abi-index';
-import { AbsProjection, AbsSyncError } from './abs-state';
-import { AbsReconcileOptions, reconcileAbsDraft } from './abs-reconciler';
+import { AbsSyncError } from './abs-state';
+import { AbsReconcileOptions, createAbsReconciler } from './abs-reconciler';
 import { prepareAbsReconciledResources } from './abs-prepared-reconciliation';
 import { assertAbsReadback } from './abs-readback';
 import { assertAbsDeclaredBlockShape } from './abs-declarative-contracts';
@@ -15,17 +15,20 @@ import { absDeclarationRequestId } from './abs-declaration-intents';
 import { walkAbsRawSyntax } from './abs-syntax-binding';
 import { absSyntaxOptions } from './abs-syntax-contracts';
 import { retireEmptyProjectModels } from './abs-empty-project-models';
+import { orderAbsSharedRoots } from './abs-program-state';
 
 export type AbsNativeExecutor = (request: Omit<NativeCandidateRequest, 'steps'>) => Promise<NativeCandidateResult>;
 
 /** No alternate save path: native execution only supplies this transaction's detached draft. */
-export async function prepareAbsNativeReconciliation(baseline: AbsProjection, source: string,
+export async function prepareAbsNativeReconciliation(reconciler: ReturnType<typeof createAbsReconciler>,
   options: AbsReconcileOptions, execute: AbsNativeExecutor, assertCurrent: () => void) {
+  const source = reconciler.source;
   const syntax = readAbsSyntax(source); // Reject a malformed document before replaying any library.
-  baseline = structuredClone(baseline);
+  const baseline = reconciler.snapshot();
   const parseOptions = absSyntaxOptions(baseline.workspace, baseline.contracts, options);
+  const readDefinitions = options.withSynchronousRead ?? (<T>(read: () => T) => read());
   const hostCalls: NonNullable<NativeCandidateRequest['hostCalls']> = [];
-  for (const { node } of walkAbsRawSyntax(syntax)) if (options.prepareBlock && options.hostPrepared?.(node.type)) {
+  readDefinitions(() => { for (const { node } of walkAbsRawSyntax(syntax)) if (options.prepareBlock && options.hostPrepared?.(node.type)) {
     const fields = Object.fromEntries(node.parameters.filter(parameter => parameter.name && parameter.token)
       .map(parameter => [parameter.name!, parameter.token!.value]));
     const extraState = Object.hasOwn(node, 'extraState') ? node.extraState : parseOptions.prepareExtraState?.(node);
@@ -37,7 +40,7 @@ export async function prepareAbsNativeReconciliation(baseline: AbsProjection, so
     const argumentOrder = parseOptions.argumentOrder?.(node.type, extraState, fields);
     hostCalls.push({ start: node.start, type: node.type, ...(argumentOrder ? { argumentOrder } : {}),
       ...(extraState === undefined ? {} : { extraState }) });
-  }
+  } });
   const modelState = structuredClone(baseline.workspace);
   if (source !== baseline.abs) retireEmptyProjectModels(baseline, modelState, source);
   const modelRequestId = await absDeclarationRequestId(baseline.map.generation, source);
@@ -46,7 +49,7 @@ export async function prepareAbsNativeReconciliation(baseline: AbsProjection, so
   // These tentative inputs only unblock shape binding. Scope/identity/model
   // decisions remain with reconcileAbsDraft and replace this table below.
   if (options.declaration) {
-    prepareAbsNativeModelInputs(syntax, modelState, options, modelRequestId);
+    readDefinitions(() => prepareAbsNativeModelInputs(syntax, modelState, options, modelRequestId));
   }
   const values = await captureAbsNativeValues(syntax, assertCurrent);
   const run = async (request: Omit<NativeCandidateRequest, 'steps'>) => {
@@ -66,7 +69,7 @@ export async function prepareAbsNativeReconciliation(baseline: AbsProjection, so
   const provisional = await bind();
   // Reuse the sole identity matcher, including ambiguity and protected-block policies.
   // The provisional tree is never externalized, loaded, persisted or used as a receipt.
-  const planned = await reconcileAbsDraft(baseline, source, { ...options, nativeBinding: provisional });
+  const planned = await reconciler.draft({ ...options, nativeBinding: provisional });
   assertCurrent();
   const identities = new Map(planned.identities.map(item => [item.start, item.id]));
   const binding = await bind(planned.identities, planned.workspace['variables'], provisional.creations ?? []);
@@ -80,7 +83,7 @@ export async function prepareAbsNativeReconciliation(baseline: AbsProjection, so
     || absJson(binding.modelDeclarations ?? []) !== absJson(provisional.modelDeclarations ?? [])) {
     throw new AbsSyncError('ABS_NATIVE_BINDING_CHANGED', 'Native default ownership, identity or content changed during replay.');
   }
-  const draft = await reconcileAbsDraft(baseline, source, { ...options, nativeBinding: binding,
+  const draft = await reconciler.draft({ ...options, nativeBinding: binding,
     newId: node => identities.get(node.start)! });
   assertCurrent();
   if (absJson(draft.identities) !== absJson(planned.identities)) throw new AbsSyncError('ABS_NATIVE_BINDING_CHANGED', 'Native identity assignment changed.');
@@ -104,6 +107,7 @@ export async function prepareAbsNativeReconciliation(baseline: AbsProjection, so
   const candidate = await prepareAbsReconciledResources(source, draft, assertCurrent);
   const materialized = await candidate.materialize();
   assertCurrent();
+  orderAbsSharedRoots(materialized, baseline.document, candidate.contracts);
   const hydrated = indexAbsAbi(materialized);
   for (const [id, instance] of instances) assertAbsDeclaredBlockShape(hydrated.get(id)!, instance.shape);
   // Check the metadata/shadow merge, native loading and actual generator effects in
@@ -112,6 +116,7 @@ export async function prepareAbsNativeReconciliation(baseline: AbsProjection, so
     !(modelState['variables'] as Array<{ id: string }> | undefined)?.some(model => model.id === effect.id));
   const verified = await run({ blocks: [], values: await captureAbsNativeValues(materialized, assertCurrent),
     verify: { state: materialized, contracts: candidate.contracts,
+      newRootIds: materialized.blocks.blocks.filter(block => added.has(block.id)).map(block => block.id),
       ...(binding.modelDeclarations?.length ? { modelDeclarations: binding.modelDeclarations.map(effect => ({ ...effect, ownerId: identities.get(effect.start)! })) } : {}) } });
   assertAbsReadback(materialized, normalizeAbsSerializedWorkspace(verified.state), {
     fieldDefinition: (_type, name, id) => candidate.contracts.fields[id]?.[name],

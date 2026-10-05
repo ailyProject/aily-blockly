@@ -57,7 +57,8 @@ describe('Coder build metadata', () => {
         return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       },
     };
-    project = { currentProjectPath: root, isAilyCodeProject: () => true, copyPackageJsonToTemp: async () => true };
+    project = { currentProjectPath: root, isAilyCodeProject: () => true, copyPackageJsonToTemp: async () => true,
+      getProjectDependencyBlockMessage: () => undefined };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
       patchBuildMetadata: (projectPath: string, patch: any) => {
@@ -84,6 +85,22 @@ describe('Coder build metadata', () => {
     }
     writeManifest({ ...readManifest(), projectConfig: { CPUFreq: '240' } });
     expect(await metadata.updateCodeHash(root)).not.toBe(previous);
+  });
+
+  it('hashes native Arduino tabs and recursive sources without hashing its own metadata or caches', async () => {
+    writeManifest({ ...readManifest(), arduinoSketch: true, entry: 'Blink.ino' });
+    files.set(`${root}/Blink.ino`, 'void setup() {}');
+    files.set(`${root}/Configuration.h`, '#define USER_SETTING 1');
+    files.set(`${root}/src/core.cpp`, 'void loop() {}');
+    const first = await metadata.updateCodeHash(root);
+    files.set(`${root}/sketch/preprocess.json`, 'generated');
+    files.set(`${root}/sketch/build-config.json`, 'generated');
+    files.set(`${root}/package-lock.json`, 'npm metadata');
+    files.set(`${root}/.log/compile/latest.log`, 'build output');
+    files.set(`${root}/.workspace-history/snapshot.ino`, 'editor history');
+    expect(await metadata.updateCodeHash(root)).toBe(first);
+    files.set(`${root}/src/core.cpp`, 'void loop() { delay(1); }');
+    expect(await metadata.updateCodeHash(root)).not.toBe(first);
   });
 
   it('ignores generated caches and cloud metadata and normalizes manifest key order', async () => {
@@ -119,12 +136,12 @@ describe('Coder build metadata', () => {
     const service = new CompileService(
       project, {} as any, { createDirectory: async () => {} } as any, electron,
       { startBuild: () => true, finishBuild: () => {}, updateNotice: () => {} } as any,
-      { za7: '/7z' } as any, { data: {} } as any,
+      { za7: '/7z' } as any, { data: {}, isCoderProduct: () => true } as any,
       { warning: () => {}, error: () => {} } as any,
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
-      { runShared: async (_label: string, task: (token: string) => Promise<unknown>) => task('reader-token') } as any,
+      { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() } as any,
     );
     let calls = 0;
     spyOn<any>(service, 'runOneShotCommand').and.callFake(async () => ({
@@ -135,6 +152,52 @@ describe('Coder build metadata', () => {
     spyOn<any>(service, 'handleFailNotice');
     return service;
   }
+
+  for (const reason of ['installing', 'retry required']) {
+    it(`rejects direct disk compilation while dependencies report ${reason}`, async () => {
+      project.getProjectDependencyBlockMessage = jasmine.createSpy('block').and.returnValue(reason);
+      const command = jasmine.createSpy('command').and.returnValue(0);
+      const compiler = createCompiler(command);
+      const result = await compiler.runCompileFromDisk({ projectPath: root });
+      expect(result).toEqual({ success: false, result: { state: 'warn', text: reason } });
+      expect(project.getProjectDependencyBlockMessage).toHaveBeenCalledOnceWith(root);
+      expect(command).not.toHaveBeenCalled();
+      expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
+    });
+  }
+
+  it('waits for disk dependency verification before acquiring the build lock or starting a compiler', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    let checked!: () => void;
+    (compiler as any).npmService.assertCoderDependenciesReady.and.returnValue(new Promise<void>(resolve => { checked = resolve; }));
+    const start = spyOn((compiler as any).application, 'startBuild').and.returnValue(true);
+    const pending = compiler.runCompileFromDisk();
+    expect(start).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+    checked();
+    expect((await pending).success).toBeTrue();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a compiler when files are missing despite an earlier ready state', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('SDK incomplete'));
+    const start = spyOn((compiler as any).application, 'startBuild');
+    expect(await compiler.runCompileFromDisk()).toEqual({ success: false, result: { state: 'warn', text: 'SDK incomplete' } });
+    expect(start).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+    expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
+  });
+
+  it('keeps Blockly disk compilation outside the Coder preflight', async () => {
+    const compiler = createCompiler(() => 0);
+    (compiler as any).configService.isCoderProduct = () => false;
+    (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('must not run'));
+    expect((await compiler.runCompileFromDisk()).success).toBeTrue();
+    expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+  });
 
   it('records successful compilation against the captured project even after a project switch', async () => {
     const service = createCompiler(() => {
@@ -213,7 +276,6 @@ describe('Coder build metadata', () => {
     expect(calls.first().args[0].scriptPath).toContain('compile.js');
     expect(calls.first().args[0].configFilePath).toContain('/.temp/compile-request-');
     expect(calls.first().args[0].buildDeliveryRequest).toBeUndefined();
-    expect(calls.first().args[3]).toBe('reader-token');
   });
 
   it('opts into host delivery for compilation but not preprocess-only commands', async () => {
@@ -236,39 +298,24 @@ describe('Coder build metadata', () => {
     expect(command).toBe('node'); expect(args[0]).toBe('/child/scripts/compile.js');
     expect(args[1]).toContain('/.temp/compile-request-');
     expect(options.cwd).toBe(root); expect(options.shellProfile).toBeFalse();
-    expect(options.appDataResourceToken).toBe('reader-token'); expect(options.buildWorkspace).toBe(root);
+    expect(options.buildWorkspace).toBe(root);
   });
 
-  it('waits before reading inputs and retains the requested root across a project switch', async () => {
+  it('retains the requested root when the UI switches projects during preparation', async () => {
     const service = createCompiler(() => 0);
-    let grant!: () => void;
-    (service as any).appDataResourceLock.runShared = (_label: string, task: (token: string) => Promise<unknown>) =>
-      new Promise(resolve => { grant = () => resolve(task('delayed-reader')); });
-    const read = spyOn<any>(service, 'readCompileSource').and.callThrough();
+    let continuePreparation!: () => void;
+    let enteredPreparation!: () => void;
+    const preparing = new Promise<void>(resolve => { enteredPreparation = resolve; });
+    spyOn<any>(service, 'resolveBoardModule').and.callFake(() => new Promise(resolve => {
+      enteredPreparation();
+      continuePreparation = () => resolve('@aily-project/board-test');
+    }));
     const build = service.runCompileFromDisk();
-    expect(read).not.toHaveBeenCalled();
+    await preparing;
     project.currentProjectPath = '/projects/other';
-    files.set(`${root}/sketch/src/main.cpp`, 'void setup() { /* saved while queued */ }');
-    grant();
+    continuePreparation();
     expect((await build).success).toBeTrue();
-    expect(read.calls.first().args[0]).toBe(root);
-    const request = [...files.entries()].find(([filename]) => filename.includes('compile-request-'))!;
-    expect(JSON.parse(request[1]).code).toContain('saved while queued');
-    expect((service as any).runOneShotCommand.calls.first().args[3]).toBe('delayed-reader');
-  });
-
-  it('cancels a queued build without reading, writing metadata or launching a child', async () => {
-    const service = createCompiler(() => 0);
-    (service as any).appDataResourceLock.runShared = (_label: string, _task: unknown, signal: AbortSignal) =>
-      new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('APPDATA_RESOURCE_LOCK_CANCELLED'))));
-    const read = spyOn<any>(service, 'readCompileSource').and.callThrough();
-    const save = spyOn(metadata, 'saveBuildInfo').and.callThrough();
-    const finish = spyOn((service as any).application, 'finishBuild');
-    const build = service.runCompileFromDisk(); service.cancel();
-    expect((await build).result.state).toBe('warn');
-    expect(read).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
-    expect((service as any).runOneShotCommand).not.toHaveBeenCalled();
-    expect(finish).toHaveBeenCalledTimes(1);
+    expect((service as any).runOneShotCommand.calls.first().args[2]).toBe(root);
   });
 
   it('does not launch when target configuration changes during asynchronous resolution', async () => {
@@ -313,18 +360,11 @@ describe('Coder build metadata', () => {
       compiler.cancel(); return 1;
     });
     const save = spyOn(metadata, 'saveBuildInfo').and.callThrough();
-    let resourceHeld = false;
-    (service as any).appDataResourceLock.runShared = async (_label: string, task: (token: string) => Promise<unknown>) => {
-      resourceHeld = true;
-      try { return await task('reader'); } finally { resourceHeld = false; }
-    };
     const finish = spyOn((service as any).application, 'finishBuild');
     const result = service.runCompileFromDisk();
     await cancelling; await Promise.resolve();
     expect(save).not.toHaveBeenCalled(); expect(finish).not.toHaveBeenCalled();
-    expect(resourceHeld).toBeTrue();
     stopped(); await result;
-    expect(resourceHeld).toBeFalse();
     expect(readManifest().buildInfo.lastBuildStatus).toBe('cancelled');
     expect(finish).toHaveBeenCalledTimes(1);
   });

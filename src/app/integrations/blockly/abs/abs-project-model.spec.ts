@@ -293,7 +293,8 @@ describe('Blockly service document boundary', () => {
     expect(service.getActivePageId()).toBe('two');
   });
 
-  it('compares saved/reopened documents semantically despite metadata key insertion order', () => {
+  it('compares saved/reopened documents semantically despite metadata key insertion order', async () => {
+    spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     live.newBlock('text', 't');
     const saved = service.getProjectAbiForSave();
     const disk = JSON.stringify(saved);
@@ -303,9 +304,9 @@ describe('Blockly service document boundary', () => {
     try {
       const project = new _ProjectService(service, {} as any, {} as any);
       project.currentProjectPath = 'D:/project';
-      expect(project.hasUnsavedChanges()).toBeFalse();
+      expect(await project.hasUnsavedChanges()).toBeFalse();
       service.renamePage('two', 'changed');
-      expect(project.hasUnsavedChanges()).toBeTrue();
+      expect(await project.hasUnsavedChanges()).toBeTrue();
     } finally { window['fs'] = oldFiles; }
   });
 
@@ -316,6 +317,8 @@ describe('Blockly service document boundary', () => {
     expect(result.pages[0].content.blocks.blocks).toEqual(legacy.blocks.blocks);
     expect(result.pages[0].content.customSerializer).toEqual(legacy.customSerializer);
     expect(result.pages[0].content.$ailyProjectData).toBeUndefined();
+    expect(result['$ailyProjectData']).toEqual(saved.$ailyProjectData);
+    expect(service.normalizeProjectAbiForLoad(result)).toEqual(result);
   });
 
   it('blocks page/load mutations during a lease without changing serialized protection flags', () => {

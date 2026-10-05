@@ -1,7 +1,20 @@
 .window-box {
     height: 100%;
     position: relative;
+    display: flex;
+    flex-direction: column;
 }
+
+.project-tabs, .pagination {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.pagination { padding: 0 10px; }
+.project-notice { color: var(--aily-text-secondary); margin-bottom: 10px; font-size: 12px; }
+.student-name { color: var(--aily-text-primary); font-size: 12px; margin-bottom: 4px; }
 
 .top {
     padding: 10px;
@@ -94,7 +107,8 @@
 
 .item-list {
     padding: 10px;
-    height: calc(100% - 95px);
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
 }
 

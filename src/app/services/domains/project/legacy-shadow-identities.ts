@@ -106,19 +106,25 @@ export function migrateLegacyShadowIdentities<T>(source: T, generate: () => stri
     groups.set(id, [...(groups.get(id) ?? []), entry]);
   }
   const duplicates = [...groups].filter(([, values]) => values.length > 1);
-  for (const [id, values] of duplicates) if (values.some(entry => !entry.hiddenOwner)) {
+  for (const [id, values] of duplicates) if (values.filter(entry => !entry.hiddenOwner).length > 1) {
     throw new ProjectBlockIdentityError('BLOCKLY_DUPLICATE_ID',
-      `Duplicate identity ${id} includes a visible block; automatic migration only covers hidden defaults.`,
+      `Duplicate identity ${id} includes multiple visible blocks; automatic migration only covers hidden defaults.`,
       { blockId: id, paths: values.map(pointerId) });
   }
   if (!duplicates.length) return { document: source, changes: [] };
   assertNoOpaqueBlockReferences(document, entries, new Set(duplicates.map(([id]) => id)));
   const reserved = new Set(groups.keys());
   const changes: ShadowIdentityChange[] = [];
-  for (const [oldId, values] of duplicates) for (const entry of values.slice(1)) {
-    const newId = freshProjectBlockId(reserved, generate);
-    entry.state['id'] = newId;
-    changes.push({ jsonPointer: pointerId(entry), oldId, newId, ownerConnection: entry.hiddenOwner!, reason: 'duplicate-hidden-shadow' });
+  for (const [oldId, values] of duplicates) {
+    // A visible shadow is the live block. Keep its identity even when an
+    // earlier hidden default with the same ID was serialized first.
+    const retained = values.find(entry => !entry.hiddenOwner) ?? values[0];
+    for (const entry of values) {
+      if (entry === retained) continue;
+      const newId = freshProjectBlockId(reserved, generate);
+      entry.state['id'] = newId;
+      changes.push({ jsonPointer: pointerId(entry), oldId, newId, ownerConnection: entry.hiddenOwner!, reason: 'duplicate-hidden-shadow' });
+    }
   }
   const byPointer = new Map(entries.map(entry => [entry.jsonPointer, entry]));
   for (const entry of entries) for (const [alias, owner] of aliases) {

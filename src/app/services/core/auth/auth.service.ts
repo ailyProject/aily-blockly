@@ -105,6 +105,7 @@ export interface AuthSessionInvalidationRequest {
   errorCode: 'AUTH_TOKEN_INVALID';
   source: 'http-401' | 'sub-window';
   requestedAt: number;
+  expectedAccessToken: string | null;
 }
 
 @Injectable({
@@ -220,6 +221,7 @@ export class AuthService {
   requestSessionInvalidation(
     errorCode: 'AUTH_TOKEN_INVALID',
     source: AuthSessionInvalidationRequest['source'] = 'http-401',
+    expectedAccessToken: string | null = null,
   ): boolean {
     if (this.authSessionInvalidating || this.authSessionInvalidationHandled) {
       return false;
@@ -236,6 +238,7 @@ export class AuthService {
       errorCode,
       source,
       requestedAt: Date.now(),
+      expectedAccessToken,
     });
     return true;
   }
@@ -427,9 +430,9 @@ export class AuthService {
     }
   }
 
-  /** Clear only this renderer/install's auth state without notifying logout. */
-  async clearLocalAuthSession(): Promise<void> {
-    await this.clearAuthData(true);
+  /** Clear shared credentials without server logout; automatic invalidation supplies its rejected token. */
+  async clearLocalAuthSession(expectedAccessToken?: string | null): Promise<void> {
+    await this.clearAuthData(true, expectedAccessToken);
   }
 
   /**
@@ -676,7 +679,7 @@ export class AuthService {
         if (!fileExists && currentLoginStatus) {
           // 文件不存在但当前显示为登录状态，说明其他实例已登出
           // console.log('检测到其他实例已登出，同步登出当前实例');
-          await this.clearAuthData();
+          await this.clearAuthData(false, null);
         } else if (fileExists && !currentLoginStatus) {
           // 文件存在但当前显示为未登录状态，重新获取用户信息
           // console.log('检测到认证文件存在，重新获取登录状态');
@@ -690,7 +693,7 @@ export class AuthService {
             } catch (error) {
               console.error('获取用户信息失败:', error);
               // token可能已过期，清理文件
-              await this.clearAuthDataFile();
+              await this.clearAuthDataFile(false, token);
             }
           }
         }
@@ -732,18 +735,24 @@ export class AuthService {
     return localStorage.getItem('aily_auth_token');
   }
 
-  /** Clear this product's credentials without removing its migration marker. */
-  async clearAuthDataFile(throwOnError = false): Promise<void> {
-    if (isDetachedAilyChatRenderer()) return;
+  /** Clear the shared credentials only if an optional rejected token still matches. */
+  async clearAuthDataFile(throwOnError = false, expectedAccessToken?: string | null): Promise<boolean> {
+    if (isDetachedAilyChatRenderer()) return true;
     try {
-      if (this.authBridge) await this.authBridge.clear();
+      if (this.authBridge) return await this.authBridge.clear(expectedAccessToken) !== false;
       else {
+        if (expectedAccessToken !== undefined) {
+          const currentToken = await this.getToken2();
+          if (currentToken && currentToken !== expectedAccessToken) return false;
+        }
         localStorage.removeItem('aily_auth_token');
         localStorage.removeItem(this.REFRESH_TOKEN_KEY);
+        return true;
       }
     } catch (error) {
       console.error('清除认证数据失败:', error);
       if (throwOnError) throw error;
+      return false;
     }
   }
 
@@ -796,17 +805,28 @@ export class AuthService {
   /**
    * 清除所有认证数据
    */
-  private async clearAuthData(requireCredentialRemoval = false): Promise<void> {
-    this.authCredentialGeneration += 1;
-    localStorage.removeItem(this.TOKEN_KEY);
-    localStorage.removeItem(this.REFRESH_TOKEN_KEY);
-    localStorage.removeItem(this.USER_INFO_KEY);
-    this.clearPendingAuthQuotaInfoSnapshotRetry();
-    this.clearPendingAuthHydrationRetry();
-    this.isLoggedInSubject.next(false);
-    this.setCurrentUserInfo(null);
-    this.authInitializationStateSubject.next('signed_out');
-    await this.clearAuthDataFile(requireCredentialRemoval);
+  private async clearAuthData(requireCredentialRemoval = false, expectedAccessToken?: string | null): Promise<void> {
+    let cleared = true;
+    try {
+      cleared = await this.clearAuthDataFile(requireCredentialRemoval, expectedAccessToken);
+    } finally {
+      if (cleared || expectedAccessToken === undefined) {
+        this.authCredentialGeneration += 1;
+        localStorage.removeItem(this.TOKEN_KEY);
+        localStorage.removeItem(this.REFRESH_TOKEN_KEY);
+        localStorage.removeItem(this.USER_INFO_KEY);
+        this.clearPendingAuthQuotaInfoSnapshotRetry();
+        this.clearPendingAuthHydrationRetry();
+        this.isLoggedInSubject.next(false);
+        this.setCurrentUserInfo(null);
+        this.authInitializationStateSubject.next('signed_out');
+      }
+    }
+    if (!cleared && expectedAccessToken !== undefined) {
+      this.authSessionInvalidating = false;
+      this.authSessionInvalidationHandled = false;
+      void this.initializeAuth();
+    }
   }
 
   /**

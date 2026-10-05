@@ -13,8 +13,8 @@ function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (_) {
-    return false;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
   }
 }
 
@@ -113,17 +113,17 @@ function killRegisteredProcessTree(pid, label) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     if (isWin32) {
-      exec(`taskkill /PID ${pid} /T /F`, (error, stdout, stderr) => {
+      exec(`taskkill /PID ${pid} /T /F`, { windowsHide: true, timeout: 10000 }, (error, stdout, stderr) => {
         const success = !error;
-        // console.info('[PROC_TRACE][PROCESS_TREE_KILL]', {
-        //   label,
-        //   pid,
-        //   method: 'taskkill',
-        //   success,
-        //   durationMs: Date.now() - startedAt,
-        //   error: error?.message || '',
-        //   stderr: stderr?.trim?.() || ''
-        // });
+        console.info('[PROC_TRACE][PROCESS_TREE_KILL]', {
+          label,
+          pid,
+          method: 'taskkill',
+          success,
+          durationMs: Date.now() - startedAt,
+          error: error?.message || '',
+          stderr: stderr?.trim?.() || ''
+        });
         resolve(success);
       });
       return;

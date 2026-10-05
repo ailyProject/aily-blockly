@@ -35,21 +35,27 @@ export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: 
   }
 
   return from(addTokenHeader(req, authService)).pipe(
-    switchMap(request => next(request)),
-    catchError(error => {
-      if (error instanceof HttpErrorResponse) {
-        const disposition = classifyAuth401(req, error);
-        if (disposition === 'terminal-token-invalid') {
-          reportTerminalTokenInvalid(req, error);
-          notifyMainWindowOfInvalidToken(authService);
-          return throwError(() => error);
+    switchMap(request => next(request).pipe(
+      catchError(error => {
+        if (error instanceof HttpErrorResponse) {
+          const disposition = classifyAuth401(request, error);
+          if (disposition === 'terminal-token-invalid' || disposition === 'refreshable') {
+            const rejectedToken = request.headers.get('Authorization')?.replace(/^Bearer /u, '') || null;
+            return from(authService.getToken2()).pipe(switchMap(currentToken => {
+              // Another product may have signed in while this request was in flight.
+              if (currentToken && rejectedToken !== currentToken) return throwError(() => error);
+              if (disposition === 'terminal-token-invalid') {
+                reportTerminalTokenInvalid(request, error);
+                notifyMainWindowOfInvalidToken(authService, rejectedToken);
+                return throwError(() => error);
+              }
+              return handle401Error(req, next, authService, rejectedToken);
+            }));
+          }
         }
-        if (disposition === 'refreshable') {
-          return handle401Error(req, next, authService);
-        }
-      }
-      return throwError(() => error);
-    })
+        return throwError(() => error);
+      }),
+    )),
   );
 };
 
@@ -185,8 +191,8 @@ function collectAuthMessages(value: unknown): string[] {
   ].flatMap(item => collectAuthMessages(item));
 }
 
-function notifyMainWindowOfInvalidToken(authService: AuthService): void {
-  const accepted = authService.requestSessionInvalidation('AUTH_TOKEN_INVALID', 'http-401');
+function notifyMainWindowOfInvalidToken(authService: AuthService, expectedAccessToken: string | null): void {
+  const accepted = authService.requestSessionInvalidation('AUTH_TOKEN_INVALID', 'http-401', expectedAccessToken);
   if (!accepted) {
     return;
   }
@@ -204,6 +210,7 @@ function notifyMainWindowOfInvalidToken(authService: AuthService): void {
     data: {
       action: 'auth-token-invalid',
       errorCode: 'AUTH_TOKEN_INVALID',
+      expectedAccessToken,
     },
     timeout: 30000,
   })).catch((error) => {
@@ -226,7 +233,7 @@ function getRefreshAuthToken$(authService: AuthService): Observable<boolean> {
   return refreshAuthToken$;
 }
 
-function handle401Error(req: HttpRequest<any>, next: HttpHandlerFn, authService: AuthService): Observable<HttpEvent<any>> {
+function handle401Error(req: HttpRequest<any>, next: HttpHandlerFn, authService: AuthService, rejectedToken: string | null): Observable<HttpEvent<any>> {
   return getRefreshAuthToken$(authService).pipe(
     switchMap(refreshed => {
       if (refreshed) {
@@ -239,8 +246,13 @@ function handle401Error(req: HttpRequest<any>, next: HttpHandlerFn, authService:
         return throwError(() => new Error('Authentication session is invalid'));
       }
 
-      return from(authService.logout()).pipe(
-        switchMap(() => throwError(() => new Error('Token已过期，请重新登录')))
+      return from(authService.clearLocalAuthSession(rejectedToken)).pipe(
+        switchMap(() => {
+          if (authService.getAuthInitializationState() === 'signed_out') {
+            authService.requestLogin('auth-required');
+          }
+          return throwError(() => new Error('Token已过期，请重新登录'));
+        })
       );
     }),
     catchError((error) => {

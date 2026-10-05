@@ -2,7 +2,8 @@ import * as Blockly from 'blockly';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { observeNativeBlockDefinition } from '../../../editors/blockly-editor/services/blockly-native-structure';
-import { restoreNativeFields, withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
+import { nativeLoadedStateView, restoreNativeFields, withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
+import { assertAbsReadback } from './abs-readback';
 import { absJson } from './abs-json';
 
 describe('native dynamic field loading without declaration JSON', () => {
@@ -11,6 +12,7 @@ describe('native dynamic field loading without declaration JSON', () => {
   const blockState = (id = 'kept') => ({ type, id, fields: { A_TEXT: 'saved text', M_CHOICE: 'C', Z_MODE: 'B' }, deletable: false });
   const state = () => ({ blocks: { blocks: [blockState()] } });
   const load = (value: any) => BlocklyService.prototype.loadWorkspaceJson.call({
+    adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
     workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value), assertWorkspaceEditAvailable() {},
     captureDeclarativeBlockDefinitions: () => catalog.capture(Blockly.Blocks), scheduleWorkspaceRenderAfterLoad() {},
   } as any, value);
@@ -36,6 +38,28 @@ describe('native dynamic field loading without declaration JSON', () => {
     Blockly.Blocks[parentType] = { init() { this.appendValueInput('VALUE'); } };
   });
   afterEach(() => { workspace.dispose(); delete Blockly.Blocks[type]; delete Blockly.Blocks[parentType]; });
+
+  it('preserves malformed legacy JSON mutation input on failure and can reopen valid XML state afterwards', () => {
+    Blockly.Blocks[type] = {
+      init() { this.appendDummyInput().appendField(new Blockly.FieldTextInput(''), 'TEXT'); },
+      domToMutation(xml) { this.setFieldValue(xml.getAttribute('text') || '', 'TEXT'); },
+      mutationToDom() {
+        const xml = Blockly.utils.xml.createElement('mutation');
+        xml.setAttribute('text', this.getFieldValue('TEXT')); return xml;
+      },
+    };
+    const broken = { blocks: { blocks: [{ type, id: 'legacy', extraState: { text: 'saved' } }] } };
+    const before = absJson(broken);
+    expect(() => load(broken)).toThrowError(/DOMParser was unable to parse/);
+    expect(absJson(broken)).toBe(before);
+    // There is no generic, lossless JSON-to-XML conversion. Only a known valid
+    // archive supplied by the caller can replace this malformed legacy state.
+    const valid = { blocks: { blocks: [{ type, id: 'legacy', extraState: '<mutation text="saved"></mutation>' }] } };
+    load(valid);
+    expect(workspace.getBlockById('legacy')!.getFieldValue('TEXT')).toBe('saved');
+    load(Blockly.serialization.workspaces.save(workspace));
+    expect(workspace.getBlockById('legacy')!.getFieldValue('TEXT')).toBe('saved');
+  });
 
   it('restores multiple selector levels in the ordinary load entry, then saves and reopens', () => {
     const input = state(), before = absJson(input);
@@ -150,6 +174,139 @@ describe('native dynamic field loading without declaration JSON', () => {
   it('does not silently replace an invalid dropdown value with the default', () => {
     const input = state(); input.blocks.blocks[0].fields.Z_MODE = 'invalid';
     expect(() => load(input)).toThrowError(/Cannot restore native field/);
+  });
+
+  it('retains the exact old U8G2 font symbol only on its matching picker', () => {
+    Blockly.Blocks['u8g2_set_font'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['14px', '14']]), 'SIZE');
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Chinese', 'CHINESE']]), 'FONT_TYPE');
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['new font', 'u8g2_font_wqy14_t_chinese2']]), 'FONT');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_set_font');
+      restoreNativeFields(block, { SIZE: '14', FONT_TYPE: 'CHINESE', FONT: 'u8g2_font_wqy13_t_chinese2' });
+      expect(block.getFieldValue('FONT')).toBe('u8g2_font_wqy13_t_chinese2');
+      expect((block.getField('FONT') as Blockly.FieldDropdown).getOptions(false)
+        .some(option => option[1] === 'u8g2_font_wqy13_t_chinese2')).toBeTrue();
+      expect(() => restoreNativeFields(block, { FONT: 'unrelated-unknown-font' }))
+        .toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['u8g2_set_font']; }
+  });
+
+  it('loads a saved custom SSCMA serial port without changing other dropdowns', () => {
+    Blockly.Blocks['sscma_begin_serial'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['Serial', 'Serial']]), 'SERIAL');
+    } };
+    try {
+      const block = workspace.newBlock('sscma_begin_serial');
+      restoreNativeFields(block, { SERIAL: 'SerialCustom' });
+      expect(block.getFieldValue('SERIAL')).toBe('SerialCustom');
+      expect(() => restoreNativeFields(block, { SERIAL: 'UnknownPort' }))
+        .toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['sscma_begin_serial']; }
+  });
+
+  it('adapts normalized U8G2 defaults for an older live library definition', () => {
+    Blockly.Blocks['u8g2_begin'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([['SSD1306', 'SSD1306']]), 'TYPE')
+        .appendField(new Blockly.FieldDropdown([['128x64 full', '128X64_NONAME_F']]), 'RESOLUTION')
+        .appendField(new Blockly.FieldDropdown([['I2C', '_HW_I2C']]), 'PROTOCOL');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_begin');
+      const saved = { TYPE: 'SSD1306', MODE: 'FULL_BUFFER', RESOLUTION: '128X64_NONAME',
+        PROTOCOL: '_HW_I2C', SCL_PIN: 'SCL', SDA_PIN: 'SDA', RESET_PIN: 'U8X8_PIN_NONE' };
+      restoreNativeFields(block, saved);
+      expect(block.getFieldValue('RESOLUTION')).toBe('128X64_NONAME_F');
+      expect(saved.RESOLUTION).toBe('128X64_NONAME');
+      expect(() => restoreNativeFields(block, { ...saved, SCL_PIN: '12' }))
+        .toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['u8g2_begin']; }
+  });
+
+  it('loads the exact saved U8G2 font on an older picker without category fields', () => {
+    Blockly.Blocks['u8g2_set_font'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([
+        ['old Chinese font', 'u8g2_font_wqy13_t_chinese2'],
+      ]), 'FONT');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_set_font');
+      restoreNativeFields(block, { SIZE: '14', FONT_TYPE: 'CHINESE', FONT: 'u8g2_font_wqy13_t_chinese2' });
+      expect(block.getFieldValue('FONT')).toBe('u8g2_font_wqy13_t_chinese2');
+      expect(() => restoreNativeFields(block, { SIZE: '15', FONT_TYPE: 'CHINESE',
+        FONT: 'u8g2_font_wqy13_t_chinese2' })).toThrowError(/Cannot restore native field/);
+    } finally { delete Blockly.Blocks['u8g2_set_font']; }
+  });
+
+  it('retains the old Chinese-1 font symbol when an old picker omits it', () => {
+    Blockly.Blocks['u8g2_set_font'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldDropdown([
+        ['Chinese-2', 'u8g2_font_wqy12_t_chinese2'],
+      ]), 'FONT');
+    } };
+    try {
+      const block = workspace.newBlock('u8g2_set_font');
+      restoreNativeFields(block, { SIZE: '8', FONT_TYPE: 'CHINESE', FONT: 'u8g2_font_wqy12_t_chinese1' });
+      expect(block.getFieldValue('FONT')).toBe('u8g2_font_wqy12_t_chinese1');
+      expect((block.getField('FONT') as Blockly.FieldDropdown).getOptions(false)
+        .some(option => option[1] === 'u8g2_font_wqy12_t_chinese1')).toBeTrue();
+    } finally { delete Blockly.Blocks['u8g2_set_font']; }
+  });
+
+  it('loads both published TFT setup shapes against the installed definition', () => {
+    const previous = { tftespi_setup: Blockly.Blocks['tftespi_setup'], math_number: Blockly.Blocks['math_number'] };
+    const names = ['WIDTH', 'HEIGHT', 'MISO', 'MOSI', 'SCLK', 'CS', 'DC', 'RST', 'BL'];
+    const values = [240, 240, 0, 10, 12, 13, 14, 11, 16];
+    const base = { VAR: 'tft', MODEL: 'GC9A01_DRIVER' };
+    Blockly.Blocks['math_number'] = { init() {
+      this.appendDummyInput().appendField(new Blockly.FieldNumber(0), 'NUM'); this.setOutput(true);
+    } };
+    const install = (shape: 'inputs' | 'fields') => {
+      Blockly.Blocks['tftespi_setup'] = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldTextInput('tft'), 'VAR')
+          .appendField(new Blockly.FieldDropdown([['GC9A01', 'GC9A01_DRIVER']]), 'MODEL');
+        for (const name of names) {
+          if (shape === 'inputs') this.appendValueInput(name);
+          else this.appendDummyInput(name).appendField(new Blockly.FieldTextInput('0'), name);
+        }
+      } };
+    };
+    try {
+      install('inputs');
+      const old = { blocks: { blocks: [{ type: 'tftespi_setup', id: 'tft', fields: {
+        ...base, ...Object.fromEntries(names.map((name, i) => [name, String(values[i])])),
+        QSPI_CS: '13', QSPI_SCLK: '12', QSPI_RST: '11', D0: '-1', D1: '-1', D2: '-1', D3: '-1', TE: '-1',
+      } }] } };
+      const before = absJson(old);
+      withNativeStateLoading(Blockly, workspace, old, () => Blockly.serialization.workspaces.load(old, workspace));
+      expect(workspace.getBlockById('tft')!.getInputTargetBlock('WIDTH')!.getFieldValue('NUM')).toBe(240);
+      const runtimeView = nativeLoadedStateView(old, workspace);
+      expect(() => assertAbsReadback(runtimeView as any, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).not.toThrow();
+      workspace.getBlockById('tft')!.getInputTargetBlock('WIDTH')!.setFieldValue(999, 'NUM');
+      expect(() => assertAbsReadback(runtimeView as any, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).toThrow();
+      expect(absJson(old)).toBe(before);
+      workspace.clear();
+
+      install('fields');
+      const newer = { blocks: { blocks: [{ type: 'tftespi_setup', id: 'tft', fields: base,
+        inputs: Object.fromEntries(names.map((name, i) => [name, { block: {
+          type: 'math_number', id: `number-${i}`, fields: { NUM: values[i] },
+        } }])),
+      }] } };
+      const newerBefore = absJson(newer);
+      withNativeStateLoading(Blockly, workspace, newer, () => Blockly.serialization.workspaces.load(newer, workspace));
+      expect(workspace.getBlockById('tft')!.getFieldValue('WIDTH')).toBe('240');
+      expect(workspace.getAllBlocks(false).length).toBe(1);
+      expect(() => assertAbsReadback(nativeLoadedStateView(newer, workspace) as any,
+        Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).not.toThrow();
+      expect(absJson(newer)).toBe(newerBefore);
+    } finally {
+      for (const type of ['tftespi_setup', 'math_number']) {
+        if (previous[type]) Blockly.Blocks[type] = previous[type];
+        else delete Blockly.Blocks[type];
+      }
+    }
   });
 
   it('bounds callbacks that continually replace one another', () => {

@@ -19,6 +19,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
   let feedbackService: jasmine.SpyObj<FeedbackService>;
   let message: jasmine.SpyObj<NzMessageService>;
   let modal: jasmine.SpyObj<NzModalRef>;
+  let electronService: { applicationVersion: string; openUrl: jasmine.Spy };
   let projectService: {
     currentProjectPath: string;
     currentBoardConfig: unknown;
@@ -36,7 +37,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     getAuthInitializationState: jasmine.Spy;
     getAuthSnapshot: jasmine.Spy;
   };
-  let configService: { isCnRegion: boolean };
+  let configService: { isCnRegion: boolean; isCoderProduct: jasmine.Spy };
   let translate: {
     currentLang: string;
     defaultLang: string;
@@ -66,6 +67,10 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
       'remove',
     ]);
     modal = jasmine.createSpyObj<NzModalRef>('NzModalRef', ['close']);
+    electronService = {
+      applicationVersion: packageJson.version,
+      openUrl: jasmine.createSpy('openUrl'),
+    };
     projectService = {
       currentProjectPath: 'C:\\Users\\tester\\private-project',
       currentBoardConfig: { name: 'Test Board' },
@@ -93,7 +98,10 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
       getAuthInitializationState: jasmine.createSpy('getAuthInitializationState').and.returnValue('authenticated'),
       getAuthSnapshot: jasmine.createSpy('getAuthSnapshot').and.returnValue({ plan: 'Pro' }),
     };
-    configService = { isCnRegion: true };
+    configService = {
+      isCnRegion: true,
+      isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(false),
+    };
     translate = {
       currentLang: 'zh-CN',
       defaultLang: 'en',
@@ -110,7 +118,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
         { provide: NzMessageService, useValue: message },
         { provide: NzModalRef, useValue: modal },
         { provide: NZ_MODAL_DATA, useValue: null },
-        { provide: ElectronService, useValue: { openUrl: jasmine.createSpy('openUrl') } },
+        { provide: ElectronService, useValue: electronService },
         { provide: ProjectService, useValue: projectService },
         { provide: LogService, useValue: logService },
         { provide: SerialService, useValue: serialService },
@@ -155,6 +163,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     await component.submitFeedback();
 
     const payload = submittedPayload();
+    expect(payload.product).toBe('blockly');
     expect(payload.label).toBe('feature');
     expect(payload.title).toBe('Feature title');
     expect(payload.email).toBe('private@example.com');
@@ -168,6 +177,45 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).not.toContain('private@example.com');
     expect(Object.prototype.hasOwnProperty.call(payload, 'userAgent')).toBeFalse();
   });
+
+  for (const { product, version } of [
+    { product: 'coder', version: '0.1.23' },
+    { product: 'blockly', version: '0.9.123' },
+  ]) {
+    for (const isCnRegion of [true, false]) {
+      it(`submits the running ${product} version for ${isCnRegion ? 'CN' : 'global'} feedback`, async () => {
+        configService.isCoderProduct.and.returnValue(product === 'coder');
+        configService.isCnRegion = isCnRegion;
+        electronService.applicationVersion = version;
+        const component = createComponent();
+        prepareValidFeedback(component, 'feature');
+
+        await component.submitFeedback();
+
+        const payload = submittedPayload();
+        expect(payload.product).toBe(product);
+        expect(payload.content).toContain(`| Software Version | ${version}${isCnRegion ? '-cn' : ''} |`);
+        expect(payload.content).not.toContain(`| Software Version | ${packageJson.version}`);
+      });
+    }
+  }
+
+  for (const type of ['bug', 'library']) {
+    it(`submits Coder ${type} feedback with the product and opens its issue repository`, async () => {
+      configService.isCoderProduct.and.returnValue(true);
+      const component = createComponent();
+      prepareValidFeedback(component, type);
+
+      component.openUrl();
+      await component.submitFeedback();
+
+      expect(submittedPayload().product).toBe('coder');
+      expect(submittedPayload().label).toBe(type);
+      const repository = type === 'library' ? 'aily-coder-libraries' : 'aily-coder';
+      expect(TestBed.inject(ElectronService).openUrl)
+        .toHaveBeenCalledWith(`https://github.com/ailyProject/${repository}/issues`);
+    });
+  }
 
   it('does not read an account snapshot before authentication is complete', () => {
     authService.getAuthInitializationState.and.returnValue('signed_out');
@@ -289,6 +337,8 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     const libraryName = '@aily-project/lib-alpha';
 
     expect((component as any).readDirectLibraries({ dependencies: [] })).toBeNull();
+    expect((component as any).readBoardDependencies({ boardDependencies: [] })).toBeNull();
+    expect((component as any).readBoardDependencies({})).toEqual({});
     expect((component as any).countDirectDependencies({ dependencies: 'invalid' })).toBeNull();
     expect((component as any).readBuildUploadParameters({ projectConfig: [] })).toBeNull();
     expect((component as any).readLibrarySource({
@@ -364,6 +414,39 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Version | null |');
     expect(payload.content).toContain('| Source | null |');
   });
+
+  for (const type of ['bug', 'build&upload']) {
+    it(`includes the board toolchain dependencies in ${type} feedback`, async () => {
+      projectService.getBoardPackageJson.and.resolveTo({
+        version: '1.2.3',
+        boardDependencies: {
+          '@aily-project/sdk-esp32': '3.3.1',
+          '@aily-project/compiler-xtensa': '14.2.0',
+          '@aily-project/tool-esptool': '^4.9.0',
+          '@aily-project/tool-local': 'file:C:/Users/tester/private-tool',
+          '@aily-project/tool-git': 'git+https://private-token@private.example/tool.git',
+        },
+        dependencies: { 'unrelated-npm-package': '1.0.0' },
+      });
+      const component = createComponent();
+      prepareValidFeedback(component, type);
+
+      await component.submitFeedback();
+
+      const content = String(submittedPayload().content);
+      expect(content).toContain('### Board Dependencies\n\n```json\n{');
+      expect(content).toContain('"@aily-project/sdk-esp32": "3.3.1"');
+      expect(content).toContain('"@aily-project/compiler-xtensa": "14.2.0"');
+      expect(content).toContain('"@aily-project/tool-esptool": "^4.9.0"');
+      expect(content).toContain('"@aily-project/tool-local": null');
+      expect(content).toContain('"@aily-project/tool-git": null');
+      expect(content).not.toContain('private-tool');
+      expect(content).not.toContain('private-token');
+      expect(content).not.toContain('private.example');
+      expect(content).not.toContain('unrelated-npm-package');
+      expect(projectService.getBoardPackageJson).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it('uses only whitelisted build metadata, library dependencies, terminal OTA state, and safe ports', async () => {
     const uploadTime = Date.parse('2026-09-02T08:30:00.000Z');
@@ -650,6 +733,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Board Package | null |');
     expect(payload.content).toContain('| Board Package Version | null |');
     expect(payload.content).toContain('| Port | null |');
+    expect(payload.content).toContain('### Board Dependencies\n\n```json\nnull\n```');
     expect(payload.content).toContain('### Libraries\n\n```json\nnull\n```');
     expect(payload.content).toContain('### Parameters\n\n```json\nnull\n```');
     expect(component.isSubmitting).toBeFalse();

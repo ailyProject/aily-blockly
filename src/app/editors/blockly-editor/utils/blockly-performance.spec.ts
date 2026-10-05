@@ -1,9 +1,9 @@
 import * as Blockly from 'blockly';
 import {
-  installBlocklyVariableComparator,
   WorkspaceCodeChangeTracker,
   isBlocklyWorkspaceInteracting,
 } from './blockly-performance';
+import { installBlocklyVariableComparator } from './blockly-variable-order';
 import { ArduinoGenerator } from '../components/blockly/generators/arduino/arduino';
 import { findOversizedInlineValues, ProjectDataStore, type ProjectDataFileSystem } from '@domain/project/public-api';
 
@@ -70,7 +70,7 @@ describe('large Blockly workspaces', () => {
   it('keeps locale ordering including non-ASCII and case variants', () => {
     const names = ['Z', 'a', 'A', 'ä', '变量', '变量2', 'é', 'e'];
     const variables = names.map(name => new Blockly.VariableModel(workspace, name, ''));
-    const expected = [...variables].sort(Blockly.VariableModel.compareByName).map(variable => variable.name);
+    const expected = [...variables].sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })).map(variable => variable.name);
     installBlocklyVariableComparator();
     expect(variables.sort(Blockly.VariableModel.compareByName).map(variable => variable.name)).toEqual(expected);
   });

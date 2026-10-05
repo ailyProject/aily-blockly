@@ -1,12 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// Only artifacts owned by the project writer. Do not exclude all .aily, *.tmp,
+// Only transient artifacts owned by project writers/lifecycle. Do not exclude all .aily, *.tmp,
 // backups, resource files or future sync recovery records.
 function isProjectWriterTransient(relativePath) {
   const normalized = relativePath.split(path.sep).join('/');
   const name = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
   return name === '.aily/project-files.write.lock'
+    || name === '.aily/project-open.lock'
     || /^(?:\.aily\/abs-sync\/(?:baselines\/)?)?\.abs-sync-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name)
     || /^\.(?:project\.(?:abi|abs|abs\.map\.json)|project-data-backup)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(name);
 }
@@ -62,6 +63,16 @@ function importProjectDirectory(source, destination, unwrapArchive = false) {
   fs.mkdirSync(parent, { recursive: true });
   fs.mkdirSync(target);
   copyProjectDirectory(root, target);
+  // Zip archives may mark project metadata read-only. These are fresh copies
+  // that the importer and project-data writer must update; leave the archive
+  // source and installed libraries untouched.
+  for (const name of ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json']) {
+    const file = path.join(target, name);
+    let stat;
+    try { stat = fs.lstatSync(file); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (stat.isFile() && !(stat.mode & 0o200)) fs.chmodSync(file, (stat.mode & 0o7777) | 0o200);
+  }
   return destination;
 }
 

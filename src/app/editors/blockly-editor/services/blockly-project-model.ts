@@ -51,7 +51,12 @@ const same = (a: unknown, b: unknown) => canonicalJsonStringify(a) === canonical
 const fail = (code: string, message: string, ids: string[] = []): never => { throw new BlocklyProjectModelError(code, message, ids); };
 
 export function normalizeBlocklyWorkspace(value: any): any {
-  const state = value == null ? {} : copy(value);
+  return normalizeOwnedBlocklyWorkspace(value == null ? {} : copy(value));
+}
+
+/** Internal only: ownership normalization has already detached the entire document. */
+function normalizeOwnedBlocklyWorkspace(value: any): any {
+  const state = value == null ? {} : value;
   if (!state || typeof state !== 'object' || Array.isArray(state)) fail('BLOCKLY_WORKSPACE_INVALID', 'Expected serialized workspace state.');
   if (state.blocks !== undefined && (!state.blocks || typeof state.blocks !== 'object' || Array.isArray(state.blocks))) fail('BLOCKLY_WORKSPACE_INVALID', 'Invalid block serializer state.');
   state.blocks ??= { languageVersion: 0, blocks: [] };
@@ -74,7 +79,7 @@ export function normalizeBlocklyOwnership(
     fail('BLOCKLY_MODEL_INVALID', 'Expected shared root block list.');
   }
   document.sharedModel = { ...document.sharedModel, procedureBlocks: [...(document.sharedModel?.procedureBlocks ?? [])] };
-  document.pages = document.pages.map(page => ({ ...page, content: normalizeBlocklyWorkspace(page.content),
+  document.pages = document.pages.map(page => ({ ...page, content: normalizeOwnedBlocklyWorkspace(page.content),
     ...(page.viewState ? { viewState: normalizeBlocklyViewState(page.viewState) } : {}) }));
   const shared = new Map<string, any>();
   for (const block of document.sharedModel.procedureBlocks) {

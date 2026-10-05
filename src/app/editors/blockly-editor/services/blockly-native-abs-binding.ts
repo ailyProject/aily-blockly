@@ -8,9 +8,9 @@ import { AbsSyncError, type AbsSyntaxNode } from '../../../integrations/blockly/
 import { serializeAbsFailure } from '../../../integrations/blockly/abs/abs-diagnostics';
 import { captureAbsFieldContract } from '../../../integrations/blockly/abs/abs-runtime-field-contract';
 import type { NativeCandidateWorkspace } from './blockly-native-candidate-workspace';
-import type { AbsNativeBinding, AbsNativeBlock, AbsNativeDefault } from '../../../integrations/blockly/abs/abs-native-binding';
+import type { AbsNativeBlock, AbsNativeDefault } from '../../../integrations/blockly/abs/abs-native-binding';
 import { captureNativeBlock } from './blockly-native-instance';
-import type { NativeCandidateRequest } from './blockly-native-candidate-protocol';
+import type { NativeCandidateRequest, NativeCandidateResult } from './blockly-native-candidate-protocol';
 import { indexAbsAbi } from '../../../integrations/blockly/abs/abs-abi-index';
 import { normalizeAbsSerializedWorkspace } from '../../../integrations/blockly/abs/abs-serialized-workspace';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
@@ -23,7 +23,7 @@ import { nativeFieldDependencies } from './blockly-native-field-dependencies';
 export function bindNativeAbs(source: string, execution: NativeCandidateWorkspace, declarations: Map<string, Record<string, any>>,
   identities?: NativeCandidateRequest['identities'], hydrate: <T>(value: T) => T = value => value,
   hostCalls: NonNullable<NativeCandidateRequest['hostCalls']> = [],
-  modelPreparation?: { generator: Blockly.Generator; requestId: string }): () => AbsNativeBinding {
+  modelPreparation?: { generator: Blockly.Generator; requestId: string }): () => NativeCandidateResult {
   // Parse the complete document before executing any block callback.
   const raw = readAbsSyntax(source);
   const structural = captureStructuralMutators();
@@ -36,16 +36,24 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
   let bindingReferences = false;
   const conflicts: AbsSyncError[] = [];
   const capture = (block: Blockly.Block, seed: AbsNativeBlock['seed']) => captureNativeBlock(execution, declarations, block, seed);
+  // Replay owns these detached declarations and registration is already closed.
+  // Reuse only their parsed syntax within this binding, not live field contracts,
+  // native structure, generator effects or another candidate's results.
+  const metadata = new Map<string, ReturnType<typeof parseBlockDefinition>>();
+  const declared = (type: string) => {
+    if (!metadata.has(type)) metadata.set(type, parseBlockDefinition(declarations.get(type), ''));
+    return metadata.get(type);
+  };
   const options: AbsSyntaxOptions = {
     prepareExtraState: node => {
       const host = hosted.get(node.start);
       if (host) return host.extraState;
       const definition = declarations.get(node.type);
       const recipe = typeof definition?.['mutator'] === 'string' ? structural.get(definition['mutator']) : undefined;
-      return prepareAbsStructuralSyntax(node, recipe, parseBlockDefinition(definition, '')?.argsOrder);
+      return prepareAbsStructuralSyntax(node, recipe, declared(node.type)?.argsOrder);
     },
-    argumentOrder: type => parseBlockDefinition(declarations.get(type), '')?.argsOrder,
-    fieldDefinition: (type, name) => parseBlockDefinition(declarations.get(type), '')?.fieldDefinitions?.get(name),
+    argumentOrder: type => declared(type)?.argsOrder,
+    fieldDefinition: (type, name) => declared(type)?.fieldDefinitions?.get(name),
   };
   const create = (node: AbsSyntaxNode) => {
     consumed.add(node.start);
@@ -154,7 +162,11 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
   if (assigned && assigned.size !== consumed.size || hostCalls.some(call => !consumed.has(call.start))) throw new Error('Native candidate identities or host bindings contain unused calls.');
   structural.assertCurrent();
   return () => {
-    const state = normalizeAbsSerializedWorkspace(execution.result().state);
+    // The response and its binding share this first complete readback. No callback
+    // intervenes between them. Still independently read again after all contract
+    // getters, so their mutations cannot be accepted as the candidate baseline.
+    const result = execution.result();
+    const state = normalizeAbsSerializedWorkspace(result.state);
     const saved = indexAbsAbi(state);
     const hidden = execution.shadows.verify(state, execution.workspace.getAllBlocks(false));
     const captureInput = (input: AbsNativeDefault['state']) => [...indexAbsAbi({ blocks: {
@@ -183,8 +195,8 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
     structural.assertCurrent();
     // Contract getters must not change what was just checked.
     if (absJson(normalizeAbsSerializedWorkspace(execution.result().state)) !== absJson(state)) throw new Error('Native contract getters changed candidate state.');
-    return { source, syntax, instances, ...(modelDeclarations.length ? { modelDeclarations } : {}), ...(hostCalls.length ? { hostCalls: structuredClone(hostCalls) } : {}),
+    return { ...result, binding: { source, syntax, instances, ...(modelDeclarations.length ? { modelDeclarations } : {}), ...(hostCalls.length ? { hostCalls: structuredClone(hostCalls) } : {}),
       ...(execution.creations.entries.length ? { creations: structuredClone(execution.creations.entries) } : {}),
-      ...(defaults.length ? { defaults } : {}) };
+      ...(defaults.length ? { defaults } : {}) } };
   };
 }

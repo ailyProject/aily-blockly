@@ -12,6 +12,7 @@ import { indexAbsAbi } from '../../../integrations/blockly/abs/abs-abi-index';
 import { AbsSyncError, type AbsAbiBlock } from '../../../integrations/blockly/abs/abs-state';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { initializeNativeCandidateBlock } from './blockly-native-graphics';
+import { assertNativeBudget } from './blockly-native-budget';
 
 const sameJsonValue = (actual: unknown, expected: unknown): boolean =>
   actual !== undefined && expected !== undefined && absJson(actual) === absJson(expected);
@@ -41,7 +42,7 @@ export class NativeCandidateWorkspace {
     }, (block, _id, source) => {
       this.createdBy.set(block, source);
       this.shadows.observe(block);
-      if (this.createdBy.size > 2000) throw new Error('Native candidate exceeds created-block limits.');
+      assertNativeBudget('createdBlocks', this.createdBy.size, 'creation');
     }, (type, id, source) => {
       const definition = this.native.Blocks[type];
       if (definition) this.observer.observeNativeBlockDefinition(definition);
@@ -53,7 +54,7 @@ export class NativeCandidateWorkspace {
 
   create(operation: NativeCandidateBlock, start?: number): Blockly.Block {
     if (typeof operation.id !== 'string' || !operation.id || this.requested.has(operation.id)) throw new Error('Native candidate IDs must be unique and explicit.');
-    if (this.requested.size >= 2000) throw new Error('Native candidate exceeds block limits.');
+    assertNativeBudget('blocks', this.requested.size + 1, 'creation');
     const definition = this.native.Blocks[operation.type];
     if (!definition) throw new Error(`Native block is unavailable: ${operation.type}.`);
     this.observer.observeNativeBlockDefinition(definition);

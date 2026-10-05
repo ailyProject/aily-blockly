@@ -91,7 +91,6 @@ export class PlaygroundComponent implements OnDestroy {
     this.tagList = [
       {
         text: 'SenseCraft AI',
-        color: '#739c19ff'
       },
       {
         text: 'AI-VOX',

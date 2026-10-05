@@ -69,8 +69,7 @@
       'top': submenuPosition.top,
       'width': submenuWidth,
       'max-width': submenuMaxWidth,
-      'max-height': submenuMaxHeight,
-      'overflow-y': submenuOverflow
+      '--submenu-viewport-top': submenuViewportTop + 'px'
     }" (mouseenter)="keepSubMenuOpen()" (mouseleave)="hideSubMenu($event, 0)">
     @if(shouldShowSubmenuDetail(activeSubmenuItem)) {
     <div class="submenu-detail">

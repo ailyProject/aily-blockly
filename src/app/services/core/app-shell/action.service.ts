@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { Subject, Observable, filter, map, take, timeout, catchError, of } from 'rxjs';
+import { Subject, ReplaySubject, Observable, filter, map, take, timeout, catchError, of } from 'rxjs';
 
 // 定义动作接口
 export interface Action<T = any> {
@@ -56,11 +56,11 @@ export class ActionService {
       requireFeedback: !!feedbackCallback
     };
 
-    this.actionSubject.next(action);
-
+    // A listener may report a synchronous failure while the action is emitted.
     if (feedbackCallback) {
       this.waitForFeedback<T>(actionId, timeoutMs).subscribe(feedbackCallback);
     }
+    this.actionSubject.next(action);
   }
 
   /**
@@ -371,17 +371,11 @@ export class ActionService {
     payload?: T,
     timeoutMs: number = 5000
   ): Observable<ActionFeedback<T>> {
-    const actionId = this.generateActionId();
-    const action: Action<T> = {
-      type,
-      payload,
-      timestamp: Date.now(),
-      id: actionId,
-      requireFeedback: true
-    };
-
-    this.actionSubject.next(action);
-    return this.waitForFeedback<T>(actionId, timeoutMs);
+    // Preserve eager dispatch, including a reply arriving before the caller subscribes.
+    // Reuse the callback path so both APIs have the same timeout and one-reply lifetime.
+    const reply = new ReplaySubject<ActionFeedback<T>>(1);
+    this.dispatch<T>(type, payload, feedback => { reply.next(feedback); reply.complete(); }, timeoutMs);
+    return reply.asObservable();
   }
 
   /**

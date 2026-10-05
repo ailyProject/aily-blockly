@@ -1,6 +1,11 @@
 $header-height: 40px;
 $header-inner-height: 38px;
 
+app-act-btn.dependency-blocked {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .header-box {
   display: flex;
   justify-content: flex-start;
@@ -52,6 +57,31 @@ $header-inner-height: 38px;
       padding-top: 2px;
       margin-left: 5px;
       font-size: 18px;
+    }
+  }
+
+  .coder-sidebar-toggle {
+    flex-shrink: 0;
+    margin-left: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+
+    &:enabled:hover {
+      background: var(--aily-bg-tertiary);
+    }
+
+    &:focus-visible {
+      outline: 1px solid var(--aily-text-primary);
+      outline-offset: -4px;
+    }
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.35;
     }
   }
 

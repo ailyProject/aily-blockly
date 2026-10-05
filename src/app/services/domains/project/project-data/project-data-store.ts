@@ -56,7 +56,7 @@ export class ProjectDataStore {
   private projectRoot = '';
   private resourceRoot = '';
   private sessionId = '';
-  private readonly pendingReads = new Map<string, Promise<Uint8Array>>();
+  private readonly pendingReads = new Map<string, { ref: AilyDataRef; promise: Promise<Uint8Array> }>();
   private readonly pendingWrites = new Map<string, Promise<AilyDataRef>>();
   private readonly canonicalCache = new Map<string, CacheEntry>();
   private cacheBytes = 0;
@@ -162,17 +162,23 @@ export class ProjectDataStore {
     if (cached) return cached.slice();
 
     const existingRead = this.pendingReads.get(ref.$ailyData.id);
-    if (existingRead) return (await existingRead).slice();
+    if (existingRead) {
+      if (!areAilyDataRefsEquivalent(existingRead.ref, ref)) {
+        throw new ProjectDataError('corrupt', `Pending project data metadata conflicts with its reference: ${ref.$ailyData.id}`);
+      }
+      return (await existingRead.promise).slice();
+    }
 
     const sessionId = this.sessionId;
-    const readPromise = this.readAndValidate(ref, sessionId);
-    this.pendingReads.set(ref.$ailyData.id, readPromise);
+    const snapshot = { $ailyData: { ...ref.$ailyData } };
+    const readPromise = this.readAndValidate(snapshot, sessionId);
+    this.pendingReads.set(snapshot.$ailyData.id, { ref: snapshot, promise: readPromise });
     try {
       const canonicalBytes = await readPromise;
       return canonicalBytes.slice();
     } finally {
-      if (this.pendingReads.get(ref.$ailyData.id) === readPromise) {
-        this.pendingReads.delete(ref.$ailyData.id);
+      if (this.pendingReads.get(snapshot.$ailyData.id)?.promise === readPromise) {
+        this.pendingReads.delete(snapshot.$ailyData.id);
       }
     }
   }
@@ -559,7 +565,7 @@ export class ProjectDataStore {
       this.canonicalCache.delete(id);
     }
     const copy = bytes.slice();
-    this.canonicalCache.set(id, { bytes: copy, size: copy.length, ref });
+    this.canonicalCache.set(id, { bytes: copy, size: copy.length, ref: { $ailyData: { ...ref.$ailyData } } });
     this.cacheBytes += copy.length;
     while (this.cacheBytes > this.maxCacheBytes) {
       const oldest = this.canonicalCache.entries().next().value as [string, CacheEntry] | undefined;

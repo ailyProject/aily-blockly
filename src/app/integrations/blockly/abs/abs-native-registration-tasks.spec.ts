@@ -48,4 +48,38 @@ describe('finite native registration timers', () => {
     expect(() => tasks.set(() => {})).toThrowError(/budget/);
     await expectAsync(tasks.drain()).toBeRejectedWithError(/budget/);
   });
+
+  it('observes requested and actual delays without changing the scheduled callback or delay', async () => {
+    tasks.dispose();
+    let now = 10, next = 0;
+    const pending = new Map<number, () => void>(), delays: number[] = [], events: any[] = [];
+    tasks = new NativeRegistrationTasks((callback, delay) => {
+      delays.push(delay); pending.set(++next, callback); return next;
+    }, id => { pending.delete(id); }, () => now);
+    const callback = jasmine.createSpy('registration').and.callFake(() => { now += 7; });
+    const id = tasks.set(callback, 200, event => events.push(event));
+    const cancelled = tasks.set(() => fail('cancelled'), 20, event => events.push(event));
+    tasks.clear(cancelled);
+    const drained = tasks.drain();
+    now = 1510; pending.get(id)!();
+    await drained;
+    expect(delays).toEqual([200, 20]); expect(callback).toHaveBeenCalledTimes(1);
+    expect(events.filter(event => event.id === id)).toEqual([
+      { event: 'timer-scheduled', id, delayMs: 200, elapsedMs: 0, pending: 1 },
+      { event: 'timer-start', id, delayMs: 200, elapsedMs: 1500, pending: 0 },
+      { event: 'timer-end', id, delayMs: 200, elapsedMs: 1507, pending: 0 },
+    ]);
+    expect(events.at(-3).event).toBe('timer-cancel');
+  });
+
+  it('ignores diagnostic observer failures while preserving nested registration and original failures', async () => {
+    const values: number[] = [];
+    const observe = () => { throw Error('broken observer'); };
+    tasks.set(() => { values.push(1); tasks.set(() => { values.push(2); }, 0, observe); }, 0, observe);
+    await tasks.drain(); expect(values).toEqual([1, 2]);
+    tasks.dispose();
+    tasks = new NativeRegistrationTasks(window.setTimeout.bind(window), window.clearTimeout.bind(window));
+    tasks.set(() => { throw Error('original registration failure'); }, 0, observe);
+    await expectAsync(tasks.drain()).toBeRejectedWithError('original registration failure');
+  });
 });

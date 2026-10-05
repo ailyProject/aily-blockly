@@ -13,6 +13,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "Build and sync the project first"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "Show editor sidebar",
+        "HIDE_CODER_SIDEBAR": "Hide editor sidebar",
         "MENU": "Menu",
         "PROJECT_NEW": "New Project",
         "PROJECT_NEW_AILY_CODE": "New Aily Code Project",
@@ -886,6 +888,7 @@
         "CANCEL": "Cancel"
     },
     "LOGIN": {
+        "EDU_LOGIN": "EDU login",
         "HEADER": "Log in to use our services",
         "PHONE": "Phone",
         "EMAIL": "Email",
@@ -1027,6 +1030,9 @@
         "REINSTALL_CONFIRM": "Reinstall"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "Dependencies are not ready. Click Retry in the installation failure notification.",
+        "PREPARING_LIBRARY_SOURCES": "Preparing dependency library sources…",
+        "DEPENDENCY_INCOMPLETE": "{{name}} is still missing required files after installation. Please retry.",
         "INSTALLING": "Installing {{name}}...",
         "INSTALLING_DEPENDENCY": "Installing {{name}} dependency...",
         "INSTALL_COMPLETE": "{{name}} installed successfully",
@@ -1188,6 +1194,7 @@
         "PROJECT_CREATED": "Project created successfully",
         "CREATE_FAILED": "Project creation failed",
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
+        "DEPENDENCY_TASKS_STOPPED": "Project dependency tasks have been stopped",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
         "SDK_CONFIG_NOT_READY": "SDK is not ready. Some board settings are temporarily unavailable.",
         "BOARD_SWITCH_COMPLETE": "Board switch complete",

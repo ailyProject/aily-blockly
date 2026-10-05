@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const { normalizeBuildProduct } = require('./build-product');
 
 function readRecord(filePath) {
   try {
@@ -35,18 +34,30 @@ function credentials(record) {
 }
 
 // All operations, including first-run migration, run under the host's cross-process lock.
-function createAuthStore(appDataPath, product, withLock) {
-  const id = normalizeBuildProduct(product);
-  const filePath = path.join(appDataPath, 'auth', `${id}.json`);
-  const migrationPath = path.join(appDataPath, 'auth', 'blockly-migration.json');
+function createAuthStore(appDataPath, withLock) {
+  const filePath = path.join(appDataPath, '.aily');
+  const migrationPath = path.join(appDataPath, 'auth', 'shared-migration.json');
 
   function initialize() {
-    if (id !== 'blockly' || fs.existsSync(migrationPath)) return;
-    if (!fs.existsSync(filePath)) {
-      const legacy = credentials(readRecord(path.join(appDataPath, '.aily')));
-      if (legacy.access_token) writeRecord(filePath, legacy);
+    if (fs.existsSync(migrationPath)) return;
+    const current = readRecord(filePath);
+    const blocklyPath = path.join(appDataPath, 'auth', 'blockly.json');
+    // Early split-store versions left .aily behind when Blockly signed out.
+    const blocklySignedOut = fs.existsSync(path.join(appDataPath, 'auth', 'blockly-migration.json'))
+      && !fs.existsSync(blocklyPath);
+    const candidates = [
+      blocklySignedOut ? {} : credentials(current),
+      credentials(readRecord(blocklyPath)),
+      credentials(readRecord(path.join(appDataPath, 'auth', 'coder.json'))),
+    ].filter(record => record.access_token);
+    candidates.sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0));
+    if (candidates.length) {
+      const latest = candidates[0];
+      writeRecord(filePath, { ...current, ...latest, refresh_token: latest.refresh_token, updated_at: latest.updated_at });
+    } else if (blocklySignedOut) {
+      fs.rmSync(filePath, { force: true });
     }
-    // Keep this marker when credentials are cleared; never resurrect legacy login.
+    // Keep the old files, but never import them again after a shared logout.
     writeRecord(migrationPath, { completed: true });
   }
 
@@ -59,14 +70,19 @@ function createAuthStore(appDataPath, product, withLock) {
       initialize();
       const current = readRecord(filePath);
       if (expectedRefreshToken !== undefined && current.refresh_token !== expectedRefreshToken) return false;
-      const next = credentials(record);
+      const next = { ...credentials(record), updated_at: new Date().toISOString() };
       if (!next.access_token) throw new Error('Access token cannot be empty');
-      writeRecord(filePath, { ...next, updated_at: new Date().toISOString() });
+      writeRecord(filePath, { ...current, ...next, refresh_token: next.refresh_token });
       return true;
     }),
-    clear: () => withLock(() => {
+    clear: expectedAccessToken => withLock(() => {
       initialize();
+      if (expectedAccessToken !== undefined) {
+        const currentToken = credentials(readRecord(filePath)).access_token;
+        if (currentToken && currentToken !== expectedAccessToken) return false;
+      }
       fs.rmSync(filePath, { force: true });
+      return true;
     }),
   };
 }

@@ -1,12 +1,45 @@
 import { _BuilderService } from './builder.service';
 import { createBlocklyBuildSourceMappings } from './blockly-build-source-mappings';
+import { fakeAsync, tick } from '@angular/core/testing';
+import * as Blockly from 'blockly';
 import { BlocklyService } from './blockly.service';
 import { ProcessState } from '@core/app-shell/public-api';
+import { Subject } from 'rxjs';
 import {
   type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
 
 describe('BuilderService background preprocess ownership', () => {
+  it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    service.preprocessProcess = { unsubscribe: jasmine.createSpy('unsubscribe') };
+    service.preprocessStreamId = 'preprocess';
+    service.cmdService = { kill: jasmine.createSpy('kill').and.resolveTo(false) };
+    await expectAsync(service.stopPreprocess()).toBeRejectedWithError(/未确认停止/);
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('preprocess');
+    expect(service.preprocessStreamId).toBe('preprocess');
+    service.cmdService.kill.and.resolveTo(true);
+    await service.stopPreprocess();
+    expect(service.cmdService.kill).toHaveBeenCalledTimes(2);
+    expect(service.preprocessStreamId).toBeNull();
+  });
+
+  it('shares an in-flight stop and clears ownership only after confirmation', async () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    let stopped!: (value: boolean) => void;
+    service.preprocessStreamId = 'preprocess';
+    service.cmdService = { kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; })) };
+
+    const firstStop = service.stopPreprocess();
+    const secondStop = service.stopPreprocess();
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('preprocess');
+    expect(service.preprocessStreamId).toBe('preprocess');
+    stopped(true);
+    await Promise.all([firstStop, secondStop]);
+    expect(service.preprocessStreamId).toBeNull();
+    expect(service.preprocessStop).toBeNull();
+  });
+
   function queuedBuilder() {
     const service = Object.create(_BuilderService.prototype) as any;
     service.projectService = { currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
@@ -20,45 +53,89 @@ describe('BuilderService background preprocess ownership', () => {
     return service;
   }
 
-  it('cancels resource waiting before preparing or launching a Blockly request', async () => {
-    const service = queuedBuilder();
-    service.appDataResourceLock = { runShared: (_label: string, _task: unknown, signal: AbortSignal) =>
-      new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('APPDATA_RESOURCE_LOCK_CANCELLED')))) };
-    const result = service.build().catch((error: Error) => error);
-    service.cancel();
-    expect((await result).message).toBe('APPDATA_RESOURCE_LOCK_CANCELLED');
-    expect(service.cmdService.spawn).not.toHaveBeenCalled();
-    expect(service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
+  describe('background preparation', () => {
+    let oldPath: any;
+    beforeEach(() => {
+      oldPath = window['path'];
+      window['path'] = { getAppDataPath: () => '/sdk', getAilyChildPath: () => '/child', isExists: () => true };
+    });
+    afterEach(() => { window['path'] = oldPath; });
+
+    function backgroundBuilder() {
+      const service = queuedBuilder();
+      service.preprocessRunGeneration = 0;
+      service.actionService = { listen() {}, unlisten() {} };
+      service.ngZone = { runOutsideAngular: (task: () => unknown) => task() };
+      service.blocklyService = { workspace: {}, dependencySubject: new Subject(), aiExecutionActive$: new Subject() };
+      service.workflowService.state$ = new Subject();
+      service.projectService.stateSubject = { value: 'loaded' };
+      service.projectService.getBoardModule = async () => 'board';
+      service.platformService = { za7: '7za' };
+      service.configService = { data: {} };
+      service.isInstallInProgress = () => false;
+      service.getPendingChatBlockingOperationCount = () => 0;
+      service.getMissingBoardDependencies = async () => [];
+      service.generateWorkspaceCodeForPreprocess = async () => 'void setup() {}';
+      service.writeCompileRequest = async () => '/project/request.json';
+      for (const method of ['waitForBackgroundPreprocessIdle', 'waitForOneIdleBoundary', 'waitForAilyBuilderReady', 'writeTextFile']) {
+        service[method] = async () => {};
+      }
+      service.recordPreprocessDuration = () => {};
+      service.cmdService.spawn.and.returnValue(new Subject());
+      service.cmdService.kill = async () => true;
+      return service;
+    }
+
+    it('does not spawn after the project starts closing during preparation', fakeAsync(() => {
+      const service = backgroundBuilder();
+      let completePreparation!: () => void;
+      service.writeCompileRequest = () => new Promise(resolve => {
+        completePreparation = () => resolve('/project/request.json');
+      });
+      service.init();
+      service.blocklyService.dependencySubject.next('changed');
+      tick(500);
+      service.projectService.isProjectTransitionInProgress = () => true;
+      completePreparation();
+      tick();
+      expect(service.cmdService.spawn).not.toHaveBeenCalled();
+      service.destroy();
+    }));
   });
 
-  it('does not release SDK access or finish workflow while cancelled preparation is pending', async () => {
+  it('blocks foreground compilation when a detached background command cannot be stopped', async () => {
     const service = queuedBuilder();
-    let resourceHeld = false, completePreparation!: () => void;
+    service.preprocessStreamId = 'preprocess';
+    service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(false);
+
+    const result = await service.build().catch((error: { text: string }) => error);
+
+    expect(result.text).toContain('未确认停止');
+    expect(service.preprocessStreamId).toBe('preprocess');
+    expect(service.cmdService.spawn).not.toHaveBeenCalled();
+  });
+
+  it('does not finish workflow while cancelled preparation is pending', async () => {
+    const service = queuedBuilder();
+    let completePreparation!: () => void;
     service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); });
-    service.appDataResourceLock = { runShared: async (_label: string, task: (token: string) => Promise<unknown>) => {
-      resourceHeld = true;
-      try { return await task('reader'); } finally { resourceHeld = false; }
-    } };
     const build = service.build().catch((error: unknown) => error);
     service.cancel();
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(resourceHeld).toBeTrue();
     expect(service.workflowService.finishBuild).not.toHaveBeenCalled();
     service.cancelled = false; // The captured signal, not mutable UI state, owns cancellation.
     completePreparation(); await build;
-    expect(resourceHeld).toBeFalse();
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
     expect(service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a project switch while queued instead of building the newly selected project', async () => {
+  it('rejects a project switch during preparation instead of building the newly selected project', async () => {
     const service = queuedBuilder();
-    let grant!: () => void;
-    service.appDataResourceLock = { runShared: (_label: string, task: (token: string) => Promise<unknown>) =>
-      new Promise(resolve => { grant = () => resolve(task('reader')); }) };
+    let completePreparation!: () => void;
+    service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); });
     const build = service.build().catch((error: { text: string }) => error);
-    service.projectService.currentProjectPath = 'D:/other'; grant();
-    expect((await build).text).toContain('BUILD_SOURCE_STALE');
+    service.projectService.currentProjectPath = 'D:/other'; completePreparation();
+    expect((await build).text).toContain('Build project changed before capture');
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
   });
 
@@ -77,10 +154,23 @@ describe('BuilderService background preprocess ownership', () => {
     expect(result).toBeUndefined();
     expect(service.preprocessRunGeneration).toBe(4);
     expect(service.preprocessProcess).toBeNull();
-    expect(service.preprocessStreamId).toBeNull();
+    expect(service.preprocessStreamId).toBe('builder_preprocess_1');
     expect(service.pendingPrecompile).toBeTrue();
     expect(unsubscribe).toHaveBeenCalled();
     expect(kill).toHaveBeenCalledOnceWith('builder_preprocess_1');
+  });
+
+  it('retains pending preprocessing when installation interrupts preparation, but not after destruction', () => {
+    const service = Object.create(_BuilderService.prototype) as any;
+    Object.assign(service, { initialized: true, preprocessRunGeneration: 1, pendingPrecompile: false,
+      projectService: { currentProjectPath: '/project', isProjectTransitionInProgress: () => false },
+      blocklyService: { aiWaiting: false }, getPendingChatBlockingOperationCount: () => 0,
+      isInstallInProgress: () => true, workflowService: { currentState: ProcessState.INSTALLING } });
+    expect(service.shouldCancelBackgroundPreprocess(1)).toBeTrue();
+    expect(service.pendingPrecompile).toBeTrue();
+    service.initialized = false; service.pendingPrecompile = false;
+    expect(service.shouldCancelBackgroundPreprocess(1)).toBeTrue();
+    expect(service.pendingPrecompile).toBeFalse();
   });
 
   it('serializes source ranges from the exact generator result, not the debounced UI map', () => {
@@ -155,6 +245,7 @@ describe('BuilderService background preprocess ownership', () => {
   it('atomically snapshots generated code and source mappings before generator state can change', async () => {
     const service = Object.create(_BuilderService.prototype) as any;
     const workspace = {
+      isDragging: () => false, getInjectionDiv: () => null,
       getBlockById: (blockId: string) => ({
         outputConnection: blockId === 'value-block' ? {} : null,
       }),
@@ -182,12 +273,16 @@ describe('BuilderService background preprocess ownership', () => {
         codeSnippet: 'delay(1);',
       },
     ]]);
-    const prepared = { code: 'void setup() {}\n', artifacts: null, revision: 1, blockCodeMapText: JSON.stringify([...generatedMap]) };
+    const prepared = {
+      code: 'void setup() {}\n', artifacts: null, revision: 1,
+      blockCodeMapText: JSON.stringify([...generatedMap]),
+      sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' },
+    };
     service.blocklyService.isWorkspaceEditBlocked = () => false;
     service.blocklyService.getProjectPersistenceRevision = () => 1;
     service.blocklyService.getActivePageId = () => 'main';
     service.blocklyService.publishPreparedCodeView = jasmine.createSpy('publishPreparedCodeView');
-    service.blocklyService.runWithPreparedProjectCode = operation => operation(prepared, () => undefined);
+    service.blocklyService.runWithBackgroundProjectCode = async operation => { await operation(prepared, () => undefined); return true; };
 
     const checkpoint: { inputCapturedAt?: number } = {};
     const startedAt = Date.now();
@@ -204,6 +299,8 @@ describe('BuilderService background preprocess ownership', () => {
     generatedMap.clear();
 
     expect(snapshot.code).toContain('void setup()');
+    expect(snapshot.generatedArtifacts).toBe(prepared.artifacts);
+    expect(snapshot.sourceWorkspace).toBe(prepared.sourceWorkspace);
     snapshot.assertFresh();
     service.blocklyService.getActivePageId = () => 'other';
     expect(snapshot.assertFresh).toThrowError(/BUILD_SOURCE_STALE/);
@@ -228,12 +325,13 @@ describe('BuilderService background preprocess ownership', () => {
 
   it('routes forced preprocessing through the prepared code/artifact cache', async () => {
     const service = Object.create(_BuilderService.prototype) as any;
-    const workspace = {};
+    const workspace = { isDragging: () => false, getInjectionDiv: () => null };
     const prepared = { code: 'void setup() {}\n', artifacts: null };
     const assertCurrent = jasmine.createSpy('assertCurrent');
-    const prepare = jasmine.createSpy('prepare').and.callFake(operation => operation(prepared, assertCurrent));
+    const prepare = jasmine.createSpy('prepare').and.callFake(async operation => { await operation(prepared, assertCurrent); return true; });
     service.blocklyService = {
-      workspace, runWithPreparedProjectCode: prepare,
+      workspace, runWithBackgroundProjectCode: prepare,
+      isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
       publishPreparedCodeView: jasmine.createSpy('publishPreparedCodeView'),
       getReusableGeneratedCode: () => { throw new Error('Code-only cache cannot publish artifacts.'); },
     };
@@ -242,11 +340,134 @@ describe('BuilderService background preprocess ownership', () => {
     service.runBuilderPreprocessPhase = (_tag: string, operation: () => unknown) => operation();
 
     expect(await service.generateWorkspaceCodeForPreprocess(workspace, 'spec', true)).toBe(prepared.code);
-    expect(prepare.calls.mostRecent().args[1]).toBeTrue();
+    expect(prepare.calls.mostRecent().args[2]).toBeTrue();
     expect(assertCurrent).toHaveBeenCalled();
     expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledWith(prepared.code, null);
     await service.generateWorkspaceCodeForPreprocess(workspace, 'spec');
-    expect(prepare.calls.mostRecent().args[1]).toBeFalse();
+    expect(prepare.calls.mostRecent().args[2]).toBeFalse();
+  });
+});
+
+describe('BuilderService non-interrupting code capture', () => {
+  let service: any;
+  let workspace: any;
+  let consume: jasmine.Spy;
+  let cancelled: boolean;
+  beforeEach(() => {
+    cancelled = false;
+    workspace = { currentGesture_: null, isDragging: () => false, getInjectionDiv: () => document.body };
+    spyOn(Blockly.WidgetDiv, 'isVisible').and.returnValue(false);
+    spyOn(Blockly.DropDownDiv, 'isVisible').and.returnValue(false);
+    service = Object.create(_BuilderService.prototype);
+    consume = jasmine.createSpy('consume').and.resolveTo('code');
+    Object.assign(service, {
+      codePreparationSequence: 0, t: (key: string) => key,
+      projectService: { currentProjectPath: '/project' },
+      blocklyService: {
+        workspace, getActivePageId: () => 'main', isWorkspaceEditBlocked: () => false,
+        runWithPreparedProjectCode: jasmine.createSpy('exclusive'),
+        runWithBackgroundProjectCode: jasmine.createSpy('reader').and.callFake(async operation => {
+          await operation({ code: 'code', artifacts: null }, () => undefined); return true;
+        }),
+      },
+    });
+  });
+  const capture = () => service.runWithInteractiveProjectCode(workspace, consume, false, () => cancelled);
+
+  it('waits outside the project queue for a drag and retries invalidated preparation without an edit fence', fakeAsync(() => {
+    workspace.currentGesture_ = {};
+    let result: string | undefined;
+    capture().then(value => { result = value; }); tick(1500);
+    expect(service.blocklyService.runWithBackgroundProjectCode).not.toHaveBeenCalled();
+    workspace.currentGesture_ = null;
+    const reader = service.blocklyService.runWithBackgroundProjectCode;
+    let attempts = 0;
+    reader.and.callFake(async operation => {
+      if (++attempts === 1) return false;
+      await operation({ code: 'code', artifacts: null }, () => undefined); return true;
+    });
+    tick(200);
+    expect(reader).toHaveBeenCalledTimes(2);
+    expect(result).toBe('code');
+    expect(service.blocklyService.runWithPreparedProjectCode).not.toHaveBeenCalled();
+  }));
+
+  it('keeps text and dropdown editors open, then returns the latest idle result', fakeAsync(() => {
+    const input = document.createElement('input'); document.body.append(input); input.focus();
+    let result: string;
+    try {
+      capture().then(value => { result = value; }); tick(500);
+      expect(document.activeElement).toBe(input); expect(consume).not.toHaveBeenCalled();
+      input.blur(); (Blockly.DropDownDiv.isVisible as jasmine.Spy).and.returnValue(true); tick(500);
+      expect(consume).not.toHaveBeenCalled();
+      (Blockly.DropDownDiv.isVisible as jasmine.Spy).and.returnValue(false); tick(100);
+      expect(result!).toBe('code'); expect(consume).toHaveBeenCalledTimes(1);
+    } finally { input.remove(); }
+  }));
+
+  it('can cancel a pending capture without waiting for the user to release input', fakeAsync(() => {
+    workspace.currentGesture_ = {};
+    let error: Error;
+    capture().catch(value => { error = value; }); tick(100);
+    cancelled = true; tick(100);
+    expect(error!.message).toBe('CANCELLED_TITLE');
+    expect(consume).not.toHaveBeenCalled();
+  }));
+
+  for (const invalidate of ['project', 'workspace', 'destroy', 'page']) {
+    it(`drops pending capture after ${invalidate} changes`, fakeAsync(() => {
+      workspace.currentGesture_ = {};
+      let error: Error;
+      capture().catch(value => { error = value; }); tick(100);
+      if (invalidate === 'project') service.projectService.currentProjectPath = '/other';
+      if (invalidate === 'workspace') service.blocklyService.workspace = {};
+      if (invalidate === 'destroy') ++service.codePreparationSequence;
+      if (invalidate === 'page') service.blocklyService.getActivePageId = () => 'other';
+      tick(100);
+      expect(error!.message).toContain('BUILD_SOURCE_STALE'); expect(consume).not.toHaveBeenCalled();
+    }));
+  }
+
+  it('retries build-publication contention but propagates genuine generator errors', fakeAsync(() => {
+    const reader = service.blocklyService.runWithBackgroundProjectCode;
+    let attempts = 0, error: Error;
+    reader.and.callFake(async () => { throw new Error(++attempts === 1 ? 'BUILD_WORKSPACE_BUSY: compile' : 'bad generator'); });
+    capture().catch(value => { error = value; }); tick(100);
+    expect(error!.message).toBe('bad generator'); expect(reader).toHaveBeenCalledTimes(2);
+  }));
+
+  it('Python publishes the revision captured after editing finishes, not the pre-wait revision', fakeAsync(() => {
+    service.projectService.currentPackageData = { devmode: 'python' };
+    service.electronService = { pathJoin: (...parts: string[]) => parts.join('/') };
+    service.waitForOneIdleBoundary = () => Promise.resolve();
+    service.runBuilderPreprocessPhase = (_tag, task) => task();
+    service.writeTextFileAtomic = jasmine.createSpy('write').and.resolveTo();
+    let revision = 1;
+    service.blocklyService.getProjectPersistenceRevision = () => revision;
+    service.blocklyService.publishPreparedCodeView = jasmine.createSpy('preview');
+    service.blocklyService.runWithBackgroundProjectCode.and.callFake(async operation => {
+      await operation({ code: 'print("latest")', artifacts: null, revision }, () => undefined); return true;
+    });
+    workspace.currentGesture_ = {};
+    let result: any;
+    service.generateAndWritePythonEntry().then(value => { result = value; }); tick(1000);
+    expect(service.writeTextFileAtomic).not.toHaveBeenCalled();
+    revision = 2; workspace.currentGesture_ = null; tick(100);
+    expect(result.state).toBe('done');
+    expect(service.writeTextFileAtomic).toHaveBeenCalledOnceWith('/project/main.py', 'print("latest")');
+    expect(service.lastCode).toBe('print("latest")');
+  }));
+
+  it('Python rechecks freshness after its asynchronous file publication', async () => {
+    service.projectService.currentPackageData = { devmode: 'python' };
+    service.electronService = { pathJoin: (...parts: string[]) => parts.join('/') };
+    let changed = false;
+    service.generateWorkspaceBuildSnapshotForPreprocess = async () => ({ code: 'print(1)', assertFresh: () => {
+      if (changed) throw new Error('BUILD_SOURCE_STALE: changed during write');
+    } });
+    service.writeTextFileAtomic = async () => { changed = true; };
+    await expectAsync(service.generateAndWritePythonEntry()).toBeRejectedWithError(/BUILD_SOURCE_STALE/);
+    expect(service.lastCode).toBeUndefined();
   });
 });
 

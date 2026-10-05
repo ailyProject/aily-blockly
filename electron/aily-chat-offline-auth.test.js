@@ -17,7 +17,9 @@ function load(source, imports = {}) {
   return record.exports;
 }
 
-const {AuthService} = load('src/app/services/core/auth/auth.service.ts');
+const {AuthService} = load('src/app/services/core/auth/auth.service.ts', {
+  './policies/detached-aily-chat-auth': {isDetachedAilyChatRenderer: () => false},
+});
 const {createAilyHostAuthRequestHandler} = load('src/app/services/core/auth/bridges/aily-chat-host-auth-runtime-bridge.ts');
 const {UiService} = load('src/app/services/core/app-shell/ui.service.ts', {
   '@core/auth/public-api': {isAuthRequiredTool: name => ['aily-chat','cloud-space','user-center'].includes(name)},
@@ -68,4 +70,78 @@ test('offline credential leases do not repeatedly probe remote auth', async () =
   assert.equal((await handler({operation:'access-token'})).errorCode, 'AUTH_CREDENTIAL_UNAVAILABLE');
   service.authSessionInvalidating = true;
   assert.equal((await handler({operation:'access-token'})).errorCode, 'AUTH_SIGNED_OUT');
+});
+
+for (const scenario of [
+  {name: 'the rejected session', sent: 'old', current: 'old', code: 'AUTH_TOKEN_INVALID', invalidated: ['old']},
+  {name: 'an in-flight request after shared logout', sent: 'old', current: null, code: 'AUTH_TOKEN_INVALID', invalidated: ['old']},
+  {name: 'a new request after shared logout', sent: null, current: null, code: 'AUTH_TOKEN_MISSING', cleared: [null], login: true},
+  {name: 'a replacement shared session', sent: 'old', current: 'new', code: 'AUTH_TOKEN_INVALID'},
+]) test(`401 handling protects ${scenario.name}`, async t => {
+  const rx = require('rxjs');
+  class HttpErrorResponse extends Error {
+    status = 401;
+    error = {errorCode: scenario.code};
+  }
+  let current = scenario.sent;
+  const invalidated = [], cleared = [], login = [];
+  const service = {
+    getToken2: async () => current,
+    refreshAuthToken: async () => false,
+    requestSessionInvalidation: (_code, _source, token) => { invalidated.push(token); return true; },
+    clearLocalAuthSession: async token => { cleared.push(token); },
+    getAuthInitializationState: () => 'signed_out',
+    requestLogin: reason => login.push(reason),
+  };
+  const previousWindow = global.window;
+  global.window = {};
+  t.after(() => { global.window = previousWindow; });
+  const {authInterceptor} = load('src/app/interceptors/auth.interceptor.ts', {
+    '@angular/core': {inject: () => service},
+    '@angular/common/http': {HttpErrorResponse},
+    '@core/auth/public-api': {isDetachedAilyChatRenderer: () => false},
+    '../configs/api.config': {API: {me: '/me'}},
+    rxjs: rx,
+  });
+  const request = {
+    url: '/me', headers: {get: () => null},
+    clone: ({setHeaders}) => ({url: '/me', headers: {get: name => setHeaders[name]}}),
+  };
+  const response = new rx.Subject();
+  const result = rx.firstValueFrom(authInterceptor(request, () => response));
+  await new Promise(resolve => setImmediate(resolve));
+  current = scenario.current;
+  response.error(new HttpErrorResponse());
+  await assert.rejects(result);
+  assert.deepEqual(invalidated, scenario.invalidated || []);
+  assert.deepEqual(cleared, scenario.cleared || []);
+  assert.equal(login.length, scenario.login ? 1 : 0);
+});
+
+test('a rejected clear preserves the replacement session; cleanup errors still clear local UI', async t => {
+  const previousWindow = global.window, previousStorage = global.localStorage;
+  t.after(() => { global.window = previousWindow; global.localStorage = previousStorage; });
+  t.mock.method(console, 'error', () => {});
+  const expectedTokens = [];
+  global.window = {electronAPI: {auth: {clear: async token => { expectedTokens.push(token); return false; }}}};
+  global.localStorage = {removeItem: () => {}};
+  const service = auth('authenticated', true);
+  service.electronService = {isElectron: true};
+  service.authCredentialGeneration = 0;
+  for (const subject of [service.isLoggedInSubject, service.authInitializationStateSubject]) {
+    subject.next = value => { subject.value = value; };
+  }
+  service.clearPendingAuthQuotaInfoSnapshotRetry = service.clearPendingAuthHydrationRetry = () => {};
+  service.setCurrentUserInfo = () => {};
+  let initialized = 0;
+  service.initializeAuth = () => { initialized++; return new Promise(() => {}); };
+  await service.clearLocalAuthSession('old');
+  assert.deepEqual(expectedTokens, ['old']);
+  assert.equal(service.isLoggedIn, true);
+  assert.equal(initialized, 1);
+
+  global.window.electronAPI.auth.clear = async () => { throw Object.assign(new Error('fixture denied'), {code: 'EACCES'}); };
+  await service.clearAuthData();
+  assert.equal(service.isLoggedIn, false);
+  assert.equal(service.getAuthInitializationState(), 'signed_out');
 });

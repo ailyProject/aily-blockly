@@ -27,14 +27,24 @@ test('publishes exact UTF-8 bytes, BOM and CRLF and cleans temporary files', asy
   assert.deepEqual(await replaceProjectText(request(root, content), guard), { status: 'COMMITTED', hash: hash(content) });
   assert.equal(read(root), content); assertClean(root);
 });
-test('legacy shadow migration retains a backup and requires an identity-free project', async () => {
+test('legacy shadow migration retains a backup when no ABS identity binding exists', async () => {
   const root = project(); initialize(root);
   const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard);
   assert.equal(result.status, 'COMMITTED'); assert.equal(result.backupHash, hash('before'));
   assert.equal(fs.readFileSync(path.join(root, '.aily/project-data-backups', hash('before').slice(7) + '.abi'), 'utf8'), 'before');
   assert.equal(read(root), 'migrated'); assertClean(root);
 });
-for (const context of ['project.abs', 'project.abs.map.json', '.aily/abs-sync/committed.json', '.aily/abs-sync/prepared.json']) {
+test('legacy shadow migration keeps standalone ABS text byte-for-byte', async () => {
+  const root = project(); initialize(root);
+  const abs = '# independent ABS source\r\nowner(NUM=7)\n';
+  fs.writeFileSync(path.join(root, 'project.abs'), abs);
+  const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard);
+  assert.equal(result.status, 'COMMITTED');
+  assert.equal(read(root), 'migrated');
+  assert.equal(fs.readFileSync(path.join(root, 'project.abs'), 'utf8'), abs);
+  assertClean(root);
+});
+for (const context of ['project.abs.map.json', '.aily/abs-sync/committed.json', '.aily/abs-sync/prepared.json']) {
   test(`legacy shadow migration preserves existing ${context}`, async () => {
     const root = project(); initialize(root);
     const target = path.join(root, context); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, 'keep');
@@ -47,11 +57,11 @@ test('legacy shadow migration rechecks ABS context under the publication lock', 
   const root = project(); initialize(root);
   const files = { ...fs, writeFileSync(fd, ...args) {
     fs.writeFileSync(fd, ...args);
-    if (typeof fd === 'number') fs.writeFileSync(path.join(root, 'project.abs'), 'concurrent draft');
+    if (typeof fd === 'number') fs.writeFileSync(path.join(root, 'project.abs.map.json'), 'concurrent map');
   } };
   const result = await replaceProjectText({ ...request(root, 'migrated'), backup: 'project-data', migrateLegacyShadowIds: true }, guard, { files });
   assert.equal(result.status, 'NOT_COMMITTED'); assert.equal(result.code, 'BLOCKLY_IDENTITY_MIGRATION_BLOCKED');
-  assert.equal(read(root), 'before'); assert.equal(fs.readFileSync(path.join(root, 'project.abs'), 'utf8'), 'concurrent draft'); assertClean(root);
+  assert.equal(read(root), 'before'); assert.equal(fs.readFileSync(path.join(root, 'project.abs.map.json'), 'utf8'), 'concurrent map'); assertClean(root);
 });
 test('creates missing mirrors and supports exact no-op commits', async () => {
   const root = project();
@@ -130,8 +140,9 @@ test('recognizes committed bytes after a rename callback failure', async () => {
 });
 test('reports UNKNOWN when bytes cannot be inspected after rename', async () => {
   const root = project(); initialize(root); let renamed = false;
+  const target = path.join(fs.realpathSync(root), 'project.abi');
   const files = { ...fs, renameSync(...args) { fs.renameSync(...args); renamed = true; }, readFileSync(file, ...args) {
-    if (renamed && file === path.join(root, 'project.abi')) throw new Error('inspection failed'); return fs.readFileSync(file, ...args);
+    if (renamed && file === target) throw new Error('inspection failed'); return fs.readFileSync(file, ...args);
   } };
   assert.equal((await replaceProjectText(request(root, 'after'), guard, { files })).status, 'UNKNOWN');
   assert.equal(read(root), 'after'); assertClean(root);
@@ -234,8 +245,9 @@ test('late external edits are retained and never become the wrong backup', async
 
 test('uncertain ABI commit keeps the verified recovery backup and does not roll back', async () => {
   const root = project(); initialize(root); let renamed = false;
+  const target = path.join(fs.realpathSync(root), 'project.abi');
   const files = { ...fs, renameSync(...args) { fs.renameSync(...args); renamed = true; }, readFileSync(file, ...args) {
-    if (renamed && file === path.join(root, 'project.abi')) throw new Error('readback lost'); return fs.readFileSync(file, ...args);
+    if (renamed && file === target) throw new Error('readback lost'); return fs.readFileSync(file, ...args);
   } };
   const result = await replaceProjectText(migrationRequest(root), guard, { files });
   assert.equal(result.status, 'UNKNOWN'); assert.equal(result.backupHash, hash('before'));

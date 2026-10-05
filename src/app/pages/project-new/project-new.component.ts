@@ -583,13 +583,18 @@ export class ProjectNewComponent implements OnDestroy {
 
   /** 切换到新工程前的未保存确认；取消则停在向导第一步 */
   private async confirmSwitchWithUnsavedIfNeeded(): Promise<boolean> {
+    const path = this.projectService.currentProjectPath;
     if (!this.isOnEditorRoute()) {
       return true;
     }
-    if (!(await this.projectService.hasUnsavedChanges())) {
-      return true;
+    const unchanged = this.projectService.captureCurrentProjectGuard();
+    try {
+      if (!(await this.projectService.hasUnsavedChanges())) return unchanged();
+    } catch (error) {
+      this.message.error(`无法确认保存状态：${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
-    if (this.unsaveDialogOpen) {
+    if (this.unsaveDialogOpen || !unchanged()) {
       return false;
     }
     this.unsaveDialogOpen = true;
@@ -605,14 +610,20 @@ export class ProjectNewComponent implements OnDestroy {
       });
       ref.afterClose.subscribe(async (res: { result?: string } | null) => {
         this.unsaveDialogOpen = false;
-        if (!res) {
+        if (!res || !unchanged()) {
           resolve(false);
           return;
         }
         switch (res.result) {
           case 'save':
-            await this.projectService.save();
-            resolve(true);
+            try {
+              const saved = await this.projectService.save(path, 15_000);
+              if (saved?.success !== true) throw new Error(saved?.error || '编辑器未确认保存成功');
+              resolve(unchanged());
+            } catch (error) {
+              this.message.error(error instanceof Error ? error.message : String(error));
+              resolve(false);
+            }
             break;
           case 'continue':
             resolve(true);

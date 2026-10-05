@@ -1018,17 +1018,26 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
   }
 
   addVariable(tag, code, overwrite = false) {
-    if (this.codeDict['variables'][tag] === undefined || overwrite) {
+    if (this.codeDict['variables'][tag] === undefined || overwrite ||
+        this.replacesLegacyBlinkerNumber(tag, this.codeDict['variables'][tag], code)) {
       this.codeDict['variables'][tag] = code;
     }
     this._trackCodeFragment('variables', tag, code);
   }
 
   addObject(tag, code, overwrite = false) {
-    if (this.codeDict['objects'][tag] === undefined || overwrite) {
+    if (this.codeDict['objects'][tag] === undefined || overwrite ||
+        this.replacesLegacyBlinkerNumber(tag, this.codeDict['objects'][tag], code)) {
       this.codeDict['objects'][tag] = code;
     }
     this._trackCodeFragment('objects', tag, code);
+  }
+
+  private replacesLegacyBlinkerNumber(tag: string, existing: string, replacement: string): boolean {
+    if (!/^Blinker_[A-Za-z0-9_]+$/.test(tag)) return false;
+    const number = /^BlinkerNumber (Blinker_[A-Za-z0-9_]+)\((.*)\);$/.exec(existing);
+    const widget = /^Blinker(?:Button|Slider|RGB|Joystick|Chart) (Blinker_[A-Za-z0-9_]+)\((.*)\);$/.exec(replacement);
+    return !!number && !!widget && number[1] === tag && widget[1] === tag && number[2] === widget[2];
   }
 
   addFunction(tag, code, overwrite = false) {

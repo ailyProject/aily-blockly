@@ -299,6 +299,11 @@ nz-sider {
   // Blockly 默认 z-index 为 99999，需低于 cdk-overlay-container(10000) 以免遮挡弹窗
   z-index: 9999 !important;
 
+  .blocklyContextMenu {
+    // Blockly 用不含边框的 scrollHeight 限高；避免全局 border-box 造成 2px 溢出。
+    box-sizing: content-box;
+  }
+
   .blocklyHtmlInput {
     color: var(--aily-blockly-text-primary);
   }

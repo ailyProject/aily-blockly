@@ -13,6 +13,8 @@
         "WORKSPACE_PROJECT_BUILD_REQUIRED": "请先编译并同步项目"
     },
     "MENU": {
+        "SHOW_CODER_SIDEBAR": "展开编辑器左侧栏",
+        "HIDE_CODER_SIDEBAR": "收起编辑器左侧栏",
         "MENU": "菜单",
         "PROJECT_NEW": "新建项目",
         "PROJECT_NEW_AILY_CODE": "新建 Aily Code 项目",
@@ -882,6 +884,7 @@
         "CANCEL": "取消"
     },
     "LOGIN": {
+        "EDU_LOGIN": "EDU 登录",
         "HEADER": "登录后即可使用我们的服务",
         "PHONE": "手机号",
         "EMAIL": "邮箱",
@@ -1023,6 +1026,9 @@
         "REINSTALL_CONFIRM": "重新安装"
     },
     "NPM": {
+        "DEPS_RETRY_REQUIRED": "依赖尚未安装完成，请在安装失败通知中点击“重试”",
+        "PREPARING_LIBRARY_SOURCES": "正在准备依赖库源码…",
+        "DEPENDENCY_INCOMPLETE": "{{name}} 安装后仍缺少必要文件，请重试",
         "INSTALLING": "正在安装{{name}}...",
         "INSTALLING_DEPENDENCY": "正在安装{{name}}依赖...",
         "INSTALL_COMPLETE": "{{name}}安装完成",
@@ -1184,6 +1190,7 @@
         "PROJECT_CREATED": "项目创建成功",
         "CREATE_FAILED": "项目创建失败",
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
+        "DEPENDENCY_TASKS_STOPPED": "项目依赖任务已停止",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
         "SDK_CONFIG_NOT_READY": "SDK 尚未就绪，部分开发板配置暂不可用",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",

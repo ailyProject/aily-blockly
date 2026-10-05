@@ -14,7 +14,7 @@ const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { copyProjectDirectory, importProjectDirectory } = require("./project-file-copy");
-const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource } = require('./build-workspace-publication');
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload } = require('./build-workspace-publication');
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -233,7 +233,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ...require('./build-product').getProductAuthConfig(process.env.AILY_BUILD_PRODUCT),
     read: () => ipcRenderer.invoke('auth-credentials-read'),
     write: (record, expectedRefreshToken) => ipcRenderer.invoke('auth-credentials-write', record, expectedRefreshToken),
-    clear: () => ipcRenderer.invoke('auth-credentials-clear'),
+    clear: (expectedAccessToken) => ipcRenderer.invoke('auth-credentials-clear', expectedAccessToken),
   },
   ipcRenderer: {
     send: (channel, data) => ipcRenderer.send(channel, data),
@@ -410,15 +410,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.on("window-maximize-changed", listener);
       return () => ipcRenderer.removeListener("window-maximize-changed", listener);
     },
-    // 监听 Mac 平台下系统关闭按钮的关闭请求
+    // Main-window quit uses the same confirmation on every platform.
     onCloseRequest: (callback) => {
-      const listener = () => callback();
+      const listener = (_event, request) => {
+        if (request?.requestId) ipcRenderer.send('window-close-checking', { requestId: request.requestId });
+        callback(request);
+      };
       ipcRenderer.on("window-close-request", listener);
       return () => ipcRenderer.removeListener("window-close-request", listener);
     },
-    // 确认关闭窗口（Mac 平台使用）
-    confirmClose: () => {
-      ipcRenderer.send("window-close-confirmed");
+    confirmClose: (requestId, allowed) => {
+      ipcRenderer.send("window-close-confirmed", { requestId, allowed });
     },
   },
   projectLock: {
@@ -542,6 +544,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     publishArduinoGeneratedCode,
     patchBuildMetadata,
     captureBuildSource,
+    canReuseBlocklyUpload,
     status: () => ipcRenderer.invoke("aily-builder-status"),
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),

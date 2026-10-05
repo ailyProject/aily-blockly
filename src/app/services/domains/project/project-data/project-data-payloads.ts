@@ -120,6 +120,9 @@ function visitProjectDataDocument(document: unknown, onPayload: (payload: Projec
     if (shared) {
       blocks(shared['procedureBlocks'], '/sharedModel/procedureBlocks');
       variables(shared['variables'], '/sharedModel/variables');
+      for (const key of Object.keys(shared)) {
+        if (!['procedureBlocks', 'variables'].includes(key)) add(shared, key, '/sharedModel');
+      }
     }
   } else if (typeof root['type'] === 'string') {
     // Standalone block serialization is also used by clipboard consumers.

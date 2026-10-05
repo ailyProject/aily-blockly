@@ -16,6 +16,7 @@ describe('independent native candidate Realm', () => {
   afterEach(() => expect(document.querySelectorAll('[data-blockly-native-candidate]').length).toBe(0));
 
   it('fails asset loading before constructing a candidate realm', async () => {
+    spyOnProperty(document, 'baseURI', 'get').and.returnValue('http://cold-native-runtime.invalid/');
     spyOn(window, 'fetch').and.rejectWith(new TypeError('Failed to fetch'));
     const create = spyOn(document, 'createElement').and.callThrough();
     try { await run(candidate()); fail('accepted missing asset'); }
@@ -24,6 +25,7 @@ describe('independent native candidate Realm', () => {
   });
 
   it('rejects a stale or altered candidate asset before evaluating any code', async () => {
+    spyOnProperty(document, 'baseURI', 'get').and.returnValue('http://altered-native-runtime.invalid/');
     spyOn(window, 'fetch').and.resolveTo(new Response('window.alteredCandidateRan = true;'));
     await expectAsync(run(candidate())).toBeRejectedWithError(/does not match the host build/);
     expect(window['alteredCandidateRan']).toBeUndefined();
@@ -221,6 +223,23 @@ describe('independent native candidate Realm', () => {
     await expectAsync(evaluateNativeCandidate(candidate(), { signal: abort.signal, assertCurrent: () => {} })).toBeRejectedWithError('cancelled');
     let calls = 0;
     await expectAsync(evaluateNativeCandidate(candidate(), { assertCurrent: () => { if (++calls >= 3) throw Error('stale'); } })).toBeRejectedWithError('stale');
+  });
+
+  it('cancels an already mounted candidate and leaves the host workspace untouched', async () => {
+    const host = new Blockly.Workspace(); host.newBlock('math_number', 'host-number').setFieldValue(17, 'NUM');
+    const before = Blockly.serialization.workspaces.save(host), abort = new AbortController();
+    let mounted = false;
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('[data-blockly-native-candidate]')) {
+        mounted = true; abort.abort(new Error('user cancelled candidate'));
+      }
+    });
+    observer.observe(document.body, { childList: true });
+    try {
+      await expectAsync(evaluateNativeCandidate(candidate(), { signal: abort.signal, assertCurrent: () => {} }))
+        .toBeRejectedWithError('user cancelled candidate');
+      expect(mounted).toBeTrue(); expect(Blockly.serialization.workspaces.save(host)).toEqual(before);
+    } finally { observer.disconnect(); host.dispose(); }
   });
 
   it('retains native extraState or rejects ignored state without manual input synthesis', async () => {

@@ -53,13 +53,14 @@ const feedbackCases: ReadonlyArray<{
   {
     label: 'bug',
     radioIndex: 0,
-    diagnosticHeadings: ['### Project Summary', '### Crash Summary', '### Logs'],
+    diagnosticHeadings: ['### Project Summary', '### Board Dependencies', '### Crash Summary', '### Logs'],
   },
   {
     label: 'build&upload',
     radioIndex: 1,
     diagnosticHeadings: [
       '### Board and Port',
+      '### Board Dependencies',
       '### Libraries',
       '### Parameters',
       '### Last Results',

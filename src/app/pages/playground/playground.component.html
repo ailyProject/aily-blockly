@@ -23,7 +23,10 @@
         </ng-template>
         <div class="tag-list">
             @for (tag of tagList; track tag) {
-            <nz-tag (click)="search(tag.text)" [nzColor]="tag.color">{{ tag.text }}</nz-tag>
+            <nz-tag role="button" tabindex="0" (click)="search(tag.text)"
+                (keydown.enter)="search(tag.text)" (keydown.space)="$event.preventDefault(); search(tag.text)"
+                [attr.aria-pressed]="keyword === tag.text"
+                [nzColor]="keyword === tag.text ? '#739c19ff' : undefined">{{ tag.text }}</nz-tag>
             }
         </div>
     </div>

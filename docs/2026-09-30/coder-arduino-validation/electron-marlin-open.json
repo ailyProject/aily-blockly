@@ -1,0 +1,23 @@
+{
+  "path": "/tmp/aily-arduino-validation/Marlin",
+  "mode": "coder",
+  "manifest": {
+    "name": "marlin",
+    "nickname": "Marlin",
+    "version": "1.0.0",
+    "private": true,
+    "type": "coder",
+    "arduinoSketch": true,
+    "entry": "Marlin.ino",
+    "framework": "arduino",
+    "devmode": "arduino",
+    "sourceRoots": [
+      ".",
+      "src",
+      "sketch/libraries"
+    ],
+    "dependencies": {},
+    "boardDependencies": {},
+    "projectConfig": {}
+  }
+}

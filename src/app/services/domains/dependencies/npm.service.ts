@@ -2,7 +2,6 @@ import { HttpClient } from '@angular/common/http';
 import { Inject, Injectable } from '@angular/core';
 
 import {
-  AppDataResourceLockService,
   CmdService,
   ElectronService,
   LogOptions,
@@ -42,6 +41,14 @@ import {
 } from './ports/dependency-application.port';
 
 type GlobalDependencyUsageFile = GlobalDependencyUsageState;
+type ProjectDependencySession = ReturnType<ProjectService['getProjectDependencySession']>;
+
+interface ProjectDependencyInstallOptions {
+  onRetryInstall?: () => void;
+  /** The complete project workflow prepares sources after the SDK and tools. */
+  deferCoderSources?: boolean;
+  deferSuccessNotice?: boolean;
+}
 
 export interface GlobalDependencyRemovalResult {
   packageNames: string[];
@@ -64,7 +71,6 @@ export class NpmService {
     private application: DependencyApplicationPort,
     private translate: TranslateService,
     private logService: LogService,
-    private appDataResourceLock: AppDataResourceLockService,
     private blocklyLibraryPackageService: BlocklyLibraryPackageService,
     private configService: ConfigService,
   ) {
@@ -75,7 +81,23 @@ export class NpmService {
 
   isInstalling = false;
   private boardDependencyInstallProgress?: BoardDependencyInstallProgress;
-  private boardDepsInstallPromise?: Promise<void>;
+  private boardDepsInstallPromise?: { session: ProjectDependencySession; promise: Promise<void> };
+  private projectDepsInstallPromises?: Map<ProjectDependencySession, Promise<boolean>>;
+  private projectNpmFailures?: WeakSet<ProjectDependencySession>;
+
+  private isDependencySessionCurrent(session?: ProjectDependencySession): boolean {
+    if (!session) return true;
+    try {
+      this.prjService.assertProjectDependencySession(session);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private assertDependencySession(session?: ProjectDependencySession): void {
+    if (session) this.prjService.assertProjectDependencySession(session);
+  }
 
   private getNpmErrorMessage(error: any): string {
     return (error?.message || String(error)).replace(/^Error invoking remote method 'npm-run': Error:\s*/i, '');
@@ -98,6 +120,7 @@ export class NpmService {
   }
 
   private updateBoardDependencyNotice(progress: BoardDependencyInstallProgress, value: number) {
+    if (!this.isDependencySessionCurrent(progress.session)) return;
     const nextProgress = Math.max(progress.lastProgress, this.clampProgress(value));
 
     progress.lastProgress = nextProgress;
@@ -121,7 +144,10 @@ export class NpmService {
       return { phase: 'download', percent: 100 };
     }
 
-    const match = text.match(/^(下载进度|Download progress|解压进度|Extract progress)[:：]?\s*(\d+(?:\.\d+)?)/i);
+    const pattern = this.configService.isCoderProduct()
+      ? /^(下载进度|Download progress|解压进度|Extract(?:ion)? progress)[:：]?\s*(\d+(?:\.\d+)?)/i
+      : /^(下载进度|Download progress|解压进度|Extract progress)[:：]?\s*(\d+(?:\.\d+)?)/i;
+    const match = text.match(pattern);
 
     if (!match) {
       return null;
@@ -139,7 +165,7 @@ export class NpmService {
   private handleBoardDependencyProgressLog(log: LogOptions) {
     const progress = this.boardDependencyInstallProgress;
 
-    if (!progress) {
+    if (!progress || !this.isDependencySessionCurrent(progress.session)) {
       return;
     }
 
@@ -289,7 +315,7 @@ export class NpmService {
     });
 
     try {
-      await this.appDataResourceLock.runExclusive(`npm:install-board:${board.name}`, appDataResourceToken => window['npm'].run({ cmd, appDataResourceToken }));
+      await window['npm'].run({ cmd });
     } catch (error) {
       const errorMessage = this.getNpmErrorMessage(error);
 
@@ -479,37 +505,158 @@ export class NpmService {
     }
   }
 
-  /** Blockly / Aily Code 共用：工程 npm 就绪后后台检查主板平台依赖（与 blockly-editor loadProject 一致） */
-  ensureProjectAndBoardDeps(
-    projectPath: string,
-    options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void },
-  ): Promise<boolean> {
-    return this.ensureProjectDependenciesInstalled(projectPath, options).then((ok) => {
-      if (!ok) {
-        return false;
-      }
-
-      void this.installBoardDeps()
-        .then(() => options?.onBoardDepsSettled?.())
-        .catch((err) => console.error('install board dependencies error', err));
-
-      return true;
-    });
+  private getDependencyProject(session: ProjectDependencySession): ProjectService {
+    return this.configService.isCoderProduct() && this.prjService.isAilyCodeProject(session.projectPath)
+      ? this.prjService.getCoderProjectContext(session.projectPath)
+      : this.prjService;
   }
 
-  async installBoardDeps() {
-    if (this.boardDepsInstallPromise) {
-      return this.boardDepsInstallPromise;
+  /** Coder execution preflight: completed preparation plus the current files on disk. */
+  async assertCoderDependenciesReady(projectPath: string): Promise<void> {
+    if (!this.configService.isCoderProduct() || !this.prjService.isAilyCodeProject(projectPath)) return;
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const blocked = () => this.prjService.getProjectDependencyBlockMessage(projectPath);
+    const reject = (message: string) => Object.assign(new Error(message), { state: 'warn' });
+    const initialBlock = blocked();
+    if (initialBlock) throw reject(initialBlock);
+
+    try {
+      // An idle/unknown session is not evidence that SDK and source preparation succeeded.
+      if (this.prjService.getProjectDependencyStatus(projectPath) !== 'ready'
+        || !await this.installedOk(projectPath)) {
+        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      }
+      this.assertDependencySession(session);
+      const project = this.getDependencyProject(session);
+      const boardModule = await project.getBoardModule();
+      this.assertDependencySession(session);
+      if (boardModule) {
+        const boardPackage = await project.getBoardPackageJson();
+        this.assertDependencySession(session);
+        // Use the same version check as Blockly's build preflight, plus extracted SDK/tools.
+        const missing = this.getMissingBoardDependencies(boardPackage);
+        if (missing.length || !await this.areBoardPlatformDepsReady(boardPackage?.boardDependencies || {})) {
+          throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
+            name: missing.length ? missing.join(', ') : boardModule,
+          }));
+        }
+      }
+      this.assertDependencySession(session);
+      const latestBlock = blocked();
+      if (latestBlock) throw reject(latestBlock);
+    } catch (error) {
+      this.assertDependencySession(session);
+      // A new install may have started during the async reads. Preserve its state and notice.
+      const latestBlock = blocked();
+      if (latestBlock) throw reject(latestBlock);
+      this.prjService.setProjectDependencyResult(session, false);
+      const message = this.translate.instant('NPM.DEPS_RETRY_REQUIRED');
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+        text: message,
+        detail: this.getNpmErrorMessage(error),
+        state: 'error',
+        onRetry: () => {
+          if (!this.isDependencySessionCurrent(session)
+            || this.prjService.isProjectDependencyPreparationInProgress(projectPath)) return;
+          void this.ensureProjectAndBoardDeps(projectPath, {
+            onBoardDepsSettled: async () => { await this.getDependencyProject(session).syncCurrentBoardConfig(session); },
+          }, session).catch(() => {});
+        },
+      });
+      throw reject(message);
+    }
+  }
+
+  /** Blockly / Aily Code 共用：等待工程 npm 和主板平台依赖全部完成。 */
+  async ensureProjectAndBoardDeps(
+    projectPath: string,
+    options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void> },
+    session = this.prjService.getProjectDependencySession(projectPath),
+  ): Promise<boolean> {
+    // Software identity is intentional: Blockly can also open Coder projects.
+    if (!this.configService.isCoderProduct()) {
+      return this.prjService.runProjectDependencyTask(session, async () => {
+        if (!(await this.ensureProjectDependenciesInstalled(projectPath, options, session))) return false;
+        this.assertDependencySession(session);
+        if (this.prjService.isAilyCodeProject(projectPath) && !await this.prjService.getBoardModule()) return true;
+        await this.installBoardDeps(session);
+        this.assertDependencySession(session);
+        await options?.onBoardDepsSettled?.();
+        return true;
+      });
     }
 
-    this.boardDepsInstallPromise = (async () => {
+    const pending = this.projectDepsInstallPromises ??= new Map();
+    const existing = pending.get(session);
+    if (existing) return existing;
+    const onRetryInstall = () => {
+      if (this.isDependencySessionCurrent(session) && !pending.has(session)) {
+        if (options?.onRetryInstall) options.onRetryInstall();
+        else void this.ensureProjectAndBoardDeps(projectPath, options, session).catch(() => {});
+      }
+    };
+    const promise = this.prjService.runProjectDependencyTask(session, async () => {
+      let ready = false;
+      try {
+        // One owner reports completion; npm success alone does not unlock builds.
+        if (!await this.ensureProjectDependenciesInstalled(projectPath, {
+          onRetryInstall, deferCoderSources: true, deferSuccessNotice: true,
+        }, session)) return false;
+        this.assertDependencySession(session);
+        const hasBoard = !this.prjService.isAilyCodeProject(projectPath) || await this.getDependencyProject(session).getBoardModule();
+        this.assertDependencySession(session);
+        if (hasBoard) await this.installBoardDeps(session, false);
+        this.assertDependencySession(session);
+        if (!await this.ensureCoderDependencyLibrarySources(projectPath, { onRetryInstall }, session)) return false;
+        await options?.onBoardDepsSettled?.();
+        this.assertDependencySession(session);
+        ready = true;
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+          text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+          state: 'done', progress: 100, setTimeout: 3000,
+        });
+        return true;
+      } catch (error) {
+        this.assertDependencySession(session);
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.DEPENDENCY_INSTALL_FAILED_TITLE'),
+          text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+          detail: this.getNpmErrorMessage(error),
+          state: 'error', onRetry: onRetryInstall,
+        });
+        return false;
+      } finally {
+        if (this.isDependencySessionCurrent(session)) this.prjService.setProjectDependencyResult(session, ready);
+      }
+    });
+    pending.set(session, promise);
+    try {
+      return await promise;
+    } finally {
+      if (pending.get(session) === promise) pending.delete(session);
+    }
+  }
+
+  async installBoardDeps(session = this.prjService.getProjectDependencySession(), showSuccessNotice = true) {
+    this.assertDependencySession(session);
+    if (this.boardDepsInstallPromise?.session === session) {
+      return this.boardDepsInstallPromise.promise;
+    }
+
+    const promise: Promise<void> = this.prjService.runProjectDependencyTask(session, async () => {
       let installStateStarted = false;
 
       try {
-        const boardPackageJson = await this.prjService.getBoardPackageJson() || {};
-        const projectPackageJson = await this.prjService.getPackageJson() || {};
+        const project = this.getDependencyProject(session);
+        const boardPackageJson = await project.getBoardPackageJson() || {};
+        this.assertDependencySession(session);
+        const projectPackageJson = await project.getPackageJson() || {};
+        this.assertDependencySession(session);
         const boardDependencies: Record<string, string> = boardPackageJson.boardDependencies || {};
         const boardPlatformDepsReady = await this.areBoardPlatformDepsReady(boardDependencies);
+        this.assertDependencySession(session);
 
         if (!boardPlatformDepsReady) {
           this.isInstalling = true;
@@ -517,30 +664,36 @@ export class NpmService {
         }
 
         try {
-          await this.recordGlobalDependencyUsage(projectPackageJson, boardPackageJson);
+          await this.recordGlobalDependencyUsage(projectPackageJson, boardPackageJson, session);
         } catch (error) {
+          this.assertDependencySession(session);
           console.warn('Failed to record global dependency usage:', error);
         }
+        this.assertDependencySession(session);
 
         // console.log("boardPackageJson: ", boardPackageJson);
         if (!boardPlatformDepsReady) {
-          await this.installBoardDependencies(boardPackageJson, false, true);
+          await this.installBoardDependencies(boardPackageJson, false, true, session, showSuccessNotice);
         } else {
           console.log('[installBoardDeps] 平台依赖已就绪，跳过安装状态');
         }
+        this.assertDependencySession(session);
 
         try {
           // A missing resource may have been installed above. Record again so
           // that concrete on-disk version starts with a fresh timestamp.
-          await this.recordGlobalDependencyUsage(projectPackageJson, boardPackageJson);
+          await this.recordGlobalDependencyUsage(projectPackageJson, boardPackageJson, session);
         } catch (error) {
+          this.assertDependencySession(session);
           console.warn('Failed to record installed global dependency resources:', error);
         }
+        this.assertDependencySession(session);
 
         if (installStateStarted && this.application.currentProcessState === "INSTALLING") {
           this.application.finishInstall(true);
         }
       } catch (error) {
+        this.assertDependencySession(session);
         const errorMessage = this.getNpmErrorMessage(error);
 
         if (installStateStarted && this.application.currentProcessState === "INSTALLING") {
@@ -549,13 +702,19 @@ export class NpmService {
 
         throw error;
       } finally {
-        this.isInstalling = false;
-        this.boardDependencyInstallProgress = undefined;
-        this.boardDepsInstallPromise = undefined;
+        if (this.boardDepsInstallPromise?.promise === promise) {
+          if (session.signal.aborted && installStateStarted && this.application.currentProcessState === "INSTALLING") {
+            this.application.finishInstall(false);
+          }
+          this.isInstalling = false;
+          this.boardDependencyInstallProgress = undefined;
+          this.boardDepsInstallPromise = undefined;
+        }
       }
-    })();
+    });
+    this.boardDepsInstallPromise = { session, promise };
 
-    return this.boardDepsInstallPromise;
+    return promise;
   }
 
   private isAilyCodeProjectRoot(projectPath: string): boolean {
@@ -571,121 +730,118 @@ export class NpmService {
     const bases = await this.getPlatformPathBases();
     const resourceBasePaths = [bases.sdkBase, bases.compilersBase, bases.toolsBase];
 
-    return this.appDataResourceLock.runExclusive(`npm:remove-global-dependencies:${unusedDays ?? 'all'}`, async appDataResourceToken => {
-      const now = Date.now();
-      const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
+    const now = Date.now();
+    const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
 
-      const resources = await listGlobalDependencyResources({
-        appDataPath,
-        resourceBasePaths,
-        pathApi: window['path'],
-        fsApi: window['fsp'],
-      });
-
-      const usage = this.syncGlobalDependencyUsage(
-        appDataPath,
-        dependencyNames,
-        resources.map((resource) => resource.key),
-        now,
-      );
-
-      this.writeGlobalDependencyUsage(appDataPath, usage);
-
-      const cutoff = unusedDays === null ? Number.POSITIVE_INFINITY : now - unusedDays * 24 * 60 * 60 * 1000;
-      const packagesToRemove = dependencyNames.filter((name) => usage.dependencies[name] <= cutoff);
-
-      const resourceKeysToRemove = Object.keys(usage.resources)
-        .filter((key) => usage.resources[key] <= cutoff);
-
-      let resourcePaths: string[] = [];
-      onProgress?.(10);
-      let completedScripts = 0;
-      let completedResources = 0;
-      const onResourceRemoved = () => {
-        completedResources++;
-        onProgress?.(40 + 40 * Math.min(1, completedResources / Math.max(1, resourceKeysToRemove.length)));
-      };
-
-      if (packagesToRemove.length > 0) {
-        const invalidPackageName = packagesToRemove.find((name) => !this.isValidNpmPackageName(name));
-
-        if (invalidPackageName) {
-          throw new Error(`Invalid npm package name: ${invalidPackageName}`);
-        }
-
-        // Resource packages (SDKs, compilers and tools) extract files outside
-        // node_modules during installation. Run their declared cleanup scripts
-        // before npm removes the package directory that contains those scripts.
-        for (const packageName of packagesToRemove) {
-          await this.runDeclaredUninstallScript(appDataPath, packageName, appDataResourceToken);
-          onProgress?.(10 + 30 * ++completedScripts / packagesToRemove.length);
-        }
-      }
-      onProgress?.(40);
-
-      // Main owns the asynchronous filesystem operation as well as the lease;
-      // renderer destruction cannot release a still-running recursive removal.
-      const cleanupFs = {
-        readdir: (path: string) => window['fsp'].readdir(path),
-        rm: async (target: string) => {
-          const result = await window['ipcRenderer'].invoke('appdata-resource-remove', { token: appDataResourceToken, target });
-          if (result?.ok !== true) throw new Error('APPDATA_RESOURCE_REMOVE_FAILED');
-        },
-      };
-      if (unusedDays === null) {
-        resourcePaths = await clearGlobalDependencyResourceDirectories({
-          appDataPath,
-          resourceBasePaths,
-          pathApi: window['path'],
-          fsApi: cleanupFs,
-          onResourceRemoved,
-        });
-      } else if (resourceKeysToRemove.length > 0) {
-        resourcePaths = await clearGlobalDependencyResources({
-          appDataPath,
-          resourceBasePaths,
-          resourceKeys: resourceKeysToRemove,
-          pathApi: window['path'],
-          fsApi: cleanupFs,
-          onResourceRemoved,
-        });
-      }
-      onProgress?.(80);
-
-      if (packagesToRemove.length > 0) {
-        const cmd = `npm uninstall ${packagesToRemove.join(' ')} --prefix "${appDataPath}"`;
-        await window['npm'].run({ cmd, appDataResourceToken });
-      }
-      onProgress?.(90);
-
-      const remainingNames = new Set(this.getDeclaredGlobalDependencyNames(appDataPath));
-
-      for (const name of Object.keys(usage.dependencies)) {
-        if (!remainingNames.has(name)) {
-          delete usage.dependencies[name];
-        }
-      }
-
-      const remainingResources = await listGlobalDependencyResources({
-        appDataPath,
-        resourceBasePaths,
-        pathApi: window['path'],
-        fsApi: window['fsp'],
-      });
-
-      const remainingResourceKeys = new Set(remainingResources.map((resource) => resource.key));
-
-      for (const key of Object.keys(usage.resources)) {
-        if (!remainingResourceKeys.has(key)) {
-          delete usage.resources[key];
-        }
-      }
-
-      this.writeGlobalDependencyUsage(appDataPath, usage);
-
-      onProgress?.(100);
-      return { packageNames: packagesToRemove, resourcePaths };
+    const resources = await listGlobalDependencyResources({
+      appDataPath,
+      resourceBasePaths,
+      pathApi: window['path'],
+      fsApi: window['fsp'],
     });
+
+    const usage = this.syncGlobalDependencyUsage(
+      appDataPath,
+      dependencyNames,
+      resources.map((resource) => resource.key),
+      now,
+    );
+
+    this.writeGlobalDependencyUsage(appDataPath, usage);
+
+    const cutoff = unusedDays === null ? Number.POSITIVE_INFINITY : now - unusedDays * 24 * 60 * 60 * 1000;
+    const packagesToRemove = dependencyNames.filter((name) => usage.dependencies[name] <= cutoff);
+
+    const resourceKeysToRemove = Object.keys(usage.resources)
+      .filter((key) => usage.resources[key] <= cutoff);
+
+    let resourcePaths: string[] = [];
+    onProgress?.(10);
+    let completedScripts = 0;
+    let completedResources = 0;
+    const onResourceRemoved = () => {
+      completedResources++;
+      onProgress?.(40 + 40 * Math.min(1, completedResources / Math.max(1, resourceKeysToRemove.length)));
+    };
+
+    if (packagesToRemove.length > 0) {
+      const invalidPackageName = packagesToRemove.find((name) => !this.isValidNpmPackageName(name));
+
+      if (invalidPackageName) {
+        throw new Error(`Invalid npm package name: ${invalidPackageName}`);
+      }
+
+      // Resource packages (SDKs, compilers and tools) extract files outside
+      // node_modules during installation. Run their declared cleanup scripts
+      // before npm removes the package directory that contains those scripts.
+      for (const packageName of packagesToRemove) {
+        await this.runDeclaredUninstallScript(appDataPath, packageName);
+        onProgress?.(10 + 30 * ++completedScripts / packagesToRemove.length);
+      }
+    }
+    onProgress?.(40);
+
+    // Main validates the target and owns the asynchronous filesystem removal.
+    const cleanupFs = {
+      readdir: (path: string) => window['fsp'].readdir(path),
+      rm: async (target: string) => {
+        const result = await window['ipcRenderer'].invoke('appdata-resource-remove', { target });
+        if (result?.ok !== true) throw new Error('APPDATA_RESOURCE_REMOVE_FAILED');
+      },
+    };
+    if (unusedDays === null) {
+      resourcePaths = await clearGlobalDependencyResourceDirectories({
+        appDataPath,
+        resourceBasePaths,
+        pathApi: window['path'],
+        fsApi: cleanupFs,
+        onResourceRemoved,
+      });
+    } else if (resourceKeysToRemove.length > 0) {
+      resourcePaths = await clearGlobalDependencyResources({
+        appDataPath,
+        resourceBasePaths,
+        resourceKeys: resourceKeysToRemove,
+        pathApi: window['path'],
+        fsApi: cleanupFs,
+        onResourceRemoved,
+      });
+    }
+    onProgress?.(80);
+
+    if (packagesToRemove.length > 0) {
+      const cmd = `npm uninstall ${packagesToRemove.join(' ')} --prefix "${appDataPath}"`;
+      await window['npm'].run({ cmd });
+    }
+    onProgress?.(90);
+
+    const remainingNames = new Set(this.getDeclaredGlobalDependencyNames(appDataPath));
+
+    for (const name of Object.keys(usage.dependencies)) {
+      if (!remainingNames.has(name)) {
+        delete usage.dependencies[name];
+      }
+    }
+
+    const remainingResources = await listGlobalDependencyResources({
+      appDataPath,
+      resourceBasePaths,
+      pathApi: window['path'],
+      fsApi: window['fsp'],
+    });
+
+    const remainingResourceKeys = new Set(remainingResources.map((resource) => resource.key));
+
+    for (const key of Object.keys(usage.resources)) {
+      if (!remainingResourceKeys.has(key)) {
+        delete usage.resources[key];
+      }
+    }
+
+    this.writeGlobalDependencyUsage(appDataPath, usage);
+
+    onProgress?.(100);
+    return { packageNames: packagesToRemove, resourcePaths };
   }
 
   private getResourceKeysForBoardDependencies(
@@ -707,11 +863,13 @@ export class NpmService {
     return keys;
   }
 
-  private async recordGlobalDependencyUsage(projectPackageJson: any, boardPackageJson: any): Promise<void> {
+  private async recordGlobalDependencyUsage(projectPackageJson: any, boardPackageJson: any, session?: ProjectDependencySession): Promise<void> {
     const appDataPath = window['path'].getAppDataPath();
     const bases = await this.getPlatformPathBases();
+    this.assertDependencySession(session);
     const resourceBasePaths = [bases.sdkBase, bases.compilersBase, bases.toolsBase];
     const boardDependencies = await this.prjService.getBoardDependencies();
+    this.assertDependencySession(session);
 
     const usedNames = new Set<string>([
       ...this.getDependencyNames(projectPackageJson),
@@ -727,39 +885,38 @@ export class NpmService {
       bases,
     );
 
-    await this.appDataResourceLock.runExclusive('npm:record-global-dependency-usage', async () => {
-      const now = Date.now();
-      const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
-      const declaredNames = new Set(dependencyNames);
+    const now = Date.now();
+    const dependencyNames = this.getDeclaredGlobalDependencyNames(appDataPath);
+    const declaredNames = new Set(dependencyNames);
 
-      const resources = await listGlobalDependencyResources({
-        appDataPath,
-        resourceBasePaths,
-        pathApi: window['path'],
-        fsApi: window['fsp'],
-      });
-
-      const usage = this.syncGlobalDependencyUsage(
-        appDataPath,
-        dependencyNames,
-        resources.map((resource) => resource.key),
-        now,
-      );
-
-      for (const name of usedNames) {
-        if (declaredNames.has(name)) {
-          usage.dependencies[name] = now;
-        }
-      }
-
-      for (const key of usedResourceKeys) {
-        if (Object.prototype.hasOwnProperty.call(usage.resources, key)) {
-          usage.resources[key] = now;
-        }
-      }
-
-      this.writeGlobalDependencyUsage(appDataPath, usage);
+    const resources = await listGlobalDependencyResources({
+      appDataPath,
+      resourceBasePaths,
+      pathApi: window['path'],
+      fsApi: window['fsp'],
     });
+    this.assertDependencySession(session);
+
+    const usage = this.syncGlobalDependencyUsage(
+      appDataPath,
+      dependencyNames,
+      resources.map((resource) => resource.key),
+      now,
+    );
+
+    for (const name of usedNames) {
+      if (declaredNames.has(name)) {
+        usage.dependencies[name] = now;
+      }
+    }
+
+    for (const key of usedResourceKeys) {
+      if (Object.prototype.hasOwnProperty.call(usage.resources, key)) {
+        usage.resources[key] = now;
+      }
+    }
+
+    this.writeGlobalDependencyUsage(appDataPath, usage);
   }
 
   private getDeclaredGlobalDependencyNames(appDataPath: string): string[] {
@@ -847,7 +1004,7 @@ export class NpmService {
     return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i.test(name);
   }
 
-  private async runDeclaredUninstallScript(appDataPath: string, packageName: string, appDataResourceToken: string): Promise<void> {
+  private async runDeclaredUninstallScript(appDataPath: string, packageName: string): Promise<void> {
     const packagePath = window['path'].join(appDataPath, 'node_modules', packageName);
     const packageJsonPath = window['path'].join(packagePath, 'package.json');
 
@@ -861,7 +1018,7 @@ export class NpmService {
       return;
     }
 
-    await this.cmdService.runAsyncChecked('npm run uninstall', packagePath, true, false, { appDataResourceToken, appDataResourceMode: 'write' });
+    await this.cmdService.runAsyncChecked('npm run uninstall', packagePath, true, false);
   }
 
   boardDependenciesChanged = false;
@@ -948,7 +1105,30 @@ export class NpmService {
     version: string,
     bases: { sdkBase: string; compilersBase: string; toolsBase: string },
   ): boolean {
-    return !!resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    const directory = resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    if (!directory) return false;
+    // Arduino SDK extraction can leave a directory behind after a failed install.
+    if (this.configService.isCoderProduct() && packageName.startsWith('@aily-project/sdk-')) {
+      return ['boards.txt', 'platform.txt'].every(name => window['path'].isExists(window['path'].join(directory, name)));
+    }
+    return true;
+  }
+
+  private async removeIncompleteSdkDirectory(
+    packageName: string,
+    version: string,
+    bases: { sdkBase: string; compilersBase: string; toolsBase: string },
+    session?: ProjectDependencySession,
+  ): Promise<void> {
+    if (!this.configService.isCoderProduct() || !packageName.startsWith('@aily-project/sdk-')) return;
+    const directory = resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    if (!directory || ['boards.txt', 'platform.txt'].every(name => window['path'].isExists(window['path'].join(directory, name)))) return;
+    this.assertDependencySession(session);
+    // SDK postinstall skips an existing directory, including an interrupted extraction.
+    // Use the main-process allowlist to remove only this incomplete generated version.
+    const result = await window['ipcRenderer'].invoke('appdata-resource-remove', { target: directory });
+    this.assertDependencySession(session);
+    if (result?.ok !== true) throw new Error(result?.error || this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: packageName }));
   }
 
   /**
@@ -1026,14 +1206,17 @@ export class NpmService {
     return missingDependencies;
   }
   // 安装开发板依赖
-  async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false) {
+  async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession, showSuccessNotice = true) {
+    this.assertDependencySession(session);
     const boardDependencies: Record<string, string> = packageJson.boardDependencies || {};
 
     if (!force && await this.areBoardPlatformDepsReady(boardDependencies)) {
+      this.assertDependencySession(session);
       console.log('[installBoardDependencies] 平台依赖已就绪，跳过');
 
       return;
     }
+    this.assertDependencySession(session);
 
     try {
       if (manageInstallState) {
@@ -1051,6 +1234,7 @@ export class NpmService {
       // Python 项目的板依赖从 Linux 仓库安装；Arduino 留空并沿用既有 managed npm 配置。
       const registry = this.configService.getNpmRegistryForProject(packageJson);
       const platformBases = await this.getPlatformPathBases();
+      this.assertDependencySession(session);
       const dependencies = Object.entries(boardDependencies);
 
       this.traceToAppLog('DEPS_START', {
@@ -1060,113 +1244,131 @@ export class NpmService {
       });
 
       for (const [index, [key, version]] of dependencies.entries()) {
-        await this.appDataResourceLock.runExclusive(`npm:board-dependency:${key}`, async appDataResourceToken => {
-          const declaredVersion = String(version);
-          const depPath = `${appDataPath}/node_modules/${key}`;
-          const depPathPackageJson = `${depPath}/package.json`;
-          let installedVersionWhenMismatch: string | undefined;
-          const versionStr = String(version);
+        this.assertDependencySession(session);
+        const declaredVersion = String(version);
+        const depPath = `${appDataPath}/node_modules/${key}`;
+        const depPathPackageJson = `${depPath}/package.json`;
+        let installedVersionWhenMismatch: string | undefined;
+        const versionStr = String(version);
 
-          // npm 包版本满足声明时，仍须检查 sdk/tools 解压目录（postinstall 可能未跑）
-          if (window['path'].isExists(depPathPackageJson)) {
-            const depPackageJson = JSON.parse(window['fs'].readFileSync(depPathPackageJson));
+        if (this.configService.isCoderProduct()) {
+          await this.removeIncompleteSdkDirectory(key, versionStr, platformBases, session);
+          this.assertDependencySession(session);
+        }
 
-            if (this.depVersionSatisfiesDecl(depPackageJson.version, versionStr)) {
-              const platformOnDisk = this.isPlatformPackageOnDisk(key, versionStr, platformBases);
+        // npm 包版本满足声明时，仍须检查 sdk/tools 解压目录（postinstall 可能未跑）
+        if (window['path'].isExists(depPathPackageJson)) {
+          const depPackageJson = JSON.parse(window['fs'].readFileSync(depPathPackageJson));
 
-              if (platformOnDisk) {
-                console.log(`依赖 ${key} 已安装且平台目录存在`);
-                this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, installedVersion: depPackageJson.version, platformReady: true });
+          if (this.depVersionSatisfiesDecl(depPackageJson.version, versionStr)) {
+            const platformOnDisk = this.isPlatformPackageOnDisk(key, versionStr, platformBases);
 
-                return;
-              }
+            if (platformOnDisk) {
+              console.log(`依赖 ${key} 已安装且平台目录存在`);
+              this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, installedVersion: depPackageJson.version, platformReady: true });
 
-              const platformPath = resolvePlatformPackageEntries({ [key]: versionStr }, platformBases)[0]
-                ?.absolutePath;
-
-              console.log(`依赖 ${key} npm 已满足但平台目录缺失，尝试 postinstall: ${platformPath}`);
-
-              this.boardDependenciesChanged = true;
-
-              this.application.updateNotice({
-                title: this.translate.instant('NPM.INSTALLING_TITLE'),
-                text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: key }),
-                state: 'doing',
-                showProgress: false,
-                setTimeout: 300000
-              });
-
-              try {
-                await this.cmdService.runAsyncChecked('npm run postinstall', depPath, true, false,
-                  { appDataResourceToken, appDataResourceMode: 'write' });
-
-                if (this.isPlatformPackageOnDisk(key, versionStr, platformBases)) {
-                  this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, installedVersion: depPackageJson.version, platformReady: true, afterPostinstall: true });
-
-                  return;
-                }
-              } catch (error) {
-                console.warn(`依赖 ${key} postinstall 失败，将重新 npm install:`, error);
-              }
-            } else {
-              installedVersionWhenMismatch = depPackageJson.version;
+              continue;
             }
+
+            const platformPath = resolvePlatformPackageEntries({ [key]: versionStr }, platformBases)[0]
+              ?.absolutePath;
+
+            console.log(`依赖 ${key} npm 已满足但平台目录缺失，尝试 postinstall: ${platformPath}`);
+
+            this.boardDependenciesChanged = true;
+
+            this.application.updateNotice({
+              title: this.translate.instant('NPM.INSTALLING_TITLE'),
+              text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: key }),
+              state: 'doing',
+              showProgress: false,
+              setTimeout: 300000
+            });
+
+            try {
+              await this.cmdService.runAsyncChecked('npm run postinstall', depPath, true, false, session);
+              this.assertDependencySession(session);
+
+              if (this.isPlatformPackageOnDisk(key, versionStr, platformBases)) {
+                this.traceToAppLog('DEP_SKIP', { name: key, declaredVersion: versionStr, installedVersion: depPackageJson.version, platformReady: true, afterPostinstall: true });
+
+                continue;
+              }
+            } catch (error) {
+              this.assertDependencySession(session);
+              console.warn(`依赖 ${key} postinstall 失败，将重新 npm install:`, error);
+            }
+          } else {
+            installedVersionWhenMismatch = depPackageJson.version;
           }
+        }
 
-          const needUninstallForDowngrade =
-            window['path'].isExists(depPath) &&
-            installedVersionWhenMismatch !== undefined &&
-            this.installedIsNewerThanDeclared(installedVersionWhenMismatch, declaredVersion);
+        const needUninstallForDowngrade =
+          window['path'].isExists(depPath) &&
+          installedVersionWhenMismatch !== undefined &&
+          this.installedIsNewerThanDeclared(installedVersionWhenMismatch, declaredVersion);
 
-          const dependency: BoardDependencyToInstall = {
-            name: key,
-            version: declaredVersion,
-            needUninstallForDowngrade
-          };
+        const dependency: BoardDependencyToInstall = {
+          name: key,
+          version: declaredVersion,
+          needUninstallForDowngrade
+        };
 
-          this.traceToAppLog('DEP_PLAN', { name: key, declaredVersion, installedVersionWhenMismatch, needUninstallForDowngrade });
-          this.boardDependenciesChanged = true;
+        this.traceToAppLog('DEP_PLAN', { name: key, declaredVersion, installedVersionWhenMismatch, needUninstallForDowngrade });
+        this.boardDependenciesChanged = true;
 
-          const progress: BoardDependencyInstallProgress = {
-            total: dependencies.length,
-            index,
-            name: dependency.name,
-            downloadProgress: 0,
-            extractProgress: 0,
-            lastProgress: Math.max(1, this.clampProgress((index / dependencies.length) * 100))
-          };
+        const progress: BoardDependencyInstallProgress = {
+          session,
+          total: dependencies.length,
+          index,
+          name: dependency.name,
+          downloadProgress: 0,
+          extractProgress: 0,
+          lastProgress: Math.max(1, this.clampProgress((index / dependencies.length) * 100))
+        };
 
-          this.boardDependencyInstallProgress = progress;
+        this.boardDependencyInstallProgress = progress;
 
-          // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: key }), timeout: 300000 });
-          this.updateBoardDependencyNotice(progress, progress.lastProgress);
+        // this.uiService.updateFooterState({ state: 'doing', text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: key }), timeout: 300000 });
+        this.updateBoardDependencyNotice(progress, progress.lastProgress);
 
-          // 仅当当前安装版本高于声明基线（需降级）时先卸载；升级或未读到版本时直接 install，避免无谓卸载
-          if (dependency.needUninstallForDowngrade) {
-            const uninstallCmd = `npm uninstall ${dependency.name} --prefix "${appDataPath}"`;
+        // 仅当当前安装版本高于声明基线（需降级）时先卸载；升级或未读到版本时直接 install，避免无谓卸载
+        if (dependency.needUninstallForDowngrade) {
+          const uninstallCmd = `npm uninstall ${dependency.name} --prefix "${appDataPath}"`;
 
-            console.log(`执行命令: ${uninstallCmd}, 时间: ${new Date().toISOString()}`);
-            this.traceToAppLog('DEP_UNINSTALL_START', { name: dependency.name, version: dependency.version });
-            await window['npm'].run({ cmd: uninstallCmd, appDataResourceToken });
+          console.log(`执行命令: ${uninstallCmd}, 时间: ${new Date().toISOString()}`);
+          this.traceToAppLog('DEP_UNINSTALL_START', { name: dependency.name, version: dependency.version });
+          await window['npm'].run({ cmd: uninstallCmd, ...(session ? {
+            projectPath: session.projectPath, projectSessionId: session.projectSessionId,
+          } : {}) });
+          this.assertDependencySession(session);
+        }
+
+        // --save-exact：与开发板声明版本一致写入 prefix 下 package.json，避免 ^ 导致再次解析到更高版
+        const npmCmd = appendScopedNpmRegistry(
+          `npm install ${dependency.name}@${dependency.version} --save-exact --prefix "${appDataPath}"`,
+          registry,
+        );
+
+        console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
+        this.traceToAppLog('DEP_INSTALL_START', { name: dependency.name, version: dependency.version });
+        await window['npm'].run({ cmd: npmCmd, ...(session ? {
+          projectPath: session.projectPath, projectSessionId: session.projectSessionId,
+        } : {}) });
+        this.assertDependencySession(session);
+        if (this.configService.isCoderProduct()) {
+          if (!await this.areBoardPlatformDepsReady({ [key]: versionStr })) {
+            throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: key }));
           }
-
-          // --save-exact：与开发板声明版本一致写入 prefix 下 package.json，避免 ^ 导致再次解析到更高版
-          const npmCmd = appendScopedNpmRegistry(
-            `npm install ${dependency.name}@${dependency.version} --save-exact --prefix "${appDataPath}"`,
-            registry,
-          );
-
-          console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
-          this.traceToAppLog('DEP_INSTALL_START', { name: dependency.name, version: dependency.version });
-          await window['npm'].run({ cmd: npmCmd, appDataResourceToken });
-          this.updateBoardDependencyNotice(progress, ((index + 1) / dependencies.length) * 100);
-          console.log(`依赖 ${dependency.name} 安装成功, 时间: ${new Date().toISOString()}`);
-          this.traceToAppLog('DEP_INSTALL_DONE', { name: dependency.name, version: dependency.version });
-        });
+          this.assertDependencySession(session);
+        }
+        this.updateBoardDependencyNotice(progress, ((index + 1) / dependencies.length) * 100);
+        console.log(`依赖 ${dependency.name} 安装成功, 时间: ${new Date().toISOString()}`);
+        this.traceToAppLog('DEP_INSTALL_DONE', { name: dependency.name, version: dependency.version });
       }
 
       // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_COMPLETE') });
-      this.application.updateNotice({
+      if (showSuccessNotice) this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
         text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_COMPLETE'),
         state: 'done',
@@ -1178,6 +1380,7 @@ export class NpmService {
         this.application.finishInstall(true);
       }
     } catch (error) {
+      this.assertDependencySession(session);
       const errorMessage = this.getNpmErrorMessage(error);
 
       console.error(error);
@@ -1197,9 +1400,11 @@ export class NpmService {
 
       throw error;
     } finally {
-      this.boardDependencyInstallProgress = undefined;
+      if (this.boardDependencyInstallProgress?.session === session) {
+        this.boardDependencyInstallProgress = undefined;
+      }
 
-      if (manageInstallState) {
+      if (manageInstallState && this.isDependencySessionCurrent(session)) {
         this.isInstalling = false;
       }
     }
@@ -1258,38 +1463,36 @@ export class NpmService {
 
       // 检查每个依赖是否被其他开发板使用
       console.log("installedBoards: ", installedBoards);
-      await this.appDataResourceLock.runExclusive(`npm:uninstall-board-dependencies:${depName}`, async appDataResourceToken => {
-        for (const [depName, depVersion] of Object.entries(boardDependenciesToUninstall)) {
-          const isUsedByOtherBoards = installedBoards.some(board =>
-            board.dependencies && board.dependencies[depName] !== undefined
-          );
+      for (const [depName, depVersion] of Object.entries(boardDependenciesToUninstall)) {
+        const isUsedByOtherBoards = installedBoards.some(board =>
+          board.dependencies && board.dependencies[depName] !== undefined
+        );
 
-          if (!isUsedByOtherBoards) {
-            // 如果不被其他开发板使用，则卸载它
-            try {
-              const depPath = `${appDataPath}/node_modules/${depName}`;
+        if (!isUsedByOtherBoards) {
+          // 如果不被其他开发板使用，则卸载它
+          try {
+            const depPath = `${appDataPath}/node_modules/${depName}`;
 
-              if (!window['path'].isExists(depPath)) {
-                console.log(`依赖 ${depName} 未安装，跳过卸载`);
+            if (!window['path'].isExists(depPath)) {
+              console.log(`依赖 ${depName} 未安装，跳过卸载`);
 
-                continue;
-              }
-
-              const npmCmd = `npm uninstall ${depName} --prefix "${appDataPath}"`;
-
-              console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
-
-              await window['npm'].run({ cmd: npmCmd, appDataResourceToken });
-
-              console.log(`依赖 ${depName} 卸载成功, 时间: ${new Date().toISOString()}`);
-            } catch (error) {
-              console.error(`依赖 ${depName} 卸载失败:`, error);
+              continue;
             }
-          } else {
-            console.log(`依赖 ${depName} 被其他开发板使用，跳过卸载`);
+
+            const npmCmd = `npm uninstall ${depName} --prefix "${appDataPath}"`;
+
+            console.log(`执行命令: ${npmCmd}, 时间: ${new Date().toISOString()}`);
+
+            await window['npm'].run({ cmd: npmCmd });
+
+            console.log(`依赖 ${depName} 卸载成功, 时间: ${new Date().toISOString()}`);
+          } catch (error) {
+            console.error(`依赖 ${depName} 卸载失败:`, error);
           }
+        } else {
+          console.log(`依赖 ${depName} 被其他开发板使用，跳过卸载`);
         }
-      });
+      }
 
       // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.DEPS_UNINSTALL_COMPLETE') });
       this.application.updateNotice({ 
@@ -1327,7 +1530,7 @@ export class NpmService {
     });
 
     // 添加超时保护和正确的参数名
-    await this.appDataResourceLock.runExclusive(`npm:uninstall-board:${board.name}`, appDataResourceToken => window['npm'].run({ cmd, appDataResourceToken }));
+    await window['npm'].run({ cmd });
     // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.BOARD_UNINSTALL_COMPLETE') });
     this.application.updateNotice({ 
       title: this.translate.instant('NPM.UNINSTALL_COMPLETE_TITLE'), 
@@ -1348,40 +1551,42 @@ export class NpmService {
     }
 
     try {
-      await this.appDataResourceLock.runExclusive(`npm:install-package:${packageInfo.name}`, async appDataResourceToken => {
-        if (version) {
-          const nmPath = `${appDataPath}/node_modules/${packageInfo.name}`;
-          const pjPath = `${nmPath}/package.json`;
-          let installedVer: string | undefined;
+      let alreadyInstalled = false;
+      if (version) {
+        const nmPath = `${appDataPath}/node_modules/${packageInfo.name}`;
+        const pjPath = `${nmPath}/package.json`;
+        let installedVer: string | undefined;
 
-          if (window['path'].isExists(pjPath)) {
-            try {
-              const pj = JSON.parse(window['fs'].readFileSync(pjPath, 'utf8'));
+        if (window['path'].isExists(pjPath)) {
+          try {
+            const pj = JSON.parse(window['fs'].readFileSync(pjPath, 'utf8'));
 
-              if (this.depVersionSatisfiesDecl(pj.version, String(version))) {
-                console.log(`${type} ${packageInfo.name} 已安装且满足版本声明，跳过 npm install`);
+            if (this.depVersionSatisfiesDecl(pj.version, String(version))) {
+              console.log(`${type} ${packageInfo.name} 已安装且满足版本声明，跳过 npm install`);
 
-                return;
-              }
-
-              installedVer = pj.version;
-            } catch {
-              /* 无法读取版本时不按「更高版」卸载 */
+              alreadyInstalled = true;
             }
-          }
 
-          if (
-            window['path'].isExists(nmPath) &&
-            installedVer !== undefined &&
-            this.installedIsNewerThanDeclared(installedVer, String(version))
-          ) {
-            await this.cmdService.runAsyncChecked(
-              `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`,
-              appDataPath, true, false, { appDataResourceToken, appDataResourceMode: 'write' }
-            );
+            installedVer = pj.version;
+          } catch {
+            /* 无法读取版本时不按「更高版」卸载 */
           }
         }
 
+        if (
+          !alreadyInstalled &&
+          window['path'].isExists(nmPath) &&
+          installedVer !== undefined &&
+          this.installedIsNewerThanDeclared(installedVer, String(version))
+        ) {
+          await this.cmdService.runAsyncChecked(
+            `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`,
+            appDataPath, true, false
+          );
+        }
+      }
+
+      if (!alreadyInstalled) {
         const packageName = version ? `${packageInfo.name}@${version}` : packageInfo.name;
         const cmd = `npm install ${packageName} --save-exact --prefix "${appDataPath}"`;
 
@@ -1394,8 +1599,8 @@ export class NpmService {
           setTimeout: 300000
         });
 
-        await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false, { appDataResourceToken, appDataResourceMode: 'write' });
-      });
+        await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false);
+      }
 
       // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.INSTALL_COMPLETE', { name: packageInfo.name }) });
       this.application.updateNotice({ 
@@ -1458,11 +1663,9 @@ export class NpmService {
     });
 
     console.log("PackageNodeModulesPath: ", packageNodeModulesPath);
-    await this.appDataResourceLock.runExclusive(`npm:uninstall-package:${packageInfo.name}`, async appDataResourceToken => {
-      await this.runDeclaredUninstallScript(appDataPath, packageInfo.name, appDataResourceToken);
-      const cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
-      await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false, { appDataResourceToken, appDataResourceMode: 'write' });
-    });
+    await this.runDeclaredUninstallScript(appDataPath, packageInfo.name);
+    const cmd = `npm uninstall ${packageInfo.name} --prefix "${appDataPath}"`;
+    await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false);
     // this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('NPM.UNINSTALL_COMPLETE', { name: packageInfo.name }) });
     this.application.updateNotice({ 
       title: this.translate.instant('NPM.UNINSTALL_COMPLETE_TITLE'), 
@@ -1593,15 +1796,34 @@ export class NpmService {
    */
   async ensureProjectDependenciesInstalled(
     projectPath: string,
-    options?: { onRetryInstall?: () => void },
+    options?: ProjectDependencyInstallOptions,
+    session = this.prjService.getProjectDependencySession(projectPath),
   ): Promise<boolean> {
+    const guardedOptions = options?.onRetryInstall ? { ...options, onRetryInstall: () => {
+      if (this.isDependencySessionCurrent(session)) options.onRetryInstall();
+    } } : options;
+    return this.prjService.runProjectDependencyTask(session, () => this.installProjectDependencies(projectPath, guardedOptions, session));
+  }
+
+  private async installProjectDependencies(
+    projectPath: string,
+    options: { onRetryInstall?: () => void } | undefined,
+    session: ProjectDependencySession,
+  ): Promise<boolean> {
+    if (this.configService.isCoderProduct()) {
+      return this.installCoderProjectDependencies(projectPath, options, session);
+    }
+
     // 已完整安装则不再跑 npm install，缩短冷启动
-    if (await this.installedOk(projectPath)) {
-      return this.ensureCoderDependencyLibrarySources(projectPath, options);
+    const installed = await this.installedOk(projectPath);
+    this.assertDependencySession(session);
+    if (installed) {
+      return this.ensureCoderDependencyLibrarySources(projectPath, options, session);
     }
 
     // 与 Blockly 一致：下一帧再挂通知，避免变更检测/弹层偶发不同步
     setTimeout(() => {
+      if (!this.isDependencySessionCurrent(session)) return;
       this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALLING_TITLE'),
         text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
@@ -1625,10 +1847,17 @@ export class NpmService {
     const npmResult = await this.cmdService.runAsync(
       this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
       projectPath,
+      true,
+      false,
+      session,
     );
+    this.assertDependencySession(session);
 
-    if (!(await this.installedOk(projectPath))) {
+    const installedAfterAttempt = await this.installedOk(projectPath);
+    this.assertDependencySession(session);
+    if (!installedAfterAttempt) {
       setTimeout(() => {
+        if (!this.isDependencySessionCurrent(session)) return;
         this.application.updateNotice({
           title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
           text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
@@ -1642,11 +1871,13 @@ export class NpmService {
       return false;
     }
 
-    if (!(await this.ensureCoderDependencyLibrarySources(projectPath, options))) {
+    if (!(await this.ensureCoderDependencyLibrarySources(projectPath, options, session))) {
       return false;
     }
+    this.assertDependencySession(session);
 
     setTimeout(() => {
+      if (!this.isDependencySessionCurrent(session)) return;
       this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
         text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
@@ -1659,17 +1890,100 @@ export class NpmService {
     return true;
   }
 
+  private async installCoderProjectDependencies(
+    projectPath: string,
+    options: ProjectDependencyInstallOptions | undefined,
+    session: ProjectDependencySession,
+  ): Promise<boolean> {
+    // 已完整安装则不再跑 npm install，缩短冷启动
+    const installed = await this.installedOk(projectPath);
+    this.assertDependencySession(session);
+    if (installed && !this.projectNpmFailures?.has(session)) {
+      return options?.deferCoderSources || this.ensureCoderDependencyLibrarySources(projectPath, options, session);
+    }
+
+    this.application.updateNotice({
+      title: this.translate.instant('NPM.INSTALLING_TITLE'),
+      text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+      state: 'doing',
+      icon: 'fa-light fa-cubes',
+      showProgress: false,
+    });
+
+    let projectPackageJson: Record<string, unknown> = {};
+
+    try {
+      projectPackageJson = JSON.parse(
+        window['fs'].readFileSync(window['path'].join(projectPath, 'package.json'), 'utf8'),
+      );
+    } catch {
+      // installedOk() will report the missing or invalid manifest below.
+    }
+
+    // 修复项目依赖时仍按当前项目 devmode 选择仓库，避免混装两类板包。
+    try {
+      const npmResult = await this.cmdService.runAsync(
+        this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
+        projectPath, true, false, session,
+      );
+      this.assertDependencySession(session);
+      if (npmResult?.type === 'error' || (npmResult?.code ?? 0) !== 0 || !await this.installedOk(projectPath)) {
+        throw new Error(npmResult?.error || npmResult?.stderr || 'npm install 执行完成但依赖检查未通过');
+      }
+      this.assertDependencySession(session);
+      this.projectNpmFailures?.delete(session);
+    } catch (error) {
+      this.assertDependencySession(session);
+      (this.projectNpmFailures ??= new WeakSet()).add(session);
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+        text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+        detail: this.getNpmErrorMessage(error),
+        state: 'error',
+        sendToLog: true,
+        ...(options?.onRetryInstall ? { onRetry: options.onRetryInstall } : {}),
+      });
+      return false;
+    }
+
+    if (!options?.deferCoderSources && !(await this.ensureCoderDependencyLibrarySources(projectPath, options, session))) {
+      return false;
+    }
+    this.assertDependencySession(session);
+
+    if (!options?.deferSuccessNotice) this.application.updateNotice({
+      title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+      text: this.translate.instant('NPM.DEPS_INSTALL_COMPLETE'),
+      state: 'done',
+      showProgress: false,
+      setTimeout: 3000,
+    });
+
+    return true;
+  }
+
   private async ensureCoderDependencyLibrarySources(
     projectPath: string,
     options?: { onRetryInstall?: () => void },
+    session?: ProjectDependencySession,
   ): Promise<boolean> {
     if (!this.isAilyCodeProjectRoot(projectPath)) return true;
 
     try {
+      if (this.configService.isCoderProduct()) {
+        this.assertDependencySession(session);
+        this.application.updateNotice({
+          title: this.translate.instant('NPM.INSTALLING_TITLE'),
+          text: this.translate.instant('NPM.PREPARING_LIBRARY_SOURCES'),
+          state: 'doing', showProgress: false,
+        });
+      }
       await this.application.materializeCoderProjectLibraries(projectPath);
+      this.assertDependencySession(session);
 
       return true;
     } catch (error) {
+      this.assertDependencySession(session);
       this.application.updateNotice({
         title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
         text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
@@ -1722,6 +2036,7 @@ interface BoardDependencyToInstall {
 }
 
 interface BoardDependencyInstallProgress {
+  session?: ProjectDependencySession;
   total: number;
   index: number;
   name: string;

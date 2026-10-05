@@ -17,15 +17,24 @@ export interface AbsDraftReadiness {
   workspace?: { changedFromBaseline: boolean; savedChangedFromBaseline: boolean; matchesSaved: boolean };
 }
 
+/** A copied draft can be archived and refreshed only on its original page.
+ * Missing/corrupt maps, pending journals and projection upgrades still block it. */
+export function canInspectAbsDraft(inspection: Inspection): boolean {
+  return !!inspection.committed
+    && (!inspection.diagnostics.issues.includes('ABS_SCOPE_INVALID') || inspection.diagnostics.issues.includes('ABS_SOURCE_CONFLICT'))
+    && inspection.diagnostics.issues.every(issue => issue === 'ABS_SOURCE_CONFLICT' || issue === 'ABS_SCOPE_INVALID')
+    && inspection.diagnostics.scope.pageId === inspection.committed.projection.map.scope.pageId;
+}
+
 /** Read-only readiness, not candidate validation. Resolve resources without creating
- * assets or changing mirrors. Only a proven unchanged project can refresh a draft. */
+ * assets or changing mirrors. Only a workspace proven to match the saved project can refresh a draft. */
 export async function inspectAbsDraft(inspection: Inspection, document: unknown,
   runtime: { state: AbsAbiWorkspace; contracts: AbsProjectionContracts }) {
   const diagnostics: Inspection['diagnostics'] & AbsDraftReadiness = { ...inspection.diagnostics };
   if (!inspection.committed || !inspection.disk.abs) return diagnostics;
   const draft = diagnostics.issues.includes('ABS_SOURCE_CONFLICT');
   if (draft) diagnostics.draft = { hash: diagnostics.hashes.abs!, bytes: new TextEncoder().encode(inspection.disk.abs).byteLength, canValidate: false };
-  if (diagnostics.issues.some(issue => issue !== 'ABS_SOURCE_CONFLICT')) return diagnostics;
+  if (!canInspectAbsDraft(inspection)) return diagnostics;
   const baseline = inspection.committed!.projection;
   const resolve: Pick<typeof projectDataRuntime, 'resolve'> = { resolve: ref => projectDataRuntime.resolve(ref) };
   const sameDocument = sameAbsProgram(document, baseline.document)
@@ -47,9 +56,10 @@ export async function inspectAbsDraft(inspection: Inspection, document: unknown,
     ...(diagnostics.workspace?.savedChangedFromBaseline && !diagnostics.workspace.matchesSaved ? ['ABS_DUAL_EDIT_CONFLICT'] : []),
     ...(runtimeStatus.status === 'incompatible' ? ['ABS_RUNTIME_CONTRACT_STALE'] : [])];
   diagnostics.status = diagnostics.issues.length ? 'blocked' : 'ready';
-  if (draft && sameDocument && sameSaved) {
-    diagnostics.baseline = await generationEvidence(baseline, inspection.disk.abi);
-    diagnostics.draft.canValidate = runtimeStatus.status !== 'incompatible';
+  if (draft && (sameDocument && sameSaved || diagnostics.workspace?.matchesSaved)) {
+    if (sameDocument && sameSaved && !diagnostics.issues.includes('ABS_SCOPE_INVALID')) diagnostics.baseline = await generationEvidence(baseline, inspection.disk.abi);
+    diagnostics.draft.canValidate = sameDocument && sameSaved && runtimeStatus.status !== 'incompatible'
+      && !diagnostics.issues.includes('ABS_SCOPE_INVALID');
     diagnostics.refresh = { token: await hashAbsText(absJson({
       scope: diagnostics.scope, hashes: diagnostics.hashes, committed: inspection.committed!.pointerHash,
       contracts: runtime.contracts, document: absProgramDocument(document),

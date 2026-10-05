@@ -9,9 +9,9 @@ import {
   ElectronService,
   LogService,
   PlatformService,
-  AppDataResourceLockService,
 } from '@core/platform/public-api';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, coderSourceDirectory } from '@domain/project/public-api';
+import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
@@ -63,7 +63,6 @@ export class CompileService {
   private activeStreamId: string | null = null;
   private activeCommandCancel: (() => void) | null = null;
   private stopPending: Promise<unknown> = Promise.resolve();
-  private resourceWait: AbortController | null = null;
 
   constructor(
     private projectService: ProjectService,
@@ -79,12 +78,11 @@ export class CompileService {
     private logService: LogService,
     private translate: TranslateService,
     private coderBuildInfo: CoderBuildInfoService,
-    private appDataResourceLock: AppDataResourceLockService,
+    private npmService: NpmService,
   ) { }
 
   cancel(): void {
     this.cancelled = true;
-    this.resourceWait?.abort();
     const streamId = this.activeStreamId;
     if (streamId) {
       this.stopPending = this.cmdService.kill(streamId).catch((error) => {
@@ -108,6 +106,22 @@ export class CompileService {
       };
     }
 
+    const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
+    if (dependencyBlock) {
+      this.message.warning(dependencyBlock);
+      return { success: false, result: { state: 'warn', text: dependencyBlock } };
+    }
+
+    if (this.configService.isCoderProduct()) {
+      try {
+        await this.npmService.assertCoderDependenciesReady(root);
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        this.message.warning(text);
+        return { success: false, result: { state: 'warn', text } };
+      }
+    }
+
     if (!this.application.startBuild()) {
       const state = this.application.currentProcessState;
       let msg = 'System is busy';
@@ -124,27 +138,21 @@ export class CompileService {
 
     this.cancelled = false;
     this.stopPending = Promise.resolve();
-    const wait = new AbortController();
-    this.resourceWait = wait;
     this.application.updateNotice({ title: this.t('PREPARING_TITLE'), text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
       state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
     try {
-      // Read source/configuration only after installers have released the writer.
       // Keep the root captured at submission, even if the UI switches projects.
-      return await this.appDataResourceLock.runShared('build:disk-preprocess-and-compile',
-        token => this.runWithResources(root, options, token), wait.signal);
+      return await this.runCompile(root, options);
     } catch (error: any) {
       const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
       this.application.finishBuild(false, text);
       if (this.cancelled) this.updateCancelledNotice(text);
       else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
       return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text } };
-    } finally {
-      if (this.resourceWait === wait) this.resourceWait = null;
     }
   }
 
-  private async runWithResources(root: string, options: DiskCompileOptions, appDataResourceToken: string): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+  private async runCompile(root: string, options: DiskCompileOptions): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
     const packagePath = this.electronService.pathJoin(root, 'package.json');
     const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
     const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
@@ -171,7 +179,7 @@ export class CompileService {
       assertManifest();
       if (!boardModule) {
         finishReason = 'Missing board module';
-        const text = 'Cannot resolve board module from the active project.';
+        const text = isAilyCodeProject ? '请先在顶部选择开发板，再编译或上传 Arduino 工程。' : 'Cannot resolve board module from the active project.';
         this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
         return { success: false, result: { state: 'error', text } };
       }
@@ -229,7 +237,7 @@ export class CompileService {
         const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
         const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
           this.publishBuildLog(root, line.line, line.type);
-        }, root, appDataResourceToken);
+        }, root);
         if (this.cancelled) {
           finishReason = 'Cancelled';
           const sec = ((Date.now() - started) / 1000).toFixed(2);
@@ -284,7 +292,7 @@ export class CompileService {
           return;
         }
         this.publishBuildLog(root, line.line, line.type);
-      }, root, appDataResourceToken);
+      }, root);
       const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
 
       if (this.cancelled) {
@@ -378,7 +386,7 @@ export class CompileService {
         ) {
           return { success: false, error: `Invalid Coder entry outside sketch workspace: ${entryRel}` };
         }
-        const sourcePath = this.electronService.pathJoin(projectPath, 'sketch', ...segments);
+        const sourcePath = this.electronService.pathJoin(projectPath, coderSourceDirectory(manifest), ...segments);
         if (!window['path'].isExists(sourcePath)) {
           return { success: false, error: `Entry file does not exist: ${entryRel}` };
         }
@@ -556,7 +564,6 @@ export class CompileService {
     request: { scriptPath: string; configFilePath: string; buildDeliveryRequest?: string },
     onLine?: (line: AilyBuilderOutputLine) => void,
     buildWorkspace?: string,
-    appDataResourceToken?: string,
   ): Promise<OneShotCommandResult> {
     return new Promise((resolve, reject) => {
       let stdout = '';
@@ -603,7 +610,7 @@ export class CompileService {
       const streamId = `disk_build_${crypto.randomUUID()}`;
       this.activeStreamId = streamId;
       sub = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
-        cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId, appDataResourceToken,
+        cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId,
         ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
       }).subscribe({
         next: (o: CmdOutput) => {

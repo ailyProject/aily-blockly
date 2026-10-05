@@ -2,6 +2,9 @@ import { Injectable } from '@angular/core';
 import { observeNativeBlockDefinition } from './blockly-native-structure';
 import { createBlocklyExtensionFacade } from './blockly-extension-registration';
 import { BlocklyNativeReplayJournal } from './blockly-native-replay-journal';
+import { captureNativeGraphicsContext } from './blockly-native-graphics-context';
+import { absJson } from '../../../integrations/blockly/abs/abs-json';
+import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-native-candidate-protocol';
 import * as Blockly from 'blockly';
@@ -220,16 +223,23 @@ export class BlocklyGeneratorRuntimeService {
 
   captureNativeReplay() {
     const session = this.requireActiveSession(), revision = activeProjectGeneratorRevision;
-    return session.replay.capture(() => {
+    const workspace = session.context.getWorkspace();
+    const graphics = captureNativeGraphicsContext(workspace), graphicsKey = absJson(graphics ?? null);
+    const replay = session.replay.capture(() => {
       if (!this.isCurrent(session) || activeProjectGeneratorRevision !== revision) throw new Error('Native candidate runtime changed.');
+      if (session.context.getWorkspace() !== workspace || absJson(graphics ?? null) !== graphicsKey
+        || absJson(captureNativeGraphicsContext(workspace) ?? null) !== graphicsKey) {
+        throw new AbsSyncError('ABS_RUNTIME_CAPTURE_CHANGED', 'Native candidate graphics changed. Validate the candidate again with the current renderer and theme.');
+      }
     });
+    return { ...replay, ...(graphics ? { graphics } : {}) };
   }
 
   /** Diagnostic preparation only: no ABS capability promotion or host workspace mutation. */
   async evaluateNativeCandidate(blocks: NativeCandidateBlock[], options: NativeCandidateOptions) {
     const replay = this.captureNativeReplay(), detached = structuredClone(blocks);
     const { evaluateNativeCandidate } = await import('./blockly-native-candidate');
-    return evaluateNativeCandidate({ steps: replay.steps, blocks: detached }, {
+    return evaluateNativeCandidate({ steps: replay.steps, graphics: replay.graphics, blocks: detached }, {
       ...options, assertCurrent: () => { options.assertCurrent(); replay.assertCurrent(); },
     });
   }

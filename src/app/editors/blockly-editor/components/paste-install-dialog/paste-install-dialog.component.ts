@@ -69,10 +69,20 @@ export class PasteInstallDialogComponent {
 
   getVersionDisplay(lib: MissingLibInfo): string {
     if (lib.localPath) {
-      const folderName = lib.localPath.split(/[/\\]/).pop() || '';
-      return 'file:' + folderName;
+      return 'file:' + lib.localPath;
     }
     return lib.version;
+  }
+
+  async selectLocalLibrary(lib: MissingLibInfo): Promise<void> {
+    const result = await window['ipcRenderer'].invoke('dialog-select-files', {
+      title: `选择 ${lib.name} 积木库目录`,
+      properties: ['openDirectory'],
+    });
+    if (!result?.canceled && result?.filePaths?.[0]) {
+      lib.localPath = result.filePaths[0];
+      this.installLog = '';
+    }
   }
 
   cancel(): void {

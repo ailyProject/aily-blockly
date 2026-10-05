@@ -1,3 +1,5 @@
+import { HttpClient } from '@angular/common/http';
+import { NpmService } from '@domain/dependencies/public-api';
 import { TestBed } from '@angular/core/testing';
 import { BehaviorSubject, of, Subject } from 'rxjs';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -24,12 +26,14 @@ describe('Coder concurrent process integration', () => {
   const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
   beforeEach(() => {
-    originals = { path: window['path'], fs: window['fs'], cmd: window['cmd'] };
+    spyOn(NpmService.prototype, 'assertCoderDependenciesReady').and.resolveTo();
+    originals = { path: window['path'], fs: window['fs'], cmd: window['cmd'], builder: window['builder'] };
+    window['builder'] = { captureBuildSource: () => ({ digest: 'fixture-source' }) };
     window['path'] = { join: (...parts: string[]) => parts.join('/'), isExists: () => true,
       getAilyBuilderPath: () => '/builder', getAilyChildPath: () => '/child', getAppDataPath: () => '/appdata' };
     window['fs'] = { existsSync: () => true, appendFileSync: () => {}, mkdirSync: () => {}, readFileSync: (path: string) => path.endsWith('package.json')
       ? JSON.stringify({ type: 'coder', entry: 'src/main.cpp', dependencies: { '@aily-project/board-uno': '1' } }) : 'void setup() {}\nvoid loop() {}',
-      writeFileSync: jasmine.createSpy('write') };
+      writeFileSync: jasmine.createSpy('write'), renameSync: () => {} };
     commands = []; killed = [];
     spyOn(CmdService.prototype, 'run').and.callFake((command: string) => {
       const output = new Subject<any>(); const id = `process-${commands.length}`;
@@ -43,6 +47,7 @@ describe('Coder concurrent process integration', () => {
       coderProjects: [{ path: '/a' }, { path: '/b' }],
       coderOperationsSubject: new BehaviorSubject(new Map()),
       getProjectMode: () => 'coder',
+      getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
       beginCoderOperation: () => () => {},
       getCoderProjectContext(path: string) {
         if (!contexts.has(path)) contexts.set(path, {
@@ -50,6 +55,7 @@ describe('Coder concurrent process integration', () => {
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
           syncCurrentBoardConfig: async () => true,
+          getProjectDependencyBlockMessage: (path: string) => project.getProjectDependencyBlockMessage(path),
         });
         return contexts.get(path);
       },
@@ -64,7 +70,8 @@ describe('Coder concurrent process integration', () => {
       { provide: CrossPlatformCmdService, useValue: {} },
       { provide: ElectronService, useValue: { pathJoin: (...parts: string[]) => parts.join('/'), isWindowFocused: () => true } },
       { provide: PlatformService, useValue: { za7: '/7z' } },
-      { provide: ConfigService, useValue: { data: {} } },
+      { provide: ConfigService, useValue: { data: {}, isCoderProduct: () => true } },
+      { provide: HttpClient, useValue: {} },
       { provide: NzMessageService, useValue: { warning: () => {}, error: () => {} } },
       { provide: TranslateService, useValue: { instant: (key: string) => key } },
       { provide: CompileValidationService, useValue: { triggerAfterSuccessfulCompile: () => {} } },
@@ -79,6 +86,39 @@ describe('Coder concurrent process integration', () => {
 
   function started(command: typeof commands[number]): void { command.output.next({ type: 'stdout', data: 'running\n', streamId: command.id }); }
   function finish(command: typeof commands[number]): void { command.output.next({ type: 'close', code: 0, streamId: command.id }); command.output.complete(); }
+
+  it('rejects build and upload requests before creating processes while dependencies are unavailable', async () => {
+    project.getProjectDependencyBlockMessage.and.returnValue('retry dependencies');
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError('retry dependencies');
+    await expectAsync(runtime.upload('/a', '/dev/A')).toBeRejectedWithError('retry dependencies');
+    expect(commands).toEqual([]);
+    expect(runtime.getState('/a').build).toBe('default');
+    expect(runtime.getState('/a').upload).toBe('default');
+  });
+
+  it('restores an actionable dependency failure and its retry when returning to a project', () => {
+    project.getProjectDependencyBlockMessage.and.returnValue('retry dependencies');
+    const a = runtime.getSession('/a'); runtime.getSession('/b');
+    const retry = jasmine.createSpy('retry');
+    const shown: any[] = [];
+    TestBed.inject(NoticeService).stateSubject.subscribe(value => shown.push(value));
+    a.notice.update({ title: 'Dependencies failed', state: 'error', onRetry: retry });
+    project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
+    project.currentProjectPath = '/a'; project.currentProjectPath$.next('/a');
+    expect(shown.at(-1)?.title).toBe('Dependencies failed');
+    shown.at(-1).onRetry();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay an already presented failure when Coder dependency blocking is disabled', () => {
+    const a = runtime.getSession('/a'); runtime.getSession('/b');
+    const shown: any[] = [];
+    TestBed.inject(NoticeService).stateSubject.subscribe(value => shown.push(value));
+    a.notice.update({ title: 'Dependencies failed', state: 'error', onRetry: () => {} });
+    project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
+    project.currentProjectPath = '/a'; project.currentProjectPath$.next('/a');
+    expect(shown.at(-1)).toBeNull();
+  });
 
   it('records command and RPC failures in the owning project without leaking across tabs', async () => {
     (CmdService.prototype.run as jasmine.Spy).and.callThrough();
@@ -111,22 +151,26 @@ describe('Coder concurrent process integration', () => {
   });
 
   it('starts both real compile pipelines before either finishes and cancels only the addressed process', async () => {
+    spyOn(CmdService.prototype, 'spawn').and.callFake((command, args, options) => {
+      const output = new Subject<any>();
+      commands.push({ command: [command, ...args].join(' '), output, id: options.streamId });
+      return output;
+    });
     const a = runtime.build('/a').catch(error => error);
     const b = runtime.build('/b');
     await tick();
     expect(commands.length).toBe(2);
-    expect(commands[0].command).toContain('/a/sketch/build-config.json');
-    expect(commands[1].command).toContain('/b/sketch/build-config.json');
+    expect(commands[0].command).toContain('/a/.temp/compile-request-');
+    expect(commands[1].command).toContain('/b/.temp/compile-request-');
     commands.forEach(started);
     project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
     runtime.cancel('/a', 'build');
     await a;
     expect(killed).toEqual([commands[0].id]);
     expect(runtime.getState('/b').build).toBe('doing');
-    finish(commands[1]); await tick();
-    expect(commands[2].command).toContain('/b/sketch/build-config.json');
-    started(commands[2]); finish(commands[2]);
+    finish(commands[1]);
     expect((await b).state).toBe('done');
+    expect(commands.length).toBe(2);
     expect(runtime.getState('/a').build).toBe('warn');
     expect(runtime.getState('/b').build).toBe('done');
   });

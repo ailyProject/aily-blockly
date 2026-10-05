@@ -168,7 +168,7 @@ export async function setBoardConfig(
     const customPartition: Record<string, unknown> = {};
     if (configKey === 'PartitionScheme' && selection.data === 'custom') {
       const sourceDirectory = projectService.isAilyCodeProject(project)
-        ? window['path'].dirname(electronService.pathJoin(project, 'sketch', saved.entry || 'src/main.cpp'))
+        ? window['path'].dirname(electronService.pathJoin(project, saved.arduinoSketch === true ? '.' : 'sketch', saved.entry || 'src/main.cpp'))
         : electronService.pathJoin(project, 'src');
       const requiredFilePath = electronService.pathJoin(sourceDirectory, 'partitions.csv');
       const legacyFilePath = electronService.pathJoin(project, 'partitions.csv');

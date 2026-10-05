@@ -25,6 +25,18 @@
         color: var(--aily-text-secondary);
         font-size: 12px;
         margin-left: 4px;
+        min-width: 0;
+        flex: 1;
+        overflow-wrap: anywhere;
+    }
+
+    .local-library-picker {
+        color: #4b97dd;
+        background: none;
+        border: 0;
+        cursor: pointer;
+        padding: 0 4px;
+        white-space: nowrap;
     }
 }
 

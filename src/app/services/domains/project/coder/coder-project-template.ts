@@ -77,6 +77,10 @@ export function applyCoderProjectPackageConfig(
   manifest.devmode = 'arduino';
   manifest.framework = 'arduino';
   manifest.sourceRoots = ['src', 'libraries'];
+  if (currentManifest?.['arduinoSketch'] === true) {
+    manifest['arduinoSketch'] = true;
+    manifest.sourceRoots = ['.', 'src', 'sketch/libraries'];
+  }
   manifest.dependencies = {
     ...(manifest.dependencies || {}),
     [boardPackageName]: boardRange,
