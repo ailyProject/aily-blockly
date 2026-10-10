@@ -1,5 +1,5 @@
 overrides:
-  blockly: 'npm:aily-project-blockly@1.0.3'
+  blockly: 'npm:aily-project-blockly@1.0.5'
   '@blockly/field-colour': 13.3.0
   '@blockly/field-grid-dropdown': 13.3.0
 
@@ -11,4 +11,4 @@ allowBuilds:
   msgpackr-extract: true
 
 minimumReleaseAgeExclude:
-  - aily-project-blockly@1.0.3
+  - aily-project-blockly@1.0.5

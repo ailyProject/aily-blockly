@@ -207,7 +207,7 @@
     "altcha": "^2.3.0",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
-    "blockly": "npm:aily-project-blockly@1.0.4",
+    "blockly": "npm:aily-project-blockly@1.0.5",
     "buffer": "^6.0.3",
     "cropperjs": "^1.6.2",
     "dragselect": "^2.7.4",
