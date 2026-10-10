@@ -53,14 +53,14 @@ const feedbackCases: ReadonlyArray<{
   {
     label: 'bug',
     radioIndex: 0,
-    diagnosticHeadings: ['### Project Summary', '### Board Dependencies', '### Crash Summary', '### Logs'],
+    diagnosticHeadings: ['### Project Dependencies', '### Project Summary', '### Crash Summary', '### Logs'],
   },
   {
     label: 'build&upload',
     radioIndex: 1,
     diagnosticHeadings: [
+      '### Project Dependencies',
       '### Board and Port',
-      '### Board Dependencies',
       '### Libraries',
       '### Parameters',
       '### Last Results',
@@ -70,17 +70,17 @@ const feedbackCases: ReadonlyArray<{
   {
     label: 'library',
     radioIndex: 2,
-    diagnosticHeadings: ['### Library', '### Related Logs'],
+    diagnosticHeadings: ['### Project Dependencies', '### Library', '### Related Logs'],
   },
   {
     label: 'other',
     radioIndex: 3,
-    diagnosticHeadings: ['### Latest Error'],
+    diagnosticHeadings: ['### Project Dependencies', '### Latest Error'],
   },
   {
     label: 'feature',
     radioIndex: 4,
-    diagnosticHeadings: [],
+    diagnosticHeadings: ['### Project Dependencies'],
   },
 ];
 
@@ -182,15 +182,11 @@ test.describe('反馈诊断正文', () => {
           expect(content.endsWith(ISSUE_FOOTER)).toBe(true);
 
           const levelTwoHeadings = content.match(/^## .+$/gm) || [];
-          expect(levelTwoHeadings).toEqual(
-            feedbackCase.label === 'feature'
-              ? ['## Issue Description', '## Environment']
-              : ['## Issue Description', '## Environment', '## Diagnostics'],
-          );
+          expect(levelTwoHeadings).toEqual(['## Issue Description', '## Environment', '## Diagnostics']);
           expectInOrder(content, [
             '## Issue Description',
             '## Environment',
-            ...(feedbackCase.label === 'feature' ? [] : ['## Diagnostics']),
+            '## Diagnostics',
             '\n\n---\n\n',
             ISSUE_FOOTER,
           ]);
@@ -212,6 +208,8 @@ test.describe('反馈诊断正文', () => {
 
           const actualDiagnosticHeadings = content.match(/^### .+$/gm) || [];
           expect(actualDiagnosticHeadings).toEqual(feedbackCase.diagnosticHeadings);
+          expect(content).toContain('### Project Dependencies\n\n```json\n{}\n```');
+          expect(content).not.toContain('Board Dependencies');
           expect(diagnosticCodeBlockByteLength(content)).toBeLessThanOrEqual(DIAGNOSTIC_TEXT_MAX_BYTES);
 
           const hasForbiddenMarker = forbiddenMarkers.some((marker) => marker && content.includes(marker));

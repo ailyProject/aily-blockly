@@ -49,7 +49,7 @@ describe('project dependency session lifecycle', () => {
     expect(lifecycle.isBusy('/project')).toBeFalse();
   });
 
-  it('waits for cancelled work to settle and keeps stopping until explicit release', async () => {
+  it('settles stalled renderer work on cancellation and keeps stopping until explicit release', async () => {
     const lifecycle = new ProjectDependencyLifecycle();
     const session = lifecycle.beginPreparation('/project');
     const deferredWork = deferred();
@@ -65,12 +65,14 @@ describe('project dependency session lifecycle', () => {
     let idle = false;
     const waiting = lifecycle.waitForIdle(session).then(() => { idle = true; });
     await Promise.resolve();
-    expect(idle).toBeFalse();
-    deferredWork.resolve();
     await rejected; await waiting;
+    expect(idle).toBeTrue();
     expect(lifecycle.isBusy('/project')).toBeTrue();
     lifecycle.release(session);
     expect(lifecycle.isBusy('/project')).toBeFalse();
+    const replacement = lifecycle.ensure('/project');
+    deferredWork.resolve(); await deferredWork.promise;
+    expect(lifecycle.get('/project')).toBe(replacement);
   });
 
   it('does not let late cleanup release a new session or another project', async () => {
@@ -100,6 +102,19 @@ describe('project dependency session lifecycle', () => {
     });
     await expectAsync(work).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
     await lifecycle.waitForIdle(session);
+  });
+
+  it('handles cancellation followed by a synchronous failure without an unhandled rejection', async () => {
+    const lifecycle = new ProjectDependencyLifecycle();
+    const session = lifecycle.ensure('/project');
+    const work = lifecycle.run(session, () => {
+      lifecycle.cancel('/project');
+      throw new Error('request failed during cancellation');
+    });
+    await expectAsync(work).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+    await lifecycle.waitForIdle(session);
+    lifecycle.release(session);
+    expect(lifecycle.isBusy('/project')).toBeFalse();
   });
 
   it('cleans up rejected work, publishes changes and uses the supplied path identity', async () => {

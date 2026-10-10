@@ -9,6 +9,7 @@
  */
 
 import * as Blockly from 'blockly/core';
+import {isBlocklyFunctionViewBlockVisible} from '../../../../utils/blockly-function-view';
 import {
   dragSelectionWeakMap, hasSelectedParent, copyData, connectionDBList,
   dataCopyToStorage, dataCopyFromStorage, registeredShortcut,
@@ -423,7 +424,7 @@ const registerPaste = function(useCopyPasteCrossTab) {
     centerBlocksInViewport(blockList, workspace);
     applyConsecutivePasteStagger(blockList, workspace);
 
-    Blockly.common.setSelected(multiDraggable);
+    multiDraggable.selectAfterRender();
     Blockly.Events.setGroup(false);
   };
 
@@ -490,6 +491,7 @@ const registerSelectAll = function() {
     },
     check: function(block) {
       return block &&
+            isBlocklyFunctionViewBlockVisible(block) &&
             (block.isDeletable() || block.isMovable()) &&
             !block.isInsertionMarker();
     },
@@ -509,7 +511,7 @@ const registerSelectAll = function() {
         } else {
           Blockly.getSelected().unselect();
         }
-        Blockly.common.setSelected(null);
+        Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
         multiDraggable.clearAll_();
         dragSelectionWeakMap.get(workspace).clear();
       }

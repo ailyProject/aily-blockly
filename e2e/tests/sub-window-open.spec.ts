@@ -31,8 +31,12 @@ async function waitForHiddenWarmSettingsWindow(
     { timeout: 30_000 },
   ).toBe(1);
 
+  // Main-process window creation and Playwright's page attachment are separate
+  // events; observe both before accessing the prewarmed renderer.
+  await expect.poll(() => electronApp.windows().some(
+    (candidate) => candidate.url().includes('#/settings'),
+  ), {timeout: 30_000}).toBe(true);
   const page = electronApp.windows().find((candidate) => candidate.url().includes('#/settings'));
-  expect(page).toBeDefined();
 
   await expect.poll(
     () => page!.evaluate(() => {
@@ -171,7 +175,13 @@ test.describe('设置子窗口预热', () => {
     await expect(checkedRenderer).toHaveText(unsavedRenderer);
 
     const firstPageClosed = firstWarmWindow.page.waitForEvent('close');
-    await firstWarmWindow.page.locator('app-sub-window .win-btns .close').click();
+    if (process.platform === 'darwin') {
+      // macOS hides the custom title-bar close button in favour of the native
+      // traffic-light control. Invoke that BrowserWindow close lifecycle.
+      await electronApp.evaluate(({BrowserWindow}, id) => BrowserWindow.fromId(id)?.close(), firstWarmWindow.id);
+    } else {
+      await firstWarmWindow.page.locator('app-sub-window .win-btns .close').click();
+    }
     await firstPageClosed;
     await expect.poll(
       () => electronApp.evaluate(

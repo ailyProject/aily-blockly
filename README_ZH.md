@@ -42,7 +42,7 @@ aily Blockly 是通用硬件开发环境，不绑定某一款开发板或套件�
 AI 会根据需求自主规划任务，逐步理解项目依赖和库的使用方式，再生成可落地的项目代码。
 
 8. **无限扩展**  
-内置 400 多个常用扩展库。缺少 Blockly 库时，可以让 AI 分析原生 Arduino/C/C++ 库并生成适配。
+内置 500 多个常用扩展库。缺少 Blockly 库时，可以让 AI 分析原生 Arduino/C/C++ 库并生成适配。
 
 9. **连线图**  
 不知道怎么接线时，AI 可以根据需求和程序生成连线图；也可以根据已有连线反向辅助生成代码。
@@ -50,6 +50,9 @@ AI 会根据需求自主规划任务，逐步理解项目依赖和库的使用�
 10. **自动调试**  
 编译有错误、调试信息看不懂时，可以交给 AI 读取报错、定位问题并给出修复建议。
 
+11. **仿真器/虚拟机**  
+
+12. **UI设计器**  
 
 ## 非正式版注意事项  
 本次测试的alpha版本，仅保证最低限度的能用，很多计划的亮点功能还未完成设计和开发。
@@ -77,8 +80,7 @@ AI 会根据需求自主规划任务，逐步理解项目依赖和库的使用�
 ## 本项目AI功能参考了以下项目
 [Kode](https://github.com/shareAI-lab/Kode-cli)  
 [copilot](https://github.com/microsoft/vscode-copilot-chat)  
-[ESPConnect](https://github.com/thelastoutpostworkshop/ESPConnect)  
-[BLEOTA](https://github.com/gb88/BLEOTA)  
+[pi-agent](https://github.com/earendil-works/pi)
 
 ## 附加权利说明  
 1. 本软件为GPL协议下的免费软件，在无授权的情况下，不得销售本软件及基于本软件的衍生软件；

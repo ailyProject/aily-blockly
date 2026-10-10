@@ -2,6 +2,46 @@ import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import * as Blockly from 'blockly';
 import { BlocklyEditorComponent } from '../../../editors/blockly-editor/blockly-editor.component';
 import { _BuilderService } from '../../../editors/blockly-editor/services/builder.service';
+import { BlocklyComponent } from '../../../editors/blockly-editor/components/blockly/blockly.component';
+import { Subject } from 'rxjs';
+
+describe('generated artifact retry interaction boundary', () => {
+  let component: any;
+  let workspace: Blockly.WorkspaceSvg;
+  let container: HTMLDivElement;
+  let previousBuilder: any;
+  beforeEach(() => {
+    container = document.createElement('div'); document.body.append(container);
+    workspace = Blockly.inject(container, {toolbox: {kind: 'flyoutToolbox', contents: []}});
+    component = Object.create(BlocklyComponent.prototype);
+    Object.assign(component, {destroy$: new Subject(), generatedArtifactRetryToken: 0,
+      generatedArtifactRetryTimer: null, projectService: {currentProjectPath: '/project'},
+      blocklyService: {workspace, getWorkspaceContentRevision: jasmine.createSpy('captureRevision').and.returnValue(7)}});
+    previousBuilder = window['builder'];
+    window['builder'] = {publishArduinoGeneratedCode: jasmine.createSpy('publish')};
+  });
+  afterEach(() => {
+    component.clearGeneratedArtifactRetry(); workspace.currentGesture_ = null;
+    workspace.dispose(); container.remove(); window['builder'] = previousBuilder;
+  });
+  it('does no project serialization or disk publication until the gesture ends', fakeAsync(() => {
+    workspace.currentGesture_ = {} as Blockly.Gesture;
+    component.scheduleGeneratedArtifactRetry('/project', [], 7);
+    tick(3000);
+    expect(component.blocklyService.getWorkspaceContentRevision).not.toHaveBeenCalled();
+    expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+    workspace.currentGesture_ = null;
+    tick(1000);
+    expect(component.blocklyService.getWorkspaceContentRevision).toHaveBeenCalledTimes(1);
+    expect(window['builder'].publishArduinoGeneratedCode).toHaveBeenCalledOnceWith('/project', {artifacts: []});
+  }));
+  it('drops an old project retry before capturing its replacement revision', fakeAsync(() => {
+    component.scheduleGeneratedArtifactRetry('/project', [], 7);
+    component.projectService.currentProjectPath = '/replacement'; tick(2000);
+    expect(component.blocklyService.getWorkspaceContentRevision).not.toHaveBeenCalled();
+    expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+  }));
+});
 
 describe('project startup publication scheduling', () => {
   let component: any;

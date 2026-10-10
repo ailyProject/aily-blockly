@@ -1,4 +1,5 @@
 import * as Blockly from 'blockly';
+import 'blockly/blocks';
 import { projectDataRuntime } from '@domain/project/public-api';
 import { BlocklyGeneratorRuntimeService, getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyProjectCodePreparation } from '../../../editors/blockly-editor/services/prepared-project-code';
@@ -32,6 +33,35 @@ describe('prepared project code boundary', () => {
     spyOn(generator, 'workspaceToCode').and.returnValue('prepared code');
   });
   afterEach(() => { workspace.dispose(); runtime.destroy(); });
+
+  it('reuses canonical bytes from a full capture and refreshes them after event-free edits', async () => {
+    const captureText = () => {
+      const snapshot = capture();
+      return {...snapshot, documentText: revision.documentText};
+    };
+    const before = await preparation.prepare(captureText);
+    Blockly.Events.disable();
+    try {workspace.getVariableMap().createVariable('event-free edit');}
+    finally {Blockly.Events.enable();}
+    const after = await preparation.prepare(captureText);
+    expect(after!.revision).toBeGreaterThan(before!.revision);
+    expect(after!.sourceWorkspace!.documentText).toContain('event-free edit');
+    expect(after!.sourceWorkspace!.documentText).toBe(revision.documentText);
+  });
+
+  it('rejects edits during a cooperative yield before generating or publishing stale code', async () => {
+    await expectAsync(preparation.prepare(capture, false, async () => {
+      workspace.getVariableMap().createVariable('edited while yielding');
+    })).toBeRejectedWithError(/Project changed before code preparation/);
+    expect(generator.workspaceToCode).not.toHaveBeenCalled();
+  });
+
+  it('rejects changes after generation at a cooperative yield', async () => {
+    let yields = 0;
+    await expectAsync(preparation.prepare(capture, false, async () => {
+      if (++yields === 2) workspace.getVariableMap().createVariable('edited after generation');
+    })).toBeRejectedWithError(/Project changed after code preparation/);
+  });
 
   const productEditor = () => {
     const editor = Object.create(BlocklyService.prototype) as BlocklyService;
@@ -88,7 +118,7 @@ describe('prepared project code boundary', () => {
     const editor = productEditor(); const consume = jasmine.createSpy('consume');
     (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => {
       expect(editor.isWorkspaceEditBlocked()).toBeFalse();
-      workspace.createVariable('typed while preparing');
+      workspace.getVariableMap().createVariable('typed while preparing');
     });
     expect(await editor.runWithBackgroundProjectCode(consume, () => false)).toBeFalse();
     expect(generator.workspaceToCode).not.toHaveBeenCalled();
@@ -113,7 +143,7 @@ describe('prepared project code boundary', () => {
         replaceProjectText: async (_request, guard) => {
           await Promise.resolve();
           expect(editor.isWorkspaceEditBlocked()).toBeFalse();
-          workspace.createVariable('next edit');
+          workspace.getVariableMap().createVariable('next edit');
           try { guard(); } catch (error) {
             return { status: 'NOT_COMMITTED', code: 'PROJECT_FILE_WRITE_FAILED', error: error.message };
           }
@@ -138,7 +168,7 @@ describe('prepared project code boundary', () => {
   it('guards consumer continuations and releases the lease after state changes', async () => {
     const editor = productEditor();
     await expectAsync(editor.runWithPreparedProjectCode(async (_prepared, assertCurrent) => {
-      await Promise.resolve(); workspace.createVariable('intervening edit'); assertCurrent();
+      await Promise.resolve(); workspace.getVariableMap().createVariable('intervening edit'); assertCurrent();
     })).toBeRejectedWithError(/changed before code publication/);
     expect(editor.isWorkspaceEditBlocked()).toBeFalse();
     expect(await editor.runWithPreparedProjectCode(prepared => prepared.code)).toBe('prepared code');
@@ -151,7 +181,7 @@ describe('prepared project code boundary', () => {
     const prepare = editor.prepareProjectCode.bind(editor);
     spyOn(editor, 'prepareProjectCode').and.callFake(async (...args) => {
       const result = await prepare(...args);
-      queueMicrotask(() => workspace.createVariable('late cache-hit edit'));
+      queueMicrotask(() => workspace.getVariableMap().createVariable('late cache-hit edit'));
       return result;
     });
     const consume = jasmine.createSpy('consume');
@@ -160,11 +190,11 @@ describe('prepared project code boundary', () => {
   });
 
   it('generates once, adopts synchronous model registration and reuses the resulting persisted revision', async () => {
-    generator.workspaceToCode.and.callFake(() => { workspace.createVariable('device', 'runtime-type'); return 'prepared code'; });
+    generator.workspaceToCode.and.callFake(() => { workspace.getVariableMap().createVariable('device', 'runtime-type'); return 'prepared code'; });
     const before = capture().revision;
     const result = await preparation.prepare(capture);
     expect(capture().revision).toBeGreaterThan(before);
-    expect(workspace.getAllVariables().length).toBe(1);
+    expect(workspace.getVariableMap().getAllVariables().length).toBe(1);
     expect(result.code).toBe('prepared code');
     expect(result.sourceWorkspace.revision).toBe(capture().revision);
     expect(result.sourceWorkspace.documentText).toContain('device');
@@ -183,13 +213,13 @@ describe('prepared project code boundary', () => {
     expect(JSON.parse(result.blockCodeMapText)[0][1].codeSnippet).toBe('original');
     expect(Object.isFrozen(result)).toBeTrue(); expect(Object.isFrozen(result.artifacts[0])).toBeTrue();
     const capturedText = result.sourceWorkspace.documentText;
-    workspace.createVariable('later edit');
+    workspace.getVariableMap().createVariable('later edit');
     expect(result.sourceWorkspace.documentText).toBe(capturedText);
     expect(result.sourceWorkspace.documentText).not.toContain('later edit');
   });
 
   it('rejects changes during the resource await before executing any generator', async () => {
-    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => workspace.createVariable('external edit'));
+    (projectDataRuntime.prepareValue as jasmine.Spy).and.callFake(async () => workspace.getVariableMap().createVariable('external edit'));
     await expectAsync(preparation.prepare(capture)).toBeRejectedWithError(/before code preparation/);
     expect(generator.workspaceToCode).not.toHaveBeenCalled();
   });
@@ -204,7 +234,7 @@ describe('prepared project code boundary', () => {
     await preparation.prepare(capture);
     pageId = 'other'; await preparation.prepare(capture);
     dataSession = 'session-2'; await preparation.prepare(capture);
-    workspace.createVariable('new model'); await preparation.prepare(capture);
+    workspace.getVariableMap().createVariable('new model'); await preparation.prepare(capture);
     expect(generator.workspaceToCode).toHaveBeenCalledTimes(4);
     await preparation.prepare(capture, true);
     expect(generator.workspaceToCode).toHaveBeenCalledTimes(5);
@@ -226,7 +256,7 @@ describe('prepared project code boundary', () => {
   });
 
   it('does not adopt a late asynchronous generator mutation or cache its output', async () => {
-    generator.workspaceToCode.and.callFake(() => { queueMicrotask(() => workspace.createVariable('late model')); return 'stale code'; });
+    generator.workspaceToCode.and.callFake(() => { queueMicrotask(() => workspace.getVariableMap().createVariable('late model')); return 'stale code'; });
     await expectAsync(preparation.prepare(capture)).toBeRejectedWithError(/after code preparation/);
     generator.workspaceToCode.and.returnValue('latest code');
     expect((await preparation.prepare(capture)).code).toBe('latest code');
@@ -234,7 +264,7 @@ describe('prepared project code boundary', () => {
   });
 
   it('retains a generation failure for the same revision without replay or partial artifact publication', async () => {
-    generator.workspaceToCode.and.callFake(() => { workspace.createVariable('registered before failure'); throw new Error('unfinished code'); });
+    generator.workspaceToCode.and.callFake(() => { workspace.getVariableMap().createVariable('registered before failure'); throw new Error('unfinished code'); });
     const result = await preparation.prepare(capture);
     expect(result).toEqual({ code: null, artifacts: null, blockCodeMapText: null, error: 'unfinished code', revision: capture().revision });
     expect(await preparation.prepare(capture)).toBe(result);
@@ -242,6 +272,33 @@ describe('prepared project code boundary', () => {
     preparation.clear();
     await preparation.prepare(capture);
     expect(generator.workspaceToCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects compiling native functions without their library while keeping the document editable', async () => {
+    generator.workspaceToCode.and.callThrough();
+    const definition = workspace.newBlock('procedures_defnoreturn');
+    const consume = jasmine.createSpy('compile');
+    const editor = productEditor();
+    const result = await preparation.prepare(capture);
+    expect(result!.code).toBeNull(); expect(result!.artifacts).toBeNull();
+    expect(result!.error).toContain('BLOCKLY_GENERATOR_MISSING');
+    expect(result!.error).toContain('procedures_defnoreturn');
+    await expectAsync(editor.runWithPreparedProjectCode(consume)).toBeRejectedWithError(/procedures_defnoreturn/);
+    expect(consume).not.toHaveBeenCalled(); expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+    definition.setFieldValue('still editable', 'NAME');
+    expect(JSON.stringify(Blockly.serialization.workspaces.save(workspace))).toContain('still editable');
+    // Installing the library invalidates the failure without changing workspace bytes.
+    runtime.loadGenerator('restored-functions/generator.js', 'Arduino.forBlock.procedures_defnoreturn = () => "";');
+    expect((await preparation.prepare(capture))!.code).toContain('void setup()');
+    await editor.runWithPreparedProjectCode(consume);
+    expect(consume).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows explicitly disabled blocks without generators to remain in the editable project', async () => {
+    generator.workspaceToCode.and.callThrough();
+    workspace.newBlock('procedures_defnoreturn').setDisabledReason(true, 'MANUALLY_DISABLED');
+    const result = await preparation.prepare(capture);
+    expect(result!.error).toBeUndefined(); expect(result!.code).toContain('void setup()');
   });
   it('does not publish an asynchronous generator return value as code', async () => {
     generator.workspaceToCode.and.returnValue(Promise.resolve('too late'));

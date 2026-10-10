@@ -40,14 +40,6 @@ function normalizeProduct(value) {
   return value === 'coder' ? 'coder' : 'blockly';
 }
 
-function resolveProductUpdaterUrl(baseUrl, product) {
-  const normalized = String(baseUrl || '').trim().replace(/\/+$/, '');
-  if (product !== 'coder') return normalized;
-  return /\/blockly$/i.test(normalized)
-    ? normalized.replace(/\/blockly$/i, '/coder')
-    : `${normalized}/coder`;
-}
-
 function withoutFileAssociations(options = {}) {
   const { fileAssociations: _fileAssociations, ...rest } = options;
   return rest;
@@ -86,6 +78,7 @@ function createBuilderConfig(plan, baseConfig) {
     publish: [{
       provider: 'generic',
       url: plan.updateBaseUrl,
+      ...(plan.buildProduct === 'coder' ? { channel: 'latest-coder' } : {}),
     }],
     protocols: (baseConfig.protocols || []).map((protocol) => ({
       ...protocol,
@@ -129,7 +122,7 @@ function createBuildPlan(args, appConfig) {
     : product.artifactBase;
   const officialRegionKey = buildFlavor === 'global' ? 'eu' : 'cn';
   const configuredUpdateBaseUrl = appConfig?.regions?.[officialRegionKey]?.updater;
-  const updateBaseUrl = resolveProductUpdaterUrl(configuredUpdateBaseUrl, buildProduct);
+  const updateBaseUrl = String(configuredUpdateBaseUrl || '').trim().replace(/\/+$/, '');
 
   if (!configuredUpdateBaseUrl) {
     throw new Error(`Missing updater URL for flavor "${buildFlavor}" (region: ${officialRegionKey})`);
@@ -230,5 +223,4 @@ module.exports = {
   createBuildPlan,
   normalizeFlavor,
   normalizeProduct,
-  resolveProductUpdaterUrl,
 };

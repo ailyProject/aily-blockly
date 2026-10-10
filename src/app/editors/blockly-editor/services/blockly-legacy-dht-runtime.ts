@@ -1,4 +1,5 @@
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
+import { cloneProjectJson } from '@domain/project/project-document/public-api';
 import { DeclarativeBlockSnapshot } from './blockly-declarative-block-catalog';
 
 const READ_TYPES = ['dht_read_temperature', 'dht_read_humidity', 'dht_read_success'] as const;
@@ -16,7 +17,7 @@ export function adaptLegacyDhtRuntimeState<T>(source: T, definitions: Pick<Decla
   if (!collectProjectBlocks(source).some(({ state }) => state['type'] === 'dht_init'
     && typeof (state['fields'] as Record<string, unknown> | undefined)?.['VAR'] === 'string')) return source;
 
-  const document = structuredClone(source) as any;
+  const document = cloneProjectJson(source) as any;
   const entries = collectProjectBlocks(document);
   const variables = new Map<string, string>();
   for (const model of document.variables ?? []) {

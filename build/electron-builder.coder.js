@@ -34,6 +34,10 @@ module.exports = createBuilderConfig(plan, {
   mac: {
     ...packageJson.build.mac,
     icon: coderMacIcon,
+    target: [
+      { target: 'dmg', arch: ['arm64'] },
+      { target: 'zip', arch: ['arm64'] },
+    ],
   },
   linux: {
     ...packageJson.build.linux,

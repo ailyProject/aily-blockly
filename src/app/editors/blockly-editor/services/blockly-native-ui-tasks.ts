@@ -1,6 +1,7 @@
 import type * as Blockly from 'blockly';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { absProgramWorkspace } from '../../../integrations/blockly/abs/abs-program-state';
+import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
 
 /** Candidate-local, virtual one-shot tasks. No event loop, waiting or arbitrary
@@ -10,24 +11,37 @@ export class NativeUiTasks {
   private readonly pending = new Map<number, { due: number; callback: () => unknown }>();
   private sequence = 0;
   private now = 0;
-  private delayBudget = 0;
   private forbidden = false;
   private failure?: Error;
 
   get hasPending(): boolean { return this.pending.size > 0; }
   assertClean(): void { if (this.failure) throw this.failure; }
-  private reject(message: string): never {
-    this.failure ??= new Error(message); this.pending.clear(); throw this.failure;
+  private reject(error: string | Error): never {
+    this.failure ??= typeof error === 'string' ? new Error(error) : error;
+    this.pending.clear(); throw this.failure;
+  }
+  private limit(resource: string, actual: number, limit: number): never {
+    return this.reject(new AbsSyncError('ABS_LIMIT',
+      `Native UI tasks exceed the finite callback/delay budget (${resource}: ${actual}, limit: ${limit}).`, undefined, [], {
+        reason: 'native-ui-capacity', capacity: { phase: 'ui', resource, actual: Math.ceil(actual), limit },
+        hint: 'Deterministic virtual UI capacity failure. Retain ABS and repair the host; waiting or retrying unchanged ABS cannot help.',
+      }));
   }
   set(callback: () => unknown, delay = 0): number {
     this.assertClean();
     if (this.forbidden) return this.reject('Native candidate does not support timers during generation.');
     if (typeof callback !== 'function' || typeof delay !== 'number' || !Number.isFinite(delay)
-      || delay < 0 || delay > 2000 || ++this.sequence > 512 || (this.delayBudget += delay) > 5000) {
-      return this.reject(`Native UI tasks exceed the finite callback/delay budget (${this.sequence} callbacks, ${this.delayBudget}ms total delay).`);
+      || delay < 0) {
+      return this.reject('Native UI tasks require a function and finite non-negative delay.');
     }
+    if (delay > 2000) return this.limit('singleDelay', delay, 2000);
+    if (++this.sequence > 512) return this.limit('callbacks', this.sequence, 512);
+    // Parallel initialization timers share a due time. Only nested/serial work
+    // advances virtual elapsed time; a large workspace is not a long timer chain.
+    const due = this.now + delay;
+    if (due > 5000) return this.limit('virtualDelay', due, 5000);
     const id = -this.sequence;
-    this.pending.set(id, { due: this.now + delay, callback });
+    this.pending.set(id, { due, callback });
     return id;
   }
   clear(id: number): void { this.pending.delete(id); }
@@ -57,7 +71,7 @@ export class NativeUiTasks {
         const after = this.withoutScheduling(snapshot);
         if (after !== before) this.reject('Native deferred UI task changed persisted state, structure or field constraints' + semanticDifferencePath(before, after) + '.');
         before = after;
-      } catch (error) { this.reject(String(error)); }
+      } catch (error) { this.reject(error instanceof Error ? error : String(error)); }
     }
     this.assertClean();
   }

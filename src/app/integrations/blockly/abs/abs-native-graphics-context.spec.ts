@@ -29,6 +29,7 @@ describe('native graphics replay context', () => {
     const snapshot = captureNativeGraphicsContext(workspace)!;
     expect(snapshot.renderer).toBe('thrasos'); expect(snapshot.rtl).toBeTrue();
     expect(snapshot.oneBasedIndex).toBeFalse(); expect(snapshot.theme.fontStyle.size).toBe(16);
+    expect(snapshot.viewportRendering).toBeFalse();
     expect(snapshot.theme).not.toBe(workspace.getTheme() as any);
     snapshot.theme.fontStyle.size = 99; snapshot.rendererOverrides!['MIN_BLOCK_HEIGHT'] = 88;
     (snapshot.blockIcons[0][1] as any).width = 99;
@@ -50,6 +51,7 @@ describe('native graphics replay context', () => {
       [() => { workspace.getTheme().fontStyle.size = 17; }, () => { workspace.getTheme().fontStyle.size = 16; }],
       [() => { workspace.options.rendererOverrides!['MIN_BLOCK_HEIGHT'] = 32; }, () => { workspace.options.rendererOverrides!['MIN_BLOCK_HEIGHT'] = 31; }],
       [() => { workspace.options.oneBasedIndex = true; }, () => { workspace.options.oneBasedIndex = false; }],
+      [() => { workspace.setViewportRendering(true); }, () => { workspace.setViewportRendering(false); }],
       [() => { (window as any).__ailyBlockDefinitionsMap.get('graphics_context_probe').width = 32; },
         () => { (window as any).__ailyBlockDefinitionsMap.get('graphics_context_probe').width = 24; }],
       [() => { current = null!; }, () => { current = workspace; }],
@@ -58,6 +60,29 @@ describe('native graphics replay context', () => {
       expect(() => replay.assertCurrent()).toThrowError(/graphics changed/);
       restore(); expect(() => runtime.captureNativeReplay().assertCurrent()).not.toThrow();
     }
+  });
+
+  it('keeps the complete candidate state and initializes offscreen views with viewport rendering', async () => {
+    workspace.setViewportRendering(true);
+    const graphics = captureNativeGraphicsContext(workspace)!;
+    const steps = [{ kind: 'context' as const, mode: 'arduino' as const }, { kind: 'script' as const, label: 'offscreen-views', source: `
+      Blockly.Blocks.offscreen_probe = { init() {
+        if (!this.workspace.getViewportRenderer()) throw Error('candidate did not use host viewport rendering');
+        this.appendDummyInput().appendField('probe');
+        this.workspace.getViewportRenderer().deferView(this, () => {
+          this.setTooltip('initialized');
+          this.viewInitialized = true;
+        });
+      } };
+      Arduino.forBlock.offscreen_probe = block => {
+        if (!block.viewInitialized) throw Error('offscreen view was skipped');
+        return 'probe();\\n';
+      };
+    ` }];
+    const state = { blocks: { blocks: [{ id: 'hidden', type: 'offscreen_probe', x: 0, y: 50000 }] } };
+    const result = await evaluateNativeCandidate({ graphics, steps, blocks: [],
+      verify: { state, contracts: { fields: { hidden: {} } } } }, { assertCurrent() {} });
+    expect(result.state['blocks'].blocks).toEqual(state.blocks.blocks);
   });
 
   for (const renderer of ['thrasos', 'aily-thrasos', 'aily-zelos']) it(`replays ${renderer}, theme, icons, index mode and RTL before library initialization`, async () => {

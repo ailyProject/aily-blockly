@@ -133,7 +133,7 @@ describe('Project command lifecycle during close', () => {
     expect(window['projectLock'].release).not.toHaveBeenCalled();
   });
 
-  it('aborts renderer work immediately but keeps the project until its asynchronous tail settles', fakeAsync(() => {
+  it('closes after native shutdown without waiting for a stalled renderer tail, and rejects late publication', fakeAsync(() => {
     const session = service.getProjectDependencySession('/active');
     let finish!: () => void;
     let cancelled: unknown;
@@ -143,10 +143,6 @@ describe('Project command lifecycle during close', () => {
     service.close().then((value: boolean) => { result = value; });
     flushMicrotasks();
     expect(session.signal.aborted).toBeTrue();
-    expect(result).toBeUndefined();
-    expect(window['projectLock'].release).not.toHaveBeenCalled();
-    expect(service.logService.update).not.toHaveBeenCalled();
-    finish(); flushMicrotasks();
     expect(cancelled).toEqual(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
     expect(result).toBeTrue();
     expect(service.logService.update).toHaveBeenCalledOnceWith({
@@ -154,6 +150,9 @@ describe('Project command lifecycle during close', () => {
     });
     const reopened = service.getProjectDependencySession('/active');
     expect(reopened.projectSessionId).not.toBe(session.projectSessionId);
+    finish(); flushMicrotasks();
+    expect(() => service.assertProjectDependencySession(session)).toThrow();
+    expect(service.getProjectDependencySession('/active')).toBe(reopened);
   }));
 
   it('cancels editor preparation while projectOpen is still waiting for loaded', fakeAsync(() => {

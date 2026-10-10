@@ -2,7 +2,7 @@ import type * as Blockly from 'blockly';
 import { normalizeArduinoGeneratedCode, type BlockCodeMapping } from '../components/blockly/generators/arduino/arduino';
 import { runWithPreparedActiveProjectGenerator, type ProjectGenerator } from './blockly-generator-runtime.service';
 import { captureArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { canonicalJsonStringify } from '@domain/project/public-api';
+import { canonicalProjectJsonStringify } from '@domain/project/public-api';
 import { captureGeneratorProjectEffects, type GeneratorMacroEffect } from './generator-project-effects';
 
 export interface BlocklyCodeScope {
@@ -13,6 +13,8 @@ export interface BlocklyCodeScope {
   readonly pageId: string;
   readonly revision: number;
   readonly document: unknown;
+  /** Reuse canonical bytes already validated by this exact capture. */
+  readonly documentText?: string;
 }
 
 /** No live Generator, mutable map or caller-owned artifact survives the synchronous phase. */
@@ -26,7 +28,7 @@ export interface PreparedBlocklyCode {
   readonly projectMacros?: readonly GeneratorMacroEffect[];
 }
 
-type CodeStamp = Omit<BlocklyCodeScope, 'document'>;
+type CodeStamp = Omit<BlocklyCodeScope, 'document' | 'documentText'>;
 /** Expected when interactive edits supersede an asynchronous preview request. */
 export class BlocklyCodePreparationInvalidatedError extends Error {}
 const sameContext = (a: CodeStamp, b: CodeStamp) => a.workspace === b.workspace && a.generator === b.generator
@@ -39,11 +41,14 @@ export class BlocklyProjectCodePreparation {
 
   clear(): void { this.entry = undefined; }
 
-  async prepare(capture: () => BlocklyCodeScope, force = false): Promise<PreparedBlocklyCode | null> {
+  async prepare(capture: () => BlocklyCodeScope, force = false, yieldToBrowser?: () => Promise<void>): Promise<PreparedBlocklyCode | null> {
     const before = capture();
     if (!before.generator) return null;
     if (!force && this.entry && sameRevision(before, this.entry.stamp)) return this.entry.result;
     this.clear();
+    // Background previews may give input/paint a task boundary between full
+    // snapshots. Each boundary still performs the complete revision check.
+    if (yieldToBrowser) await yieldToBrowser();
     const prepared = await runWithPreparedActiveProjectGenerator(before.workspace, generator => {
       if (!sameRevision(before, capture())) throw new BlocklyCodePreparationInvalidatedError('Project changed before code preparation.');
       let result: Omit<PreparedBlocklyCode, 'revision'>;
@@ -60,13 +65,14 @@ export class BlocklyProjectCodePreparation {
         result = Object.freeze({ code: null, artifacts: null, blockCodeMapText: null,
           error: error instanceof Error ? error.message : String(error) });
       }
-      const { document, ...stamp } = capture();
+      const { document, documentText, ...stamp } = capture();
       if (!sameContext(before, stamp)) throw new Error('Project runtime changed during code preparation.');
       return { stamp, result: Object.freeze({ ...result, revision: stamp.revision,
-        ...(result.code !== null ? { sourceWorkspace: Object.freeze({ documentText: canonicalJsonStringify(document),
+        ...(result.code !== null ? { sourceWorkspace: Object.freeze({ documentText: documentText ?? canonicalProjectJsonStringify(document),
           revision: stamp.revision, runtimeRevision: stamp.runtimeRevision, pageId: stamp.pageId }) } : {}) }) };
     }, before.document);
     // Only the synchronous Generator phase may contribute model changes, not async continuations.
+    if (yieldToBrowser) await yieldToBrowser();
     if (!sameRevision(prepared.stamp, capture())) throw new BlocklyCodePreparationInvalidatedError('Project changed after code preparation.');
     this.entry = prepared;
     return prepared.result;

@@ -1,4 +1,5 @@
 .notification-box {
+    box-sizing: border-box;
     position: absolute;
     bottom: 16px;
     right: 16px;
@@ -11,8 +12,9 @@
     box-shadow: var(--aily-shadow-md);
     min-width: 250px;
     max-width: 450px;
+    width: max-content;
     height: 90px;
-    transition: all 0.3s ease;
+    transition: opacity 0.3s ease, transform 0.3s ease;
     overflow: hidden;
     z-index: 1100;
 

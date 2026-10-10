@@ -1,5 +1,5 @@
 import { Injectable, Injector } from '@angular/core';
-import { ProjectService, canonicalJsonStringify } from '@domain/project/public-api';
+import { ProjectService, canonicalProjectJsonStringify } from '@domain/project/public-api';
 import { ElectronService } from '@core/platform/public-api';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { getActiveProjectGeneratorRevision } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
@@ -66,7 +66,7 @@ export class BuildSourceQueryService {
     const workspace = blockly.workspace;
     const before = blockly.captureProjectSnapshot();
     const runtimeRevision = getActiveProjectGeneratorRevision(), pageId = blockly.getActivePageId();
-    const documentText = canonicalJsonStringify(before.document);
+    const documentText = canonicalProjectJsonStringify(before.document);
     if (new TextEncoder().encode(documentText).length > 128 * 1024 * 1024) throw new Error('Workspace exceeds source query budget.');
     const documentSha256 = await sha256Hex(documentText);
     assertActive();

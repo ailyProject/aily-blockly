@@ -39,6 +39,10 @@ describe('Coder concurrent process integration', () => {
       const output = new Subject<any>(); const id = `process-${commands.length}`;
       commands.push({ command, output, id }); return output;
     });
+    spyOn(CmdService.prototype, 'spawn').and.callFake((file, args, options) => {
+      const output = new Subject<any>(); const id = options!.streamId!;
+      commands.push({command: [file, ...args].join(' '), output, id}); return output;
+    });
     spyOn(CmdService.prototype, 'kill').and.callFake(async (id: string) => { killed.push(id); return true; });
     const contexts = new Map<string, any>();
     project = {
@@ -122,6 +126,7 @@ describe('Coder concurrent process integration', () => {
 
   it('records command and RPC failures in the owning project without leaking across tabs', async () => {
     (CmdService.prototype.run as jasmine.Spy).and.callThrough();
+    (CmdService.prototype.spawn as jasmine.Spy).and.callThrough();
     const callbacks = new Map<string, (data: any) => void>();
     window['cmd'] = {
       onData: (id: string, callback: (data: any) => void) => {
@@ -151,11 +156,6 @@ describe('Coder concurrent process integration', () => {
   });
 
   it('starts both real compile pipelines before either finishes and cancels only the addressed process', async () => {
-    spyOn(CmdService.prototype, 'spawn').and.callFake((command, args, options) => {
-      const output = new Subject<any>();
-      commands.push({ command: [command, ...args].join(' '), output, id: options.streamId });
-      return output;
-    });
     const a = runtime.build('/a').catch(error => error);
     const b = runtime.build('/b');
     await tick();

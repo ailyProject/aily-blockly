@@ -62,7 +62,7 @@ ngx-simplebar {
 }
 
 // Routed pages must use the space left after the resizable bottom panel.
-:host ::ng-deep .middle-box > router-outlet + * {
+:host ::ng-deep .middle-box > .aily-routed-content {
   display: block;
   width: 100%;
   height: 100%;
@@ -183,7 +183,13 @@ ngx-simplebar {
   }
 }
 
-nz-layout {
+.aily-window-layout {
+  // NzLayout's `.ant-layout *` repeatedly walks the complete SVG ancestry.
+  // Its layout contract is simple flex; keep the content/sider components.
+  display: flex;
+  flex: auto;
+  flex-direction: column;
+  min-height: 0;
   height: 100%;
 
   &.app-layout-has-sider {

@@ -409,8 +409,8 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         const editable = super.updateEditable();
         const svgRoot = this.getSvgRoot();
         if (svgRoot) {
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableText');
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableText');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableField');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableField');
         }
         return editable;
     }

@@ -14,7 +14,7 @@ export class NativeCandidateModels {
   }
 
   load(): void {
-    for (const variable of this.expected) this.workspace.createVariable(variable.name, variable.type ?? '', variable.id);
+    for (const variable of this.expected) this.workspace.getVariableMap().createVariable(variable.name, variable.type ?? '', variable.id);
     this.assertCurrent();
   }
 
@@ -29,7 +29,7 @@ export class NativeCandidateModels {
     const state = { blocks: { blocks: [] }, variables: this.expected };
     adoptAbsNativeModels(state, [declaration]);
     if (!existing) {
-      this.workspace.createVariable(name, type, declaration.id);
+      this.workspace.getVariableMap().createVariable(name, type, declaration.id);
       this.expected.push({ id: declaration.id, name, type });
     }
     this.assertCurrent();
@@ -37,7 +37,7 @@ export class NativeCandidateModels {
   }
 
   assertCurrent(serialized?: unknown): void {
-    const actual = serialized ?? this.workspace.getAllVariables().map(model => ({ id: model.getId(), name: model.name, type: model.type }));
+    const actual = serialized ?? this.workspace.getVariableMap().getAllVariables().map(model => ({ id: model.getId(), name: model.getName(), type: model.getType() }));
     try {
       assertAbsReadback({ blocks: { blocks: [] }, variables: this.expected }, { blocks: { blocks: [] }, variables: actual });
     } catch (error) {

@@ -238,7 +238,7 @@
     }
 }
 
-:host ::ng-deep .blocklyToolboxDiv {
+:host ::ng-deep .blocklyToolbox {
     position: absolute !important;
     left: -10000px !important;
     top: auto !important;
@@ -254,7 +254,7 @@
     scrollbar-width: thin !important;
     scrollbar-color: var(--aily-scrollbar-thumb) transparent;
 
-    .blocklyTreeIcon {
+    .blocklyToolboxCategoryIcon {
         width: 40px;
     }
 
@@ -262,26 +262,26 @@
         display: none;
     }
 
-    > .blocklyToolboxContents {
-        > .blocklyToolboxCategory:first-child {
-            .blocklyTreeSelected {
+    > .blocklyToolboxCategoryGroup {
+        > .blocklyToolboxCategoryContainer:first-child {
+            .blocklyToolboxSelected {
                 background: transparent !important;
             }
 
-            .blocklyTreeRow {
+            .blocklyToolboxCategory {
                 &:hover {
                     background: transparent !important;
                 }
             }
         }
 
-        > .blocklyToolboxCategory:last-child {
+        > .blocklyToolboxCategoryContainer:last-child {
             padding-bottom: 70px;
         }
     }
 
-    .blocklyToolboxCategory {
-        .blocklyTreeRow {
+    .blocklyToolboxCategoryContainer {
+        .blocklyToolboxCategory {
             height: 40px;
             display: flex;
             align-items: center;
@@ -292,7 +292,7 @@
             border: none !important;
         }
 
-        .blocklyTreeSelected {
+        .blocklyToolboxSelected {
             background: var(--aily-blockly-toolbox-row-selected-bg) !important;
         }
 
@@ -311,22 +311,22 @@
         }
     }
 
-    .blocklyTreeIcon {
+    .blocklyToolboxCategoryIcon {
         background: var(--aily-blockly-toolbox-tree-icon);
         mask: url('../../../../../../public/imgs/chevron-right.svg') no-repeat center center;
         mask-size: contain;
         transition: transform 0.3s ease;
 
-        &.blocklyTreeIconOpen {
+        &.blocklyToolboxCategoryIconOpen {
             transform: rotate(90deg);
         }
     }
 
-    .blocklyTreeRow.blocklyTreeSelected .blocklyTreeIcon {
+    .blocklyToolboxCategory.blocklyToolboxSelected .blocklyToolboxCategoryIcon {
         background: color-mix(in srgb, var(--aily-text-primary) 85%, transparent);
     }
 
-    .blocklyTreeLabel {
+    .blocklyToolboxCategoryLabel {
         color: var(--aily-text-primary);
     }
 }
@@ -419,9 +419,19 @@
     right: 16px;
     top: 16px;
     transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    touch-action: none;
+    cursor: crosshair;
+    contain: layout paint;
+
+    &:focus-visible {
+        outline: 2px solid var(--ant-primary-color, #4096ff);
+        outline-offset: 2px;
+    }
 
     .blocklySvg {
-        background-color: var(--aily-blockly-minimap-bg) !important;
+        // The overview canvas sits below the SVG viewport overlay. Keep the
+        // overlay transparent; the wrapper already provides the themed fill.
+        background-color: transparent !important;
     }
 
     .blocklyMainBackground {

@@ -1,6 +1,6 @@
+import { ProjectDependencyLifecycle } from './project-dependency-lifecycle';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
-import { ProjectDependencyLifecycle } from './project-dependency-lifecycle';
 import { AiOperationRegistryService } from '@integration/automation/public-api';
 
 describe('board switch project persistence', () => {
@@ -241,6 +241,7 @@ describe('board switch project persistence', () => {
     registry.setActive('chat', true, { projectPath: '/project' });
     service.application.hasActiveProjectMutation = (path: string) => registry.hasBlocking(path);
     service.projectLifecycle = new ProjectLifecycleGate();
+    service.dependencyLifecycle = new ProjectDependencyLifecycle();
     service.copyPackageJsonToTemp = async () => true;
     service.getProjectMode = () => 'blockly';
     service.boardChangeSubject = { next: jasmine.createSpy('changed') };

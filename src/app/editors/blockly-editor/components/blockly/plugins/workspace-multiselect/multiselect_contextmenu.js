@@ -9,6 +9,7 @@
  */
 
 import * as Blockly from 'blockly/core';
+import {isBlocklyFunctionViewBlockVisible} from '../../../../utils/blockly-function-view';
 import {
   dragSelectionWeakMap, hasSelectedParent, copyData,
   connectionDBList, dataCopyToStorage, dataCopyFromStorage,
@@ -217,7 +218,7 @@ const registerDuplicate = function() {
         });
         dragSelection.clear();
         multiDraggable.clearAll_();
-        Blockly.common.setSelected(null);
+        Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
       } else {
         apply(scope.block);
       }
@@ -241,7 +242,7 @@ const registerDuplicate = function() {
       connectionDBList.forEach(function(connectionDB) {
         connectionDB[0].connect(connectionDB[1]);
       });
-      Blockly.common.setSelected(multiDraggable);
+      multiDraggable.selectAfterRender();
       Blockly.Events.setGroup(false);
     },
     scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK,
@@ -771,7 +772,7 @@ const executePaste = async function(workspace) {
   moveBlocksToMousePosition(blockList, workspace);
   applyConsecutivePasteStagger(blockList, workspace);
   Blockly.Events.setGroup(false);
-  Blockly.common.setSelected(multiDraggable);
+  multiDraggable.selectAfterRender();
 };
 
 const registerPaste = function(useCopyPasteCrossTab) {
@@ -846,6 +847,7 @@ const registerSelectAll = function() {
     },
     check: function(block) {
       return block &&
+             isBlocklyFunctionViewBlockVisible(block) &&
              (block.isDeletable() || block.isMovable()) &&
              !block.isInsertionMarker();
     },
@@ -862,7 +864,7 @@ const registerSelectAll = function() {
         } else {
           Blockly.getSelected().unselect();
         }
-        Blockly.common.setSelected(null);
+        Blockly.getFocusManager().focusNode(scope.workspace.getRootFocusableNode());
         multiDraggable.clearAll_();
         dragSelectionWeakMap.get(scope.workspace).clear();
       }
@@ -1144,7 +1146,7 @@ const registerCommentDuplicate = function() {
         });
         dragSelection.clear();
         multiDraggable.clearAll_();
-        Blockly.common.setSelected(null);
+        Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
       } else {
         apply(scope.comment);
       }

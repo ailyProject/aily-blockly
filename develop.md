@@ -14,6 +14,12 @@ cd electron
 npm i
 ```  
 
+Blockly 核心从 npm 安装：[aily-project-blockly@1.0.3](https://www.npmjs.com/package/aily-project-blockly)，
+上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.3` 别名，
+现有 `blockly` 导入保持不变；npm/pnpm override 让插件共用同一核心。
+本地 tarball、补丁快照和源码同步入口已移除，无需邻接核心源码仓库。
+复现锁定依赖可在宿主根目录执行 `npm ci` 或 `pnpm install --frozen-lockfile`。
+
 **开发环境配置**
 
 - 支持 Windows x64、macOS ARM64。其他架构在资源补齐前会明确报错。

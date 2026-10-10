@@ -8,6 +8,7 @@ import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import type { NativeCandidateBlock, NativeCandidateOptions } from './blockly-native-candidate-protocol';
 import * as Blockly from 'blockly';
+import { normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
 import { GeneratorProjectEffects } from './generator-project-effects';
@@ -34,6 +35,8 @@ export interface GeneratorRuntimeContext {
 export interface GeneratorLoadResult {
   contractsReady?: Promise<void>;
   filePath: string;
+  /** Handlers added or replaced by this script, excluding previous libraries. */
+  registeredBlockTypes: string[];
   arduinoBlockTypes: string[];
   micropythonBlockTypes: string[];
   pythonBlockTypes: string[];
@@ -320,6 +323,7 @@ export class BlocklyGeneratorRuntimeService {
       return this.describeLoadedGenerator(session, filePath, []);
     }
 
+    source = normalizeLegacyVariableToolboxSource(filePath, source);
     activeProjectGeneratorRevision++;
     session.replay.append({ kind: 'script', label: filePath, source });
     const previousTextHandler = session.generator.forBlock['text'];
@@ -358,6 +362,8 @@ export class BlocklyGeneratorRuntimeService {
       .map(String)
       .filter((name) => !globalsBefore.has(name));
     const result = this.describeLoadedGenerator(session, filePath, globalNames);
+    result.registeredBlockTypes = Object.keys(session.generator.forBlock)
+      .filter(type => session.generator.forBlock[type] !== previousHandlers[type]);
 
     // Generator scripts now live in the project iframe, so Project Data's
     // legacy-field projection must be installed at this runtime boundary. This
@@ -365,11 +371,7 @@ export class BlocklyGeneratorRuntimeService {
     if (session.context.mode === 'arduino' && session.generator.forBlock['text'] !== previousTextHandler) {
       adaptArduinoTextLiterals(session.generator);
     }
-    wrapProjectDataGeneratorFunctions(session.generator, [
-      ...result.arduinoBlockTypes,
-      ...result.micropythonBlockTypes,
-      ...result.pythonBlockTypes,
-    ].filter(type => session.generator.forBlock[type] !== previousHandlers[type]));
+    wrapProjectDataGeneratorFunctions(session.generator, result.registeredBlockTypes);
     if (session.context.mode === 'arduino') {
       adaptBundledArduinoProcedureCalls(session.generator);
       session.projectEffects.wrap(session.generator);
@@ -770,6 +772,7 @@ export class BlocklyGeneratorRuntimeService {
     const python = (session.realmWindow as any).Python;
     return {
       filePath,
+      registeredBlockTypes: [],
       arduinoBlockTypes: arduino?.forBlock ? Object.keys(arduino.forBlock) : [],
       micropythonBlockTypes: micropython?.forBlock ? Object.keys(micropython.forBlock) : [],
       pythonBlockTypes: python?.forBlock ? Object.keys(python.forBlock) : [],

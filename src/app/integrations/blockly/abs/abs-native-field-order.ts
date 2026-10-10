@@ -8,7 +8,8 @@ import { nativeAbsArgumentOrder } from './abs-native-arguments';
 
 /** Read the current actual construction on every step: a selector can add fields. */
 export function nativeFieldOrder(block: Blockly.Block, definitions: DeclarativeBlockSnapshot): string[] | undefined {
-  definitions.assertCurrent();
+  // get() validates the snapshot before returning a declaration. Repeating the
+  // same catalog-wide check here doubles that work for every restored field.
   const json = definitions.get(block.type) ?? definitions.nativeJson?.(block) ?? { type: block.type };
   const trace = definitions.nativeStructure?.(block);
   const args = trace ? nativeAbsArgumentOrder(json, trace) : parseBlockDefinition(json, '')?.argsOrder;

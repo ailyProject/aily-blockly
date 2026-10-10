@@ -23,14 +23,14 @@ test.describe('Blockly iframe focus boundary', () => {
         const workspace = (window as any).blocklyWorkspace;
         return Boolean(
           workspace?.getInjectionDiv?.() &&
-          workspace?.svgGroup_?.parentElement,
+          workspace?.getRootFocusableNode?.()?.getFocusableElement?.(),
         );
       }), {timeout: 60_000}).toBe(true);
 
       await win.evaluate(() => {
         const workspace = (window as any).blocklyWorkspace;
         const injectionDiv = workspace?.getInjectionDiv?.() as HTMLElement | undefined;
-        const focusTarget = workspace?.svgGroup_?.parentElement as HTMLElement | undefined;
+        const focusTarget = workspace?.getRootFocusableNode?.()?.getFocusableElement?.() as HTMLElement | undefined;
         if (!injectionDiv || !focusTarget) {
           throw new Error('Blockly focus elements are unavailable');
         }

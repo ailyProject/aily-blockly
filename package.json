@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.104",
+  "version": "0.9.105",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -169,7 +169,13 @@
     "validate:e2e:simulator-debug": "node ./scripts/validate-simulator-debug-e2e-report.mjs",
     "setup:external-tools": "node scripts/prepare-child-resources.js",
     "setup:local-builder": "node scripts/use-local-builder.mjs",
-    "setup:local-connector": "node scripts/use-local-connector.mjs"
+    "setup:local-connector": "node scripts/use-local-connector.mjs",
+    "perf:blockly:prepare": "node scripts/prepare-blockly-performance.cjs",
+    "perf:blockly:serve": "node scripts/serve-blockly-performance.cjs",
+    "perf:blockly:test": "playwright test -c e2e/performance.config.ts",
+    "perf:blockly:real:fixture": "node scripts/prepare-blockly-real-fixture.cjs",
+    "perf:blockly:real:prepare": "node scripts/prepare-blockly-real-performance.cjs",
+    "perf:blockly:real:test": "playwright test -c e2e/real-performance.config.ts"
   },
   "private": true,
   "dependencies": {
@@ -182,9 +188,9 @@
     "@angular/platform-browser": "^19.0.0",
     "@angular/platform-browser-dynamic": "^19.0.0",
     "@angular/router": "^19.0.0",
-    "@blockly/block-dynamic-connection": "^0.7.16",
-    "@blockly/field-colour-hsv-sliders": "^5.0.19",
-    "@blockly/workspace-minimap": "^0.2.16",
+    "@blockly/block-dynamic-connection": "13.3.0",
+    "@blockly/field-colour-hsv-sliders": "13.3.0",
+    "@blockly/workspace-minimap": "13.3.0",
     "@breezystack/lamejs": "^1.2.7",
     "@ctrl/tinycolor": "^4.1.0",
     "@lydell/node-pty": "^1.1.0",
@@ -201,7 +207,7 @@
     "altcha": "^2.3.0",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
-    "blockly": "npm:aily-project-blockly@^1.0.2",
+    "blockly": "npm:aily-project-blockly@1.0.4",
     "buffer": "^6.0.3",
     "cropperjs": "^1.6.2",
     "dragselect": "^2.7.4",
@@ -259,7 +265,9 @@
     "dmg-license": "^1.0.11"
   },
   "overrides": {
-    "blockly": "npm:aily-project-blockly@^1.0.2"
+    "blockly": "$blockly",
+    "@blockly/field-colour": "13.3.0",
+    "@blockly/field-grid-dropdown": "13.3.0"
   },
   "allowScripts": {
     "electron": true

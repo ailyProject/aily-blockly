@@ -1,4 +1,5 @@
 import { Subject } from 'rxjs';
+import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from '../../../editors/blockly-editor/services/blockly-project-clean-state';
 import { BlocklyProjectDocument } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { _ProjectService } from '../../../editors/blockly-editor/services/project.service';
@@ -6,6 +7,7 @@ import { createAilyProjectDataValue, projectDataRuntime } from '@domain/project/
 import { ProjectApplicationAdapter } from '../../project/project-application.adapter';
 import { HeaderComponent } from '../../../main-window/components/header/header.component';
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
+import { cloneProjectJson } from '@domain/project/project-document/public-api';
 
 const source = (): BlocklyProjectDocument => ({ schemaVersion: 3, activePageId: 'main', openedPageIds: ['main'],
   $ailyProjectData: { schemaVersion: 1, mode: 'external-only' },
@@ -29,6 +31,27 @@ describe('project loaded-state admission and comparison', () => {
     expect(state.compare(['project', 1], 'disk', edited)).toBeTrue();
     expect(state.compare(['project', 1], 'disk', after)).toBeFalse();
   });
+  it('admits a model created by an omitted native variable field and keeps it clean after hydration', () => {
+    after.pages[0].content.blocks.blocks[0].fields.VAR = { id: 'default-model' };
+    after.sharedModel.variables = [{ id: 'default-model', name: 'sensor', type: 'Sensor' }];
+    expect(() => assertProjectLoadPreserved(before, after)).not.toThrow();
+    state.remember(['p'], 'disk', before);
+    state.acceptHydration(['p'], before, after);
+    expect(state.compare(['p'], 'disk', after)).toBeFalse();
+    const edited = structuredClone(after); edited.sharedModel.variables[0].name = 'renamed';
+    expect(state.compare(['p'], 'disk', edited)).toBeTrue();
+  });
+  it('still rejects replacement or deletion of saved variable models and changes to saved fields', () => {
+    before.sharedModel.variables = [{ id: 'saved-model', name: 'saved' }];
+    before.pages[0].content.blocks.blocks[0].fields.VAR = { id: 'saved-model' };
+    after = structuredClone(before);
+    after.pages[0].content.blocks.blocks[0].fields.VAR = { id: 'replacement' };
+    after.sharedModel.variables.push({ id: 'replacement', name: 'other' });
+    expect(() => assertProjectLoadPreserved(before, after)).toThrow();
+    after = structuredClone(before);
+    after.sharedModel.variables = [];
+    expect(() => assertProjectLoadPreserved(before, after)).toThrow();
+  });
   for (const [name, change] of [
     ['deleted block', (d: any) => d.pages[0].content.blocks.blocks.pop()],
     ['added block', (d: any) => d.pages[0].content.blocks.blocks.push({ id: 'unexpected', type: 'text' })],
@@ -47,10 +70,16 @@ describe('project loaded-state admission and comparison', () => {
   });
   it('does not impose ABS syntax depth on ordinary loaded project chains', () => {
     let block = before.pages[0].content.blocks.blocks[0];
-    for (let n = 0; n < 200; n++) {
+    for (let n = 0; n < 1500; n++) {
       block.next = { block: { id: `chain-${n}`, type: 'text_print' } }; block = block.next.block;
     }
-    expect(() => assertProjectLoadPreserved(before, structuredClone(before))).not.toThrow();
+    const copy = cloneProjectJson(before);
+    expect(() => assertProjectLoadPreserved(before, copy)).not.toThrow();
+    state.remember(['deep'], 'disk', copy);
+    expect(state.compare(['deep'], 'disk', before)).toBeFalse();
+    block.fields = { TEXT: 'edit at deepest node' };
+    expect(state.compare(['deep'], 'disk', before)).toBeTrue();
+    expect(() => assertProjectLoadPreserved(before, copy)).toThrow();
   });
   it('never reuses a record for an external file write or another runtime', () => {
     state.remember(['project', 1], 'disk', after);
@@ -132,6 +161,20 @@ describe('editor unsaved-state resource and lifecycle boundary', () => {
     for (let n = 0; n < 3; n++) expect(await service.hasUnsavedChanges()).toBeFalse();
     document.pages[1].title = 'user edit'; expect(await service.hasUnsavedChanges()).toBeTrue();
     expect(projectDataRuntime.getPrepared).not.toHaveBeenCalled();
+  });
+  it('admits the load owner while keeping concurrent project reads blocked', () => {
+    const gate = new BlocklyWorkspaceEditGate(), owner = gate.acquire();
+    editor.getProjectDocument = lease => { gate.assertAvailable(lease); return document; };
+    editor.getProjectAbiForSave = value => value ?? editor.getProjectDocument();
+    try {
+      expect(() => service.rememberLoadedProject('D:/project', disk, structuredClone(document))).toThrow();
+      expect(() => service.rememberLoadedProject('D:/project', disk, structuredClone(document), owner)).not.toThrow();
+      const original = structuredClone(document);
+      document.pages[0].content.blocks.blocks[0].fields.TEST = 'changed';
+      expect(() => service.rememberLoadedProject('D:/project', disk, original, owner)).toThrow();
+      expect(() => editor.getProjectDocument()).toThrow();
+    } finally { owner.release(); }
+    expect(() => editor.getProjectDocument()).not.toThrow();
   });
   it('accepts only the explicit board-template load, not global empty equivalence', async () => {
     disk = JSON.stringify({ blocks: { blocks: [] } });
@@ -270,7 +313,7 @@ describe('project check feedback is fail-closed for all editors', () => {
     h.projectService = { getProjectMode: () => 'blockly', captureCurrentProjectGuard: () => () => true,
       hasUnsavedChanges: async () => { throw new Error('unavailable'); } };
     h.message = { error: jasmine.createSpy('error') }; h.modal = { create: jasmine.createSpy('dialog') };
-    for (const action of ['close', 'open', 'new']) expect(await h.checkUnsavedChanges(action)).toBeFalse();
+    for (const action of ['open', 'new']) expect(await h.checkUnsavedChanges(action)).toBeFalse();
     expect(h.modal.create).not.toHaveBeenCalled(); expect(h.message.error).toHaveBeenCalled();
   });
   it('keeps the new-project wizard on the current project after a check failure', async () => {

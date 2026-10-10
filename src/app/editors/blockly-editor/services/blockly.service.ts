@@ -1,7 +1,9 @@
+import { cloneBlocklyJson } from '@domain/project/project-document/public-api';
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject, debounceTime, filter, firstValueFrom, fromEvent, map, switchMap, take, takeUntil, timer } from 'rxjs';
 import * as Blockly from 'blockly';
-import { loadBlocklyWorkspace } from '../utils/blockly-performance';
+import { loadBlocklyWorkspace, isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
+import { BlocklyFunctionView, emptyBlocklyFunctionView, isBlocklyFunctionViewBlockVisible } from '../utils/blockly-function-view';
 import { installBlocklyVariableComparator } from '../utils/blockly-variable-order';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
@@ -23,6 +25,7 @@ import {
   dragSelectionWeakMap,
   registerFieldInputIncrementPolicy,
 } from '../components/blockly/plugins/workspace-multiselect/index.js';
+import { multiDraggableWeakMap } from '../components/blockly/plugins/workspace-multiselect/global';
 import { exportWorkspaceToSvg } from './workspace-svg-exporter';
 import {
   createProjectDataMarker,
@@ -134,6 +137,7 @@ interface CodeViewerPublisher {
     blockCodeMap: Map<string, BlockCodeMapping>,
     selectedBlockId: string | null,
     selectedBlockIds: readonly string[],
+    isInteracting?: () => boolean,
   ): void;
 }
 
@@ -154,6 +158,47 @@ export class BlocklyService {
 
   private _workspace: Blockly.WorkspaceSvg | null = null;
   private workspaceReadySubject = new BehaviorSubject<Blockly.WorkspaceSvg | null>(null);
+  private functionView: BlocklyFunctionView | null = null;
+  readonly functionViewSubject = new BehaviorSubject(emptyBlocklyFunctionView());
+
+  setFunctionView(scopeId: string): void {
+    this.assertWorkspaceEditAvailable();
+    this.hideChaff(true);
+    this.clearFunctionViewSelection();
+    this.functionView?.setScope(scopeId);
+    // Complete the explicit navigation gesture. A focused selector/comment
+    // otherwise keeps background code/minimap refresh waiting for an editor.
+    if (this.workspace) Blockly.getFocusManager().focusNode(this.workspace.getRootFocusableNode());
+  }
+
+  private clearFunctionViewSelection(): void {
+    const selected = Blockly.getSelected();
+    const ownsSelection = selected?.workspace === this.workspace;
+    if (ownsSelection) selected.unselect();
+    multiDraggableWeakMap.get(this.workspace)?.clearAll_();
+    if (ownsSelection) {
+      // v13 selection is owned by its focus manager. Clearing the legacy
+      // selected value leaves the hidden group as the tree's remembered node.
+      Blockly.getFocusManager().focusNode(this.workspace.getRootFocusableNode());
+    }
+    dragSelectionWeakMap.get(this.workspace)?.clear();
+    this.selectedBlockSubject.next(null); this.selectedBlockIdsSubject.next([]);
+  }
+
+  private clearHiddenFunctionViewSelection(): void {
+    const selected = Blockly.getSelected();
+    const hidden = (block: Blockly.BlockSvg | null) => !!block && !isBlocklyFunctionViewBlockVisible(block);
+    const group = dragSelectionWeakMap.get(this.workspace) as Set<string> | undefined;
+    if (!(selected instanceof Blockly.BlockSvg && selected.workspace === this.workspace && hidden(selected))
+      && ![...(group ?? [])].some(id => hidden(this.workspace.getBlockById(id)))) return;
+    // Search/code/debug navigation can switch scope without using the selector.
+    // Retain its visible target, but retire any previous hidden multi-selection.
+    const target = selected instanceof Blockly.BlockSvg && selected.workspace === this.workspace && !hidden(selected) ? selected : null;
+    this.clearFunctionViewSelection();
+    target?.select();
+    this.selectedBlockSubject.next(target?.id ?? null);
+    this.selectedBlockIdsSubject.next(target ? [target.id] : []);
+  }
 
   get workspace(): Blockly.WorkspaceSvg {
     return this._workspace as Blockly.WorkspaceSvg;
@@ -161,6 +206,9 @@ export class BlocklyService {
 
   set workspace(workspace: Blockly.WorkspaceSvg | null) {
     if (workspace !== this._workspace) {
+      this.functionView?.dispose();
+      this.functionView = null;
+      this.functionViewSubject.next(emptyBlocklyFunctionView());
       this.releaseWorkspaceInputFence?.();
       this.workspaceEditGate.reset();
       this.projectRevision.invalidate();
@@ -168,6 +216,13 @@ export class BlocklyService {
       this.pageReferenceContracts.clear();
     }
     this._workspace = workspace;
+    if (workspace?.rendered && !this.functionView) {
+      this.functionView = new BlocklyFunctionView(workspace, state => {
+        this.clearHiddenFunctionViewSelection();
+        this.functionViewSubject.next(state);
+        this.workspaceVisualRefreshRequestSubject.next(workspace);
+      });
+    }
     this.workspaceReadySubject.next(workspace);
     if (workspace) {
       this.syncSerialDynamicToolboxBlocks(workspace);
@@ -412,6 +467,9 @@ export class BlocklyService {
   }
 
   requestWorkspaceVisualRefresh(): void {
+    // ABS reconciliation suppresses native events and may change roots without
+    // calling loadWorkspaceJson. Keep the display projection current as well.
+    this.functionView?.refresh();
     if (this.workspace) this.workspaceVisualRefreshRequestSubject.next(this.workspace);
   }
 
@@ -424,6 +482,7 @@ export class BlocklyService {
       this.blockCodeMapSubject.value,
       this.selectedBlockSubject.value,
       this.selectedBlockIdsSubject.value,
+      () => this.isWorkspaceEditBlocked() || (!!this.workspace && isBlocklyWorkspaceInteracting(this.workspace)),
     );
   }
 
@@ -549,7 +608,7 @@ export class BlocklyService {
   async createWorkspaceImageExportSvg(): Promise<string | null> {
     const workspace = await this.waitForWorkspace();
     this.hideChaff(true);
-    return exportWorkspaceToSvg(workspace);
+    return this.functionView ? this.functionView.withAllVisible(() => exportWorkspaceToSvg(workspace)) : exportWorkspaceToSvg(workspace);
   }
 
   registerExternalToolboxHost(host: HTMLElement | null) {
@@ -1102,7 +1161,9 @@ export class BlocklyService {
 
   getProjectDocument(owner?: BlocklyWorkspaceEditLease): BlocklyProjectDocument {
     this.assertWorkspaceEditAvailable(owner);
-    const document = this.getStoredProjectDocument();
+    // Ownership normalization already detaches its input. Do not first clone
+    // the previous large active page only to clone it again and replace it.
+    const document = this.workspace ? this.readStoredProjectDocument() : this.getStoredProjectDocument();
     return this.workspace ? replaceBlocklyPageWorkspace(
       document, document.activePageId, this.getWorkspaceJson(),
       captureBlocklyRootClassifier(this.workspace, Blockly.Blocks), this.captureWorkspaceViewState(),
@@ -1116,7 +1177,8 @@ export class BlocklyService {
 
   captureProjectSnapshot(owner?: BlocklyWorkspaceEditLease) {
     const document = this.getProjectDocument(owner);
-    return { document, revision: this.projectRevision.observe(document) };
+    const revision = this.projectRevision.observe(document);
+    return { document, revision, documentText: this.projectRevision.documentText };
   }
 
   /** Call inside the existing operation queue with explicit edit ownership. */
@@ -1192,8 +1254,10 @@ export class BlocklyService {
           return { ...this.captureProjectSnapshot(), workspace, generator, dataSession: session,
             runtimeRevision, pageId };
         };
-        const prepared = await this.projectCodePreparation.prepare(capture, force);
+        const yieldToBrowser = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+        const prepared = await this.projectCodePreparation.prepare(capture, force, yieldToBrowser);
         if (!prepared || prepared.code === null) throw new Error(prepared?.error ?? 'Blockly generator runtime is not active');
+        await yieldToBrowser();
         const assertCurrent = () => {
           assertContext();
           if (prepared.revision !== this.captureProjectSnapshot().revision) {
@@ -1259,15 +1323,19 @@ export class BlocklyService {
     return lease;
   }
 
-  private getStoredProjectDocument(): BlocklyProjectDocument {
+  private readStoredProjectDocument(): BlocklyProjectDocument {
     return {
-      ...this.cloneJson(this.documentMetadata),
+      ...this.documentMetadata,
       schemaVersion: this.projectDocumentSchemaVersion,
       activePageId: this.activePageIdSubject.value,
-      openedPageIds: this.cloneJson(this.openedPageIdsSubject.value),
-      pages: this.cloneJson(this.pagesSubject.value),
-      sharedModel: this.cloneJson(this.sharedModelSubject.value),
+      openedPageIds: this.openedPageIdsSubject.value,
+      pages: this.pagesSubject.value,
+      sharedModel: this.sharedModelSubject.value,
     };
+  }
+
+  private getStoredProjectDocument(): BlocklyProjectDocument {
+    return this.cloneJson(this.readStoredProjectDocument());
   }
 
   getProjectAbiForSave(document = this.getProjectDocument()): any {
@@ -1355,16 +1423,16 @@ export class BlocklyService {
     workspaceJson.blocks?.blocks?.forEach((block) => {
       const ailyIcons = this.iconsMap.get(block.type);
       if (ailyIcons) {
-        block.icons = ailyIcons;
+        block.icons = { ...ailyIcons, ...block.icons };
       }
     });
 
-    installBlocklyVariableComparator();
     definitions.assertCurrent();
     withNativeStateLoading(Blockly, this.workspace, workspaceJson,
       () => loadBlocklyWorkspace(this.workspace, workspaceJson),
       block => nativeFieldOrder(block, definitions));
     captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(this.workspace, true);
+    this.functionView?.loaded();
   }
 
   // 通过node_modules加载库
@@ -1532,15 +1600,18 @@ export class BlocklyService {
         // 替换block中静态图片路径
         const staticFileIsExist = this.electronService.exists(this.electronService.pathJoin(libPackagePath, 'static'));
         this.loadLibBlocks(blocks, staticFileIsExist ? this.electronService.pathJoin(libPackagePath, 'static') : null, libPackageName, libVersion, libLocalPath, owner);
-        for (const blockType of runtimeDefinedBlockTypes) {
-          this.runtimeDefinedLibraryBlockTypes.add(blockType);
+        for (const blockType of runtimeDefinedBlockTypes) this.runtimeDefinedLibraryBlockTypes.add(blockType);
+        // Native procedure shapes already belong to Blockly. Legacy libraries
+        // supply only their generators, so block.json alone cannot track usage.
+        const generatorBlockTypes = Array.from(this.loadedGenerators.get(generatorFilePath) || []);
+        for (const blockType of new Set([...runtimeDefinedBlockTypes, ...generatorBlockTypes])) {
           this.blockTypeToLibMap.set(blockType, {
             name: libPackageName,
             version: libVersion,
             localPath: libLocalPath,
           });
         }
-        loadedBlockTypes = Array.from(new Set([...loadedBlockTypes, ...runtimeDefinedBlockTypes]));
+        loadedBlockTypes = Array.from(new Set([...loadedBlockTypes, ...runtimeDefinedBlockTypes, ...generatorBlockTypes]));
         // 加载toolbox
         if (librarySnapshot.toolboxRoot) {
           let toolbox = this.cloneJson(librarySnapshot.toolboxRoot);
@@ -2089,28 +2160,23 @@ export class BlocklyService {
       return false;
     }
 
+    const libraryBlockTypes = new Set([
+      ...(this.loadedLibraryInfos.get(libPackagePath)?.blockTypes || []),
+      ...this.getFailedLegacyProcedureBlockTypes(this.failedLibraryLoads.get(libPackagePath)?.snapshot),
+    ]);
     const libBlockPath = this.electronService.pathJoin(libPackagePath, 'block.json');
-    if (!this.electronService.exists(libBlockPath)) {
-      return false;
-    }
-
     try {
-      const blocksData = JSON.parse(this.electronService.readFile(libBlockPath));
-      const libraryBlockTypes = Array.isArray(blocksData)
-        ? blocksData
-          .map((block: any) => block?.type)
-          .filter((blockType): blockType is string => typeof blockType === 'string' && blockType.length > 0)
-        : [];
-      if (libraryBlockTypes.length === 0) {
-        return false;
+      if (this.electronService.exists(libBlockPath)) {
+        const blocksData = JSON.parse(this.electronService.readFile(libBlockPath));
+        for (const block of Array.isArray(blocksData) ? blocksData : []) {
+          if (typeof block?.type === 'string' && block.type.length > 0) libraryBlockTypes.add(block.type);
+        }
       }
-
-      const usedBlockTypes = new Set(this.collectBlockTypesFromProjectDocument(this.getProjectDocument()));
-      return libraryBlockTypes.some((blockType) => usedBlockTypes.has(blockType));
     } catch (error) {
       console.error('检查库使用情况失败:', libPackagePath, error);
-      return false;
     }
+    const usedBlockTypes = new Set(this.collectBlockTypesFromProjectDocument(this.getProjectDocument()));
+    return Array.from(libraryBlockTypes).some(blockType => usedBlockTypes.has(blockType));
   }
 
   // 通过包名检查库是否被当前项目使用（适用于跨实例复制粘贴时携带库元信息的场景）
@@ -2122,6 +2188,11 @@ export class BlocklyService {
     const blockTypes = Array.from(this.blockTypeToLibMap.entries())
       .filter(([, lib]) => lib?.name === packageName)
       .map(([blockType]) => blockType);
+    for (const failure of this.failedLibraryLoads.values()) {
+      if (failure.snapshot.ref.name === packageName) {
+        blockTypes.push(...this.getFailedLegacyProcedureBlockTypes(failure.snapshot));
+      }
+    }
 
     if (blockTypes.length === 0) {
       return false;
@@ -2129,6 +2200,15 @@ export class BlocklyService {
 
     const usedBlockTypes = new Set(this.collectBlockTypesFromProjectDocument(this.getProjectDocument()));
     return blockTypes.some((blockType) => usedBlockTypes.has(blockType));
+  }
+
+  private getFailedLegacyProcedureBlockTypes(snapshot?: BlocklyLibraryPackageSnapshot): string[] {
+    // A red legacy category still belongs to these native shapes, even though
+    // its generator never loaded and therefore has no successful runtime entry.
+    if (snapshot?.packageJson?.name !== '@aily-project/lib-core-functions'
+      || snapshot.packageJson.version !== '0.0.1' || snapshot.toolboxRoot?.custom !== 'PROCEDURE') return [];
+    return ['procedures_defnoreturn', 'procedures_defreturn', 'procedures_callnoreturn',
+      'procedures_callreturn', 'procedures_ifreturn'];
   }
 
   loadLibGenerator(filePath, owner?: BlocklyWorkspaceEditLease): Promise<boolean> {
@@ -2151,12 +2231,7 @@ export class BlocklyService {
       const result = this.generatorRuntime.loadGenerator(filePath, source);
       await result.contractsReady;
       if (this.generatorRuntime.getActiveGenerator() !== owner) return false;
-      const registered = Array.from(new Set([
-        ...result.arduinoBlockTypes,
-        ...result.micropythonBlockTypes,
-        ...result.pythonBlockTypes,
-      ]));
-      this.loadedGenerators.set(filePath, new Set(registered));
+      this.loadedGenerators.set(filePath, new Set(result.registeredBlockTypes));
       return true;
     } catch (error) {
       console.error(`Generator loading failed: ${filePath}`, error);
@@ -2191,6 +2266,8 @@ export class BlocklyService {
     // Workspace dispose may call project-defined callbacks, so it must happen
     // before the iframe and host registry snapshot are released.
     if (this.workspace) {
+      this.functionView?.dispose();
+      this.functionView = null;
       this.workspace.dispose();
       this.workspace = null;
     }
@@ -2400,7 +2477,7 @@ export class BlocklyService {
   private mountExternalToolbox() {
     if (!this.nativeToolboxElement && this.workspace) {
       const injectionDiv = (this.workspace as any).getInjectionDiv?.() as HTMLElement | undefined;
-      const currentNativeToolbox = injectionDiv?.querySelector<HTMLElement>('.blocklyToolboxDiv') || null;
+      const currentNativeToolbox = injectionDiv?.querySelector<HTMLElement>('.blocklyToolbox') || null;
       if (currentNativeToolbox) {
         this.nativeToolboxElement = currentNativeToolbox;
       }
@@ -2940,12 +3017,15 @@ export class BlocklyService {
 
     const workspace = this.workspace as any;
 
-    if (typeof workspace.setScale === 'function') {
-      workspace.setScale(viewState.scale || 1);
+    const scale = viewState.scale || 1;
+    // In v13 setScale closes the flyout even when the scale is unchanged.
+    // Startup can finish after the user has already opened a category.
+    if (typeof workspace.setScale === 'function' && workspace.scale !== scale) {
+      workspace.setScale(scale);
     }
 
     if (typeof workspace.scroll === 'function') {
-      workspace.scroll(viewState.scrollX || 0, viewState.scrollY || 0);
+      workspace.scroll(viewState.scrollX || 0, viewState.scrollY || 0, false);
       return;
     }
 
@@ -2958,7 +3038,7 @@ export class BlocklyService {
       return value;
     }
 
-    return JSON.parse(JSON.stringify(value));
+    return cloneBlocklyJson(value);
   }
 
   // 创建变量用

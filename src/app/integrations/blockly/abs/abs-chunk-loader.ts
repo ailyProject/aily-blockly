@@ -66,49 +66,56 @@ export async function loadAbsWorkspaceInChunks(
   const pending: PendingFragment[] = (abi['blocks']?.blocks || [])
     .map((state: BlockState) => ({ state }))
     .reverse();
-  Blockly.serialization.workspaces.load({
-    ...abi,
-    blocks: { ...abi['blocks'], blocks: [] },
-  }, workspace);
-
   let blockCount = 0;
   let batchCount = 0;
-  const budget = createBrowserFrameBudget({ onYield: () => Blockly.renderManagement.triggerQueuedRenders(workspace) });
-  while (pending.length > 0) {
-    assertCurrent();
-    let batchBlocks = 0;
-    while (pending.length > 0 && batchBlocks < BLOCKS_PER_BATCH) {
+  // Keep models complete while yielding input handling between fragments.
+  // Geometry and the viewport index are refreshed after the graph is connected,
+  // rather than repeatedly rendering a growing long stack at every browser frame.
+  const beginBatch = (Blockly.renderManagement as typeof Blockly.renderManagement & {
+    beginWorkspaceRenderBatch?: (workspace: Blockly.WorkspaceSvg) => () => void;
+  }).beginWorkspaceRenderBatch;
+  const release = beginBatch?.(workspace) ?? (() => Blockly.renderManagement.triggerQueuedRenders(workspace));
+  const budget = createBrowserFrameBudget();
+  try {
+    Blockly.serialization.workspaces.load({
+      ...abi,
+      blocks: { ...abi['blocks'], blocks: [] },
+    }, workspace);
+    while (pending.length > 0) {
       assertCurrent();
-      const item = pending.pop()!;
-      const fragment = takeFragment(item.state, Math.min(BLOCKS_PER_FRAGMENT, BLOCKS_PER_BATCH - batchBlocks));
-      const parent = item.parent ? workspace.getBlockById(item.parent.id) : undefined;
-      const parentConnection = item.parent
-        ? item.parent.input !== undefined
-          ? parent?.getInput(item.parent.input)?.connection
-          : parent?.nextConnection
-        : undefined;
-      if (item.parent && !parentConnection) {
-        throw new Error(`ABS 切片连接不存在: ${item.parent.id}/${item.parent.input ?? 'next'}`);
+      let batchBlocks = 0;
+      while (pending.length > 0 && batchBlocks < BLOCKS_PER_BATCH) {
+        assertCurrent();
+        const item = pending.pop()!;
+        const fragment = takeFragment(item.state, Math.min(BLOCKS_PER_FRAGMENT, BLOCKS_PER_BATCH - batchBlocks));
+        const parent = item.parent ? workspace.getBlockById(item.parent.id) : undefined;
+        const parentConnection = item.parent
+          ? item.parent.input !== undefined
+            ? parent?.getInput(item.parent.input)?.connection
+            : parent?.nextConnection
+          : undefined;
+        if (item.parent && !parentConnection) {
+          throw new Error(`ABS 切片连接不存在: ${item.parent.id}/${item.parent.input ?? 'next'}`);
+        }
+
+        withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
+          parentConnection: parentConnection || undefined,
+          recordUndo: false,
+        }));
+        pending.push(...fragment.deferred.reverse());
+        batchBlocks += fragment.blockCount;
+        await budget.checkpoint('abs.native-load');
+        assertCurrent();
       }
 
-      withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
-        parentConnection: parentConnection || undefined,
-        recordUndo: false,
-      }));
-      pending.push(...fragment.deferred.reverse());
-      batchBlocks += fragment.blockCount;
-      await budget.checkpoint('abs.native-load');
-      assertCurrent();
+      blockCount += batchBlocks;
+      batchCount++;
+      onProgress?.(blockCount, batchCount);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      budget.reset();
     }
-
-    blockCount += batchBlocks;
-    batchCount++;
-    Blockly.renderManagement.triggerQueuedRenders(workspace);
-    onProgress?.(blockCount, batchCount);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    budget.reset();
-  }
-
+    assertCurrent();
+  } finally { release(); }
   assertCurrent();
   return { blockCount, batchCount };
 }

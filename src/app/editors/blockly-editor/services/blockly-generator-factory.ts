@@ -1,3 +1,4 @@
+import '../utils/blockly-legacy-library-compat';
 import { createArduinoGenerator } from '../components/blockly/generators/arduino/arduino';
 import { createMicroPythonGenerator } from '../components/blockly/generators/micropython/micropython';
 import { createPythonGenerator } from '../components/blockly/generators/python/python';

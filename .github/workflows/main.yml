@@ -7,9 +7,36 @@ on:
       - beta
   workflow_dispatch:
 
+concurrency:
+  group: aily-blockly-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve Blockly release branch and version
+        id: version
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          if (process.env.RELEASE_REF_TYPE !== 'branch' || !['deploy', 'beta'].includes(process.env.RELEASE_BRANCH)) {
+            throw new Error('Blockly releases require the deploy or beta branch');
+          }
+          const { version } = require('./package.json');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\n`);
+          NODE
+
   # 任务 1：Windows 国际版客户端构建
   build-windows:
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +76,8 @@ jobs:
         with:
           name: unsigned-installer-global
           path: dist/aily-blockly/*.exe
+          overwrite: true
+          if-no-files-found: error
 
       - name: Sign Installer with SignPath
         uses: signpath/github-action-submit-signing-request@v1
@@ -145,9 +174,12 @@ jobs:
         with:
           name: AilyBlockly-Windows-Package
           path: dist/aily-blockly/
+          overwrite: true
+          if-no-files-found: error
 
   # 任务 1b：Windows 国内版客户端构建
   build-windows-cn:
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -185,6 +217,8 @@ jobs:
         with:
           name: unsigned-installer-cn
           path: dist/aily-blockly/*.exe
+          overwrite: true
+          if-no-files-found: error
 
       - name: Sign Installer with SignPath (CN)
         uses: signpath/github-action-submit-signing-request@v1
@@ -268,9 +302,12 @@ jobs:
         with:
           name: AilyBlockly-Windows-Package-cn
           path: dist/aily-blockly/
+          overwrite: true
+          if-no-files-found: error
   
   # 任务 2：macOS 客户端构建
   build-macos:
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -368,14 +405,23 @@ jobs:
             xcrun stapler validate "$DMG_PATH" && echo "✅ Notarized: $DMG_PATH" || echo "⚠️ Not notarized: $DMG_PATH"
           done < <(find dist/aily-blockly -name "*.dmg" -type f)
       
+      - name: Refresh DMG update metadata after stapling
+        run: |
+          for manifest in dist/aily-blockly/*-mac.yml; do
+            node scripts/refresh-macos-dmg-manifest.cjs "$manifest"
+          done
+
       - name: Archive macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AilyBlockly-macOS-Package
           path: dist/aily-blockly/
+          overwrite: true
+          if-no-files-found: error
 
   # 任务 2b：macOS 国内版客户端构建
   build-macos-cn:
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -469,6 +515,12 @@ jobs:
             xcrun stapler validate "$DMG_PATH" && echo "✅ Notarized: $DMG_PATH" || echo "⚠️ Not notarized: $DMG_PATH"
           done < <(find dist/aily-blockly -name "aily-blockly-CN-*.dmg" -type f)
 
+      - name: Refresh DMG update metadata after stapling (CN)
+        run: |
+          for manifest in dist/aily-blockly/*-mac.yml; do
+            node scripts/refresh-macos-dmg-manifest.cjs "$manifest"
+          done
+
       - name: Rename latest-mac manifest (CN)
         run: |
           if [ -f "dist/aily-blockly/latest-mac.yml" ]; then
@@ -484,27 +536,19 @@ jobs:
         with:
           name: AilyBlockly-macOS-Package-cn
           path: dist/aily-blockly/
+          overwrite: true
+          if-no-files-found: error
 
-  # 任务 3：发布到 GitHub Release
-  release:
-    needs: [build-windows, build-windows-cn, build-macos, build-macos-cn]
+  # 在发布前固定日志，重试发布时复用同一份内容。
+  prepare-release:
+    needs: prepare
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    concurrency:
-      group: release-${{ github.ref_name }}
-      cancel-in-progress: false
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # 获取完整 git 历史，用于对比 tag 生成 changelog
-
-      - name: Extract version from package.json
-        id: version
-        run: |
-          VERSION=$(node -e "console.log(require('./package.json').version)")
-          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
-          echo "Version: v${VERSION}"
 
       - name: Get Git Commits Since Last Release
         id: commits
@@ -536,7 +580,7 @@ jobs:
 
           # 策略2（降级）：通过 GitHub API 获取上一个 Release tag
           if [ -z "$BASE_SHA" ]; then
-            CURRENT_TAG="${{ steps.version.outputs.tag }}"
+            CURRENT_TAG="${{ needs.prepare.outputs.tag }}"
             echo "--- 降级：通过 GitHub API 获取上一个 Release tag ---"
             PREV_TAG=""
 
@@ -620,40 +664,15 @@ jobs:
           AI_BASE_URL3: ${{ secrets.AI_BASE_URL3 }}
           AI_COMPLETIONS_PATH3: ${{ secrets.AI_COMPLETIONS_PATH3 }}
           AI_MODEL3: ${{ secrets.AI_MODEL3 }}
-          RELEASE_VERSION: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.tag }}
         run: node scripts/generate-changelog.js
 
-      - name: Download Windows Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AilyBlockly-Windows-Package
-          path: ./release
-
-      - name: Download Windows CN Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AilyBlockly-Windows-Package-cn
-          path: ./release-cn
-
-      - name: Download macOS Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AilyBlockly-macOS-Package
-          path: ./release
-
-      - name: Download macOS CN Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AilyBlockly-macOS-Package-cn
-          path: ./release-mac-cn
-
       - name: Prepare Changelog Files
-        id: release_body
         run: |
           # 若英文 changelog 文件不存在（上一步失败），生成兜底内容
           if [ ! -f /tmp/changelog_en.md ]; then
             echo "⚠️ changelog_en.md not found, using fallback"
-            echo "## ${{ steps.version.outputs.tag }}" > /tmp/changelog_en.md
+            echo "## ${{ needs.prepare.outputs.tag }}" > /tmp/changelog_en.md
             echo "" >> /tmp/changelog_en.md
             echo "### Changes" >> /tmp/changelog_en.md
             echo "" >> /tmp/changelog_en.md
@@ -663,7 +682,7 @@ jobs:
           # 若中文 changelog 文件不存在，生成兜底内容
           if [ ! -f /tmp/changelog_zh.md ]; then
             echo "⚠️ changelog_zh.md not found, using fallback"
-            echo "## ${{ steps.version.outputs.tag }}" > /tmp/changelog_zh.md
+            echo "## ${{ needs.prepare.outputs.tag }}" > /tmp/changelog_zh.md
             echo "" >> /tmp/changelog_zh.md
             echo "### 更新内容" >> /tmp/changelog_zh.md
             echo "" >> /tmp/changelog_zh.md
@@ -671,24 +690,113 @@ jobs:
           fi
 
           # 复制 changelog 到 release 目录，作为附件
+          mkdir -p ./release
           cp /tmp/changelog_en.md ./release/CHANGELOG.md
           cp /tmp/changelog_zh.md ./release/CHANGELOG_ZH.md
+          test -s ./release/CHANGELOG.md && test -s ./release/CHANGELOG_ZH.md
           echo "✓ CHANGELOG.md and CHANGELOG_ZH.md saved to release directory"
 
-          # 将英文 changelog 内容写入 GitHub Output，作为 Release body
-          # 注意：cat 后补一个空行，防止文件末尾无换行导致分隔符被拼接
-          {
-            echo 'body<<CHANGELOG_DELIMITER'
-            cat /tmp/changelog_en.md
-            echo ''
-            echo 'CHANGELOG_DELIMITER'
-          } >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Archive CHANGELOG Artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          body: ${{ steps.release_body.outputs.body }}
+          name: AilyBlockly-Changelog
+          overwrite: true
+          if-no-files-found: error
+          path: |
+            ./release/CHANGELOG.md
+            ./release/CHANGELOG_ZH.md
+
+  # 任务 3：发布到 GitHub Release
+  release:
+    needs: [prepare, prepare-release, build-windows, build-windows-cn, build-macos, build-macos-cn]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_BRANCH: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package
+          path: ./release
+      - name: Download Windows CN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Windows-Package-cn
+          path: ./release-cn
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package
+          path: ./release
+      - name: Download macOS CN Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-macOS-Package-cn
+          path: ./release-mac-cn
+      - name: Download fixed changelog
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Changelog
+          path: ./release
+      - name: Collect stable update manifests
+        if: github.ref_name == 'deploy'
+        run: |
+          mkdir -p feed
+          cp release/latest.yml release/latest-mac.yml release-cn/latest-cn.yml release-mac-cn/latest-mac-cn.yml feed/
+          for file in feed/*.yml; do test -s "$file"; done
+      - name: Archive stable update manifests
+        if: github.ref_name == 'deploy'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AilyBlockly-Manifests
+          path: feed/*.yml
+          overwrite: true
+          if-no-files-found: error
+      - name: Reject reused tags or older channel versions
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" > tags.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const semver = require('semver');
+          const marker = `<!-- blockly-run:${process.env.GITHUB_REPOSITORY}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_SHA} -->`;
+          const releases = require('./releases.json').flat();
+          const existing = releases.find(release => release.tag_name === process.env.RELEASE_TAG);
+          const tagExists = require('./tags.json').some(ref => ref.ref === `refs/tags/${process.env.RELEASE_TAG}`);
+          if ((existing && !existing.body?.includes(marker)) || (tagExists && !existing)) {
+            throw new Error('Release tag belongs to another run; select a new version');
+          }
+          for (const release of releases) {
+            const previous = semver.valid(release.tag_name);
+            if (release !== existing && !release.draft && release.prerelease === (process.env.RELEASE_BRANCH === 'beta') && previous &&
+                !semver.gt(process.env.RELEASE_VERSION, previous)) {
+              throw new Error(`Release must be newer than published ${release.tag_name}`);
+            }
+          }
+          fs.writeFileSync('release-body.md', `${fs.readFileSync('release/CHANGELOG.md', 'utf8')}\n\n${marker}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `published=${Boolean(existing && !existing.draft)}\nrelease_id=${existing?.id || ''}\n`);
+          NODE
+      - name: Upload packages and changelogs to a draft
+        id: draft
+        if: steps.release.outputs.published != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-body.md
           files: |
             ./release/*.exe
             ./release-cn/*.exe
@@ -696,66 +804,110 @@ jobs:
             ./release-mac-cn/*.dmg
             ./release/CHANGELOG.md
             ./release/CHANGELOG_ZH.md
-          draft: false
+          fail_on_unmatched_files: true
+          draft: true
           prerelease: ${{ github.ref_name == 'beta' }}
-          make_latest: ${{ github.ref_name == 'deploy' }}
+          make_latest: 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Archive CHANGELOG Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AilyBlockly-Changelog
-          path: |
-            ./release/CHANGELOG.md
-            ./release/CHANGELOG_ZH.md
-
-      - name: Save Release SHA to release-meta branch
+      - name: Verify complete Release assets before publication
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.draft.outputs.id || steps.release.outputs.release_id }}
+          ALREADY_PUBLISHED: ${{ steps.release.outputs.published }}
         run: |
-          BRANCH_NAME="${{ github.ref_name }}"
-          CURRENT_SHA="${{ github.sha }}"
-          FILE_NAME="last-sha-${BRANCH_NAME}"
-          COMMIT_MSG="chore: update last release SHA for ${BRANCH_NAME} [${CURRENT_SHA:0:7}]"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const { execFileSync } = require('node:child_process');
+          (async () => {
+            const files = ['release/CHANGELOG.md', 'release/CHANGELOG_ZH.md'];
+            for (const [directory, extension] of [['release', '.exe'], ['release-cn', '.exe'], ['release', '.dmg'], ['release-mac-cn', '.dmg']]) {
+              const names = fs.readdirSync(directory).filter(name => name.endsWith(extension));
+              if (names.length !== 1) throw new Error(`Expected exactly one ${extension} in ${directory}`);
+              files.push(`${directory}/${names[0]}`);
+            }
+            const url = `repos/${process.env.GITHUB_REPOSITORY}/releases/${process.env.RELEASE_ID}`;
+            const assets = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp', `${url}/assets?per_page=100`], { encoding: 'utf8' })).flat();
+            if (assets.length !== files.length) throw new Error('Release asset set is incomplete or unexpected');
+            for (const file of files) {
+              const hash = crypto.createHash('sha256');
+              for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+              const asset = assets.find(asset => asset.name === path.basename(file));
+              const size = fs.statSync(file).size;
+              if (!asset || asset.state !== 'uploaded' || !size || asset.size !== size || asset.digest !== `sha256:${hash.digest('hex')}`) {
+                throw new Error(`Release asset verification failed: ${file}`);
+              }
+            }
+            if (process.env.ALREADY_PUBLISHED !== 'true') {
+              execFileSync('gh', ['api', url, '--method', 'PATCH', '--input', '-'], {
+                input: JSON.stringify({ draft: false, prerelease: process.env.RELEASE_BRANCH === 'beta',
+                  make_latest: process.env.RELEASE_BRANCH === 'deploy' ? 'true' : 'false' }), stdio: ['pipe', 'ignore', 'inherit'],
+              });
+            }
+          })();
+          NODE
 
-          # base64 编码内容（含换行符）
-          CONTENT=$(printf '%s\n' "$CURRENT_SHA" | base64 -w 0)
+  save-source-baseline:
+    needs: [prepare, release, trigger-server-script]
+    if: >-
+      always() && needs.release.result == 'success' &&
+      (github.ref_name == 'beta' || (github.ref_name == 'deploy' && needs.trigger-server-script.result == 'success'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: blockly-release-meta
+      cancel-in-progress: false
+    steps:
+      - name: Save only this Blockly branch's source SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const { execFileSync, spawnSync } = require('node:child_process');
+          const repository = process.env.GITHUB_REPOSITORY;
+          const file = `last-sha-${process.env.RELEASE_BRANCH}`;
+          const api = (url, body) => JSON.parse(execFileSync('gh', ['api', url, ...(body ? ['--method', 'PUT', '--input', '-'] : [])], {
+            input: body ? JSON.stringify(body) : undefined, encoding: 'utf8',
+          }));
+          const branch = spawnSync('gh', ['api', `repos/${repository}/git/ref/heads/release-meta`], { encoding: 'utf8' });
+          if (branch.status !== 0) {
+            if (!branch.stderr.includes('HTTP 404')) throw new Error(branch.stderr);
+            const created = spawnSync('gh', ['api', `repos/${repository}/git/refs`, '--method', 'POST', '--input', '-'], {
+              input: JSON.stringify({ ref: 'refs/heads/release-meta', sha: process.env.GITHUB_SHA }), encoding: 'utf8',
+            });
+            if (created.status !== 0) api(`repos/${repository}/git/ref/heads/release-meta`);
+          }
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const current = spawnSync('gh', ['api', `repos/${repository}/contents/${file}?ref=release-meta`], { encoding: 'utf8' });
+            if (current.status !== 0 && !current.stderr.includes('HTTP 404')) throw new Error(current.stderr);
+            const metadata = current.status === 0 ? JSON.parse(current.stdout) : undefined;
+            const sha = metadata?.sha;
+            if (metadata) {
+              const previous = Buffer.from(metadata.content, 'base64').toString('utf8').trim();
+              if (!/^[a-f0-9]{40}$/.test(previous)) throw new Error('Invalid Blockly source baseline');
+              if (previous === process.env.GITHUB_SHA) break;
+              const relation = execFileSync('gh', ['api', `repos/${repository}/compare/${previous}...${process.env.GITHUB_SHA}`, '--jq', '.status'], { encoding: 'utf8' }).trim();
+              if (relation !== 'ahead') throw new Error('Refusing to rewind or diverge the Blockly source baseline');
+            }
+            try {
+              api(`repos/${repository}/contents/${file}`, {
+                message: `chore: record Blockly ${process.env.RELEASE_BRANCH} source SHA`,
+                content: Buffer.from(`${process.env.GITHUB_SHA}\n`).toString('base64'), branch: 'release-meta', ...(sha ? { sha } : {}),
+              });
+              break;
+            } catch (error) {
+              if (attempt === 2 || !/HTTP (409|422)/.test(error.stderr?.toString() || '')) throw error;
+            }
+          }
+          NODE
 
-          # 确保 release-meta 分支存在，不存在则以当前 SHA 为基础创建
-          if ! gh api "repos/${GITHUB_REPOSITORY}/git/refs/heads/release-meta" --silent 2>/dev/null; then
-            echo "release-meta 分支不存在，正在创建..."
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              --method POST \
-              -f ref="refs/heads/release-meta" \
-              -f sha="${CURRENT_SHA}"
-            echo "✓ release-meta 分支已创建"
-          fi
-
-          # 获取文件当前 SHA（更新时需要，文件不存在时为空）
-          FILE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE_NAME}?ref=release-meta" \
-            --jq '.sha' 2>/dev/null || echo "")
-
-          if [ -n "$FILE_SHA" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE_NAME}" \
-              --method PUT \
-              -f message="$COMMIT_MSG" \
-              -f content="$CONTENT" \
-              -f sha="$FILE_SHA" \
-              -f branch="release-meta"
-          else
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE_NAME}" \
-              --method PUT \
-              -f message="$COMMIT_MSG" \
-              -f content="$CONTENT" \
-              -f branch="release-meta"
-          fi
-
-          echo "✓ Saved SHA $CURRENT_SHA for branch $BRANCH_NAME"
-
-  # 任务 4a：上传 Windows 文件到 Cloudflare R2 存储（与Release并行执行）
+  # 任务 4a：Release 成功后上传 Windows 软件包，清单在全部包和日志成功后统一发布。
   upload-windows-to-r2:
-    needs: [build-windows, build-windows-cn]
+    needs: [release]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
@@ -783,17 +935,15 @@ jobs:
       - name: Upload Windows files to Cloudflare R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_UPLOAD_PATH: ${{ secrets.R2_UPLOAD_PATH }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
-          # 配置 AWS CLI 使用 Cloudflare R2
-          aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
-          aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
-          aws configure set default.region auto
-          
+          set -euo pipefail
+          shopt -s failglob
           # Cloudflare R2 endpoint
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           
@@ -801,48 +951,41 @@ jobs:
 
           upload_windows_dir() {
             local artifact_dir="$1"
-            local manifest_name="$2"
-
-            if [ ! -d "$artifact_dir" ]; then
-              echo "  ⚠️ 目录不存在，跳过: $artifact_dir"
-              return
-            fi
           
             echo "上传 ${artifact_dir} 下的 Windows exe 文件..."
             for file in "$artifact_dir"/*.exe; do
-              if [ -f "$file" ]; then
-                filename=$(basename "$file")
-                echo "  上传: $filename"
-                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
-                  --endpoint-url "$R2_ENDPOINT" \
-                  --content-type "application/x-msdownload"
-              fi
-            done
-
-            local manifest_path="${artifact_dir}/${manifest_name}"
-            echo "上传 ${manifest_name} 配置文件..."
-            if [ -f "$manifest_path" ]; then
-              aws s3 cp "$manifest_path" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${manifest_name}" \
+              test -s "$file"
+              filename=$(basename "$file")
+              echo "  上传: $filename"
+              aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
                 --endpoint-url "$R2_ENDPOINT" \
-                --content-type "text/yaml" \
-                --cache-control "no-cache, no-store, must-revalidate"
-            else
-              echo "  ⚠️ ${manifest_name} not found under ${artifact_dir}, skipping"
-            fi
+                --content-type "application/x-msdownload"
+            done
           }
 
-          upload_windows_dir "./artifacts/windows/global" "latest.yml"
-          upload_windows_dir "./artifacts/windows/cn" "latest-cn.yml"
+          upload_windows_dir "./artifacts/windows/global"
+          upload_windows_dir "./artifacts/windows/cn"
           
           echo "✓ Windows 文件上传到 Cloudflare R2 完成"
           echo "公开访问地址: ${R2_PUBLIC_URL}"
 
-  # 任务 4c：上传 CHANGELOG 文件到 Cloudflare R2 存储
-  upload-changelog-to-r2:
-    needs: [release]
+  # 任务 4c：全部软件包成功后，先上传日志，再发布更新清单；重试时一起恢复。
+  publish-update-metadata:
+    needs: [prepare, upload-windows-to-r2, upload-macos-to-r2]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Download final manifests for rollback protection
+        uses: actions/download-artifact@v4
+        with:
+          name: AilyBlockly-Manifests
+          path: ./manifests
       - name: Download CHANGELOG Artifact
         uses: actions/download-artifact@v4
         with:
@@ -858,19 +1001,19 @@ jobs:
           fi
           aws --version
 
-      - name: Upload CHANGELOG files to Cloudflare R2
+      - name: Check current versions and publish logs then manifests
         env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_UPLOAD_PATH: ${{ secrets.R2_UPLOAD_PATH }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
-          aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
-          aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
-          aws configure set default.region auto
-          
+          set -euo pipefail
+          node scripts/blockly-feed-guard.cjs ./manifests "$RELEASE_VERSION"
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           
           echo "上传 CHANGELOG 文件到 Cloudflare R2..."
@@ -878,22 +1021,28 @@ jobs:
           # upload-artifact@v4 uses least-common-ancestor stripping: both files are under
           # ./release/ so that prefix is stripped; files land directly under ./artifacts/
           for file in CHANGELOG.md CHANGELOG_ZH.md; do
-            filepath="./artifacts/${file}"
-            if [ -f "${filepath}" ]; then
-              echo "  上传: ${file}"
-              aws s3 cp "${filepath}" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${file}" \
-                --endpoint-url "$R2_ENDPOINT" \
-                --content-type "text/markdown; charset=utf-8"
-            else
-              echo "  ⚠️ ${file} not found, skipping"
-            fi
+            test -s "./artifacts/${file}"
           done
-          
-          echo "✓ CHANGELOG 文件上传到 Cloudflare R2 完成"
+          for file in CHANGELOG.md CHANGELOG_ZH.md; do
+            filepath="./artifacts/${file}"
+            echo "  上传: ${file}"
+            aws s3 cp "${filepath}" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${file}" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "text/markdown; charset=utf-8" \
+              --cache-control "no-cache, no-store, must-revalidate"
+          done
 
-  # 任务 4b：上传 macOS 文件到 Cloudflare R2 存储（与Release并行执行）
+          for name in latest.yml latest-cn.yml latest-mac.yml latest-mac-cn.yml; do
+            aws s3 cp "./manifests/$name" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${name}" \
+              --endpoint-url "$R2_ENDPOINT" --content-type 'text/yaml' \
+              --cache-control 'no-cache, no-store, must-revalidate'
+          done
+
+          echo "✓ 日志和更新清单上传到 Cloudflare R2 完成"
+
+  # 任务 4b：Release 成功后上传 macOS 软件包。
   upload-macos-to-r2:
-    needs: [build-macos, build-macos-cn]
+    needs: [release]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:
@@ -921,17 +1070,15 @@ jobs:
       - name: Upload macOS files to Cloudflare R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_UPLOAD_PATH: ${{ secrets.R2_UPLOAD_PATH }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
-          # 配置 AWS CLI 使用 Cloudflare R2
-          aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
-          aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
-          aws configure set default.region auto
-          
+          set -euo pipefail
+          shopt -s failglob
           # Cloudflare R2 endpoint
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           
@@ -939,45 +1086,27 @@ jobs:
 
           upload_macos_dir() {
             local artifact_dir="$1"
-            local manifest_name="$2"
-
-            if [ ! -d "$artifact_dir" ]; then
-              echo "  ⚠️ 目录不存在，跳过: $artifact_dir"
-              return
-            fi
 
             echo "上传 ${artifact_dir} 下的 macOS 文件..."
             for file in "$artifact_dir"/*.dmg "$artifact_dir"/*.zip; do
-              if [ -f "$file" ]; then
-                filename=$(basename "$file")
-                echo "  上传: $filename"
+              test -s "$file"
+              filename=$(basename "$file")
+              echo "  上传: $filename"
 
-                if [[ "$filename" == *.dmg ]]; then
-                  content_type="application/x-apple-diskimage"
-                else
-                  content_type="application/zip"
-                fi
-
-                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
-                  --endpoint-url "$R2_ENDPOINT" \
-                  --content-type "$content_type"
+              if [[ "$filename" == *.dmg ]]; then
+                content_type="application/x-apple-diskimage"
+              else
+                content_type="application/zip"
               fi
-            done
 
-            local manifest_path="${artifact_dir}/${manifest_name}"
-            echo "上传 ${manifest_name} 配置文件..."
-            if [ -f "$manifest_path" ]; then
-              aws s3 cp "$manifest_path" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${manifest_name}" \
+              aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}/${filename}" \
                 --endpoint-url "$R2_ENDPOINT" \
-                --content-type "text/yaml" \
-                --cache-control "no-cache, no-store, must-revalidate"
-            else
-              echo "  ⚠️ ${manifest_name} not found under ${artifact_dir}, skipping"
-            fi
+                --content-type "$content_type"
+            done
           }
 
-          upload_macos_dir "./artifacts/macos/global" "latest-mac.yml"
-          upload_macos_dir "./artifacts/macos/cn" "latest-mac-cn.yml"
+          upload_macos_dir "./artifacts/macos/global"
+          upload_macos_dir "./artifacts/macos/cn"
           
           echo "✓ macOS 文件上传到 Cloudflare R2 完成"
           echo "公开访问地址: ${R2_PUBLIC_URL}"
@@ -1029,7 +1158,7 @@ jobs:
 
   # 任务 5：触发服务器脚本
   trigger-server-script:
-    needs: [upload-windows-to-r2, upload-macos-to-r2, upload-changelog-to-r2]
+    needs: [publish-update-metadata]
     if: github.ref_name == 'deploy'
     runs-on: ubuntu-latest
     steps:

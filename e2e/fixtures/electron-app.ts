@@ -1,7 +1,8 @@
+import {seedPlatform} from './platform-seed';
 import { test as base, _electron, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -45,11 +46,35 @@ export async function launchAilyElectron(options: {
 
   let app: ElectronApplication;
   try {
+    const minimap = options.environment?.['AILY_E2E_MINIMAP'] || process.env['AILY_E2E_MINIMAP'];
+    if (minimap === '1' || minimap === '0') {
+      const config = JSON.parse(await readFile(path.join(ROOT, 'electron/config/config.json'), 'utf8'));
+      config.blockly.minimap = minimap === '1';
+      await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(config));
+    }
+    // Optional read-only toolchain seed for offline compile verification. Copy
+    // only installed packages/binaries into this test's disposable appdata;
+    // never copy accounts, auth, projects, .npmrc, locks or subapp activations.
+    const toolchainSeed = options.environment?.['AILY_E2E_TOOLCHAIN_SEED']
+      || process.env['AILY_E2E_TOOLCHAIN_SEED'];
+    if (toolchainSeed) {
+      const seedProject = options.environment?.['AILY_E2E_TOOLCHAIN_PROJECT'] || process.env['AILY_E2E_TOOLCHAIN_PROJECT'];
+      if (seedProject) await seedPlatform(seedProject, userDataDir, toolchainSeed);
+      const resources = seedProject ? ['npm-global/bin', 'npm-global/lib'] :
+        ['package.json', 'package-lock.json', 'node_modules', 'tools', 'sdk', 'npm-global/bin', 'npm-global/lib'];
+      for (const relative of resources) {
+        const source = path.join(toolchainSeed, relative);
+        if (!existsSync(source)) continue;
+        const destination = path.join(userDataDir, relative);
+        await mkdir(path.dirname(destination), {recursive: true});
+        await cp(source, destination, {recursive: true, mode: constants.COPYFILE_FICLONE});
+      }
+    }
     if (options.config) {
       await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(options.config), 'utf8');
     }
     app = await _electron.launch({
-      args: ['.', `--user-data-dir=${userDataDir}`],
+      args: ['.', ...(process.env['AILY_E2E_DEV_URL'] ? ['--serve'] : []), `--user-data-dir=${userDataDir}`],
       cwd: ROOT,
       timeout: 60_000,
       env: {
@@ -60,6 +85,11 @@ export async function launchAilyElectron(options: {
         AILY_APPDATA_PATH: userDataDir,
       },
     });
+    if (process.env['AILY_E2E_DEV_URL']) {
+      await app.context().route('http://localhost:4200/**', route => route.fulfill({
+        status: 302, headers: { location: process.env['AILY_E2E_DEV_URL']! },
+      }));
+    }
   } catch (error) {
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
     throw error;

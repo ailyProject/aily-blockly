@@ -34,6 +34,32 @@ describe('BlocklyGeneratorRuntimeService', () => {
     });
   }
 
+  it('loads the published variable lookup alongside native dynamic function and variable categories', () => {
+    const container = document.createElement('div'); document.body.appendChild(container);
+    let workspace: Blockly.WorkspaceSvg | null = null;
+    service.activate({ mode: 'arduino', getWorkspace: () => workspace });
+    const source = `
+      Blockly.Blocks.variable_define = { init() { this.appendDummyInput().appendField('declare'); } };
+      window.findLegacyVariableCategory = () => Blockly.getMainWorkspace().getToolbox().getToolboxItems().find(item =>
+        item.name_ === "Variables" || (item.getContents && item.getContents().some(c => c.type === "variable_define"))
+      ).getName();
+    `;
+    service.loadGenerator('/project/node_modules/@aily-project/lib-core-variables/generator.js', source);
+    try {
+      workspace = Blockly.inject(container, { toolbox: { kind: 'categoryToolbox', contents: [
+        { kind: 'category', name: '函数', custom: 'PROCEDURE' },
+        { kind: 'category', name: '原生变量', custom: 'VARIABLE' },
+        { kind: 'category', name: '变量', contents: [{ kind: 'block', type: 'variable_define' }] },
+      ] } });
+      expect(service.invokeGlobal('findLegacyVariableCategory')).toBe('变量');
+      const categories = workspace.getToolbox()!.getToolboxItems() as Blockly.ToolboxCategory[];
+      expect(categories[0].getContents()).toBe('PROCEDURE');
+      expect(categories[1].getContents()).toBe('VARIABLE');
+      expect(source).not.toContain('Array.isArray');
+      expect(service.captureNativeReplay().steps.some(step => step.kind === 'script' && step.source.includes('Array.isArray'))).toBeTrue();
+    } finally { workspace?.dispose(); container.remove(); }
+  });
+
   for (const chunk of [false, true]) it('settles project-owned dropdown tasks across an entire load; chunk=' + chunk, async () => {
     const container = document.createElement('div'); document.body.appendChild(container);
     const workspace = Blockly.inject(container, { toolbox: null });

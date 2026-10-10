@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const ailyCodeProject = require('./aily-code-project');
 const { runCompilePreprocess } = require('./compile-preprocess');
 const { readBuilderCapabilities } = require('./builder-capabilities');
@@ -10,6 +9,7 @@ const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, p
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
+const { compileWithArchiveRecovery } = require('./builder-archive-recovery');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
 
 // 简单的日志工具
@@ -186,7 +186,7 @@ async function main() {
 
         // 5. 执行编译
         const builderCommand = 'aily-builder';
-        const args = [
+        let args = [
             'compile',
             `"${compileSourcePath}"`,
             '--board', `"${boardType}"`,
@@ -242,25 +242,13 @@ async function main() {
         logger.log(`执行编译: ${builderCommand} ${args.join(' ')}`);
 
         const startedAt = new Date();
-        const output = [];
-        let spawnError = null;
-        const child = spawn(builderCommand, args, spawnOpts);
-        child.stdout.on('data', (chunk) => {
-            process.stdout.write(chunk);
-            output.push(String(chunk));
+        const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
+            workspace.assertOwned(); workspace.assertBuilderIdle();
+            confirmBuildSource(config);
+            if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
-        child.stderr.on('data', (chunk) => {
-            process.stderr.write(chunk);
-            output.push(String(chunk));
-        });
-        child.on('error', (error) => {
-            spawnError = error;
-            output.push(`\n[BUILDER_SPAWN_ERROR] ${formatFatalError(error)}\n`);
-        });
-
-        const { exitCode, signal } = await new Promise(resolve => {
-            child.once('close', (exitCode, signal) => resolve({ exitCode, signal }));
-        });
+        const { exitCode, signal, spawnError, output } = attempt;
+        args = attempt.args;
         workspace.assertBuilderIdle();
         let deliveryError = null;
         try {
@@ -291,6 +279,7 @@ async function main() {
                 signal,
                 spawnError: spawnError || deliveryError,
                 startedAt,
+                archiveRecovery: attempt.archiveRecovery,
                 output: output.join('')
             })
         );
@@ -326,6 +315,7 @@ function buildBuilderCompileReport({
     signal,
     spawnError,
     startedAt,
+    archiveRecovery,
     output
 }) {
     const completedAt = new Date();
@@ -364,6 +354,7 @@ function buildBuilderCompileReport({
             signal: signal || null,
             error: spawnError ? formatFatalError(spawnError) : null
         },
+        ...(archiveRecovery ? { archiveRecovery } : {}),
         archiveCloudCache: {
             observed: cacheLines.length > 0,
             localHits: restoreMatch ? Number(restoreMatch[1]) : null,

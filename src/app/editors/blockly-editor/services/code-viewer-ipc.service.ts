@@ -31,7 +31,7 @@ export function normalizeCodeViewerSelectedBlockIds(
   providedIn: 'root',
 })
 export class CodeViewerIpcService {
-  private pendingCodeState: { code: string; blockCodeMap: Map<string, BlockCodeMapping> } | null = null;
+  private pendingCodeState: { code: string; blockCodeMap: Map<string, BlockCodeMapping>; isInteracting?: () => boolean } | null = null;
   private codeStatePublishTimer: ReturnType<typeof setTimeout> | null = null;
   private latestSelectedBlockId: string | null = null;
   private latestSelectedBlockIds: string[] = [];
@@ -56,6 +56,7 @@ export class CodeViewerIpcService {
     blockCodeMap: Map<string, BlockCodeMapping>,
     selectedBlockId: string | null,
     selectedBlockIds: ReadonlyArray<string> = [],
+    isInteracting?: () => boolean,
   ): void {
     if (!this.isAvailable) return;
 
@@ -64,16 +65,13 @@ export class CodeViewerIpcService {
       selectedBlockId,
       selectedBlockIds,
     );
-    this.pendingCodeState = { code, blockCodeMap };
+    this.pendingCodeState = { code, blockCodeMap, isInteracting };
 
     if (this.codeStatePublishTimer) {
       clearTimeout(this.codeStatePublishTimer);
     }
 
-    this.codeStatePublishTimer = setTimeout(() => {
-      this.codeStatePublishTimer = null;
-      this.flushPendingCodeState();
-    }, this.codeStatePublishDelay);
+    this.scheduleCodePublication();
   }
 
   publishSelection(
@@ -126,6 +124,16 @@ export class CodeViewerIpcService {
 
   toMap(entries: Array<[string, BlockCodeMapping]> | undefined): Map<string, BlockCodeMapping> {
     return new Map(entries || []);
+  }
+
+  private scheduleCodePublication(): void {
+    this.codeStatePublishTimer = setTimeout(() => {
+      this.codeStatePublishTimer = null;
+      // Large code maps cross Electron IPC. Coalesce the newest state while
+      // Blockly is dragging/editing, without delaying lightweight selection.
+      if (this.pendingCodeState?.isInteracting?.()) this.scheduleCodePublication();
+      else this.flushPendingCodeState();
+    }, this.codeStatePublishDelay);
   }
 
   private flushPendingCodeState(): void {

@@ -70,9 +70,9 @@ describe('large Blockly workspaces', () => {
   it('keeps locale ordering including non-ASCII and case variants', () => {
     const names = ['Z', 'a', 'A', 'ä', '变量', '变量2', 'é', 'e'];
     const variables = names.map(name => new Blockly.VariableModel(workspace, name, ''));
-    const expected = [...variables].sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })).map(variable => variable.name);
+    const expected = [...variables].sort((a, b) => a.getName().localeCompare(b.getName(), undefined, { sensitivity: 'base' })).map(variable => variable.getName());
     installBlocklyVariableComparator();
-    expect(variables.sort(Blockly.VariableModel.compareByName).map(variable => variable.name)).toEqual(expected);
+    expect(variables.sort(Blockly.Variables.compareByName).map(variable => variable.getName())).toEqual(expected);
   });
 
   it('retains the tail and precedence of a value block with a next connection', () => {

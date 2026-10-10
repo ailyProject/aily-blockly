@@ -1,4 +1,5 @@
 import { AbsFieldDefinition, normalizeAbsSerializedField } from './abs-field-values';
+import { cloneBlocklyJson } from '@domain/project/project-document/public-api';
 import { absJson } from './abs-json';
 import { indexAbsAbi } from './abs-abi-index';
 import { AbsAbiBlock, AbsAbiWorkspace, AbsSyncError } from './abs-state';
@@ -20,7 +21,7 @@ export function assertAbsReadback(expected: AbsAbiWorkspace, actual: AbsAbiWorks
  * complete fresh readback. No revision shortcut or caller-owned cached proof.
  * Field contracts are read each time, not assumed to be callback-free constants. */
 export function createAbsReadbackVerifier(expected: AbsAbiWorkspace, options: Omit<AbsReadbackOptions, 'index'> = {}) {
-  return prepareReadback(structuredClone(expected), { fieldDefinition: options.fieldDefinition, mode: options.mode });
+  return prepareReadback(cloneBlocklyJson(expected), { fieldDefinition: options.fieldDefinition, mode: options.mode });
 }
 
 function prepareReadback(expected: AbsAbiWorkspace, options: AbsReadbackOptions) {

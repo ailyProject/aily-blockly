@@ -22,6 +22,17 @@ import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
 import {shouldAutoFocusWorkspace} from './workspace-auto-focus';
 
+// Install the host-owned policy before generator sessions snapshot Blockly.
+// A per-workspace flag survives library realm rebuilds without globally
+// disabling neighbour bumps in other workspaces (flyouts/minimap included).
+const noBumpWorkspaces = new WeakSet();
+const upstreamBumpNeighbours = Blockly.BlockSvg.prototype.bumpNeighbours;
+Blockly.BlockSvg.prototype.bumpNeighbours = function() {
+  if (!noBumpWorkspaces.has(this.workspace)) {
+    return upstreamBumpNeighbours.call(this);
+  }
+};
+
 /**
  * Class for using multiple select blocks on workspace.
  */
@@ -64,16 +75,20 @@ export class Multiselect {
         injectionDiv, 'keyup', this, this.onKeyUp_);
     this.onFocusOutWrapper_ = Blockly.browserEvents.conditionalBind(
         injectionDiv, 'focusout', this, this.onBlur_);
-    injectionDiv.addEventListener('mouseenter', () => {
-      const workspaceFocusTarget = this.workspace_.svgGroup_.parentElement;
+    this.onMouseEnter_ = () => {
+      // Entering with the pointer must not clear a keyboard-made selection.
+      if (injectionDiv.contains(document.activeElement)) return;
+      const focusNode = this.workspace_.getRootFocusableNode();
+      const workspaceFocusTarget = focusNode.getFocusableElement();
       if (!shouldAutoFocusWorkspace(
           options.workspaceAutoFocus,
           document.activeElement,
           workspaceFocusTarget)) {
         return;
       }
-      workspaceFocusTarget.focus();
-    });
+      Blockly.getFocusManager().focusNode(focusNode);
+    };
+    injectionDiv.addEventListener('mouseenter', this.onMouseEnter_);
     this.eventListenerWrapper_ = this.eventListener_.bind(this);
     this.workspace_.addChangeListener(this.eventListenerWrapper_);
 
@@ -123,8 +138,7 @@ export class Multiselect {
     }
 
     if (!options.bumpNeighbours) {
-      this.origBumpNeighbours = Blockly.BlockSvg.prototype.bumpNeighbours;
-      Blockly.BlockSvg.prototype.bumpNeighbours = function() {};
+      noBumpWorkspaces.add(this.workspace_);
     }
 
     Blockly.browserEvents.conditionalBind(
@@ -176,6 +190,10 @@ export class Multiselect {
    * @param {boolean} keepRegistry Keep the context menu and shortcut registry.
    */
   dispose(keepRegistry = false) {
+    if (this.onMouseEnter_) {
+      this.workspace_.getInjectionDiv().removeEventListener('mouseenter', this.onMouseEnter_);
+      this.onMouseEnter_ = null;
+    }
     if (this.onKeyDownWrapper_) {
       Blockly.browserEvents.unbind(this.onKeyDownWrapper_);
       this.onKeyDownWrapper_ = null;
@@ -224,12 +242,11 @@ export class Multiselect {
       this.controls_.dispose();
       this.controls_ = null;
     }
+    multiDraggableWeakMap.get(this.workspace_)?.disposeFocus();
 
     this.useDoubleClick_(false);
 
-    if (this.origBumpNeighbours) {
-      Blockly.BlockSvg.prototype.bumpNeighbours = this.origBumpNeighbours;
-    }
+    noBumpWorkspaces.delete(this.workspace_);
   }
 
   /**

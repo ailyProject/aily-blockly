@@ -182,7 +182,7 @@ describe('Extension service UI boundary', () => {
 
   for (const presentUi of [undefined, 'embedded', 'window']) {
     it(`keeps extension domain RPC available without UI when presentUi=${presentUi}`, async () => {
-      const service = Object.create(SubappAgentBridgeService.prototype) as any;
+      const service = new SubappAgentBridgeService({} as any, {} as any, {} as any) as any;
       service.resolveAgentTool = () => ({
         config: config('aily-coder-editor', true),
         definition: { rpc: { method: 'extension.status' }, presentation: { mode: 'dock' } },

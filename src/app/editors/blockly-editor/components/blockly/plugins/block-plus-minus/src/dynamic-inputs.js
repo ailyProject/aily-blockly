@@ -56,13 +56,14 @@ const dynamicInputsMutator = {
    * @returns {{extraCount: (number|undefined)}} The state of this block.
    */
   saveExtraState: function () {
-    if (!this.extraCount_) {
+    if (!this.extraCount_ && this.legacyItemCount_ === undefined) {
       return null;
     }
     const state = Object.create(null);
     if (this.extraCount_) {
       state['extraCount'] = this.extraCount_;
     }
+    if (this.legacyItemCount_ !== undefined) state['itemCount'] = this.legacyItemCount_;
     return state;
   },
 
@@ -71,6 +72,11 @@ const dynamicInputsMutator = {
    * @param {*} state The state to apply to this block.
    */
   loadExtraState: function (state) {
+    // Historical archives carried itemCount even when only INPUT0 existed.
+    // Keep that metadata for readback/save; extraCount still owns native shape.
+    // Treating itemCount as extraCount would invent inputs during project open.
+    this.legacyItemCount_ = Number.isSafeInteger(state['itemCount']) && state['itemCount'] >= 0
+      ? state['itemCount'] : undefined;
     const targetCount = state['extraCount'] || 0;
     this.updateShape_(targetCount);
   },

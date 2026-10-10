@@ -3,6 +3,7 @@ export { projectDataRuntime } from './project-data-runtime';
 export { isAilyDataRef } from './project-data.types';
 export type { AilyDataRef } from './project-data.types';
 export { canonicalJsonStringify } from './project-data-codec.registry';
+export { canonicalProjectJsonStringify } from '../project-document-json';
 export { materializeProjectDataPayload, materializePreparedProjectDataPayload } from './project-data-generic-values';
 export { collectProjectBlocks, collectProjectBlockLocations } from './project-data-payloads';
 export { collectProjectDataReferences, projectDataFieldReference } from './project-data-references';

@@ -3,6 +3,7 @@
  */
 import './renderer/aily-thrasos/thrasos';
 import './renderer/aily-zelos/zelos';
+import './renderer/aily-icon';
 import './plugins/block-plus-minus/src/index.js';
 import './custom-field/field-bitmap';
 import './custom-field/field-u8g2-bitmap';

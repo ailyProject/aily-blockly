@@ -162,6 +162,20 @@ describe('native initializer model preparation', () => {
     value.steps.push({ kind: 'script', label: 'unowned-side-effect', source: 'Arduino.forBlock.test_object_init = block => { block.workspace.createVariable("leaked", "Sensor"); return ""; };' });
     await expectAsync(run(value)).toBeRejectedWithError(/unrequested blocks or models/);
   });
+  it('retains repeated committed registrations without accepting new duplicate producers or type changes', async () => {
+    const value = request('test_object_init("sensor", Sensor)\ntest_object_init("sensor", Sensor)\ntest_object_read($sensor)');
+    value.variables = [{ id: 'existing', name: 'sensor', type: 'Sensor' }];
+    value.retainedModelIds = ['existing'];
+    value.retainedModelCalls = [value.abs!.indexOf('test_object_init'), value.abs!.indexOf('test_object_init', value.abs!.indexOf('test_object_init') + 1)];
+    const result = await run(value);
+    expect(result.binding!.modelDeclarations).toBeUndefined();
+    expect(result.state['variables']).toEqual(value.variables);
+    value.retainedModelCalls = [value.retainedModelCalls[0]];
+    await expectAsync(run(value)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CONFLICT' }));
+    value.retainedModelCalls = [value.abs!.indexOf('test_object_init'), value.abs!.indexOf('test_object_init', value.abs!.indexOf('test_object_init') + 1)];
+    value.variables[0].type = 'Other';
+    await expectAsync(run(value)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SYMBOL_TYPE_MISMATCH' }));
+  });
 
   it('rejects registration/registry replacement and swallowed declaration conflicts', async () => {
     for (const source of [

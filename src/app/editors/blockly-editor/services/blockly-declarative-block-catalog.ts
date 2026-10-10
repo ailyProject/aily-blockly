@@ -9,6 +9,7 @@ import { observeNativeBlockDefinition, readNativeBlockStructure, readNativeBlock
 export interface DeclarativeBlockSnapshot {
   readonly types: readonly string[];
   registered(type: string): boolean;
+  /** Checks snapshot freshness before reading a declaration, including absent types. */
   get(type: string): Record<string, any> | undefined;
   supportsUiExtension?(name: string): boolean;
   structuralMutator?(name: string): StructuralMutationRecipe | undefined;

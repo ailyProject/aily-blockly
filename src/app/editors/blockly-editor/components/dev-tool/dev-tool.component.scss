@@ -26,10 +26,14 @@
         will-change: transform;
         opacity: 0.8;
         box-shadow: var(--aily-shadow-lg);
+
+        .drag-handle {
+            cursor: grabbing;
+        }
     }
 
     .drag-handle {
-        cursor: move;
+        cursor: grab;
         padding: 5px;
         display: flex;
         align-items: center;
@@ -45,6 +49,7 @@
 
         i {
             font-size: 14px;
+            cursor: inherit;
         }
     }
 

@@ -58,7 +58,7 @@ describe('actual-instance reference coverage', () => {
   }
 
   it('rejects references declared by a custom model getter but absent from serialized field/procedure paths', () => {
-    const hidden = workspace.createVariable('Hidden', '', 'hidden');
+    const hidden = workspace.getVariableMap().createVariable('Hidden', '', 'hidden');
     Blockly.Blocks[custom] = { init() {}, getVarModels: () => [hidden] };
     workspace.newBlock(custom);
     expect(capture).toThrowError(/reference adapter/);
@@ -91,7 +91,7 @@ describe('actual-instance reference coverage', () => {
     const old = save(); block.setFieldValue('changed', 'TEXT');
     expect(() => captureAbsPageReferenceContract(workspace, old, () => undefined)).toThrowMatching(error => error.code === 'ABS_REFERENCE_CAPTURE_CHANGED');
     expect(() => captureAbsPageReferenceContract(workspace, { blocks: { blocks: [] } }, () => undefined)).toThrowMatching(error => error.code === 'ABS_REFERENCE_CAPTURE_CHANGED');
-    workspace.createVariable('Unused');
+    workspace.getVariableMap().createVariable('Unused');
     const missing = save(); delete missing['variables'];
     expect(() => captureAbsPageReferenceContract(workspace, missing, () => undefined)).toThrowMatching(error => error.code === 'ABS_REFERENCE_CAPTURE_CHANGED');
   });

@@ -109,13 +109,20 @@ export class GeneratorProjectEffects {
 
   capture(workspace: Blockly.Workspace): readonly GeneratorMacroEffect[] {
     const merged = new Map<string, GeneratorMacroEffect>();
+    // Most blocks have no project effects. Only inspect owners and share their
+    // ancestor results for this capture; edits/disabled parents are checked anew
+    // next time, and the workspace's original merge order remains authoritative.
+    const enabled = new Map<Blockly.Block, boolean>();
     for (const block of workspace.getAllBlocks(false)) {
-      let enabled = true;
-      for (let current: Blockly.Block | null = block; current; current = current.getParent?.() ?? null) {
-        if (!current.isEnabled()) enabled = false;
-      }
-      if (!enabled) continue;
-      for (const [name, effect] of this.effects.get(block.id) ?? []) merged.set(name, effect);
+      const effects = this.effects.get(block.id);
+      if (!effects?.size) continue;
+      const parents: Blockly.Block[] = [];
+      let current: Blockly.Block | null = block;
+      while (current && !enabled.has(current)) { parents.push(current); current = current.getParent?.() ?? null; }
+      let active = current ? enabled.get(current)! : true;
+      for (let i = parents.length - 1; i >= 0; i--) { active = active && parents[i].isEnabled(); enabled.set(parents[i], active); }
+      if (!enabled.get(block)) continue;
+      for (const [name, effect] of effects) merged.set(name, effect);
     }
     return Object.freeze([...merged.values()].sort((a, b) => a.name.localeCompare(b.name)).map(value => Object.freeze({ ...value })));
   }

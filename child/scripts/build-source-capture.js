@@ -98,7 +98,11 @@ function confirmBuildSource(config) {
     const captured = config.sourceCapture;
     if (captured?.schemaVersion !== 1 || captured.scope !== 'captured-build-source' || !sha(captured.digest)) fail('Invalid capture contract.');
     const current = record(config, workspaceRecord(captured.workspace));
-    if (JSON.stringify(current) !== JSON.stringify(captured)) fail('Project/board/generated inputs changed after capture; build again.');
+    if (JSON.stringify(current) !== JSON.stringify(captured)) {
+        const changed = Object.keys(current).filter(key => key !== 'digest'
+            && JSON.stringify(current[key]) !== JSON.stringify(captured[key]));
+        fail(`Project/board/generated inputs changed after capture (${changed.join(', ') || 'capture digest'}); build again.`);
+    }
     return current;
 }
 

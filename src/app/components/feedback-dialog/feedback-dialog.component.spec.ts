@@ -173,7 +173,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Account Status Code | 101 |');
     expect(payload.content).toContain(`| Feedback Time | ${payload.timestamp} |`);
     expect(payload.content.match(new RegExp(escapeRegExp(payload.timestamp), 'g'))?.length).toBe(1);
-    expect(payload.content).not.toContain('## Diagnostics');
+    expect(payload.content).toContain('## Diagnostics\n\n### Project Dependencies\n\n```json\n{}\n```');
     expect(payload.content).not.toContain('private@example.com');
     expect(Object.prototype.hasOwnProperty.call(payload, 'userAgent')).toBeFalse();
   });
@@ -337,8 +337,8 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     const libraryName = '@aily-project/lib-alpha';
 
     expect((component as any).readDirectLibraries({ dependencies: [] })).toBeNull();
-    expect((component as any).readBoardDependencies({ boardDependencies: [] })).toBeNull();
-    expect((component as any).readBoardDependencies({})).toEqual({});
+    expect((component as any).readProjectDependencies({ dependencies: [] })).toBeNull();
+    expect((component as any).readProjectDependencies({})).toEqual({});
     expect((component as any).countDirectDependencies({ dependencies: 'invalid' })).toBeNull();
     expect((component as any).readBuildUploadParameters({ projectConfig: [] })).toBeNull();
     expect((component as any).readLibrarySource({
@@ -415,18 +415,22 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Source | null |');
   });
 
-  for (const type of ['bug', 'build&upload']) {
-    it(`includes the board toolchain dependencies in ${type} feedback`, async () => {
+  for (const type of ['bug', 'build&upload', 'library', 'other', 'feature']) {
+    it(`includes the open project's dependencies in ${type} feedback`, async () => {
+      projectService.getPackageJson.and.resolveTo({
+        dependencies: {
+          '@aily-project/board-test': '1.0.0',
+          '@aily-project/lib-alpha': '^1.2.3',
+          lodash: '^4.17.21',
+          'local-package': 'file:C:/Users/tester/private-package',
+          'git-package': 'git+https://private-token@private.example/package.git',
+        },
+        devDependencies: { typescript: '~5.9.0' },
+        optionalDependencies: { 'optional-package': '2.0.0' },
+      });
       projectService.getBoardPackageJson.and.resolveTo({
         version: '1.2.3',
-        boardDependencies: {
-          '@aily-project/sdk-esp32': '3.3.1',
-          '@aily-project/compiler-xtensa': '14.2.0',
-          '@aily-project/tool-esptool': '^4.9.0',
-          '@aily-project/tool-local': 'file:C:/Users/tester/private-tool',
-          '@aily-project/tool-git': 'git+https://private-token@private.example/tool.git',
-        },
-        dependencies: { 'unrelated-npm-package': '1.0.0' },
+        boardDependencies: { '@aily-project/sdk-esp32': '3.3.1' },
       });
       const component = createComponent();
       prepareValidFeedback(component, type);
@@ -434,19 +438,68 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
       await component.submitFeedback();
 
       const content = String(submittedPayload().content);
-      expect(content).toContain('### Board Dependencies\n\n```json\n{');
-      expect(content).toContain('"@aily-project/sdk-esp32": "3.3.1"');
-      expect(content).toContain('"@aily-project/compiler-xtensa": "14.2.0"');
-      expect(content).toContain('"@aily-project/tool-esptool": "^4.9.0"');
-      expect(content).toContain('"@aily-project/tool-local": null');
-      expect(content).toContain('"@aily-project/tool-git": null');
-      expect(content).not.toContain('private-tool');
+      expect(content).toContain('## Diagnostics\n\n### Project Dependencies\n\n```json\n{');
+      expect(content).toContain('"@aily-project/board-test": "1.0.0"');
+      expect(content).toContain('"@aily-project/lib-alpha": "^1.2.3"');
+      expect(content).toContain('"lodash": "^4.17.21"');
+      expect(content).toContain('"typescript": "~5.9.0"');
+      expect(content).toContain('"optional-package": "2.0.0"');
+      expect(content).toContain('"local-package": null');
+      expect(content).toContain('"git-package": null');
+      expect(content).not.toContain('private-package');
       expect(content).not.toContain('private-token');
       expect(content).not.toContain('private.example');
-      expect(content).not.toContain('unrelated-npm-package');
-      expect(projectService.getBoardPackageJson).toHaveBeenCalledTimes(1);
+      expect(content).not.toContain('Board Dependencies');
+      expect(content).not.toContain('@aily-project/sdk-esp32');
+      expect(projectService.getPackageJson).toHaveBeenCalledTimes(1);
+    });
+
+    it(`omits project dependencies from ${type} feedback when no project is open`, async () => {
+      projectService.currentProjectPath = '';
+      projectService.getPackageJson.and.resolveTo({ dependencies: { 'stale-project-package': '1.0.0' } });
+      const component = createComponent();
+      prepareValidFeedback(component, type);
+
+      await component.submitFeedback();
+
+      const content = String(submittedPayload().content);
+      expect(content).not.toContain('### Project Dependencies');
+      expect(content).not.toContain('Board Dependencies');
+      expect(content).not.toContain('stale-project-package');
+      if (type === 'feature') {
+        expect(content).not.toContain('## Diagnostics');
+      }
     });
   }
+
+  it('reports unavailable dependencies when the open project package cannot be read', async () => {
+    projectService.getPackageJson.and.rejectWith(new Error('package unavailable'));
+    const component = createComponent();
+    prepareValidFeedback(component, 'feature');
+
+    await component.submitFeedback();
+
+    expect(submittedPayload().content).toContain('### Project Dependencies\n\n```json\nnull\n```');
+    expect(component.isSubmitting).toBeFalse();
+  });
+
+  it('includes project dependencies in the shared diagnostic text budget', async () => {
+    projectService.getPackageJson.and.resolveTo({
+      dependencies: Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`package-${index}`, '1.2.3'])),
+    });
+    logService.list = [{ detail: `large error ${'字'.repeat(16_000)}`, state: 'error', timestamp: Date.now() }];
+    const component = createComponent();
+    prepareValidFeedback(component, 'other');
+
+    await component.submitFeedback();
+
+    const content = String(submittedPayload().content);
+    const diagnosticBytes = [...content.matchAll(/```(?:json|text)\n([\s\S]*?)\n```/g)]
+      .reduce((total, match) => total + new TextEncoder().encode(match[1]).byteLength, 0);
+    expect(content).toContain('### Project Dependencies');
+    expect(content).toContain('[truncated; latest content retained]');
+    expect(diagnosticBytes).toBeLessThanOrEqual(32 * 1024);
+  });
 
   it('uses only whitelisted build metadata, library dependencies, terminal OTA state, and safe ports', async () => {
     const uploadTime = Date.parse('2026-09-02T08:30:00.000Z');
@@ -490,7 +543,8 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(content).toContain('| Port | COM7 |');
     expect(content).toContain('"name": "@aily-project/lib-alpha"');
     expect(content).toContain('"version": "^1.2.3"');
-    expect(content).not.toContain('lodash');
+    expect(content).toContain('"lodash": "^4.17.21"');
+    expect(content).not.toContain('"name": "lodash"');
     expect(content).toContain('"status": "success"');
     expect(content).toContain('"durationSeconds": 1.25');
     expect(content).toContain('"CDCOnBoot": "cdc"');
@@ -532,6 +586,9 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     projectService.getPackageJson.and.resolveTo({
       dependencies: {
         '@aily-project/lib-alpha': 'git+ssh://git@private.example/team/lib.git#private-token',
+        'registry-tag': 'latest',
+        'bearer-value': 'Bearer private-credential',
+        'assignment-value': 'password=private-password',
       },
     });
     const component = createComponent();
@@ -544,6 +601,9 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(content).toContain('"version": null');
     expect(content).not.toContain('private.example');
     expect(content).not.toContain('private-token');
+    expect(content).toContain('"registry-tag": "latest"');
+    expect(content).not.toContain('private-credential');
+    expect(content).not.toContain('private-password');
   });
 
   it('does not reuse an older OTA terminal state after newer project upload activity', async () => {
@@ -733,7 +793,8 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(payload.content).toContain('| Board Package | null |');
     expect(payload.content).toContain('| Board Package Version | null |');
     expect(payload.content).toContain('| Port | null |');
-    expect(payload.content).toContain('### Board Dependencies\n\n```json\nnull\n```');
+    expect(payload.content).not.toContain('### Project Dependencies');
+    expect(payload.content).not.toContain('Board Dependencies');
     expect(payload.content).toContain('### Libraries\n\n```json\nnull\n```');
     expect(payload.content).toContain('### Parameters\n\n```json\nnull\n```');
     expect(component.isSubmitting).toBeFalse();

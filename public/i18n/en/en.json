@@ -1,4 +1,11 @@
 {
+  "BLOCKLY_FUNCTION_VIEW": {
+    "LABEL": "View a function or the whole file",
+    "ALL": "Whole file",
+    "GLOBAL": "Global definitions",
+    "OTHER": "Other blocks",
+    "BLOCKS": "blocks"
+  },
   "CODER_TABS": {
     "PROJECTS": "Projects",
     "CLOSE": "Close Project",

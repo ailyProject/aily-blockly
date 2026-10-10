@@ -103,7 +103,7 @@ export class FieldSlider extends Blockly.FieldNumber {
     // Always quiet the input for the super constructor, as we don't want to
     // focus on the text field, and we don't want to display the modal
     // editor on mobile devices.
-    super.showEditor_(e, true);
+    super.showEditor_(e, true, false);
 
     // Build the DOM.
     const editor = this.dropdownCreate_();

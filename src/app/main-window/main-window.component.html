@@ -1,11 +1,11 @@
 <div class="main-window-box animate__animated animate__fadeIn">
   <app-header></app-header>
   <div class="content-box">
-    <nz-layout [class.app-layout-has-sider]="showRbox">
+    <div class="aily-window-layout" [class.app-layout-has-sider]="showRbox">
       <nz-content>
         <div class="middle-box">
           <!-- <ngx-simplebar [options]="options"> -->
-            <router-outlet></router-outlet>
+            <router-outlet ailyRoutedContent></router-outlet>
           <!-- </ngx-simplebar> -->
         </div>
         @if (showBbox) {
@@ -96,7 +96,7 @@
         </div>
       </nz-sider>
       }
-    </nz-layout>
+    </div>
   </div>
   <app-footer></app-footer>
 </div>

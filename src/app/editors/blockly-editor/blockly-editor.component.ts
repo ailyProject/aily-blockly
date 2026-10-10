@@ -32,6 +32,7 @@ import { BlocklyGeneratorRuntimeService } from './services/blockly-generator-run
 import { isBuildWorkspaceBusyError } from './services/generated-code-artifacts';
 import { AuthService } from '@core/auth/public-api';
 import { boardRequiresCloudAuth } from './board-auth-gate';
+import { canTransferProjectAbi } from './utils/project-abi-transfer';
 import {
   normalizeProjectMode,
 } from '@shared/public-api';
@@ -90,6 +91,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private runtimeCdcEnabled: boolean | undefined;
   private loadedProjectPath: string | null = null;
   private toolboxOnlyProjectPath: string | null = null;
+  private toolboxReadyProjectPath: string | null = null;
   private projectLoadSequence = 0;
   private projectRouteSubscription: Subscription | null = null;
 
@@ -155,6 +157,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
             return;
           }
           this._projectService.currentProjectPath = requestedProjectPath;
+          this.toolboxReadyProjectPath = null;
           this.projectService.currentProjectPath = requestedProjectPath;
           this.projectService.beginBlocklyProjectLoad(requestedProjectPath);
           projectDataRuntime.configure(params['path']);
@@ -169,14 +172,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
-          if (error instanceof ProjectToolboxOnlyLoadError) {
+          if (error instanceof ProjectToolboxOnlyLoadError || this.toolboxReadyProjectPath === requestedProjectPath) {
             this.toolboxOnlyProjectPath = requestedProjectPath;
             this.clearProjectLoadedCodeRefreshTimer();
             this.stopPackageJsonDependencyWatch();
             this.localLibrarySyncService.stop();
-            this.uiService.updateFooterState({ state: 'error', text: error.message });
+            this.uiService.updateFooterState({ state: 'error', text: detail });
           } else {
             this.abortFailedProjectLoad();
+            this.uiService.updateFooterState({ state: 'error', text: detail });
           }
           this.projectService.markBlocklyProjectLoadFailed(requestedProjectPath, detail);
           this.message.error(detail);
@@ -200,6 +204,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
   private abortFailedProjectLoad(): void {
     this.loadedProjectPath = null;
+    this.toolboxReadyProjectPath = null;
     this.clearProjectLoadedCodeRefreshTimer();
     this.stopPackageJsonDependencyWatch();
     this.localLibrarySyncService.stop();
@@ -430,6 +435,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       await this.blocklyService.loadLibrary(libPackageName, projectPath);
       assertCurrent();
     }
+    this.toolboxReadyProjectPath = projectPath;
     // 5. 加载project.abi数据
     this.uiService.updateFooterState({
       state: 'doing',
@@ -465,8 +471,18 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         `积木定义缺失：${missingBlockDefinitions.join(', ')}。已加载可用工具箱；请恢复对应积木库后重新打开项目。`,
       );
     }
-    this.blocklyService.loadProjectDocument(projectDocument, false);
-    this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument);
+    const loadLease = this.blocklyService.acquireWorkspaceEditLease();
+    try {
+      this.blocklyService.loadProjectDocument(projectDocument, false, loadLease);
+      // Comments settle after rendering. Keep queued pointer/keyboard input out
+      // of this frame gap: a drag can detach a child before /roots admission.
+      await this.waitForNextFrame(session.signal);
+      assertCurrent();
+      loadLease.assertCurrent();
+      this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
+    } finally {
+      loadLease.release();
+    }
     if (!usedBoardTemplateAbi) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
@@ -626,7 +642,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
   private async parseProjectAbiContent(content: string, signal?: AbortSignal): Promise<any> {
     if (signal?.aborted) throw signal.reason;
-    if (typeof Worker === 'undefined') {
+    if (typeof Worker === 'undefined' || !canTransferProjectAbi(content)) {
       return this.parseProjectAbiContentOnMainThread(content, signal);
     }
 

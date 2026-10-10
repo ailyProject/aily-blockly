@@ -1648,12 +1648,16 @@ export class HeaderComponent implements OnInit, OnDestroy {
     // Coder activation retains each iframe, including its unsaved editor buffers.
     if (action !== 'close' && this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return true;
     const unchanged = this.projectService.captureCurrentProjectGuard();
+    let checkError: string | undefined;
     // 检查项目是否有未保存的更改
     try {
       if (!await this.projectService.hasUnsavedChanges()) return unchanged();
     } catch (error) {
-      this.message.error(`无法确认保存状态：${error instanceof Error ? error.message : String(error)}`);
-      return false;
+      checkError = (error instanceof Error ? error.message : String(error)) || '编辑器未返回有效保存状态。';
+      if (action !== 'close') {
+        this.message.error(`无法确认保存状态：${checkError}`);
+        return false;
+      }
     }
 
     // 如果弹窗已经打开，直接返回 false，避免重复弹出
@@ -1674,7 +1678,15 @@ export class HeaderComponent implements OnInit, OnDestroy {
         },
         nzWidth: '350px',
         nzContent: UnsaveDialogComponent,
-        nzData: { action },
+        nzData: checkError ? {
+          title: '无法确认保存状态',
+          text: '无法确认项目是否有未保存的更改。跳过保存将关闭项目，并丢弃尚未保存的更改。',
+          detail: checkError,
+          buttons: [
+            { text: 'UNSAVE_DIALOG.CANCEL', type: 'default', action: 'cancel' },
+            { text: 'UNSAVE_DIALOG.SKIP_SAVE', type: 'primary', danger: true, action: 'continue' },
+          ],
+        } : { action },
         // nzDraggable: true,
       });
 
@@ -1689,6 +1701,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         }
         switch (result.result) {
           case 'save':
+            if (checkError) { resolve(false); return; }
             // 保存项目并继续
             try {
               if (this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') await this.coderPersistence.saveAllOpenProjects();

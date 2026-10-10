@@ -27,12 +27,21 @@ export function createNativeCandidateGraphics(native: typeof Blockly, tasks: Nat
   // Aily renderers consume these data-only icons when measuring a block. Use
   // the host's actual map, not reprocessed JSON or guessed library metadata.
   if (graphics) (window as any).__ailyBlockDefinitionsMap = new Map(structuredClone(graphics.blockIcons));
-  return native.inject(container, {
+  const workspace = native.inject(container, {
     ...(graphics ? { renderer: graphics.renderer, rendererOverrides: graphics.rendererOverrides ?? undefined,
       rtl: graphics.rtl, oneBasedIndex: graphics.oneBasedIndex,
       theme: native.Theme.defineTheme(graphics.theme.name, structuredClone(graphics.theme)) } : {}),
     sounds: false, trashcan: false, scrollbars: false,
     move: { drag: false, wheel: false, scrollbars: false }, zoom: { controls: false, wheel: false } });
+  workspace.setViewportRendering(graphics?.viewportRendering ?? true);
+  const viewport = workspace.getViewportRenderer();
+  if (viewport) {
+    // Keep every field/icon initializer observable, including offscreen blocks.
+    // Only SVG mounting is virtualized here; candidate validation must not defer
+    // a view's semantic effects until a user scrolls the real editor.
+    viewport.deferView = (_block, create) => { create(); return () => {}; };
+  }
+  return workspace;
 }
 
 /** Use the native view lifecycle, including custom fields, inside creation ownership. */

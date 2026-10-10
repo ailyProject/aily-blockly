@@ -57,6 +57,9 @@ function installAbsPhaseAudit() {
         const reply = event.data;
         if (!audit || !Number.isFinite(reply?.elapsedMs)) return;
         if (!record) audit.native.push(record = { phases: [] });
+        if (window.auditBindingEvidence && typeof reply.result?.binding === 'string') {
+          record.binding = reply.result.binding;
+        }
         const receivedMs = performance.now() - start;
         if (reply.replay) {
           record.replay ??= [];

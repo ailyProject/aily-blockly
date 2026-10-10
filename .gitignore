@@ -83,6 +83,7 @@ child/aily-builder*
 **/*.spec.ts
 !/src/**/*.spec.ts
 !/e2e/tests/**/*.spec.ts
+!/e2e/performance/**/*.spec.ts
 **/__tests__/**/*
 .tmp
 .temp

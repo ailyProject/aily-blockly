@@ -7,6 +7,7 @@ export interface NativeGraphicsContext {
   rendererOverrides: Record<string, unknown> | null;
   rtl: boolean;
   oneBasedIndex: boolean;
+  viewportRendering?: boolean;
   blockIcons: Array<[string, unknown]>;
   theme: {
     name: string;
@@ -25,6 +26,7 @@ export function captureNativeGraphicsContext(workspace: Blockly.Workspace | null
   return structuredClone({
     renderer: svg.options.renderer, rendererOverrides: svg.options.rendererOverrides ?? null,
     rtl: svg.RTL, oneBasedIndex: svg.options.oneBasedIndex,
+    viewportRendering: !!svg.getViewportRenderer(),
     blockIcons: Array.from(getBlockIconDefinitions() ?? []),
     theme: { name: theme.name, blockStyles: theme.blockStyles, categoryStyles: theme.categoryStyles,
       componentStyles: theme.componentStyles, fontStyle: theme.fontStyle, startHats: theme.startHats ?? false },

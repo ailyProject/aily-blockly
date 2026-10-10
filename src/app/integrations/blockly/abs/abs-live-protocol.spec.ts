@@ -71,6 +71,21 @@ describe('ABS live protocol admission', () => {
     expect(rejectAbsLiveRequest('project_save', {})).toBeNull();
   });
 
+  it('identifies an obsolete MCP caller separately from the ABS source schema', () => {
+    for (const version of [undefined, 1, '2', false, { version: 2 }]) {
+      const result = rejectAbsLiveRequest('abs_validate', { version, abs: '# ABS Schema: 2\ntext("draft")' });
+      expect(result!.code).toBe('ABS_PROTOCOL_REQUIRED');
+      expect(result!.diagnostic!.reason).toBe('generation-protocol-version');
+      expect(result!.diagnostic!.field).toBe('version');
+      expect(result!.diagnostic!.allowedValues).toEqual([2]);
+      expect(result!.diagnostic!.received).toBe(typeof version === 'object' || version === undefined ? null : version);
+      expect(result!.publication.status).toBe('NOT_COMMITTED');
+      expect(result!.recovery).toContain('MCP service');
+      expect(result!.recovery).toContain('Restarting Blockly alone');
+      expect(result!.message).toContain('not an ABS source syntax error');
+    }
+  });
+
   for (const current of [null, 'b'.repeat(64)]) {
     it(`distinguishes runtime ${current ? 'change' : 'unavailability'} without reading or applying ABS`, async () => {
       const service = bridge(); service.projectService.getBlocklyLibraryRuntimeFingerprint.and.resolveTo(current);

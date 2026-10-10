@@ -1,4 +1,11 @@
 {
+  "BLOCKLY_FUNCTION_VIEW": {
+    "LABEL": "查看函數或整個檔案",
+    "ALL": "整個檔案",
+    "GLOBAL": "全域定義",
+    "OTHER": "其他積木",
+    "BLOCKS": "塊"
+  },
   "CODER_TABS": {
     "PROJECTS": "專案",
     "CLOSE": "關閉專案",

@@ -396,6 +396,12 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     sections: Record<string, {tag: string; code: string}[]>
   ): void {
     const lines = finalCode.split('\n');
+    const trimmedLines = lines.map(line => line.trim());
+    const lineIndex = new Map<string, number[]>();
+    trimmedLines.forEach((line, index) => {
+      const entries = lineIndex.get(line);
+      if (entries) entries.push(index); else lineIndex.set(line, [index]);
+    });
 
     // tag → 行号范围
     const tagLineRanges = new Map<string, CodeLineRange>();
@@ -409,12 +415,12 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
         if (!firstLine) continue;
 
         // 在最终代码中搜索该片段首行
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].trim() === firstLine) {
+        for (const i of lineIndex.get(firstLine) ?? []) {
+          if (trimmedLines[i] === firstLine) {
             // 验证后续行也匹配
             let match = true;
             for (let j = 1; j < codeLines.length; j++) {
-              if (i + j >= lines.length || lines[i + j].trim() !== codeLines[j].trim()) {
+              if (i + j >= lines.length || trimmedLines[i + j] !== codeLines[j].trim()) {
                 match = false;
                 break;
               }
@@ -489,9 +495,8 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
 
       // 在最终代码中查找该行（跳过已被其他块占用的行）
       let matchedRange: CodeLineRange | null = null;
-      for (let i = 0; i < lines.length; i++) {
+      for (const i of lineIndex.get(firstSigLine) ?? []) {
         if (usedLines.has(i)) continue;
-        if (lines[i].trim() !== firstSigLine) continue;
 
         // 对于多行 body 代码，验证后续行是否也匹配
         if (bodyLines.length > 1) {
@@ -509,7 +514,7 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
               sigSearchIdx++;
               continue;
             }
-            if (lines[finalSearchIdx].trim() === bodySig) {
+            if (trimmedLines[finalSearchIdx] === bodySig) {
               lastMatchedIdx = finalSearchIdx;
               sigSearchIdx++;
               finalSearchIdx++;
@@ -763,23 +768,14 @@ export class ArduinoGenerator extends Blockly.CodeGenerator {
     opt_thisOnly?: boolean,
   ): string | [string, number] {
 
-    // 防御性检查：如果 forBlock 中没有该 block type 的生成器函数，
-    // 跳过该块而不是让 super.blockToCode 抛出异常
+    // Missing handlers must fail preparation: skipping them can produce a valid
+    // sketch that silently omits the user's function definitions and calls.
     if (block.isEnabled() && !block.isInsertionMarker() &&
         typeof this.forBlock[block.type] !== 'function') {
-      console.warn(
-        `[ArduinoGenerator] 跳过未注册的块类型 "${block.type}"（id: ${block.id}）。` +
-        `该块对应的库生成器可能未加载，请检查库是否已安装。`
+      throw new Error(
+        `[BLOCKLY_GENERATOR_MISSING] 积木 "${block.type}" 缺少代码生成器（id: ${block.id}）。` +
+        `请安装或修复对应积木库后再编译。`
       );
-      // 值块返回空字符串 tuple，语句块返回空字符串
-      if (block.outputConnection) {
-        return ['', 0];
-      }
-      // 语句块：如果不是 thisOnly 模式，继续处理 next 块链
-      if (!opt_thisOnly) {
-        this._statementFrames[this._statementFrames.length - 1].next = block.getNextBlock();
-      }
-      return '';
     }
 
     // 入栈当前 block

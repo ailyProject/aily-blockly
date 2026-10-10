@@ -1,4 +1,4 @@
-import { assertNoOversizedInlineValues, collectProjectDataPayloads } from '@domain/project/public-api';
+import { assertNoOversizedInlineValues, collectProjectDataPayloads, cloneBlocklyJson } from '@domain/project/public-api';
 import { AbsFieldDefinition, normalizeAbsSerializedField, resolveAbsFieldValue } from './abs-field-values';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { absJson, indexAbsAbi, indexAbsSyntax } from './abs-identity-map';
@@ -107,7 +107,7 @@ async function reconcileDraft(
   const baseline = analysis.snapshot();
   options = { ...options };
   const variableCreation = options.variableCreation ? JSON.parse(absJson(options.variableCreation)) : undefined;
-  const nativeBinding = options.nativeBinding ? structuredClone(options.nativeBinding) : undefined;
+  const nativeBinding = options.nativeBinding ? cloneBlocklyJson(options.nativeBinding) : undefined;
   const sourceEdits = options.sourceEdits ? structuredClone(options.sourceEdits) : undefined;
   if (nativeBinding && nativeBinding.source !== editedAbs) throw new AbsSyncError('ABS_NATIVE_BINDING_STALE', 'Native binding belongs to different ABS bytes.');
   await analysis.validate();
@@ -130,7 +130,7 @@ async function reconcileDraft(
   });
   // Pure syntax adapters may return object-valued state. Own it before the
   // asynchronous matcher so callbacks cannot mutate cached evidence in flight.
-  const edited = readDefinitions(() => nativeBinding?.syntax ?? structuredClone(parseAbsSyntax(editedAbs, syntax)));
+  const edited = readDefinitions(() => nativeBinding?.syntax ?? cloneBlocklyJson(parseAbsSyntax(editedAbs, syntax)));
   const newEntries = indexAbsSyntax(edited);
   const nativeInstances = new Map(nativeBinding?.instances.map(instance => [instance.start, instance]));
   const hostCalls = new Map(nativeBinding?.hostCalls?.map(call => [call.start, call]));
@@ -169,97 +169,104 @@ async function reconcileDraft(
   const retained: string[] = [];
   const sources = new Map<string, AbsSyntaxNode>();
   const defaultIds = new Set<string>();
-  const build = (node: AbsSyntaxNode, root: boolean): AbsAbiBlock => {
-    const matched = matches.get(node);
-    const previous = matched ? abiBlocks.get(originalIds.get(matched)!)! : undefined;
-    const id = previous?.id ?? (options.newId ?? (() => crypto.randomUUID()))(node);
-    if (!previous && (!id || ids.has(id))) throw new AbsSyncError('ABS_DUPLICATE_ID', 'New block ID is not unique.', node, [id]);
-    ids.add(id);
-    sources.set(id, node);
-    (previous ? retained : added).push(id);
-    const nativeInstance = nativeInstances.get(node.start);
-    if (nativeBinding && !nativeInstance && !hostCalls.has(node.start)) throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Native instance does not match this call.', node);
-    const prepareBlock = options.prepareBlock && options.hostPrepared?.(node.type) !== false ? options.prepareBlock : undefined;
-    const block: AbsAbiBlock = previous
-      ? prepareBlock ? JSON.parse(absJson(previous)) : copyAbsBlockForRebuild(previous)
-      : { ...structuredClone(nativeInstance?.seed), type: node.type, id };
-    if (node.disabled !== (matched?.disabled ?? false)) {
-      throw new AbsSyncError('ABS_STATE_EDIT_REQUIRES_HOST', 'Change disabled state through an explicit host operation.', node, [id]);
-    }
-    const declaredShape = options.blockContract?.(node.type, node.extraState, Object.fromEntries(Object.entries(node.fields).map(([name, token]) => [name, token.value])));
-    const preparedShape = nativeInstance?.shape ?? (!previous || declaredShape?.mutation || declaredShape?.fieldShape ? declaredShape : undefined);
-    // Only a per-call native execution can remove fields after a configuration change.
-    // Retained fields keep their opaque persisted state unless explicitly edited below.
-    block.fields = { ...(preparedShape?.defaults ?? {}), ...Object.fromEntries(Object.entries(block.fields ?? {})
-      .filter(([name]) => !nativeInstance || Object.hasOwn(nativeInstance.shape.fields, name))) };
-    if (preparedShape) setJsonMember(contracts.fields, id, JSON.parse(absJson(preparedShape.fields)));
-    if (preparedShape?.argumentOrder) setJsonMember(contracts.syntax ??= Object.create(null), id, preparedShape.argumentOrder);
-    if (preparedShape?.fieldShape) setJsonMember(contracts.selectors ??= Object.create(null), id, [...new Set(preparedShape.fieldShape.map(rule => rule.field))]);
-    if (nativeInstance && contracts.selectors) delete contracts.selectors[id];
-    for (const [name, token] of Object.entries(node.fields)) {
-      // Formatting or another field's edit cannot rewrite an unchanged persisted value.
-      const originalToken = matched?.fields[name];
-      try {
-        const definition = preparedShape?.fields[name] ?? options.fieldDefinition?.(node.type, name, previous?.id)
-          ?? (previous ? getAbsFieldDefinition(baseline.contracts, previous.id, name) : undefined);
-        if (token.reference && definition?.symbol?.kind !== 'variable') throw new Error('$ references require a variable field.');
-        if (definition) {
-          if (!Object.hasOwn(contracts.fields, id)) setJsonMember(contracts.fields, id, {});
-          setJsonMember(contracts.fields[id], name, JSON.parse(absJson(definition)));
+  const build = (head: AbsSyntaxNode, root: boolean): AbsAbiBlock => {
+    let first: AbsAbiBlock | undefined, tail: AbsAbiBlock | undefined;
+    for (let node: AbsSyntaxNode | undefined = head; node; node = node.next) {
+      const matched = matches.get(node);
+      const previous = matched ? abiBlocks.get(originalIds.get(matched)!)! : undefined;
+      const id = previous?.id ?? (options.newId ?? (() => crypto.randomUUID()))(node);
+      if (!previous && (!id || ids.has(id))) throw new AbsSyncError('ABS_DUPLICATE_ID', 'New block ID is not unique.', node, [id]);
+      ids.add(id);
+      sources.set(id, node);
+      (previous ? retained : added).push(id);
+      const nativeInstance = nativeInstances.get(node.start);
+      if (nativeBinding && !nativeInstance && !hostCalls.has(node.start)) throw new AbsSyncError('ABS_NATIVE_BINDING_INVALID', 'Native instance does not match this call.', node);
+      const prepareBlock = options.prepareBlock && options.hostPrepared?.(node.type) !== false ? options.prepareBlock : undefined;
+      const block: AbsAbiBlock = previous
+        ? prepareBlock ? JSON.parse(absJson(previous)) : copyAbsBlockForRebuild(previous)
+        : { ...structuredClone(nativeInstance?.seed), type: node.type, id };
+      if (node.disabled !== (matched?.disabled ?? false)) {
+        throw new AbsSyncError('ABS_STATE_EDIT_REQUIRES_HOST', 'Change disabled state through an explicit host operation.', node, [id]);
+      }
+      const declaredShape = options.blockContract?.(node.type, node.extraState, Object.fromEntries(Object.entries(node.fields).map(([name, token]) => [name, token.value])));
+      const preparedShape = nativeInstance?.shape ?? (!previous || declaredShape?.mutation || declaredShape?.fieldShape ? declaredShape : undefined);
+      // Only a per-call native execution can remove fields after a configuration change.
+      // Retained fields keep their opaque persisted state unless explicitly edited below.
+      block.fields = { ...(preparedShape?.defaults ?? {}), ...Object.fromEntries(Object.entries(block.fields ?? {})
+        .filter(([name]) => !nativeInstance || Object.hasOwn(nativeInstance.shape.fields, name))) };
+      if (preparedShape) setJsonMember(contracts.fields, id, JSON.parse(absJson(preparedShape.fields)));
+      if (preparedShape?.argumentOrder) setJsonMember(contracts.syntax ??= Object.create(null), id, preparedShape.argumentOrder);
+      if (preparedShape?.fieldShape) setJsonMember(contracts.selectors ??= Object.create(null), id, [...new Set(preparedShape.fieldShape.map(rule => rule.field))]);
+      if (nativeInstance && contracts.selectors) delete contracts.selectors[id];
+      for (const [name, token] of Object.entries(node.fields)) {
+        // Formatting or another field's edit cannot rewrite an unchanged persisted value.
+        const originalToken = matched?.fields[name];
+        try {
+          const definition = preparedShape?.fields[name] ?? options.fieldDefinition?.(node.type, name, previous?.id)
+            ?? (previous ? getAbsFieldDefinition(baseline.contracts, previous.id, name) : undefined);
+          if (token.reference && definition?.symbol?.kind !== 'variable') throw new Error('$ references require a variable field.');
+          if (definition) {
+            if (!Object.hasOwn(contracts.fields, id)) setJsonMember(contracts.fields, id, {});
+            setJsonMember(contracts.fields[id], name, JSON.parse(absJson(definition)));
+          }
+          if (originalToken && absJson(token.value) === absJson(originalToken.value)) continue;
+          const value = definition?.symbol
+            ? symbols.resolve(token, definition.symbol, previous?.fields?.[name])
+            : resolveAbsFieldValue(token, definition);
+          setJsonMember(block.fields, name, definition?.type === 'field_checkbox' ? normalizeAbsSerializedField(value, definition) : value);
+        } catch (error) {
+          const failure = serializeAbsFailure(error);
+          throw new AbsSyncError(error instanceof AbsSyncError ? error.code : 'ABS_FIELD_INVALID',
+            `${node.type}.${name}: ${failure.message}`, node.fieldRanges[name] ?? node, [id],
+            { ...failure.diagnostic, blockType: node.type, field: name });
         }
-        if (originalToken && absJson(token.value) === absJson(originalToken.value)) continue;
-        const value = definition?.symbol
-          ? symbols.resolve(token, definition.symbol, previous?.fields?.[name])
-          : resolveAbsFieldValue(token, definition);
-        setJsonMember(block.fields, name, definition?.type === 'field_checkbox' ? normalizeAbsSerializedField(value, definition) : value);
-      } catch (error) {
-        const failure = serializeAbsFailure(error);
-        throw new AbsSyncError(error instanceof AbsSyncError ? error.code : 'ABS_FIELD_INVALID',
-          `${node.type}.${name}: ${failure.message}`, node.fieldRanges[name] ?? node, [id],
-          { ...failure.diagnostic, blockType: node.type, field: name });
       }
-    }
-    if (Object.hasOwn(node, 'extraState')) block.extraState = node.extraState;
-    // Native execution already verified the hydrated explicit extraState. Keep
-    // its source envelope here; shape equality belongs after materialization.
-    if (nativeInstance ? !Object.hasOwn(node, 'extraState') : preparedShape?.mutation || preparedShape?.fieldShape) {
-      if (preparedShape.extraState === undefined) delete block.extraState;
-      else block.extraState = preparedShape.extraState;
-    }
-    prepareBlock?.(block, previous, candidate, contracts);
-    const defaultInputs = previous ? new Set<string>() : adoptAbsNativeDefaults(nativeBinding, node, block, { ids, contracts, added, defaultIds });
-    const inputs = { ...block.inputs };
-    for (const name of new Set([...Object.keys(inputs), ...Object.keys(node.inputs)])) {
-      if (defaultInputs.has(name)) continue;
-      const originalInput = Object.hasOwn(inputs, name) ? inputs[name] : undefined;
-      const child = node.inputs[name];
-      if (preparedShape && !Object.hasOwn(preparedShape.inputs, name) && !child) {
-        // An explicit, proven shape change removes the slot itself, including its
-        // dormant shadow. Ordinary disconnection must still preserve that shadow.
-        delete inputs[name]; continue;
+      if (Object.hasOwn(node, 'extraState')) block.extraState = node.extraState;
+      // Native execution already verified the hydrated explicit extraState. Keep
+      // its source envelope here; shape equality belongs after materialization.
+      if (nativeInstance ? !Object.hasOwn(node, 'extraState') : preparedShape?.mutation || preparedShape?.fieldShape) {
+        if (preparedShape.extraState === undefined) delete block.extraState;
+        else block.extraState = preparedShape.extraState;
       }
-      if (child) {
-        const next = build(child, false);
-        // A visible shadow stays a shadow only while its original identity remains.
-        if (!originalInput?.block && originalInput?.shadow?.id === next.id) setJsonMember(inputs, name, { ...originalInput, shadow: next });
-        else setJsonMember(inputs, name, { ...originalInput, block: next });
-      } else if (originalInput?.block && originalInput.shadow) {
-        const { block: removed, ...fallback } = originalInput;
-        setJsonMember(inputs, name, fallback);
-      } else if (originalInput?.shadow) {
-        // Removing a visible shadow is not a reliable instruction to delete a
-        // default connection: require a shape/state operation instead.
-        throw new AbsSyncError('ABS_CONNECTION_EDIT_REQUIRES_HOST', 'Cannot silently remove a fallback shadow.', node, [id]);
-      } else if (!originalInput || originalInput.block || !Object.hasOwn(node.inputs, name)) delete inputs[name];
+      prepareBlock?.(block, previous, candidate, contracts);
+      const defaultInputs = previous ? new Set<string>() : adoptAbsNativeDefaults(nativeBinding, node, block, { ids, contracts, added, defaultIds });
+      const inputs = { ...block.inputs };
+      for (const name of new Set([...Object.keys(inputs), ...Object.keys(node.inputs)])) {
+        if (defaultInputs.has(name)) continue;
+        const originalInput = Object.hasOwn(inputs, name) ? inputs[name] : undefined;
+        const child = node.inputs[name];
+        if (preparedShape && !Object.hasOwn(preparedShape.inputs, name) && !child) {
+          // An explicit, proven shape change removes the slot itself, including its
+          // dormant shadow. Ordinary disconnection must still preserve that shadow.
+          delete inputs[name]; continue;
+        }
+        if (child) {
+          const next = build(child, false);
+          // A visible shadow stays a shadow only while its original identity remains.
+          if (!originalInput?.block && originalInput?.shadow?.id === next.id) setJsonMember(inputs, name, { ...originalInput, shadow: next });
+          else setJsonMember(inputs, name, { ...originalInput, block: next });
+        } else if (originalInput?.block && originalInput.shadow) {
+          const { block: removed, ...fallback } = originalInput;
+          setJsonMember(inputs, name, fallback);
+        } else if (originalInput?.shadow) {
+          // Removing a visible shadow is not a reliable instruction to delete a
+          // default connection: require a shape/state operation instead.
+          throw new AbsSyncError('ABS_CONNECTION_EDIT_REQUIRES_HOST', 'Cannot silently remove a fallback shadow.', node, [id]);
+        } else if (!originalInput || originalInput.block || !Object.hasOwn(node.inputs, name)) delete inputs[name];
+      }
+      if (Object.keys(inputs).length) block.inputs = inputs;
+      else delete block.inputs;
+      const nextMetadata = block.next;
+      delete block.next;
+      if (!root || first) { delete block['x']; delete block['y']; }
+      else if (!previous) { block['x'] = 30; block['y'] = 30 + added.length * 100; }
+      if (!Object.keys(block.fields).length && !previous?.fields) delete block.fields;
+      if (tail) tail.next = { ...tail.next, block };
+      else first = block;
+      if (node.next && nextMetadata) block.next = { ...nextMetadata };
+      tail = block;
     }
-    if (Object.keys(inputs).length) block.inputs = inputs;
-    else delete block.inputs;
-    if (node.next) block.next = { ...block.next, block: build(node.next, false) };
-    else delete block.next;
-    if (!root) { delete block['x']; delete block['y']; }
-    else if (!previous) { block['x'] = 30; block['y'] = 30 + added.length * 100; }
-    if (!Object.keys(block.fields).length && !previous?.fields) delete block.fields;
-    return block;
+    return first!;
   };
   candidate.blocks.blocks = readDefinitions(() => edited.map(node => build(node, true)));
   assertAbsProtectedBlocks(baseline.workspace, candidate);

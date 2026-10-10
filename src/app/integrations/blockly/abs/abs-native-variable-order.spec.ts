@@ -12,10 +12,10 @@ describe('shared native variable ordering', () => {
     try {
       const models = names.map(name => new Blockly.VariableModel(workspace, name, ''));
       for (const left of models) for (const right of models) {
-        expect(Math.sign(Blockly.VariableModel.compareByName(left, right)))
-          .withContext(`${left.name}/${right.name}`).toBe(Math.sign(originalOrder(left.name, right.name)));
+        expect(Math.sign(Blockly.Variables.compareByName(left, right)))
+          .withContext(`${left.getName()}/${right.getName()}`).toBe(Math.sign(originalOrder(left.getName(), right.getName())));
       }
-      expect([...models].sort(Blockly.VariableModel.compareByName).map(model => model.name))
+      expect([...models].sort(Blockly.Variables.compareByName).map(model => model.getName()))
         .toEqual([...names].sort(originalOrder));
     } finally { workspace.dispose(); }
   });
@@ -24,24 +24,24 @@ describe('shared native variable ordering', () => {
     installBlocklyVariableComparator();
     const workspace = new Blockly.Workspace();
     try {
-      const left = workspace.createVariable('a', '', 'left'), right = workspace.createVariable('z', '', 'right');
-      expect(Blockly.VariableModel.compareByName(left, right)).toBeLessThan(0);
-      workspace.renameVariableById(left.getId(), 'zz');
-      expect(Blockly.VariableModel.compareByName(left, right)).toBeGreaterThan(0);
-      workspace.deleteVariableById(right.getId());
-      workspace.createVariable('0', '', 'new');
-      expect(workspace.getAllVariables().sort(Blockly.VariableModel.compareByName).map(model => model.getId())).toEqual(['new', 'left']);
+      const left = workspace.getVariableMap().createVariable('a', '', 'left'), right = workspace.getVariableMap().createVariable('z', '', 'right');
+      expect(Blockly.Variables.compareByName(left, right)).toBeLessThan(0);
+      workspace.getVariableMap().renameVariable(left, 'zz');
+      expect(Blockly.Variables.compareByName(left, right)).toBeGreaterThan(0);
+      Blockly.Variables.deleteVariable(workspace, right);
+      workspace.getVariableMap().createVariable('0', '', 'new');
+      expect(workspace.getVariableMap().getAllVariables().sort(Blockly.Variables.compareByName).map(model => model.getId())).toEqual(['new', 'left']);
     } finally { workspace.dispose(); }
   });
 
   it('is idempotent and does not overwrite a later library comparator', () => {
     installBlocklyVariableComparator();
-    const compare = Blockly.VariableModel.compareByName;
+    const compare = Blockly.Variables.compareByName;
     installBlocklyVariableComparator();
-    expect(Blockly.VariableModel.compareByName).toBe(compare);
-    const libraryCompare = spyOn(Blockly.VariableModel, 'compareByName').and.returnValue(0);
+    expect(Blockly.Variables.compareByName).toBe(compare);
+    const libraryCompare = spyOn(Blockly.Variables, 'compareByName').and.returnValue(0);
     installBlocklyVariableComparator();
-    expect(Blockly.VariableModel.compareByName).toBe(libraryCompare);
+    expect(Blockly.Variables.compareByName).toBe(libraryCompare);
   });
 
   for (const run of [1, 2]) it(`installs before dropdown loading in fresh candidate ${run}, without per-comparison locale setup`, async () => {

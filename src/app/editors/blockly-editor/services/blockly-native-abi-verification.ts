@@ -1,4 +1,5 @@
 import type * as Blockly from 'blockly';
+import { cloneBlocklyJson } from '@domain/project/project-document/public-api';
 import type { NativeCandidateRequest, NativeCandidateResult } from './blockly-native-candidate-protocol';
 import { createAbsReadbackVerifier } from '../../../integrations/blockly/abs/abs-readback';
 import { normalizeAbsSerializedWorkspace } from '../../../integrations/blockly/abs/abs-serialized-workspace';
@@ -19,12 +20,12 @@ import { withNativeFieldDependencies } from './blockly-native-field-dependencies
 export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly.Workspace,
   request: NonNullable<NativeCandidateRequest['verify']>, generator: Blockly.Generator | undefined,
   assertClean: () => void, readPrepared: PreparedDataReader, uiTasks = new NativeUiTasks(), progress: NativeCandidateProgress = () => {}): Promise<NativeCandidateResult> {
-  const expected = structuredClone(request.state);
+  const expected = cloneBlocklyJson(request.state);
   const verify = createAbsReadbackVerifier(expected, { fieldDefinition: (_type, name, id) => request.contracts.fields[id]?.[name] });
   // Variable identities are explicit inputs; other serializers still need ownership.
   if (Object.keys(expected).some(key => !['blocks', 'variables', '$ailyProjectData'].includes(key))) throw new Error('Native ABI model/resource ownership is not prepared.');
   if (!generator) throw new Error('Native ABI verification requires the actual project generator.');
-  const detached = structuredClone(expected);
+  const detached = cloneBlocklyJson(expected);
   progress('load');
   orderAbsNativeFields(detached, request.contracts);
   withNativeFieldDependencies(native, workspace, () => withNativeStateLoading(native, workspace, detached,
@@ -52,7 +53,7 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
     if (new Set(request.newRootIds).size !== request.newRootIds.length || request.newRootIds.some(id => !roots.has(id))) {
       throw new Error('Native new-root placement requires unique final root identities.');
     }
-    layoutAbsNewRoots(structuredClone(expected), request.newRootIds, workspace as Blockly.WorkspaceSvg, assertClean, native);
+    layoutAbsNewRoots(cloneBlocklyJson(expected), request.newRootIds, workspace as Blockly.WorkspaceSvg, assertClean, native);
     capture(); // Moving a block must not change fields, connections or models.
   }
   const deferredUi = uiTasks.hasPending;

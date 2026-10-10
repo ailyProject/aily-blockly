@@ -27,6 +27,10 @@ export interface NativeCandidateRequest {
   graphics?: NativeGraphicsContext;
   /** Internal deterministic namespace, never an Agent model-creation permission. */
   modelRequestId?: string;
+  /** Exact unchanged producer subtrees and model IDs from the committed baseline.
+   * Existing repeated registrations are not new object declarations. */
+  retainedModelCalls?: number[];
+  retainedModelIds?: string[];
   steps: NativeReplayStep[];
   blocks: NativeCandidateBlock[];
   /** Internal binding. Mutually exclusive with explicit blocks; no new public Agent contract. */

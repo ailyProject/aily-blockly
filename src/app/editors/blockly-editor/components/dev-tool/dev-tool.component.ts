@@ -119,6 +119,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         getBounds: () => this.getPositionBounds(),
         applyPosition: (position, bounds) => this.applyPosition(position, bounds),
         onDraggingChange: dragging => this.setDragging(dragging),
+        onPositionCommitted: position => this.savePosition(position),
       });
       this.dragController.connect();
       handle.addEventListener('pointerleave', this.onDragHandleLeave);
@@ -131,7 +132,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
       this.initAnimationFrame = window.requestAnimationFrame(() => {
         this.initAnimationFrame = null;
-        this.centerAtBottom();
+        this.restorePosition();
       });
     });
   }
@@ -189,14 +190,29 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     this.ngZone.run(() => this.dragTooltipVisible = visible);
   }
 
-  private centerAtBottom() {
+  private restorePosition(): void {
     const bounds = this.getPositionBounds();
-    this.dragController?.setPosition({
-      x: Math.round(bounds.maxX / 2),
-      y: bounds.minY,
-    }, bounds);
+    const saved = this.configService.data.devToolPosition;
+    const position = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+      && saved.x >= 0 && saved.y >= bounds.minY
+      ? { x: saved.x, y: saved.y }
+      : { x: Math.round(bounds.maxX / 2), y: bounds.minY };
+    // Keep the preferred position while applyPosition clamps it for a smaller
+    // window/panel layout. Resizing must not replace the saved preference.
+    this.dragController?.setPosition(position, bounds);
     this.positionReady = true;
     this.devtoolBox.nativeElement.classList.add('position-ready');
+  }
+
+  private savePosition(position: DragPoint): void {
+    const bounds = this.getPositionBounds();
+    this.configService.data.devToolPosition = {
+      x: Math.round(this.clamp(position.x, 0, bounds.maxX)),
+      y: Math.round(this.clamp(position.y, bounds.minY, bounds.maxY)),
+    };
+    void this.configService.save().catch(error => {
+      console.warn('[DevTool] Failed to save toolbar position:', error);
+    });
   }
 
   private applyPosition(position: DragPoint, bounds = this.getPositionBounds()): void {

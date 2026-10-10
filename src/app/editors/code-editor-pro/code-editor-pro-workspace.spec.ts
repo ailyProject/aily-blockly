@@ -20,7 +20,7 @@ describe('Coder retained project workspaces', () => {
       relative: (root: string, path: string) => path === root ? '' : path.startsWith(root + '/') ? path.slice(root.length + 1) : '../outside',
       isAbsolute: (path: string) => path.startsWith('/'),
     };
-    window['fs'] = { isDirectory: () => true };
+    window['fs'] = { isDirectory: () => true, existsSync: () => true };
     window['ipcRenderer'] = { send: jasmine.createSpy('send') };
     window['projectLock'] = { tryAcquire: jasmine.createSpy('acquire').and.resolveTo({ ok: true }), release: jasmine.createSpy('release').and.resolveTo() };
     service = Object.create(ProjectService.prototype);
@@ -40,6 +40,9 @@ describe('Coder retained project workspaces', () => {
       isAilyCodeProject: (path: string) => path.includes('device'),
       electronService: { isElectron: true, exists: () => true, readFile: () => '{"name":"device","type":"coder"}', setTitle: jasmine.createSpy('title') },
     });
+    service.projectLifecycle = {hasActive: () => false, acquire: () => ({token: Symbol('fixture'), release() {}})};
+    service.stopProjectCommands = jasmine.createSpy('stopProjectCommands').and.resolveTo();
+    Object.defineProperty(service, 'application', {value: {hasActiveProjectMutation: () => false}, configurable: true});
     service.currentProjectPath = '/work/device-a';
   });
   afterEach(() => Object.assign(window, originals));
@@ -261,7 +264,7 @@ describe('Coder retained project workspaces', () => {
     service.beginCoderOperation('upload', '/work/device-a');
     service.ensureProjectModeAllowed = async () => true;
     service.configService.getApplicationName = () => 'Coder';
-    service.routerService = { navigate: jasmine.createSpy('navigate').and.resolveTo(true) };
+    service.routerService = { navigate: jasmine.createSpy('navigate').and.resolveTo(true), createUrlTree: () => ({}), isActive: () => false };
     service.projectActivationSubject = new Subject();
     Object.defineProperty(service, 'application', { value: { dispatchProjectSave: jasmine.createSpy('save') } });
     const b = service.getCoderProjectContext('/work/device-b');

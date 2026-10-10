@@ -16,6 +16,10 @@ describe('Header project save as', () => {
       currentProjectPath: '/Aily Projects/My Project',
       currentPackageData: { name: 'my_project', path: '/legacy/default' },
       getProjectMode: jasmine.createSpy('mode').and.returnValue('coder'),
+      captureCurrentProjectGuard() {
+        const original = this.currentProjectPath;
+        return () => this.currentProjectPath === original;
+      },
       saveAs: jasmine.createSpy('saveAs').and.resolveTo(),
     };
     header.message = { error: jasmine.createSpy('error') };

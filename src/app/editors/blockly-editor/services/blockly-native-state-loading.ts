@@ -1,4 +1,5 @@
 import type * as Blockly from 'blockly';
+import { cloneProjectJson } from '@domain/project/project-document/public-api';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
@@ -7,6 +8,31 @@ import { nativeFieldDependencies, withNativeFieldDependencies } from './blockly-
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 
 type FieldOrder = (block: Blockly.Block) => readonly string[] | undefined;
+
+/** Old plus/minus procedure definitions persisted parameter connection IDs.
+ * Native Blockly keeps the same variable models but omits argId on save. Keep
+ * that instance-local metadata for surviving parameters across save/reopen;
+ * names, models, arity and connections still come from the live native block. */
+function retainLegacyProcedureParameterIds(block: Blockly.Block, state: Record<string, unknown>): void {
+  if (block.type !== 'procedures_defnoreturn' && block.type !== 'procedures_defreturn') return;
+  const params = (state['extraState'] as { params?: unknown })?.params;
+  if (!Array.isArray(params) || typeof block.saveExtraState !== 'function') return;
+  const ids = new Map<string, string>();
+  for (const param of params) {
+    if (param && typeof param.id === 'string' && typeof param.argId === 'string') ids.set(param.id, param.argId);
+  }
+  if (!ids.size) return;
+  const save = block.saveExtraState;
+  block.saveExtraState = function (...args) {
+    const result = Reflect.apply(save, this, args);
+    if (Array.isArray(result?.params)) {
+      for (const param of result.params) {
+        if (!Object.hasOwn(param, 'argId') && ids.has(param.id)) param.argId = ids.get(param.id);
+      }
+    }
+    return result;
+  };
+}
 
 /** Keep the two observed legacy U8G2 symbols on their live field instances
  * when a published picker omits them. */
@@ -67,6 +93,21 @@ function adaptLegacyU8g2Font(block: Blockly.Block, values: Record<string, any>):
 
 const TFT_SPI_NUMBERS = ['WIDTH', 'HEIGHT', 'MISO', 'MOSI', 'SCLK', 'CS', 'DC', 'RST', 'BL'] as const;
 
+/** The GC9A01 SPI generator does not consume QSPI pins. Its board initializer
+ * mirrors the active SPI pins into previously unset QSPI defaults. Admit only
+ * that exact initialization, not arbitrary changes to saved or active pins. */
+function initializedTftDefaults(block: Blockly.Block, fields: Record<string, any>): Record<string, any> {
+  if (block.type !== 'tftespi_setup' || fields['MODEL'] !== 'GC9A01_DRIVER'
+    || block.getFieldValue('MODEL') !== fields['MODEL']) return fields;
+  const view = { ...fields };
+  for (const [inactive, active] of [['QSPI_CS', 'CS'], ['QSPI_SCLK', 'SCLK'], ['QSPI_RST', 'RST']]) {
+    if (fields[inactive] === '-1' && typeof fields[active] === 'string'
+      && block.getFieldValue(active) === fields[active]
+      && block.getFieldValue(inactive) === fields[active]) view[inactive] = fields[active];
+  }
+  return view;
+}
+
 /** lib-tft-espi published both field-based and value-input-based setup blocks.
  * Adapt only scalar number children/fields to the shape actually installed for
  * this project. The saved ABI and library definition remain untouched. */
@@ -113,14 +154,21 @@ function adaptLegacyTftSetup(block: Blockly.Block, savedFields: Record<string, a
  * adapters as native loading; no replay, generators or persistent state edits.
  * Only adapter-created shadows obtain their assigned native IDs here. */
 export function nativeLoadedStateView<T>(state: T, workspace: Blockly.Workspace): T {
-  const view = structuredClone(state);
+  const view = cloneProjectJson(state);
   for (const { state: entry } of collectProjectBlocks(view)) {
     const block = typeof entry['id'] === 'string' ? workspace.getBlockById(entry['id']) : null;
     if (!block || block.type !== entry['type']) continue;
+    // The old if/else mutator omitted the false default; the current serializer
+    // writes it explicitly. Only admit the default when no ELSE input exists.
+    const extra = entry['extraState'] as Record<string, unknown> | undefined;
+    if (block.type === 'controls_ifelse' && extra && typeof extra === 'object' && !Array.isArray(extra)
+      && !Object.hasOwn(extra, 'hasElse') && !block.getInput('ELSE')) {
+      entry['extraState'] = { ...extra, hasElse: false };
+    }
     const fields = entry['fields'] as Record<string, any> | undefined;
     const inputs = entry['inputs'] as Record<string, any> | undefined;
     const adapted = adaptLegacyTftSetup(block, fields ?? {}, inputs ?? {});
-    const fieldView = adaptLegacyU8g2Font(block, adaptLegacyU8g2Begin(block, adapted.fields));
+    const fieldView = initializedTftDefaults(block, adaptLegacyU8g2Font(block, adaptLegacyU8g2Begin(block, adapted.fields)));
     if (fields || Object.keys(fieldView).length) entry['fields'] = fieldView;
     for (const [name, slot] of Object.entries(adapted.inputs)) {
       if (inputs && Object.hasOwn(inputs, name) || !slot.shadow || slot.shadow.id) continue;
@@ -323,6 +371,10 @@ function loadNativeState<T>(native: typeof Blockly, workspace: Blockly.Workspace
     return withNativeBlockCreation(workspace, run => {
       owned = run;
       const result = load();
+      for (const entry of entries) {
+        const block = created.get(entry['id'] as string);
+        if (block && !block.isDisposed()) retainLegacyProcedureParameterIds(block, entry);
+      }
       orderShadowDefaults(created.values(), orders);
       return result;
     }, (block, id, owner) => {

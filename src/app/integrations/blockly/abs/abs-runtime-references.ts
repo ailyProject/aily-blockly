@@ -1,3 +1,4 @@
+import '../../../editors/blockly-editor/utils/blockly-legacy-library-compat';
 import * as Blockly from 'blockly';
 import { AbsAbiWorkspace, AbsSyncError } from './abs-state';
 import { absJson, indexAbsAbi } from './abs-identity-map';
@@ -14,7 +15,10 @@ const nativeFields = new Set<unknown>([Blockly.FieldTextInput, Blockly.FieldNumb
   Blockly.FieldDropdown, Blockly.FieldVariable, Blockly.FieldLabelSerializable]);
 const blockKeys = new Set(['type', 'id', 'x', 'y', 'fields', 'inputs', 'next', 'extraState', 'collapsed',
   'deletable', 'movable', 'editable', 'enabled', 'disabled', 'disabledReasons', 'inline', 'shadow', 'data', 'icons']);
-const nativeGetVars = Blockly.Block.prototype.getVars;
+// Independently published libraries may still implement v11 getVars. Native
+// v13 blocks express references with getVarModels instead.
+type LegacyVariableBlock = Blockly.Block & { getVars?: () => string[] };
+const nativeGetVars = (Blockly.Block.prototype as LegacyVariableBlock).getVars;
 const nativeGetVarModels = Blockly.Block.prototype.getVarModels;
 
 /** Complete coverage only for verified native fields and explicit procedure protocols.
@@ -78,7 +82,7 @@ export function captureAbsPageReferenceContract(
       }
       const procedure = procedures[id];
       const customShape = custom?.existing(state);
-      if ((!procedure || customShape) && (block!.getVars !== nativeGetVars || block!.getVarModels !== nativeGetVarModels)) {
+      if ((!procedure || customShape) && ((block as LegacyVariableBlock).getVars !== nativeGetVars || block!.getVarModels !== nativeGetVarModels)) {
         fail('Custom variable getters need a reference adapter, even when currently empty.', id);
       }
       const extra = state.extraState;
@@ -123,8 +127,9 @@ export function captureAbsPageReferenceContract(
       if (!Array.isArray(models) || absJson([...new Set(models.map(model => model.getId()))].sort()) !== absJson([...runtimeReferences].sort())) {
         fail('Block model references are not fully represented by the captured fields/procedure paths.', id);
       }
-      const variables = block!.getVars();
-      const expectedVariables = procedure && !customShape ? models.map(model => model.name) : [...runtimeReferences];
+      const legacyGetVars = (block as LegacyVariableBlock).getVars;
+      const variables = legacyGetVars ? legacyGetVars.call(block) : [...runtimeReferences];
+      const expectedVariables = procedure && !customShape && legacyGetVars && legacyGetVars !== nativeGetVars ? models.map(model => model.getName()) : [...runtimeReferences];
       if (!Array.isArray(variables) || absJson([...new Set(variables)].sort()) !== absJson([...new Set(expectedVariables)].sort())) {
         fail('Block declares additional variable references requiring an adapter.', id);
       }

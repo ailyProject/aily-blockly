@@ -4,8 +4,16 @@
     "src/app/integrations/blockly/abs/abs-startup-interaction.spec.ts",
     "src/app/integrations/blockly/abs/abs-prepared-code.spec.ts",
     "src/app/editors/blockly-editor/utils/blockly-performance.spec.ts",
+    "src/app/editors/blockly-editor/utils/blockly-function-view.spec.ts",
+    "src/app/editors/blockly-editor/utils/blockly-drag-render-batch.spec.ts",
+    "src/app/editors/blockly-editor/utils/workspace-minimap.spec.ts",
+    "src/app/editors/blockly-editor/utils/blockly-text-measurement.spec.ts",
     "src/app/editors/blockly-editor/services/builder.service.spec.ts",
     "src/app/editors/blockly-editor/services/build-upload-flow.spec.ts",
+    "src/app/editors/blockly-editor/components/blockly/generators/arduino/arduino.spec.ts",
+    "src/app/editors/blockly-editor/services/code-viewer-ipc.service.spec.ts",
+    "src/app/integrations/blockly/abs/abs-generator-project-effects.spec.ts",
+    "src/app/services/domains/project/project-document-json.spec.ts",
     "src/**/*.d.ts"
   ],
   "exclude": []

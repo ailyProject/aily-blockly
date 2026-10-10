@@ -66,9 +66,15 @@ export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionCo
       + (isAbsBlockDisabled(block) ? ' @disabled' : '');
   };
   const lines = [ABS_SCHEMA_HEADER, '# Project Data Schema: 1 (external-only)', ''];
-  const render = (block: AbsAbiBlock, path: string, depth: number, chain = false) => {
+  type RenderTask = { block: AbsAbiBlock; path: string; depth: number; chain?: boolean } | { line: string };
+  const pending: RenderTask[] = workspace.blocks.blocks.map((block, index) => ({ block, path: `/blocks/${index}`, depth: 0 })).reverse();
+  while (pending.length) {
+    const task = pending.pop()!;
+    if ('line' in task) { lines.push(task.line); continue; }
+    const { block, path, depth, chain = false } = task;
     const indent = '    '.repeat(depth);
     lines.push(indent + call(block, path));
+    const children: RenderTask[] = [];
     const statements = syntax.argumentOrder?.(block.type, block.extraState, block.fields)?.filter(arg => arg.kind === 'statementInput');
     const branch = branches(block);
     const names = [...new Set([...(branch ?? []), ...Object.keys(block.inputs ?? {})])]
@@ -78,18 +84,18 @@ export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionCo
       if (renderedInputs.get(block)?.has(name)) continue;
       if (name === 'next') throw new AbsSyncError('ABS_INPUT_UNSUPPORTED', 'The input name next conflicts with @next.');
       if (branch && child && inlineInput(block, name)) {
-        lines.push(`${indent}    @${identifier(name)}: ${call(child, absInputPath(path, name))}`);
+        children.push({ line: `${indent}    @${identifier(name)}: ${call(child, absInputPath(path, name))}` });
         continue;
       }
       const implicit = !branch && child && statements?.length === 1 && statements[0].name === name;
-      if (!implicit) lines.push(`${indent}    @${identifier(name)}:`);
-      if (child) render(child, absInputPath(path, name), depth + (implicit ? 1 : 2), statements?.some(arg => arg.name === name));
+      if (!implicit) children.push({ line: `${indent}    @${identifier(name)}:` });
+      if (child) children.push({ block: child, path: absInputPath(path, name), depth: depth + (implicit ? 1 : 2), chain: statements?.some(arg => arg.name === name) });
     }
     if (block.next?.block) {
-      if (!chain) lines.push(`${indent}    @next:`);
-      render(block.next.block, `${path}/next`, depth + (chain ? 0 : 2), chain);
+      if (!chain) children.push({ line: `${indent}    @next:` });
+      children.push({ block: block.next.block, path: `${path}/next`, depth: depth + (chain ? 0 : 2), chain });
     }
-  };
-  workspace.blocks.blocks.forEach((block, index) => render(block, `/blocks/${index}`, 0));
+    pending.push(...children.reverse());
+  }
   return { abs: lines.join('\n'), blockAtPath, symbolAtPath };
 }
