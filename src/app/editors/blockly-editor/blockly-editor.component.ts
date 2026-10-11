@@ -473,7 +473,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
     const loadLease = this.blocklyService.acquireWorkspaceEditLease();
     try {
-      this.blocklyService.loadProjectDocument(projectDocument, false, loadLease);
+      await this.ngZone.runOutsideAngular(() =>
+        this.blocklyService.loadProjectDocumentForOpen(projectDocument, loadLease, assertCurrent));
       // Comments settle after rendering. Keep queued pointer/keyboard input out
       // of this frame gap: a drag can detach a child before /roots admission.
       await this.waitForNextFrame(session.signal);

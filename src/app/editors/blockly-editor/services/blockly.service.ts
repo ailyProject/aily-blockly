@@ -19,6 +19,9 @@ import { AbsBlockContextIndex, truncateAbsContext } from '../../../integrations/
 import type { AbsProjection } from '../../../integrations/blockly/abs/abs-state';
 import { nativeFieldOrder } from '../../../integrations/blockly/abs/abs-native-field-order';
 import { nativeLoadedStateView, withNativeStateLoading } from './blockly-native-state-loading';
+import { beginNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { loadAbsWorkspaceInChunks } from '../../../integrations/blockly/abs/abs-chunk-loader';
+import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { adaptLegacyDhtRuntimeState } from './blockly-legacy-dht-runtime';
 import { BlockSearcher } from '../components/blockly/plugins/toolbox-search/src/block_searcher';
 import {
@@ -1007,6 +1010,44 @@ export class BlocklyService {
     this.loadActivePageIntoWorkspace(owner);
   }
 
+  /** Initial opens can yield while the existing edit lease fences incomplete
+   * topology. Synchronous edits, rollback and page transactions keep their
+   * existing atomic loader. Publish readiness only after complete readback. */
+  async loadProjectDocumentForOpen(document: BlocklyProjectDocument, owner: BlocklyWorkspaceEditLease,
+    assertCurrent: () => void): Promise<void> {
+    const workspace = this.workspace;
+    const check = () => { assertCurrent(); owner.assertCurrent(); };
+    check();
+    this.applyProjectDocument(normalizeBlocklyOwnership(document, captureBlocklyRootClassifier(null, Blockly.Blocks)), false);
+    await this.loadActivePageIntoWorkspace(owner, undefined, async state => {
+      if (collectProjectBlocks(state).length < 1000) {
+        Blockly.Events.disable();
+        try { this.loadWorkspaceJson(state, false, owner); }
+        finally { Blockly.Events.enable(); }
+        return;
+      }
+      const { workspaceJson, definitions } = this.prepareWorkspaceLoad(state, false);
+      Blockly.Events.disable();
+      const fields = beginNativeFieldDependencies(Blockly, workspace);
+      try {
+        await loadAbsWorkspaceInChunks(workspaceJson, workspace, undefined, check,
+          block => nativeFieldOrder(block, definitions));
+        check();
+        fields.finish();
+        captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(workspace, true);
+        this.functionView?.loaded();
+      } finally { fields.dispose(); Blockly.Events.enable(); }
+      // The canvas is mounted again now. Restore the saved zoom/pan before
+      // yielding a paint; otherwise large projects flash at the default scale.
+      this.restoreWorkspaceViewState(this.getActivePage()?.viewState);
+      // Yield after complete geometry, before collecting the page's
+      // reference contracts. The caller still holds the input/transaction lease.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      check();
+    });
+    check();
+  }
+
   /** ABS mutates the composed active workspace, not titles/tabs or another page's content. */
   restoreProjectWorkspaceSnapshot(snapshot: BlocklyProjectDocument, owner?: BlocklyWorkspaceEditLease, rootOrder?: readonly string[]): void {
     this.assertWorkspaceEditAvailable(owner);
@@ -1417,6 +1458,15 @@ export class BlocklyService {
       return;
     }
 
+    const { workspaceJson, definitions } = this.prepareWorkspaceLoad(jsonData, clone);
+    withNativeStateLoading(Blockly, this.workspace, workspaceJson,
+      () => loadBlocklyWorkspace(this.workspace, workspaceJson),
+      block => nativeFieldOrder(block, definitions));
+    captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(this.workspace, true);
+    this.functionView?.loaded();
+  }
+
+  private prepareWorkspaceLoad(jsonData: any, clone: boolean) {
     let workspaceJson = (clone ? this.cloneJson(jsonData) : jsonData) || this.createEmptyWorkspaceContent();
     const definitions = this.captureDeclarativeBlockDefinitions();
     workspaceJson = this.adaptWorkspaceToRuntime(workspaceJson, definitions);
@@ -1428,11 +1478,7 @@ export class BlocklyService {
     });
 
     definitions.assertCurrent();
-    withNativeStateLoading(Blockly, this.workspace, workspaceJson,
-      () => loadBlocklyWorkspace(this.workspace, workspaceJson),
-      block => nativeFieldOrder(block, definitions));
-    captureCustomFunctionRegistration(Blockly.Blocks)?.prepareSerialization(this.workspace, true);
-    this.functionView?.loaded();
+    return { workspaceJson, definitions };
   }
 
   // 通过node_modules加载库
@@ -2973,7 +3019,8 @@ export class BlocklyService {
     });
   }
 
-  private loadActivePageIntoWorkspace(owner?: BlocklyWorkspaceEditLease, rootOrder?: readonly string[]) {
+  private loadActivePageIntoWorkspace(owner?: BlocklyWorkspaceEditLease, rootOrder?: readonly string[],
+    load?: (state: any) => Promise<void>): void | Promise<void> {
     const activePage = this.getActivePage();
     if (!activePage || !this.workspace) {
       return;
@@ -2990,6 +3037,10 @@ export class BlocklyService {
       }
       workspaceJson.blocks.blocks = rootOrder.map(id => roots.get(id));
     }
+    if (load) return load(workspaceJson).then(() => {
+      owner?.assertCurrent();
+      this.finishActivePageLoad(before, activePage, owner);
+    });
     try {
       Blockly.Events.disable();
       this.workspace.clear();
@@ -2999,6 +3050,10 @@ export class BlocklyService {
       Blockly.Events.enable();
     }
 
+    this.finishActivePageLoad(before, activePage, owner);
+  }
+
+  private finishActivePageLoad(before: BlocklyProjectDocument, activePage: BlocklyPageSnapshot, owner?: BlocklyWorkspaceEditLease) {
     this.selectedBlockSubject.next(null);
     this.selectedBlockIdsSubject.next([]);
     this.closeWorkspaceBlockSearch();

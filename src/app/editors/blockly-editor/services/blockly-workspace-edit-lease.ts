@@ -56,9 +56,13 @@ export function fenceBlocklyWorkspaceInput(root: Element | undefined): () => voi
   };
   const events = ['pointerdown', 'mousedown', 'touchstart', 'wheel', 'click', 'dblclick', 'contextmenu', 'drop', 'paste', 'cut'];
   events.forEach(name => root.addEventListener(name, block, { capture: true, passive: false }));
-  document.addEventListener('keydown', keys, true);
+  // Fence before document-level shortcut dispatch. Use an explicitly
+  // non-passive capture listener so keyboard defaults are cancelled as well
+  // as propagation, including in the Electron/Zone event bridge.
+  const keyboardTarget = document.defaultView ?? document;
+  keyboardTarget.addEventListener('keydown', keys, { capture: true, passive: false });
   return () => {
     events.forEach(name => root.removeEventListener(name, block, true));
-    document.removeEventListener('keydown', keys, true);
+    keyboardTarget.removeEventListener('keydown', keys, true);
   };
 }

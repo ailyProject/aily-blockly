@@ -543,6 +543,7 @@ export class BlocklyGeneratorRuntimeService {
   private installTimerBridge(session: RuntimeSession, realm: Record<string, any>): void {
     const fieldTimers = new Map<number, () => void>();
     realm['setTimeout'] = (callback: (...args: unknown[]) => void, delay = 0, ...args: unknown[]) => {
+      const initializing = this.initializationDepth > 0 || session.iframe.getAttribute('data-runtime-ready') !== 'true';
       let called = false;
       const invoke = () => {
         if (called) return;
@@ -550,7 +551,20 @@ export class BlocklyGeneratorRuntimeService {
         session.resources.timeouts.delete(id);
         fieldTimers.get(id)?.(); fieldTimers.delete(id);
         if (this.isCurrent(session)) {
-          callback(...args);
+          if (initializing) this.initializationDepth++;
+          try {
+            // Initialization timers from installed libraries often refresh many
+            // dropdowns with render() in a loop. Flush their completed changes
+            // once at this callback boundary, while retaining normal rendering
+            // for ordinary timers, field edits and other workspaces.
+            if (initializing && workspace?.rendered && workspace === session.context.getWorkspace()
+              && !nativeFieldDependencies(workspace)) {
+              const release = Blockly.renderManagement.beginWorkspaceRenderBatch(workspace);
+              Blockly.utils.dom.startTextWidthCache();
+              try { callback(...args); }
+              finally { try { release(); } finally { Blockly.utils.dom.stopTextWidthCache(); } }
+            } else callback(...args);
+          } finally { if (initializing) this.initializationDepth--; }
         }
       };
       const id = window.setTimeout(invoke, delay);
@@ -625,12 +639,15 @@ export class BlocklyGeneratorRuntimeService {
     };
   }
 
+  private initializationDepth = 0;
+
   private getWorkspaceFacade(session: RuntimeSession, workspace: Blockly.Workspace): Blockly.Workspace {
     const existing = session.resources.workspaceFacades.get(workspace);
     if (existing) {
       return existing;
     }
 
+    const wrappers = new Map<(event: any) => void, (event: any) => void>();
     const facade = new Proxy(workspace, {
       get: (target, key) => {
         if (key === 'addChangeListener') {
@@ -643,14 +660,27 @@ export class BlocklyGeneratorRuntimeService {
               listeners = new Set<(event: any) => void>();
               session.resources.workspaceListeners.set(target, listeners);
             }
-            listeners.add(listener);
-            return target.addChangeListener(listener);
+            let wrapped = wrappers.get(listener);
+            if (!wrapped) {
+              wrapped = event => {
+                const loading = event.type === Blockly.Events.FINISHED_LOADING;
+                if (loading) this.initializationDepth++;
+                try { listener(event); }
+                finally { if (loading) this.initializationDepth--; }
+              };
+              wrappers.set(listener, wrapped);
+            }
+            listeners.add(wrapped);
+            target.addChangeListener(wrapped);
+            return listener;
           };
         }
         if (key === 'removeChangeListener') {
           return (listener: (event: any) => void) => {
-            session.resources.workspaceListeners.get(target)?.delete(listener);
-            return target.removeChangeListener(listener);
+            const wrapped = wrappers.get(listener) ?? listener;
+            wrappers.delete(listener);
+            session.resources.workspaceListeners.get(target)?.delete(wrapped);
+            return target.removeChangeListener(wrapped);
           };
         }
 
