@@ -5,10 +5,10 @@ import {closeAilyElectronApp, expect, getMainWindow, openBlocklyProject, test} f
 
 const PROJECT_PATH = process.env['AILY_E2E_PROJECT'];
 
-test('Blockly 1.0.2 background refresh preserves consecutive drags, editors, menus and comments', async ({electronApp}, testInfo) => {
+test('Blockly 13 background refresh preserves consecutive drags, editors, menus and comments', async ({electronApp}, testInfo) => {
   test.skip(!PROJECT_PATH, 'Set AILY_E2E_PROJECT to an installed Blockly project.');
   const blocklyVersion = JSON.parse(await readFile(path.join(__dirname, '../../node_modules/blockly/package.json'), 'utf8')).version;
-  expect(blocklyVersion).toBe('1.0.2');
+  expect(blocklyVersion).toBe('13.3.0');
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-interaction-'));
   const projectPath = path.join(tempRoot, 'project');
   await cp(PROJECT_PATH!, projectPath, {recursive: true,
@@ -36,10 +36,20 @@ test('Blockly 1.0.2 background refresh preserves consecutive drags, editors, men
     await win.evaluate(() => {
       const B = (window as any).Blockly, ws = (window as any).blocklyWorkspace;
       const realm = (document.querySelector('iframe[data-blockly-generator-runtime]') as HTMLIFrameElement).contentWindow as any;
-      const probe = (window as any).__interactionProbe = {generations: 0, interruptedDrags: 0, cancellations: []};
+      const probe = (window as any).__interactionProbe = {
+        generations: 0, generationsDuringInteraction: [], interruptedDrags: 0, cancellations: [],
+      };
       const originalGenerate = realm.Arduino.workspaceToCode.bind(realm.Arduino);
       realm.Arduino.workspaceToCode = (...args: any[]) => {
         probe.generations++;
+        const active = ws.getInjectionDiv().ownerDocument.activeElement;
+        if (ws.currentGesture_ || ws.isDragging() || B.WidgetDiv.isVisible() || B.DropDownDiv.isVisible()
+          || active?.matches('input, textarea, select, [role="textbox"]') || active?.isContentEditable) {
+          probe.generationsDuringInteraction.push({
+            active: active?.tagName, className: active?.getAttribute('class'), dragging: ws.isDragging(),
+            stack: new Error().stack,
+          });
+        }
         return probe.lastCode = originalGenerate(...args);
       };
       const originalCancel = ws.cancelCurrentGesture.bind(ws);
@@ -97,7 +107,6 @@ test('Blockly 1.0.2 background refresh preserves consecutive drags, editors, men
     await drag('probe-c', 150, 1300); // Second gesture while previous work is pending.
     await drag('probe-b', -40, 700);
 
-    const generationsBeforeEditing = await win.evaluate(() => (window as any).__interactionProbe.generations);
     const text = win.locator('.blocklyHtmlInput');
     await win.locator('[data-interaction-field="probe-c-TEXT"]').click();
     await expect(text).toBeVisible();
@@ -133,15 +142,19 @@ test('Blockly 1.0.2 background refresh preserves consecutive drags, editors, men
     const comment = win.locator('textarea.blocklyTextarea').last();
     await expect(comment).toBeVisible();
     await comment.fill('注释输入后立即保存');
+    const generationsBeforeComment = await win.evaluate(() => (window as any).__interactionProbe.generations);
     await win.waitForTimeout(1500);
     await expect(comment).toBeFocused();
-    expect(await win.evaluate(() => (window as any).__interactionProbe.generations)).toBe(generationsBeforeEditing);
+    expect(await win.evaluate(() => (window as any).__interactionProbe.generations)).toBe(generationsBeforeComment);
+    // Idle gaps between Enter, the next click and opening a comment may flush
+    // pending code. Generation must never run inside any actual interaction.
+    expect(await win.evaluate(() => (window as any).__interactionProbe.generationsDuringInteraction)).toEqual([]);
     const interruptedDrags = await win.evaluate(() => (window as any).__interactionProbe.interruptedDrags);
     expect(interruptedDrags).toBe(0);
     await win.screenshot({path: testInfo.outputPath('comment-focus-preserved.png')});
     // Deferral must resume after editing, not permanently disable code refresh.
     await comment.blur();
-    await expect.poll(() => win.evaluate(() => (window as any).__interactionProbe.generations)).toBeGreaterThan(generationsBeforeEditing);
+    await expect.poll(() => win.evaluate(() => (window as any).__interactionProbe.generations)).toBeGreaterThan(generationsBeforeComment);
     const latestCode = await win.evaluate(() => (window as any).__interactionProbe.lastCode);
     expect(latestCode).toContain('editing中文 42 B');
     expect(latestCode).toContain('注释输入后立即保存');

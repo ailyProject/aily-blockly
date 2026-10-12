@@ -50,9 +50,11 @@ function baselineAnalysis(text: string) {
 }
 
 function candidateAnalysis(baseline: ReturnType<typeof baselineAnalysis>, source: string) {
-  // Cache only successful matching: private original nodes by candidate position.
+  // Cache only successful matching: private original nodes by stable AST path.
+  // Canonical JSON ignores property order, but traversal positions do not: native
+  // binding can serialize input keys in a different order from pure parsing.
   // Candidate AST references must never survive into another pass.
-  let matched: { key: string; originals: (AbsSyntaxNode | null)[] } | undefined;
+  let matched: { key: string; originals: ReadonlyMap<string, AbsSyntaxNode> } | undefined;
   return {
     snapshot: baseline.snapshot, validate: baseline.validate,
     async match(edited: AbsSyntaxNode[], sourceEdits?: AbsSourceEdits) {
@@ -62,10 +64,16 @@ function candidateAnalysis(baseline: ReturnType<typeof baselineAnalysis>, source
       const key = absJson({ syntax: edited, sourceEdits: sourceEdits ?? null });
       let matches: ReadonlyMap<AbsSyntaxNode, AbsSyntaxNode>;
       if (matched?.key === key) {
-        matches = new Map(entries.flatMap(({ node }, index) => matched!.originals[index] ? [[node, matched!.originals[index]!]] : []));
+        matches = new Map(entries.flatMap(({ node, path }) => {
+          const original = matched!.originals.get(path);
+          return original ? [[node, original]] : [];
+        }));
       } else {
         matches = await matchAbsIdentities(baseline.source, source, original, edited, sourceEdits, identity.requiresIdentity, baseline.fingerprint);
-        matched = { key, originals: entries.map(({ node }) => matches.get(node) ?? null) };
+        matched = { key, originals: new Map(entries.flatMap(({ node, path }) => {
+          const original = matches.get(node);
+          return original ? [[path, original]] : [];
+        })) };
       }
       return { matches, originalIds, identity };
     },

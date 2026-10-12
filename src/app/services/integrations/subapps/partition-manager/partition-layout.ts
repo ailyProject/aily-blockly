@@ -153,9 +153,19 @@ export function validatePartitions(rows: PartitionRow[], flashBytes: number): Pa
   if (!apps.length) errors.push('缺少程序分区。');
   if (new Set(apps.map(p => p.subtypeId)).size !== apps.length) errors.push('程序分区子类型重复。');
   if (otaData.length > 1) errors.push('OTA 信息分区只能有一个。');
-  if (otaApps.length && !otaData.length) errors.push('OTA 程序分区需要一个 8 KiB 的 OTA 信息分区。');
+  if (otaApps.length && !otaData.length) warnings.push('缺少 OTA 信息分区；如需使用标准 OTA 更新，需要一个 8 KiB 的 data/ota 分区。仅凭分区表不能判断固件是否启用 OTA。');
   if (otaApps.length === 1) warnings.push('只有一个 OTA 程序槽，不具备双槽在线更新空间。');
-  if (!partitions.some(p => p.name === 'nvs' && p.typeId === 1 && p.subtypeId === 2)) errors.push('当前 Arduino ESP32 方案必须保留名为 nvs 的配置分区。');
+  if (!partitions.some(p => p.name === 'nvs' && p.typeId === 1 && p.subtypeId === 2)) warnings.push('未找到名为 nvs 的 data/nvs 分区；使用 Arduino 默认 NVS 配置的功能可能不可用，请核对固件配置。');
+  // Arduino ESP32's default recipes write boot_app0 at 0xE000 and the app at
+  // 0x10000. Other valid ESP-IDF layouts require matching upload addresses.
+  const initialApp = apps.find(p => p.subtypeId === 0) || [...otaApps].sort((a, b) => a.subtypeId - b.subtypeId)[0];
+  const uploadIssues: string[] = [];
+  if (initialApp && initialApp.offsetBytes !== 0x10000) uploadIssues.push(`程序起始地址为 ${hex(initialApp.offsetBytes)}`);
+  if (otaData.some(p => p.offsetBytes !== 0xE000)) uploadIssues.push('OTA 信息分区未位于 0xE000');
+  if (partitions.some(p => p.typeId === 1 && p.subtypeId === 2 &&
+    (p.offsetBytes < 0x10000 && p.offsetBytes + p.sizeBytes > 0xE000 ||
+      p.offsetBytes <= 0x10000 && p.offsetBytes + p.sizeBytes > 0x10000))) uploadIssues.push('NVS 覆盖默认写入地址');
+  if (uploadIssues.length) warnings.push(`当前${uploadIssues.join('，')}。Arduino ESP32 默认上传在 0x10000 写入程序、在 0xE000 写入 8 KiB 的 boot_app0；请核对烧录命令中的地址。`);
   const appLimit = apps.length ? Math.min(...(otaApps.length >= 2 ? otaApps : apps).map(p => p.sizeBytes)) : 0;
   return { partitions, errors: [...new Set(errors)], warnings: [...new Set(warnings)], usedBytes: end, freeBytes: Math.max(0, flashBytes - end), appLimit, ota: otaApps.length >= 2 && otaData.length === 1 };
 }
@@ -165,10 +175,10 @@ export function createPreset(preset: PartitionPreset, flashBytes: number): Parti
   const flashMiB = flashBytes / MIB;
   return {
     preset, flashBytes, ota: preset !== 'large' && !(x && flashMiB === 4), storage: preset !== 'large',
-    appBytes: x ? (flashMiB === 16 ? 4032 : 3008) * KIB : (flashMiB <= 4 ? 1536 : flashMiB <= 8 ? 3072 : 4096) * KIB,
+    appBytes: x ? (flashMiB >= 16 ? 4096 : 3584) * KIB : (flashMiB <= 4 ? 1536 : flashMiB <= 8 ? 3072 : 4096) * KIB,
     appMode: preset === 'large' ? 'remaining' : 'recommended',
-    storageBytes: x ? (flashMiB === 16 ? 8 : flashMiB === 8 ? 2 : 1) * MIB : 256 * KIB,
-    storageMode: 'remaining', nvsBytes: (x ? 16 : 20) * KIB, coredump: false,
+    storageBytes: x ? (flashMiB >= 16 ? 8128 : flashMiB >= 8 ? 960 : 448) * KIB : 256 * KIB,
+    storageMode: 'remaining', nvsBytes: 20 * KIB, coredump: false,
   };
 }
 
@@ -176,8 +186,7 @@ export function allocatePartitions(draft: PartitionDraft): { rows: PartitionRow[
   const errors: string[] = [];
   const rows: PartitionRow[] = [];
   const x = draft.preset === 'xiaozhi';
-  if (x && ![4, 8, 16].includes(draft.flashBytes / MIB)) errors.push('小智参考方案仅提供 4、8、16 MiB 布局。');
-  if (x && !draft.storage) errors.push('小智方案必须保留资源分区。');
+  if (x && ![4, 8, 16].includes(draft.flashBytes / MIB)) errors.push('小智预设仅提供 4、8、16 MiB 布局。');
   if (draft.appMode === 'remaining' && draft.storage && draft.storageMode === 'remaining') errors.push('只能有一个分区接收剩余空间。');
   const add = (name: string, type: string, sub: string, offset: number, size: number) => {
     rows.push({ name, type, subtype: sub, offset: hex(offset), size: String(size), flags: '' });
@@ -185,9 +194,8 @@ export function allocatePartitions(draft: PartitionDraft): { rows: PartitionRow[
   let cursor = PARTITION_TABLE_OFFSET + SECTOR;
   add('nvs', 'data', 'nvs', cursor, draft.nvsBytes);
   cursor += draft.nvsBytes;
-  if (draft.ota || x) { add('otadata', 'data', 'ota', cursor, 8 * KIB); cursor += 8 * KIB; }
-  if (x) { add('phy_init', 'data', 'phy', cursor, SECTOR); cursor += SECTOR; }
-  cursor = Math.max(alignUp(cursor, APP_ALIGNMENT), x && draft.ota ? 0x20000 : 0x10000);
+  if (draft.ota) { add('otadata', 'data', 'ota', cursor, 8 * KIB); cursor += 8 * KIB; }
+  cursor = Math.max(alignUp(cursor, APP_ALIGNMENT), 0x10000);
   const slots = draft.ota ? 2 : 1;
   const dumpSize = draft.coredump ? APP_ALIGNMENT : 0;
   const fixedStorage = draft.storage && draft.storageMode === 'fixed' ? draft.storageBytes : 0;
@@ -195,16 +203,16 @@ export function allocatePartitions(draft: PartitionDraft): { rows: PartitionRow[
     ? Math.floor((draft.flashBytes - cursor - dumpSize - fixedStorage) / slots / APP_ALIGNMENT) * APP_ALIGNMENT
     : draft.appBytes;
   if (!Number.isSafeInteger(appSize) || appSize <= 0 || appSize % SECTOR) errors.push('单份程序空间必须大于 0，并按 4 KiB 对齐。');
-  add(draft.ota ? (x ? 'ota_0' : 'app0') : 'factory', 'app', draft.ota ? 'ota_0' : 'factory', cursor, appSize);
+  add(draft.ota ? 'app0' : 'factory', 'app', draft.ota ? 'ota_0' : 'factory', cursor, appSize);
   cursor += appSize;
   if (draft.ota) {
     cursor = alignUp(cursor, APP_ALIGNMENT);
-    add(x ? 'ota_1' : 'app1', 'app', 'ota_1', cursor, appSize); cursor += appSize;
+    add('app1', 'app', 'ota_1', cursor, appSize); cursor += appSize;
   }
   if (draft.storage) {
     const dataSize = draft.storageMode === 'remaining' ? Math.floor((draft.flashBytes - cursor - dumpSize) / SECTOR) * SECTOR : draft.storageBytes;
     if (dataSize < SECTOR) errors.push(`存储空间不足，还需要 ${formatBytes(SECTOR - dataSize)}。请调整程序大小或在线更新选项。`);
-    add(x ? 'assets' : 'spiffs', 'data', 'spiffs', cursor, Math.max(0, dataSize)); cursor += Math.max(0, dataSize);
+    add('spiffs', 'data', 'spiffs', cursor, Math.max(0, dataSize)); cursor += Math.max(0, dataSize);
   }
   if (draft.coredump) add('coredump', 'data', 'coredump', cursor, dumpSize);
   return { rows, errors };
@@ -214,11 +222,11 @@ export function allocatePartitions(draft: PartitionDraft): { rows: PartitionRow[
 export function inferDraft(rows: PartitionRow[], flashBytes: number): PartitionDraft | null {
   const layout = validatePartitions(rows, flashBytes);
   if (layout.errors.length) return null;
-  const preset: PartitionPreset = layout.partitions.some(p => p.name === 'assets') ? 'xiaozhi' : 'iot';
+  const preset: PartitionPreset = 'iot';
   const draft = createPreset(preset, flashBytes);
   const nvs = layout.partitions.find(p => p.name === 'nvs');
   const apps = layout.partitions.filter(p => p.typeId === 0);
-  const storage = layout.partitions.find(p => p.name === (preset === 'xiaozhi' ? 'assets' : 'spiffs'));
+  const storage = layout.partitions.find(p => p.name === 'spiffs');
   if (apps.some(p => p.sizeBytes !== apps[0].sizeBytes)) return null;
   Object.assign(draft, {
     ota: layout.ota, storage: !!storage, appBytes: apps[0].sizeBytes, appMode: 'fixed',

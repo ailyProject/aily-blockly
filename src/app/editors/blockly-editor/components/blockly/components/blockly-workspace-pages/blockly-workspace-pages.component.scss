@@ -43,6 +43,98 @@
   min-width: 0;
 }
 
+.function-view {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 72px);
+  padding: 4px 8px;
+  border: 1px solid var(--aily-border-secondary);
+  border-radius: 6px;
+  background: var(--aily-bg-secondary);
+  color: var(--aily-text-primary);
+  font-size: 12px;
+  height: 36px;
+  min-width: 0;
+  cursor: pointer;
+  outline: none;
+  box-shadow: none;
+
+  > i { flex-shrink: 0; }
+  > .function-view__label { max-width: 280px; }
+  &:hover, &:focus-visible, &[aria-expanded='true'] { background: var(--aily-bg-tertiary); }
+  &:disabled { cursor: default; opacity: .5; }
+}
+
+.function-view__menu {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-width: calc(100vw - 24px);
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aily-border-secondary) transparent;
+  padding: 4px;
+  border: 1px solid var(--aily-border-secondary);
+  border-radius: 6px;
+  background: var(--aily-bg-secondary);
+  color: var(--aily-text-primary);
+  box-shadow: 0 4px 12px #0005;
+}
+
+.function-view__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+
+  i { width: 12px; flex-shrink: 0; visibility: hidden; }
+  &[aria-checked='true'] i { visibility: visible; }
+  &:hover, &:focus { background: var(--aily-bg-tertiary); }
+  &[aria-disabled='true'] { cursor: default; opacity: .5; }
+}
+
+.function-view__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.function-view__text {
+  display: inline-block;
+  transform: translateX(0);
+}
+
+:is(.function-view__trigger, .function-view__item):is(:hover, :focus-visible) .is-overflowing {
+  text-overflow: clip;
+  .function-view__text {
+    animation: function-view-hover-scroll var(--hover-scroll-duration) linear .35s forwards;
+  }
+}
+
+@keyframes function-view-hover-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--hover-scroll-distance))); }
+}
+
+.function-view__count { flex-shrink: 0; white-space: nowrap; opacity: .7; }
+
 :host ::ng-deep .ant-tabs {
   margin-bottom: 0;
 }

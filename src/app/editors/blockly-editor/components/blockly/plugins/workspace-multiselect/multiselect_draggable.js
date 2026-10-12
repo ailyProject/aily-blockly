@@ -14,7 +14,7 @@ import {dragSelectionWeakMap, hasSelectedParent, inMultipleSelectionModeWeakMap}
 /**
  * A draggable object that adds the functionality for multiple blocks to
  * be moved while someone is dragging it.
- * It implements the IDraggable interface in Blockly v11.
+   * Implements Blockly v13's draggable and focusable selection contracts.
  */
 export class MultiselectDraggable {
   /**
@@ -30,6 +30,54 @@ export class MultiselectDraggable {
     this.loc = new Blockly.utils.Coordinate(0, 0);
     this.connectionDBList = [];
     this.dragSelection = dragSelectionWeakMap.get(workspace);
+    this.focusElement = Blockly.utils.dom.createSvgElement('rect', {
+      id: `aily_multiselect_${this.id}`,
+      fill: 'none', stroke: 'none', 'pointer-events': 'none',
+      'aria-label': 'Selected blocks', role: 'group',
+    }, workspace.getCanvas());
+    this.originalLookUpFocusableNode = workspace.lookUpFocusableNode;
+    this.lookUpFocusableNode = (id) => id === this.focusElement.id
+      ? this : this.originalLookUpFocusableNode.call(workspace, id);
+    workspace.lookUpFocusableNode = this.lookUpFocusableNode;
+  }
+
+  getFocusableElement() { return this.focusElement; }
+  getFocusableTree() { return this.workspace; }
+  canBeFocused() { return this.subDraggables.size > 0; }
+  onNodeFocus() { this.updateFocusBounds(); this.select(); }
+  onNodeBlur() { this.unselect(); }
+
+  /** Preserve the group after v13's BlockPaster asynchronously focuses a child. */
+  selectAfterRender() {
+    Blockly.common.setSelected(this);
+    const members = [...this.subDraggables.keys()];
+    return Blockly.renderManagement.finishQueuedRenders().then(() => {
+      const selected = Blockly.getSelected();
+      if (this.focusElement.isConnected && this.subDraggables.size &&
+          members.every((member) => this.subDraggables.has(member)) &&
+          (selected === this || this.subDraggables.has(selected))) {
+        Blockly.common.setSelected(this);
+      }
+    });
+  }
+
+  updateFocusBounds() {
+    const bounds = this.getBoundingRectangle();
+    this.focusElement.setAttribute('x', bounds.left);
+    this.focusElement.setAttribute('y', bounds.top);
+    this.focusElement.setAttribute('width', bounds.right - bounds.left);
+    this.focusElement.setAttribute('height', bounds.bottom - bounds.top);
+  }
+
+  disposeFocus() {
+    if (Blockly.getSelected() === this) {
+      Blockly.getFocusManager().focusNode(this.workspace.getRootFocusableNode());
+    }
+    this.clearAll_();
+    if (this.workspace.lookUpFocusableNode === this.lookUpFocusableNode) {
+      this.workspace.lookUpFocusableNode = this.originalLookUpFocusableNode;
+    }
+    this.focusElement.remove();
   }
 
   /**
@@ -128,6 +176,9 @@ export class MultiselectDraggable {
    */
   pointerDownEventHandler_(event) {
     if (!inMultipleSelectionModeWeakMap.get(this.workspace)) {
+      // Do not let the browser's default pointer focus replace the group with
+      // the clicked child after the Blockly gesture has started.
+      event.preventDefault();
       Blockly.common.setSelected(this);
     }
   }
@@ -193,8 +244,12 @@ export class MultiselectDraggable {
           draggable[0].getRelativeToSurfaceXY());
     }
     for (const draggable of this.topSubDraggables) {
-      draggable.startDrag();
+      draggable.startDrag(e);
     }
+    // v13's layer manager focuses each child when entering the drag layer.
+    // Restore group focus before queued selection events reconcile the set.
+    Blockly.getFocusManager().focusNode(this);
+    return this;
   }
 
   /**
@@ -214,6 +269,7 @@ export class MultiselectDraggable {
             this.subDraggables.get(draggable)), e);
       }
     }
+    this.updateFocusBounds();
   }
 
   /**
@@ -222,9 +278,9 @@ export class MultiselectDraggable {
    * It delegates the endDrag methods to the topmost subdraggables.
    * @param {Blockly.Events.BLOCK_DRAG} e A drag event
    */
-  endDrag(e) {
+  endDrag(e, disposition = Blockly.DragDisposition.COMMIT) {
     for (const draggable of this.topSubDraggables) {
-      draggable.endDrag(e);
+      draggable.endDrag(e, disposition);
     }
 
     for (const draggable of this.subDraggables) {
@@ -234,14 +290,20 @@ export class MultiselectDraggable {
 
     // Reconnect any connections between blocks that are
     // on the same level (not child/parent)
-    this.connectionDBList.forEach(function(connectionDB) {
-      connectionDB[0].connect(connectionDB[1]);
-    });
+    if (disposition !== Blockly.DragDisposition.DELETE) {
+      this.connectionDBList.forEach(function(connectionDB) {
+        connectionDB[0].connect(connectionDB[1]);
+      });
+    }
 
     this.topSubDraggables.length = 0;
     this.connectionDBList.length = 0;
     if (!this.inGroup) {
       Blockly.Events.setGroup(false);
+    }
+    this.updateFocusBounds();
+    if (disposition !== Blockly.DragDisposition.DELETE && this.canBeFocused()) {
+      Blockly.getFocusManager().focusNode(this);
     }
   }
 
@@ -273,6 +335,7 @@ export class MultiselectDraggable {
         draggable[0].select();
       }
     }
+    Blockly.common.fireSelectedEvent(this);
   }
 
   /**

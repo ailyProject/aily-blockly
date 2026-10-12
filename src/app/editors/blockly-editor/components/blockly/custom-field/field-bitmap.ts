@@ -246,8 +246,8 @@ export class FieldBitmap extends Blockly.Field<number[][]> {
         // lines.
         const svgRoot = this.getSvgRoot();
         if (svgRoot) {
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableText');
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableText');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableField');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableField');
         }
         return editable;
     }

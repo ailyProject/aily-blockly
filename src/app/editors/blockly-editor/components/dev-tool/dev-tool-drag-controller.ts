@@ -24,6 +24,7 @@ export interface DevToolDragControllerOptions {
   getBounds: () => DragBounds;
   applyPosition: (position: DragPoint, bounds: DragBounds) => void;
   onDraggingChange: (dragging: boolean) => void;
+  onPositionCommitted?: (position: DragPoint) => void;
 }
 
 export class DevToolDragController {
@@ -161,6 +162,11 @@ export class DevToolDragController {
     if (releaseCapture && dragState.hasPointerCapture && handle.hasPointerCapture(dragState.pointerId)) {
       handle.releasePointerCapture(dragState.pointerId);
     }
+
+    // Persist only a completed move, never animation frames or teardown.
+    if (commitPending && !pointsEqual(dragState.positionStart, dragState.pendingPosition)) {
+      this.options.onPositionCommitted?.({ ...dragState.pendingPosition });
+    }
   }
 
   private addDocumentDragListeners(): void {
@@ -191,7 +197,14 @@ export class DevToolDragController {
 
   private commitPendingPosition(): void {
     const dragState = this.dragState;
-    if (!dragState || pointsEqual(this.position, dragState.pendingPosition)) {
+    if (!dragState) {
+      return;
+    }
+    const visiblePosition = {
+      x: clamp(this.position.x, 0, dragState.bounds.maxX),
+      y: clamp(this.position.y, dragState.bounds.minY, dragState.bounds.maxY),
+    };
+    if (pointsEqual(visiblePosition, dragState.pendingPosition)) {
       return;
     }
 

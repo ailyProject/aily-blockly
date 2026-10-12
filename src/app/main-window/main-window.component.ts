@@ -47,6 +47,7 @@ import { LoginComponent } from '../components/login/login.component';
 import { LibManagerToolComponent } from '../tools/lib-manager-tool/lib-manager-tool.component';
 import { buildChildAuthStateSnapshot } from '../tools/child-tool-host/child-auth-state';
 import { CoderSubappInstallNoticeComponent } from '../components/coder-subapp-install-notice/coder-subapp-install-notice.component';
+import { RoutedContentDirective } from '../directives/routed-content.directive';
 
 const RIGHT_SIDER_WIDTH_STORAGE_KEY = 'aily-main-window.right-sider-width';
 const RIGHT_SIDER_DEFAULT_WIDTH = 450;
@@ -77,6 +78,7 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     TranslateModule,
     LibManagerToolComponent,
     CoderSubappInstallNoticeComponent,
+    RoutedContentDirective,
   ],
   templateUrl: './main-window.component.html',
   styleUrl: './main-window.component.scss',

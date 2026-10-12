@@ -12,9 +12,14 @@ export function mergeGeneratorMacros(pkg: Record<string, any>, effects: readonly
     if (macros.get(name) === value) macros.delete(name);
   }
   const owned: Record<string, string> = Object.create(null);
-  for (const { name, value } of effects) {
+  for (const { name, value } of [...effects].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
     if (value === null) macros.delete(name);
-    else { macros.set(name, value); owned[name] = value; }
+    else {
+      // Claiming a legacy unowned macro must use the same position as later
+      // publications. Map.set alone retains its old position, so background
+      // generation would reorder identical macros after the build capture.
+      macros.delete(name); macros.set(name, value); owned[name] = value;
+    }
   }
   return { ...pkg, MACROS: [...macros.values()].map(value => [value]), ailyGeneratorMacros: owned };
 }

@@ -59,15 +59,27 @@ export class ProjectDependencyLifecycle {
     const entry = this.entries.get(this.normalize(session.projectPath))!;
     entry.pending += 1;
     this.changesSubject.next();
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(Object.assign(new Error('Project dependency session was cancelled or replaced.'),
+        { code: 'PROJECT_DEPENDENCY_CANCELLED' }));
+      session.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    // work() can synchronously cancel and throw before Promise.race attaches.
+    void cancelled.catch(() => undefined);
     try {
       this.assertCurrent(session);
-      const result = await work();
+      // A stalled read/request must not hold renderer teardown forever. Native
+      // command shutdown is still awaited by close; late continuations must
+      // assert the session before writing or publishing their result.
+      const result = await Promise.race([work(), cancelled]);
       this.assertCurrent(session);
       return result;
     } catch (error) {
       this.assertCurrent(session);
       throw error;
     } finally {
+      session.signal.removeEventListener('abort', onAbort);
       entry.pending -= 1;
       if (!entry.pending) entry.idleWaiters.splice(0).forEach(resolve => resolve());
       this.changesSubject.next();
@@ -109,8 +121,10 @@ export class ProjectDependencyLifecycle {
 
   release(session: ProjectDependencySession): void {
     const key = this.normalize(session.projectPath);
-    if (this.entries.get(key)?.session !== session) return;
+    const entry = this.entries.get(key);
+    if (entry?.session !== session) return;
     this.entries.delete(key);
+    entry.idleWaiters.splice(0).forEach(resolve => resolve());
     this.changesSubject.next();
   }
 

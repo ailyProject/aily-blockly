@@ -38,6 +38,9 @@
           </div>
           }
           <app-blockly-workspace-pages
+               [functionView]="functionViewState"
+               [functionViewDisabled]="functionViewDisabled"
+               (functionSelected)="onFunctionViewSelected($event)"
                [pages]="pages"
                [closedPages]="closedPages"
                [activePageId]="activePageId"

@@ -41,13 +41,17 @@ Whether your requirement is still vague or already well defined, AI can help cla
 AI plans tasks from your requirements, gradually understands project dependencies and library usage, and then generates practical project code.
 
 8. **Unlimited Extension**
-The software includes 400+ common extension libraries. If a Blockly library is missing, AI can analyze a native Arduino/C/C++ library and generate an adaptation.
+The software includes 500+ common extension libraries. If a Blockly library is missing, AI can analyze a native Arduino/C/C++ library and generate an adaptation.
 
 9. **Wiring Diagrams**
 When you are unsure how to wire modules, AI can generate a wiring diagram from your requirements and program. It can also help generate code from an existing wiring setup.
 
 10. **Automatic Debugging**
 When compilation fails or debug logs are hard to understand, AI can read the error output, locate the issue, and provide repair suggestions.
+
+11. **Simulator / Virtual Machine**
+
+12. **UI Designer**
 
 ## Unofficial Version Notes
 This alpha test version only guarantees minimum usability, and many planned highlight features have not yet been designed or developed.
@@ -75,8 +79,7 @@ Other content can be found in [package.json](./package.json).
 ## The AI Features of This Project Reference the Following Projects
 - [Kode](https://github.com/shareAI-lab/Kode-cli)
 - [copilot](https://github.com/microsoft/vscode-copilot-chat)
-- [ESPConnect](https://github.com/thelastoutpostworkshop/ESPConnect)
-- [BLEOTA](https://github.com/gb88/BLEOTA)
+- [pi-agent](https://github.com/earendil-works/pi)
 
 ## Additional Rights Statement
 1. This software is free software under the GPL license. Without authorization, this software and derivative software based on it may not be sold.

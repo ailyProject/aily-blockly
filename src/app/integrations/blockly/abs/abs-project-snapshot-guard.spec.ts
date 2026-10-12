@@ -79,11 +79,11 @@ describe('ABS phase-local snapshot guard', () => {
     expect(first).toThrow(jasmine.objectContaining({ code: 'ABS_REVISION_STALE' }));
   });
 
-  it('normalizes ownership with one deep copy and keeps both public boundaries detached', () => {
+  it('normalizes ownership without JSON round trips and keeps both public boundaries detached', () => {
     const source = document(), before = JSON.stringify(source);
     const copies = spyOn(JSON, 'stringify').and.callThrough();
     const normalized = normalizeBlocklyOwnership(source);
-    const count = copies.calls.count(); expect(count).toBe(1);
+    const count = copies.calls.count(); expect(count).toBe(0);
     expect(JSON.stringify(source)).toBe(before);
     normalized.pages[0].content.blocks.blocks[0].fields.TEXT = 'modified';
     normalized.sharedModel.variables![0].name = 'modified';

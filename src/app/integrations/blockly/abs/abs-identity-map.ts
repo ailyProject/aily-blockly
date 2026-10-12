@@ -55,14 +55,17 @@ export async function hashAbsText(text: string): Promise<string> {
 export interface AbsSyntaxEntry { path: string; node: AbsSyntaxNode; parent: string | null; slot: string }
 export function indexAbsSyntax(roots: AbsSyntaxNode[]): AbsSyntaxEntry[] {
   const entries: AbsSyntaxEntry[] = [];
-  const visit = (node: AbsSyntaxNode, path: string, parent: string | null, slot: string) => {
+  const pending: AbsSyntaxEntry[] = roots.map((node, index) => ({ node, path: `/blocks/${index}`, parent: null, slot: '@root' })).reverse();
+  while (pending.length) {
+    const { node, path, parent, slot } = pending.pop()!;
     entries.push({ node, path, parent, slot });
+    const children: AbsSyntaxEntry[] = [];
     for (const [name, child] of Object.entries(node.inputs)) {
-      if (child) visit(child, absInputPath(path, name), path, name);
+      if (child) children.push({ node: child, path: absInputPath(path, name), parent: path, slot: name });
     }
-    if (node.next) visit(node.next, `${path}/next`, path, '@next');
-  };
-  roots.forEach((node, index) => visit(node, `/blocks/${index}`, null, '@root'));
+    if (node.next) children.push({ node: node.next, path: `${path}/next`, parent: path, slot: '@next' });
+    pending.push(...children.reverse());
+  }
   return entries;
 }
 

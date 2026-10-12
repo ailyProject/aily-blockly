@@ -1,4 +1,6 @@
 import * as Blockly from 'blockly';
+import '@blockly/field-colour-hsv-sliders';
+import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-minus/src/index.js';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { observeNativeBlockDefinition } from '../../../editors/blockly-editor/services/blockly-native-structure';
@@ -11,6 +13,12 @@ describe('native dynamic field loading without declaration JSON', () => {
   let workspace: Blockly.Workspace, catalog: BlocklyDeclarativeBlockCatalog;
   const blockState = (id = 'kept') => ({ type, id, fields: { A_TEXT: 'saved text', M_CHOICE: 'C', Z_MODE: 'B' }, deletable: false });
   const state = () => ({ blocks: { blocks: [blockState()] } });
+  const legacyIfElse = { init() { this.jsonInit({
+    message0: '%1', args0: [{ type: 'input_value', name: 'IF0' }],
+    message1: '%1', args1: [{ type: 'input_statement', name: 'DO0' }],
+    message2: '%1', args2: [{ type: 'input_statement', name: 'ELSE' }],
+    mutator: 'controls_if_mutator', previousStatement: null, nextStatement: null,
+  }); } };
   const load = (value: any) => BlocklyService.prototype.loadWorkspaceJson.call({
     adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
     workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value), assertWorkspaceEditAvailable() {},
@@ -39,6 +47,143 @@ describe('native dynamic field loading without declaration JSON', () => {
   });
   afterEach(() => { workspace.dispose(); delete Blockly.Blocks[type]; delete Blockly.Blocks[parentType]; });
 
+  it('retains legacy dynamic-input metadata without inventing ports, through edits, save and reopen', () => {
+    const name = 'legacy_dynamic_inputs_probe';
+    Blockly.Blocks[name] = { init() { this.jsonInit({ message0: '%1',
+      args0: [{ type: 'input_value', name: 'INPUT0' }], mutator: 'dynamic_inputs_mutator' }); } };
+    try {
+      const input = { blocks: { blocks: [{ type: name, id: 'legacy-inputs', extraState: { itemCount: 2 },
+        inputs: { INPUT0: { block: { type, id: 'kept-child', fields: { Z_MODE: 'A' } } } } }] } };
+      const original = absJson(input);
+      load(input);
+      let block: any = workspace.getBlockById('legacy-inputs');
+      expect(block.getInput('INPUT1')).toBeNull();
+      assertAbsReadback(input as any, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' });
+      block.plus();
+      let saved: any = Blockly.serialization.workspaces.save(workspace);
+      expect(saved.blocks.blocks[0].extraState).toEqual({ itemCount: 2, extraCount: 1 });
+      load(saved); block = workspace.getBlockById('legacy-inputs');
+      expect(block.getInput('INPUT1')).not.toBeNull();
+      expect(block.getInputTargetBlock('INPUT0')!.id).toBe('kept-child');
+      assertAbsReadback(saved, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' });
+      block.minus(2);
+      saved = Blockly.serialization.workspaces.save(workspace);
+      expect(saved.blocks.blocks[0].extraState).toEqual({ itemCount: 2 });
+      block.loadExtraState({});
+      expect(block.saveExtraState()).toBeNull();
+      expect(absJson(input)).toBe(original);
+    } finally { delete Blockly.Blocks[name]; }
+  });
+
+  it('still rejects unknown dynamic-input metadata or a lost saved connection', () => {
+    const name = 'legacy_dynamic_inputs_strict_probe';
+    Blockly.Blocks[name] = { init() { this.jsonInit({ message0: '%1',
+      args0: [{ type: 'input_value', name: 'INPUT0' }], mutator: 'dynamic_inputs_mutator' }); } };
+    try {
+      for (const extraState of [{ itemCount: '2' }, { itemCount: 2, unknown: true }]) {
+        const input = { blocks: { blocks: [{ type: name, id: 'legacy-inputs', extraState }] } };
+        load(input);
+        expect(() => assertAbsReadback(input as any, Blockly.serialization.workspaces.save(workspace) as any,
+          { mode: 'requested' })).toThrow();
+      }
+      const input = { blocks: { blocks: [{ type: name, id: 'legacy-inputs', extraState: { itemCount: 2 },
+        inputs: { INPUT0: { block: { type, id: 'kept-child', fields: { Z_MODE: 'A' } } } } }] } };
+      load(input); workspace.getBlockById('kept-child')!.dispose();
+      expect(() => assertAbsReadback(input as any, Blockly.serialization.workspaces.save(workspace) as any,
+        { mode: 'requested' })).toThrow();
+    } finally { delete Blockly.Blocks[name]; }
+  });
+
+  it('admits only board-initialized inactive GC9A01 QSPI defaults while keeping effective pins strict', () => {
+    const previous = Blockly.Blocks['tftespi_setup'];
+    Blockly.Blocks['tftespi_setup'] = { init() {
+      this.appendDummyInput('config');
+      for (const name of ['MODEL', 'CS', 'SCLK', 'RST', 'QSPI_CS', 'QSPI_SCLK', 'QSPI_RST']) {
+        this.getInput('config')!.appendField(new Blockly.FieldTextInput(''), name);
+      }
+    } };
+    try {
+      const input = { blocks: { blocks: [{ type: 'tftespi_setup', id: 'display', fields: {
+        MODEL: 'GC9A01_DRIVER', CS: '13', SCLK: '12', RST: '11', QSPI_CS: '-1', QSPI_SCLK: '-1', QSPI_RST: '-1',
+      } }] } };
+      const original = absJson(input);
+      load(input); const block = workspace.getBlockById('display')!;
+      for (const [inactive, active] of [['QSPI_CS', 'CS'], ['QSPI_SCLK', 'SCLK'], ['QSPI_RST', 'RST']]) {
+        block.setFieldValue(block.getFieldValue(active), inactive);
+      }
+      const readback = () => assertAbsReadback(nativeLoadedStateView(input, workspace) as any,
+        Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' });
+      expect(readback).not.toThrow();
+      block.setFieldValue('99', 'QSPI_CS'); expect(readback).toThrow(); block.setFieldValue('13', 'QSPI_CS');
+      block.setFieldValue('99', 'CS'); expect(readback).toThrow(); block.setFieldValue('13', 'CS');
+      input.blocks.blocks[0].fields.QSPI_CS = '27'; expect(readback).toThrow();
+      input.blocks.blocks[0].fields.QSPI_CS = '-1';
+      input.blocks.blocks[0].fields.MODEL = 'CH13613_DRIVER'; block.setFieldValue('CH13613_DRIVER', 'MODEL');
+      expect(readback).toThrow();
+      input.blocks.blocks[0].fields.MODEL = 'GC9A01_DRIVER'; expect(absJson(input)).toBe(original);
+    } finally {
+      if (previous) Blockly.Blocks['tftespi_setup'] = previous;
+      else delete Blockly.Blocks['tftespi_setup'];
+    }
+  });
+
+  it('preserves legacy procedure parameter IDs while allowing rename, removal, save and reopen', () => {
+    const input = { variables: [{ name: 'x', id: 'param-model' }], blocks: { blocks: [{
+      type: 'procedures_defnoreturn', id: 'legacy-definition', fields: { NAME: 'pickDigit' },
+      extraState: { params: [{ name: 'x', id: 'param-model', argId: 'legacy-connection' }] },
+    }] } };
+    load(input);
+    let saved: any = Blockly.serialization.workspaces.save(workspace);
+    assertAbsReadback(input as any, saved, { mode: 'requested' });
+    workspace.getVariableMap().renameVariable(workspace.getVariableMap().getVariableById('param-model')!, 'renamed');
+    saved = Blockly.serialization.workspaces.save(workspace);
+    expect(saved.blocks.blocks[0].extraState.params).toEqual([{ name: 'renamed', id: 'param-model', argId: 'legacy-connection' }]);
+    load(saved);
+    expect((Blockly.serialization.workspaces.save(workspace) as any).blocks.blocks[0].extraState.params[0].argId).toBe('legacy-connection');
+    (workspace.getBlockById('legacy-definition') as any).loadExtraState({});
+    expect((Blockly.serialization.workspaces.save(workspace) as any).blocks.blocks[0].extraState).toBeUndefined();
+    expect(input.blocks.blocks[0].extraState.params[0].name).toBe('x');
+  });
+
+  it('admits the native false ELSE default in old if/else state without changing the archive', () => {
+    const previous = Blockly.Blocks['controls_ifelse'];
+    Blockly.Blocks['controls_ifelse'] = legacyIfElse;
+    try {
+      const input = { blocks: { blocks: [{ type: 'controls_ifelse', id: 'old-if', extraState: { elseIfCount: 3 } }] } };
+      load(input);
+      const saved: any = Blockly.serialization.workspaces.save(workspace);
+      assertAbsReadback(nativeLoadedStateView(input, workspace) as any, saved, { mode: 'requested' });
+      expect(workspace.getBlockById('old-if')!.getInput('IF3')).not.toBeNull();
+      expect(workspace.getBlockById('old-if')!.getInput('ELSE')).toBeNull();
+      expect(input.blocks.blocks[0].extraState).toEqual({ elseIfCount: 3 });
+      load(saved);
+      assertAbsReadback(saved as any, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' });
+    } finally {
+      if (previous) Blockly.Blocks['controls_ifelse'] = previous;
+      else delete Blockly.Blocks['controls_ifelse'];
+    }
+  });
+
+  it('still rejects lost ELSE topology and unknown legacy if/else metadata', () => {
+    const previous = Blockly.Blocks['controls_ifelse'];
+    Blockly.Blocks['controls_ifelse'] = legacyIfElse;
+    try {
+      const input = { blocks: { blocks: [{ type: 'controls_ifelse', id: 'if', extraState: { elseIfCount: 1, hasElse: true } }] } };
+      load(input);
+      assertAbsReadback(nativeLoadedStateView(input, workspace) as any,
+        Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' });
+      (workspace.getBlockById('if') as any).loadExtraState({ elseIfCount: 1 });
+      expect(() => assertAbsReadback(nativeLoadedStateView(input, workspace) as any,
+        Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).toThrow();
+      const unknown = { blocks: { blocks: [{ type: 'controls_ifelse', id: 'if', extraState: { elseIfCount: 1, unknown: 'kept' } }] } };
+      expect(() => assertAbsReadback(nativeLoadedStateView(unknown, workspace) as any,
+        Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' })).toThrow();
+    } finally {
+      if (previous) Blockly.Blocks['controls_ifelse'] = previous;
+      else delete Blockly.Blocks['controls_ifelse'];
+    }
+  });
+
   it('preserves malformed legacy JSON mutation input on failure and can reopen valid XML state afterwards', () => {
     Blockly.Blocks[type] = {
       init() { this.appendDummyInput().appendField(new Blockly.FieldTextInput(''), 'TEXT'); },
@@ -59,6 +204,17 @@ describe('native dynamic field loading without declaration JSON', () => {
     expect(workspace.getBlockById('legacy')!.getFieldValue('TEXT')).toBe('saved');
     load(Blockly.serialization.workspaces.save(workspace));
     expect(workspace.getBlockById('legacy')!.getFieldValue('TEXT')).toBe('saved');
+  });
+
+  it('restores and reopens real LVGL HSV colours outside the preset palette', () => {
+    Blockly.Blocks[type] = { init() {
+      this.jsonInit({ message0: '%1', args0: [{ type: 'field_colour_hsv_sliders', name: 'COLOR', colour: '#ffffff' }] });
+    } };
+    const input = { blocks: { blocks: [{ type, id: 'lvgl-colour', fields: { COLOR: '#3a1f6b' } }] } };
+    load(input);
+    expect(workspace.getBlockById('lvgl-colour')!.getFieldValue('COLOR')).toBe('#3a1f6b');
+    load(Blockly.serialization.workspaces.save(workspace));
+    expect(workspace.getBlockById('lvgl-colour')!.getFieldValue('COLOR')).toBe('#3a1f6b');
   });
 
   it('restores multiple selector levels in the ordinary load entry, then saves and reopens', () => {
@@ -259,6 +415,7 @@ describe('native dynamic field loading without declaration JSON', () => {
     const names = ['WIDTH', 'HEIGHT', 'MISO', 'MOSI', 'SCLK', 'CS', 'DC', 'RST', 'BL'];
     const values = [240, 240, 0, 10, 12, 13, 14, 11, 16];
     const base = { VAR: 'tft', MODEL: 'GC9A01_DRIVER' };
+    const previousNumber = Blockly.Blocks['math_number'];
     Blockly.Blocks['math_number'] = { init() {
       this.appendDummyInput().appendField(new Blockly.FieldNumber(0), 'NUM'); this.setOutput(true);
     } };

@@ -1,4 +1,11 @@
 {
+  "BLOCKLY_FUNCTION_VIEW": {
+    "LABEL": "查看函数或整个文件",
+    "ALL": "整个文件",
+    "GLOBAL": "全局定义",
+    "OTHER": "其他积木",
+    "BLOCKS": "块"
+  },
   "CODER_TABS": {
     "PROJECTS": "工程",
     "CLOSE": "关闭工程",

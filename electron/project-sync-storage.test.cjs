@@ -129,9 +129,12 @@ test('callback failure leaves completed files for recovery but releases only its
 test('post-rename failure is read back, but unreadable outcome is UNKNOWN', async () => {
   for (const unreadable of [false, true]) {
     const root = project(); let renamed = false;
-    const files = { ...fs, renameSync(...args) { fs.renameSync(...args); renamed = true; throw new Error('lost acknowledgement'); },
+    const descriptors = new Map();
+    const files = { ...fs, openSync(file, ...args) {
+      const descriptor = fs.openSync(file, ...args); descriptors.set(descriptor, file); return descriptor;
+    }, closeSync(descriptor) { descriptors.delete(descriptor); return fs.closeSync(descriptor); }, renameSync(...args) { fs.renameSync(...args); renamed = true; throw new Error('lost acknowledgement'); },
       readFileSync(file, ...args) {
-        if (unreadable && renamed && file === path.join(root, 'project.abi')) throw new Error('cannot inspect');
+        if (unreadable && renamed && (descriptors.get(file) ?? file) === path.join(fs.realpathSync(root), 'project.abi')) throw new Error('cannot inspect');
         return fs.readFileSync(file, ...args);
       } };
     const store = await openProjectSyncStorage(root, guard, { files });

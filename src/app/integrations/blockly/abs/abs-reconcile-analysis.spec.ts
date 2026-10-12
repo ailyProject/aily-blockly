@@ -3,6 +3,7 @@ import { createAbsReconciler, createAbsReconcilerFactory, reconcileAbsDraft } fr
 import { parseAbsSyntax } from './abs-syntax';
 import type { AbsAbiBlock } from './abs-state';
 import type { AbsNativeBinding } from './abs-native-binding';
+import { createAbsReconcileAnalysis } from './abs-reconcile-analysis';
 
 const source = (text: string) => '# ABS Schema: 2\n' + text;
 const project = (blocks: AbsAbiBlock[] = [{ id: 'root', type: 'number', fields: { NUM: 1 }, deletable: false }]) => {
@@ -20,6 +21,27 @@ function nativeBinding(text: string): AbsNativeBinding {
 }
 
 describe('transaction-owned ABS reconciliation analysis', () => {
+  it('preserves identities when native serialization changes input property order on a cache hit', async () => {
+    const baseline = await project([{ id: 'owner', type: 'owner', inputs: {
+      Z: { block: { id: 'number', type: 'number', fields: { NUM: 1 } } },
+      A: { block: { id: 'text', type: 'text', fields: { TEXT: 'value' } } },
+    } }]);
+    const analysis = createAbsReconcileAnalysis(baseline, baseline.abs);
+    const syntax = parseAbsSyntax(baseline.abs);
+    syntax[0].inputs = Object.fromEntries(Object.entries(syntax[0].inputs).reverse());
+    const first = await analysis.match(syntax);
+    const reordered = JSON.parse(absJson(syntax));
+    expect(indexAbsSyntax(reordered).map(entry => entry.path))
+      .not.toEqual(indexAbsSyntax(syntax).map(entry => entry.path));
+    const cached = await analysis.match(reordered);
+    for (const { path, node } of indexAbsSyntax(reordered)) {
+      const original = cached.matches.get(node)!;
+      const previous = indexAbsSyntax(syntax).find(entry => entry.path === path)!.node;
+      expect(original.type).toBe(node.type);
+      expect(cached.originalIds.get(original)).toBe(first.originalIds.get(first.matches.get(previous)!));
+    }
+  });
+
   it('reuses an exact baseline across candidates and hashes only changed dependency content', async () => {
     const baseline = await project(), create = createAbsReconcilerFactory();
     const digest = spyOn(crypto.subtle, 'digest').and.callThrough();

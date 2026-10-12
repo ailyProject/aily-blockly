@@ -13,6 +13,23 @@ describe('bounded disposable candidate recovery', () => {
     expect(execute.calls.first().args[1].timeoutMs).toBeUndefined();
   });
 
+  it('gives large binding and verification the existing 30s allowance without repeating timed-out work', async () => {
+    const execute = jasmine.createSpy().and.resolveTo(result);
+    const run = createNativeCandidateRecovery(execute, () => {});
+    await run({ ...request(), abs: '# ABS Schema: 2\n' + 'probe()\n'.repeat(2000) });
+    expect(execute.calls.first().args[1].timeoutMs).toBe(30000);
+    await run({ ...request(), verify: { state: { blocks: { blocks: Array.from({ length: 2000 }, (_, i) => ({ type: 'probe', id: String(i) })) } }, contracts: { fields: {} }, newRootIds: [] } });
+    expect(execute.calls.mostRecent().args[1].timeoutMs).toBe(30000);
+    const timeout = nativeCandidateTimeout('ui', 30000);
+    execute.and.rejectWith(timeout);
+    await expectAsync(run(request())).toBeRejectedWith(timeout);
+    expect(execute).toHaveBeenCalledTimes(3);
+    execute.calls.reset();
+    await expectAsync(createNativeCandidateRecovery(execute, () => {})({ ...request(), abs: '# ABS Schema: 2\n' + 'probe()\n'.repeat(2000) }))
+      .toBeRejectedWith(timeout);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it('recovers exact input once after cleanup, with a complete 30s retry budget', async () => {
     let active = false;
     const input = request(), budgets: Array<number | undefined> = [];

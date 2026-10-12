@@ -7,7 +7,7 @@ import { _ProjectService } from '../../../editors/blockly-editor/services/projec
 import { BlocklyWorkspaceEditLease } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
-import { projectDataRuntime } from '@domain/project/public-api';
+import { projectDataRuntime, cloneBlocklyJson } from '@domain/project/public-api';
 import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
@@ -122,7 +122,12 @@ export class AbsWorkspaceSyncService {
       const committed = inspection ? inspection.committed?.projection : await store.loadCommitted();
       if (committed && !inspection) this.assertMirrors(committed, expected, true);
       else if (!committed && (expected.map !== null || expected.abs !== null && !initialize)) {
-        throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.');
+        throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.', undefined, [], {
+          reason: expected.map === null ? 'initial-baseline' : 'orphan-map',
+          hint: expected.map === null
+            ? 'No pending transaction or map exists. Explicit initialize=true may establish the first baseline from the trusted current canvas while preserving the old ABS.'
+            : 'An orphan map exists. Preserve it and inspect project recovery; initialization cannot overwrite it.',
+        });
       }
       context.assertCurrent();
       let snapshot = this.editor.captureProjectSnapshot(lease);
@@ -426,7 +431,7 @@ export class AbsWorkspaceSyncService {
     // serialize the entire project; compare the program at the boundaries.
     const rollback = captureAbsWorkspaceState(context.workspace, assertCurrent, context.definitions, context.assertCurrent);
     assertAbsContractsCompatible(prepared.rollback.contracts, rollback.contracts, rollback.state);
-    const materialized = structuredClone(prepared.materialized);
+    const materialized = cloneBlocklyJson(prepared.materialized);
     retainAbsRootLayout(materialized, composeBlocklyPage(current.document, context.scope.pageId));
     this.editor.assertWorkspaceSharedChange(current.document, materialized, lease);
     return { ...prepared, expected, before: current, rollback, materialized };

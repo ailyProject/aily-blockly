@@ -195,6 +195,7 @@ describe('Blockly service document boundary', () => {
   let live: Blockly.Workspace;
   beforeEach(() => {
     service = Object.create(BlocklyService.prototype);
+    (service as any).functionViewSubject = new BehaviorSubject({ scopeId: '', options: [], visibleCount: 0, totalCount: 0 });
     internal = service;
     live = new Blockly.Workspace();
     Object.assign(internal, {

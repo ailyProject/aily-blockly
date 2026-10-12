@@ -505,6 +505,7 @@ describe('BlocklyService prepared code view', () => {
       service.blockCodeMapSubject.value,
       'selected',
       ['selected'],
+      jasmine.any(Function),
     );
   });
 
@@ -517,6 +518,6 @@ describe('BlocklyService prepared code view', () => {
 
     const publishCodeState = jasmine.createSpy('publishCodeState');
     service.registerCodeViewerPublisher({ publishCodeState });
-    expect(publishCodeState).toHaveBeenCalledOnceWith('void loop() {}', previous, 'selected', ['selected']);
+    expect(publishCodeState).toHaveBeenCalledOnceWith('void loop() {}', previous, 'selected', ['selected'], jasmine.any(Function));
   });
 });

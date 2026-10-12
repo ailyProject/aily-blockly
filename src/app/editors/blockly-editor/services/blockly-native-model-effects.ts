@@ -63,7 +63,7 @@ export function verifyNativeModelRegistrations<T>(realm: any, generator: Blockly
     if (!effect) return;
     const variable = nativeLoopVariable(block)?.getVariable();
     if (effect.blockType !== block.type || !variable || variable.getId() !== effect.id
-      || variable.name !== effect.name || variable.type !== effect.type) {
+      || variable.getName() !== effect.name || variable.getType() !== effect.type) {
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Complete generation changed the loop counter declaration.');
     }
     seen.add(effect.id);

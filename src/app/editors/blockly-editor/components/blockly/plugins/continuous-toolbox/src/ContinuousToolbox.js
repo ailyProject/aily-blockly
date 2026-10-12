@@ -160,7 +160,7 @@ Blockly.Css.register(`
   width: 1.25rem;
   height: 1.25rem;
 }
-.blocklyTreeRow {
+.blocklyToolboxCategory {
   height: initial;
   padding: 3px 0;
 }
@@ -168,7 +168,7 @@ Blockly.Css.register(`
   display: flex;
   flex-direction: column;
 }
-.blocklyTreeLabel {
+.blocklyToolboxCategoryLabel {
   margin: auto;
 }
 `);

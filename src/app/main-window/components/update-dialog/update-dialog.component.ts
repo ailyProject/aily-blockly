@@ -149,7 +149,9 @@ export class UpdateDialogComponent implements OnInit, OnDestroy {
   private loadChangelog() {
     const lang = this.translate.currentLang || this.translate.defaultLang || '';
     const isChinese = lang.toLowerCase().startsWith('zh');
-    const filename = isChinese ? 'CHANGELOG_ZH.md' : 'CHANGELOG.md';
+    const filename = this.configService.isCoderProduct()
+      ? (isChinese ? 'CHANGELOG_CODER_ZH.md' : 'CHANGELOG_CODER.md')
+      : (isChinese ? 'CHANGELOG_ZH.md' : 'CHANGELOG.md');
     let updaterUrl = '';
     try {
       updaterUrl = this.configService.getCurrentUpdaterUrl();

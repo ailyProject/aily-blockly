@@ -1,4 +1,5 @@
 import type { NativeCandidateRequest, NativeCandidateResult } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
+import { cloneBlocklyJson } from '@domain/project/public-api';
 import { absJson } from './abs-json';
 import { indexAbsAbi } from './abs-abi-index';
 import { AbsSyncError } from './abs-state';
@@ -16,6 +17,7 @@ import { walkAbsRawSyntax } from './abs-syntax-binding';
 import { absSyntaxOptions } from './abs-syntax-contracts';
 import { retireEmptyProjectModels } from './abs-empty-project-models';
 import { orderAbsSharedRoots } from './abs-program-state';
+import { retainedAbsNativeModelCalls } from './abs-retained-native-models';
 
 export type AbsNativeExecutor = (request: Omit<NativeCandidateRequest, 'steps'>) => Promise<NativeCandidateResult>;
 
@@ -41,9 +43,11 @@ export async function prepareAbsNativeReconciliation(reconciler: ReturnType<type
     hostCalls.push({ start: node.start, type: node.type, ...(argumentOrder ? { argumentOrder } : {}),
       ...(extraState === undefined ? {} : { extraState }) });
   } });
-  const modelState = structuredClone(baseline.workspace);
+  const modelState = cloneBlocklyJson(baseline.workspace);
   if (source !== baseline.abs) retireEmptyProjectModels(baseline, modelState, source);
   const modelRequestId = await absDeclarationRequestId(baseline.map.generation, source);
+  const retainedModelCalls = retainedAbsNativeModelCalls(baseline.abs, source, syntax);
+  const retainedModelIds = (baseline.workspace['variables'] as Array<{ id: string }> | undefined)?.map(model => model.id) ?? [];
   assertCurrent();
   prepareAbsVariableCreations(modelState, options.variableCreation);
   // These tentative inputs only unblock shape binding. Scope/identity/model
@@ -59,7 +63,9 @@ export async function prepareAbsNativeReconciliation(reconciler: ReturnType<type
     return result;
   };
   const bind = async (identities?: NativeCandidateRequest['identities'], variables = modelState['variables'], creations?: NativeCandidateRequest['creations']) => {
-    const result = await run({ blocks: [], abs: source, modelRequestId, values, ...(hostCalls.length ? { hostCalls } : {}),
+    const suppliedIds = new Set((variables as Array<{ id: string }> | undefined)?.map(model => model.id));
+    const result = await run({ blocks: [], abs: source, modelRequestId, retainedModelCalls,
+      retainedModelIds: retainedModelIds.filter(id => suppliedIds.has(id)), values, ...(hostCalls.length ? { hostCalls } : {}),
       ...(variables === undefined ? {} : { variables: variables as NativeCandidateRequest['variables'] }), ...(identities ? { identities } : {}),
       ...(creations ? { creations } : {}) });
     if (!result.binding || result.binding.source !== source) throw new AbsSyncError('ABS_NATIVE_BINDING_STALE', 'Native executor did not bind the requested source.');

@@ -3,6 +3,66 @@ import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
+describe('dirty checks after a rejected Blockly open', () => {
+  function fixture(mode: string | null, status: { ready: boolean; error?: string }) {
+    const service: any = Object.create(ProjectService.prototype);
+    service.currentProjectPathSubject = new BehaviorSubject('/failed');
+    service.stateSubject = new BehaviorSubject('error');
+    service.getProjectMode = () => mode;
+    service.getBlocklyProjectLoadStatus = () => status;
+    if (mode !== 'coder' && status.error) service.blocklyProjectLoadFailure = { path: '/failed', error: status.error };
+    const dirty = jasmine.createSpy('dirty').and.rejectWith(new Error('ProjectDataRuntime is not configured for flush.'));
+    Object.defineProperty(service, 'application', { value: { hasUnsavedBlocklyChanges: dirty } });
+    return { service, dirty };
+  }
+  it('allows close, switch and retry without querying a partial or destroyed Blockly runtime', async () => {
+    const { service, dirty } = fixture('blockly', { ready: false, error: 'readback mismatch' });
+    expect(await service.hasUnsavedChanges()).toBeFalse();
+    expect(dirty).not.toHaveBeenCalled();
+  });
+  it('allows leaving a failed activation even if its manifest cannot identify the mode', async () => {
+    const { service, dirty } = fixture(null, { ready: false, error: 'invalid manifest' });
+    expect(await service.hasUnsavedChanges()).toBeFalse();
+    expect(dirty).not.toHaveBeenCalled();
+  });
+  it('allows cancelling preparation before the editor can answer dirty-state queries', async () => {
+    const { service, dirty } = fixture('blockly', { ready: false });
+    service.beginBlocklyProjectLoad('/failed');
+    expect(await service.hasUnsavedChanges()).toBeFalse();
+    expect(dirty).not.toHaveBeenCalled();
+  });
+  it('still checks a loaded code editor that used the legacy opening route', async () => {
+    const { service, dirty } = fixture('coder', { ready: false });
+    service.beginBlocklyProjectLoad('/failed');
+    service.stateSubject.next('loaded');
+    await expectAsync(service.hasUnsavedChanges()).toBeRejectedWithError(/not configured/);
+    expect(dirty).toHaveBeenCalledTimes(1);
+  });
+  it('does not let late load success or failure revive a cancelled or closed project', () => {
+    const { service } = fixture('blockly', { ready: false });
+    service.beginBlocklyProjectLoad('/failed');
+    service.getProjectDependencySession('/failed');
+    service.dependencyLifecycle.cancel('/failed');
+    service.markBlocklyProjectLoaded('/failed');
+    service.markBlocklyProjectLoadFailed('/failed', 'late error');
+    expect(service.stateSubject.value).toBe('loading');
+    service.currentProjectPathSubject.next('');
+    service.loadingBlocklyProjectPath = '';
+    service.stateSubject.next('default');
+    service.dependencyLifecycle.release(service.dependencyLifecycle.get('/failed'));
+    service.markBlocklyProjectLoadFailed('/failed', 'late error');
+    expect(service.stateSubject.value).toBe('default');
+    expect(service.blocklyProjectLoadFailure).toBeNull();
+  });
+  for (const [mode, status] of [
+    ['blockly', { ready: true }], ['blockly', { ready: false }], ['coder', { ready: false, error: 'coder error' }],
+  ] as const) it(`retains the dirty-state error boundary for ${mode} ${JSON.stringify(status)}`, async () => {
+    const { service, dirty } = fixture(mode, status);
+    await expectAsync(service.hasUnsavedChanges()).toBeRejectedWithError(/not configured/);
+    expect(dirty).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('project lifecycle admission across sessions', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);

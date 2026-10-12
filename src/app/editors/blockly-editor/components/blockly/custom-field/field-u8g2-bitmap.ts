@@ -295,8 +295,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
         // lines.
         const svgRoot = this.getSvgRoot();
         if (svgRoot) {
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableText');
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableText');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableField');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableField');
         }
         return editable;
     }

@@ -31,7 +31,15 @@ export interface AbsGenerationValidation extends AbsGenerationCandidateRequest {
 const hash = (value: unknown) => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
 export function assertGenerationRequest(value: any): asserts value is AbsGenerationRequest & Record<string, any> {
   if (value?.version !== 2) {
-    throw new AbsSyncError('ABS_PROTOCOL_REQUIRED', 'ABS tools require generation protocol version 2. Update the host and Agent together.');
+    const received = value?.version;
+    throw new AbsSyncError('ABS_PROTOCOL_REQUIRED',
+      'ABS tools require generation protocol version 2. The caller sent a missing or unsupported version; this is not an ABS source syntax error.',
+      undefined, [], {
+        reason: 'generation-protocol-version', field: 'version', allowedValues: [2],
+        received: typeof received === 'string' ? received.slice(0, 80)
+          : typeof received === 'number' && Number.isFinite(received) || typeof received === 'boolean' ? received : null,
+        hint: 'Reconnect/restart the MCP service using current Aily Chat tools. Restarting Blockly alone cannot refresh an old MCP process. Tools construct version 2 and receipts; do not add wire fields to ABS or edit ABI/map data.',
+      });
   }
   if (typeof value.requestId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(value.requestId)) {
     throw new AbsSyncError('ABS_REQUEST_INVALID', 'A valid generation requestId is required.', undefined, [], { reason: 'invalid-request-id' });

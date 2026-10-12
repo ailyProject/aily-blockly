@@ -1,4 +1,4 @@
-import { canonicalJsonStringify } from '@domain/project/public-api';
+import { canonicalProjectJsonStringify, cloneBlocklyJson } from '@domain/project/public-api';
 
 export interface BlocklyWorkspaceViewState {
   scale: number;
@@ -46,8 +46,8 @@ export class BlocklyProjectModelError extends Error {
     this.name = 'BlocklyProjectModelError';
   }
 }
-const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
-const same = (a: unknown, b: unknown) => canonicalJsonStringify(a) === canonicalJsonStringify(b);
+const copy = cloneBlocklyJson;
+const same = (a: unknown, b: unknown) => canonicalProjectJsonStringify(a) === canonicalProjectJsonStringify(b);
 const fail = (code: string, message: string, ids: string[] = []): never => { throw new BlocklyProjectModelError(code, message, ids); };
 
 export function normalizeBlocklyWorkspace(value: any): any {

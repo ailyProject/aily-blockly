@@ -34,6 +34,73 @@ describe('BlocklyGeneratorRuntimeService', () => {
     });
   }
 
+  it('batches initialization timer render loops and retains immediate rendering in ordinary timers', async () => {
+    const container = document.createElement('div'); document.body.appendChild(container);
+    const workspace = Blockly.inject(container, { sounds: false });
+    service.activate({ mode: 'arduino', getWorkspace: () => workspace });
+    service.loadGenerator('timer-render/generator.js', `
+      Blockly.Blocks.runtime_timer_render = { init() {
+        this.appendDummyInput().appendField(new Blockly.FieldTextInput('short'), 'TEXT');
+      } };
+      window.refreshLabels = () => setTimeout(() => {
+        const blocks = Blockly.getMainWorkspace().getAllBlocks(false);
+        for (const block of blocks) { block.setFieldValue('a longer initialized label', 'TEXT'); block.render(); block.render(); }
+        window.refreshDone = true;
+      }, 0);
+      window.loadingListener = event => { if (event.type === Blockly.Events.FINISHED_LOADING) window.refreshLabels(); };
+      window.installLoadingListener = () => Blockly.getMainWorkspace().addChangeListener(window.loadingListener);
+      window.removeLoadingListener = () => Blockly.getMainWorkspace().removeChangeListener(window.loadingListener);
+    `);
+    try {
+      const block = workspace.newBlock('runtime_timer_render'); block.initSvg(); block.render();
+      const width = block.width;
+      const renderer = spyOn(workspace.getRenderer(), 'render').and.callThrough();
+      service.invokeGlobal('refreshLabels');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(block.width).toBeGreaterThan(width);
+      expect(renderer.calls.count()).toBe(1);
+      renderer.calls.reset(); service.markReady();
+      service.invokeGlobal('refreshLabels');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(renderer.calls.count()).toBe(2);
+      renderer.calls.reset();
+      service.invokeGlobal('installLoadingListener');
+      workspace.fireChangeListener(new Blockly.Events.FinishedLoading(workspace));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(renderer.calls.count()).toBe(1);
+      renderer.calls.reset(); service.invokeGlobal('removeLoadingListener');
+      workspace.fireChangeListener(new Blockly.Events.FinishedLoading(workspace));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(renderer).not.toHaveBeenCalled();
+    } finally { workspace.dispose(); container.remove(); }
+  });
+
+  it('loads the published variable lookup alongside native dynamic function and variable categories', () => {
+    const container = document.createElement('div'); document.body.appendChild(container);
+    let workspace: Blockly.WorkspaceSvg | null = null;
+    service.activate({ mode: 'arduino', getWorkspace: () => workspace });
+    const source = `
+      Blockly.Blocks.variable_define = { init() { this.appendDummyInput().appendField('declare'); } };
+      window.findLegacyVariableCategory = () => Blockly.getMainWorkspace().getToolbox().getToolboxItems().find(item =>
+        item.name_ === "Variables" || (item.getContents && item.getContents().some(c => c.type === "variable_define"))
+      ).getName();
+    `;
+    service.loadGenerator('/project/node_modules/@aily-project/lib-core-variables/generator.js', source);
+    try {
+      workspace = Blockly.inject(container, { toolbox: { kind: 'categoryToolbox', contents: [
+        { kind: 'category', name: '函数', custom: 'PROCEDURE' },
+        { kind: 'category', name: '原生变量', custom: 'VARIABLE' },
+        { kind: 'category', name: '变量', contents: [{ kind: 'block', type: 'variable_define' }] },
+      ] } });
+      expect(service.invokeGlobal('findLegacyVariableCategory')).toBe('变量');
+      const categories = workspace.getToolbox()!.getToolboxItems() as Blockly.ToolboxCategory[];
+      expect(categories[0].getContents()).toBe('PROCEDURE');
+      expect(categories[1].getContents()).toBe('VARIABLE');
+      expect(source).not.toContain('Array.isArray');
+      expect(service.captureNativeReplay().steps.some(step => step.kind === 'script' && step.source.includes('Array.isArray'))).toBeTrue();
+    } finally { workspace?.dispose(); container.remove(); }
+  });
+
   for (const chunk of [false, true]) it('settles project-owned dropdown tasks across an entire load; chunk=' + chunk, async () => {
     const container = document.createElement('div'); document.body.appendChild(container);
     const workspace = Blockly.inject(container, { toolbox: null });

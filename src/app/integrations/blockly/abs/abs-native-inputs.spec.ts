@@ -15,7 +15,7 @@ describe('native candidate owned model and resource inputs', () => {
   afterEach(() => expect(document.querySelector('[data-blockly-native-candidate]')).toBeNull());
 
   for (const value of ['variables_get($counter)', '$counter']) it(`binds a variable dropdown and value input (${value}) without incidental default models`, async () => {
-    const probe = spyOn(Blockly.Workspace.prototype, 'createVariable').and.callThrough();
+    const probe = spyOn(Blockly.VariableMap.prototype, 'createVariable').and.callThrough();
     const result = await run(request(`native_model_input($counter, ${value})`));
     const root = result.state['blocks'].blocks[0];
     expect(root.fields.SELECT).toEqual({ id: 'counter-id' });

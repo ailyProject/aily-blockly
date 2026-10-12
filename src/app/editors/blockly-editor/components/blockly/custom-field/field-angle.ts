@@ -210,7 +210,6 @@ export class FieldAngle extends Blockly.FieldNumber {
             Blockly.utils.userAgent.MOBILE ||
             Blockly.utils.userAgent.ANDROID ||
             Blockly.utils.userAgent.IPAD;
-        super.showEditor_(e, noFocus);
 
         const editor = this.dropdownCreate();
         Blockly.DropDownDiv.getContentDiv().appendChild(editor);
@@ -227,6 +226,8 @@ export class FieldAngle extends Blockly.FieldNumber {
             this,
             this.dropdownDispose.bind(this),
         );
+
+        super.showEditor_(e, noFocus, false);
 
         this.updateGraph();
     }

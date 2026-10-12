@@ -11,13 +11,17 @@ import { assertNativeBudget } from './blockly-native-budget';
  * No fake dropdown value, empty consumer code or missing-reference-created model.
  * The final fresh realm must reproduce each registration with the complete ABI. */
 export function prepareNativeModels(execution: NativeCandidateWorkspace, generator: Blockly.Generator,
-  blocks: ReadonlyMap<AbsSyntaxNode, Blockly.Block>, resolveReferences: () => ReadonlySet<Blockly.Block>, requestId: string): AbsNativeModelDeclaration[] {
+  blocks: ReadonlyMap<AbsSyntaxNode, Blockly.Block>, resolveReferences: () => ReadonlySet<Blockly.Block>, requestId: string,
+  retained: { retainedCalls?: number[]; retainedIds?: string[] } = {}): AbsNativeModelDeclaration[] {
   const nodes = new Map([...blocks].map(([node, block]) => [block, node]));
   const disabled = (block: Blockly.Block): boolean => {
     for (let current: Blockly.Block | null = block; current; current = current.getParent()) if (nodes.get(current)?.disabled) return true;
     return false;
   };
   const declarations = new Map<string, AbsNativeModelDeclaration>();
+  const retainedCalls = new Set(retained.retainedCalls), retainedIds = new Set(retained.retainedIds);
+  const retainedNames = new Set<string>();
+  const unchanged = (effect: AbsNativeModelDeclaration) => retainedCalls.has(effect.start) && retainedIds.has(effect.id);
   // Only the explicit counter declaration may seed a missing loop model. A
   // later ordinary initializer can own that same model; shared loop counters
   // reuse the first identity instead of inventing duplicate variable models.
@@ -32,6 +36,7 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     // Record ownership even when replay receives the already planned models.
     // Discovery and identity-bound replay must produce identical evidence.
     const effect = execution.models.declare(node.start, block.type, String(token.value), '', requestId);
+    if (unchanged(effect)) continue;
     if (!declarations.has(effect.name.toLowerCase())) declarations.set(effect.name.toLowerCase(), { ...effect, kind: 'loop' });
     assertNativeBudget('declarations', declarations.size, 'model-preparation');
   }
@@ -50,6 +55,12 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     if (!node || disabled(block)) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', 'Only an active ABS initializer may prepare a model.');
     const effect = execution.models.declare(node.start, block.type, name, type, requestId);
     const key = effect.name.toLowerCase(), previous = declarations.get(key);
+    // Still execute and validate the real helper/type/identity, but do not turn
+    // unchanged registrations of an existing model into new producer ownership.
+    if (unchanged(effect) && (!previous || previous.kind === 'loop')) { retainedNames.add(key); return; }
+    if (retainedNames.has(key) || unchanged(effect)) {
+      throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', `New initializer duplicates an existing declaration of ${JSON.stringify(name)}.`, node);
+    }
     if (previous && previous.kind !== 'loop' && (previous.start !== effect.start || previous.type !== effect.type)) {
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', `Multiple initializers declare ${JSON.stringify(name)}. Keep one declaration per object.`, node);
     }

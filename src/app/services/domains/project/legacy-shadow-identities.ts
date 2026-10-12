@@ -1,4 +1,5 @@
-import { canonicalJsonStringify, createDefaultProjectDataCodecRegistry } from './project-data/project-data-codec.registry';
+import { canonicalProjectJsonStringify } from './project-document-json';
+import { createDefaultProjectDataCodecRegistry } from './project-data/project-data-codec.registry';
 import { collectProjectBlockLocations, ProjectBlockLocation, projectDataChildPointer } from './project-data/project-data-payloads';
 import { isAilyDataRef } from './project-data/project-data.types';
 
@@ -91,7 +92,7 @@ export function migrateLegacyShadowIdentities<T>(source: T, generate: () => stri
     for (const entry of entries.filter(item => /^\/pages\/\d+\/content\/blocks\/blocks\/\d+$/.test(item.jsonPointer))) {
       const owner = shared.get(entry.state['id'] as string);
       if (!owner) continue;
-      if (canonicalJsonStringify(entry.state) !== canonicalJsonStringify(owner.state)) {
+      if (canonicalProjectJsonStringify(entry.state) !== canonicalProjectJsonStringify(owner.state)) {
         throw new ProjectBlockIdentityError('BLOCKLY_MODEL_CONFLICT', 'Shared definition copies differ; original project retained.', { blockId: entry.state['id'] });
       }
       aliases.set(entry.jsonPointer, owner.jsonPointer);

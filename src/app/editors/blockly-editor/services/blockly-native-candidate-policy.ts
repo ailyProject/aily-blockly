@@ -8,6 +8,18 @@ export function assertSynchronousNativeCandidate(request: NativeCandidateRequest
   if (request.modelRequestId !== undefined && (request.abs === undefined || !/^[a-zA-Z0-9-]{16,80}$/.test(request.modelRequestId))) {
     throw new Error('Native model preparation requires an internal ABS request namespace.');
   }
+  if (request.retainedModelCalls !== undefined || request.retainedModelIds !== undefined) {
+    const suppliedIds = new Set(Array.isArray(request.variables) ? request.variables.map(model => model?.id) : []);
+    if (!request.modelRequestId || !Array.isArray(request.retainedModelCalls) || !Array.isArray(request.retainedModelIds)
+      || request.retainedModelCalls.some(start => !Number.isSafeInteger(start) || start < 0)
+      || new Set(request.retainedModelCalls).size !== request.retainedModelCalls.length
+      || request.retainedModelIds.some(id => typeof id !== 'string' || !suppliedIds.has(id))
+      || new Set(request.retainedModelIds).size !== request.retainedModelIds.length) {
+      throw new Error('Retained native models require committed calls and supplied model identities.');
+    }
+    assertNativeBudget('identities', request.retainedModelCalls.length, 'request');
+    assertNativeBudget('variables', request.retainedModelIds.length, 'request');
+  }
   if (!Array.isArray(request.steps) || !Array.isArray(request.blocks)) throw new Error('Native candidate requires steps and blocks arrays.');
   assertNativeBudget('requestCharacters', JSON.stringify(request).length, 'request');
   for (const [key, resource] of [['blocks', 'blocks'], ['identities', 'identities'], ['variables', 'variables'],

@@ -71,14 +71,6 @@ function normalizeBuildFlavor(flavor) {
   return String(flavor || '').trim().toLowerCase() === 'global' ? 'global' : 'cn';
 }
 
-function resolveProductUpdaterUrl(baseUrl, product) {
-  const normalized = String(baseUrl || '').trim().replace(/\/+$/, '');
-  if (!normalized || normalizeBuildProduct(product) !== 'coder') return normalized;
-  return /\/blockly$/i.test(normalized)
-    ? normalized.replace(/\/blockly$/i, '/coder')
-    : `${normalized}/coder`;
-}
-
 function getPackagedBuildFlavor() {
   if (cachedPackagedBuildFlavor !== undefined) {
     return cachedPackagedBuildFlavor;
@@ -184,6 +176,7 @@ function isSimplifiedChineseLanguage(config) {
 
 function getForcedUpdateManifestSource() {
   const config = loadMergedConfig();
+  const buildProduct = getCurrentBuildProduct(config);
 
   if (getCurrentBuildFlavor(config) === 'cn') {
     return null;
@@ -193,10 +186,7 @@ function getForcedUpdateManifestSource() {
     return null;
   }
 
-  const updaterUrl = resolveProductUpdaterUrl(
-    config.regions && config.regions.cn && config.regions.cn.updater,
-    getCurrentBuildProduct(config),
-  );
+  const updaterUrl = config.regions && config.regions.cn && config.regions.cn.updater;
   if (typeof updaterUrl !== 'string' || updaterUrl.trim() === '') {
     return null;
   }
@@ -204,6 +194,7 @@ function getForcedUpdateManifestSource() {
   return {
     provider: 'generic',
     url: updaterUrl.trim().replace(/\/+$/, ''),
+    ...(buildProduct === 'coder' ? { channel: 'latest-coder' } : {}),
     reason: 'china-timezone-and-zh-cn-language',
   };
 }
@@ -214,33 +205,38 @@ async function applyUpdateManifestSourceBeforeCheck() {
     autoUpdater.setFeedURL({
       provider: source.provider,
       url: source.url,
+      ...(source.channel ? { channel: source.channel } : {}),
     });
     forcedUpdateManifestSourceApplied = true;
     logUpdater('forced update manifest source', {
       reason: source.reason,
-      url: joinUrl(source.url, getChannelFileName()),
+      url: joinUrl(source.url, getChannelFileName(source)),
     });
 
     return source;
   }
 
   if (forcedUpdateManifestSourceApplied) {
+    const isCoder = getCurrentBuildProduct() === 'coder';
     try {
       const config = normalizePublishConfig(await autoUpdater.configOnDisk.value);
+      if (isCoder && (!config || !config.url)) {
+        throw new Error('Packaged Coder updater configuration is missing a URL');
+      }
       if (config && config.url) {
         autoUpdater.setFeedURL(config);
         logUpdater('restored packaged update manifest source', {
           provider: config.provider || 'generic',
-          url: joinUrl(config.url, getChannelFileName()),
+          url: joinUrl(config.url, getChannelFileName(config)),
         });
       }
     } catch (error) {
       logUpdater('failed to restore packaged update manifest source', {
         error: serializeError(error),
       });
-    } finally {
-      forcedUpdateManifestSourceApplied = false;
+      if (isCoder) throw error;
     }
+    forcedUpdateManifestSourceApplied = false;
   }
 
   return null;
@@ -272,10 +268,10 @@ function getTargetUpdateBuildFlavor(updateInfo) {
   }
 
   const normalizedPaths = filePaths.join('\n').toLowerCase();
-  if (normalizedPaths.includes('aily-blockly-cn-')) {
+  if (normalizedPaths.includes('aily-blockly-cn-') || normalizedPaths.includes('aily-coder-cn-')) {
     return 'cn';
   }
-  if (normalizedPaths.includes('aily-blockly-')) {
+  if (normalizedPaths.includes('aily-blockly-') || normalizedPaths.includes('aily-coder-')) {
     return 'global';
   }
 
@@ -288,7 +284,6 @@ function getDownloadMirrorSources(updateInfo) {
   }
 
   const config = loadMergedConfig();
-  const buildProduct = getCurrentBuildProduct(config);
   const strategy = config.update_download_strategy || {};
 
   if (strategy.enabled === false) {
@@ -303,10 +298,7 @@ function getDownloadMirrorSources(updateInfo) {
   const seenUrls = new Set();
   return regionOrder
     .map((regionKey) => {
-      const updaterUrl = resolveProductUpdaterUrl(
-        regions[regionKey] && regions[regionKey].updater,
-        buildProduct,
-      );
+      const updaterUrl = regions[regionKey] && regions[regionKey].updater;
       if (typeof updaterUrl !== 'string' || updaterUrl.trim() === '') {
         return null;
       }
@@ -389,8 +381,8 @@ function getPlatformChannelPrefix() {
   return '';
 }
 
-function getChannelFileName() {
-  const channel = autoUpdater.channel || 'latest';
+function getChannelFileName(config = {}) {
+  const channel = autoUpdater.channel || config.channel || 'latest';
   return `${channel}${getPlatformChannelPrefix()}.yml`;
 }
 
@@ -411,7 +403,7 @@ async function logDefaultUpdateCheckUrl() {
     if (config && config.url) {
       logUpdater('checking update manifest', {
         provider: config.provider || 'generic',
-        url: joinUrl(config.url, getChannelFileName()),
+        url: joinUrl(config.url, getChannelFileName(config)),
       });
     } else {
       logUpdater('checking update manifest with packaged updater config');
@@ -834,14 +826,14 @@ function registerUpdaterHandlers(mainWindow) {
   // }
 
   autoUpdater.autoDownload = false;  // 禁用自动下载
-  // autoUpdater.allowDowngrade = true; // 允许版本降级
+  autoUpdater.allowDowngrade = false;
   autoUpdater.useMultipleRangeRequest = false; // 禁用多范围请求
   autoUpdater.disableDifferentialDownload = true; // 禁用差量下载，使用完整下载
 
   // 添加IPC处理程序，允许从渲染进程手动检查更新
   ipcMain.handle('check-for-updates', async () => {
-    await applyUpdateManifestSourceBeforeCheck();
-    await logDefaultUpdateCheckUrl();
+    const source = await applyUpdateManifestSourceBeforeCheck();
+    if (!source) await logDefaultUpdateCheckUrl();
     const result = await autoUpdater.checkForUpdates();
     // console.log('检查更新结果:', result);
     return JSON.parse(JSON.stringify(result))
@@ -959,7 +951,6 @@ module.exports = {
     getDownloadGuardConfig,
     getDownloadMirrorSources,
     getTargetUpdateBuildFlavor,
-    resolveProductUpdaterUrl,
     isCancellationError,
     isStrategyCancellationError,
   },

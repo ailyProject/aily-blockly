@@ -26,6 +26,7 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
     runtime = new BlocklyGeneratorRuntimeService();
     runtime.activate({ mode: 'arduino', projectPath: path, getWorkspace: () => live as any });
     Object.assign(internal, {
+      toolbox: { kind: 'categoryToolbox', contents: [] }, applyToolboxSortOrderToContents() {},
       _workspace: live, projectDocumentSchemaVersion: 3, documentMetadata: {}, generatorRuntime: runtime,
       projectRevision: new BlocklyProjectRevision(), workspaceEditGate: new BlocklyWorkspaceEditGate(),
       projectCodePreparation: new BlocklyProjectCodePreparation(), projectOperations: new SerialOperationQueue(),
@@ -58,6 +59,69 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
     project.rememberLoadedProject(path, files.get(`${path}/project.abi`)!, editor.getProjectAbiForSave());
   });
   afterEach(() => { project.destroy(); live.dispose(); runtime.destroy(); window['fs'] = oldFs; });
+
+  async function loadLegacyFunctions() {
+    const name = '@aily-project/lib-core-functions', root = `${path}/node_modules/${name}`;
+    const types = ['procedures_defnoreturn', 'procedures_defreturn', 'procedures_callnoreturn', 'procedures_callreturn', 'procedures_ifreturn'];
+    files.set(`${root}/block.json`, '[]');
+    files.set(`${root}/generator.js`, types.map(type => `Arduino.forBlock.${type} = () => '';`).join('\n'));
+    Object.assign(internal, {
+      electronService: { pathJoin: (...parts) => parts.join('/'), exists: file => files.has(file), readFile: file => files.get(file) },
+      translateService: { currentLang: 'en' },
+      blocklyLibraryPackageService: {
+        getPackagePath: () => root,
+        readLibraryPackage: () => ({ paths: { generatorJs: `${root}/generator.js` },
+          packageJson: { name, version: '0.0.1' }, blockJson: [],
+          toolboxRoot: { kind: 'category', name: 'Functions', custom: 'PROCEDURE' } }),
+      },
+      checkLibraryIntegrity: () => ({ valid: true, errors: [] }), resolveLibraryLocalPath: () => undefined,
+    });
+    // A previous library's handler must not become owned by the functions library.
+    runtime.loadGenerator('previous-library/generator.js', 'Arduino.forBlock.text = () => ["text", 0];');
+    load.and.callThrough();
+    await editor.loadLibrary(name, path);
+    return { name, root, types };
+  }
+
+  it('tracks native generator-only blocks for uninstall and persisted dependency usage', async () => {
+    const { name, root, types } = await loadLegacyFunctions();
+    expect([...internal.loadedGenerators.get(`${root}/generator.js`)].sort()).toEqual([...types].sort());
+    expect(internal.runtimeDefinedLibraryBlockTypes.has('procedures_defnoreturn')).toBeFalse();
+    expect(internal.blockTypeToLibMap.get('text')?.name).not.toBe(name);
+    expect(editor.isLibraryUsedByCurrentProject(root)).toBeFalse();
+    expect(editor.isLibraryPackageNameUsedByCurrentProject(name)).toBeFalse();
+    const document = editor.getProjectDocument();
+    (document.pages[1].content as any).blocks.blocks.push({ type: 'procedures_callnoreturn', id: 'inactive-call' });
+    spyOn(editor, 'getProjectDocument').and.returnValue(document);
+    expect(editor.isLibraryUsedByCurrentProject(root)).toBeTrue();
+    expect(editor.isLibraryPackageNameUsedByCurrentProject(name)).toBeTrue();
+    expect(editor.getProjectUsedLibraryManifest()[name].blockTypes).toEqual(['procedures_callnoreturn']);
+  });
+
+  it('protects shared native function definitions even if block.json disappears after loading', async () => {
+    const { name, root } = await loadLegacyFunctions();
+    const document = editor.getProjectDocument();
+    document.sharedModel.procedureBlocks.push({ type: 'procedures_defreturn', id: 'shared-function' } as any);
+    spyOn(editor, 'getProjectDocument').and.returnValue(document);
+    files.delete(`${root}/block.json`);
+    expect(editor.isLibraryUsedByCurrentProject(root)).toBeTrue();
+    expect(editor.isLibraryPackageNameUsedByCurrentProject(name)).toBeTrue();
+  });
+
+  it('keeps usage protection for a red legacy function category with no loaded generator', async () => {
+    const { name, root } = await loadLegacyFunctions();
+    internal.loadedLibraryInfos.clear(); internal.loadedGenerators.clear(); internal.blockTypeToLibMap.clear();
+    internal.failedLibraryLoads.set(root, { snapshot: { ref: { name, path: root },
+      packageJson: { name, version: '0.0.1' }, blockJson: [],
+      toolboxRoot: { kind: 'category', custom: 'PROCEDURE' } }, errors: ['SyntaxError'] });
+    expect(editor.isLibraryUsedByCurrentProject(root)).toBeFalse();
+    const document = editor.getProjectDocument();
+    document.sharedModel.procedureBlocks.push({ type: 'procedures_defreturn', id: 'shared-function' } as any);
+    spyOn(editor, 'getProjectDocument').and.returnValue(document);
+    expect(editor.isLibraryUsedByCurrentProject(root)).toBeTrue();
+    expect(editor.isLibraryPackageNameUsedByCurrentProject(name)).toBeTrue();
+    expect(internal.failedLibraryLoads.has(root)).toBeTrue();
+  });
 
   it('keeps repeated clean reloads clean, preserving disk bytes, protections, pages and shared data', async () => {
     const before = editor.getProjectAbiForSave(), disk = files.get(`${path}/project.abi`);

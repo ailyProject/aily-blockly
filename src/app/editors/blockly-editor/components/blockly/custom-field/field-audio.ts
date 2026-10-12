@@ -301,8 +301,8 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
     const editable = super.updateEditable();
     const root = this.getSvgRoot();
     if (root) {
-      Blockly.utils.dom.removeClass(root, 'blocklyNonEditableText');
-      Blockly.utils.dom.removeClass(root, 'blocklyEditableText');
+      Blockly.utils.dom.removeClass(root, 'blocklyNonEditableField');
+      Blockly.utils.dom.removeClass(root, 'blocklyEditableField');
     }
     return editable;
   }

@@ -6,7 +6,7 @@ import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './
 import { ElectronService, ProjectFilePublicationError } from '@core/platform/public-api';
 import {
   projectDataRuntime,
-  canonicalJsonStringify,
+  canonicalProjectJsonStringify,
   materializeGenericProjectDataValues,
   type AilyDataRef,
 } from '@domain/project/public-api';
@@ -16,6 +16,7 @@ import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave } from './prepared-project-save';
+import type { BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
 
 
@@ -79,17 +80,17 @@ export class _ProjectService {
     if (this.blocklyService.captureProjectSnapshot().revision !== revision || window['fs'].readFileSync(path, 'utf8') !== diskText) {
       throw new Error('Project changed while checking unsaved state. Please retry.');
     }
-    return canonicalJsonStringify(memory) !== canonicalJsonStringify(this.blocklyService.normalizeProjectAbi(materialized));
+    return canonicalProjectJsonStringify(memory) !== canonicalProjectJsonStringify(this.blocklyService.normalizeProjectAbi(materialized));
   }
 
   /** Called only by the authoritative open path, never an ABS draft/rollback. */
-  rememberLoadedProject(path: string, diskText: string, source: BlocklyProjectDocument): void {
+  rememberLoadedProject(path: string, diskText: string, source: BlocklyProjectDocument, owner?: BlocklyWorkspaceEditLease): void {
     const context = this.captureSaveContext(path);
     context.assertCurrent(); // A stale caller must not erase a newer project's record.
     this.cleanState.clear();
     try {
       if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== diskText) throw new Error('Project changed during loading.');
-      const document = this.blocklyService.getProjectAbiForSave();
+      const document = this.blocklyService.getProjectAbiForSave(owner ? this.blocklyService.getProjectDocument(owner) : undefined);
       assertProjectLoadPreserved(this.blocklyService.getProjectAbiForSave(source), document,
         workspace => this.blocklyService.getWorkspaceLoadReadbackView(workspace));
       context.assertCurrent();
@@ -171,7 +172,7 @@ export class _ProjectService {
     const { document, revision } = this.blocklyService.captureProjectSnapshot();
     const path = `${this.currentProjectPath}/project.abi`;
     const diskText = window['fs'].readFileSync(path, 'utf8');
-    const memory = canonicalJsonStringify(this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(document)));
+    const memory = canonicalProjectJsonStringify(this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(document)));
     const usedLibraries = Object.keys(this.blocklyService.getProjectUsedLibraryManifest(undefined, document));
 
     const assertCurrent = () => {
@@ -187,7 +188,7 @@ export class _ProjectService {
       resolve: async <TValue>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<TValue>(ref); context.assertCurrent(); return value; },
     });
     assertCurrent();
-    const disk = canonicalJsonStringify(this.blocklyService.normalizeProjectAbi(materialized));
+    const disk = canonicalProjectJsonStringify(this.blocklyService.normalizeProjectAbi(materialized));
     const [memoryHash, diskHash] = await Promise.all([
       sha256Hex(memory),
       sha256Hex(disk),

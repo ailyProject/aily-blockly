@@ -1,4 +1,5 @@
 import { assertSynchronousNativeCandidate } from './blockly-native-candidate-policy';
+import { cloneNativeCandidateRequest, encodeNativeCandidateRequest, decodeNativeCandidateResult } from './blockly-native-transfer';
 import { restoreAbsFailure } from '../../../integrations/blockly/abs/abs-diagnostics';
 import nativeBuild from '../../../../../.generated/blockly-runtime/manifest.json';
 import type { NativeCandidateOptions, NativeCandidateRequest, NativeCandidateResult } from './blockly-native-candidate-protocol';
@@ -11,7 +12,7 @@ const loadNativeRuntimeAsset = createNativeRuntimeAssetLoader();
 
 /** Disposable state isolation, not an adversarial JavaScript CPU/security sandbox. */
 export async function evaluateNativeCandidate(request: NativeCandidateRequest, options: NativeCandidateOptions): Promise<NativeCandidateResult> {
-  const detached = structuredClone(request);
+  const detached = cloneNativeCandidateRequest(request);
   if (!detached.verify) return evaluateNativeCandidatePass(detached, options);
   const budget = nativeCandidateBudget(options.timeoutMs, 2);
   const deadline = Date.now() + budget.totalMs;
@@ -39,7 +40,7 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
   const assertCurrent = () => { options.signal?.throwIfAborted(); options.assertCurrent(); };
   assertCurrent();
   // Snapshot before the first await: callers cannot change the request during asset loading.
-  const detached = structuredClone(request);
+  const detached = cloneNativeCandidateRequest(request);
   assertSynchronousNativeCandidate(detached);
   const { perPassMs: timeoutMs } = nativeCandidateBudget(options.timeoutMs, 1);
   const abort = new AbortController();
@@ -95,13 +96,13 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
           }
           assertCurrent(); abort.signal.throwIfAborted();
           if (!reply?.ok) throw restoreAbsFailure(reply?.error || 'Native candidate failed.');
-          if (!reply.result?.state || !Array.isArray(reply.result.structures)) throw new Error('Invalid native candidate response.');
-          resolve(reply.result);
+          if (typeof reply.result?.state !== 'string' || !Array.isArray(reply.result.structures)) throw new Error('Invalid native candidate response.');
+          resolve(decodeNativeCandidateResult(reply.result));
         } catch (error) { reject(error); }
       };
       channel!.port1.onmessageerror = () => reject(new Error('Native candidate response is not transferable.'));
       frame!.onload = () => {
-        try { assertCurrent(); abort.signal.throwIfAborted(); frame!.contentWindow!.postMessage(detached, '*', [channel!.port2]); }
+        try { assertCurrent(); abort.signal.throwIfAborted(); frame!.contentWindow!.postMessage(encodeNativeCandidateRequest(detached), '*', [channel!.port2]); }
         catch (error) { reject(error); }
       };
       document.body.appendChild(frame!);

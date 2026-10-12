@@ -27,6 +27,10 @@ for (const minimap of [true, false]) {
     try {
       await openBlocklyProject(win, project);
       await expect(win.locator('iframe[data-runtime-ready="true"]')).toHaveCount(1, { timeout: 60_000 });
+      await expect.poll(() => win.evaluate(project => {
+        const realm = (document.querySelector('iframe[data-blockly-generator-runtime]') as HTMLIFrameElement).contentWindow as any;
+        return realm.projectService.getBlocklyProjectLoadStatus(project).ready;
+      }, project), {timeout: 60_000}).toBe(true);
       const windowHandle = await launched.app.browserWindow(win);
       const contentsId = await windowHandle.evaluate(window => window.webContents.id);
       // The same host bridge used by Agent tools; receipts are issued by the real
@@ -44,7 +48,7 @@ for (const minimap of [true, false]) {
         }), { contentsId, requestId: randomUUID(), path: project, operation, params });
       };
 
-      await win.evaluate(async project => {
+      const saved = await win.evaluate(async project => {
         const B = (window as any).Blockly, ws = (window as any).blocklyWorkspace;
         // Reuse installed libraries but start with only the board's entry roots.
         const state = B.serialization.workspaces.save(ws);
@@ -61,25 +65,55 @@ for (const minimap of [true, false]) {
         while (connection?.targetBlock()) connection = connection.targetBlock().nextConnection;
         if (!connection) throw new Error('Fixture setup has no free statement connection.');
         connection.connect(delay.previousConnection);
+        await B.renderManagement.finishQueuedRenders();
+        await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 50)));
         const realm = (document.querySelector('iframe[data-blockly-generator-runtime]') as HTMLIFrameElement).contentWindow as any;
-        await realm.projectService.save(project);
+        return realm.projectService.save(project, 30_000);
       }, project);
+      expect(saved.success, JSON.stringify(saved)).toBe(true);
 
       const snapshot = () => win.evaluate(() => {
         const B = (window as any).Blockly, main = (window as any).blocklyWorkspace;
-        const mini = B.common.getAllWorkspaces().find(ws => ws.getInjectionDiv?.()?.closest('.blockly-minimap'));
-        // XML minimap copies intentionally use fresh IDs: compare content and
-        // connections, not identities belonging to different workspaces.
-        const blocks = ws => ws?.getAllBlocks(false).map(block => ({ type: block.type,
-          parent: block.getParent()?.type ?? null, number: block.getFieldValue('NUM'),
-          input: block.getParent()?.inputList.find(input => input.connection?.targetBlock() === block)?.name ?? null,
-        })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-        return { main: blocks(main), mini: mini ? blocks(mini) : null, eventsEnabled: B.Events.isEnabled(),
+        const mini = document.querySelector('.blockly-minimap') as HTMLElement;
+        // The minimap projects the native SVG and never creates another model.
+        // Selecting/editing a block changes SVG stacking order. Compare all
+        // rendered text values independently of that order, plus native IDs
+        // and transforms, so focus changes don't imply stale content.
+        const text = svg => Array.from(svg.querySelectorAll('text')).map((element: Element) => element.textContent).sort();
+        const blocks = ws => ws.getAllBlocks(false).map(block => ({ id: block.id, type: block.type,
+          text: text(block.getSvgRoot()), transform: block.getSvgRoot().getAttribute('transform') }));
+        const projection = mini?.dataset.minimapReady === 'true' ? blocks(main).map(block => {
+          const root = Array.from(mini.querySelectorAll('[data-minimap-source]')).find(element =>
+            element.getAttribute('data-minimap-source') === main.getBlockById(block.id).getRootBlock().getSvgRoot().id);
+          const copies = root ? [root, ...root.querySelectorAll('[data-id]')].filter(element => element.tagName.toLowerCase() === 'g') : [];
+          const copy = copies.find(element => element.getAttribute('data-id') === block.id);
+          return { ...block, text: copy ? text(copy) : null, transform: copy?.getAttribute('transform') ?? null };
+        }) : null;
+        return { main: blocks(main), mini: projection, duplicateModel: B.common.getAllWorkspaces().some(ws => ws.getInjectionDiv?.()?.closest('.blockly-minimap')), eventsEnabled: B.Events.isEnabled(),
           mainNumber: main.getBlockById('minimap-number')?.getFieldValue('NUM') };
       });
       if (minimap) {
-        await expect(win.locator('.blockly-minimap')).toBeVisible();
+        const overview = win.locator('.blockly-minimap');
+        await expect(overview).toBeVisible();
+        await expect(win.locator('.blockly-minimap > svg')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
         await expect.poll(async () => { const state = await snapshot(); return state.mini; }).toEqual((await snapshot()).main);
+        const viewport = () => win.evaluate(() => {
+          const ws = (window as any).blocklyWorkspace; return { x: ws.scrollX, y: ws.scrollY };
+        });
+        const box = await overview.boundingBox();
+        if (!box) throw new Error('Minimap is not rendered.');
+        const initialView = await viewport();
+        await overview.click({ position: { x: box.width / 2, y: box.height / 2 } });
+        await expect.poll(viewport).not.toEqual(initialView);
+        const clickedView = await viewport();
+        await overview.press('ArrowDown');
+        await expect.poll(viewport).not.toEqual(clickedView);
+        const keyboardView = await viewport();
+        await win.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await win.mouse.down();
+        await win.mouse.move(box.x + box.width / 2, box.y + box.height * 0.65, { steps: 5 });
+        await win.mouse.up();
+        await expect.poll(viewport).not.toEqual(keyboardView);
       } else {
         expect((await snapshot()).mini).toBeNull();
       }
@@ -121,7 +155,7 @@ for (const minimap of [true, false]) {
           ws.centerOnBlock('minimap-number');
           ws.getBlockById('minimap-number').getField('NUM').getClickTarget_().setAttribute('data-minimap-probe', 'number');
         });
-        await win.locator('[data-minimap-probe="number"]').click();
+        await win.locator('.blocklyBlockCanvas [data-minimap-probe="number"]').click();
         const input = win.locator('.blocklyHtmlInput');
         await expect(input).toBeFocused();
         await win.waitForTimeout(900);
@@ -130,17 +164,19 @@ for (const minimap of [true, false]) {
         const current = await snapshot();
         expect(current.mainNumber).toBe(next);
         expect(current.eventsEnabled).toBe(true);
+        expect(current.duplicateModel).toBe(false);
         if (minimap) {
-          await expect.poll(async () => (await snapshot()).mini).toEqual(current.main);
+          await expect(async () => { const state = await snapshot();
+            expect(state.mini).toEqual(state.main); }).toPass({timeout: 15_000});
           const visibleNumber = await win.evaluate(next => {
-            const B = (window as any).Blockly;
-            const ws = B.common.getAllWorkspaces().find(ws => ws.getInjectionDiv?.()?.closest('.blockly-minimap'));
-            return ws.getBlocksByType('math_number', false).find(block => block.getFieldValue('NUM') === next)?.getSvgRoot().textContent;
+            return document.querySelector('.blockly-minimap')?.textContent;
           }, next);
           expect(visibleNumber).toContain(String(next));
         } else expect(current.mini).toBeNull();
-        const codeState = await win.evaluate(() => (window as any).electronAPI.codeViewer.getState());
-        expect(JSON.stringify(codeState)).toContain(`delay(${next})`);
+        // Publication waits while the native editor owns focus, then resumes
+        // with the latest AI result through the existing coalesced IPC update.
+        await expect.poll(async () => JSON.stringify(await win.evaluate(() =>
+          (window as any).electronAPI.codeViewer.getState()))).toContain(`delay(${next})`);
         const saved = await readFile(path.join(project, 'project.abi'), 'utf8');
         expect(saved).toContain(String(next));
         source = await readFile(path.join(project, 'project.abs'), 'utf8');

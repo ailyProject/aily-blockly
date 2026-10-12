@@ -23,7 +23,7 @@ import { nativeFieldDependencies } from './blockly-native-field-dependencies';
 export function bindNativeAbs(source: string, execution: NativeCandidateWorkspace, declarations: Map<string, Record<string, any>>,
   identities?: NativeCandidateRequest['identities'], hydrate: <T>(value: T) => T = value => value,
   hostCalls: NonNullable<NativeCandidateRequest['hostCalls']> = [],
-  modelPreparation?: { generator: Blockly.Generator; requestId: string }): () => NativeCandidateResult {
+  modelPreparation?: { generator: Blockly.Generator; requestId: string; retainedCalls?: number[]; retainedIds?: string[] }): () => NativeCandidateResult {
   // Parse the complete document before executing any block callback.
   const raw = readAbsSyntax(source);
   const structural = captureStructuralMutators();
@@ -157,7 +157,7 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
     return new Set([...pending.map(item => item.block), ...dependencies?.blocks ?? []]);
   };
   const modelDeclarations = modelPreparation ? prepareNativeModels(execution, modelPreparation.generator, blocks,
-    resolvePending, modelPreparation.requestId) : [];
+    resolvePending, modelPreparation.requestId, modelPreparation) : [];
   for (const item of pending) setField(item.block, item.node, item.name, item.token);
   if (assigned && assigned.size !== consumed.size || hostCalls.some(call => !consumed.has(call.start))) throw new Error('Native candidate identities or host bindings contain unused calls.');
   structural.assertCurrent();

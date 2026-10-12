@@ -8,10 +8,12 @@ import { AbsSymbols } from './abs-symbols';
 export function absIdentityPolicy(baseline: AbsProjection, ids: ReadonlyMap<AbsSyntaxNode, string>,
   blocks: ReadonlyMap<string, AbsAbiBlock>) {
   const referenced = new Set<string>();
-  const visit = (value: unknown): void => {
-    if (typeof value === 'string') { if (blocks.has(value)) referenced.add(value); return; }
-    if (!value || typeof value !== 'object') return;
-    if (Array.isArray(value)) { value.forEach(visit); return; }
+  const pending: unknown[] = [baseline.document];
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === 'string') { if (blocks.has(value)) referenced.add(value); continue; }
+    if (!value || typeof value !== 'object') continue;
+    if (Array.isArray(value)) { pending.push(...value); continue; }
     const record = value as Record<string, unknown>;
     const definition = typeof record['id'] === 'string' && blocks.get(record['id'])?.type === record['type'];
     for (const [key, child] of Object.entries(record)) {
@@ -23,12 +25,11 @@ export function absIdentityPolicy(baseline: AbsProjection, ids: ReadonlyMap<AbsS
           // because the user chose a short ID with the same spelling.
           if (typeof field !== 'object' && contract && !contract.symbol
             && ['field_input', 'field_number', 'field_checkbox', 'field_dropdown'].includes(contract.type)) continue;
-          visit(field);
+          pending.push(field);
         }
-      } else visit(child);
+      } else pending.push(child);
     }
-  };
-  visit(baseline.document);
+  }
   const symbols = new AbsSymbols(baseline.workspace, baseline.document, baseline.contracts);
   const required = new Set<AbsSyntaxNode>();
   for (const [node, id] of ids) {

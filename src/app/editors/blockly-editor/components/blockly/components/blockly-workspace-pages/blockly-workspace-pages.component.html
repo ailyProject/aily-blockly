@@ -38,6 +38,40 @@
   </div> -->
 
   <div class="workspace-stage">
+    <button type="button" class="function-view function-view__trigger" #functionTrigger
+            [attr.aria-label]="'BLOCKLY_FUNCTION_VIEW.LABEL' | translate" [title]="'BLOCKLY_FUNCTION_VIEW.LABEL' | translate"
+            [attr.data-scope-id]="functionView.scopeId" [disabled]="functionViewDisabled"
+            [cdkMenuTriggerFor]="functionMenu"
+            (mouseenter)="updateHoverScroll(triggerLabel, triggerText)" (focus)="updateHoverScroll(triggerLabel, triggerText)"
+            (keydown)="$event.stopPropagation()">
+      <i class="fa-light fa-layer-group" aria-hidden="true"></i>
+      <span class="function-view__label" #triggerLabel><span class="function-view__text" #triggerText>{{ (selectedFunction?.label || 'BLOCKLY_FUNCTION_VIEW.ALL') | translate }} · {{ selectedFunction?.count ?? functionView.totalCount }} {{ 'BLOCKLY_FUNCTION_VIEW.BLOCKS' | translate }}</span></span>
+      @if (functionView.scopeId) {
+        <span class="function-view__count">{{ functionView.visibleCount }} / {{ functionView.totalCount }} {{ 'BLOCKLY_FUNCTION_VIEW.BLOCKS' | translate }}</span>
+      }
+      <i class="fa-light fa-chevron-down" aria-hidden="true"></i>
+    </button>
+    <ng-template #functionMenu>
+      <div cdkMenu class="function-view__menu" [style.width.px]="functionTrigger.getBoundingClientRect().width"
+           [attr.aria-label]="'BLOCKLY_FUNCTION_VIEW.LABEL' | translate" (keydown)="$event.stopPropagation()">
+        <button type="button" cdkMenuItemRadio class="function-view__item" data-scope-id=""
+                [cdkMenuItemDisabled]="functionViewDisabled"
+                (mouseenter)="updateHoverScroll(allLabel, allText)" (focus)="onMenuItemFocus(allLabel, allText)"
+                [cdkMenuItemChecked]="!functionView.scopeId" (cdkMenuItemTriggered)="functionSelected.emit('')">
+          <i class="fa-light fa-check" aria-hidden="true"></i>
+          <span class="function-view__label" #allLabel><span class="function-view__text" #allText>{{ 'BLOCKLY_FUNCTION_VIEW.ALL' | translate }} · {{ functionView.totalCount }} {{ 'BLOCKLY_FUNCTION_VIEW.BLOCKS' | translate }}</span></span>
+        </button>
+        @for (item of functionView.options; track item.id) {
+          <button type="button" cdkMenuItemRadio class="function-view__item" [attr.data-scope-id]="item.id"
+                  [cdkMenuItemDisabled]="functionViewDisabled"
+                  (mouseenter)="updateHoverScroll(itemLabel, itemText)" (focus)="onMenuItemFocus(itemLabel, itemText)"
+                  [cdkMenuItemChecked]="functionView.scopeId === item.id" (cdkMenuItemTriggered)="functionSelected.emit(item.id)">
+            <i class="fa-light fa-check" aria-hidden="true"></i>
+            <span class="function-view__label" #itemLabel><span class="function-view__text" #itemText>{{ item.label | translate }} · {{ item.count }} {{ 'BLOCKLY_FUNCTION_VIEW.BLOCKS' | translate }}</span></span>
+          </button>
+        }
+      </div>
+    </ng-template>
     <div class="blocklyBox" #blocklyDiv></div>
 
     <div class="blockly-spin"

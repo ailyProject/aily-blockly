@@ -253,7 +253,14 @@ export class BlocklyLibraryPackageService {
       this.validatePackageJson(snapshot.packageJson, snapshot.paths.packageJson, errors, expectedPackageName);
     }
     if (snapshot.blockJson !== null) {
-      this.validateBlockJson(snapshot.blockJson, snapshot.paths.blockJson, errors);
+      // The published legacy functions library delegates shapes/toolbox items
+      // to native Blockly procedures and intentionally has no JSON definitions.
+      const nativeProcedures = snapshot.packageJson?.name === '@aily-project/lib-core-functions'
+        && snapshot.packageJson?.version === '0.0.1'
+        && snapshot.toolboxRoot?.kind === 'category' && snapshot.toolboxRoot?.custom === 'PROCEDURE';
+      if (!(nativeProcedures && Array.isArray(snapshot.blockJson) && snapshot.blockJson.length === 0)) {
+        this.validateBlockJson(snapshot.blockJson, snapshot.paths.blockJson, errors);
+      }
     }
     if (snapshot.toolboxJson !== null) {
       this.validateToolboxJson(snapshot.toolboxJson, snapshot.paths.toolboxJson, errors, warnings);
@@ -968,6 +975,8 @@ export class BlocklyLibraryPackageService {
         errors.push(`${location} 不合规: category 缺少字符串字段 name (${filePath})`);
       }
       if (!Array.isArray(item['contents'])) {
+        // Native dynamic categories populate their contents through callbacks.
+        if (['PROCEDURE', 'VARIABLE', 'VARIABLE_DYNAMIC'].includes(item['custom']) && item['contents'] === undefined) return;
         errors.push(`${location} 不合规: category.contents 必须是数组 (${filePath})`);
         return;
       }

@@ -30,6 +30,44 @@ describe('native deferred UI effect boundary', () => {
     expect(() => tasks.drain(() => state)).toThrowError(/changed persisted state/);
     expect(calls).toBe(1);
   });
+  it('uses virtual elapsed time, rather than adding parallel block UI delays', () => {
+    const tasks = new NativeUiTasks(); let calls = 0, snapshots = 0;
+    for (let i = 0; i < 80; i++) tasks.set(() => { calls++; }, 100);
+    tasks.drain(() => { snapshots++; return 'same'; });
+    expect(calls).toBe(80);
+    expect(snapshots).toBe(81);
+  });
+  it('still bounds serial virtual time and individual timers with capacity diagnostics', () => {
+    const tasks = new NativeUiTasks(); let calls = 0;
+    const repeat = () => { calls++; tasks.set(repeat, 1000); };
+    tasks.set(repeat, 1000);
+    try { tasks.drain(() => 'same'); fail('accepted unbounded serial work'); }
+    catch (error: any) {
+      expect(error.code).toBe('ABS_LIMIT');
+      expect(error.diagnostic.capacity).toEqual({ phase: 'ui', resource: 'virtualDelay', actual: 6000, limit: 5000 });
+    }
+    expect(calls).toBe(5);
+    try { new NativeUiTasks().set(() => {}, 2001); fail('accepted a long individual timer'); }
+    catch (error: any) { expect(error.diagnostic.capacity.resource).toBe('singleDelay'); }
+  });
+  it('admits parallel UI initialization in the isolated native realm without hiding callback mutations', async () => {
+    for (const mutate of [false, true]) {
+      const input: NativeCandidateRequest = { blocks: [], steps: [{ kind: 'context', mode: 'arduino' }, {
+        kind: 'script', label: 'parallel-ui', source: `
+          Blockly.Blocks.parallel_ui = { init() {
+            this.appendDummyInput().appendField(new Blockly.FieldNumber(1), 'NUM');
+            for (let i = 0; i < 80; i++) setTimeout(() => {
+              ${mutate ? "if (i === 79) this.setFieldValue(2, 'NUM');" : "this.setTooltip('ready');"}
+            }, 100);
+          } };
+          Arduino.forBlock.parallel_ui = () => '';
+        `,
+      }], verify: { state: { blocks: { blocks: [{ id: 'owner', type: 'parallel_ui', fields: { NUM: 1 }, x: 0, y: 0 }] } },
+        contracts: { fields: { owner: { NUM: { type: 'field_number' } } } } } };
+      if (mutate) await expectAsync(evaluateNativeCandidate(input, { assertCurrent() {} })).toBeRejectedWithError(/changed persisted state/);
+      else expect((await evaluateNativeCandidate(input, { assertCurrent() {} })).state['blocks'].blocks[0].fields!['NUM']).toBe(1);
+    }
+  });
   it('bounds callback work after cancellations and shares adjacent semantic snapshots', () => {
     const tasks = new NativeUiTasks(); let snapshots = 0;
     for (let i = 0; i < 512; i++) tasks.set(() => {});

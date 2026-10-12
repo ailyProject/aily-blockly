@@ -19,6 +19,7 @@ import path from 'node:path';
 const PROJECT_PATH = process.env['AILY_E2E_PROJECT'];
 const SECOND_PROJECT_PATH = process.env['AILY_E2E_PROJECT_SECOND'];
 const REMOVAL_LIBRARY = process.env['AILY_E2E_REMOVAL_LIBRARY'] || '@aily-project/lib-async-http';
+const REMOVAL_GENERATOR = process.env['AILY_E2E_REMOVAL_GENERATOR'] || 'async_http_get';
 const RETAINED_LIBRARY = '@aily-project/lib-core-serial';
 
 test.describe('Blockly 编辑器', () => {
@@ -39,9 +40,18 @@ test.describe('Blockly 编辑器', () => {
     const win = await getMainWindow(electronApp);
     await openBlocklyProject(win, PROJECT_PATH!);
 
-    await expect(win.locator('app-blockly-editor .blocklyToolboxDiv')).toBeVisible({
+    // The native toolbox is intentionally hidden by the external Angular pane.
+    // Assert the actual user entry and its flyout, not the hidden native DOM.
+    await expect(win.locator('app-blockly-toolbox-pane')).toBeVisible({
       timeout: 30_000,
     });
+    const category = win.locator('app-blockly-toolbox-pane .toolbox-item').filter({hasText: /循环|Loop/i}).first();
+    await expect(category).toBeVisible({timeout: 30_000});
+    await category.click();
+    await expect.poll(() => win.evaluate(() => {
+      const flyout = (window as any).blocklyWorkspace?.getFlyout();
+      return flyout?.isVisible() && flyout.getWorkspace().getAllBlocks(false).length > 0;
+    })).toBe(true);
   });
 
   test('连续打开两个项目时应重建 generator realm', async ({ electronApp }) => {
@@ -117,7 +127,7 @@ test.describe('Blockly 编辑器', () => {
       sameWorkspaceElement: (window as any).__ailyLibraryRemovalWorkspaceElement
         === document.querySelector('app-blockly-editor .blocklyBox'),
     }));
-    const readRuntime = () => win.evaluate(() => {
+    const readRuntime = () => win.evaluate(removedGenerator => {
       const iframe = document.querySelector<HTMLIFrameElement>('iframe[data-blockly-generator-runtime]');
       const realm = iframe?.contentWindow as any;
       const generator = realm?.Arduino || realm?.MPY || realm?.MicropPython;
@@ -126,12 +136,12 @@ test.describe('Blockly 编辑器', () => {
         id: iframe?.getAttribute('data-blockly-generator-runtime') || '',
         ready: iframe?.getAttribute('data-runtime-ready') === 'true',
         projectPath: iframe?.getAttribute('data-runtime-project-path') || '',
-        hasRemovedLibraryGenerator: typeof generator?.forBlock?.async_http_get === 'function',
+        hasRemovedLibraryGenerator: typeof generator?.forBlock?.[removedGenerator] === 'function',
         generatedCode: typeof generator?.workspaceToCode === 'function' && workspace
           ? String(generator.workspaceToCode(workspace) || '')
           : '',
       };
-    });
+    }, REMOVAL_GENERATOR);
     const readWorkspaceProgram = () => win.evaluate(() => {
       const iframe = document.querySelector<HTMLIFrameElement>('iframe[data-blockly-generator-runtime]');
       const blockly = (iframe?.contentWindow as any)?.Blockly;
@@ -148,6 +158,14 @@ test.describe('Blockly 编辑器', () => {
       await openBlocklyProject(win, projectPath);
       await expect.poll(async () => (await readRuntime()).ready, { timeout: 60_000 }).toBe(true);
       await expect.poll(async () => (await readRuntime()).projectPath, { timeout: 60_000 }).toBe(projectPath);
+      // Unused libraries load their generator when the real toolbox category
+      // is opened. Exercise that path before verifying cache invalidation.
+      await win.locator(`.toolbox-node[data-toolbox-sort-key="${REMOVAL_LIBRARY}"] > .toolbox-row > button.toolbox-item`).click();
+      await expect.poll(async () => (await readRuntime()).hasRemovedLibraryGenerator).toBe(true);
+      await win.clock.install();
+      // Renderer clock time advances independently from the runner's wall
+      // clock. Pause using its own future time, before capturing the baseline.
+      await win.clock.pauseAt(new Date(await win.evaluate(() => Date.now()) + 10_000));
       const firstRuntime = await readRuntime();
       const workspaceBeforeRemoval = await readWorkspaceProgram();
       const toolboxOrderBeforeRemoval = await readToolboxOrder();
@@ -160,21 +178,28 @@ test.describe('Blockly 编辑器', () => {
       }, rendererRealmMarker);
       const rendererBeforeRemoval = await readRendererIdentity();
 
+      // Pause renderer timers while npm runs so its debounced watcher cannot
+      // rebuild before the retained-package outage is established.
+      const retainedLibraryPath = path.join(projectPath, 'node_modules', ...RETAINED_LIBRARY.split('/'));
+      // Keep the moved package outside node_modules: the scanner correctly
+      // recognizes package.json names even if its folder has a temporary suffix.
+      const transientLibraryPath = path.join(tempRoot, 'retained-library-transient');
+      expect(existsSync(retainedLibraryPath)).toBe(true);
+
       execFileSync('npm', [
         'uninstall',
         REMOVAL_LIBRARY,
         '--ignore-scripts',
         '--no-audit',
         '--no-fund',
+        '--@aily-project:registry=https://registry.yiyu.pro',
       ], { cwd: projectPath, stdio: 'pipe' });
 
       // npm may temporarily move/recreate unrelated packages while it updates
       // node_modules. The removal watcher must keep the current workspace intact
       // until every retained library is readable again.
-      const retainedLibraryPath = path.join(projectPath, 'node_modules', ...RETAINED_LIBRARY.split('/'));
-      const transientLibraryPath = `${retainedLibraryPath}.transient`;
-      expect(existsSync(retainedLibraryPath)).toBe(true);
       await rename(retainedLibraryPath, transientLibraryPath);
+      await win.clock.resume();
       await win.waitForTimeout(2_000);
       expect((await readRuntime()).id).toBe(firstRuntime.id);
       expect(await readWorkspaceProgram()).toEqual(workspaceBeforeRemoval);

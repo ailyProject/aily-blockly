@@ -52,6 +52,13 @@ describe('declared field order at normal project load', () => {
     expect(workspace.getBlockById('original')).not.toBeNull();
   });
 
+  it('rejects a catalog mutation before restoring another field', () => {
+    const definitions = catalog.capture(Blockly.Blocks), block = workspace.newBlock(type);
+    nativeFieldOrder(block, definitions);
+    Blockly.Blocks[type].init = function() {};
+    expect(() => nativeFieldOrder(block, definitions)).toThrowError(/definitions changed/);
+  });
+
   it('keeps normal empty and ID-less native loading compatible', () => {
     const definitions = catalog.capture(Blockly.Blocks);
     expect(() => withNativeStateLoading(Blockly, workspace, {}, () => Blockly.serialization.workspaces.load({}, workspace))).not.toThrow();

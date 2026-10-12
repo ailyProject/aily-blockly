@@ -29,6 +29,7 @@ const { values: args } = parseArgs({
     trace: { type: "boolean", default: false },
     snapshots: { type: "boolean", default: false },
     phases: { type: "boolean", default: false },
+    "binding-evidence": { type: "boolean", default: false },
     "generation-evidence": { type: "boolean", default: false },
     "native-timeout": { type: "string" },
     "renderer-root": { type: "string" },
@@ -39,6 +40,7 @@ const { values: args } = parseArgs({
     "verify-noop": { type: "boolean", default: false },
     "expect-noop-reload": { type: "boolean", default: false },
     "expect-failure": { type: "boolean", default: false },
+    exports: { type: "string", default: "0" },
     compile: { type: "boolean", default: false },
     "npm-prefix": { type: "string" },
   },
@@ -48,6 +50,8 @@ if (!args.source || !args.agent || !args.candidate)
     "--source, --agent and --candidate are required. Only an imported project copy is changed.",
   );
 if (args['native-timeout'] && !['once', 'always'].includes(args['native-timeout'])) throw Error('Invalid --native-timeout mode');
+const repeatedExports = Number(args.exports);
+if (!Number.isInteger(repeatedExports) || repeatedExports < 0 || repeatedExports > 5) throw Error('--exports must be between 0 and 5');
 const repo = path.resolve(__dirname, "..");
 const rendererRoot = path.resolve(args['renderer-root'] || path.join(repo, 'dist/aily-blockly/browser'));
 const agent = args.agent && path.resolve(args.agent);
@@ -200,7 +204,7 @@ const pass = (s) => {
       JSON.stringify(
         await page.evaluate(() => ({
           open: window.auditOpen,
-          text: document.body.innerText.slice(-200),
+          editorPresent: !!document.querySelector('app-blockly-editor'),
         })),
       ),
   );
@@ -227,6 +231,7 @@ const pass = (s) => {
   });
   pass("Original project copy loads in actual Electron");
   if (args.phases) await page.evaluate(req('./scripts/lib/abs-phase-audit.cjs').installAbsPhaseAudit);
+  if (args['binding-evidence']) await page.evaluate(() => { window.auditBindingEvidence = true; });
   if (args['generation-evidence']) await page.evaluate(req('./scripts/lib/abs-generation-audit.cjs').installAbsGenerationAudit);
   if (args.snapshots) await page.evaluate(() => {
     const editor = window.ng.getComponent(document.querySelector("app-blockly-editor")).blocklyService;
@@ -336,6 +341,12 @@ const pass = (s) => {
     : await call("abs_export", diagnosis.diagnostics?.rebind ? { rebind: diagnosis.diagnostics.rebind.token } : {});
   assert.equal(exported.ok, true, JSON.stringify(exported));
   assert.equal(mirrors(project)["project.abi"], before["project.abi"]);
+  for (let i = 0; i < repeatedExports; i++) {
+    const previous = mirrors(project), repeated = await call('abs_export');
+    assert.equal(repeated.ok, true, JSON.stringify(repeated));
+    assert.equal(repeated.abs, exported.abs, 'Repeated export preserves the full source');
+    assert.deepEqual(mirrors(project), previous, 'Verified repeated export must retain ABI/ABS/map bytes');
+  }
   const readCode = () => page.evaluate(() => window.ng.getComponent(document.querySelector("app-blockly-editor"))
     .blocklyService.getGeneratedCode());
   const initialCode = await readCode();
@@ -457,21 +468,15 @@ const pass = (s) => {
     const previous = previousBlocks.get(id), connection = previousBlocks.parents.get(id);
     assert.ok(connection, `Existing root retained: ${id}`);
     const parent = previousBlocks.get(connection.parent);
-    // This delay-insertion fixture introduces identical ordinary delay pairs.
-    // Reconciliation may rebuild those ambiguous pairs, but never accept their
+    // Large real projects also contain identical ordinary subtrees.
+    // Reconciliation may rebuild ambiguous unannotated blocks, but never accept their
     // disappearance: prove attributes AND their edge from the same parent.
-    const delay = previous.type === 'time_delay' ? previous : parent;
-    assert.equal(delay.type, 'time_delay', `Only an ambiguous delay pair may be rebuilt: ${id}`);
-    const input = Object.values(delay.inputs || {});
-    assert.equal(input.length, 1);
-    assert.equal(input[0].block?.type, 'math_number');
-    assert.deepEqual(input[0].block.fields, { NUM: 200 });
-    assert.ok(previous.type === 'time_delay' || input[0].block.id === id);
     assert.ok(!['deletable', 'editable', 'movable', 'data', 'extraState'].some(key => Object.hasOwn(previous, key)),
       `Protected or annotated block must retain identity: ${id}`);
     const saved = connection.edge.reduce((node, key) => node?.[key], savedEquivalent(connection.parent));
     assert.ok(saved, `Existing block retained at its original connection: ${id}`);
-    assert.ok(!previousBlocks.has(saved.id), 'A rebuilt pair must not steal an existing identity');
+    assert.ok(!previousBlocks.has(saved.id), 'A rebuilt block must not steal an existing identity');
+    assert.ok(![...rebuilt.values()].some(block => block.id === saved.id), 'Equivalent blocks must remain one-to-one');
     rebuilt.set(id, saved);
     return saved;
   };

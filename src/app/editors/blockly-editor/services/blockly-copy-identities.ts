@@ -30,10 +30,29 @@ export function prepareBlockCopyIdentities<T>(state: T, occupied: ReadonlySet<st
 
 const workspaces = new WeakMap<Blockly.WorkspaceSvg, () => unknown>();
 let registered: Blockly.clipboard.BlockPaster | undefined;
+let copyBoundaryInstalled = false;
+
+function installProjectCopyBoundary(): void {
+  if (copyBoundaryInstalled) return;
+  const nativeCopy = Blockly.BlockSvg.prototype.toCopyData;
+  Blockly.BlockSvg.prototype.toCopyData = function(addNextBlocks = false) {
+    const data = nativeCopy.call(this, addNextBlocks);
+    if (!data || !workspaces.has(this.workspace)) return data;
+    // v13 native copy drops IDs. The project paster needs them to distinguish
+    // a cut from a copy and to reserve identities on inactive pages/shadows.
+    // Preserve the native clipboard envelope; only registered project workspaces
+    // retain IDs, and collisions are still renewed by prepareBlockCopyIdentities.
+    return {...data, blockState: Blockly.serialization.blocks.save(this, {
+      addCoordinates: true, addNextBlocks, saveIds: true,
+    })!};
+  };
+  copyBoundaryInstalled = true;
+}
 
 /** One supported clipboard registry boundary covers shortcuts, context-menu
  * duplicate and multiselect. Never intercept loading, moving or undo/redo. */
 export function registerProjectBlockPaster(workspace: Blockly.WorkspaceSvg, project: () => unknown): () => void {
+  installProjectCopyBoundary();
   const current = Blockly.registry.getObject(Blockly.registry.Type.PASTER, Blockly.clipboard.BlockPaster.TYPE);
   if (current !== registered) {
     if (!current) throw new Error('Native block paster is unavailable.');

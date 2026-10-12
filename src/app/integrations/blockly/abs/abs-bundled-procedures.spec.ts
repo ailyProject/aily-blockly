@@ -48,7 +48,7 @@ describe('host-bundled procedure candidate preparation', () => {
     expect(param.id).toBe('abs-variable:procedure-test-0001:0'); expect(param.argId).toBe('abs_arg_0');
     expect(definition.fields![param.argId]).toBe('amount');
     load(result.workspace);
-    expect(workspace.getAllVariables().length).toBe(1);
+    expect(workspace.getVariableMap().getAllVariables().length).toBe(1);
   });
   it('adds and removes parameters while retaining definition/call IDs and surviving parameter IDs', async () => {
     load((await prepare(abs => abs + '\nprocedures_defnoreturn(NAME="work")\nprocedures_callnoreturn() @extra:{"name":"work"}')).workspace);
@@ -60,7 +60,7 @@ describe('host-bundled procedure candidate preparation', () => {
     load((await prepare(abs => abs + '\n# edit again')).workspace); expect(absJson(capture().state)).toBe(before);
     const removed = await prepare(abs => abs.replace(/@extra:\{"params":\[\{[^\n]+?\}\]\}/, '@extra:{"params":[]}').replace('"params":["amount"]', '"params":[]'));
     load(removed.workspace);
-    expect(workspace.getAllVariables().length).toBe(1); // Signature removal never deletes shared models.
+    expect(workspace.getVariableMap().getAllVariables().length).toBe(1); // Signature removal never deletes shared models.
     expect(removed.workspace.blocks.blocks.find(block => block.type === 'procedures_defnoreturn')!.fields).toEqual({ NAME: 'work' });
   });
   it('rejects undeclared parameters, duplicate names, unknown serializer members and caller mismatch before loading', async () => {
@@ -70,7 +70,7 @@ describe('host-bundled procedure candidate preparation', () => {
       '\nprocedures_callnoreturn() @extra:{"name":"missing"}',
       '\nprocedures_defnoreturn(NAME="work")\nprocedures_defnoreturn(NAME="WORK")',
     ]) await expectAsync(prepare(abs => abs + suffix)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_PROCEDURE_INVALID' }));
-    expect(workspace.getAllBlocks(false)).toEqual([]); expect(workspace.getAllVariables()).toEqual([]);
+    expect(workspace.getAllBlocks(false)).toEqual([]); expect(workspace.getVariableMap().getAllVariables()).toEqual([]);
   });
   it('does not accept caller-supplied parameter IDs or UI field IDs', async () => {
     for (const identity of [{ argId: 'forged' }, { id: 'abs-variable:procedure-test-0001:0' }]) {

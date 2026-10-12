@@ -11,20 +11,31 @@
         </nz-input-group>
         <ng-template #suffixIconSearch>
             @if(keyword.length > 0){
-            <i class="fa-light fa-xmark" (click)="keyword='';search()"></i>
+            <i class="fa-light fa-xmark" (click)="search('')"></i>
             } @else {
             <i class="fa-light fa-search"></i>
             }
         </ng-template>
         <div class="tag-list">
-            <nz-tag (click)="keyword='';search()">{{ 'LIB_MANAGER.ALL' | translate }}</nz-tag>
+            <nz-tag role="button" tabindex="0" (click)="search('')"
+                (keydown.enter)="search('')" (keydown.space)="$event.preventDefault(); search('')"
+                [attr.aria-pressed]="keyword === ''"
+                [nzColor]="keyword === '' ? '#739c19ff' : undefined">{{ 'LIB_MANAGER.ALL' | translate }}</nz-tag>
             @for (tag of displayTagList; track tag.key) {
-            <nz-tag (click)="keyword=tag.key;search()">{{ tag.label }}</nz-tag>
+            <nz-tag role="button" tabindex="0" (click)="search(tag.key)"
+                (keydown.enter)="search(tag.key)" (keydown.space)="$event.preventDefault(); search(tag.key)"
+                [attr.aria-pressed]="keyword === tag.key"
+                [nzColor]="keyword === tag.key ? '#739c19ff' : undefined">{{ tag.label }}</nz-tag>
             }
             <span style="position: absolute;top: 10px;color: #444;">|</span>
-            <nz-tag style="margin-left: 11px;" (click)="search('installed')">{{ 'LIB_MANAGER.INSTALLED' | translate
-                }}</nz-tag>
-            <nz-tag (click)="search('lib-core')">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
+            <nz-tag role="button" tabindex="0" style="margin-left: 11px;" (click)="search('installed')"
+                (keydown.enter)="search('installed')" (keydown.space)="$event.preventDefault(); search('installed')"
+                [attr.aria-pressed]="keyword === 'installed'"
+                [nzColor]="keyword === 'installed' ? '#739c19ff' : undefined">{{ 'LIB_MANAGER.INSTALLED' | translate }}</nz-tag>
+            <nz-tag role="button" tabindex="0" (click)="search('lib-core')"
+                (keydown.enter)="search('lib-core')" (keydown.space)="$event.preventDefault(); search('lib-core')"
+                [attr.aria-pressed]="keyword === 'lib-core'"
+                [nzColor]="keyword === 'lib-core' ? '#739c19ff' : undefined">{{ 'LIB_MANAGER.CORE_LIBRARY' | translate }}</nz-tag>
         </div>
         <div class="btns">
             <button nz-button nzType="primary" nzShape="circle" nzSize="small" style="margin-right: 10px;"

@@ -34,7 +34,9 @@ export class FieldTonePicker extends Blockly.FieldTextInput {
       return newValue;
     };
 
-    super(initialValue, finalValidator, config);
+    // v13 validates the initial value in the base constructor. Defer it until
+    // the tone lookup used by our validator has been initialized.
+    super(Blockly.Field.SKIP_SETUP, finalValidator, config);
 
     this.selectedTone = initialValue;
 
@@ -80,6 +82,7 @@ export class FieldTonePicker extends Blockly.FieldTextInput {
     if (!this.toneMap[initialValue]) {
       this.selectedTone = '131';
     }
+    this.setValue(this.selectedTone);
 
     this.size_ = new Blockly.utils.Size(120, 25);
   }
@@ -303,8 +306,8 @@ export class FieldTonePicker extends Blockly.FieldTextInput {
   /**
    * 编辑器
    */
-  override showEditor_() {
-    super.showEditor_();
+  override showEditor_(e?: Event) {
+    super.showEditor_(e, true, false);
 
     Blockly.DropDownDiv.hideWithoutAnimation();
     Blockly.DropDownDiv.clearContent();

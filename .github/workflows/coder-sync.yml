@@ -1,0 +1,24 @@
+name: Aily Coder Sync
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sync-stable-feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Trigger Coder Server Script
+        env:
+          SERVER_HOST: ${{ secrets.TRIGGER_SERVER_HOST }}
+          SERVER_USER: ${{ secrets.TRIGGER_SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
+          SERVER_SCRIPT_PATH: ${{ secrets.TRIGGER_CODER_SERVER_SCRIPT_PATH }}
+        run: |
+          : "${SERVER_SCRIPT_PATH:?Missing TRIGGER_CODER_SERVER_SCRIPT_PATH}"
+          sudo apt-get update && sudo apt-get install -y sshpass
+          echo "触发服务器脚本..."
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "bash $SERVER_SCRIPT_PATH"
+          echo "✓ 脚本执行完成"

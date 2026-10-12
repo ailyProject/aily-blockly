@@ -107,7 +107,6 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         );
 
         this.SERIALIZABLE = true;
-        this.CURSOR = 'pointer';
         this.defaultMode = FieldLedMatrixImage.normalizeMode(config?.mode);
         this.minWidth = FieldLedMatrixImage.normalizeLimit(config?.minWidth, DEFAULT_MIN_SIZE);
         this.maxWidth = FieldLedMatrixImage.normalizeLimit(config?.maxWidth, DEFAULT_MAX_SIZE);
@@ -251,8 +250,8 @@ export class FieldLedMatrixImage extends Blockly.Field<LedMatrixImageValue> {
         const editable = super.updateEditable();
         const svgRoot = this.getSvgRoot();
         if (svgRoot) {
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableText');
-            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableText');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyNonEditableField');
+            Blockly.utils.dom.removeClass(svgRoot, 'blocklyEditableField');
         }
         return editable;
     }

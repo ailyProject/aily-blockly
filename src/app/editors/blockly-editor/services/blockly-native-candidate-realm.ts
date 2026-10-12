@@ -18,6 +18,7 @@ import type { NativeCandidateProgress } from './blockly-native-progress';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
 import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
+import { decodeNativeCandidateRequest, encodeNativeCandidateResult, type NativeCandidateWireRequest } from './blockly-native-transfer';
 
 /** Bundled with the actual host implementations into an independent JavaScript realm. */
 export function installNativeCandidateRealm(): void {
@@ -25,14 +26,14 @@ export function installNativeCandidateRealm(): void {
   const native = realm.Blockly;
   const observer = createNativeStructureObserver();
   let consumed = false;
-  window.addEventListener('message', async (event: MessageEvent<NativeCandidateRequest>) => {
+  window.addEventListener('message', async (event: MessageEvent<NativeCandidateWireRequest>) => {
     if (consumed || event.source !== window.parent || event.ports.length !== 1) return;
     consumed = true;
     const port = event.ports[0], started = performance.now();
     // Realm-local time: host message delivery may wait until synchronous native
     // work finishes. Timing is diagnostic only, never candidate authority.
     const send = (value: Record<string, unknown>) => port.postMessage({ ...value, elapsedMs: performance.now() - started });
-    const request = event.data;
+    const request = decodeNativeCandidateRequest(event.data);
     const progress: NativeCandidateProgress = phase => send({ phase });
     const errors: Error[] = [];
     let workspace: any;
@@ -179,7 +180,7 @@ export function installNativeCandidateRealm(): void {
       progress('binding');
       const binding = request.abs !== undefined ? withNativeFieldDependencies(native, workspace, () => bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
         request.modelRequestId && generator
-          ? { generator, requestId: request.modelRequestId } : undefined), uiTasks) : undefined;
+          ? { generator, requestId: request.modelRequestId, retainedCalls: request.retainedModelCalls, retainedIds: request.retainedModelIds } : undefined), uiTasks) : undefined;
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
         progress('views');
@@ -195,7 +196,7 @@ export function installNativeCandidateRealm(): void {
       phase = 'candidate cleanup';
       progress('cleanup');
       workspace.dispose(); workspace = undefined; assertClean();
-      send({ ok: true, result });
+      send({ ok: true, result: encodeNativeCandidateResult(result) });
     } catch (error) {
       try { workspace?.dispose(); } catch { /* The entire independent Realm is discarded by the host. */ }
       send({ ok: false, error: serializeAbsFailure(error) });

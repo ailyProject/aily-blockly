@@ -29,6 +29,14 @@ const FIELD_TYPES: Array<[string, unknown]> = [
 ];
 
 function runtimeFieldType(field: any): string {
+  // Colour palettes inherit dropdown UI, but their native validator accepts
+  // arbitrary colours (including HSV slider values absent from the palette).
+  // Let the registered field's serializer/validator own that value contract.
+  for (const name of ['field_colour', 'field_colour_hsv_sliders']) {
+    if (!Blockly.registry.hasItem(Blockly.registry.Type.FIELD, name)) continue;
+    const constructor = Blockly.registry.getClass(Blockly.registry.Type.FIELD, name, false);
+    if (constructor && field instanceof constructor) return 'field_custom';
+  }
   for (const [type, constructor] of FIELD_TYPES) {
     if (typeof constructor === 'function' && field instanceof (constructor as new (...args: any[]) => unknown)) {
       return type;

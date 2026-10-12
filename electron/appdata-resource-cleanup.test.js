@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function fixture(t, filesystem = fs) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-resource-cleanup-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-resource-cleanup-')));
   t.after(() => {
     const actual = fs.realpathSync(root);
     assert.equal(path.dirname(actual), fs.realpathSync(os.tmpdir()));

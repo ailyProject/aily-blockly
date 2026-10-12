@@ -26,6 +26,7 @@ describe('isolated native graphical candidate', () => {
     Arduino.forBlock.graphical_owner = block => {
       Arduino.addSetup('graphical', 'consume(' + (Arduino.valueToCode(block, 'VALUE', 0) || '0') + ');'); return '';
     };
+    Arduino.forBlock.math_number = block => [String(block.getFieldValue('NUM')), 0];
   `;
   const request = (abs = 'graphical_owner(ON, math_number(32))'): NativeCandidateRequest => ({
     steps: [{ kind: 'context', mode: 'arduino' }, { kind: 'script', label: 'unknown-graphical-library', source }],

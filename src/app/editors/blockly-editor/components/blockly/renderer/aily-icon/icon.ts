@@ -118,18 +118,12 @@ export class Icon extends Blockly.icons.Icon implements ISerializable {
   }
 
   loadState(state: AilyIcon | string): void {
-    // if (typeof state === 'string') {
-    //   this._state = { ...this._state, src: state };
-    // } else {
-    //   this._state = { ...this._state, ...state };
-    // }
-    // if (!this._state.color) {
-    //   this._state.color = 'white';
-    // }
-    // this.state = state;
+    // The current renderer supplies the visible library icon. This legacy
+    // serializer still owns any icon payload already stored in the archive.
+    this.state = structuredClone(state);
   }
 
   saveState(doFullSerialization: boolean): any {
-    // return this.state;
+    return this.state === undefined ? undefined : structuredClone(this.state);
   }
 }

@@ -18,6 +18,7 @@ import { AuthService } from '@core/auth/public-api';
 import { isAilyBoardPackageName, isAilyLibraryPackageName } from '@shared/public-api';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subscription } from 'rxjs';
+import { validRange } from 'semver';
 import {
   FEEDBACK_CRASH_CONTEXT_MAX_BYTES,
   enforceDiagnosticTextBudget,
@@ -363,7 +364,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       case 'other':
         return this.buildOtherDiagnostics(feedbackTime);
       case 'feature':
-        return null;
+        return this.buildFeatureDiagnostics();
       default:
         return this.buildOtherDiagnostics(feedbackTime);
     }
@@ -372,9 +373,8 @@ export class FeedbackDialogComponent implements OnDestroy {
   private async buildBugDiagnostics(feedbackTime: string): Promise<string> {
     const now = this.toTimestamp(feedbackTime) ?? Date.now();
     const projectPath = this.readCurrentProjectPath();
-    const [projectPackage, boardPackage, crash] = await Promise.all([
+    const [projectPackage, crash] = await Promise.all([
       this.readProjectPackage(),
-      this.readBoardPackage(),
       this.readLatestCrashDiagnostic(),
     ]);
     const sensitivePaths = this.readSensitivePaths(projectPath, projectPackage);
@@ -385,12 +385,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       state: 'error',
     });
 
-    const blocks = this.applyDiagnosticBudget([
-      {
-        key: 'board-dependencies',
-        kind: 'result',
-        content: this.sanitizeBlock(JSON.stringify(this.readBoardDependencies(boardPackage), null, 2), sensitivePaths),
-      },
+    const blocks = this.buildDiagnosticBlocks(projectPath, projectPackage, [
       {
         key: 'recent-errors',
         kind: 'log',
@@ -407,14 +402,13 @@ export class FeedbackDialogComponent implements OnDestroy {
 
     const sections = [
       '## Diagnostics',
+      ...this.renderProjectDependencies(blocks),
       '### Project Summary',
       this.renderTable([
         ['Project Mode', this.readProjectMode(projectPackage, projectPath)],
         ['Board', this.readBoardName()],
         ['Direct Dependency Count', this.countDirectDependencies(projectPackage)],
       ]),
-      '### Board Dependencies',
-      this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'board-dependencies')),
     ];
 
     if (crash) {
@@ -464,12 +458,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       'Last Upload Result Time': uploadResult.time,
     };
 
-    const blocks = this.applyDiagnosticBudget([
-      {
-        key: 'board-dependencies',
-        kind: 'result',
-        content: this.sanitizeBlock(JSON.stringify(this.readBoardDependencies(boardPackage), null, 2), sensitivePaths),
-      },
+    const blocks = this.buildDiagnosticBlocks(projectPath, projectPackage, [
       {
         key: 'libraries',
         kind: 'result',
@@ -508,6 +497,7 @@ export class FeedbackDialogComponent implements OnDestroy {
 
     return [
       '## Diagnostics',
+      ...this.renderProjectDependencies(blocks),
       '### Board and Port',
       this.renderTable([
         ['Board', this.readBoardName()],
@@ -515,8 +505,6 @@ export class FeedbackDialogComponent implements OnDestroy {
         ['Board Package Version', this.readDependencyVersion(boardPackage?.['version'])],
         ['Port', this.readSafeSerialPort()],
       ]),
-      '### Board Dependencies',
-      this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'board-dependencies')),
       '### Libraries',
       this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'libraries')),
       '### Parameters',
@@ -543,7 +531,7 @@ export class FeedbackDialogComponent implements OnDestroy {
         query: libraryName,
       })
       : { content: null, latestTimestamp: null };
-    const blocks = this.applyDiagnosticBudget([{
+    const blocks = this.buildDiagnosticBlocks(projectPath, projectPackage, [{
       key: 'related-logs',
       kind: 'log',
       content: this.sanitizeBlock(relatedLogs.content, sensitivePaths),
@@ -552,6 +540,7 @@ export class FeedbackDialogComponent implements OnDestroy {
 
     return [
       '## Diagnostics',
+      ...this.renderProjectDependencies(blocks),
       '### Library',
       this.renderTable([
         ['Name', libraryName || null],
@@ -573,7 +562,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       limit: 1,
       state: 'error',
     });
-    const blocks = this.applyDiagnosticBudget([{
+    const blocks = this.buildDiagnosticBlocks(projectPath, projectPackage, [{
       key: 'latest-error',
       kind: 'error',
       content: this.sanitizeBlock(latestError.content, this.readSensitivePaths(projectPath, projectPackage)),
@@ -582,9 +571,20 @@ export class FeedbackDialogComponent implements OnDestroy {
 
     return [
       '## Diagnostics',
+      ...this.renderProjectDependencies(blocks),
       '### Latest Error',
       this.renderCodeBlock('text', this.readBudgetedBlock(blocks, 'latest-error')),
     ].join('\n\n');
+  }
+
+  private async buildFeatureDiagnostics(): Promise<string | null> {
+    const projectPath = this.readCurrentProjectPath();
+    if (!projectPath) {
+      return null;
+    }
+    const projectPackage = await this.readProjectPackage();
+    const blocks = this.buildDiagnosticBlocks(projectPath, projectPackage, []);
+    return ['## Diagnostics', ...this.renderProjectDependencies(blocks)].join('\n\n');
   }
 
   // 验证邮箱格式
@@ -711,20 +711,21 @@ export class FeedbackDialogComponent implements OnDestroy {
     }
   }
 
-  private readBoardDependencies(boardPackage: UnknownRecord | null): Record<string, string | null> | null {
-    if (!boardPackage) {
-      return null;
-    }
-    const dependencies = Object.prototype.hasOwnProperty.call(boardPackage, 'boardDependencies')
-      ? this.asRecord(boardPackage['boardDependencies'])
-      : {};
+  private readProjectDependencies(projectPackage: UnknownRecord | null): Record<string, string | null> | null {
+    const dependencies = this.readDependencyEntries(projectPackage);
     if (!dependencies) {
       return null;
     }
-    return Object.fromEntries(Object.entries(dependencies)
-      .filter(([name]) => name.trim())
+    return Object.fromEntries([...dependencies.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, version]) => [name, this.readDependencyVersion(version)]));
+      .flatMap(([name, version]) => {
+        const sanitizedName = this.sanitizeBlock(name, []);
+        const dependencyVersion = this.readDependencyVersion(version);
+        // Keep semver ranges such as ~1.2.3 from being mistaken for user-home paths.
+        const sanitizedVersion = dependencyVersion && validRange(dependencyVersion)
+          ? dependencyVersion : this.sanitizeBlock(dependencyVersion, []);
+        return sanitizedName ? [[sanitizedName, sanitizedVersion]] : [];
+      }));
   }
 
   private readSafeSerialPort(): string | null {
@@ -1069,8 +1070,24 @@ export class FeedbackDialogComponent implements OnDestroy {
     return sanitized?.trim() ? sanitized : null;
   }
 
-  private applyDiagnosticBudget(blocks: readonly DiagnosticTextBlock[]): DiagnosticTextBlock[] {
-    return enforceDiagnosticTextBudget(blocks);
+  private buildDiagnosticBlocks(
+    projectPath: string | null,
+    projectPackage: UnknownRecord | null,
+    blocks: readonly DiagnosticTextBlock[],
+  ): DiagnosticTextBlock[] {
+    const projectBlocks: DiagnosticTextBlock[] = projectPath ? [{
+      key: 'project-dependencies',
+      kind: 'result',
+      content: JSON.stringify(this.readProjectDependencies(projectPackage), null, 2),
+    }] : [];
+    return enforceDiagnosticTextBudget([...projectBlocks, ...blocks]);
+  }
+
+  private renderProjectDependencies(blocks: readonly DiagnosticTextBlock[]): string[] {
+    return blocks.some((block) => block.key === 'project-dependencies') ? [
+      '### Project Dependencies',
+      this.renderCodeBlock('json', this.readBudgetedBlock(blocks, 'project-dependencies')),
+    ] : [];
   }
 
   private readBudgetedBlock(blocks: readonly DiagnosticTextBlock[], key: string): string | null {

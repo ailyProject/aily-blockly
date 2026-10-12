@@ -18,6 +18,11 @@ const EXPORT_PADDING = 24;
  * 只复制工作区内容、批注和背景，不包含工具箱、滚动条或缩放按钮。
  */
 export function exportWorkspaceToSvg(workspace: Blockly.WorkspaceSvg): string | null {
+  const viewport = workspace.getViewportRenderer();
+  return viewport ? viewport.withAllBlocksRendered(() => renderWorkspaceSvg(workspace)) : renderWorkspaceSvg(workspace);
+}
+
+function renderWorkspaceSvg(workspace: Blockly.WorkspaceSvg): string | null {
   const bounds = getWorkspaceBounds(workspace);
   if (!bounds) {
     return null;

@@ -20,6 +20,8 @@ export class AilyIcon extends Blockly.icons.Icon {
 
   // static readonly WEIGHT = -1;
 
+  private cancelDeferredView?: () => void;
+
   private state: AilyIconState = {
     type: 'i',
     width: 20,
@@ -50,12 +52,48 @@ export class AilyIcon extends Blockly.icons.Icon {
     return new Blockly.utils.Size(this.state.width, this.state.height);
   }
 
+  // Library icons describe the block; they are not independent controls.
+  override canBeFocused(): boolean {
+    return false;
+  }
+
+  override isClickableInFlyout(_autoClosingFlyout: boolean): boolean {
+    return false;
+  }
+
+  protected override recomputeAriaContext(): void {
+    if (!this.svgRoot) return;
+    Blockly.utils.aria.setState(this.svgRoot, Blockly.utils.aria.State.HIDDEN, true);
+  }
+
   override initView(pointerdownListener: (e: PointerEvent) => void): void {
     if (this.svgRoot) return;
 
     super.initView(pointerdownListener);
 
-    this.createIconContent();
+    // Hit the block underneath, including through foreignObject font icons.
+    // Otherwise Blockly starts an icon gesture, focuses it and uses its
+    // default cursor instead of the block's grab/drag interaction.
+    this.svgRoot!.style.pointerEvents = 'none';
+
+    const viewport = this.sourceBlock.workspace.getViewportRenderer();
+    if (viewport) {
+      // Decorative contents have an explicit size. Offscreen font/image DOM
+      // can wait until first visibility without changing fields or geometry.
+      this.cancelDeferredView = viewport.deferView(this.sourceBlock, () => {
+        this.cancelDeferredView = undefined;
+        this.createIconContent();
+        this.applyColour();
+      });
+    } else {
+      this.createIconContent();
+    }
+  }
+
+  override dispose(): void {
+    this.cancelDeferredView?.();
+    this.cancelDeferredView = undefined;
+    super.dispose();
   }
 
   /**
@@ -177,7 +215,7 @@ export class AilyIcon extends Blockly.icons.Icon {
     if (keys.length === Object.keys(this.state).length && keys.every(key => next[key] === this.state[key])) return;
     this.state = next;
 
-    if (this.svgRoot) {
+    if (this.svgRoot && !this.cancelDeferredView) {
       this.svgRoot.innerHTML = '';
       this.createIconContent();
       this.applyColour();
@@ -204,7 +242,9 @@ export class AilyIcon extends Blockly.icons.Icon {
  * 这样可以通过 block.addIcon() 或 XML 序列化使用
  */
 export function registerAilyIcon(): void {
-  Blockly.icons.registry.register(AILY_ICON_TYPE, AilyIcon);
+  if (!Blockly.registry.hasItem(Blockly.registry.Type.ICON, AILY_ICON_TYPE.toString())) {
+    Blockly.icons.registry.register(AILY_ICON_TYPE, AilyIcon);
+  }
 }
 
 /**
@@ -217,10 +257,7 @@ export function addAilyIconToBlock(
   block: BlockSvg,
   state?: Partial<AilyIconState> | string
 ): AilyIcon {
-  try {
-    Blockly.icons.registry.register(AILY_ICON_TYPE, AilyIcon);
-  } catch (e) {
-  }
+  registerAilyIcon();
   const existingIcon = block.getIcon(AILY_ICON_TYPE);
   if (existingIcon instanceof AilyIcon) {
     if (state) {

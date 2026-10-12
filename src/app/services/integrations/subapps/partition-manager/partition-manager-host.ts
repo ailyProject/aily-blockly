@@ -2,7 +2,7 @@ import type { ProjectService } from '@domain/project/public-api';
 import type { BuilderService } from '@domain/build/public-api';
 import {
   allocatePartitions, inferDraft, parseFlashSize, parsePartitionCsv,
-  serializePartitions, validatePartitions, type PartitionDraft,
+  serializePartitions, validatePartitions, MIB, SECTOR, type PartitionDraft,
 } from './partition-layout';
 
 export interface FlashOption { value: string | null; bytes: number; }
@@ -18,7 +18,6 @@ export interface PartitionManagerContext {
   customSelected: boolean;
   filePath: string;
   draft: PartitionDraft | null;
-  xiaozhiSupported: boolean;
 }
 interface Session {
   context: PartitionManagerContext;
@@ -28,6 +27,19 @@ interface Session {
 const sessions = new Map<string, Session>();
 const readOptional = (fs: any, path: string): string | null => fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : null;
 const projectSignature = (pkg: any, board: any): string => JSON.stringify([pkg.entry, pkg.devmode, pkg.board, pkg.dependencies, pkg.projectConfig, board]);
+
+/** Metadata is only a UI hint; malformed values must never become editor state. */
+function isPartitionDraft(value: unknown): value is PartitionDraft {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const draft = value as Record<string, unknown>;
+  return ['iot', 'xiaozhi', 'large'].includes(draft['preset'] as string)
+    && ['recommended', 'fixed', 'remaining'].includes(draft['appMode'] as string)
+    && ['fixed', 'remaining'].includes(draft['storageMode'] as string)
+    && ['ota', 'storage', 'coredump'].every(key => typeof draft[key] === 'boolean')
+    && Number.isSafeInteger(draft['flashBytes']) && Number(draft['flashBytes']) > 0 && Number(draft['flashBytes']) <= 256 * MIB
+    && ['appBytes', 'storageBytes', 'nvsBytes'].every(key => Number.isSafeInteger(draft[key])
+      && Number(draft[key]) >= 0 && Number(draft[key]) <= 256 * MIB && Number(draft[key]) % SECTOR === 0);
+}
 
 export function resolvePartitionPaths(projectPath: string, pkg: any, isCoder: boolean, path: any) {
   const root = path.resolve(projectPath);
@@ -90,7 +102,7 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
     const current = item.children?.find(child => child.check);
     if (current && selected[item.key] === undefined) selected[item.key] = current.data;
   }
-  const flashOptions: FlashOption[] = menu.flatMap(item => item.children || [])
+  const flashOptions: FlashOption[] = menu.filter(item => !item.disabled).flatMap(item => item.children || [])
     .filter(item => item.key === 'FlashSize' && !item.disabled && !item.extra?.selectAction)
     .map(item => ({ value: String(item.data), bytes: parseFlashSize(item.data) }))
     .filter(item => item.bytes > 0);
@@ -137,7 +149,7 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
   const parsed = parsePartitionCsv(csv);
   let draft = !parsed.errors.length && csv ? inferDraft(parsed.rows, flashBytes) : null;
   const metadata = pkg.ailyPartitionManager;
-  if (metadata?.version === 1 && metadata.csv === csv && metadata.draft?.flashBytes === flashBytes) {
+  if (metadata?.version === 1 && metadata.csv === csv && isPartitionDraft(metadata.draft) && metadata.draft.flashBytes === flashBytes) {
     const generated = allocatePartitions(metadata.draft);
     if (!generated.errors.length && serializePartitions(generated.rows) === csv) draft = metadata.draft;
   }
@@ -145,9 +157,6 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
     token: crypto.randomUUID(), projectPath: requestedPath, projectName: pkg.nickname || pkg.name || path.basename(requestedPath),
     boardName: board.description || board.name || board.type || 'ESP32', flashBytes, flashOptions,
     csv, source, filePath, customSelected: selected['PartitionScheme'] === 'custom', draft,
-    // A resource layout is supported only when already supplied by this project's board/CSV.
-    // Generic Arduino targets cannot silently adopt the upstream IDF app offset.
-    xiaozhiSupported: draft?.preset === 'xiaozhi',
   };
   if (sessions.size >= 32) sessions.delete(sessions.keys().next().value);
   sessions.set(context.token, { context, signature: projectSignature(pkg, board), watched });
@@ -175,7 +184,6 @@ export async function handlePartitionManagerRequest(
     if (typeof request.csv !== 'string') throw new Error('分区 CSV 内容无效。');
     const selectedFlash = context.flashOptions.find(option => option.bytes === request.flashBytes);
     if (!selectedFlash) throw new Error('请选择当前开发板支持的 Flash 容量。');
-    if (request.draft?.preset === 'xiaozhi' && !context.xiaozhiSupported) throw new Error('此项目尚未提供匹配的小智资源布局，参考方案不能直接保存。');
     const parsed = parsePartitionCsv(request.csv);
     const validation = validatePartitions(parsed.rows, selectedFlash.bytes);
     const errors = [...parsed.errors, ...validation.errors];
@@ -183,7 +191,7 @@ export async function handlePartitionManagerRequest(
     const projectConfig = { ...pkg.projectConfig, PartitionScheme: 'custom' };
     if (selectedFlash.value !== null) projectConfig.FlashSize = selectedFlash.value;
     let draft: PartitionDraft | null = null;
-    if (request.draft && request.draft.flashBytes === selectedFlash.bytes) {
+    if (isPartitionDraft(request.draft) && request.draft.flashBytes === selectedFlash.bytes) {
       const generated = allocatePartitions(request.draft);
       if (!generated.errors.length && serializePartitions(generated.rows) === request.csv) draft = request.draft;
     }

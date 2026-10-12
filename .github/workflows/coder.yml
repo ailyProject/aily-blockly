@@ -2,14 +2,14 @@ name: Aily Coder Package
 
 on:
   push:
-    branches:
-      - deploy-coder
+    branches: [deploy-coder, beta-coder]
   workflow_dispatch:
 
 permissions:
   actions: read
   contents: read
 
+# Serialize the complete release, including mutable feeds and source baselines.
 concurrency:
   group: aily-coder-${{ github.ref_name }}
   cancel-in-progress: false
@@ -18,301 +18,633 @@ env:
   CODER_RELEASE_REPOSITORY: ailyProject/aily-coder
 
 jobs:
-  build-and-sign-windows:
-    name: Build and test-sign Windows CN package
-    runs-on: windows-latest
+  prepare:
+    runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
-
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      channel: ${{ steps.release.outputs.channel }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      make_latest: ${{ steps.release.outputs.make_latest }}
+      signing_policy: ${{ steps.release.outputs.signing_policy }}
+      target_branch: ${{ steps.target.outputs.default_branch }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Resolve Coder version and release channel
+        id: release
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const semver = require('semver');
+          const { version } = require('./build/products/coder.json');
+          const branch = process.env.RELEASE_BRANCH;
+          const stable = branch === 'deploy-coder';
+          if (process.env.RELEASE_REF_TYPE !== 'branch' || !['deploy-coder', 'beta-coder'].includes(branch)) {
+            throw new Error('Coder releases require deploy-coder or beta-coder');
+          }
+          if (semver.valid(version) !== version ||
+              (stable ? !/^\d+\.\d+\.\d+$/.test(version) : !/^\d+\.\d+\.\d+-beta\.\d+$/.test(version))) {
+            throw new Error('deploy-coder requires X.Y.Z; beta-coder requires X.Y.Z-beta.N');
+          }
+          if (stable && !semver.gt(version, '0.1.6')) {
+            throw new Error('The first stable Coder release must upgrade existing 0.1.6 clients');
+          }
+          const values = { version, tag: `v${version}`, channel: stable ? 'stable' : 'beta',
+            prerelease: !stable, make_latest: stable, signing_policy: stable ? 'release-signing' : 'test-signing' };
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
+          NODE
+      - name: Verify initialized release repository
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo '::error::Missing AILY_CODER_RELEASE_TOKEN'; exit 1; }
+          default_branch=$(gh api "repos/$CODER_RELEASE_REPOSITORY" --jq '.default_branch')
+          gh api "repos/$CODER_RELEASE_REPOSITORY/commits/$default_branch" --silent
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
 
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@v4
+  build-and-sign-windows:
+    name: Windows x64 / ${{ matrix.flavor }}
+    needs: prepare
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [cn, global]
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_FLAVOR: ${{ matrix.flavor }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22.x'
           cache: npm
           cache-dependency-path: |
             package-lock.json
             electron/package-lock.json
-
-      - name: Cache child resources
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: .aily/child-cache
           key: child-coder-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
-
-      - name: Read Coder version
-        id: version
+      - name: Install dependencies and verify runner
         shell: pwsh
         run: |
-          $version = node -p "require('./build/products/coder.json').version"
-          if (-not $version) {
-            throw 'Unable to read Coder version'
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-          Write-Host "Coder version: $version"
-
-      - name: Install dependencies
-        shell: pwsh
-        run: |
-          npm install -g @angular/cli
+          node -e "if(process.platform!=='win32'||process.arch!=='x64') throw Error('Expected win32-x64')"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --include=dev
-          Push-Location electron
-          npm ci --include=dev --force
-          Pop-Location
-
-      - name: Build aily coder Windows package
-        run: npm run build:coder
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm ci --prefix electron --include=dev --force
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build Coder installer
+        run: npm run build:coder -- --flavor ${{ matrix.flavor }}
         env:
           NODE_ENV: production
-
-      - name: Add beta marker to test installer
+      - name: Resolve installer name
+        id: installer
         shell: pwsh
         run: |
-          $version = '${{ steps.version.outputs.version }}'
-          $outputDirectory = Join-Path $PWD 'dist/aily-coder'
-          $sourcePath = Join-Path $outputDirectory "aily-coder-CN-Setup-$version.exe"
-          $betaPath = Join-Path $outputDirectory "aily-coder-CN-Setup-beta-$version.exe"
-
-          if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
-            throw "Unsigned installer not found: $sourcePath"
-          }
-
-          Move-Item -LiteralPath $sourcePath -Destination $betaPath
-          Write-Host "Test installer: $(Split-Path -Leaf $betaPath)"
-
+          $prefix = if ($env:RELEASE_FLAVOR -eq 'cn') { 'aily-coder-CN' } else { 'aily-coder' }
+          "name=$prefix-Setup-$env:RELEASE_VERSION.exe" >> $env:GITHUB_OUTPUT
       - name: Upload unsigned installer for SignPath
-        id: upload_unsigned_coder
+        id: unsigned
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-aily-coder-windows-cn
-          path: dist/aily-coder/aily-coder-CN-Setup-beta-${{ steps.version.outputs.version }}.exe
+          name: unsigned-aily-coder-windows-${{ matrix.flavor }}
+          overwrite: true
+          path: dist/aily-coder/${{ steps.installer.outputs.name }}
           if-no-files-found: error
-
-      - name: Sign installer with SignPath test certificate
+      - name: Sign installer
         uses: signpath/github-action-submit-signing-request@v1
         with:
-          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
-          organization-id: 'bd01a768-a9e3-4a62-945d-fcfdc37a299e'
-          project-slug: 'aily-blockly'
-          signing-policy-slug: 'test-signing'
-          artifact-configuration-slug: 'aily-coder'
-          github-artifact-id: '${{ steps.upload_unsigned_coder.outputs.artifact-id }}'
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: bd01a768-a9e3-4a62-945d-fcfdc37a299e
+          project-slug: aily-blockly
+          signing-policy-slug: ${{ needs.prepare.outputs.signing_policy }}
+          artifact-configuration-slug: aily-coder
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
           parameters: |
-            version: ${{ toJSON(steps.version.outputs.version) }}
+            version: ${{ toJSON(needs.prepare.outputs.version) }}
           wait-for-completion: true
           output-artifact-directory: dist/aily-coder
-
-      - name: Rebuild latest.yml from signed installer
+      - name: Verify Authenticode and generate final manifest
         shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ steps.installer.outputs.name }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
         run: |
-          $version = '${{ steps.version.outputs.version }}'
-          $outputDirectory = Join-Path $PWD 'dist/aily-coder'
-          $installerName = "aily-coder-CN-Setup-beta-$version.exe"
-          $installerPath = Join-Path $outputDirectory $installerName
-
-          if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
-            throw "Signed installer not found: $installerPath"
+          $installer = "dist/aily-coder/$env:INSTALLER_NAME"
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($env:RELEASE_CHANNEL -eq 'beta' -and @('NotTrusted', 'UnknownError') -contains $signature.Status -and $signature.SignerCertificate) {
+            # Trust this test certificate in the disposable runner, then verify the signature again.
+            $certificatePath = Join-Path $env:RUNNER_TEMP 'coder-test-signing.cer'
+            Export-Certificate -Cert $signature.SignerCertificate -FilePath $certificatePath | Out-Null
+            Import-Certificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer
           }
-
-          Get-ChildItem -LiteralPath $outputDirectory -Filter '*.blockmap' -File |
-            Remove-Item -Force
-
-          $installer = Get-Item -LiteralPath $installerPath
-          $hash = Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA512
-          $hashBytes = [System.Convert]::FromHexString($hash.Hash)
-          $sha512 = [System.Convert]::ToBase64String($hashBytes)
-          $releaseDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-          $content = @(
-            "version: $version"
-            'files:'
-            "  - url: $installerName"
-            "    sha512: $sha512"
-            "    size: $($installer.Length)"
-            "path: $installerName"
-            "sha512: $sha512"
-            "releaseDate: '$releaseDate'"
-          ) -join "`n"
-
-          $manifestPath = Join-Path $outputDirectory 'latest.yml'
-          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-          [System.IO.File]::WriteAllText($manifestPath, "$content`n", $utf8NoBom)
-          Write-Host "Rebuilt latest.yml for signed installer: $installerName"
-
-      - name: Archive signed Coder package
+          if ($signature.Status -ne 'Valid') { throw "Installer Authenticode validation failed: $($signature.Status)" }
+          $sevenZip = Join-Path ${env:ProgramFiles} '7-Zip/7z.exe'
+          $nsisRoot = Join-Path $env:RUNNER_TEMP 'verify-coder-nsis'
+          $payloadRoot = Join-Path $env:RUNNER_TEMP 'verify-coder-payload'
+          & $sevenZip x $installer "-o$nsisRoot" '$PLUGINSDIR\app-64.7z' -y
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $payload = Join-Path $nsisRoot '$PLUGINSDIR\app-64.7z'
+          if (-not (Test-Path -LiteralPath $payload -PathType Leaf)) { throw 'Signed NSIS x64 payload is missing' }
+          & $sevenZip x $payload "-o$payloadRoot" 'aily coder.exe' 'resources\app.asar' -y
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $bytes = [System.IO.File]::ReadAllBytes((Join-Path $payloadRoot 'aily coder.exe'))
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) { throw 'Expected final Windows x64 executable' }
+          node scripts/coder-release-manifest.cjs write dist/aily-coder windows $env:RELEASE_FLAVOR $env:RELEASE_VERSION (Join-Path $payloadRoot 'resources/app.asar')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Archive final Windows release files
         uses: actions/upload-artifact@v4
         with:
-          name: AilyCoder-Windows-Package-cn
+          name: AilyCoder-windows-${{ matrix.flavor }}
+          overwrite: true
           path: |
-            dist/aily-coder/aily-coder-CN-Setup-beta-${{ steps.version.outputs.version }}.exe
-            dist/aily-coder/latest.yml
+            dist/aily-coder/${{ steps.installer.outputs.name }}
+            dist/aily-coder/latest-coder${{ matrix.flavor == 'cn' && '-cn' || '' }}.yml
           if-no-files-found: error
 
   build-and-sign-macos:
-    name: Build, sign and notarize macOS CN package
-    runs-on: macos-latest
-
+    name: macOS ARM64 / ${{ matrix.flavor }}
+    needs: prepare
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [cn, global]
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_FLAVOR: ${{ matrix.flavor }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22.x'
           cache: npm
           cache-dependency-path: |
             package-lock.json
             electron/package-lock.json
-
-      - name: Read Coder version
-        id: version
-        shell: bash
+      - uses: actions/cache@v4
+        with:
+          path: .aily/child-cache
+          key: child-coder-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/child-resources.lock.json') }}
+      - name: Install dependencies and verify runner
         run: |
-          version=$(node -p "require('./build/products/coder.json').version")
-          if [ -z "$version" ]; then
-            echo "Unable to read Coder version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Coder version: $version"
-
-      - name: Install dependencies
-        run: |
-          npm install -g @angular/cli
+          node -e "if(process.platform!=='darwin'||process.arch!=='arm64') throw Error('Expected darwin-arm64')"
           npm ci --include=dev
-          cd electron
-          npm ci --include=dev --force
-
+          npm ci --prefix electron --include=dev --force
       - name: Import codesign certificate
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.APPLE_SIGNING_CERT }}
           p12-password: ${{ secrets.APPLE_SIGNING_PASSWORD }}
-
       - name: Verify codesign certificate
-        shell: bash
-        run: |
-          if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
-            echo "No Developer ID Application certificate found" >&2
-            exit 1
-          fi
-
-      - name: Build, sign and notarize aily coder macOS package
-        run: npm run build:coder
-        # Reuse the imported keychain; CSC_LINK triggers electron-builder's broken re-import.
+        run: security find-identity -v -p codesigning | grep 'Developer ID Application'
+      - name: Build signed Coder DMG and ZIP
+        run: npm run build:coder -- --flavor ${{ matrix.flavor }}
+        # Reuse the imported keychain; do not re-import it through CSC_LINK.
         env:
           NODE_ENV: production
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-      - name: Notarize, staple and mark macOS test package
-        shell: bash
+      - name: Notarize final app and DMG, staple and rebuild ZIP
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-
-          version='${{ steps.version.outputs.version }}'
-          output_directory='dist/aily-coder'
-          dmg_count=0
-
-          while IFS= read -r -d '' dmg_path; do
-            xcrun notarytool submit "$dmg_path" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait \
-              --timeout 30m
-
-            xcrun stapler staple "$dmg_path"
-
-            original_name=$(basename "$dmg_path")
-            beta_name=${original_name/aily-coder-CN-macos-/aily-coder-CN-macos-beta-}
-            beta_path="$(dirname "$dmg_path")/$beta_name"
-            mv "$dmg_path" "$beta_path"
-
-            xcrun stapler validate "$beta_path"
-            echo "Test package: $beta_name"
-            dmg_count=$((dmg_count + 1))
-          done < <(
-            find "$output_directory" -maxdepth 1 -type f \
-              -name "aily-coder-CN-macos-${version}-*.dmg" -print0
-          )
-
-          if [ "$dmg_count" -eq 0 ]; then
-            echo "macOS DMG not found in $output_directory" >&2
-            exit 1
-          fi
-
-      - name: Archive signed Coder macOS package
+          prefix=aily-coder
+          if [ "$RELEASE_FLAVOR" = cn ]; then prefix=aily-coder-CN; fi
+          output=dist/aily-coder
+          app="$output/mac-arm64/aily coder.app"
+          zip="$output/$prefix-macos-$RELEASE_VERSION-arm64.zip"
+          dmg="$output/$prefix-macos-$RELEASE_VERSION-arm64.dmg"
+          test -f "$zip" && test -f "$dmg" && test -d "$app"
+          test "$(lipo -archs "$app/Contents/MacOS/aily coder")" = arm64
+          codesign --verify --deep --strict --verbose=2 "$app"
+          notarize() {
+            xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notarization.json"
+            node -e 'if(require(process.argv[1]).status!=="Accepted") throw Error("Notarization was not accepted")' "$RUNNER_TEMP/notarization.json"
+          }
+          notarize "$zip"
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/final-coder.zip"
+          mv "$RUNNER_TEMP/final-coder.zip" "$zip"
+          notarize "$dmg"
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          ditto -x -k "$zip" "$RUNNER_TEMP/verify-coder-zip"
+          final_app="$RUNNER_TEMP/verify-coder-zip/aily coder.app"
+          codesign --verify --deep --strict --verbose=2 "$final_app"
+          xcrun stapler validate "$final_app"
+          test "$(lipo -archs "$final_app/Contents/MacOS/aily coder")" = arm64
+          dmg_mount="$RUNNER_TEMP/verify-coder-dmg"
+          mkdir -p "$dmg_mount"
+          hdiutil attach -readonly -nobrowse -mountpoint "$dmg_mount" "$dmg"
+          trap 'hdiutil detach "$dmg_mount" >/dev/null' EXIT
+          dmg_app="$dmg_mount/aily coder.app"
+          codesign --verify --deep --strict --verbose=2 "$dmg_app"
+          test "$(lipo -archs "$dmg_app/Contents/MacOS/aily coder")" = arm64
+          node scripts/coder-release-manifest.cjs write "$output" macos "$RELEASE_FLAVOR" "$RELEASE_VERSION" \
+            "$final_app/Contents/Resources/app.asar" "$dmg_app/Contents/Resources/app.asar"
+          hdiutil detach "$dmg_mount"
+          trap - EXIT
+      - name: Archive final macOS release files
         uses: actions/upload-artifact@v4
         with:
-          name: AilyCoder-macOS-Package-cn
-          path: dist/aily-coder/aily-coder-CN-macos-beta-${{ steps.version.outputs.version }}-*.dmg
+          name: AilyCoder-macos-${{ matrix.flavor }}
+          overwrite: true
+          path: |
+            dist/aily-coder/aily-coder${{ matrix.flavor == 'cn' && '-CN' || '' }}-macos-${{ needs.prepare.outputs.version }}-arm64.dmg
+            dist/aily-coder/aily-coder${{ matrix.flavor == 'cn' && '-CN' || '' }}-macos-${{ needs.prepare.outputs.version }}-arm64.zip
+            dist/aily-coder/latest-coder-mac${{ matrix.flavor == 'cn' && '-cn' || '' }}.yml
           if-no-files-found: error
 
-  publish-test-release:
-    name: Publish test release to ailyProject/aily-coder
-    needs: [build-and-sign-windows, build-and-sign-macos]
+  prepare-release:
+    needs: prepare
     runs-on: ubuntu-latest
-
+    env:
+      RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
     steps:
-      - name: Download signed Coder package
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: AilyCoder-Windows-Package-cn
-          path: release
-
-      - name: Download signed Coder macOS package
-        uses: actions/download-artifact@v4
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
         with:
-          name: AilyCoder-macOS-Package-cn
-          path: release-macos
-
-      - name: Require target repository token
-        env:
-          TARGET_REPOSITORY_TOKEN: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Collect source commits from independent Coder baseline
         run: |
-          if [ -z "$TARGET_REPOSITORY_TOKEN" ]; then
-            echo "Missing repository secret: AILY_CODER_RELEASE_TOKEN" >&2
-            exit 1
+          set -euo pipefail
+          metadata_ref=$(git ls-remote --heads origin release-meta)
+          if [ -n "$metadata_ref" ]; then
+            git fetch origin release-meta:refs/remotes/origin/release-meta
           fi
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync, spawnSync } = require('node:child_process');
+          const git = args => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim();
+          const boundedDiff = commit => {
+            const result = spawnSync('git', ['show', '--format=', '--no-ext-diff', '--unified=3', commit], { encoding: 'utf8', maxBuffer: 12000 });
+            if (result.status !== 0 && result.error?.code !== 'ENOBUFS') throw new Error(result.stderr || result.error?.message);
+            return result.stdout.slice(0, 12000);
+          };
+          const baseline = spawnSync('git', ['show', `origin/release-meta:last-sha-coder-${process.env.RELEASE_CHANNEL}`], { encoding: 'utf8' });
+          const sha = baseline.status === 0 ? baseline.stdout.trim() : '';
+          if (sha && (!/^[a-f0-9]{40}$/.test(sha) || spawnSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD']).status !== 0)) {
+            throw new Error('Coder baseline is invalid or outside source history; review it before releasing');
+          }
+          if (!sha) console.log('No Coder baseline: bounded review of the last 100 source commits');
+          const commits = git(['rev-list', '--max-count=100', sha ? `${sha}..HEAD` : 'HEAD']).split('\n').filter(Boolean).map(commit => ({
+            sha: commit,
+            title: git(['show', '-s', '--format=%s', commit]),
+            body: git(['show', '-s', '--format=%b', commit]).slice(0, 4000),
+            files: git(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '-m', commit]).split('\n').filter(Boolean),
+            diff: boundedDiff(commit),
+          }));
+          fs.writeFileSync('coder-commits.json', JSON.stringify(commits));
+          NODE
+      - name: Generate product-specific bilingual changelog
+        env:
+          RELEASE_PRODUCT: coder
+          RELEASE_VERSION: ${{ needs.prepare.outputs.tag }}
+          CHANGELOG_COMMITS_FILE: coder-commits.json
+          CHANGELOG_EN_FILE: release/CHANGELOG_CODER.md
+          CHANGELOG_ZH_FILE: release/CHANGELOG_CODER_ZH.md
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+          AI_COMPLETIONS_PATH: ${{ secrets.AI_COMPLETIONS_PATH }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          AI_API_KEY2: ${{ secrets.AI_API_KEY2 }}
+          AI_BASE_URL2: ${{ secrets.AI_BASE_URL2 }}
+          AI_COMPLETIONS_PATH2: ${{ secrets.AI_COMPLETIONS_PATH2 }}
+          AI_MODEL2: ${{ secrets.AI_MODEL2 }}
+          AI_API_KEY3: ${{ secrets.AI_API_KEY3 }}
+          AI_BASE_URL3: ${{ secrets.AI_BASE_URL3 }}
+          AI_COMPLETIONS_PATH3: ${{ secrets.AI_COMPLETIONS_PATH3 }}
+          AI_MODEL3: ${{ secrets.AI_MODEL3 }}
+        run: |
+          mkdir -p release
+          node scripts/generate-changelog.js
+          test -s release/CHANGELOG_CODER.md && test -s release/CHANGELOG_CODER_ZH.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Coder-changelog
+          overwrite: true
+          path: release/CHANGELOG_CODER*.md
+          if-no-files-found: error
 
-      - name: Verify target repository is initialized
-        id: target_repository
+  publish-release:
+    needs: [prepare, prepare-release, build-and-sign-windows, build-and-sign-macos]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: AilyCoder-*
+          merge-multiple: true
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: Coder-changelog
+          path: release
+      - name: Verify all four final manifests
+        run: |
+          for platform in windows macos; do
+            for flavor in cn global; do
+              node scripts/coder-release-manifest.cjs verify release "$platform" "$flavor" "$RELEASE_VERSION"
+            done
+          done
+      - name: Resolve existing release and reject channel rollback
+        id: release
         env:
           GH_TOKEN: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
-          TARGET_REPOSITORY: ${{ env.CODER_RELEASE_REPOSITORY }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          default_branch=$(gh api "repos/${TARGET_REPOSITORY}" --jq '.default_branch')
-          if ! gh api "repos/${TARGET_REPOSITORY}/commits/${default_branch}" --silent >/dev/null 2>&1; then
-            echo "::error::${TARGET_REPOSITORY} has no commits. Initialize it with a README before publishing a release."
-            exit 1
-          fi
-          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
-
-      - name: Create aily coder test release
+          gh api --paginate --slurp "repos/$CODER_RELEASE_REPOSITORY/releases?per_page=100" > releases.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const semver = require('semver');
+          const releases = require('./releases.json').flat();
+          const existing = releases.find(release => release.tag_name === process.env.RELEASE_TAG);
+          for (const release of releases) {
+            const previous = semver.valid(release.tag_name);
+            if (release !== existing && !release.draft && release.prerelease === (process.env.RELEASE_CHANNEL === 'beta') && previous &&
+                semver.lt(process.env.RELEASE_VERSION, previous)) {
+              throw new Error(`Release cannot be older than published ${release.tag_name}`);
+            }
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `published=${Boolean(existing && !existing.draft)}\nrelease_id=${existing?.id || ''}\n`);
+          NODE
+      - name: Upload or replace Coder release assets
+        id: draft
         uses: softprops/action-gh-release@v3
         with:
           repository: ${{ env.CODER_RELEASE_REPOSITORY }}
           token: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
-          tag_name: v${{ needs.build-and-sign-windows.outputs.version }}
-          target_commitish: ${{ steps.target_repository.outputs.default_branch }}
-          name: aily coder v${{ needs.build-and-sign-windows.outputs.version }} (beta)
-          body: |
-            Beta Windows and macOS packages built from
-            https://github.com/${{ github.repository }}/commit/${{ github.sha }}
-
-            Windows uses SignPath test signing. macOS uses Apple Developer ID signing and notarization.
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.target_branch }}
+          name: aily coder ${{ needs.prepare.outputs.tag }}
+          body_path: release/CHANGELOG_CODER.md
           files: |
-            release/aily-coder-CN-Setup-beta-${{ needs.build-and-sign-windows.outputs.version }}.exe
-            release/latest.yml
-            release-macos/aily-coder-CN-macos-beta-${{ needs.build-and-sign-windows.outputs.version }}-*.dmg
+            release/aily-coder-*.exe
+            release/aily-coder-*.dmg
+            release/CHANGELOG_CODER.md
+            release/CHANGELOG_CODER_ZH.md
           fail_on_unmatched_files: true
-          draft: false
-          prerelease: true
-          make_latest: false
+          overwrite_files: true
+          draft: ${{ steps.release.outputs.published != 'true' }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.release.outputs.published == 'true' && needs.prepare.outputs.make_latest || 'false' }}
+      - name: Verify complete Release assets before publication
+        env:
+          GH_TOKEN: ${{ secrets.AILY_CODER_RELEASE_TOKEN }}
+          RELEASE_ID: ${{ steps.draft.outputs.id || steps.release.outputs.release_id }}
+          ALREADY_PUBLISHED: ${{ steps.release.outputs.published }}
+          MAKE_LATEST: ${{ needs.prepare.outputs.make_latest }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const { execFileSync } = require('node:child_process');
+          const { releaseFiles } = require('./scripts/coder-release-manifest.cjs');
+          (async () => {
+            const url = `repos/${process.env.CODER_RELEASE_REPOSITORY}/releases/${process.env.RELEASE_ID}`;
+            // Ignore legacy update-only assets when retrying a release from an older workflow.
+            const assets = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp', `${url}/assets?per_page=100`], { encoding: 'utf8' })).flat()
+              .filter(asset => !/\.(zip|yml)$/.test(asset.name));
+            const names = ['CHANGELOG_CODER.md', 'CHANGELOG_CODER_ZH.md'];
+            for (const platform of ['windows', 'macos']) for (const flavor of ['cn', 'global']) {
+              const { packages } = releaseFiles(platform, flavor, process.env.RELEASE_VERSION);
+              names.push(...packages.filter(name => !name.endsWith('.zip')));
+            }
+            if (assets.length !== names.length) throw new Error('Release asset set is incomplete or unexpected');
+            for (const name of names) {
+              const file = `release/${name}`;
+              const hash = crypto.createHash('sha256');
+              for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+              const asset = assets.find(asset => asset.name === name);
+              if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(file).size || asset.digest !== `sha256:${hash.digest('hex')}`) {
+                throw new Error(`Release asset verification failed: ${name}`);
+              }
+            }
+            // Existing releases stay public; publish new drafts only after asset verification.
+            if (process.env.ALREADY_PUBLISHED !== 'true') {
+              execFileSync('gh', ['api', url, '--method', 'PATCH', '--input', '-'], {
+                input: JSON.stringify({ draft: false, prerelease: process.env.RELEASE_CHANNEL === 'beta',
+                  make_latest: process.env.MAKE_LATEST }), stdio: ['pipe', 'ignore', 'inherit'],
+              });
+            }
+          })();
+          NODE
+
+  upload-stable-feed:
+    needs: [prepare, publish-release]
+    if: needs.prepare.outputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      R2_UPLOAD_PATH: ${{ secrets.R2_UPLOAD_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: AilyCoder-*
+          merge-multiple: true
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: Coder-changelog
+          path: release
+      - name: Check final files and reject public feed rollback
+        run: |
+          for platform in windows macos; do
+            for flavor in cn global; do
+              node scripts/coder-release-manifest.cjs verify release "$platform" "$flavor" "$RELEASE_VERSION"
+            done
+          done
+          node <<'NODE'
+          const yaml = require('js-yaml');
+          const semver = require('semver');
+          const config = require('./electron/config/config.json');
+          const { releaseFiles } = require('./scripts/coder-release-manifest.cjs');
+          (async () => {
+            for (const region of ['eu', 'cn']) {
+              const base = config.regions[region].updater;
+              const flavors = region === 'cn' ? ['cn'] : ['cn', 'global'];
+              for (const platform of ['windows', 'macos']) for (const flavor of flavors) {
+                const { manifest } = releaseFiles(platform, flavor, process.env.RELEASE_VERSION);
+                const publicManifest = region === 'cn' ? releaseFiles(platform, 'global', process.env.RELEASE_VERSION).manifest : manifest;
+                const response = await fetch(`${base.replace(/\/+$/, '')}/${publicManifest}`, { cache: 'no-store', signal: AbortSignal.timeout(30000) });
+                if (response.status === 404) continue;
+                if (!response.ok) throw new Error(`Cannot inspect current feed: ${response.status}`);
+                const published = Buffer.from(await response.arrayBuffer());
+                const previous = yaml.load(published.toString('utf8')).version;
+                if (!semver.valid(previous) || semver.lt(process.env.RELEASE_VERSION, previous)) {
+                  throw new Error(`Refusing feed rollback: ${manifest} at ${previous}`);
+                }
+              }
+            }
+          })().catch(error => { console.error(error.message); process.exitCode = 1; });
+          NODE
+      - name: Ensure AWS CLI is available
+        run: |
+          if ! command -v aws >/dev/null; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o "$RUNNER_TEMP/awscliv2.zip"
+            unzip -q "$RUNNER_TEMP/awscliv2.zip" -d "$RUNNER_TEMP/aws-cli"
+            sudo "$RUNNER_TEMP/aws-cli/aws/install"
+          fi
+      - name: Upload installers, then changelogs, then manifests
+        run: |
+          set -euo pipefail
+          : "${R2_BUCKET_NAME:?Missing R2 bucket}"
+          : "${R2_ACCOUNT_ID:?Missing R2 account}"
+          command -v aws
+          destination="s3://${R2_BUCKET_NAME}/${R2_UPLOAD_PATH}"
+          endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          for file in release/aily-coder-*.exe release/aily-coder-*.dmg release/aily-coder-*.zip; do
+            test -s "$file"
+            aws s3 cp "$file" "$destination/$(basename "$file")" --endpoint-url "$endpoint"
+          done
+          for file in release/CHANGELOG_CODER.md release/CHANGELOG_CODER_ZH.md; do
+            test -s "$file"
+            aws s3 cp "$file" "$destination/$(basename "$file")" --endpoint-url "$endpoint" \
+              --content-type 'text/markdown; charset=utf-8' --cache-control 'no-cache, no-store, must-revalidate'
+          done
+          for file in release/latest-coder*.yml; do
+            test -s "$file"
+            aws s3 cp "$file" "$destination/$(basename "$file")" --endpoint-url "$endpoint" \
+              --content-type 'text/yaml' --cache-control 'no-cache, no-store, must-revalidate'
+          done
+
+  sync-stable-feed:
+    needs: [prepare, upload-stable-feed]
+    if: needs.prepare.outputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Trigger Coder Server Script
+        env:
+          SERVER_HOST: ${{ secrets.TRIGGER_SERVER_HOST }}
+          SERVER_USER: ${{ secrets.TRIGGER_SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.TRIGGER_SERVER_PASSWORD }}
+          SERVER_SCRIPT_PATH: ${{ secrets.TRIGGER_CODER_SERVER_SCRIPT_PATH }}
+        run: |
+          : "${SERVER_SCRIPT_PATH:?Missing TRIGGER_CODER_SERVER_SCRIPT_PATH}"
+          sudo apt-get update && sudo apt-get install -y sshpass
+          echo "触发服务器脚本..."
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" "bash $SERVER_SCRIPT_PATH"
+          echo "✓ 脚本执行完成"
+
+  verify-stable-feed:
+    needs: [prepare, sync-stable-feed]
+    if: needs.prepare.outputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: AilyCoder-*
+          merge-multiple: true
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: Coder-changelog
+          path: release
+      - name: Verify published files on both download endpoints
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/verify-coder-release.cjs release "$RELEASE_VERSION"
+
+  save-source-baseline:
+    needs: [prepare, publish-release, verify-stable-feed]
+    if: >-
+      always() && needs.publish-release.result == 'success' &&
+      (needs.prepare.outputs.channel == 'beta' || needs.verify-stable-feed.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: coder-release-meta
+      cancel-in-progress: false
+    steps:
+      - name: Save only this Coder channel's source SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node <<'NODE'
+          const { execFileSync, spawnSync } = require('node:child_process');
+          const repository = process.env.GITHUB_REPOSITORY;
+          const file = `last-sha-coder-${process.env.RELEASE_CHANNEL}`;
+          const api = (url, body) => JSON.parse(execFileSync('gh', ['api', url, ...(body ? ['--method', 'PUT', '--input', '-'] : [])], {
+            input: body ? JSON.stringify(body) : undefined, encoding: 'utf8',
+          }));
+          const branch = spawnSync('gh', ['api', `repos/${repository}/git/ref/heads/release-meta`], { encoding: 'utf8' });
+          if (branch.status !== 0) {
+            if (!branch.stderr.includes('HTTP 404')) throw new Error(branch.stderr);
+            const created = spawnSync('gh', ['api', `repos/${repository}/git/refs`, '--method', 'POST', '--input', '-'], {
+              input: JSON.stringify({ ref: 'refs/heads/release-meta', sha: process.env.GITHUB_SHA }), encoding: 'utf8',
+            });
+            if (created.status !== 0) api(`repos/${repository}/git/ref/heads/release-meta`);
+          }
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const current = spawnSync('gh', ['api', `repos/${repository}/contents/${file}?ref=release-meta`], { encoding: 'utf8' });
+            if (current.status !== 0 && !current.stderr.includes('HTTP 404')) throw new Error(current.stderr);
+            const metadata = current.status === 0 ? JSON.parse(current.stdout) : undefined;
+            const sha = metadata?.sha;
+            if (metadata) {
+              const previous = Buffer.from(metadata.content, 'base64').toString('utf8').trim();
+              if (!/^[a-f0-9]{40}$/.test(previous)) throw new Error('Invalid Coder source baseline');
+              if (previous === process.env.GITHUB_SHA) break;
+              const relation = execFileSync('gh', ['api', `repos/${repository}/compare/${previous}...${process.env.GITHUB_SHA}`, '--jq', '.status'], { encoding: 'utf8' }).trim();
+              if (relation !== 'ahead') throw new Error('Refusing to rewind or diverge the Coder source baseline');
+            }
+            try {
+              api(`repos/${repository}/contents/${file}`, {
+                message: `chore: record Coder ${process.env.RELEASE_CHANNEL} source SHA`,
+                content: Buffer.from(`${process.env.GITHUB_SHA}\n`).toString('base64'), branch: 'release-meta', ...(sha ? { sha } : {}),
+              });
+              break;
+            } catch (error) {
+              if (attempt === 2 || !/HTTP (409|422)/.test(error.stderr?.toString() || '')) throw error;
+            }
+          }
+          NODE

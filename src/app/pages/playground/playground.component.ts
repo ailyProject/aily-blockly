@@ -10,6 +10,7 @@ import { PlaygroundService } from './playground.service';
 import { ElectronService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { Subject } from 'rxjs';
+import { RoutedContentDirective } from '../../directives/routed-content.directive';
 import { debounceTime, takeUntil } from 'rxjs/operators';
 import {
   normalizePlaygroundPage,
@@ -26,7 +27,8 @@ import {
     NzInputModule,
     NzToolTipModule,
     TranslateModule,
-    RouterModule
+    RouterModule,
+    RoutedContentDirective
   ],
   templateUrl: './playground.component.html',
   styleUrl: './playground.component.scss'

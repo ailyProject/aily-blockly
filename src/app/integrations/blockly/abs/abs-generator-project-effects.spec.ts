@@ -40,6 +40,14 @@ describe('owned generator project effects', () => {
     expect(original.MACROS.length).toBe(3);
     expect(mergeGeneratorMacros(result, []).MACROS).toEqual([['USER=1'], ['EDITED=9']]);
   });
+  it('keeps first legacy macro adoption identical to later background publications', () => {
+    const original = { MACROS: [['Z_GENERATED=2'], ['USER=1'], ['A_GENERATED=3']] };
+    const effects = [{ name: 'Z_GENERATED', value: 'Z_GENERATED=2' }, { name: 'A_GENERATED', value: 'A_GENERATED=3' }];
+    const captured = mergeGeneratorMacros(original, effects);
+    expect(captured.MACROS).toEqual([['USER=1'], ['A_GENERATED=3'], ['Z_GENERATED=2']]);
+    expect(mergeGeneratorMacros(captured, [...effects].reverse())).toEqual(captured);
+    expect(original.MACROS).toEqual([['Z_GENERATED=2'], ['USER=1'], ['A_GENERATED=3']]);
+  });
 
   it('discards partially captured effects after a failed generator invocation', () => {
     const realm: any = { Promise, projectService: {} }, effects = new GeneratorProjectEffects(realm);
@@ -79,6 +87,24 @@ describe('owned generator project effects', () => {
     generator.forBlock.parent({ id: 'parent' }, generator);
     expect(effects.capture(workspace(['parent']))).toEqual([{ name: 'PARENT', value: 'PARENT=1' }]);
     expect(effects.capture(workspace(['child']))).toEqual([{ name: 'CHILD', value: 'CHILD=1' }]);
+  });
+
+  it('checks deep shared ancestors once per capture and ignores blocks without effects', () => {
+    const realm: any = {Promise, projectService: {}}, effects = new GeneratorProjectEffects(realm);
+    let reads = 0, parent: any = null;
+    const blocks: any[] = [];
+    for (let i = 0; i < 6000; i++) {
+      const ancestor = parent;
+      parent = {id: `b${i}`, isEnabled: () => true, getParent: () => { reads++; return ancestor; }};
+      blocks.push(parent);
+    }
+    effects.run('b5998', () => { realm.projectService.addMacro('FIRST=1'); });
+    effects.run('b5999', () => { realm.projectService.addMacro('SECOND=2'); });
+    expect(effects.capture({getAllBlocks: () => blocks} as any)).toHaveSize(2);
+    expect(reads).toBe(6000);
+    blocks[0].isEnabled = () => false; reads = 0;
+    expect(effects.capture({getAllBlocks: () => blocks} as any)).toEqual([]);
+    expect(reads).toBe(6000);
   });
 
   it('validates a real isolated generator using the legacy Promise/macro interface', async () => {

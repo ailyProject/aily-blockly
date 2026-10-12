@@ -55,7 +55,6 @@ export class FieldLedPatternSelector extends Blockly.Field<number[][]> {
         super(value, validator, config);
 
         this.SERIALIZABLE = true;
-        this.CURSOR = 'pointer';
         // 禁用默认的下拉箭头
         this.clickTarget_ = null;
         this.pixelColours = { ...DEFAULT_PIXEL_COLOURS, ...config?.colours };
@@ -820,8 +819,8 @@ export class FieldLedPatternSelector extends Blockly.Field<number[][]> {
         const svgRoot = this.getSvgRoot();
         if (svgRoot) {
             // 移除可能的下拉箭头类名
-            svgRoot.classList.remove('blocklyEditableText');
-            svgRoot.classList.remove('blocklyNonEditableText');
+            svgRoot.classList.remove('blocklyEditableField');
+            svgRoot.classList.remove('blocklyNonEditableField');
             svgRoot.style.cursor = 'pointer';
         }
         return editable;
