@@ -315,8 +315,8 @@ export class SimulatorBuildCallbackAuthority {
       const errorCode = mapBuildFailure(error);
       this.publishTerminal(
         job,
-        'failed',
-        Math.min(currentProgress(job), 999),
+        errorCode === 'cancelled' ? 'cancelled' : 'failed',
+        errorCode === 'cancelled' ? 0 : Math.min(currentProgress(job), 999),
         errorCode,
       );
     } finally {

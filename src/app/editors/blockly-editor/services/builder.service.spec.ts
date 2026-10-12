@@ -5,9 +5,71 @@ import * as Blockly from 'blockly';
 import { BlocklyService } from './blockly.service';
 import { ProcessState } from '@core/app-shell/public-api';
 import { Subject } from 'rxjs';
+import { sha256Hex } from '../../../utils/crypto.utils';
 import {
   type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
+
+describe('Builder normal saved-source capture', () => {
+  async function capturedBuilder() {
+    const service = Object.create(_BuilderService.prototype) as any;
+    const workspace = { isDragging: () => false, getInjectionDiv: () => null };
+    const prepared = { code: 'void setup() {}\n', artifacts: null, revision: 5, blockCodeMapText: null,
+      sourceWorkspace: { documentText: '{}', revision: 5, runtimeRevision: 7, pageId: 'main' } };
+    const boundary = { projectPath: 'D:/project', mode: 'blockly', activationId: 'active', boardModule: 'board-test',
+      workspace: { scope: 'serialized-blockly-document', documentSha256: await sha256Hex('{}'),
+        revision: 5, runtimeRevision: 7, pageId: 'main',
+        savedProjectFiles: [{ path: 'project.abi', sizeBytes: 2, sha256: 'a'.repeat(64) }] } };
+    service.projectService = { currentProjectPath: 'D:/project' };
+    service.waitForOneIdleBoundary = async () => {};
+    service.runBuilderPreprocessPhase = (_tag: string, operation: () => unknown) => operation();
+    service.blocklyService = { workspace, isWorkspaceEditBlocked: () => false, getProjectPersistenceRevision: () => 5,
+      getActivePageId: () => 'main', publishPreparedCodeView: jasmine.createSpy('publishPreparedCodeView'),
+      runWithBackgroundProjectCode: async (operation: Function) => { await operation(prepared, () => {}); return true; } };
+    return { service, workspace, prepared, boundary };
+  }
+
+  it('adds verified generic file facts only to the current prepared snapshot', async () => {
+    const { service, workspace, prepared, boundary } = await capturedBuilder();
+    const snapshot = await service.generateWorkspaceBuildSnapshotForPreprocess(workspace, 'compile_config', undefined, () => false, boundary);
+    expect(snapshot.sourceWorkspace.savedProjectFiles).toBe(boundary.workspace.savedProjectFiles);
+    expect(snapshot.sourceWorkspace.documentText).toBe(prepared.sourceWorkspace.documentText);
+    expect((prepared.sourceWorkspace as any).savedProjectFiles).toBeUndefined();
+    snapshot.assertFresh();
+  });
+
+  it('preserves the ordinary unsaved-code capture path without a saved-file claim', async () => {
+    const { service, workspace, prepared } = await capturedBuilder();
+    service.buildSourceQuery = { readSavedProjectBoundary: jasmine.createSpy('readSavedProjectBoundary') };
+    const snapshot = await service.generateWorkspaceBuildSnapshotForPreprocess(workspace, 'compile_config');
+    expect(snapshot.sourceWorkspace).toBe(prepared.sourceWorkspace);
+    expect(snapshot.sourceWorkspace.savedProjectFiles).toBeUndefined();
+    expect(service.buildSourceQuery.readSavedProjectBoundary).not.toHaveBeenCalled();
+  });
+
+  for (const change of ['project', 'scope', 'document', 'revision', 'runtime', 'page']) it(`rejects saved ${change} mismatch before publication`, async () => {
+    const { service, workspace, boundary } = await capturedBuilder();
+    if (change === 'project') boundary.projectPath = 'D:/other';
+    if (change === 'scope') boundary.workspace.scope = 'different';
+    if (change === 'document') boundary.workspace.documentSha256 = '0'.repeat(64);
+    if (change === 'revision') boundary.workspace.revision++;
+    if (change === 'runtime') boundary.workspace.runtimeRevision++;
+    if (change === 'page') boundary.workspace.pageId = 'other';
+    await expectAsync(service.generateWorkspaceBuildSnapshotForPreprocess(workspace, 'compile_config', undefined, () => false, boundary))
+      .toBeRejectedWithError(/BUILD_SOURCE_STALE/);
+    expect(service.blocklyService.publishPreparedCodeView).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the prepared operation ownership after asynchronous hashing', async () => {
+    const { service, workspace, prepared, boundary } = await capturedBuilder();
+    service.blocklyService.runWithBackgroundProjectCode = async (operation: Function) => {
+      await operation(prepared, () => { throw new Error('Prepared operation changed'); }); return true;
+    };
+    await expectAsync(service.generateWorkspaceBuildSnapshotForPreprocess(workspace, 'compile_config', undefined, () => false, boundary))
+      .toBeRejectedWithError(/Prepared operation changed/);
+    expect(service.blocklyService.publishPreparedCodeView).not.toHaveBeenCalled();
+  });
+});
 
 describe('BuilderService background preprocess ownership', () => {
   it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
@@ -124,9 +186,49 @@ describe('BuilderService background preprocess ownership', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(service.workflowService.finishBuild).not.toHaveBeenCalled();
     service.cancelled = false; // The captured signal, not mutable UI state, owns cancellation.
-    completePreparation(); await build;
+    completePreparation();
+    const result = await build as { state: string; text: string; errorCode?: string };
+    expect(result.state).toBe('warn');
+    expect(result.errorCode).toBe('build-cancelled');
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
     expect(service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a real notice stop as cancelled without requiring a Host abort', async () => {
+    const service = queuedBuilder();
+    service.preprocessProcess = {};
+    let notice: { stop(): void };
+    service.safeUpdateNotice = (value: { stop(): void }) => { notice = value; };
+    const build = service.build().catch((error: unknown) => error);
+    notice!.stop();
+    const result = await build as { state: string; text: string; errorCode?: string };
+    expect(result.state).toBe('warn');
+    expect(result.text).toBe('CANCELLED_WITH_TIME');
+    expect(result.errorCode).toBe('build-cancelled');
+    expect(service.cmdService.spawn).not.toHaveBeenCalled();
+  });
+
+  it('does not classify an ordinary busy warning as cancelled', async () => {
+    const service = queuedBuilder();
+    service.workflowService.startBuild = () => false;
+    service.message = { warning: jasmine.createSpy('warning') };
+    const result = await service.build().catch((error: unknown) => error) as { state: string; errorCode?: string };
+    expect(result.state).toBe('warn');
+    expect(result.errorCode).toBeUndefined();
+    expect(service.cmdService.spawn).not.toHaveBeenCalled();
+  });
+
+  it('does not infer cancellation from a localized preparation error', async () => {
+    const service = queuedBuilder();
+    const oldFs = window['fs'];
+    window['fs'] = { readFileSync() { throw new Error('CANCELLED_TITLE'); } };
+    try {
+      const result = await service.build().catch((error: unknown) => error) as { state: string; text: string; errorCode?: string };
+      expect(result.state).toBe('error');
+      expect(result.text).toBe('CANCELLED_TITLE');
+      expect(result.errorCode).toBeUndefined();
+      expect(service.updateCancelledNotice).not.toHaveBeenCalled();
+    } finally { window['fs'] = oldFs; }
   });
 
   it('rejects a project switch during preparation instead of building the newly selected project', async () => {

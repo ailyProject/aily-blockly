@@ -6,7 +6,11 @@ import {
   type SimulatorProjectHostProviderAdapterOptions,
 } from '@aily-project/simulator-host-sdk';
 import {
+  createProjectSceneHeadV1,
+  encodeProjectSceneHeadV1,
+  validateProjectSceneHeadV1,
   validateProjectSceneNetworkDescriptorV2,
+  type ProjectSceneHeadV1,
   type ProjectSceneNetworkDescriptorV2,
 } from '@aily-project/simulator-protocol/scene';
 import {
@@ -46,11 +50,13 @@ export interface SimulatorProjectArtifactFilePort {
   resolve(...segments: string[]): string;
   relative(from: string, to: string): string;
   readFile(filePath: string, signal: AbortSignal): Promise<Uint8Array>;
-  writeFileAtomic(
-    filePath: string,
+  replaceFileAtomic(
+    projectRoot: string,
+    relativePath: string,
+    expectedBytes: Uint8Array | null,
     bytes: Uint8Array,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<boolean>;
   lstat(
     filePath: string,
     signal: AbortSignal,
@@ -69,13 +75,10 @@ export interface SimulatorProjectArtifactCallbackAuthorityOptions {
   maxArtifactReferences?: number;
   createArtifactReference?: () => string;
   createSceneCommitId?: () => string;
-}
-
-interface StoredSceneHeadV1 {
-  schemaVersion: 1;
-  kind: 'aily-blockly-simulator-project-scene-head';
-  commitId: string;
-  descriptor: ProjectSceneNetworkDescriptorV2;
+  readWorkspaceSource?: (signal: AbortSignal) => Promise<{
+    sha256: string;
+    isCurrent(): boolean;
+  } | null>;
 }
 
 interface ArtifactReference {
@@ -87,6 +90,8 @@ interface ArtifactReference {
   buildRootRealPath: string;
   files: ReadonlyMap<string, ArtifactReferenceFile>;
 }
+
+interface StoredScene { head: ProjectSceneHeadV1; bytes: Uint8Array }
 
 interface ArtifactReferenceFile {
   readonly filePath: string;
@@ -122,6 +127,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private readonly maxArtifactReferences: number;
   private readonly createArtifactReference: () => string;
   private readonly createSceneCommitId: () => string;
+  private readonly readWorkspaceSource: NonNullable<SimulatorProjectArtifactCallbackAuthorityOptions['readWorkspaceSource']>;
   private readonly artifactReferences = new Map<string, ArtifactReference>();
   private operationTail: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -168,6 +174,8 @@ export class SimulatorProjectArtifactCallbackAuthority {
       ?? (() => createPortableRandomId('host-artifact-v1'));
     this.createSceneCommitId = options.createSceneCommitId
       ?? (() => createPortableRandomId('scene-commit-v1'));
+    this.readWorkspaceSource = options.readWorkspaceSource
+      ?? (async () => null);
     this.callbacks = Object.freeze({
       readContext: (
         request: SimulatorSubappHostProjectContextReadV1,
@@ -232,13 +240,23 @@ export class SimulatorProjectArtifactCallbackAuthority {
       }),
     ]);
     this.requireActive(signal);
+    const source = await this.readWorkspaceSource(signal);
+    const currentArtifact = await this.readManifest(signal, true);
+    this.requireActive(signal);
+    // A build can finish while source hashing awaits. Never authorize an old
+    // identity observed before that build; this is a bounded request recheck,
+    // not an atomic snapshot or a new persistent authority.
+    const activeArtifactRevision = artifact?.artifactId === currentArtifact?.artifactId
+      ? currentArtifact?.artifactId ?? null
+      : null;
     return {
       schemaVersion: 1,
       kind: 'aily-simulator-host-project-context-snapshot',
       projectIdentity: this.projectIdentity,
       workspaceIdentity: this.workspaceIdentity,
       activeSceneId: this.sceneId,
-      activeArtifactRevision: artifact?.artifactId ?? null,
+      activeArtifactRevision,
+      workspaceSourceSha256: source?.isCurrent() ? source.sha256 : null,
     };
   }
 
@@ -257,7 +275,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
         sceneId: this.sceneId,
       };
     }
-    return structuredClone(scene.descriptor);
+    return structuredClone(scene.head.descriptor);
   }
 
   private writeScene(
@@ -279,7 +297,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
         throw new SimulatorHostProviderOperationError('invalid-request');
       }
       const current = await this.readStoredScene(signal, true);
-      const currentRevision = current?.descriptor.storageRevision
+      const currentRevision = current?.head.descriptor.storageRevision
         ?? EMPTY_STORAGE_REVISION;
       if (currentRevision !== request.expectedStorageRevision) {
         throw new SimulatorHostProviderOperationError('conflict');
@@ -288,35 +306,19 @@ export class SimulatorProjectArtifactCallbackAuthority {
         this.createSceneCommitId(),
         'scene commitId',
       );
-      const nextStorageRevision = await digestJson({
-        schemaVersion: 1,
-        kind: 'aily-blockly-simulator-project-scene-revision',
-        commitId,
-        projectIdentity: this.projectIdentity,
-        sceneId: this.sceneId,
-        document: input.document,
-        artifactAlignment: input.artifactAlignment,
-      });
-      if (nextStorageRevision === currentRevision) {
+      const stored = await createProjectSceneHeadV1({ commitId, descriptor: input });
+      const descriptor = stored.descriptor;
+      if (descriptor.storageRevision === currentRevision) {
         throw new SimulatorHostProviderOperationError('conflict');
       }
-      const descriptor = await validateProjectSceneNetworkDescriptorV2({
-        ...structuredClone(input),
-        storageRevision: nextStorageRevision,
-        runtimeAttachment: null,
-      });
-      const stored: StoredSceneHeadV1 = {
-        schemaVersion: 1,
-        kind: 'aily-blockly-simulator-project-scene-head',
-        commitId,
-        descriptor,
-      };
-      const bytes = new TextEncoder().encode(`${JSON.stringify(stored, null, 2)}\n`);
+      const bytes = encodeProjectSceneHeadV1(stored);
       if (bytes.byteLength > MAX_SCENE_BYTES) {
         throw new SimulatorHostProviderOperationError('invalid-request');
       }
-      await this.files.writeFileAtomic(this.sceneFilePath, bytes, signal);
+      const replaced = await this.files.replaceFileAtomic(this.projectRoot,
+        '.aily/simulator/scene-network-v2.json', current?.bytes ?? null, bytes, signal);
       this.requireActive(signal);
+      if (!replaced) throw new SimulatorHostProviderOperationError('conflict');
       return structuredClone(descriptor);
     });
   }
@@ -406,7 +408,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async readStoredScene(
     signal: AbortSignal,
     allowMissing: boolean,
-  ): Promise<StoredSceneHeadV1 | null> {
+  ): Promise<StoredScene | null> {
     const bytes = await this.readRegularFile(
       this.sceneFilePath,
       MAX_SCENE_BYTES,
@@ -420,49 +422,15 @@ export class SimulatorProjectArtifactCallbackAuthority {
     } catch {
       throw new SimulatorHostProviderOperationError('operation-failed');
     }
-    const record = asRecord(value);
-    if (
-      !record
-      || exactKeys(record) !== exactKeys({
-        schemaVersion: 1,
-        kind: '',
-        commitId: '',
-        descriptor: null,
-      })
-      || record['schemaVersion'] !== 1
-      || record['kind'] !== 'aily-blockly-simulator-project-scene-head'
-    ) {
+    try {
+      const head = await validateProjectSceneHeadV1(value, {
+        projectIdentity: this.projectIdentity,
+        sceneId: this.sceneId,
+      });
+      return { head, bytes };
+    } catch {
       throw new SimulatorHostProviderOperationError('operation-failed');
     }
-    const commitId = requirePortableIdentifier(record['commitId'], 'scene commitId');
-    const descriptor = await validateProjectSceneNetworkDescriptorV2(
-      record['descriptor'],
-    );
-    if (
-      descriptor.projectIdentity !== this.projectIdentity
-      || descriptor.sceneId !== this.sceneId
-      || descriptor.runtimeAttachment !== null
-    ) {
-      throw new SimulatorHostProviderOperationError('operation-failed');
-    }
-    const expectedRevision = await digestJson({
-      schemaVersion: 1,
-      kind: 'aily-blockly-simulator-project-scene-revision',
-      commitId,
-      projectIdentity: this.projectIdentity,
-      sceneId: this.sceneId,
-      document: descriptor.document,
-      artifactAlignment: descriptor.artifactAlignment,
-    });
-    if (descriptor.storageRevision !== expectedRevision) {
-      throw new SimulatorHostProviderOperationError('operation-failed');
-    }
-    return {
-      schemaVersion: 1,
-      kind: 'aily-blockly-simulator-project-scene-head',
-      commitId,
-      descriptor,
-    };
   }
 
   private async readManifest(
@@ -653,7 +621,7 @@ function requireFilePort(
     || typeof value.resolve !== 'function'
     || typeof value.relative !== 'function'
     || typeof value.readFile !== 'function'
-    || typeof value.writeFileAtomic !== 'function'
+    || typeof value.replaceFileAtomic !== 'function'
     || typeof value.lstat !== 'function'
     || typeof value.realpath !== 'function'
   ) {
@@ -738,16 +706,6 @@ function isInside(
     );
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function exactKeys(value: Record<string, unknown>): string {
-  return Object.keys(value).sort().join('\0');
-}
-
 function isMissingFileError(error: unknown): boolean {
   // Errors crossing Electron's preload/renderer boundary are not guaranteed to
   // preserve the renderer realm's Error prototype. Treat the stable Node error
@@ -773,32 +731,4 @@ function logProjectArtifactReadFailure(stage: string, error: unknown): void {
       : null,
     rendererRealmError: error instanceof Error,
   }));
-}
-
-async function digestJson(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(stableJson(value));
-  return digestBytes(bytes);
-}
-
-async function digestBytes(bytes: Uint8Array): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) throw new TypeError('Value is not serializable.');
-    return serialized;
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableJson(entry)).join(',')}]`;
-  }
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
-    .join(',')}}`;
 }

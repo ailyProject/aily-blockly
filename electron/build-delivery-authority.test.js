@@ -2,6 +2,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const { createBuildDeliveryAuthority } = require('./build-delivery-authority');
 
 const { fixture } = require('./test/fixtures/build-delivery-fixture.cjs');
@@ -26,18 +30,18 @@ test('foreign owners, wrong handles and unsupervised launch shapes cannot mint a
     await assert.rejects(f.api.query(f.sender, { projectPath: f.root, handle: 'copied-from-another-host' }), /No matching/);
 });
 
-for (const binding of [undefined, 'f'.repeat(64)]) test(`missing/wrong private context process binding cannot mint authority: ${binding === undefined ? 'missing' : 'wrong'}`, async t => {
+for (const binding of [undefined, 'f'.repeat(64)]) test(`missing/wrong input record process binding cannot mint authority: ${binding === undefined ? 'missing' : 'wrong'}`, async t => {
     const f = fixture(t), handle = await f.api.begin(f.sender, f.options);
-    f.publish(handle, { inputContextSha256: binding }); handle.onExit(0, null, false);
+    f.publish(handle, { inputRecordSha256: binding }); handle.onExit(0, null, false);
     assert.equal((await f.query()).status, 'failed');
 });
 
-test('private context replacement invalidates an observed build even if the portable artifact stays identical', async t => {
+test('input record byte replacement invalidates an observed build even if its semantic digest and Artifact stay identical', async t => {
     const f = fixture(t), handle = await f.api.begin(f.sender, f.options);
     f.publish(handle); handle.onExit(0, null, false);
-    const filename = require('node:path').join(f.root, '.build/aily-build-input-context.json');
+    const filename = require('node:path').join(f.root, '.build/aily-build-inputs.json');
     require('node:fs').appendFileSync(filename, ' ');
-    await assert.rejects(f.query(), /Input context changed/);
+    await assert.rejects(f.query(), /Input record changed/);
 });
 
 for (const outcome of ['failed', 'cancelled', 'signal', 'no-message', 'wrong-request', 'wrong-build', 'duplicate']) {
@@ -97,3 +101,31 @@ test('a renderer reload during registration abandons its pending entry', async t
     await assert.rejects(f.api.begin(f.sender, f.options), /generation/);
     await assert.rejects(f.query(), /No matching/);
 });
+
+for (const [coder, outcome] of [[false, 'normal'], [true, 'normal'], [false, 'failed'], [false, 'no-message']]) {
+    test(`real fixture child IPC delivery: ${coder ? 'Coder' : 'Blockly'} ${outcome}`, { timeout: 15000 }, async t => {
+        const f = fixture(t, coder);
+        f.config.fixtureOutcome = outcome;
+        fs.writeFileSync(f.request, JSON.stringify(f.config));
+        const childRoot = path.resolve(__dirname, 'test/fixtures/build-delivery-child');
+        const api = createBuildDeliveryAuthority({ ...f.dependencies, childRoot });
+        const options = { ...f.options, args: [path.join(childRoot, 'scripts/compile.js'), f.request] };
+        const handle = await api.begin(f.sender, options);
+        const child = spawn(options.command, options.args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+        let stderr = '', messages = 0;
+        child.stderr.on('data', bytes => { stderr += bytes.toString(); });
+        child.on('message', message => { messages++; handle.onMessage(message); });
+        const [code, signal] = await once(child, 'close');
+        handle.onExit(code, signal, false);
+        assert.equal(code, outcome === 'failed' ? 7 : 0, stderr);
+        assert.equal(signal, null);
+        assert.equal(messages, outcome === 'no-message' ? 0 : 1);
+        const result = await api.query(f.sender, { projectPath: f.root, handle: handle.handle });
+        assert.equal(result.status, outcome === 'normal' ? 'source-current' : 'failed', stderr);
+        if (outcome === 'normal') {
+            assert.equal(result.currentProjectAcceptance, false);
+            assert.equal(result.authority, 'host-observed-build');
+        }
+        assert.equal(fs.existsSync(path.join(f.root, '.build/aily-workspace.lock')), false);
+    });
+}

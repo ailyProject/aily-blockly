@@ -7,7 +7,7 @@ import {
 } from '../../utils/blockly-performance';
 import { Subject, combineLatest } from 'rxjs';
 
-import { debounceTime, takeUntil, map, distinctUntilChanged, pairwise, startWith } from 'rxjs/operators';
+import { debounceTime, takeUntil, map, distinctUntilChanged, pairwise, startWith, skip } from 'rxjs/operators';
 import { TranslateService } from '@ngx-translate/core';
 import { NoticeService } from '@core/app-shell/public-api';
 import { AuthService } from '@core/auth/public-api';
@@ -54,6 +54,7 @@ import './plugins/stable-comment-icon';
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
 import {
   BlocklyGeneratorRuntimeService,
+  getActiveProjectGeneratorRevision,
 } from '../../services/blockly-generator-runtime.service';
 import { BitmapUploadResponse, BitmapUploadService } from '../../services/bitmap-upload.service';
 import { GlobalServiceManager } from '../../services/bitmap-upload-bridge';
@@ -108,6 +109,7 @@ const PROJECT_BREAKPOINT_CONTEXT_MENU_IDS = [
   'ailyProjectBreakpointToggle',
   'ailyProjectBreakpointRemove',
 ] as const;
+const HOST_CONTEXT_MENU_IDS = ['blockExplainWithAi', ...PROJECT_BREAKPOINT_CONTEXT_MENU_IDS] as const;
 const PROJECT_DEBUG_CONFIGURATION_MUTATION_EVENT =
   'aily_project_debug_configuration_mutation';
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
@@ -276,6 +278,7 @@ class ExternalToolboxDeleteArea extends Blockly.DeleteArea {
 export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private releaseProjectBlockPaster?: () => void;
   private releaseDragRenderBatch?: () => void;
+  private readonly hostContextMenuItems = new Map<string, Blockly.ContextMenuRegistry.RegistryItem>();
   @ViewChild(BlocklyWorkspacePagesComponent, { static: true }) workspacePaneComponent!: BlocklyWorkspacePagesComponent;
   @ViewChild('workspaceSearchInput') private workspaceSearchInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('layoutElement', { static: true }) private layoutElementRef!: ElementRef<HTMLDivElement>;
@@ -562,7 +565,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     this.closeWorkspaceBlockSearch();
     this.removeFlyoutPinControl();
     this.unregisterExternalToolboxDeleteArea();
-    this.unregisterProjectBreakpointContextMenus();
+    this.unregisterHostContextMenus(HOST_CONTEXT_MENU_IDS);
     this.clearProjectBreakpointMarkers();
     this.clearDebugExecutionMarker();
     this.cancelToolboxResizeAnimationFrame();
@@ -1531,12 +1534,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
    * @param lang 语言代码，如 'zh_cn', 'en' 等
    */
   private registerBlockExplainContextMenu(): void {
-    const id = 'blockExplainWithAi';
-    if (Blockly.ContextMenuRegistry.registry.getItem(id)) {
-      Blockly.ContextMenuRegistry.registry.unregister(id);
-    }
-
-    Blockly.ContextMenuRegistry.registry.register({
+    this.registerHostContextMenu({
       displayText: () => Blockly.Msg['EXPLAIN_BLOCK'] || 'Explain with AI',
       preconditionFn: (scope) => {
         const block = scope.block;
@@ -1550,7 +1548,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         return true;
       },
       scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK,
-      id,
+      id: HOST_CONTEXT_MENU_IDS[0],
       weight: -5,
     });
   }
@@ -1558,7 +1556,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private registerProjectBreakpointContextMenus(): void {
     this.unregisterProjectBreakpointContextMenus();
 
-    Blockly.ContextMenuRegistry.registry.register({
+    this.registerHostContextMenu({
       displayText: (scope) => {
         const blockId = scope.block?.id || '';
         const label = this.getProjectBreakpoint(blockId)
@@ -1605,7 +1603,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       weight: -8,
     });
 
-    Blockly.ContextMenuRegistry.registry.register({
+    this.registerHostContextMenu({
       displayText: (scope) => {
         const breakpoint = this.getProjectBreakpoint(scope.block?.id || '');
         return breakpoint?.enabled
@@ -1632,7 +1630,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       weight: -7,
     });
 
-    Blockly.ContextMenuRegistry.registry.register({
+    this.registerHostContextMenu({
       displayText: () => this.projectBreakpointText(
         '删除仿真断点',
         'Remove simulation breakpoint',
@@ -1653,10 +1651,32 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private unregisterProjectBreakpointContextMenus(): void {
-    for (const id of PROJECT_BREAKPOINT_CONTEXT_MENU_IDS) {
-      if (Blockly.ContextMenuRegistry.registry.getItem(id)) {
-        Blockly.ContextMenuRegistry.registry.unregister(id);
-      }
+    this.unregisterHostContextMenus(PROJECT_BREAKPOINT_CONTEXT_MENU_IDS);
+  }
+
+  private registerHostContextMenu(item: Blockly.ContextMenuRegistry.RegistryItem): void {
+    const registry = Blockly.ContextMenuRegistry.registry;
+    const previous = registry.getItem(item.id);
+    if (previous) {
+      registry.unregister(item.id);
+      this.generatorRuntime.syncHostContextMenuSnapshot(previous, false);
+    }
+    this.hostContextMenuItems.delete(item.id);
+    registry.register(item);
+    this.hostContextMenuItems.set(item.id, item);
+    this.generatorRuntime.syncHostContextMenuSnapshot(item, true);
+  }
+
+  private unregisterHostContextMenus(ids: readonly string[]): void {
+    const registry = Blockly.ContextMenuRegistry.registry;
+    for (const id of ids) {
+      const owned = this.hostContextMenuItems.get(id);
+      if (!owned) continue;
+      if (registry.getItem(id) === owned) registry.unregister(id);
+      // A foreign replacement is not ours to delete or adopt. Retire only our
+      // exact checkpoint object, including when the live item is already absent.
+      this.generatorRuntime.syncHostContextMenuSnapshot(owned, false);
+      this.hostContextMenuItems.delete(id);
     }
   }
 
@@ -1682,6 +1702,32 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           this.projectDebugConfigurationService.refresh(projectPath);
         this.queueProjectBreakpointMarkerSync();
         this.queueDebugExecutionMarkerSync();
+      });
+
+    // The shared prepared-code publisher also serves startup and committed
+    // saves. Consume only fresh publications, never the BehaviorSubject cache.
+    this.blocklyService.codeSubject
+      .pipe(skip(1), takeUntil(this.destroy$))
+      .subscribe((code) => {
+        const projectPath = this.projectService.currentProjectPath;
+        const workspace = this.workspace, generator = this.generator;
+        if (!projectPath || !workspace || !generator) return;
+        const contentRevision = this.blocklyService.getWorkspaceContentRevision();
+        const projectRevision = this.blocklyService.getProjectPersistenceRevision();
+        const runtimeRevision = getActiveProjectGeneratorRevision();
+        const session = projectDataRuntime.getSessionToken();
+        const isCurrent = () => {
+          try {
+            return !this.destroy$.isStopped
+              && projectPath === this.projectService.currentProjectPath
+              && workspace === this.workspace && generator === this.generator
+              && contentRevision === this.blocklyService.getWorkspaceContentRevision()
+              && runtimeRevision === getActiveProjectGeneratorRevision()
+              && session === projectDataRuntime.getSessionToken()
+              && projectRevision === this.blocklyService.getProjectPersistenceRevision();
+          } catch { return false; }
+        };
+        void this.projectDebugConfigurationService.updateWorkspaceGeneratedCode(projectPath, code, { isCurrent });
       });
   }
 
@@ -2284,7 +2330,6 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           const code = generated.code;
           // Show the snapshot before disk publication. A live compile lease must not blank the viewer.
           this.blocklyService.publishPreparedCodeView(code, generated.blockCodeMapText);
-          void this.projectDebugConfigurationService.updateWorkspaceGeneratedCode(projectPath, code);
           try {
             await writePreparedArduinoGeneratedArtifacts(projectPath, generated.artifacts);
             this.clearGeneratedArtifactRetry();

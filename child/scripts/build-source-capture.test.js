@@ -9,6 +9,8 @@ const { captureBuildSource, confirmBuildSource } = require('./build-source-captu
 const { captureProjectSources, publishBuildDelivery } = require('./compile-delivery');
 const { prepareCompileSource } = require('./compile-source');
 const { createHash } = require('node:crypto');
+const { createRequire } = require('node:module');
+const vm = require('node:vm');
 const hash = value => createHash('sha256').update(value).digest('hex');
 
 function fixture(t, coder = false) {
@@ -24,7 +26,10 @@ function fixture(t, coder = false) {
     const header = 'src/variables_test-12345678.h';
     put(coder ? 'sketch/src/main.cpp' : header, coder ? 'void setup() {}' : 'int data = 1;');
     const config = { currentProjectPath: root, boardModule: '@aily-project/board-test', code: 'void setup() {}' };
-    const workspace = coder ? undefined : { documentText: '{"blocks":[]}', revision: 4, runtimeRevision: 9, pageId: 'main' };
+    const documentText = '{"blocks":[]}';
+    if (!coder) put('project.abi', documentText);
+    const workspace = coder ? undefined : { documentText, revision: 4, runtimeRevision: 9, pageId: 'main',
+        savedProjectFiles: [{ path: 'project.abi', sizeBytes: Buffer.byteLength(documentText), sha256: hash(documentText) }] };
     config.sourceCapture = captureBuildSource(config, workspace);
     return { root, config, put, workspace, header };
 }
@@ -82,11 +87,17 @@ test('capture refuses linked generated files and foreign workspace claims', t =>
 
 test('delivery carries the exact captured origin, never current-project authority', async t => {
     const f = fixture(t), snapshot = captureProjectSources(f.config), entry = await prepareCompileSource(f.config);
+    const body = { schemaVersion: 1, kind: 'aily-build-input-record', scope: 'build-graph-facts', configurationSha256: 'c'.repeat(64),
+        steps: ['sketch', 'libraries', 'core', 'linking'].map(name => ({ kind: 'ninja-plan', name, sha256: 'd'.repeat(64) })) };
+    const record = { ...body, digest: hash(JSON.stringify(body)) }, bytes = JSON.stringify(record);
+    f.put('.build/aily-build-inputs.json', bytes);
     f.put('.build/aily-artifact-manifest.json', JSON.stringify({ schemaVersion: 1, kind: 'aily-build-artifact', artifactId: 'a'.repeat(64),
         target: { fqbn: 'test:core:board' }, build: { source: { sha256: hash(f.config.code), sizeBytes: Buffer.byteLength(f.config.code) },
-            inputs: { scope: 'prepared-dependency-trees', digest: 'b'.repeat(64) } } }));
+            inputs: { schemaVersion: 1, kind: 'aily-build-input-reference', scope: 'build-graph-facts', path: 'aily-build-inputs.json', digest: record.digest } },
+        files: [{ path: 'aily-build-inputs.json', role: 'build-inputs', sizeBytes: Buffer.byteLength(bytes), sha256: hash(bytes) }] }));
     const receipt = publishBuildDelivery(f.config, snapshot, entry, 'test:core:board');
     assert.deepEqual(receipt.sourceCapture, f.config.sourceCapture); assert.equal(receipt.currentProjectAcceptance, false);
+    assert.equal(receipt.buildInputsDigest, record.digest);
     f.put(f.header, 'changed before publication');
     assert.throws(() => publishBuildDelivery(f.config, snapshot, entry, 'test:core:board'), /CHANGED|STALE/);
     assert.equal(fs.existsSync(path.join(f.root, '.build/aily-build-delivery.json')), false);
@@ -109,4 +120,64 @@ test('explicit board root retargeting invalidates capture even with identical fi
     const other = path.join(f.root, 'board-other'); fs.cpSync(original, other, { recursive: true });
     fs.unlinkSync(board); fs.symlinkSync(other, board, 'junction');
     assert.throws(() => confirmBuildSource(f.config), /BUILD_SOURCE_STALE/);
+});
+
+test('saved workspace facts bind exact ABI bytes and optional ABS/map pair, without fresh-source authority', t => {
+    const f = fixture(t);
+    assert.deepEqual(f.config.sourceCapture.workspace.savedProjectFiles, f.workspace.savedProjectFiles);
+    assert.equal(Object.hasOwn(f.config.sourceCapture, 'currentProjectAcceptance'), false);
+    for (const [relative, contents] of [['project.abs', 'setup:\n'], ['project.abs.map.json', '{"map":[]}\n']]) {
+        f.put(relative, contents);
+        f.workspace.savedProjectFiles.push({ path: relative, sizeBytes: Buffer.byteLength(contents), sha256: hash(contents) });
+    }
+    f.config.sourceCapture = captureBuildSource(f.config, f.workspace);
+    assert.deepEqual(confirmBuildSource(f.config).workspace.savedProjectFiles, f.workspace.savedProjectFiles);
+    f.put('project.abs.map.json', '{"map":[1]}\n');
+    assert.throws(() => confirmBuildSource(f.config), /Saved workspace files differ/);
+});
+
+for (const change of ['abi-change', 'abi-remove', 'abs-add', 'map-add', 'pair-add', 'digest', 'path', 'duplicate', 'quota']) {
+    test(`saved workspace boundary rejects ${change}`, t => {
+        const f = fixture(t);
+        if (change === 'abi-change') f.put('project.abi', '{"blocks":[1]}');
+        if (change === 'abi-remove') fs.unlinkSync(path.join(f.root, 'project.abi'));
+        if (change === 'abs-add' || change === 'pair-add') f.put('project.abs', 'setup:');
+        if (change === 'map-add' || change === 'pair-add') f.put('project.abs.map.json', '{}');
+        if (change === 'digest') f.config.sourceCapture.workspace.savedProjectFiles[0].sha256 = 'f'.repeat(64);
+        if (change === 'path') f.config.sourceCapture.workspace.savedProjectFiles[0].path = '../project.abi';
+        if (change === 'duplicate') f.config.sourceCapture.workspace.savedProjectFiles.push(f.config.sourceCapture.workspace.savedProjectFiles[0]);
+        if (change === 'quota') f.config.sourceCapture.workspace.savedProjectFiles[0].sizeBytes = 128 * 1024 * 1024 + 1;
+        assert.throws(() => confirmBuildSource(f.config), /BUILD_SOURCE_STALE/);
+    });
+}
+
+test('only Scene-bound delivery requires saved facts; ordinary non-saved source captures stay ordinary', t => {
+    const f = fixture(t), workspace = { ...f.workspace };
+    delete workspace.savedProjectFiles;
+    f.config.recordProjectDelivery = true;
+    assert.equal(Object.hasOwn(captureBuildSource(f.config, workspace).workspace, 'savedProjectFiles'), false);
+    f.config.graphSemanticRevision = 'e'.repeat(64);
+    assert.throws(() => captureBuildSource(f.config, workspace), /Scene-bound delivery requires/);
+    f.config.recordProjectDelivery = false;
+    assert.equal(Object.hasOwn(captureBuildSource(f.config, workspace).workspace, 'savedProjectFiles'), false);
+});
+
+test('capture rereads saved files across configuration bookends and refuses linked ABI files', t => {
+    const f = fixture(t), filename = path.join(__dirname, 'build-source-capture.js'), localRequire = createRequire(filename);
+    const boardPackage = path.join(f.root, 'node_modules/@aily-project/board-test/package.json');
+    let changed = false;
+    const mockedFs = { ...fs, readFileSync(file, ...args) {
+        const contents = fs.readFileSync(file, ...args);
+        if (file === boardPackage && !changed) { changed = true; f.put('project.abi', '{"blocks":[1]}'); }
+        return contents;
+    } };
+    const moduleRecord = { exports: {} };
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module: moduleRecord,
+        require: name => name === 'node:fs' ? mockedFs : localRequire(name), Buffer, process }, { filename });
+    assert.throws(() => moduleRecord.exports.captureBuildSource(f.config, f.workspace), /Saved workspace files differ/);
+    assert.equal(changed, true);
+    fs.unlinkSync(path.join(f.root, 'project.abi'));
+    fs.mkdirSync(path.join(f.root, 'linked-document'));
+    fs.symlinkSync(path.join(f.root, 'linked-document'), path.join(f.root, 'project.abi'), 'junction');
+    assert.throws(() => confirmBuildSource(f.config), /implicit links/);
 });

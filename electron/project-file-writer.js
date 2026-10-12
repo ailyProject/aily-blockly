@@ -4,7 +4,8 @@ const { randomUUID } = require('node:crypto');
 const { MAX_PROJECT_FILE_BYTES: MAX_BYTES, projectFileHash: hash, projectFileFault: fault,
   projectFileGuard, createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
-const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json']);
+const SCENE_FILE = '.aily/simulator/scene-network-v2.json';
+const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json', SCENE_FILE]);
 const PROJECT_FILE_PUBLICATION_VERSION = 2;
 const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
 
@@ -49,7 +50,8 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
       throw fault('PROJECT_FILE_INVALID', 'Expected an absolute project path, a supported mirror name and an exact byte hash.');
     }
     bytes = Buffer.from(content, 'utf8');
-    if (bytes.length > MAX_BYTES) throw fault('PROJECT_FILE_TOO_LARGE', 'Project mirror exceeds the 128 MiB publication limit.');
+    const maxBytes = fileName === SCENE_FILE ? 32 * 1024 * 1024 : MAX_BYTES;
+    if (bytes.length > maxBytes) throw fault('PROJECT_FILE_TOO_LARGE', 'Project file exceeds its publication limit.');
     guard();
     const root = await files.promises.realpath(projectPath);
     guard();
@@ -57,15 +59,30 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
     const { checkRoot, checkDirectory, readRegular } = access;
     const target = path.join(root, fileName);
     const lockDirectory = path.join(root, '.aily');
-    assertRoot = checkRoot;
-    read = () => readRegular(target);
+    const directories = fileName === SCENE_FILE ? [lockDirectory, path.join(lockDirectory, 'simulator')] : [];
+    const checkParents = () => { checkRoot(); for (const directory of directories) checkDirectory(directory); };
+    assertRoot = checkParents;
+    read = () => {
+      try { checkParents(); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      try { if (files.lstatSync(target).size > maxBytes) throw fault('PROJECT_FILE_TOO_LARGE', 'Project file exceeds its publication limit.'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const value = readRegular(target);
+      if (value?.length > maxBytes) throw fault('PROJECT_FILE_TOO_LARGE', 'Project file exceeds its publication limit.');
+      return value;
+    };
     checkRoot();
     // Refuse known conflicts before creating any temporary file or lock directory.
     const original = read();
     if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
     if (hash(original) !== expectedHash) return { status: 'CONFLICT', error: 'Project file changed; external content was retained.' };
+    for (const directory of directories) {
+      guard(); checkRoot();
+      try { files.mkdirSync(directory); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+      checkDirectory(directory);
+    }
     if (!original?.equals(bytes)) {
-      temporary = path.join(root, `.${fileName}.${randomUUID()}.tmp`);
+      temporary = path.join(path.dirname(target), `.${path.basename(fileName)}.${randomUUID()}.tmp`);
       const handle = await files.promises.open(temporary, 'wx', 0o600);
       temporaryOwned = true;
       try {
@@ -93,6 +110,7 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
       // No awaits from the guard through the final byte check and rename.
       guard();
       lock.assertOwned();
+      checkParents();
       assertNoPendingAbsGeneration(access);
       if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
       const previous = read();

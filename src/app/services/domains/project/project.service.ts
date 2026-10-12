@@ -174,9 +174,11 @@ export class ProjectService {
       stateSubject: new BehaviorSubject('loaded'),
       boardChangeSubject: new Subject<void>(),
       boardConfigUpdatedSubject: new Subject<any>(),
+      projectOpeningChangedSubject: new Subject<void>(),
       projectOpenTask: null,
     });
     context.currentProjectPath$ = context.currentProjectPathSubject.asObservable();
+    context.projectOpeningChanged$ = context.projectOpeningChangedSubject.asObservable();
     context.projectOpen = this.projectOpen.bind(this);
     context.beginCoderOperation = this.beginCoderOperation.bind(this);
     context.syncCurrentBoardConfig = async (session?: ProjectDependencySession) => {
@@ -534,6 +536,8 @@ export class ProjectService {
 
   private projectActivationSubject = new Subject<ProjectActivationEvent>();
   projectActivation$ = this.projectActivationSubject.asObservable();
+  private projectOpeningChangedSubject = new Subject<void>();
+  projectOpeningChanged$ = this.projectOpeningChangedSubject.asObservable();
   private projectOpenTask: { path: string; paths: string[]; promise: Promise<boolean>; lease: ProjectLifecycleLease } | null = null;
   private readonly projectLifecycle = new ProjectLifecycleGate();
   private dependencyLifecycleState?: ProjectDependencyLifecycle;
@@ -1286,6 +1290,7 @@ export class ProjectService {
     const promise = this.projectOpenInternal(projectPath, options, current => { session = current; });
     const task = { path: projectPath, paths, promise, lease };
     this.projectOpenTask = task;
+    this.projectOpeningChangedSubject.next();
     try {
       const opened = await promise;
       if (!opened) {
@@ -1298,8 +1303,9 @@ export class ProjectService {
       throw error;
     } finally {
       task.lease.release();
-      if (this.projectOpenTask?.promise === promise) {
+      if (this.projectOpenTask === task) {
         this.projectOpenTask = null;
+        this.projectOpeningChangedSubject.next();
       }
     }
   }
@@ -2196,34 +2202,14 @@ export class ProjectService {
   }
 
   /**
-   * 同步 package.json 与 temp 文件夹：
-   * - 若 temp/package.json 存在，则用它覆盖主项目的 package.json
-   * - 若不存在，则将主项目的 package.json 复制到 temp 文件夹
-   * node_modules 由 npm 维护；这里不能按顶层声明清理，否则会误删提升到根目录的间接依赖。
+   * 主项目 package.json 是配置的唯一事实源；普通打开只刷新 temp 镜像。
+   * 旧镜像不能撤销 npm 安装或显式事务恢复，node_modules 仍由 npm 维护。
    */
   async syncPackageJsonWithTemp(projectPath: string): Promise<void> {
-    if (this.isAilyCodeProject(projectPath)) {
-      return;
-    }
-    const mainPackagePath = window['path'].join(projectPath, 'package.json');
-    const tempDir = window['path'].join(projectPath, '.temp');
-    const tempPackagePath = window['path'].join(tempDir, 'package.json');
-
-    if (!window['fs'].existsSync(mainPackagePath)) {
-      return;
-    }
-
-    if (window['fs'].existsSync(tempPackagePath)) {
-      // temp 下有 package.json，覆盖主项目
-      const tempContent = window['fs'].readFileSync(tempPackagePath, 'utf8');
-      window['fs'].writeFileSync(mainPackagePath, tempContent);
-    } else {
-      // temp 下无 package.json，从主项目复制到 temp
-      await this.copyPackageJsonToTemp(projectPath);
-    }
+    await this.copyPackageJsonToTemp(projectPath);
   }
 
-  /** 项目保存时同步 Blockly 的 package.json 快照；Coder 不创建 .temp。 */
+  /** 打开或保存时刷新 Blockly 的 package.json 镜像；Coder 不创建 .temp。 */
   async copyPackageJsonToTemp(projectPath: string): Promise<boolean> {
     if (this.isAilyCodeProject(projectPath)) {
       return true;

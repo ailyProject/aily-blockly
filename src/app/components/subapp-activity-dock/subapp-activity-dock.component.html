@@ -59,6 +59,7 @@
               } @else {
               <app-child-tool-surface-host
                 [toolId]="activity.toolId"
+                [hostWorkspace]="hostWorkspace"
                 [surface]="activity.presentation?.surface || 'compact'"
                 placement="chat-dock"
                 [sessionId]="activity.sessionId"

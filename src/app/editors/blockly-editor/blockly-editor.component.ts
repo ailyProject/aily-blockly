@@ -281,7 +281,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     this.stopPackageJsonDependencyWatch();
     this.clearProjectLoadedCodeRefreshTimer();
-    // 处理 temp 下的 package.json：有则覆盖主项目，无则从主项目复制到 temp
+    // 根清单是依赖事实源；.temp 仅更新镜像，不能恢复旧依赖覆盖当前项目。
     await this.projectService.syncPackageJsonWithTemp(projectPath);
     assertCurrent();
     // 加载项目package.json

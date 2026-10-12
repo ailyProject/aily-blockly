@@ -144,4 +144,52 @@ describe('board configuration menu SDK readiness', () => {
     const diagnostics = [...warningLog.calls.allArgs(), ...errorLog.calls.allArgs()];
     expect(diagnostics.some(args => args.includes(readError))).toBeTrue();
   });
+
+  it('offers same-MCU SDK variants without changing the saved selection or crossing FQBNs', async () => {
+    const { service, manifest } = fixture();
+    service.currentBoardConfig = { type: 'STMicroelectronics:stm32:GenF4' };
+    service.currentBoardMenuConfig = [{
+      name: 'STM32.BOARD', key: 'pnum', children: [],
+      extra: { optionNameIncludes: 'F407VG', selectFirstByDefault: true, syncPinConfig: true },
+    }];
+    service.getBoardDependencies.and.resolveTo({ '@aily-project/sdk-stm32': '3.0.0' });
+    window['fs'].readFileSync.and.returnValue([
+      'GenF4.name=Generic STM32F4 series',
+      'GenF4.menu.pnum.BLACK_F407VG=Black F407VG',
+      'GenF4.menu.pnum.BLACK_F407VG.build.variant=STM32F4xx/F407V(E-G)T_F417V(E-G)T',
+      'GenF4.menu.pnum.BLACK_F407VG.build.variant_h=variant_BLACK_F407VX.h',
+      'GenF4.menu.pnum.DIYMORE_F407VGT=DIYMORE STM32F407VGT',
+      'GenF4.menu.pnum.DIYMORE_F407VGT.build.variant=STM32F4xx/F407V(E-G)T_F417V(E-G)T',
+      'GenF4.menu.pnum.DIYMORE_F407VGT.build.variant_h=variant_{build.board}.h',
+      'GenF4.menu.pnum.GENERIC_F407VGTX=Generic F407VGTx',
+      'GenF4.menu.pnum.GENERIC_F407VGTX.build.variant=STM32F4xx/F407V(E-G)T_F417V(E-G)T',
+      'GenF4.menu.pnum.GENERIC_F401RETX=Generic F401RETx',
+      'Disco.name=Discovery',
+      'Disco.menu.pnum.DISCO_F407VG=STM32F4DISCOVERY',
+    ].join('\n'));
+    existingPaths.add('/app/sdk/stm32_3.0.0');
+    existingPaths.add('/app/sdk/stm32_3.0.0/boards.txt');
+
+    const variantsAndHeaders = [
+      ['BLACK_F407VG', 'variant_BLACK_F407VX.h'],
+      ['DIYMORE_F407VGT', 'variant_{build.board}.h'],
+      ['GENERIC_F407VGTX', null],
+    ];
+    for (const [selected, variantHeader] of variantsAndHeaders) {
+      manifest.projectConfig = { pnum: selected };
+      const menu = await service.getBoardConfigMenu();
+      const variants = menu.find((item: any) => item.key === 'pnum').children;
+      expect(variants.map((child: any) => child.data)).toEqual(variantsAndHeaders.map(([value]) => value));
+      expect(variants.filter((child: any) => child.check).map((child: any) => child.data)).toEqual([selected]);
+      expect(service.currentBoardPinConfig).toEqual({
+        board: selected, variant: 'STM32F4xx/F407V(E-G)T_F417V(E-G)T',
+        variant_h: variantHeader,
+      });
+      expect(manifest.projectConfig).toEqual({ pnum: selected });
+    }
+    expect(window['fs'].readFileSync).toHaveBeenCalledWith('/app/sdk/stm32_3.0.0/boards.txt', 'utf8');
+    expect(service.setPackageJson).not.toHaveBeenCalled();
+    expect(service.syncBoardPinConfig).not.toHaveBeenCalled();
+    expect(errorLog).not.toHaveBeenCalled();
+  });
 });

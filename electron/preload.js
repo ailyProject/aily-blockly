@@ -499,6 +499,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     list: () => ipcRenderer.invoke("child-tool-session-list"),
     stop: (toolId) => ipcRenderer.invoke("child-tool-session-stop", toolId),
     sendMessage: (payload) => ipcRenderer.invoke("child-tool-session-message-send", payload),
+    bindMessageController: (payload) => ipcRenderer.invoke("child-tool-session-controller-bind", payload),
+    unbindMessageController: (payload) => ipcRenderer.invoke("child-tool-session-controller-unbind", payload),
     onMessage: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("child-tool-session-message", listener);

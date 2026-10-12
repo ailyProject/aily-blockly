@@ -2563,6 +2563,65 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(disk.get('project.abi')).toBe(prepared.abiText); expect(disk.get('project.abs')).toContain('normally saved');
   });
 
+  for (const synchronize of [false, true]) for (const layout of ['viewport', 'roots']) {
+    it(`rebaselines a normal layout-only save despite later canvas layout; ${layout}, synchronize=${synchronize}`, async () => {
+      const { tools, exported } = await wireBase();
+      if (layout === 'viewport') editor.setViewState({ scale: 0.75, scrollX: -100.706017, scrollY: 19.5 });
+      else roots().moveBy(123, 45);
+      const prepared = await project.prepareSave(editor.captureProjectSnapshot().document, () => {});
+      disk.set('project.abi', prepared.abiText);
+      if (layout === 'viewport') editor.setViewState({ scale: 0.5, scrollX: 20, scrollY: 30 });
+      else roots().moveBy(60, 90);
+      const canvas = absJson(nativeState()), diagnosis = await inspect(tools);
+      expect(diagnosis.diagnostics.workspace).toEqual({ changedFromBaseline: false, savedChangedFromBaseline: true, matchesSaved: true });
+      expect(diagnosis.diagnostics.issues).toEqual(['ABS_BASELINE_STALE']);
+      const result: any = await tools.execute('abs_projection', { version: 2, requestId: crypto.randomUUID(),
+        expectedAbiHash: await hashAbsText(prepared.abiText), synchronize, reuseCurrent: true });
+      expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+      expect(result.publication.generation).not.toBe(exported.publication.generation);
+      expect(result.publication.abiSaved).toBeFalse(); expect(disk.get('project.abi')).toBe(prepared.abiText);
+      expect(result.receipt.output.binding.abiHash).toBe(await hashAbsText(prepared.abiText));
+      const committed = (await new AbsBaselineStore(port, scope).loadCommitted())!;
+      expect(committed.map.savedAbiHash).toBe(await hashAbsText(absJson(JSON.parse(prepared.abiText))));
+      expect(result.receipt.output.binding.mapHash).toBe(await hashAbsText(disk.get('project.abs.map.json')!));
+      expect(result.abs).toBe(exported.abs); expect(absJson(nativeState())).toBe(canvas);
+      expect((await inspect(tools)).diagnostics.issues).toEqual([]);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+      expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+    });
+  }
+
+  it('uses the same materialized saved-program comparison as read-only readiness', async () => {
+    const { tools } = await wireBase();
+    const saved = JSON.parse(disk.get('project.abi')!);
+    const ref = await projectDataRuntime.put({ codec: 'utf8-v1', storage: 'raw-v1', value: 'before' });
+    saved.pages[0].content.blocks.blocks[0].fields.TEXT = createAilyProjectDataValue(ref);
+    disk.set('project.abi', absJson(saved));
+    const abi = disk.get('project.abi')!, diagnosis = await inspect(tools);
+    expect(diagnosis.diagnostics.workspace.matchesSaved).toBeTrue();
+    expect(diagnosis.diagnostics.issues).toEqual(['ABS_BASELINE_STALE']);
+    const result = await service.exportGeneration();
+    expect(result.publication.status).toBe('COMMITTED'); expect(result.publication.abiSaved).toBeFalse();
+    expect(disk.get('project.abi')).toBe(abi); expect(result.evidence!.binding.abiHash).toBe(await hashAbsText(abi));
+  });
+
+  for (const changed of ['field', 'code']) it(`still rejects actual saved ${changed} divergence despite layout differences`, async () => {
+    declare({ type: 'abs_saved_guard_code', message0: '%1', args0: [{ type: 'field_input', name: 'CODE', text: 'run();' }] });
+    const code = editor.workspace.newBlock('abs_saved_guard_code');
+    const { tools } = await wireBase();
+    const saved = JSON.parse(disk.get('project.abi')!);
+    const block = saved.pages[0].content.blocks.blocks.find(item => item.id === (changed === 'field' ? 'protected' : code.id));
+    block.fields[changed === 'field' ? 'TEXT' : 'CODE'] = changed === 'field' ? 'external edit' : 'different();';
+    disk.set('project.abi', absJson(saved));
+    editor.setViewState({ scale: 0.5, scrollX: 20, scrollY: 30 }); roots().moveBy(60, 90);
+    const before = [...disk], canvas = absJson(nativeState()), diagnosis = await inspect(tools);
+    expect(diagnosis.diagnostics.workspace.matchesSaved).toBeFalse();
+    expect(diagnosis.diagnostics.issues).toContain('ABS_DUAL_EDIT_CONFLICT');
+    await expectAsync(service.exportGeneration()).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DUAL_EDIT_CONFLICT' }));
+    expect([...disk]).toEqual(before); expect(absJson(nativeState())).toBe(canvas);
+    expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+  });
+
   it('rejects deletion of any protected type and new/dynamic shapes before native load', async () => {
     const base = await baseline(); const original = absJson(nativeState());
     for (const source of ['# ABS Schema: 2\n', base.source + '\ntext(TEXT="new")']) {

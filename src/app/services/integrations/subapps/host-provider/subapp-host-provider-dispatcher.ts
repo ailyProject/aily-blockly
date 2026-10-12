@@ -130,6 +130,8 @@ export class SubappHostProviderDispatcher {
   private removeTransportListener: (() => void) | null = null;
   private generation = 0;
   private closed = false;
+  private negotiationRequestId: string | null = null;
+  private closePromise: Promise<void> | null = null;
 
   constructor(options: SubappHostProviderDispatcherOptions) {
     this.hostInstanceId = requirePortableIdentifier(
@@ -237,13 +239,34 @@ export class SubappHostProviderDispatcher {
     });
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.detachTransport();
-    await Promise.allSettled(
-      this.adapters.map((adapter) => Promise.resolve(adapter.close?.())),
-    );
+    const transport = this.transport;
+    const requestId = this.negotiationRequestId;
+    this.closePromise = Promise.resolve().then(async () => {
+      try {
+        if (transport && requestId) {
+          await transport.send({
+            type: SUBAPP_HOST_PROVIDER_MESSAGE_TYPES.catalog,
+            version: SUBAPP_HOST_PROVIDER_TRANSPORT_VERSION,
+            requestId,
+            catalog: null,
+          });
+        }
+      } catch {
+        // Withdrawal is best-effort; transport failure cannot retain resources.
+      } finally {
+        try {
+          this.detachTransport();
+        } finally {
+          await Promise.allSettled(
+            this.adapters.map((adapter) => Promise.resolve().then(() => adapter.close?.())),
+          );
+        }
+      }
+    });
+    return this.closePromise;
   }
 
   private async handleMessage(
@@ -295,6 +318,7 @@ export class SubappHostProviderDispatcher {
     } catch {
       return;
     }
+    this.negotiationRequestId = requestId;
     await this.sendForGeneration(generation, {
       type: SUBAPP_HOST_PROVIDER_MESSAGE_TYPES.catalog,
       version: SUBAPP_HOST_PROVIDER_TRANSPORT_VERSION,
@@ -800,9 +824,10 @@ export class SubappHostProviderDispatcher {
   }
 
   private detachTransport(): void {
-    this.removeTransportListener?.();
+    const removeListener = this.removeTransportListener;
     this.removeTransportListener = null;
     this.transport = null;
+    this.negotiationRequestId = null;
     this.generation += 1;
     for (const active of [...this.activeInvocations.values()]) {
       this.finishInvocation(active);
@@ -810,6 +835,7 @@ export class SubappHostProviderDispatcher {
     for (const active of [...this.activeArtifactTransfers.values()]) {
       this.finishArtifactTransfer(active);
     }
+    removeListener?.();
   }
 
   private requireNow(): number {

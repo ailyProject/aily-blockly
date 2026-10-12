@@ -1,4 +1,5 @@
 import { getChildToolConfigs, replaceChildToolConfigs, type ChildToolConfig } from '../../configs/tool.config';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { SubappActivityService } from '@integration/subapps/public-api';
 import { ChildToolHostComponent } from './child-tool-host.component';
 import { ChildToolSurfaceHostComponent } from '../child-tool-surface-host/child-tool-surface-host.component';
@@ -24,6 +25,112 @@ describe('Subapp Dock surface contract', () => {
     component.mainUiAutomation = { openChildApp: jasmine.createSpy('openChildApp').and.resolveTo({ ok: true }) };
     return component;
   }
+
+  function compactHost() {
+    const component = Object.create(ChildToolSurfaceHostComponent.prototype) as any;
+    component.toolId = 'ffs-manager-child';
+    component.surface = 'compact';
+    component.placement = 'chat-dock';
+    component.active = true;
+    component.contextId = 'compact-context';
+    component.contextVersion = 0;
+    component.projectService = {
+      currentProjectPath: '/published-before-provider-ready',
+      currentProjectPath$: new BehaviorSubject('/published-before-provider-ready'),
+    };
+    component.workspaceHostProviders = {
+      readReadyWorkspace: jasmine.createSpy('readReadyWorkspace').and.returnValue(null),
+      readyWorkspaceChanges$: new BehaviorSubject<void>(undefined),
+    };
+    component.translate = { currentLang: 'en', onLangChange: new Subject<void>() };
+    component.themeService = { theme: () => 'dark', themeChanged$: new Subject<void>() };
+    component.remoteApi = {
+      setHostContext: jasmine.createSpy('setHostContext').and.resolveTo({ ok: true }),
+      refreshHostSnapshot: jasmine.createSpy('refreshHostSnapshot').and.resolveTo({ ok: true }),
+    };
+    return component;
+  }
+
+  it('uses the Main registered-tool readiness projection instead of the already published project path', async () => {
+    const component = compactHost();
+    component.bindTool = jasmine.createSpy('bindTool');
+    component.ngOnInit();
+    expect(component.workspaceHostProviders.readReadyWorkspace).toHaveBeenCalledWith('ffs-manager-child');
+    expect(component.remoteApi.setHostContext.calls.mostRecent().args[0].workspace).toBeNull();
+
+    component.workspaceHostProviders.readReadyWorkspace.and.returnValue('/ready-blank');
+    component.workspaceHostProviders.readyWorkspaceChanges$.next();
+    expect(component.remoteApi.setHostContext.calls.mostRecent().args[0].workspace).toBe('/ready-blank');
+    await Promise.resolve();
+    expect(component.remoteApi.refreshHostSnapshot).toHaveBeenCalled();
+
+    const pushed = component.remoteApi.setHostContext;
+    const beforeDestroy = pushed.calls.count();
+    component.ngOnDestroy();
+    component.projectService.currentProjectPath$.next('/late-project');
+    component.workspaceHostProviders.readyWorkspaceChanges$.next();
+    expect(pushed.calls.count()).toBe(beforeDestroy);
+  });
+
+  it('preserves the service passthrough workspace for an unregistered compact tool', () => {
+    const component = compactHost();
+    component.toolId = 'plain-tool';
+    component.workspaceHostProviders.readReadyWorkspace.and.returnValue('/ordinary-project');
+    expect(component.createHostContext().workspace).toBe('/ordinary-project');
+    expect(component.workspaceHostProviders.readReadyWorkspace).toHaveBeenCalledOnceWith('plain-tool');
+  });
+
+  for (const workspace of [null, '/main-ready-blank']) {
+    it(`preserves the detached Main workspace input ${workspace === null ? 'null' : 'value'} in both snapshot and pushed context`, async () => {
+      const component = compactHost();
+      component.hostWorkspace = workspace;
+      component.initialized = true;
+      component.active = false;
+      const snapshot = component.createHostContext();
+      component.ngOnChanges({ hostWorkspace: { currentValue: workspace } });
+      const pushed = component.remoteApi.setHostContext.calls.mostRecent().args[0];
+
+      expect(snapshot.workspace).toBe(workspace);
+      expect(pushed.workspace).toBe(workspace);
+      expect(component.workspaceHostProviders.readReadyWorkspace).not.toHaveBeenCalled();
+      expect(Object.keys(snapshot).sort()).toEqual([
+        'capabilities', 'contextId', 'density', 'embedded', 'interactive', 'lang', 'placement',
+        'platform', 'surface', 'theme', 'toolId', 'version', 'workspace',
+      ].sort());
+      expect(Object.keys(pushed).sort()).toEqual(Object.keys(snapshot).sort());
+      expect(pushed).toEqual({ ...snapshot, version: String(Number(snapshot.version) + 1) });
+      expect(snapshot.contextId).toBe('compact-context');
+      expect(snapshot.embedded).toBeTrue();
+      expect(snapshot.surface).toBe('compact');
+      expect(snapshot.placement).toBe('chat-dock');
+      expect(snapshot.density).toBe('compact');
+      expect(snapshot.capabilities.runtimeControl).toBeFalse();
+      await Promise.resolve();
+      expect(component.remoteApi.refreshHostSnapshot).toHaveBeenCalledOnceWith();
+    });
+  }
+
+  it('returns to the Main readiness projection only when the detached input is undefined', () => {
+    const component = compactHost();
+    component.hostWorkspace = null;
+    expect(component.createHostContext().workspace).toBeNull();
+    component.hostWorkspace = undefined;
+    component.workspaceHostProviders.readReadyWorkspace.and.returnValue('/main-ready-again');
+    expect(component.createHostContext().workspace).toBe('/main-ready-again');
+    expect(component.workspaceHostProviders.readReadyWorkspace).toHaveBeenCalledOnceWith('ffs-manager-child');
+  });
+
+  it('passes only the outer detached Main projection to compact surfaces', () => {
+    const component = host('ffs-manager-child');
+    component.currentUrl = '/main/blockly-editor';
+    expect(component.surfaceHostWorkspace).toBeUndefined();
+    component.currentUrl = '/child-tool/aily-chat';
+    expect(component.surfaceHostWorkspace).toBeNull();
+    component.standaloneWorkspace = null;
+    expect(component.surfaceHostWorkspace).toBeNull();
+    component.standaloneWorkspace = '/detached-main-ready';
+    expect(component.surfaceHostWorkspace).toBe('/detached-main-ready');
+  });
 
   for (const toolId of ['ffs-manager-child', 'native-observer']) {
     it(`expands ${toolId} without opening another window`, async () => {

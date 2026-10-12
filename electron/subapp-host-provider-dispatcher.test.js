@@ -69,6 +69,70 @@ test('negotiates an empty catalog when the product has no active project binding
   await dispatcher.close();
 });
 
+test('close withdraws the negotiated catalog before detaching and joins repeated cleanup', async () => {
+  const { SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types, SubappHostProviderDispatcher } = await dispatcherModulePromise;
+  const fixture = createFixtureAdapters();
+  const closed = [];
+  const transport = new FakeTransport();
+  for (const adapter of fixture.adapters) adapter.close = () => closed.push(adapter.provider);
+  const dispatcher = new SubappHostProviderDispatcher({ hostInstanceId: 'host-close', adapters: fixture.adapters });
+  dispatcher.bindTransport(transport);
+  await transport.receive({ type: types.negotiationRequest, version: 1, request: negotiationRequest('close-catalog') });
+  const send = transport.send.bind(transport);
+  transport.send = async message => {
+    if (message.catalog === null) assert.notEqual(transport.listener, null);
+    await send(message);
+  };
+  const first = dispatcher.close();
+  assert.equal(dispatcher.close(), first);
+  await first;
+  assert.deepEqual(transport.sent.at(-1), {
+    type: types.catalog, version: 1, requestId: 'close-catalog', catalog: null,
+  });
+  assert.equal(transport.sent.filter(message => message.catalog === null).length, 1);
+  assert.equal(transport.listener, null);
+  assert.equal(dispatcher.snapshot().bound, false);
+  assert.deepEqual(closed, fixture.adapters.map(adapter => adapter.provider));
+});
+
+test('close without a validated negotiation never sends a withdrawal', async () => {
+  const { SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types, SubappHostProviderDispatcher } = await dispatcherModulePromise;
+  for (const request of [null, { ...negotiationRequest('invalid-catalog'), providers: null }]) {
+    const dispatcher = new SubappHostProviderDispatcher({ hostInstanceId: 'host-unnegotiated', adapters: [] });
+    const transport = new FakeTransport();
+    dispatcher.bindTransport(transport);
+    if (request) await transport.receive({ type: types.negotiationRequest, version: 1, request });
+    await dispatcher.close();
+    assert.deepEqual(transport.sent, []);
+    assert.equal(transport.listener, null);
+  }
+});
+
+test('failed withdrawal still detaches, aborts pending work and closes every adapter', async () => {
+  const { SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types, SubappHostProviderDispatcher } = await dispatcherModulePromise;
+  const fixture = createFixtureAdapters();
+  const closed = [];
+  for (const adapter of fixture.adapters) adapter.close = () => {
+    closed.push(adapter.provider);
+    if (adapter.provider === 'project') throw new Error('fixture adapter close failed');
+  };
+  const dispatcher = new SubappHostProviderDispatcher({ hostInstanceId: 'host-failed-close', adapters: fixture.adapters });
+  const transport = new FakeTransport();
+  dispatcher.bindTransport(transport);
+  await transport.receive({ type: types.negotiationRequest, version: 1, request: negotiationRequest('failed-close-catalog') });
+  await transport.receive({ type: types.invocation, version: 1, invocation: invocation('close-pending', 'agent', 'agent.pending') });
+  assert.equal(dispatcher.snapshot().activeInvocations, 1);
+  transport.send = async () => { throw new Error('fixture transport closed'); };
+  await dispatcher.close();
+  assert.equal(transport.listener, null);
+  assert.equal(dispatcher.snapshot().bound, false);
+  assert.equal(dispatcher.snapshot().activeInvocations, 0);
+  assert.equal(dispatcher.snapshot().activeSubscriptions, 0);
+  assert.equal(dispatcher.snapshot().activeArtifactTransfers, 0);
+  assert.equal(fixture.aborted.has('close-pending'), true);
+  assert.deepEqual(closed, fixture.adapters.map(adapter => adapter.provider));
+});
+
 test('routes invocations to each adapter without importing product payloads', async () => {
   const {
     SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types,

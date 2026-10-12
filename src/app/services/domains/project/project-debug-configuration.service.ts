@@ -236,8 +236,9 @@ export class ProjectDebugConfigurationService {
   async updateWorkspaceGeneratedCode(
     projectPath: string,
     code: string,
-    options: { refreshArtifact?: boolean } = {},
+    options: { refreshArtifact?: boolean; isCurrent?: () => boolean } = {},
   ): Promise<ProjectDebugConfigurationState> {
+    if (options.isCurrent?.() === false) return this.snapshot;
     const generation = ++this.workspaceHashGeneration;
     if (!projectPath) {
       const empty = createEmptyProjectDebugConfigurationState();
@@ -268,6 +269,7 @@ export class ProjectDebugConfigurationService {
       if (
         generation !== this.workspaceHashGeneration
         || this.stateSubject.value.projectPath !== projectPath
+        || options.isCurrent?.() === false
       ) {
         return this.snapshot;
       }
@@ -287,6 +289,7 @@ export class ProjectDebugConfigurationService {
       if (
         generation !== this.workspaceHashGeneration
         || this.stateSubject.value.projectPath !== projectPath
+        || options.isCurrent?.() === false
       ) {
         return this.snapshot;
       }

@@ -133,6 +133,7 @@ implements SimulatorBuildExecutionPort {
       requestId: request.requestId,
       projectIdentity: request.projectIdentity,
       sceneId: request.sceneId,
+      reason: request.reason,
       graphSemanticRevision: request.sceneRevision,
       sceneDocument: structuredClone(request.sceneDocument),
     };
@@ -190,6 +191,8 @@ implements SimulatorBuildExecutionPort {
   private requireRequestScope(request: SceneArtifactRebuildRequest): void {
     if (
       request.projectIdentity !== this.projectIdentity
+      || (request.reason !== 'graph-semantic-changed'
+        && request.reason !== 'workspace-source-rebuild')
       || request.sceneId !== this.sceneId
       || request.sceneDocument.sceneId !== this.sceneId
       || request.sceneRevision
@@ -230,6 +233,10 @@ function mappedError(
 ): Error {
   if (signal.aborted) {
     return buildError('cancelled', abortReason(signal).message);
+  }
+  if (fallback === 'compile-failed' && error && typeof error === 'object'
+    && 'errorCode' in error && error.errorCode === 'build-cancelled') {
+    return buildError('cancelled', error instanceof Error ? error.message : 'Blockly Build was cancelled.');
   }
   if (
     error instanceof Error

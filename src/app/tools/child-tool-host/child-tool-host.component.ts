@@ -25,10 +25,8 @@ import {
   RequiredSubappService,
   toHostResourceLifecycleRequest,
   SubappActivityService,
+  SubappWorkspaceHostProviderService,
   type SubappActivity,
-  createSubappHostProviderChildToolTransport,
-  SubappHostProviderProductRegistryService,
-  type SubappHostProviderProductSession,
 } from '@integration/subapps/public-api';
 import { AuthService } from '@core/auth/public-api';
 import {
@@ -173,7 +171,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private authContextListenerRegistered = false;
   private authContextListenerCleanup: (() => void) | null = null;
   private unregisterHostController: (() => void) | null = null;
-  private providerProductSession: SubappHostProviderProductSession | null = null;
   private ailyChatOperationActive = false;
   private ailyChatOperationSessionId = '';
   private aiOperationNoticeShown = false;
@@ -202,12 +199,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private electronService: ElectronService,
     private mainUiAutomation: MainUiAutomationService,
     private subappManager: SubappManagerService,
-    private providerProducts: SubappHostProviderProductRegistryService,
     private noticeService: NoticeService,
     private subappActivityService: SubappActivityService,
     private requiredSubapps: RequiredSubappService,
     private aiOperationRegistry: AiOperationRegistryService,
     platformService: PlatformService,
+    private workspaceHostProviders: SubappWorkspaceHostProviderService,
   ) {
     this.standaloneWinBtns = platformService.isWindows()
       ? ['go-main', 'minimize', 'maximize', 'close']
@@ -217,6 +214,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.projectPathSubscription = combineLatest([
       this.projectService.currentProjectPath$,
       this.projectService.coderWorkspace$,
+      this.workspaceHostProviders.readyWorkspaceChanges$,
     ]).subscribe(() => {
       if (this.initialized) {
         this.syncHostContext(true);
@@ -453,7 +451,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const releaseToolId = this.acquired ? this.resolvedToolId : '';
     this.acquired = false;
     const finishDestroy = async () => {
-      await this.closeProviderProduct();
       this.destroyPenpalConnection();
       if (releaseToolId) {
         await this.processService.release(releaseToolId);
@@ -473,7 +470,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
 
     if (options.strict === true && this.resolvedToolId) {
-      await this.closeProviderProduct();
       await this.processService.forceStop(this.resolvedToolId);
       this.acquired = false;
     }
@@ -628,7 +624,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.routePath = updatedConfig.routePath || `/child-tool/${updatedConfig.id}`;
 
     this.destroyPenpalConnection();
-    await this.closeProviderProduct();
     this.serverInfo = null;
     this.iframeSrc = null;
     this.frameLoaded = false;
@@ -732,7 +727,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     });
 
     if (this.acquired && this.resolvedToolId && this.resolvedToolId !== nextToolId) {
-      await this.closeProviderProduct();
       await this.processService.release(this.resolvedToolId);
       this.acquired = false;
     }
@@ -1040,13 +1034,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         ? await this.processService.restart(this.config.id)
         : await this.processService.acquire(this.config.id, { deferPreparedUpdate });
       this.acquired = true;
-      try {
-        await this.openProviderProduct(this.config.id);
-      } catch (error) {
-        await this.processService.release(this.config.id);
-        this.acquired = false;
-        throw error;
-      }
       this.adoptRuntimeConfig(this.serverInfo);
       const childToolUrl = this.buildChildToolUrl(this.serverInfo.url);
       this.childToolUrl = childToolUrl;
@@ -1751,24 +1738,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     } else {
       void task.catch(() => undefined);
     }
-  }
-
-  private async openProviderProduct(toolId: string): Promise<void> {
-    await this.closeProviderProduct();
-    this.providerProductSession = await this.providerProducts.open({
-      toolId,
-      hostInstanceId: this.hostContextId,
-      transport: createSubappHostProviderChildToolTransport(
-        toolId,
-        this.processService,
-      ),
-    });
-  }
-
-  private async closeProviderProduct(): Promise<void> {
-    const session = this.providerProductSession;
-    this.providerProductSession = null;
-    if (session) await session.close();
   }
 
   private flushPendingExternalInputSignals(): void {
@@ -2586,7 +2555,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     if (this.isStandalone && this.standaloneWorkspace !== undefined) {
       return this.standaloneWorkspace;
     }
-    return this.projectService.currentProjectPath || null;
+    return this.workspaceHostProviders.readReadyWorkspace(this.resolvedToolId || this.toolId);
+  }
+
+  /** Detached compact surfaces reuse the outer Host's Main-owned projection. */
+  get surfaceHostWorkspace(): string | null | undefined {
+    return this.isStandalone ? this.standaloneWorkspace ?? null : undefined;
   }
 
   private resolveHostCoderWorkspace(): CoderWorkspaceContext | null {

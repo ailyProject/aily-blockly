@@ -18,7 +18,7 @@ function readJson(filename, limit) {
  * Agent authorization, a sandbox against local code, or physical correctness.
  */
 function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
-    const { readBuildInputContextBinding } = require(path.join(childRoot, 'scripts/build-input-context.js'));
+    const { readBuildInputRecordBinding } = require(path.join(childRoot, 'scripts/build-input-record.js'));
     const captures = require(path.join(childRoot, 'scripts/build-source-capture.js'));
     const sources = require(path.join(childRoot, 'scripts/compile-delivery.js'));
     const records = new Map();
@@ -66,15 +66,15 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             || value.buildId !== message.buildId || value.currentProjectAcceptance !== false
             || value.manifestSha256 !== artifact.digest || value.artifactId !== artifact.value.artifactId
             || artifact.value.kind !== 'aily-build-artifact' || artifact.value.schemaVersion !== 1
-            || value.preparedInputsDigest !== artifact.value.build?.inputs?.digest
+            || value.buildInputsDigest !== artifact.value.build?.inputs?.digest
             || value.project?.digest !== sources.captureProjectSources(entry.config).digest
             || value.project?.sourceSha256 !== entry.config.sourceCapture.sourceSha256
             || value.project?.fqbn !== artifact.value.target?.fqbn
             || JSON.stringify(value.sourceCapture) !== JSON.stringify(entry.config.sourceCapture)) throw fault('Receipt does not belong to this request/process.');
         captures.confirmBuildSource(entry.config);
-        if (typeof message.inputContextSha256 !== 'string'
-            || readBuildInputContextBinding(entry.root, value.preparedInputsDigest) !== message.inputContextSha256) throw fault('Input context does not match the actual build report.');
-        entry.inputContextSha256 = message.inputContextSha256;
+        if (typeof message.inputRecordSha256 !== 'string'
+            || readBuildInputRecordBinding(entry.root, artifact.value.build.inputs) !== message.inputRecordSha256) throw fault('Input record does not match the actual build report.');
+        entry.inputRecordSha256 = message.inputRecordSha256;
         entry.receipt = receipt; entry.manifestDigest = artifact.digest;
     }
     function invalidate(projectPath) {
@@ -132,7 +132,7 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
                 sources.confirmProjectSources(before, entry.config);
                 const current = files(entry);
                 if (current.receipt.digest !== entry.receipt.digest || current.artifact.digest !== entry.manifestDigest) throw fault('Delivery files changed.');
-                if (readBuildInputContextBinding(entry.root, entry.receipt.value.preparedInputsDigest) !== entry.inputContextSha256) throw fault('Input context changed.');
+                if (readBuildInputRecordBinding(entry.root, current.artifact.value.build.inputs) !== entry.inputRecordSha256) throw fault('Input record changed.');
                 return { status: 'source-current', authority: 'host-observed-build', handle: entry.handle,
                     buildId: entry.receipt.value.buildId, receiptSha256: entry.receipt.digest,
                     manifestSha256: entry.manifestDigest, sourceCaptureDigest: entry.config.sourceCapture.digest,

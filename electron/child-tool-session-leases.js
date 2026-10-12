@@ -35,6 +35,9 @@ function hasOwnerId(session, ownerId) {
 
 function setMessageControllerOwner(session, ownerId) {
   const normalizedOwnerId = normalizeOwnerId(ownerId);
+  if (session?.providerMessageController) {
+    return session.providerMessageController.ownerId === normalizedOwnerId;
+  }
   if (!session || !hasOwnerId(session, normalizedOwnerId)) {
     return false;
   }
@@ -44,12 +47,64 @@ function setMessageControllerOwner(session, ownerId) {
 
 function electMessageControllerOwner(session) {
   if (!session) return 0;
+  if (session.providerMessageController) {
+    return session.providerMessageController.ownerId;
+  }
   if (hasOwnerId(session, session.messageControllerOwnerId)) {
     return session.messageControllerOwnerId;
   }
   const [nextOwnerId = 0] = ownerIds(session);
   session.messageControllerOwnerId = nextOwnerId;
   return nextOwnerId;
+}
+
+// A workspace controller is a channel binding, not a Runtime consumer lease.
+function bindMessageController(session, ownerId, payload = {}, authorizedOwnerId) {
+  const normalizedOwnerId = normalizeOwnerId(ownerId);
+  if (!normalizedOwnerId || normalizedOwnerId !== normalizeOwnerId(authorizedOwnerId)) {
+    return { success: false, reason: 'message-controller-not-authorized' };
+  }
+  if (!session?.messagePort || session.exit || session.stopping) {
+    return { success: false, reason: 'message-port-unavailable' };
+  }
+  const streamId = String(payload.streamId || '').trim();
+  if (!streamId || streamId !== session.streamId) {
+    return { success: false, reason: 'stale-session', currentStreamId: session.streamId };
+  }
+  const bindingId = normalizeLeaseId(payload.bindingId);
+  if (!bindingId || bindingId.length > 128) {
+    return { success: false, reason: 'invalid-binding' };
+  }
+  session.providerMessageController = { ownerId: normalizedOwnerId, bindingId };
+  return { success: true, streamId, bindingId };
+}
+
+function clearMessageControllerBinding(session, ownerId) {
+  if (!session?.providerMessageController
+    || (ownerId !== undefined && session.providerMessageController.ownerId !== normalizeOwnerId(ownerId))) {
+    return false;
+  }
+  delete session.providerMessageController;
+  electMessageControllerOwner(session);
+  return true;
+}
+
+function unbindMessageController(session, ownerId, payload = {}, authorizedOwnerId) {
+  const normalizedOwnerId = normalizeOwnerId(ownerId);
+  if (!normalizedOwnerId || normalizedOwnerId !== normalizeOwnerId(authorizedOwnerId)) {
+    return { success: false, reason: 'message-controller-not-authorized' };
+  }
+  if (!session) return { success: false, reason: 'not-found' };
+  if (String(payload.streamId || '').trim() !== session.streamId) {
+    return { success: false, reason: 'stale-session', currentStreamId: session.streamId };
+  }
+  const binding = session.providerMessageController;
+  if (!binding || binding.ownerId !== normalizedOwnerId
+    || binding.bindingId !== normalizeLeaseId(payload.bindingId)) {
+    return { success: false, reason: 'stale-binding' };
+  }
+  clearMessageControllerBinding(session, normalizedOwnerId);
+  return { success: true, streamId: session.streamId };
 }
 
 function ownerKey(ownerId, leaseId) {
@@ -123,7 +178,7 @@ function hasOwner(session, ownerId, leaseId) {
 }
 
 function authorizeMessagePortSend(session, ownerId, payload = {}) {
-  if (!session?.messagePort) {
+  if (!session?.messagePort || session.exit || session.stopping) {
     return { success: false, reason: 'message-port-unavailable' };
   }
   const streamId = String(payload.streamId || '').trim();
@@ -133,6 +188,14 @@ function authorizeMessagePortSend(session, ownerId, payload = {}) {
       reason: 'stale-session',
       currentStreamId: session.streamId,
     };
+  }
+  const binding = session.providerMessageController;
+  if (binding || payload.bindingId) {
+    if (!binding || binding.ownerId !== normalizeOwnerId(ownerId)
+      || binding.bindingId !== normalizeLeaseId(payload.bindingId)) {
+      return { success: false, reason: 'message-controller-not-authorized' };
+    }
+    return { success: true, streamId };
   }
   if (!hasOwner(session, ownerId, payload.leaseId)) {
     return { success: false, reason: 'owner-not-authorized' };
@@ -168,6 +231,8 @@ module.exports = {
   acquireOwner,
   authorizeExclusiveRestart,
   authorizeMessagePortSend,
+  bindMessageController,
+  clearMessageControllerBinding,
   classifyRegistration,
   electMessageControllerOwner,
   hasOwner,
@@ -176,4 +241,5 @@ module.exports = {
   releaseOwner,
   releaseOwnerFromSessions,
   setMessageControllerOwner,
+  unbindMessageController,
 };

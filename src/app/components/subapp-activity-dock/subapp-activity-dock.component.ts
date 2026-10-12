@@ -36,6 +36,7 @@ export class SubappActivityDockComponent {
   isNativeObserver(toolId: string): boolean { return getChildToolConfig(toolId)?.runtime?.observer === true; }
   readonly maxWidth = 480;
   dockWidth = 320;
+  @Input() hostWorkspace: string | null | undefined;
 
   @Output() readonly expandedChange = new EventEmitter<boolean>();
 

@@ -18,7 +18,7 @@ import { createBlocklyBuildSourceMappings, type BlocklyBuildSourceMapping } from
 import { BlocklyService } from './blockly.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { CompileValidationService, type BuildCheckpoint } from '@domain/build/public-api';
+import { CompileValidationService, type BuildActionState, type BuildCheckpoint } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -34,7 +34,9 @@ import { writeBuildRequest, captureBuildRequestGuard, buildManifestForGuard } fr
 import { BlocklyCodePreparationInvalidatedError, type PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
-import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
+import { patchBuildMetadata, captureBuildSource, type BuildSourceWorkspaceInput } from '../../../utils/build-publication.utils';
+import { BuildSourceQueryService, type SavedBlocklyBuildSourceBoundary } from '../../../integrations/build/build-source-query.service';
+import { sha256Hex } from '../../../utils/crypto.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
 import {
   PYTHON_PROJECT_ENTRY,
@@ -74,6 +76,7 @@ export class _BuilderService {
     private ngZone: NgZone,
     private projectDebugConfigurationService:
       ProjectDebugConfigurationService,
+    private buildSourceQuery: BuildSourceQueryService,
   ) { }
 
   // buildInProgress = false;
@@ -294,11 +297,12 @@ export class _BuilderService {
     detail?: string,
     checkpoint?: BuildCheckpoint,
     isCancelled: () => boolean = () => false,
+    savedSource?: SavedBlocklyBuildSourceBoundary,
   ): Promise<{
     code: string;
     projectMacros: PreparedBlocklyCode['projectMacros'];
     generatedArtifacts: PreparedBlocklyCode['artifacts'];
-    sourceWorkspace: PreparedBlocklyCode['sourceWorkspace'];
+    sourceWorkspace: BuildSourceWorkspaceInput | undefined;
     assertFresh: () => void;
     blockSourceMappings: readonly BlocklyBuildSourceMapping[];
   }> {
@@ -308,6 +312,18 @@ export class _BuilderService {
       'workspace_to_code',
       () => this.runWithInteractiveProjectCode(workspace, async (prepared, assertCurrent) => {
         if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed.');
+        let sourceWorkspace: BuildSourceWorkspaceInput | undefined = prepared.sourceWorkspace;
+        if (savedSource) {
+          if (!sourceWorkspace) throw new Error('BUILD_SOURCE_STALE: Prepared source workspace is unavailable.');
+          const documentSha256 = await sha256Hex(sourceWorkspace.documentText);
+          assertCurrent();
+          if (savedSource.projectPath !== projectPath || savedSource.workspace.scope !== 'serialized-blockly-document'
+            || savedSource.workspace.documentSha256 !== documentSha256 || savedSource.workspace.revision !== sourceWorkspace.revision
+            || savedSource.workspace.runtimeRevision !== sourceWorkspace.runtimeRevision || savedSource.workspace.pageId !== sourceWorkspace.pageId) {
+            throw new Error('BUILD_SOURCE_STALE: Saved project differs from the prepared code; save or reconcile and compile again.');
+          }
+          sourceWorkspace = { ...sourceWorkspace, savedProjectFiles: savedSource.workspace.savedProjectFiles };
+        }
         // The prepared revision is guarded for the entire publication, including
         // artifact writes; record the code/map snapshot before that async I/O.
         if (checkpoint) checkpoint.inputCapturedAt = Date.now();
@@ -329,7 +345,7 @@ export class _BuilderService {
           }
         };
         return { code: prepared.code, projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
-          sourceWorkspace: prepared.sourceWorkspace, assertFresh,
+          sourceWorkspace, assertFresh,
           blockSourceMappings: createBlocklyBuildSourceMappings(
           new Map(prepared.blockCodeMapText ? JSON.parse(prepared.blockCodeMapText) : []),
           workspace as Parameters<typeof createBlocklyBuildSourceMappings>[1],
@@ -1292,7 +1308,7 @@ export class _BuilderService {
             if (cancellation.signal.aborted) {
               console.log('等待预编译时被取消');
               this.workflowService.finishBuild(false, 'Cancelled while waiting for preprocessing');
-              reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
+              reject(this.buildCancelledResult(this.t('CANCELLED_TITLE')));
               return;
             }
           }
@@ -1327,7 +1343,6 @@ export class _BuilderService {
         let compileCommand: string = "";
         let completeTitle: string = this.t('COMPLETE_TITLE');
 
-        try {
           const projectPath = this.currentProjectPath;
           if (projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed before capture.');
           const readManifest = (preparingGenerator = false) => ({ path: this.projectService.currentProjectPath,
@@ -1343,6 +1358,12 @@ export class _BuilderService {
           const boardJson = await this.projectService.getBoardJson();
           await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
+          // The generic saved-source query may inspect ABS under the existing
+          // project queue. Complete it before code preparation holds that queue.
+          const savedSource = graphSemanticRevision === undefined ? undefined
+            : await this.buildSourceQuery.readSavedProjectBoundary(projectPath);
+          assertPackage(); assertBoard();
+          if (savedSource && savedSource.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: Saved source board changed.');
           // 获取最新代码，并在同一次同步 generator 调用内冻结其块映射。
           const {
             code,
@@ -1356,6 +1377,7 @@ export class _BuilderService {
             'compile_config',
             checkpoint,
             () => cancellation.signal.aborted,
+            savedSource,
           );
           assertPackage(); assertBoard(); assertFresh();
           // Generator-owned macros are now published. From here through launch,
@@ -1366,15 +1388,15 @@ export class _BuilderService {
           const boardName = boardJson.name;
           const savedConfigPath = this.electronService.pathJoin(tempPath, 'build-config.json');
 
-          // A saved preprocess configuration is not authority for this target.
-          // Only the explicit experimental switch survives; derive all inputs now.
+          // Background configuration is not provenance for this target. Scene
+          // builds request delivery directly; ordinary recording stays opt-in.
           const savedConfig = window['path'].isExists(savedConfigPath)
             ? JSON.parse(window['fs'].readFileSync(savedConfigPath, 'utf8')) : {};
           const buildConfig: any = { currentProjectPath: projectPath, boardModule, code, blockSourceMappings, projectMacros, generatedArtifacts,
             appDataPath: window['path'].getAppDataPath(), za7Path: this.platformService.za7,
             devmode: this.configService.data.devmode || false,
             partitionFilePath: this.electronService.pathJoin(projectPath, 'partitions.csv'),
-            ...(savedConfig.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}) };
+            ...(graphSemanticRevision !== undefined || savedConfig.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}) };
           if (!sourceWorkspace) throw new Error('Build source workspace capture is unavailable.');
           buildConfig.sourceCapture = captureBuildSource(buildConfig, sourceWorkspace);
           if (graphSemanticRevision) {
@@ -1714,7 +1736,7 @@ export class _BuilderService {
                 
                 this.workflowService.finishBuild(false, 'Compilation failed');
                 reject({ state: 'error', text: this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: fullStdErr || lastStdErr });
-              } else if (this.cancelled) {
+              } else if (cancellation.signal.aborted) {
                 console.warn("编译中断")
                 console.log(`编译已取消，耗时: ${buildDuration} 秒`);
 
@@ -1727,7 +1749,7 @@ export class _BuilderService {
                 });
                 
                 this.workflowService.finishBuild(false, 'Cancelled');
-                reject({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
+                reject(this.buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
               } else {
                 // 处理未知状态：进程异常结束但没有设置任何标志
                 console.error('编译进程异常结束，未知状态，lastProgress:', lastProgress);
@@ -1748,8 +1770,8 @@ export class _BuilderService {
               this.buildPromiseReject = null;
             }
           })
-        } catch (error) {
-          if (error.message === '编译已取消' || error.message === this.t('CANCELLED_TITLE')) {
+      } catch (error) {
+          if (cancellation.signal.aborted) {
             const buildEndTime = Date.now();
             const buildDuration = ((buildEndTime - this.buildStartTime) / 1000).toFixed(2);
 
@@ -1757,12 +1779,9 @@ export class _BuilderService {
             this.cancelled = true;
             this.workflowService.finishBuild(false, 'Cancelled');
 
-            reject({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
+            reject(this.buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
             return;
           }
-          throw error;
-        }
-      } catch (error) {
         const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
         this.handleCompileError(error.message, true, fullErrorMessage);
         this.workflowService.finishBuild(false, error.message);
@@ -1962,6 +1981,10 @@ export class _BuilderService {
   /**
    * 取消当前编译过程
    */
+  private buildCancelledResult(text: string): BuildActionState {
+    return { state: 'warn', text, errorCode: 'build-cancelled' };
+  }
+
   cancel(requestId?: string) {
     if (
       requestId !== undefined
@@ -2044,7 +2067,7 @@ export class _BuilderService {
       
       // 使用 setTimeout 确保同步操作完成后再 reject
       setTimeout(() => {
-        rejectFunc({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
+        rejectFunc(this.buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
       }, 0);
     } else {
       console.log('Promise 已完成，仅清理资源');

@@ -110,8 +110,8 @@ export class SimulatorHostProviderProductService {
         readFileBufferAsync: (filePath) => (
           window['fs'].readFileBufferAsync(filePath)
         ),
-        writeFileBufferAtomicAsync: (filePath, bytes) => (
-          window['fs'].writeFileBufferAtomicAsync(filePath, bytes)
+        replaceProjectText: (request, assertCurrent) => (
+          window['fs'].replaceProjectText(request, assertCurrent)
         ),
         lstatSync: (filePath) => window['fs'].lstatSync(filePath),
         realpathAsync: (filePath) => window['fs'].realpathAsync(filePath),
@@ -126,6 +126,27 @@ export class SimulatorHostProviderProductService {
       activeProject,
       mainAgent: this.simulatorMainAgent,
       builderService: this.builder,
+      readWorkspaceSource: async (signal) => {
+        if (signal.aborted) {
+          throw new SimulatorHostProviderOperationError('cancelled');
+        }
+        if (!activeProject.readActiveBinding()) return null;
+        const revision = this.blockly.getWorkspaceContentRevision();
+        const code = this.blockly.getReusableGeneratedCode();
+        if (code === null) return null;
+        const sourceSha256 = await sha256Text(code);
+        if (signal.aborted) {
+          throw new SimulatorHostProviderOperationError('cancelled');
+        }
+        // Hashing is asynchronous: never pair an old source with a changed
+        // project, generation revision, or active workspace edit lease.
+        const isCurrent = () => (
+          !!activeProject.readActiveBinding()
+          && revision === this.blockly.getWorkspaceContentRevision()
+          && code === this.blockly.getReusableGeneratedCode()
+        );
+        return isCurrent() ? { sha256: sourceSha256, isCurrent } : null;
+      },
     });
     const editor = new SimulatorBlocklyEditorCallbackAuthority({
       projectRoot,
@@ -314,10 +335,16 @@ async function bindProviderSession(
     async close() {
       if (closed) return;
       closed = true;
-      unbind?.();
-      unbind = null;
-      await dispatcher.close();
-      await closeProduct();
+      try {
+        await dispatcher.close();
+      } finally {
+        try {
+          unbind?.();
+        } finally {
+          unbind = null;
+          await closeProduct();
+        }
+      }
     },
   });
 }

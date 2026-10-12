@@ -5,6 +5,8 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const project = require('./aily-code-project');
 const HEADER = /^(?:variables|objects)_[a-zA-Z0-9_-]+-[a-f0-9]{8}\.h$/;
+const SAVED_PROJECT_FILES = ['project.abi', 'project.abs', 'project.abs.map.json'];
+const MAX_WORKSPACE_BYTES = 128 * 1024 * 1024;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const fail = message => { throw Object.assign(new Error(`BUILD_SOURCE_STALE: ${message}`), { code: 'BUILD_SOURCE_STALE' }); };
@@ -39,8 +41,40 @@ function workspaceRecord(value) {
         || !Number.isSafeInteger(value.revision) || value.revision < 0
         || !Number.isSafeInteger(value.runtimeRevision) || value.runtimeRevision < 0
         || typeof value.pageId !== 'string' || !value.pageId || value.pageId.length > 256) fail('Invalid workspace capture.');
+    const files = value.savedProjectFiles;
+    if (files !== undefined) {
+        if (!Array.isArray(files) || ![1, 3].includes(files.length)) fail('Invalid saved workspace file boundary.');
+        let sizeBytes = 0;
+        for (const [index, file] of files.entries()) {
+            if (!file || typeof file !== 'object' || Array.isArray(file)
+                || Object.keys(file).sort().join(',') !== 'path,sha256,sizeBytes'
+                || file.path !== SAVED_PROJECT_FILES[index] || !sha(file.sha256)
+                || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0
+                || (sizeBytes += file.sizeBytes) > MAX_WORKSPACE_BYTES) fail('Invalid saved workspace file boundary.');
+        }
+    }
     return { scope: value.scope, documentSha256: value.documentSha256, revision: value.revision,
-        runtimeRevision: value.runtimeRevision, pageId: value.pageId };
+        runtimeRevision: value.runtimeRevision, pageId: value.pageId,
+        ...(files === undefined ? {} : { savedProjectFiles: files.map(file => ({ path: file.path, sizeBytes: file.sizeBytes, sha256: file.sha256 })) }) };
+}
+
+function confirmSavedWorkspace(root, workspace) {
+    if (workspace?.savedProjectFiles === undefined) return;
+    const present = relative => {
+        try { fs.lstatSync(path.join(root, relative)); return true; }
+        catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    };
+    const hasAbs = present('project.abs'), hasMap = present('project.abs.map.json');
+    if (hasAbs !== hasMap) fail('Saved ABS and its map must be present together.');
+    let remaining = MAX_WORKSPACE_BYTES;
+    const current = SAVED_PROJECT_FILES.slice(0, hasAbs ? 3 : 1).map(relative => {
+        let bytes;
+        try { bytes = read(root, relative, remaining); }
+        catch (error) { if (error.code === 'ENOENT') fail('Saved workspace file is unavailable.'); throw error; }
+        remaining -= bytes.length;
+        return { path: relative, sizeBytes: bytes.length, sha256: hash(bytes) };
+    });
+    if (JSON.stringify(current) !== JSON.stringify(workspace.savedProjectFiles)) fail('Saved workspace files differ from the prepared boundary.');
 }
 
 /** A bounded capture of request/configuration/generated files, not a complete
@@ -57,6 +91,12 @@ function record(config, workspace) {
     const board = fs.realpathSync(path.join(root, 'node_modules', config.boardModule));
     const headers = [];
     let generatedBytes = 0;
+    if (mode === 'blockly') {
+        if (config.recordProjectDelivery === true && config.graphSemanticRevision !== undefined && workspace?.savedProjectFiles === undefined) {
+            fail('Scene-bound delivery requires a saved workspace file boundary.');
+        }
+        confirmSavedWorkspace(root, workspace);
+    }
     if (mode === 'coder') {
         if (workspace) fail('Coder cannot claim a Blockly workspace revision.');
         const entry = path.relative(root, project.resolveCompileSourcePath(root)).split(path.sep).join('/');

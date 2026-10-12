@@ -25,12 +25,13 @@ const builder = require("./tools/builder");
 const linter = require("./tools/linter");
 const connector = require("./tools/connector");
 const { createPackagedRendererServer } = require("./packaged-renderer-server");
+const { resolveDevRendererUrl } = require("./dev-renderer-url");
 const {
   markInstalledForAppVersion,
   shouldInstallForAppVersion,
 } = require("./tools/aily-tools-install-state");
 const { mergeConfigChanges } = require("./config-persistence");
-const { resolveAilyAppDataPath } = require("./appdata-path");
+const { resolveAilyAppDataPath, resolveAilyNpmPrefix } = require("./appdata-path");
 const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const { refreshApplicationMenu } = require('./application-menu');
 const {
@@ -426,17 +427,7 @@ function resolveAppRendererUrl(hash = "") {
   if (!serve) {
     return packagedRendererServer.rendererUrl(hash);
   }
-  if (hash === undefined || hash === null || hash === "") {
-    return "http://localhost:4200";
-  }
-  if (
-    typeof hash !== "string"
-    || hash.length > 16 * 1024
-    || /[\u0000-\u001f\u007f]/.test(hash)
-  ) {
-    throw new TypeError("Renderer hash is invalid.");
-  }
-  return `http://localhost:4200/${hash.startsWith("#") ? hash : `#${hash}`}`;
+  return resolveDevRendererUrl(hash, process.env.AILY_DEV_RENDERER_ORIGIN);
 }
 
 function loadAppRenderer(targetWindow, hash = "") {
@@ -767,6 +758,7 @@ const {
   forceStopChildToolByCatalogId,
   listChildToolHoldersForCatalogId,
   getRunningSubappConfig,
+  stopAllChildToolSessions,
   nativeSubappRegistry,
   beginWindowShutdown,
 } = require("./window");
@@ -2311,7 +2303,7 @@ function loadEnv() {
   // aily-builder / aily-linter / aily-connector 使用独立的 npm 全局 prefix。
   // AppData 根目录本身是开发板、SDK 和工具包的普通 npm 项目；两者共用
   // node_modules 时，开发板依赖的 npm install/uninstall 会清理掉全局工具。
-  process.env.AILY_NPM_PREFIX = path.join(process.env.AILY_APPDATA_PATH, "npm-global");
+  process.env.AILY_NPM_PREFIX = resolveAilyNpmPrefix({ env: process.env });
   try {
     fs.mkdirSync(process.env.AILY_NPM_PREFIX, { recursive: true });
   } catch (error) {
@@ -2613,7 +2605,7 @@ function createWindow() {
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         console.log('Reloading renderer after crash...');
-        mainWindow.loadURL("http://localhost:4200");
+        void loadAppRenderer(mainWindow);
       }
     }, 1000);
   });
@@ -2634,7 +2626,7 @@ function createWindow() {
       console.log(`${retryDelay}ms 后尝试重新加载...`);
       setTimeout(() => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.loadURL("http://localhost:4200");
+          void loadAppRenderer(mainWindow);
         }
       }, retryDelay);
     });
@@ -3135,6 +3127,14 @@ async function cleanupRegisteredChildProcesses() {
   beginCommandShutdown();
   beginNpmShutdown();
   beginAuthCredentialsShutdown();
+
+  // Drain registered Runtime owners before the generic command-tree fallback.
+  // Unregistered startup streams and unsuccessful stops remain in Cmd ownership.
+  try {
+    await stopAllChildToolSessions();
+  } catch (error) {
+    console.warn('[PROC_TRACE][APP_CHILD_TOOL_CLEANUP_ERROR]', error?.code || 'cleanup-failed');
+  }
 
   await Promise.allSettled([
     killAllCmdProcesses(),

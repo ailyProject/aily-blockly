@@ -117,3 +117,16 @@ test('npm prefix still follows a custom appdata directory when no prefix is set'
     platform: 'win32',
   }), 'D:\\Portable Aily\\data\\npm-global');
 });
+
+test('main preserves the selected tools root without changing the login data root', () => {
+  const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  const assignment = main.match(/process\.env\.AILY_NPM_PREFIX\s*=\s*[^;]+;/)?.[0];
+  assert.ok(assignment);
+  const appData = path.resolve('normal-profile');
+  for (const explicit of [path.resolve('isolated-tools'), '']) {
+    const processStub = { env: { AILY_APPDATA_PATH: appData, AILY_NPM_PREFIX: explicit } };
+    vm.runInNewContext(assignment, { process: processStub, path, resolveAilyNpmPrefix });
+    assert.equal(processStub.env.AILY_NPM_PREFIX, explicit || path.join(appData, 'npm-global'));
+    assert.equal(processStub.env.AILY_APPDATA_PATH, appData);
+  }
+});

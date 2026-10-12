@@ -42,7 +42,7 @@ function fixture(t, coder = false) {
         const target = path.dirname(put('.temp/library/helper.h', 'original'));
         libraries.add('@aily-project/lib-fixture', libraries.capture(source), target);
     }
-    function publish(handle, overrides = {}, recordedInputs) {
+    function publish(handle, overrides = {}) {
         const source = coder ? path.join(root, 'sketch/src/main.cpp') : put('.temp/sketch/sketch.ino', config.code);
         const before = captureProjectSources(config);
         let librarySnapshot = libraries.snapshot(config);
@@ -58,19 +58,20 @@ function fixture(t, coder = false) {
                 { input: JSON.stringify({ config, entries: librarySnapshot.entries }), encoding: 'utf8', windowsHide: true, timeout: 15000 }));
         }
         put('.build/aily-library-projections.json', librarySnapshot);
-        const body = { schemaVersion: 1, kind: 'aily-build-input-record', scope: 'prepared-dependency-trees',
-            configurationSha256: 'c'.repeat(64), roots: [{ id: 'root-0', locationSha256: 'd'.repeat(64), files: [] }] };
-        const inputs = recordedInputs || { ...body, digest: hash(JSON.stringify(body)) };
-        const context = { schemaVersion: 1, kind: 'aily-build-input-context', buildPath: path.join(root, '.build'), preparedInputsDigest: inputs.digest };
-        if (!recordedInputs) put('.build/aily-build-input-context.json', context);
+        const body = { schemaVersion: 1, kind: 'aily-build-input-record', scope: 'build-graph-facts', configurationSha256: 'c'.repeat(64),
+            steps: ['sketch', 'libraries', 'core', 'linking'].map(name => ({ kind: 'ninja-plan', name, sha256: 'd'.repeat(64) })) };
+        const record = { ...body, digest: hash(JSON.stringify(body)) }, inputBytes = JSON.stringify(record);
+        const inputs = { schemaVersion: 1, kind: 'aily-build-input-reference', scope: 'build-graph-facts', path: 'aily-build-inputs.json', digest: record.digest };
+        put('.build/aily-build-inputs.json', inputBytes);
         put('.build/firmware.bin', 'synthetic firmware');
         put('.build/aily-artifact-manifest.json', { schemaVersion: 1, kind: 'aily-build-artifact', artifactId: 'a'.repeat(64),
             target: { fqbn: 'test:core:board' }, build: { source: { sha256: hash(config.code), sizeBytes: Buffer.byteLength(config.code) }, inputs },
-            files: [{ path: 'firmware.bin', role: 'application', sizeBytes: Buffer.byteLength('synthetic firmware'), sha256: hash('synthetic firmware') }] });
+            files: [{ path: 'firmware.bin', role: 'application', sizeBytes: Buffer.byteLength('synthetic firmware'), sha256: hash('synthetic firmware') },
+                { path: 'aily-build-inputs.json', role: 'build-inputs', sizeBytes: Buffer.byteLength(inputBytes), sha256: hash(inputBytes) }] });
         const receipt = publishBuildDelivery(config, before, source, 'test:core:board', librarySnapshot);
         const message = { type: 'aily.build.delivery', requestDigest: hash(JSON.stringify(config)), buildId: receipt.buildId,
             receiptSha256: hash(fs.readFileSync(path.join(root, '.build/aily-build-delivery.json'))),
-            inputContextSha256: hash(fs.readFileSync(path.join(root, '.build/aily-build-input-context.json'))), ...overrides };
+            inputRecordSha256: hash(fs.readFileSync(path.join(root, '.build/aily-build-inputs.json'))), ...overrides };
         handle.onMessage(message); return receipt;
     }
     return { root, put, config, request, sender, state, dependencies, api, options, query, publish, addLibrary, libraryFile };

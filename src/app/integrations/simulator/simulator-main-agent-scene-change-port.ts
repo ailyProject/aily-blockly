@@ -11,6 +11,7 @@ export interface SimulatorMainAgentSceneChangeRequest {
   readonly requestId: string;
   readonly projectIdentity: string;
   readonly sceneId: string;
+  readonly reason: SceneArtifactRebuildRequest['reason'];
   readonly graphSemanticRevision: string;
   readonly sceneDocument: SceneArtifactRebuildRequest['sceneDocument'];
 }

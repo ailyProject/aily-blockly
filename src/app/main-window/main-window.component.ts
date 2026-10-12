@@ -38,6 +38,7 @@ import { ElectronService } from '@core/platform/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
+  SubappWorkspaceHostProviderService,
   CoderEditorUpdateService,
   RequiredSubappService,
   bootstrapDefaultSubapps,
@@ -150,6 +151,7 @@ export class MainWindowComponent implements OnDestroy {
     private requiredSubapps: RequiredSubappService,
     private coderEditorUpdates: CoderEditorUpdateService,
     private childToolProcessService: ChildToolProcessService,
+    private workspaceHostProviders: SubappWorkspaceHostProviderService,
     private toolI18n: ToolI18nService,
   ) { }
 
@@ -177,8 +179,9 @@ export class MainWindowComponent implements OnDestroy {
     ]);
     this.uiService.init();
     this.projectService.init();
+    this.workspaceHostProviders.start();
     this.projectContextSubscription = combineLatest([
-      this.projectService.currentProjectPath$,
+      this.workspaceHostProviders.readyBaseWorkspace$,
       this.projectService.coderWorkspace$,
     ]).subscribe(([workspace, coderWorkspace]) => {
       window['ipcRenderer']?.send?.('host-project-context-changed', {
@@ -432,6 +435,7 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    void this.workspaceHostProviders.stop();
     this.unregisterAilyChatHostAuthRuntimeBridge?.();
     this.unregisterAilyChatHostAuthRuntimeBridge = null;
     this.cancelAilyChatPrewarm?.();

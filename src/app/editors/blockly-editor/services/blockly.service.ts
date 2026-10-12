@@ -1550,6 +1550,7 @@ export class BlocklyService {
     });
 
     definitions.assertCurrent();
+    this.markWorkspaceCodeDirty();
     return { workspaceJson, definitions };
   }
 

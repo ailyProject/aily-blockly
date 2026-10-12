@@ -303,6 +303,27 @@ export class BlocklyGeneratorRuntimeService {
     }
   }
 
+  /**
+   * Synchronizes one host-owned menu object, never the whole shared registry.
+   * Identity-based removal also works while a failed session awaits cleanup,
+   * without deleting a newer owner's checkpoint or adopting a library callback.
+   */
+  syncHostContextMenuSnapshot(
+    item: Blockly.ContextMenuRegistry.RegistryItem,
+    registered: boolean,
+  ): void {
+    const checkpoint = this.session?.registrySnapshot.contextMenuItems;
+    if (!checkpoint) return;
+    if (registered) {
+      if (Blockly.ContextMenuRegistry.registry.getItem(item.id) !== item) {
+        throw new Error('Host context menu changed before checkpoint synchronization.');
+      }
+      checkpoint.set(item.id, item);
+    } else if (checkpoint.get(item.id) === item) {
+      checkpoint.delete(item.id);
+    }
+  }
+
   updateContext(context: Partial<Omit<GeneratorRuntimeContext, 'mode' | 'getWorkspace'>>): void {
     const session = this.requireActiveSession();
     activeProjectGeneratorRevision++;

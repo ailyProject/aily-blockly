@@ -9,7 +9,7 @@ const targetCompileContext = require('./target-compile-context');
 const { prepareCompileSource } = require('./compile-source');
 const { createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLibraryProjections } = require('./library-source-evidence');
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
-const { invalidateBuildDelivery } = require('./compile-delivery');
+const { invalidateBuildDeliveryTicket } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
 
@@ -72,7 +72,7 @@ async function main() {
     const workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
     try {
         confirmBuildSource(config);
-        invalidateBuildDelivery(config.currentProjectPath);
+        invalidateBuildDeliveryTicket(config.currentProjectPath);
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
     } finally { workspace.release(); }

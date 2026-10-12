@@ -15,19 +15,18 @@ function readBuilderCapabilities(command, launch = spawnSync) {
                     artifact: c.simulationArtifactManifest?.schemaVersion === 1,
                     debug: c.simulationSourceDebug?.schemaVersion === 1 && c.simulationSourceDebug.cliOption === '--simulation-debug',
                     graph: c.sceneGraphProvenance?.schemaVersion === 1 && c.sceneGraphProvenance.cliOption === '--graph-semantic-revision',
-                    inputs: c.buildInputRecord?.schemaVersion === 1 && c.buildInputRecord.cliOption === '--record-build-inputs',
+                    inputs: c.buildInputRecord?.schemaVersion === 1 && c.buildInputRecord.cliOption === '--record-build-inputs'
+                        && c.buildInputRecord.scope === 'build-graph-facts' && c.buildInputRecord.currentProjectFreshness === false
+                        && c.buildInputRecord.defaultFileName === 'aily-build-inputs.json',
                     workspace: c.buildWorkspaceLease?.schemaVersion === 1 && c.buildWorkspaceLease.delegationEnvironment === 'AILY_BUILDER_WORKSPACE',
-                    verification: c.buildInputVerification?.schemaVersion === 1 && c.buildInputVerification.command === 'verify-build-inputs'
-                        && c.buildInputVerification.contextFileName === 'aily-build-input-context.json'
-                        && c.buildInputVerification.scope === 'prepared-and-explicit-inputs',
                 };
             }
         }
     } catch { /* Older Builder can still perform ordinary compilation. */ }
     try {
         const result = launch(command, ['compile', '--help'], options);
-        return { artifact: result.status === 0 && `${result.stdout || ''}\n${result.stderr || ''}`.includes('--emit-artifact-manifest'), debug: false, graph: false, inputs: false, workspace: false, verification: false };
-    } catch { return { artifact: false, debug: false, graph: false, inputs: false, workspace: false, verification: false }; }
+        return { artifact: result.status === 0 && `${result.stdout || ''}\n${result.stderr || ''}`.includes('--emit-artifact-manifest'), debug: false, graph: false, inputs: false, workspace: false };
+    } catch { return { artifact: false, debug: false, graph: false, inputs: false, workspace: false }; }
 }
 
 module.exports = { readBuilderCapabilities };

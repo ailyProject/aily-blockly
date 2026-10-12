@@ -8,10 +8,22 @@ export interface BuildMetadataPatch {
   };
 }
 
+export interface SavedProjectBuildFileFact {
+  readonly path: 'project.abi' | 'project.abs' | 'project.abs.map.json';
+  readonly sizeBytes: number;
+  readonly sha256: string;
+}
+
+export interface BuildSourceWorkspaceInput {
+  readonly documentText: string;
+  readonly revision: number;
+  readonly runtimeRevision: number;
+  readonly pageId: string;
+  readonly savedProjectFiles?: readonly SavedProjectBuildFileFact[];
+}
+
 /** Synchronous host read: record the actual prepared bytes, not mutable generator objects. */
-export function captureBuildSource(config: { currentProjectPath: string; boardModule: string; code: string }, workspace?: {
-  documentText: string; revision: number; runtimeRevision: number; pageId: string;
-}): unknown {
+export function captureBuildSource(config: { currentProjectPath: string; boardModule: string; code: string }, workspace?: BuildSourceWorkspaceInput): unknown {
   const capture = window['builder']?.captureBuildSource;
   if (typeof capture !== 'function') throw new Error('Build source capture bridge unavailable; restart the host to load matching scripts.');
   return capture(config, workspace);

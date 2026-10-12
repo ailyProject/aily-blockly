@@ -7,7 +7,7 @@ import { _ProjectService } from '../../../editors/blockly-editor/services/projec
 import { BlocklyWorkspaceEditLease } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
-import { projectDataRuntime, cloneBlocklyJson } from '@domain/project/public-api';
+import { cloneBlocklyJson, materializeGenericProjectDataValues, projectDataRuntime } from '@domain/project/public-api';
 import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
@@ -140,7 +140,14 @@ export class AbsWorkspaceSyncService {
           // A normal save may advance disk; an independent external edit must not
           // become the baseline for a different in-memory document.
           prepared = await this.project.prepareSave(snapshot.document, assertCurrent);
-          if (await hashAbsText(absJson(JSON.parse(prepared.abiText))) !== diskHash) {
+          const saved = expected.abi === null ? null : JSON.parse(expected.abi);
+          const document = JSON.parse(prepared.abiText);
+          // Match read-only readiness: layout and equivalent resource envelopes
+          // are not dual program edits. Publication hashes and disk CAS stay exact.
+          const matchesSaved = sameAbsProgram(document, saved)
+            || sameAbsProgram(await materializeGenericProjectDataValues(document, projectDataRuntime),
+              await materializeGenericProjectDataValues(saved, projectDataRuntime));
+          if (!matchesSaved) {
             throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'Saved ABI and workspace diverged; reconcile the external edit before exporting a new generation.', undefined, undefined,
               { hint: 'Call project_recover action=inspect once for disk/canvas comparison. Do not retry save/export/apply or refresh without a token; preserve both versions until the intended source is established.' });
           }

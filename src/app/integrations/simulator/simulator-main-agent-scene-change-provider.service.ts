@@ -47,7 +47,9 @@ export class SimulatorMainAgentSceneChangeProviderService {
     try {
       const result = await this.demandSessions.requestCodeSync(
         createSimulatorMainAgentSceneMessage(input),
-        '同步 Simulator 连线场景到项目代码',
+        input.reason === 'workspace-source-rebuild'
+          ? '保留当前代码，核对 Simulator 原场景后构建'
+          : '同步 Simulator 连线场景到项目代码',
         createSimulatorMainAgentSceneResources(input),
         controller.signal,
       );

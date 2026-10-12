@@ -52,7 +52,7 @@ for (const command of ['compile', 'preprocess']) test(`competing actual ${comman
     const f = fixture(t), owner = acquireBuildWorkspace(f.project, 'compile');
     fs.mkdirSync(path.join(f.project, '.temp/sketch'), { recursive: true });
     const files = ['.build/aily-artifact-manifest.json', '.build/aily-build-delivery.json', '.build/aily-library-projections.json',
-        '.build/firmware.elf', '.temp/preprocess.json', '.temp/sketch/sketch.ino'];
+        '.build/aily-build-inputs.json', '.build/firmware.elf', '.temp/preprocess.json', '.temp/sketch/sketch.ino'];
     for (const name of files) fs.writeFileSync(path.join(f.project, name), 'preserve');
     const config = path.join(f.root, 'request.json');
     fs.writeFileSync(config, JSON.stringify({ currentProjectPath: f.project, code: 'contender' }));
@@ -63,14 +63,20 @@ for (const command of ['compile', 'preprocess']) test(`competing actual ${comman
     owner.assertOwned(); owner.release();
 });
 
-test('normal preprocessing failure releases ownership and revokes old success', t => {
+test('normal preprocessing failure releases ownership and revokes delivery without deleting the portable Artifact', t => {
     const f = fixture(t), config = path.join(f.root, 'request.json');
     fs.mkdirSync(path.dirname(f.lock));
     const artifact = path.join(f.project, '.build/aily-artifact-manifest.json'); fs.writeFileSync(artifact, 'old');
+    const inputs = path.join(f.project, '.build/aily-build-inputs.json'); fs.writeFileSync(inputs, 'portable input record');
+    const tickets = ['aily-build-delivery.json', 'aily-library-projections.json'];
+    for (const name of tickets) fs.writeFileSync(path.join(f.project, '.build', name), 'old');
     fs.writeFileSync(config, JSON.stringify({ currentProjectPath: f.project, boardModule: 'missing', code: '', appDataPath: f.root }));
     const result = spawnSync(process.execPath, [path.join(__dirname, 'preprocess.js'), config],
         { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-    assert.equal(result.status, 1); assert.equal(fs.existsSync(f.lock), false); assert.equal(fs.existsSync(artifact), false);
+    assert.equal(result.status, 1); assert.equal(fs.existsSync(f.lock), false);
+    assert.equal(fs.readFileSync(artifact, 'utf8'), 'old');
+    assert.equal(fs.readFileSync(inputs, 'utf8'), 'portable input record');
+    for (const name of tickets) assert.equal(fs.existsSync(path.join(f.project, '.build', name)), false);
     acquireBuildWorkspace(f.project, 'compile').release();
 });
 

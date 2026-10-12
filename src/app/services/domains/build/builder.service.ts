@@ -165,6 +165,9 @@ export class BuilderService {
         error.text = buildResult?.text || feedback?.error || '编译失败';
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildResult = buildResult;
+        if (buildResult?.errorCode === 'build-cancelled') {
+          error.errorCode = 'build-cancelled';
+        }
         throw error;
       }
 

@@ -6,6 +6,7 @@ const { createRequire } = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const ts = require('typescript');
 
 test('main broadcasts an exact-stream exit to every window even after its spawning renderer has gone', () => {
   const harness = createHarness();
@@ -60,6 +61,113 @@ test('confirmed termination broadcasts before registry removal when Node close a
   assert.equal(harness.messages.length, 2);
 });
 
+test('concurrent session stops share one shutdown and completed stops do not repeat it', async () => {
+  const harness = createHarness();
+  const session = harness.register('stream-1');
+  let finish;
+  let calls = 0;
+  harness.stop = () => {
+    calls += 1;
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const first = harness.api.stopChildToolSessionProcess(session);
+  const second = harness.api.stopChildToolSessionProcess(session);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  finish(true);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.equal(await harness.api.stopChildToolSessionProcess(session), true);
+  assert.equal(calls, 1);
+});
+
+test('Main drains all registered sessions before sweeping remaining command owners', async () => {
+  const harness = createHarness();
+  const failed = harness.register('failed-stream', 'failed');
+  const stopped = harness.register('stopped-stream', 'stopped');
+  for (const session of [failed, stopped]) {
+    session.releaseTimer = setTimeout(() => assert.fail('release timer survived shutdown'), 60_000);
+    harness.api.pendingChildToolProcessMessages.set(session.streamId, [{ message: {} }]);
+  }
+  const calls = [];
+  let finish;
+  let finishNpm;
+  harness.stop = async session => {
+    calls.push(`stop:${session.streamId}`);
+    assert.equal(session.releaseTimer, null);
+    assert.equal(harness.api.pendingChildToolProcessMessages.has(session.streamId), false);
+    if (session === failed) throw new Error('bounded shutdown failed');
+    await new Promise(resolve => { finish = resolve; });
+    harness.active = harness.active.filter(entry => entry.streamId !== session.streamId);
+    return true;
+  };
+  const cleanup = loadMainCleanup({
+    stopAllChildToolSessions: () => harness.api.stopAllChildToolSessions(),
+    getActiveCmdProcesses: () => harness.active,
+    killAllCmdProcesses: async () => {
+      calls.push('kill-remaining');
+      assert.equal(harness.api.childToolSessions.has('stopped'), false);
+      assert.deepEqual(harness.active.map(entry => entry.streamId), ['failed-stream']);
+      harness.active = [];
+    },
+    killAllNpmProcesses: async () => {
+      calls.push('kill-npm');
+      await new Promise(resolve => { finishNpm = resolve; });
+    },
+  }, calls);
+  const operation = cleanup();
+  const repeatedStops = harness.api.stopAllChildToolSessions();
+  await Promise.resolve();
+  await Promise.resolve();
+  const admission = ['begin-window', 'stop-cli', 'begin-command', 'begin-npm', 'begin-auth'];
+  assert.deepEqual(calls, [...admission, 'stop:failed-stream', 'stop:stopped-stream']);
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [...admission, 'stop:failed-stream', 'stop:stopped-stream', 'kill-remaining', 'kill-npm']);
+  finishNpm();
+  await Promise.all([operation, repeatedStops]);
+  assert.deepEqual(calls, [...admission, 'stop:failed-stream', 'stop:stopped-stream', 'kill-remaining', 'kill-npm', 'release-auth']);
+  assert.equal(harness.api.childToolSessions.get('failed'), failed);
+  assert.equal(harness.api.pendingChildToolProcessMessages.size, 0);
+  assert.equal(failed.releaseTimer, null);
+  assert.equal(stopped.releaseTimer, null);
+});
+
+test('Main still sweeps remaining owners when the registered-session drain rejects', async () => {
+  const calls = [];
+  const cleanup = loadMainCleanup({
+    stopAllChildToolSessions: async () => { calls.push('drain'); throw new Error('drain failed'); },
+    killAllCmdProcesses: async () => { calls.push('cmd'); },
+    killAllNpmProcesses: async () => { calls.push('npm'); },
+  }, calls);
+  await cleanup();
+  assert.deepEqual(calls, ['begin-window', 'stop-cli', 'begin-command', 'begin-npm', 'begin-auth', 'drain', 'cmd', 'npm', 'release-auth']);
+});
+
+function loadMainCleanup(overrides, calls) {
+  const file = path.join(__dirname, 'main.js');
+  const source = fs.readFileSync(file, 'utf8');
+  const root = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const declarations = root.statements.filter(node => ts.isFunctionDeclaration(node)
+    && node.name?.text === 'cleanupRegisteredChildProcesses');
+  assert.equal(declarations.length, 1, 'Main must expose one registered-process cleanup function');
+  const context = {
+    console: { info() {}, warn() {} },
+    beginWindowShutdown: () => calls.push('begin-window'),
+    cliBridge: { close: () => calls.push('stop-cli') },
+    beginCommandShutdown: () => calls.push('begin-command'),
+    beginNpmShutdown: () => calls.push('begin-npm'),
+    beginAuthCredentialsShutdown: () => calls.push('begin-auth'),
+    releaseAllAuthCredentialsLocks: () => calls.push('release-auth'),
+    getActiveCmdProcesses: () => [], getActiveNpmProcesses: () => [],
+    getActiveTerminals: () => [], getActiveAilyServicesStreams: () => [],
+    killAllTerminals: async () => {}, cancelAllAilyServicesStreams: async () => {},
+    connector: { shutdown: async () => {} }, packagedRendererServer: { close: async () => {} },
+    ...overrides,
+  };
+  vm.runInNewContext(declarations[0].getText(root), context, { filename: file });
+  return context.cleanupRegisteredChildProcesses;
+}
+
 function createHarness() {
   const file = path.join(__dirname, 'window.js');
   const localRequire = createRequire(file);
@@ -78,7 +186,8 @@ function createHarness() {
   };
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(file, 'utf8') + `
-    module.exports.testApi = { childToolSessions, listChildToolSessions, isChildToolSessionAlive, stopChildToolSessionProcess };
+    module.exports.testApi = { childToolSessions, pendingChildToolProcessMessages, listChildToolSessions,
+      isChildToolSessionAlive, stopChildToolSessionProcess, stopAllChildToolSessions };
   `, {
     module,
     require: id => {
@@ -96,10 +205,10 @@ function createHarness() {
     process, console, clearTimeout, setTimeout, __dirname,
   }, { filename: file });
   harness.api = module.exports.testApi;
-  harness.register = streamId => {
+  harness.register = (streamId, toolId = 'fixture') => {
     const session = { streamId, hostInfo: { pid: process.pid }, owners: new Map(), releaseTimer: null };
-    harness.api.childToolSessions.set('fixture', session);
-    harness.active = [{ streamId, pid: process.pid }];
+    harness.api.childToolSessions.set(toolId, session);
+    harness.active.push({ streamId, pid: process.pid });
     return session;
   };
   return harness;

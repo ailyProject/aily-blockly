@@ -1,5 +1,6 @@
 @if (isStandalone) {
-<app-sub-window [title]="titleKey | translate" [winBtns]="standaloneWinBtns" (closeEvent)="close()">
+<app-sub-window [title]="titleKey | translate" [winBtns]="standaloneWinBtns"
+  (goMainEvent)="embed()" (closeEvent)="close()">
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
   </ng-container>
@@ -12,7 +13,8 @@
   <ng-container *ngTemplateOutlet="contentTpl"></ng-container>
 </app-sub-window>
 } @else {
-<app-tool-container [title]="titleKey | translate" [path]="routePath" (closeEvent)="close()">
+<app-tool-container [title]="titleKey | translate" [path]="routePath"
+  (openWindowEvent)="detach()" (closeEvent)="close()">
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
   </ng-container>
@@ -85,7 +87,7 @@
 <ng-template #contentTpl>
   <div class="child-tool-host">
     @if (isAilyChat) {
-    <app-subapp-activity-dock [sessionId]="ailyChatSessionId"></app-subapp-activity-dock>
+    <app-subapp-activity-dock [sessionId]="ailyChatSessionId" [hostWorkspace]="surfaceHostWorkspace"></app-subapp-activity-dock>
     }
     <div class="iframe-shell">
       @if (isNativeObserver) {

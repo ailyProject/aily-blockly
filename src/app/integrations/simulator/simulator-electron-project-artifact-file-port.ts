@@ -12,10 +12,8 @@ export interface SimulatorElectronProjectArtifactBridge {
   fs: {
     existsSync(filePath: string): boolean;
     readFileBufferAsync(filePath: string): Promise<ArrayBuffer>;
-    writeFileBufferAtomicAsync(
-      filePath: string,
-      bytes: ArrayBuffer | Uint8Array,
-    ): Promise<void>;
+    replaceProjectText(request: { projectPath: string; fileName: string; expectedHash: string | null; content: string },
+      assertCurrent: () => void): Promise<{ status: string; code?: string; error?: string; warnings?: string[] }>;
     lstatSync(filePath: string): {
       size: number;
       _isFile: boolean;
@@ -46,14 +44,25 @@ export function createSimulatorElectronProjectArtifactFilePort(
       requireNotAborted(signal);
       return new Uint8Array(buffer);
     },
-    async writeFileAtomic(
-      filePath: string,
+    async replaceFileAtomic(
+      projectRoot: string,
+      relativePath: string,
+      expectedBytes: Uint8Array | null,
       bytes: Uint8Array,
       signal: AbortSignal,
     ) {
       requireNotAborted(signal);
-      await bridge.fs.writeFileBufferAtomicAsync(filePath, bytes);
+      const expectedHash = expectedBytes === null ? null : `sha256:${Array.from(new Uint8Array(
+        await crypto.subtle.digest('SHA-256', new Uint8Array(expectedBytes)),
+      ), byte => byte.toString(16).padStart(2, '0')).join('')}`;
+      const result = await bridge.fs.replaceProjectText({ projectPath: projectRoot, fileName: relativePath,
+        expectedHash, content: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }, () => requireNotAborted(signal));
       requireNotAborted(signal);
+      if (result.status === 'CONFLICT') return false;
+      if (result.status !== 'COMMITTED' || result.warnings?.length) {
+        throw Object.assign(new Error('Project Scene conditional publication failed.'), { code: result.code ?? 'PROJECT_FILE_WRITE_FAILED' });
+      }
+      return true;
     },
     async lstat(
       filePath: string,
@@ -90,7 +99,7 @@ function requireBridge(
     || typeof bridge.path?.relative !== 'function'
     || typeof bridge.fs?.existsSync !== 'function'
     || typeof bridge.fs?.readFileBufferAsync !== 'function'
-    || typeof bridge.fs?.writeFileBufferAtomicAsync !== 'function'
+    || typeof bridge.fs?.replaceProjectText !== 'function'
     || typeof bridge.fs?.lstatSync !== 'function'
     || typeof bridge.fs?.realpathAsync !== 'function'
   ) {

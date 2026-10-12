@@ -28,8 +28,49 @@ function formatFatalError(error) {
 }
 
 function exitWithFatalError(error) {
+    writeProjectInputDifference(error);
     logger.error(`[ERROR] ${formatFatalError(error)}`);
     process.exit(1);
+}
+
+/** Failure-only diagnostics, not build acceptance. Keep them out of stdout,
+ * stderr and user-facing error messages. A failed write must not hide the cause. */
+function writeProjectInputDifference(error) {
+    if (error?.code !== 'PROJECT_INPUTS_CHANGED' || !error.projectInputDifferences
+        || typeof error.projectInputDiagnosticRoot !== 'string') return;
+    let temporary, stillOwned;
+    try {
+        const root = error.projectInputDiagnosticRoot;
+        const rootIdentity = fs.lstatSync(root);
+        if (!rootIdentity.isDirectory() || rootIdentity.isSymbolicLink() || fs.realpathSync(root) !== root) return;
+        const directory = path.join(root, '.build'), identity = fs.lstatSync(directory);
+        if (!identity.isDirectory() || identity.isSymbolicLink() || fs.realpathSync(directory) !== directory) return;
+        stillOwned = () => {
+            const currentRoot = fs.lstatSync(root), current = fs.lstatSync(directory);
+            return currentRoot.isDirectory() && !currentRoot.isSymbolicLink()
+                && rootIdentity.dev === currentRoot.dev && rootIdentity.ino === currentRoot.ino
+                && fs.realpathSync(root) === root && current.isDirectory() && !current.isSymbolicLink()
+                && identity.dev === current.dev && identity.ino === current.ino
+                && fs.realpathSync(directory) === directory;
+        };
+        const destination = path.join(directory, 'aily-project-input-difference.json');
+        const safeDestination = () => {
+            if (!fs.existsSync(destination)) return true;
+            const existing = fs.lstatSync(destination);
+            return existing.isFile() && !existing.isSymbolicLink() && existing.nlink === 1;
+        };
+        if (!safeDestination()) return;
+        const text = JSON.stringify(error.projectInputDifferences, null, 2) + '\n';
+        if (Buffer.byteLength(text) > 32 * 1024) return;
+        temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
+        fs.writeFileSync(temporary, text, { flag: 'wx' });
+        if (!stillOwned() || !safeDestination()) return;
+        fs.renameSync(temporary, destination);
+        temporary = undefined;
+    } catch { /* Preserve the original error even when finite diagnostics fail. */ }
+    finally {
+        if (temporary) { try { if (stillOwned?.()) fs.unlinkSync(temporary); } catch { /* Best effort for this owned temporary only. */ } }
+    }
 }
 
 function isDevelopmentEnvironment() {
@@ -149,7 +190,7 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
-        if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
+        if (projectSnapshot) confirmProjectSources(projectSnapshot, config, 'before-target-compile');
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
         const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
 
@@ -195,8 +236,8 @@ async function main() {
         const builderCommand = 'aily-builder';
         const simulatorArtifactRequested = config.graphSemanticRevision !== undefined;
         const capabilities = readBuilderCapabilities(builderCommand);
-        if (projectSnapshot && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace || !capabilities.verification)) {
-            throw new Error('Current Builder cannot record selected build inputs with workspace ownership; upgrade it before requesting project delivery.');
+        if (projectSnapshot && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
+            throw new Error('Current Builder cannot record build-graph facts with workspace ownership; upgrade it before requesting project delivery.');
         }
         if (simulatorArtifactRequested && (!capabilities.artifact || !capabilities.graph || !capabilities.debug)) {
             throw new Error('Current Builder does not support Scene-bound simulation debug artifacts; upgrade it before simulating.');
@@ -333,6 +374,7 @@ async function main() {
         logger.log('编译完成');
 
     } catch (error) {
+        writeProjectInputDifference(error);
         logger.error(`[ERROR] ${error.message}`);
         process.exitCode = 1;
     } finally {

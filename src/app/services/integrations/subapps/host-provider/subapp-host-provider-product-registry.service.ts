@@ -35,6 +35,10 @@ export class SubappHostProviderProductRegistryService {
     SubappHostProviderProductFactory
   >();
 
+  hasRegistration(toolId: string): boolean {
+    return this.factories.has(toolId);
+  }
+
   register(
     toolIdValue: string,
     factory: SubappHostProviderProductFactory,

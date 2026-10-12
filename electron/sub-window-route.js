@@ -6,11 +6,14 @@ function normalizeSubWindowRoutePath(routePath) {
     .replace(/^\/+/, '');
 }
 
-function buildDevSubWindowRouteUrl(routePath, baseUrl = 'http://localhost:4200') {
-  return `${String(baseUrl || '').replace(/\/+$/, '')}/#/${normalizeSubWindowRoutePath(routePath)}`;
+function buildSubWindowRouteUrl(routePath, resolveRendererUrl) {
+  if (typeof resolveRendererUrl !== 'function') {
+    throw new Error('Renderer URL resolver is unavailable.');
+  }
+  return resolveRendererUrl(`#/${normalizeSubWindowRoutePath(routePath)}`);
 }
 
 module.exports = {
-  buildDevSubWindowRouteUrl,
+  buildSubWindowRouteUrl,
   normalizeSubWindowRoutePath,
 };

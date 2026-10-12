@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const esbuild = require('esbuild');
+const vm = require('node:vm');
 
 const integrationModulePromise = loadIntegrationModule();
 const now = 2_000_000_000_000;
@@ -86,6 +87,7 @@ test('Project callbacks persist a CAS Scene and exchange bounded Artifact bytes 
     workspaceIdentity,
     activeSceneId: sceneId,
     activeArtifactRevision: artifact.artifactId,
+    workspaceSourceSha256: null,
   });
 
   const sceneResult = await adapter.handleInvocation(providerInvocation(
@@ -146,6 +148,351 @@ test('Project callbacks persist a CAS Scene and exchange bounded Artifact bytes 
     Buffer.from(finalChunk.dataBase64, 'base64').toString(),
     'ware-v1',
   );
+});
+
+test('Project context preserves Artifact discovery while reporting live source unavailable, current, failure, or cancellation', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority } = await integrationModulePromise;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-source-context-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, '.build'));
+  const firmware = Buffer.from('source-context');
+  const artifact = artifactFixture(firmware, 'a'.repeat(64));
+  const manifestPath = path.join(root, '.build', 'aily-artifact-manifest.json');
+  await fs.writeFile(manifestPath, JSON.stringify(artifact));
+  let source = null;
+  let failure = null;
+  let duringRead = () => {};
+  const authority = new SimulatorProjectArtifactCallbackAuthority({
+    projectRoot: root, projectIdentity, workspaceIdentity, files: nodeFilePort(),
+    readWorkspaceSource: async signal => {
+      duringRead(signal);
+      if (failure) throw failure;
+      return source === null ? null : { sha256: source, isCurrent: () => true };
+    },
+  });
+  t.after(() => authority.close());
+  const read = signal => authority.callbacks.readContext({ projectIdentity }, signal);
+  const signal = new AbortController().signal;
+  let result = await read(signal);
+  assert.equal(result.activeArtifactRevision, artifact.artifactId);
+  assert.equal(result.workspaceSourceSha256, null);
+  source = 'c'.repeat(64);
+  result = await read(signal);
+  assert.equal(result.activeArtifactRevision, artifact.artifactId);
+  assert.equal(result.workspaceSourceSha256, source);
+  await fs.unlink(manifestPath);
+  result = await read(signal);
+  assert.equal(result.activeArtifactRevision, null);
+  assert.equal(result.workspaceSourceSha256, source);
+  failure = new Error('source-generation-failed');
+  await assert.rejects(read(signal), error => error === failure);
+  failure = null;
+  const abort = new AbortController();
+  duringRead = () => abort.abort();
+  await assert.rejects(read(abort.signal), error => error.code === 'cancelled');
+});
+
+test('normal Host product source callback fences generation, async hash races, project scope, and cancellation', async () => {
+  const currentRoot = 'D:\\projects\\source-current';
+  let revision = 1;
+  let code = 'void setup() {}\nvoid loop() {}\n';
+  let reusable = true;
+  let onDigest = () => {};
+  let captured;
+  const project = {
+    currentProjectPath: currentRoot, isProjectOpening: false,
+    isAilyCodeProject: () => false,
+    projectActivation$: { subscribe: () => ({ unsubscribe() {} }) },
+  };
+  const Service = await loadHostProductService({
+    digest: async (_algorithm, bytes) => {
+      onDigest();
+      return Uint8Array.from(crypto.createHash('sha256').update(bytes).digest()).buffer;
+    },
+    onComposition: options => { captured = options; },
+  });
+  const blockly = {
+    getWorkspaceContentRevision: () => revision,
+    getReusableGeneratedCode: () => reusable ? code : null,
+  };
+  const service = new Service({}, project, {}, {}, {}, {}, blockly, {}, {});
+  const session = await service.open({ hostInstanceId: 'source-test', transport: {} });
+  try {
+    const read = async signal => {
+      const source = await captured.readWorkspaceSource(signal);
+      return source?.isCurrent() ? source.sha256 : null;
+    };
+    const signal = new AbortController().signal;
+    assert.equal(await read(signal), sha256(code));
+    reusable = false;
+    assert.equal(await read(signal), null);
+    reusable = true;
+    for (const mutation of [
+      () => { revision++; },
+      () => { code += '// changed\n'; },
+      () => { reusable = false; },
+      () => { project.currentProjectPath = 'D:\\projects\\other'; },
+      () => { project.isProjectOpening = true; },
+    ]) {
+      project.currentProjectPath = currentRoot;
+      project.isProjectOpening = false;
+      reusable = true;
+      onDigest = mutation;
+      assert.equal(await read(signal), null);
+      onDigest = () => {};
+    }
+    for (const mutation of [
+      () => { revision++; },
+      () => { code += '// after hash\n'; },
+      () => { reusable = false; },
+      () => { project.currentProjectPath = 'D:\\projects\\other'; },
+      () => { project.isProjectOpening = true; },
+    ]) {
+      project.currentProjectPath = currentRoot;
+      project.isProjectOpening = false;
+      reusable = true;
+      const snapshot = await captured.readWorkspaceSource(signal);
+      assert.equal(snapshot.sha256, sha256(code));
+      assert.equal(snapshot.isCurrent(), true);
+      mutation();
+      assert.equal(snapshot.isCurrent(), false);
+    }
+    project.currentProjectPath = currentRoot;
+    project.isProjectOpening = false;
+    reusable = true;
+    const controller = new AbortController();
+    onDigest = () => controller.abort();
+    await assert.rejects(read(controller.signal), error => error.code === 'cancelled');
+    await assert.rejects(read(controller.signal), error => error.code === 'cancelled');
+    onDigest = () => { throw new Error('hash-failed'); };
+    await assert.rejects(read(signal), /hash-failed/);
+  } finally {
+    await session.close();
+  }
+});
+
+test('Project context refuses during-source-await same-source manifest replacement or removal', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority } = await integrationModulePromise;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-source-manifest-race-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, '.build'));
+  const firmware = Buffer.from('manifest-race');
+  const original = artifactFixture(firmware, 'a'.repeat(64));
+  const replacement = artifactFixture(Buffer.from('rebuilt-manifest-race'), 'a'.repeat(64));
+  assert.notEqual(original.artifactId, replacement.artifactId);
+  assert.equal(original.build.source.sha256, replacement.build.source.sha256);
+  const manifestPath = path.join(root, '.build', 'aily-artifact-manifest.json');
+  const signal = new AbortController().signal;
+  let reads = 0;
+  const baseFiles = nodeFilePort();
+  const files = {
+    ...baseFiles,
+    async readFile(filePath, inputSignal) {
+      if (filePath === manifestPath) reads++;
+      return baseFiles.readFile(filePath, inputSignal);
+    },
+  };
+  for (const mutation of [
+    () => fs.writeFile(manifestPath, JSON.stringify(replacement)),
+    () => fs.unlink(manifestPath),
+  ]) {
+    await fs.writeFile(manifestPath, JSON.stringify(original));
+    reads = 0;
+    const authority = new SimulatorProjectArtifactCallbackAuthority({
+      projectRoot: root, projectIdentity, workspaceIdentity, files,
+      readWorkspaceSource: async () => {
+        await mutation();
+        return { sha256: original.build.source.sha256, isCurrent: () => true };
+      },
+    });
+    try {
+      const result = await authority.callbacks.readContext({ projectIdentity }, signal);
+      assert.equal(result.activeArtifactRevision, null);
+      assert.equal(result.workspaceSourceSha256, original.build.source.sha256);
+      assert.ok(reads <= 2, 'context uses only a bounded manifest recheck');
+    } finally { authority.close(); }
+  }
+});
+
+test('Project context runs final source/project guard after the second manifest await', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority } = await integrationModulePromise;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-source-final-guard-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, '.build'));
+  const artifact = artifactFixture(Buffer.from('final-guard'), 'a'.repeat(64));
+  const manifestPath = path.join(root, '.build', 'aily-artifact-manifest.json');
+  await fs.writeFile(manifestPath, JSON.stringify(artifact));
+  let current = true;
+  let reads = 0;
+  const baseFiles = nodeFilePort();
+  const authority = new SimulatorProjectArtifactCallbackAuthority({
+    projectRoot: root, projectIdentity, workspaceIdentity,
+    files: {
+      ...baseFiles,
+      async readFile(filePath, signal) {
+        const bytes = await baseFiles.readFile(filePath, signal);
+        if (filePath === manifestPath && ++reads === 2) current = false;
+        return bytes;
+      },
+    },
+    readWorkspaceSource: async () => ({ sha256: artifact.build.source.sha256, isCurrent: () => current }),
+  });
+  t.after(() => authority.close());
+  const result = await authority.callbacks.readContext({ projectIdentity }, new AbortController().signal);
+  assert.equal(reads, 2);
+  assert.equal(result.activeArtifactRevision, artifact.artifactId);
+  assert.equal(result.workspaceSourceSha256, null);
+});
+
+test('Project callbacks keep the frozen real head bytes and storage revision through the shared codec', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority } = await integrationModulePromise;
+  const goldenBytes = await fs.readFile(path.resolve(__dirname,
+    '../../aily-simulator/packages/simulator-protocol/test/fixtures/project-scene-head-v1-real.json'));
+  assert.equal(goldenBytes.length, 64912);
+  assert.equal(sha256(goldenBytes), '64c675abc4090bd9493470e715f0f7b1d75c476f268fd68a146b96a02a3d5158');
+  const golden = JSON.parse(goldenBytes.toString('utf8'));
+  const scope = { projectIdentity: golden.descriptor.projectIdentity, sceneId: golden.descriptor.sceneId };
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-head-golden-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const authority = new SimulatorProjectArtifactCallbackAuthority({
+    projectRoot: root, ...scope, workspaceIdentity, files: nodeFilePort(),
+    createSceneCommitId: () => golden.commitId,
+  });
+  t.after(() => authority.close());
+  const signal = new AbortController().signal;
+  const missing = await authority.callbacks.readScene(scope, signal);
+  assert.equal(missing.kind, 'aily-simulator-host-project-scene-missing');
+  const descriptor = await authority.callbacks.writeScene({
+    ...scope, expectedStorageRevision: emptyRevision,
+    descriptor: { ...structuredClone(golden.descriptor), storageRevision: emptyRevision },
+  }, signal);
+  assert.deepEqual(descriptor, golden.descriptor);
+  const headPath = path.join(root, '.aily/simulator/scene-network-v2.json');
+  assert.deepEqual(await fs.readFile(headPath), goldenBytes);
+  assert.deepEqual(await authority.callbacks.readScene(scope, signal), golden.descriptor);
+  await assert.rejects(authority.callbacks.writeScene({
+    ...scope, expectedStorageRevision: emptyRevision,
+    descriptor: { ...golden.descriptor, storageRevision: emptyRevision },
+  }, signal), error => error.code === 'conflict');
+  // Reusing the same commit/content must not pretend to advance a revision.
+  await assert.rejects(authority.callbacks.writeScene({
+    ...scope, expectedStorageRevision: descriptor.storageRevision, descriptor,
+  }, signal), error => error.code === 'conflict');
+  assert.deepEqual(await fs.readFile(headPath), goldenBytes);
+});
+
+test('Project callbacks reject corrupt heads and direct descriptors as operation-failed without rewriting them', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority, SimulatorProjectHostProviderAdapter } = await integrationModulePromise;
+  const goldenBytes = await fs.readFile(path.resolve(__dirname,
+    '../../aily-simulator/packages/simulator-protocol/test/fixtures/project-scene-head-v1-real.json'));
+  const golden = JSON.parse(goldenBytes.toString('utf8'));
+  const scope = { projectIdentity: golden.descriptor.projectIdentity, sceneId: golden.descriptor.sceneId };
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-head-invalid-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const headPath = path.join(root, '.aily/simulator/scene-network-v2.json');
+  await fs.mkdir(path.dirname(headPath), { recursive: true });
+  const authority = new SimulatorProjectArtifactCallbackAuthority({
+    projectRoot: root, ...scope, workspaceIdentity, files: nodeFilePort(),
+  });
+  const adapter = new SimulatorProjectHostProviderAdapter({ ...authority.callbacks, now: () => now });
+  t.after(() => { adapter.close(); authority.close(); });
+  const missingCommit = structuredClone(golden);
+  delete missingCommit.commitId;
+  const invalidHeads = [
+    golden.descriptor,
+    { ...golden, kind: 'connection_output' },
+    { ...golden, extra: true },
+    missingCommit,
+    { ...golden, commitId: '' },
+    { ...golden, descriptor: { ...golden.descriptor, storageRevision: 'a'.repeat(64) } },
+    { ...golden, descriptor: { ...golden.descriptor, projectIdentity: 'project-other' } },
+    { ...golden, descriptor: { ...golden.descriptor, artifactAlignment: 'aligned' } },
+    { ...golden, descriptor: { ...golden.descriptor, runtimeAttachment: projectHeadRuntimeAttachment(golden.descriptor), artifactAlignment: 'aligned' } },
+  ];
+  for (const [index, head] of invalidHeads.entries()) {
+    const bytes = Buffer.from(JSON.stringify(head));
+    await fs.writeFile(headPath, bytes);
+    const result = await adapter.handleInvocation(providerInvocation('project', 'project.scene.read', scope, `invalid-${index}`));
+    assert.equal(result.status, 'failed');
+    assert.equal(result.errorCode, 'operation-failed');
+    assert.deepEqual(await fs.readFile(headPath), bytes);
+    assert.equal(JSON.stringify(result).includes(root), false);
+  }
+});
+
+test('Project callbacks preserve explicit write errors, factory errors, queued conflicts and cancellation', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority, SimulatorProjectHostProviderAdapter, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-head-errors-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const scope = { projectIdentity, sceneId };
+  const descriptor = {
+    schemaVersion: 1, kind: 'aily-project-scene-network-descriptor', ...scope,
+    storageRevision: emptyRevision, document: await createEmptySceneEditorDocumentV2(sceneId),
+    runtimeAttachment: null, artifactAlignment: 'detached',
+  };
+  const signal = new AbortController().signal;
+  const authority = new SimulatorProjectArtifactCallbackAuthority({
+    projectRoot: root, ...scope, workspaceIdentity, files: nodeFilePort(),
+    createSceneCommitId: () => 'scene-commit-fixed',
+  });
+  t.after(() => authority.close());
+  const write = (value, expectedStorageRevision = emptyRevision) => authority.callbacks.writeScene({
+    ...scope, expectedStorageRevision, descriptor: value,
+  }, signal);
+  await assert.rejects(write({ ...descriptor, projectIdentity: 'project-other' }), error => error.code === 'invalid-request');
+  await assert.rejects(write({ ...descriptor, storageRevision: 'a'.repeat(64) }), error => error.code === 'invalid-request');
+  await assert.rejects(write({ ...descriptor, runtimeAttachment: projectHeadRuntimeAttachment(descriptor), artifactAlignment: 'aligned' }), error => error.code === 'invalid-request');
+  await assert.rejects(write({ ...descriptor, kind: 'wrong' }), error => error.name === 'ProtocolValidationError' && error.code === undefined);
+  const badFactory = new SimulatorProjectArtifactCallbackAuthority({
+    projectRoot: root, ...scope, workspaceIdentity, files: nodeFilePort(), createSceneCommitId: () => '',
+  });
+  t.after(() => badFactory.close());
+  await assert.rejects(badFactory.callbacks.writeScene({ ...scope, expectedStorageRevision: emptyRevision, descriptor }, signal), error => error instanceof TypeError && error.code === undefined);
+  const badFactoryAdapter = new SimulatorProjectHostProviderAdapter({ ...badFactory.callbacks, now: () => now });
+  t.after(() => badFactoryAdapter.close());
+  const failedFactory = await badFactoryAdapter.handleInvocation(providerInvocation('project', 'project.scene.write', {
+    ...scope, expectedStorageRevision: emptyRevision, descriptor,
+  }));
+  assert.equal(failedFactory.status, 'failed');
+  assert.equal(failedFactory.errorCode, 'operation-failed');
+  const queued = await Promise.allSettled([write(descriptor), write(descriptor)]);
+  assert.equal(queued[0].status, 'fulfilled');
+  assert.equal(queued[1].status, 'rejected');
+  assert.equal(queued[1].reason.code, 'conflict');
+  const cancel = new AbortController();
+  cancel.abort();
+  await assert.rejects(authority.callbacks.readScene(scope, cancel.signal), error => error.code === 'cancelled');
+  authority.close();
+  await assert.rejects(authority.callbacks.readScene(scope, signal), error => error.code === 'cancelled');
+});
+
+test('Project callbacks keep regular-file and root checks outside the pure head codec', async t => {
+  const { SimulatorProjectArtifactCallbackAuthority } = await integrationModulePromise;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-head-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const scope = { projectIdentity, sceneId };
+  const signal = new AbortController().signal;
+  let reads = 0;
+  for (const mode of ['symlink', 'directory', 'oversize', 'escaped-root', 'permission-denied']) {
+    const files = {
+      ...nodeFilePort(),
+      async lstat() {
+        if (mode === 'permission-denied') throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return { size: mode === 'oversize' ? 32 * 1024 * 1024 + 1 : 1, isFile: mode !== 'directory', isSymbolicLink: mode === 'symlink' };
+      },
+      async realpath(value) {
+        return value === root ? root : path.resolve(root, '..', 'outside-head.json');
+      },
+      async readFile() { reads += 1; throw new Error('unsafe file must not be read'); },
+    };
+    const authority = new SimulatorProjectArtifactCallbackAuthority({
+      projectRoot: root, ...scope, workspaceIdentity, files,
+    });
+    try {
+      await assert.rejects(authority.callbacks.readScene(scope, signal), error => error.code === 'operation-failed');
+    } finally { authority.close(); }
+  }
+  assert.equal(reads, 0);
 });
 
 test('Project callback authority rejects cross-project scope and invalid Artifact handles without leaking paths', async t => {
@@ -225,8 +572,10 @@ test('Electron Project file adapter uses only generic preload path/file primitiv
         calls.push(['read', filePath]);
         return Uint8Array.from([1, 2, 3]).buffer;
       },
-      async writeFileBufferAtomicAsync(filePath, bytes) {
-        calls.push(['write-atomic', filePath, bytes.byteLength]);
+      async replaceProjectText(request, assertCurrent) {
+        assertCurrent();
+        calls.push(['replace-cas', request]);
+        return { status: 'COMMITTED' };
       },
       lstatSync(filePath) {
         calls.push(['lstat', filePath]);
@@ -247,11 +596,13 @@ test('Electron Project file adapter uses only generic preload path/file primitiv
     [...await port.readFile('project/.build/firmware.bin', signal)],
     [1, 2, 3],
   );
-  await port.writeFileAtomic(
-    'project/.aily/simulator/scene-network-v2.json',
+  assert.equal(await port.replaceFileAtomic(
+    'project', '.aily/simulator/scene-network-v2.json', null,
     Uint8Array.from([4, 5]),
     signal,
-  );
+  ), true);
+  assert.deepEqual(calls[1][1], { projectPath: 'project', fileName: '.aily/simulator/scene-network-v2.json',
+    expectedHash: null, content: '\u0004\u0005' });
   assert.equal((await port.lstat('project/file', signal)).isFile, true);
   assert.equal(
     await port.realpath('project/file', signal),
@@ -263,7 +614,7 @@ test('Electron Project file adapter uses only generic preload path/file primitiv
   );
   assert.deepEqual(calls.map(call => call[0]), [
     'read',
-    'write-atomic',
+    'replace-cas',
     'exists',
     'lstat',
     'realpath',
@@ -352,13 +703,15 @@ test('Build callbacks acknowledge, stream ordered progress, and deliver the grap
   authority.close();
 });
 
-test('Blockly Build execution waits for the visible main Agent before compiling the exact Scene revision', async () => {
+for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution forwards ${reason} and waits for the visible main Agent before compiling the exact Scene revision`, async () => {
   const {
     BlocklySimulatorBuildExecutionPort,
     createEmptySceneEditorDocumentV2,
+    validateSceneArtifactRebuildRequest,
   } = await integrationModulePromise;
   const document = await createEmptySceneEditorDocumentV2(sceneId);
-  const rebuild = rebuildRequest(document);
+  const rebuild = validateSceneArtifactRebuildRequest({ ...rebuildRequest(document), reason,
+    ...(reason === 'workspace-source-rebuild' ? { baseSceneRevision: document.graphSemanticRevision } : {}) });
   const artifact = artifactDescriptorFixture(
     Buffer.from('firmware-v3'),
     document.graphSemanticRevision,
@@ -416,6 +769,7 @@ test('Blockly Build execution waits for the visible main Agent before compiling 
   );
   await waitFor(() => agentRequests.length === 1);
   assert.equal(builderCalls.length, 0);
+  assert.equal(agentRequests[0].reason, reason);
 
   completeMainAgent(mainAgentSceneChangeResult(rebuild, {
     outcome: 'completed',
@@ -438,6 +792,130 @@ test('Blockly Build execution waits for the visible main Agent before compiling 
       'staging',
     ],
   );
+});
+
+for (const reason of [undefined, null, 'unknown']) test(`Blockly Build rejects ${String(reason)} rebuild reason before main Agent or Builder`, async () => {
+  const { BlocklySimulatorBuildExecutionPort, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const execution = new BlocklySimulatorBuildExecutionPort({
+    projectRoot: 'D:\\projects\\active', projectIdentity, sceneId,
+    activeProject: activeBlocklyProject('D:\\projects\\active'),
+    mainAgent: { async execute() { assert.fail('Invalid reason must not enter the main Agent.'); } },
+    builder: { async build() { assert.fail('Invalid reason must not enter Builder.'); } },
+    artifacts: { async readLatest() { assert.fail('Invalid reason must not access Artifacts.'); } },
+  });
+  await assert.rejects(execution.reconcileAndBuild({ ...rebuildRequest(document), reason }, { report() {} },
+    new AbortController().signal), error => error.simulatorBuildErrorCode === 'project-unavailable');
+});
+
+test('source recovery retries current code after Host completion and failed real Application replacement', async t => {
+  const { SimulatorBuildCallbackAuthority, SimulationSessionLifecycle, SimulationSessionScene,
+    SimulationBuildJobs, SimulationSceneArtifactReplacementApplication,
+    createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), attached = 'a'.repeat(64);
+  const current = { artifactRevision: attached, sourceSha256: 'b'.repeat(64) };
+  let ids = 0, hostBuilds = 0, subscriptions = 0, references = 0, editAtFirstProbe = true, scene, jobs;
+  const lifecyclePorts = controller => ({ assertAccess() {}, controller, isArtifactAligned: () => true,
+    debugger: { isAttached: () => false, async release() {} }, clock: { pause() {}, resume() {} },
+    assertPeripheralPortsIntegrity() {}, flushOutput() {}, events: { stateChanged() {}, failed() {}, recovered() {} } });
+  const boundSource = (artifactRevision, sourceSha256) => ({ artifactRevision, sourceSha256,
+    async readCurrent() { return { ...current }; } });
+  const lifecycle = new SimulationSessionLifecycle({ ...lifecyclePorts({ snapshot: () => ({ state: 'stopped' }) }),
+    executionSource: boundSource(attached, '1'.repeat(64)) });
+  scene = new SimulationSessionScene({ sessionId: 'source-recovery', sceneId, artifactRevision: attached,
+    artifactGraphSemanticRevision: document.graphSemanticRevision, document, lifecycle, state: () => 'stopped',
+    assertAccess() {}, createRebuildRequestId: () => `rebuild-v1-${(++ids).toString(16).padStart(64, '0')}`, publishStale() {} });
+  const original = artifactDescriptorFixture(Buffer.from('original'), document.graphSemanticRevision).artifact;
+  original.artifactId = attached; original.build.source.sha256 = '1'.repeat(64);
+  const artifacts = new Map([[`artifact-v1-${attached}`, { artifact: original, artifactDirectory: `artifact-v1-${attached}` }]]);
+  const manifest = { target: original.target, sceneId, sceneRevision: 'd'.repeat(64) };
+  const bindings = new Map([['source-recovery', { projectIdentity, artifactHandle: `artifact-v1-${attached}`,
+    artifactRevision: attached, artifactGraphSemanticRevision: document.graphSemanticRevision, sceneId,
+    sceneRevision: attached, sceneEditorDocument: document, manifest: { ...manifest, sceneRevision: attached },
+    projectDebugConfiguration: null, projectSceneLaunchId: 'source-launch' }]]);
+  let attachment = { sessionId: 'source-recovery', sceneRevision: attached,
+    graphSemanticRevision: document.graphSemanticRevision, artifactRevision: attached, capability: { capabilityId: 'old' } };
+  const runtimes = new Map([['source-recovery', { sessionId: 'source-recovery', sceneRevision: attached, state: 'stopped' }]]);
+  const access = {
+    async inspect(id) { return runtimes.get(id) ?? null; },
+    async create(id, recipe) {
+      const view = { sessionId: id, sceneRevision: recipe.manifest.sceneRevision, state: 'ready' };
+      const controller = { snapshot: () => ({ ...view }), async start() { view.state = 'running'; },
+        async pause() { view.state = 'paused'; }, async stop() { view.state = 'stopped'; } };
+      view.lifecycle = new SimulationSessionLifecycle({ ...lifecyclePorts(controller),
+        executionSource: boundSource(recipe.artifact.artifactId, recipe.artifact.build.source.sha256) });
+      runtimes.set(id, view); return view;
+    },
+    async remove(id) { runtimes.delete(id); },
+    async command(id, command) {
+      if (id !== 'source-recovery' && command === 'start' && editAtFirstProbe) {
+        editAtFirstProbe = false; current.sourceSha256 = 'c'.repeat(64);
+      }
+      const view = runtimes.get(id); await view.lifecycle.command(command); return view;
+    },
+    async restore(id, state) { const view = runtimes.get(id); await view.lifecycle.restoreStateForReplacement(state); return view; },
+    async closeInstruments() {}, async issueAttachment(scope) { return { ...scope, capability: { capabilityId: 'new' } }; },
+    async revokeAttachment() {},
+  };
+  const replacement = new SimulationSceneArtifactReplacementApplication({
+    bindings: { get: id => bindings.get(id), set: (id, binding) => bindings.set(id, binding) },
+    async resolveArtifact(project, handle) { assert.equal(project, projectIdentity); return artifacts.get(handle); },
+    async retainArtifact() { references++; return () => { references--; }; },
+    readRebuild: () => scene.createRebuildRequest(projectIdentity),
+    async compileScene() { return { manifest, report: { supported: true } }; },
+    async withReplacement(id, probe, operation) { await operation(access); },
+    projectScenes: { snapshot: () => ({ sceneId, document, runtimeAttachment: attachment }),
+      async replace(project, launch, previous, next) { assert.equal(previous, attachment); attachment = next; } },
+  });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(request, observer) {
+      hostBuilds++; observer.report('resolving', 100); observer.report('generating', 250);
+      observer.report('compiling', 500); observer.report('staging', 900);
+      const descriptor = artifactDescriptorFixture(Buffer.from(current.sourceSha256), request.sceneRevision);
+      descriptor.artifact.build.source.sha256 = current.sourceSha256;
+      artifacts.set(`artifact-v1-${descriptor.artifact.artifactId}`, { artifact: descriptor.artifact,
+        artifactDirectory: `artifact-v1-${descriptor.artifact.artifactId}` });
+      // Normal Builder manifest publication is output, not a new source request.
+      current.artifactRevision = descriptor.artifact.artifactId;
+      assert.equal((await scene.createRebuildRequest(projectIdentity)).requestId, request.requestId);
+      return descriptor;
+    },
+  } });
+  const listeners = new Map();
+  jobs = new SimulationBuildJobs({
+    async request(request) { return authority.callbacks.requestArtifact(request, new AbortController().signal); },
+    async subscribe(request) {
+      const subscriptionId = `provider-subscription-v1-${(++subscriptions).toString(16).padStart(64, '0')}`;
+      listeners.set(subscriptionId, authority.callbacks.subscribeProgress(progressSubscription(request),
+        progress => { void jobs.handleBuildEvent({ subscriptionId, payload: progress }); }, new AbortController().signal));
+      return { subscriptionId, requestId: request.requestId };
+    },
+    releaseSubscription(id) { listeners.get(id)?.close(); listeners.delete(id); },
+    async importArtifact(descriptor) { return { artifactHandle: `artifact-v1-${descriptor.artifact.artifactId}`,
+      artifactId: descriptor.artifact.artifactId, artifactRevision: descriptor.artifactRevision, sourceMapRevision: null }; },
+    async releaseArtifact() {}, replace: request => replacement.replace(request),
+    operation() { let cancelled = false; const listeners = new Set(); return { context: undefined,
+      cancelled: () => cancelled, cancel() { if (cancelled) return; cancelled = true; for (const call of listeners) call(); },
+      dispose() {}, subscribeCancel(call) { listeners.add(call); return () => listeners.delete(call); } }; },
+    createReplacementId: () => `replacement-v1-${subscriptions.toString(16).padStart(64, '0')}`,
+  });
+  t.after(async () => { await jobs.close(); authority.close(); await scene.close(); });
+  const first = await scene.createRebuildRequest(projectIdentity);
+  assert.equal((await scene.createRebuildRequest(projectIdentity)).requestId, first.requestId, 'same source stays idempotent');
+  assert.equal((await jobs.requestRebuild(first)).status, 'accepted');
+  const failed = await jobs.waitForTerminal(first.requestId);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.replacementErrorCode, 'session-create-failed');
+  assert.equal(hostBuilds, 1); assert.equal(bindings.get('source-recovery').artifactRevision, attached);
+  assert.equal(runtimes.get('source-recovery').state, 'stopped'); assert.equal(references, 0);
+  const retry = await scene.createRebuildRequest(projectIdentity);
+  assert.notEqual(retry.requestId, first.requestId, 'verified new source must not replay a completed old Host build');
+  assert.equal(retry.baseArtifactRevision, attached); assert.equal(retry.sceneRevision, first.sceneRevision);
+  assert.equal((await scene.createRebuildRequest(projectIdentity)).requestId, retry.requestId);
+  assert.equal((await jobs.requestRebuild(retry)).status, 'accepted');
+  const committed = await jobs.waitForTerminal(retry.requestId);
+  assert.equal(committed.status, 'committed'); assert.equal(hostBuilds, 2);
+  assert.equal(attachment.artifactRevision, current.artifactRevision);
+  assert.equal(runtimes.get('source-recovery').state, 'stopped'); assert.equal(runtimes.size, 1); assert.equal(references, 0);
 });
 
 test('a main-Agent user-edit conflict fails generation before Builder starts', async () => {
@@ -502,6 +980,7 @@ test('Simulator Scene request becomes an ordinary main-Agent message with bounde
     requestId: rebuild.requestId,
     projectIdentity,
     sceneId,
+    reason: rebuild.reason,
     graphSemanticRevision: rebuild.sceneRevision,
     sceneDocument: rebuild.sceneDocument,
   };
@@ -522,17 +1001,19 @@ test('Simulator Scene request becomes an ordinary main-Agent message with bounde
   assert.equal(message.includes('connection_output.json'), false);
 });
 
-test('product composition delivers the main-Agent Scene change through normal Builder and Project Artifact callbacks', async t => {
+for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`product composition delivers ${reason} through main Agent, normal Scene-bound Builder and Project Artifact callbacks`, async t => {
   const {
     SimulatorBuildHostProviderAdapter,
     SimulatorBuildProductComposition,
     SimulatorProjectHostProviderAdapter,
     createEmptySceneEditorDocumentV2,
+    validateSceneArtifactRebuildRequest,
   } = await integrationModulePromise;
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-build-composition-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const document = await createEmptySceneEditorDocumentV2(sceneId);
-  const rebuild = rebuildRequest(document);
+  const rebuild = validateSceneArtifactRebuildRequest({ ...rebuildRequest(document), reason,
+    ...(reason === 'workspace-source-rebuild' ? { baseSceneRevision: document.graphSemanticRevision } : {}) });
   const firmware = Buffer.from('product-composition-firmware');
   const calls = [];
   const events = [];
@@ -545,6 +1026,7 @@ test('product composition delivers the main-Agent Scene change through normal Bu
     activeProject: activeBlocklyProject(root),
     mainAgent: {
       async execute(request) {
+        assert.equal(request.reason, reason);
         calls.push(['reconcile', request.requestId, request.graphSemanticRevision]);
         return mainAgentSceneChangeResult(rebuild, {
           outcome: 'completed',
@@ -798,6 +1280,65 @@ test('a failed normal Builder keeps the previous Artifact and the same immutable
     ['main-agent', rebuild.requestId],
     ['build', rebuild.requestId],
   ]);
+});
+
+for (const firstFailure of [
+  { label: 'explicit normal Builder button cancellation', errorCode: 'build-cancelled', expectedStage: 'cancelled', expectedCode: 'cancelled' },
+  { label: 'an ordinary warning with cancellation text', state: 'warn', expectedStage: 'failed', expectedCode: 'compile-failed' },
+  { label: 'an ordinary compile error', state: 'error', expectedStage: 'failed', expectedCode: 'compile-failed' },
+]) test(`Build callback preserves ${firstFailure.label} and retries the same immutable request`, async t => {
+  const { BlocklySimulatorBuildExecutionPort, SimulatorBuildCallbackAuthority,
+    SimulatorBuildHostProviderAdapter, createSimulatorBlocklyBuilderPort, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const rebuild = rebuildRequest(document);
+  let attempts = 0;
+  let artifactReads = 0;
+  let hostSignal;
+  const descriptor = artifactDescriptorFixture(Buffer.from('retry-after-builder-outcome'), document.graphSemanticRevision);
+  const execution = new BlocklySimulatorBuildExecutionPort({
+    projectRoot: 'project', projectIdentity, sceneId, activeProject: activeBlocklyProject('project'),
+    mainAgent: { async execute(request, signal) {
+      hostSignal = signal;
+      return mainAgentSceneChangeResult(rebuild, { outcome: 'completed', agentRunId: 'agent:builder-outcome' });
+    } },
+    builder: createSimulatorBlocklyBuilderPort({
+      async buildActiveBlocklyProject() {
+        if (++attempts === 1) throw Object.assign(new Error('已取消，耗时 1.23 秒'), {
+          state: firstFailure.state ?? 'warn',
+          ...(firstFailure.errorCode ? { errorCode: firstFailure.errorCode } : {}),
+        });
+      },
+      cancelActiveBlocklyProjectBuild() { assert.fail('Normal button cancellation did not abort the Host request.'); },
+    }),
+    artifacts: { async readLatest() { artifactReads++; return descriptor; } },
+  });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution });
+  const events = [];
+  const adapter = new SimulatorBuildHostProviderAdapter({ ...authority.callbacks,
+    now: () => now, publishProgressEvent: event => events.push(event),
+    createSubscriptionId: () => `provider-subscription-v1-${'5'.repeat(64)}`,
+    createEventId: () => `provider-event-v1-${'4'.repeat(64)}`,
+  });
+  t.after(() => { adapter.close(); authority.close(); });
+  async function requestAndSubscribe(suffix) {
+    const ack = await adapter.handleInvocation(providerInvocation('build', 'build.artifact.request', rebuild, suffix));
+    assert.equal(ack.status, 'succeeded'); assert.equal(ack.payload.status, 'accepted');
+    const subscription = await adapter.handleInvocation(providerInvocation('build', 'build.progress.subscribe', progressSubscription(rebuild), suffix));
+    assert.equal(subscription.status, 'succeeded');
+  }
+  await requestAndSubscribe('first');
+  await waitFor(() => events.some(event => ['cancelled', 'failed'].includes(event.payload.stage)));
+  const terminal = events.find(event => ['cancelled', 'failed'].includes(event.payload.stage)).payload;
+  assert.equal(terminal.stage, firstFailure.expectedStage);
+  assert.equal(terminal.errorCode, firstFailure.expectedCode);
+  assert.equal(terminal.artifact, null);
+  assert.equal(artifactReads, 0, 'Failure/cancellation must not read an old latest Artifact.');
+  assert.equal(hostSignal.aborted, false, 'User Builder cancellation is a typed outcome, not a synthetic Host abort.');
+  await waitFor(() => adapter.snapshot().activeSubscriptions === 0);
+  await requestAndSubscribe('retry');
+  await waitFor(() => events.some(event => event.payload.stage === 'completed'));
+  assert.equal(events.find(event => event.payload.stage === 'completed').payload.requestId, rebuild.requestId);
+  assert.equal(attempts, 2); assert.equal(artifactReads, 1);
 });
 
 test('closing product composition cancels the pending main Agent before Builder or Artifact access', async () => {
@@ -1461,17 +2002,15 @@ function nodeFilePort() {
       throwIfAborted(signal);
       return new Uint8Array(value);
     },
-    async writeFileAtomic(filePath, bytes, signal) {
+    async replaceFileAtomic(projectRoot, relativePath, expectedBytes, bytes, signal) {
       throwIfAborted(signal);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      const temporaryPath = `${filePath}.${crypto.randomUUID()}.tmp`;
-      try {
-        await fs.writeFile(temporaryPath, bytes, { flag: 'wx', mode: 0o600 });
-        throwIfAborted(signal);
-        await fs.rename(temporaryPath, filePath);
-      } finally {
-        await fs.rm(temporaryPath, { force: true });
-      }
+      const result = await require('./project-file-writer').replaceProjectText({ projectPath: projectRoot,
+        fileName: relativePath, expectedHash: expectedBytes === null ? null : `sha256:${sha256(expectedBytes)}`,
+        content: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }, () => throwIfAborted(signal));
+      throwIfAborted(signal);
+      if (result.status === 'CONFLICT') return false;
+      if (result.status !== 'COMMITTED' || result.warnings?.length) throw Object.assign(new Error(result.error ?? 'publication failed'), { code: result.code });
+      return true;
     },
     async lstat(filePath, signal) {
       throwIfAborted(signal);
@@ -1485,6 +2024,22 @@ function nodeFilePort() {
     async realpath(filePath, signal) {
       throwIfAborted(signal);
       return await fs.realpath(filePath);
+    },
+  };
+}
+
+function projectHeadRuntimeAttachment(descriptor) {
+  const sceneRevision = descriptor.document.visualRevision;
+  return {
+    schemaVersion: 1, kind: 'aily-project-scene-runtime-attachment', sessionId: 'session-1',
+    sceneRevision, graphSemanticRevision: descriptor.document.graphSemanticRevision,
+    artifactRevision: 'a'.repeat(64), gatewayOrigin: 'http://127.0.0.1:54321',
+    capability: {
+      schemaVersion: 1, kind: 'aily-scene-session-capability-grant', capabilityId: 'capability:scene-main',
+      sessionId: 'session-1', sceneId: descriptor.sceneId, sceneRevision,
+      permissions: ['scene.descriptor', 'scene.events', 'device.action', 'uart.read', 'uart.write', 'debug.inspect', 'debug.control'],
+      issuedAtUnixMs: 1000000, expiresAtUnixMs: 4600000,
+      accessToken: 'aily_sc_test_token'.padEnd(64, 'x'),
     },
   };
 }
@@ -1580,6 +2135,7 @@ async function loadIntegrationModule() {
     stdin: {
       contents: [
         `export * from ${JSON.stringify(sdkEntry)};`,
+        `export { validateSceneArtifactRebuildRequest } from '@aily-project/simulator-protocol/scene';`,
         `export * from ${JSON.stringify(sceneModelEntry)};`,
         `export * from ${JSON.stringify(projectAuthority)};`,
         `export * from ${JSON.stringify(buildAuthority)};`,
@@ -1591,6 +2147,8 @@ async function loadIntegrationModule() {
         `export * from ${JSON.stringify(buildProductComposition)};`,
         `export * from ${JSON.stringify(editorAuthority)};`,
         `export * from ${JSON.stringify(entitlementAuthority)};`,
+        ...['session-lifecycle', 'session-scene', 'build-jobs', 'scene-artifact-replacement'].map(name =>
+          `export * from ${JSON.stringify(path.join(simulatorRoot, 'packages/simulator-application/src', `${name}.ts`))};`),
       ].join('\n'),
       resolveDir: __dirname,
       sourcefile: 'simulator-product-callback-test-entry.ts',
@@ -1613,4 +2171,52 @@ async function loadIntegrationModule() {
   } finally {
     await fs.rm(outfile, { force: true });
   }
+}
+
+async function loadHostProductService({ digest, onComposition }) {
+  const filename = path.resolve(__dirname,
+    '../src/app/integrations/simulator/simulator-host-provider-product.service.ts');
+  const source = await fs.readFile(filename, 'utf8');
+  const transformed = await esbuild.transform(source, {
+    loader: 'ts', format: 'cjs', target: 'node22',
+    tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+  });
+  class ProviderError extends Error {
+    constructor(code) { super(code); this.code = code; }
+  }
+  class CallbackAuthority { callbacks = {}; close() {} clearDebugMarker() {} }
+  const imports = {
+    '@angular/core': { Injectable: () => value => value },
+    '@aily-project/simulator-host-sdk': {
+      SimulatorHostProviderOperationError: ProviderError,
+      createSimulatorHostProviderDispatcherAdapterBundle: () => ({ adapters: [], close() {} }),
+    },
+    '@integration/subapps/public-api': {
+      SubappHostProviderDispatcher: class {
+        bindTransport() { return () => {}; }
+        async close() {}
+      },
+    },
+    './simulator-build-product-composition': {
+      SimulatorBuildProductComposition: class {
+        projectCallbacks = {}; buildCallbacks = {};
+        constructor(options) { onComposition(options); }
+        close() {}
+      },
+    },
+    './simulator-blockly-editor-callback-authority': { SimulatorBlocklyEditorCallbackAuthority: CallbackAuthority },
+    './simulator-entitlement-callback-authority': { SimulatorEntitlementCallbackAuthority: CallbackAuthority },
+    './simulator-electron-project-artifact-file-port': { createSimulatorElectronProjectArtifactFilePort: () => ({}) },
+  };
+  const module = { exports: {} };
+  vm.runInNewContext(transformed.code, {
+    module, exports: module.exports, TextEncoder, Uint8Array,
+    crypto: { subtle: { digest } },
+    window: { path: path.win32 },
+    require(specifier) {
+      assert.ok(Object.hasOwn(imports, specifier), `Unexpected product dependency: ${specifier}`);
+      return imports[specifier];
+    },
+  }, { filename, timeout: 10_000 });
+  return module.exports.SimulatorHostProviderProductService;
 }

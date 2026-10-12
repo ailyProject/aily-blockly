@@ -13,7 +13,7 @@ import {
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { TranslateService } from '@ngx-translate/core';
 import { Connection, WindowMessenger, connect } from 'penpal';
-import { Subscription } from 'rxjs';
+import { merge, Subscription } from 'rxjs';
 
 import {
   ChildToolUiSurfaceConfig,
@@ -26,6 +26,7 @@ import {
   type ChildToolHostInfo,
   type ChildToolRuntimeSnapshot,
   SubappActivityService,
+  SubappWorkspaceHostProviderService,
   type SubappActivitySummaryState,
 } from '@integration/subapps/public-api';
 import { ElectronService } from '@core/platform/public-api';
@@ -50,6 +51,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
   @Input() instanceId = '';
   @Input() sessionId = '';
   @Input() active = true;
+  @Input() hostWorkspace: string | null | undefined;
   @Output() readonly closeRequested = new EventEmitter<void>();
 
   hostStatus: CompactHostStatus = 'idle';
@@ -85,6 +87,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     private readonly themeService: ThemeService,
     private readonly ngZone: NgZone,
     private readonly uiService: UiService,
+    private readonly workspaceHostProviders: SubappWorkspaceHostProviderService,
   ) {}
 
   get isLoading(): boolean {
@@ -97,7 +100,9 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     this.initialized = true;
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
-    this.projectSubscription = this.projectService.currentProjectPath$.subscribe(() => {
+    this.projectSubscription = merge(
+      this.projectService.currentProjectPath$, this.workspaceHostProviders.readyWorkspaceChanges$,
+    ).subscribe(() => {
       if (this.initialized) this.syncHostContext(true);
     });
     this.bindTool();
@@ -111,7 +116,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       return;
     }
 
-    if ((changes['placement'] || changes['active']) && this.active) {
+    if (changes['hostWorkspace'] || ((changes['placement'] || changes['active']) && this.active)) {
       this.syncHostContext(true);
     }
   }
@@ -353,7 +358,8 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       theme: this.themeService.theme(),
       platform: (window as any).electronAPI?.platform?.type || 'browser',
       embedded: true,
-      workspace: this.projectService.currentProjectPath || null,
+      workspace: this.hostWorkspace !== undefined ? this.hostWorkspace
+        : this.workspaceHostProviders.readReadyWorkspace(this.toolId),
       surface: this.surface || 'compact',
       placement: this.placement || 'chat-dock',
       density: 'compact',

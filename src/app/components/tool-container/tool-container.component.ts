@@ -20,6 +20,8 @@ export class ToolContainerComponent {
 
   @Output() refreshEvent = new EventEmitter();
 
+  @Output() openWindowEvent = new EventEmitter<void>();
+
   constructor(private uiService: UiService) {}
 
   close() {
@@ -39,6 +41,10 @@ export class ToolContainerComponent {
   }
 
   openWindow() {
+    if (this.openWindowEvent.observed) {
+      this.openWindowEvent.emit();
+      return;
+    }
     this.uiService.openWindow({
       path: this.path,
       title: this.title,

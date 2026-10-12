@@ -17,11 +17,6 @@ import {
   type SubappRuntimeState,
 } from './subapp-activity.service';
 import { resolveSubappAgentPresentation } from './models/subapp-agent-presentation';
-import { createSubappHostProviderChildToolTransport } from './host-provider/subapp-host-provider-child-tool-transport';
-import {
-  SubappHostProviderProductRegistryService,
-  type SubappHostProviderProductSession,
-} from './host-provider/subapp-host-provider-product-registry.service';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../../configs/required-subapp.config';
 import { SubappOwnerRequests } from './models/subapp-owner-requests';
 import { SubappAgentOwnerLeases } from './models/subapp-agent-owner-leases';
@@ -61,8 +56,6 @@ interface SubappRpcChannel {
   pending: Map<string, PendingRequest>;
   sessionIds: Set<string>;
   hasUnscopedOwner: boolean;
-  providerBound: boolean;
-  providerSession: SubappHostProviderProductSession | null;
 }
 
 interface ResolvedAgentTool {
@@ -102,7 +95,6 @@ export class SubappAgentBridgeService implements OnDestroy {
     @Inject(SUBAPP_AUTOMATION_PORT)
     private readonly automation: SubappAutomationPort,
     private readonly subappActivityService: SubappActivityService,
-    private readonly providerProducts: SubappHostProviderProductRegistryService,
   ) {}
 
   async execute(
@@ -409,7 +401,7 @@ export class SubappAgentBridgeService implements OnDestroy {
         'Subapp Agent bridge stopped',
         'SUBAPP_BRIDGE_STOPPED',
       ));
-      if (channel.acquired || channel.providerSession) {
+      if (channel.acquired) {
         void this.releaseChannel(channel);
       }
     }
@@ -641,8 +633,6 @@ export class SubappAgentBridgeService implements OnDestroy {
         pending: new Map(),
         sessionIds: new Set(),
         hasUnscopedOwner: false,
-        providerBound: false,
-        providerSession: null,
       };
       this.channels.set(toolId, channel);
     }
@@ -689,7 +679,6 @@ export class SubappAgentBridgeService implements OnDestroy {
       channel.hostInfo = await this.childToolProcessService.acquire(channel.toolId);
       channel.acquired = true;
     }
-    await this.ensureProviderProduct(channel);
     if (channel.disposed) {
       await this.releaseChannel(channel);
       throw new SubappRpcError('Subapp Agent bridge stopped', 'SUBAPP_BRIDGE_STOPPED');
@@ -813,43 +802,15 @@ export class SubappAgentBridgeService implements OnDestroy {
       await channel.releasePromise;
       return;
     }
-    if (!channel.acquired && !channel.providerSession) return;
-    const acquired = channel.acquired;
+    if (!channel.acquired) return;
     channel.acquired = false;
-    channel.providerBound = false;
-    const providerSession = channel.providerSession;
-    channel.providerSession = null;
-    const releasePromise = (async () => {
-      try {
-        await providerSession?.close();
-      } finally {
-        if (acquired) {
-          await this.childToolProcessService.release(channel.toolId);
-        }
-      }
-    })();
+    const releasePromise = this.childToolProcessService.release(channel.toolId);
     channel.releasePromise = releasePromise;
     try {
       await releasePromise;
     } finally {
       if (channel.releasePromise === releasePromise) channel.releasePromise = null;
     }
-  }
-
-  private async ensureProviderProduct(channel: SubappRpcChannel): Promise<void> {
-    if (channel.providerBound) return;
-    const config = getChildToolConfig(channel.toolId);
-    channel.providerSession = config?.runtime?.processMessagePort
-      ? await this.providerProducts.open({
-          toolId: channel.toolId,
-          hostInstanceId: `agent:${channel.toolId}`,
-          transport: createSubappHostProviderChildToolTransport(
-            channel.toolId,
-            this.childToolProcessService,
-          ),
-        })
-      : null;
-    channel.providerBound = true;
   }
 
   private handleMessage(channel: SubappRpcChannel, event: MessageEvent): void {

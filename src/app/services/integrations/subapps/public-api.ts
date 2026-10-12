@@ -7,6 +7,7 @@ export * from './child-tool-process.service';
 export * from './host-provider/subapp-host-provider-dispatcher';
 export * from './host-provider/subapp-host-provider-child-tool-transport';
 export * from './host-provider/subapp-host-provider-product-registry.service';
+export * from './host-provider/subapp-workspace-host-provider.service';
 export * from './models/child-tool-runtime-entry';
 export * from './models/subapp-agent-presentation';
 export * from './operations/child-tool-close-lifecycle';

@@ -1,6 +1,40 @@
 import { of, Subject } from 'rxjs';
 import { BuilderService } from './builder.service';
 
+describe('BuilderService typed cancellation', () => {
+  function failureHarness(result: { state: string; text: string; errorCode?: string }) {
+    const service = new BuilderService({
+      hasListener: () => true,
+      dispatchWithFeedback: () => of({ success: true, data: { success: false, result } }),
+    } as any, {
+      currentProjectPath: '/workspace/blockly',
+      boardChangeSubject: new Subject<void>(),
+      isAilyCodeProject: () => false,
+    } as any, {} as any, {} as any, { isWindowFocused: () => true } as any, {} as any);
+    return service;
+  }
+
+  it('preserves the explicit normal Builder cancellation code and localized text', async () => {
+    const result = { state: 'warn', text: '已取消，耗时 1.23 秒', errorCode: 'build-cancelled' };
+    const service = failureHarness(result);
+    const error = await service.buildActiveBlocklyProject({ projectPath: '/workspace/blockly',
+      graphSemanticRevision: 'a'.repeat(64), requestId: 'request-main' }).catch(value => value);
+    expect(error).toEqual(jasmine.any(Error));
+    expect(error.errorCode).toBe('build-cancelled');
+    expect(error.message).toBe(result.text);
+    expect(error.text).toBe(result.text);
+    expect(error.buildResult).toBe(result);
+  });
+
+  for (const state of ['warn', 'error']) it(`does not infer ${state} cancellation from text`, async () => {
+    const service = failureHarness({ state, text: '已取消，耗时 1.23 秒' });
+    const error = await service.buildActiveBlocklyProject({ projectPath: '/workspace/blockly',
+      graphSemanticRevision: 'a'.repeat(64), requestId: 'request-main' }).catch(value => value);
+    expect(error.errorCode).toBeUndefined();
+    expect(error.state).toBe(state);
+  });
+});
+
 describe('BuilderService Coder persistence', () => {
   function createHarness(options: { coder: boolean; saveSucceeds?: boolean; switchDuringSave?: boolean }) {
     const events: string[] = [];

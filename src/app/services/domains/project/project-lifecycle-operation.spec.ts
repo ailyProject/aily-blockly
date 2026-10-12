@@ -1,4 +1,4 @@
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
@@ -69,6 +69,10 @@ describe('project lifecycle admission across sessions', () => {
     const registry = new AiOperationRegistryService();
     service.projectLifecycle = new ProjectLifecycleGate();
     service.currentProjectPathSubject = new BehaviorSubject('/a');
+    service.stateSubject = new BehaviorSubject('loaded');
+    service.projectOpenTask = null;
+    service.projectOpeningChangedSubject = new Subject<void>();
+    service.projectOpeningChanged$ = service.projectOpeningChangedSubject.asObservable();
     service.coderProjectsSubject = new BehaviorSubject([]);
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
@@ -182,6 +186,115 @@ describe('project lifecycle admission across sessions', () => {
     await expectAsync(service.projectOpen('/b')).toBeRejectedWithError('load failed');
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
     expect(service.isProjectTransitionInProgress('/b')).toBeFalse();
+  });
+
+  it('notifies after setting an opening task and after clearing that exact task', async () => {
+    const { service } = fixture();
+    let finishOpen!: (opened: boolean) => void;
+    service.projectOpenInternal.and.returnValue(new Promise<boolean>(resolve => { finishOpen = resolve; }));
+    const notifications: Array<{ path: string | null; opening: boolean }> = [];
+    service.projectOpeningChanged$.subscribe(() => notifications.push({
+      path: service.projectOpenTask?.path ?? null,
+      opening: service.isProjectOpening,
+    }));
+
+    const opening = service.projectOpen('/b');
+    expect(service.projectOpenTask.path).toBe('/b');
+    expect(notifications).toEqual([{ path: '/b', opening: true }]);
+
+    finishOpen(true);
+    await expectAsync(opening).toBeResolvedTo(true);
+    expect(service.projectOpenTask).toBeNull();
+    expect(notifications).toEqual([
+      { path: '/b', opening: true },
+      { path: null, opening: false },
+    ]);
+  });
+
+  it('remains opening when loaded is published before the task clears and then notifies readiness', async () => {
+    const { service } = fixture();
+    service.stateSubject.next('loading');
+    let finishOpen!: (opened: boolean) => void;
+    service.projectOpenInternal.and.returnValue(new Promise<boolean>(resolve => { finishOpen = resolve; }));
+    const notifications: Array<{ state: string; opening: boolean }> = [];
+    const openingAtLoaded: boolean[] = [];
+    service.projectOpeningChanged$.subscribe(() => notifications.push({
+      state: service.stateSubject.value,
+      opening: service.isProjectOpening,
+    }));
+    service.stateSubject.subscribe((state: string) => {
+      if (state === 'loaded') openingAtLoaded.push(service.isProjectOpening);
+    });
+
+    const opening = service.projectOpen('/b');
+    service.stateSubject.next('loaded');
+    expect(openingAtLoaded).toEqual([true]);
+    expect(service.isProjectOpening).toBeTrue();
+    expect(notifications).toEqual([{ state: 'loading', opening: true }]);
+
+    finishOpen(true);
+    await opening;
+    expect(service.isProjectOpening).toBeFalse();
+    expect(notifications).toEqual([
+      { state: 'loading', opening: true },
+      { state: 'loaded', opening: false },
+    ]);
+  });
+
+  it('does not clear a replacement root task or notify its readiness from an old finally', async () => {
+    const { service } = fixture();
+    let finishOpen!: (opened: boolean) => void;
+    service.projectOpenInternal.and.returnValue(new Promise<boolean>(resolve => { finishOpen = resolve; }));
+    const notifications: Array<{ root: string; opening: boolean }> = [];
+    service.projectOpeningChanged$.subscribe(() => notifications.push({
+      root: service.currentProjectPath,
+      opening: service.isProjectOpening,
+    }));
+
+    const openingA = service.projectOpen('/a');
+    const taskA = service.projectOpenTask;
+    const replacement = {
+      ...taskA,
+      path: '/b',
+      paths: ['/b'],
+      // Reusing the promise deliberately proves task identity, not promise identity.
+      promise: taskA.promise,
+      lease: { token: Symbol('replacement-b'), release: jasmine.createSpy('releaseB') },
+    };
+    service.currentProjectPathSubject.next('/b');
+    service.projectOpenTask = replacement;
+
+    finishOpen(true);
+    await openingA;
+    expect(service.projectOpenTask).toBe(replacement);
+    expect(service.isProjectOpening).toBeTrue();
+    expect(replacement.lease.release).not.toHaveBeenCalled();
+    expect(notifications).toEqual([{ root: '/a', opening: true }]);
+    expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
+  });
+
+  it('clears and notifies the exact failed task while preserving the original error', async () => {
+    const { service } = fixture();
+    const failure = new Error('loader failed after opening');
+    let failOpen!: (error: Error) => void;
+    service.projectOpenInternal.and.returnValue(new Promise<boolean>((_resolve, reject) => { failOpen = reject; }));
+    const notifications: Array<{ path: string | null; opening: boolean }> = [];
+    service.projectOpeningChanged$.subscribe(() => notifications.push({
+      path: service.projectOpenTask?.path ?? null,
+      opening: service.isProjectOpening,
+    }));
+
+    const opening = service.projectOpen('/b');
+    expect(notifications).toEqual([{ path: '/b', opening: true }]);
+    failOpen(failure);
+    expect(await opening.catch((error: unknown) => error)).toBe(failure);
+    expect(service.projectOpenTask).toBeNull();
+    expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
+    expect(service.isProjectTransitionInProgress('/b')).toBeFalse();
+    expect(notifications).toEqual([
+      { path: '/b', opening: true },
+      { path: null, opening: false },
+    ]);
   });
 
   it('protects the entire host mutation including its asynchronous tail and always releases it', async () => {

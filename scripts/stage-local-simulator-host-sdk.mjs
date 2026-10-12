@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import {
   access,
   mkdir,
@@ -185,9 +186,10 @@ function parsePackResult(stdout, expectedName) {
 }
 
 async function runNpm(args, cwd) {
-  const npmCli = String(process.env.npm_execpath || '').trim();
-  if (npmCli) {
-    return run(process.execPath, [npmCli, ...args], cwd);
-  }
-  return run(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, cwd);
+  const npmCli = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].find(candidate => candidate && /\.[cm]?js$/iu.test(candidate) && existsSync(candidate));
+  if (!npmCli) throw new Error('Unable to locate npm-cli.js.');
+  return run(process.execPath, [npmCli, ...args], cwd);
 }

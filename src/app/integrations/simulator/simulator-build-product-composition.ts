@@ -39,6 +39,7 @@ export interface SimulatorBuildProductCompositionOptions {
   now?: () => number;
   createArtifactReference?: () => string;
   createSceneCommitId?: () => string;
+  readWorkspaceSource?: SimulatorProjectArtifactCallbackAuthorityOptions['readWorkspaceSource'];
 }
 
 export interface SimulatorBuildProductCompositionSnapshot {
@@ -94,6 +95,9 @@ export class SimulatorBuildProductComposition {
         : {}),
       ...(options.createSceneCommitId
         ? { createSceneCommitId: options.createSceneCommitId }
+        : {}),
+      ...(options.readWorkspaceSource
+        ? { readWorkspaceSource: options.readWorkspaceSource }
         : {}),
     });
     const builder = createSimulatorBlocklyBuilderPort(options.builderService);

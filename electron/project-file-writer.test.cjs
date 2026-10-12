@@ -105,6 +105,42 @@ test('independent processes follow the same project lock and CAS', async () => {
   })));
   assert.equal(results.filter(r => r.status === 'COMMITTED').length, 1); assertClean(root);
 });
+
+test('Scene head publication uses the existing project lock and exact bytes, not an in-process Scene queue', async () => {
+  const root = project(); const name = '.aily/simulator/scene-network-v2.json';
+  const target = path.join(root, name); const before = '{"head":"original"}\n';
+  assert.equal((await replaceProjectText(request(root, before, null, name), guard)).status, 'COMMITTED');
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => replaceProjectText(request(root, `head-${i}`, before, name), guard)));
+  assert.equal(results.filter(r => r.status === 'COMMITTED').length, 1);
+  assert.equal(results.filter(r => r.status === 'CONFLICT').length, 7);
+  assert.match(fs.readFileSync(target, 'utf8'), /^head-[0-7]$/);
+  assert.equal(fs.readdirSync(path.dirname(target)).filter(name => name.endsWith('.tmp')).length, 0);
+  assertClean(root);
+});
+
+test('Scene head final CAS retains an external update made after temporary preparation', async () => {
+  const root = project(); const name = '.aily/simulator/scene-network-v2.json'; const target = path.join(root, name);
+  fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, 'before');
+  const files = { ...fs, writeFileSync(fd, ...args) { fs.writeFileSync(fd, ...args); if (typeof fd === 'number') fs.writeFileSync(target, 'external'); } };
+  assert.equal((await replaceProjectText(request(root, 'after', 'before', name), guard, { files })).status, 'CONFLICT');
+  assert.equal(fs.readFileSync(target, 'utf8'), 'external'); assertClean(root);
+});
+
+test('Scene head refuses linked parents, non-allowlisted paths and an abandoned shared lock', async () => {
+  const root = project(); const outside = project(); const name = '.aily/simulator/scene-network-v2.json';
+  fs.mkdirSync(path.join(root, '.aily'));
+  fs.symlinkSync(outside, path.join(root, '.aily/simulator'), 'junction');
+  assert.equal((await replaceProjectText(request(root, 'after', null, name), guard)).code, 'PROJECT_FILE_UNSAFE_PATH');
+  assert.deepEqual(fs.readdirSync(outside), []);
+  fs.unlinkSync(path.join(root, '.aily/simulator')); fs.mkdirSync(path.join(root, '.aily/simulator'));
+  const lock = path.join(root, '.aily/project-files.write.lock'); fs.writeFileSync(lock, 'unknown owner');
+  assert.equal((await replaceProjectText(request(root, 'after', null, name), guard, { timeoutMs: 0 })).code, 'PROJECT_FILE_BUSY');
+  assert.equal(fs.readFileSync(lock, 'utf8'), 'unknown owner');
+  assert.equal(fs.existsSync(path.join(root, name)), false);
+  for (const fileName of ['.aily/simulator/../outside.json', '.aily/scene-network-v2.json', '.aily/simulator/other.json']) {
+    assert.equal((await replaceProjectText(request(root, 'after', null, fileName), guard)).code, 'PROJECT_FILE_INVALID');
+  }
+});
 test('never steals a lock, and a stale context aborts while waiting', async () => {
   const root = project(); initialize(root); fs.mkdirSync(path.join(root, '.aily'));
   const lock = path.join(root, '.aily', 'project-files.write.lock'); fs.writeFileSync(lock, 'unknown owner');

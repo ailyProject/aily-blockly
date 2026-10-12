@@ -3,6 +3,8 @@ import type { NoticeOptions } from '@shared/public-api';
 
 export interface BuildActionState {
   text: string;
+  /** Explicit producer cancellation; presentation state/text are not machine evidence. */
+  errorCode?: 'build-cancelled';
   desc?: string;
   state?: 'done' | 'doing' | 'error' | 'warn' | 'loading' | string;
   color?: string;

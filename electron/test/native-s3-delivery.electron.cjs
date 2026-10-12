@@ -64,7 +64,7 @@ app.whenReady().then(async () => {
         const manifest = json(manifestPath);
         assert.equal(manifest.build.inputs, undefined);
         assert.equal(started.buildDeliveryHandle, undefined);
-        for (const name of ['aily-build-inputs.json', 'aily-build-input-context.json', 'aily-build-delivery.json', 'aily-library-projections.json']) {
+        for (const name of ['aily-build-inputs.json', 'aily-build-delivery.json', 'aily-library-projections.json']) {
             assert.equal(fs.existsSync(path.join(project, '.build', name)), false, name);
         }
         result.checks.push('ordinary-build-without-input-recording');

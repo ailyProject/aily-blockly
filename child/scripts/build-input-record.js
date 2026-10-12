@@ -2,13 +2,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const FILE = 'aily-build-input-context.json', LIMIT = 4 * 1024 * 1024;
+const FILE = 'aily-build-inputs.json', LIMIT = 4 * 1024 * 1024;
 const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
-const fail = () => { throw Object.assign(new Error('Build input context is missing, unsafe or does not match this build.'), { code: 'BUILD_INPUT_CONTEXT_INVALID' }); };
+const fail = () => { throw Object.assign(new Error('Build-graph record is unsafe or does not match this build.'), { code: 'BUILD_INPUT_RECORD_INVALID' }); };
 
-// Bind bounded private bytes, not SDK content. The Builder remains the only
-// implementation of input-tree verification; no paths escape this helper.
-function readBuildInputContextBinding(projectPath, inputsDigest) {
+// Bind the exact bounded producer metadata, not SDK/tool content or freshness.
+function readBuildInputRecordBinding(projectPath, reference) {
+    if (reference?.schemaVersion !== 1 || reference.kind !== 'aily-build-input-reference'
+        || reference.scope !== 'build-graph-facts' || reference.path !== FILE
+        || !/^[a-f0-9]{64}$/.test(reference.digest)) fail();
     const directory = path.join(fs.realpathSync(projectPath), '.build');
     if (key(fs.realpathSync(directory)) !== key(directory)) fail();
     const filename = path.join(directory, FILE), stat = fs.lstatSync(filename);
@@ -27,11 +29,12 @@ function readBuildInputContextBinding(projectPath, inputsDigest) {
         if (size !== stat.size) fail();
         bytes = bytes.subarray(0, size);
     } finally { fs.closeSync(fd); }
-    const context = JSON.parse(bytes.toString('utf8'));
-    if (context?.schemaVersion !== 1 || context.kind !== 'aily-build-input-context'
-        || typeof context.buildPath !== 'string' || key(context.buildPath) !== key(directory)
-        || !/^[a-f0-9]{64}$/.test(inputsDigest) || context.preparedInputsDigest !== inputsDigest) fail();
+    const record = JSON.parse(bytes.toString('utf8'));
+    if (record?.schemaVersion !== 1 || record.kind !== 'aily-build-input-record'
+        || record.scope !== 'build-graph-facts' || record.digest !== reference.digest) fail();
+    const { digest, ...body } = record;
+    if (createHash('sha256').update(JSON.stringify(body)).digest('hex') !== digest) fail();
     return createHash('sha256').update(bytes).digest('hex');
 }
 
-module.exports = { readBuildInputContextBinding };
+module.exports = { readBuildInputRecordBinding };

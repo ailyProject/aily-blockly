@@ -18,6 +18,7 @@ async function harness(t, options = {}) {
   const { SubappAgentBridgeService, replaceChildToolConfigs } = await bridgeModule;
   replaceChildToolConfigs([{
     id: 'fixture', namespace: 'FIXTURE', titleKey: 'Fixture',
+    ...(options.processMessagePort ? { runtime: { processMessagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } } : {}),
     agent: { protocolVersion: 1, transport: 'aily-child-rpc', lifecycle: options.lifecycle ?? lifecycle, tools: [{
       name: 'fixture_tool', rpc: { method: 'fixture.work' }, supportsCancellation: true, presentation: options.presentation,
     }] },
@@ -98,6 +99,19 @@ test('each owner receives a generic callback; only the last owner releases the s
   const count = h.messages.length;
   await h.service.releaseSession('b');
   assert.equal(h.messages.length, count);
+});
+
+test('temporary Agent owners of process-message tools release only their Runtime lease', async t => {
+  const h = await harness(t, { processMessagePort: true });
+  const lease = await h.acquire('scene-agent');
+  assert.equal((await h.execute(lease)).ok, true);
+  assert.equal(h.acquired, 1);
+  assert.equal((await h.release(lease)).ok, true);
+  assert.equal(h.released, 1);
+  assert.equal(h.service.channels.has('fixture'), false);
+  // The workspace Provider is independent: this Agent bridge has no registry
+  // or process-message listener to open, close or transfer during teardown.
+  assert.equal(h.messages.filter(message => message.method === lifecycle.ownerRelease.method).length, 1);
 });
 
 test('legacy manifests keep final-only cleanup; unscoped callers keep the process', async t => {

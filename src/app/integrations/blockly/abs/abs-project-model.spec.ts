@@ -217,6 +217,26 @@ describe('Blockly service document boundary', () => {
   });
   afterEach(() => live.dispose());
 
+  it('invalidates generated code when the owner silently reloads the same workspace', () => {
+    Object.assign(internal, {
+      workspaceCodeRevision: 10, generatedCodeRevision: 10, latestGeneratedCode: 'previous code',
+      iconsMap: new Map(), adaptWorkspaceToRuntime: state => state,
+      loadWorkspaceJson: BlocklyService.prototype.loadWorkspaceJson,
+    });
+    const state = workspace({ type: 'text', id: 'replacement', fields: { TEXT: 'owner load' } });
+    expect(service.getReusableGeneratedCode()).toBe('previous code');
+    Blockly.Events.disable();
+    try { service.loadWorkspaceJson(state, false); } finally { Blockly.Events.enable(); }
+    expect(live.getBlockById('replacement')?.getFieldValue('TEXT')).toBe('owner load');
+    expect(service.getWorkspaceContentRevision()).toBe(11);
+    expect(service.getReusableGeneratedCode()).toBeNull();
+    const lease = service.acquireWorkspaceEditLease();
+    try {
+      expect(() => service.loadWorkspaceJson(state, false)).toThrowMatching(error => error.code === 'BLOCKLY_EDIT_BUSY');
+      expect(service.getWorkspaceContentRevision()).toBe(11);
+    } finally { lease.release(); }
+  });
+
   it('captures without publishing state and retains metadata even for a single-page save', () => {
     const input = source();
     input.pages.splice(1); input.openedPageIds = ['one'];

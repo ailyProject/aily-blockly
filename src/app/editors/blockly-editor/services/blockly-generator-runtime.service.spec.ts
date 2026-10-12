@@ -6,6 +6,7 @@ import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-cata
 import { describeAbsBlockCapability } from '../../../integrations/blockly/abs/abs-block-capabilities';
 import { withNativeStateLoading } from './blockly-native-state-loading';
 import { loadAbsWorkspaceState } from '../../../integrations/blockly/abs/abs-workspace-state';
+import { BlocklyComponent } from '../components/blockly/blockly.component';
 
 describe('BlocklyGeneratorRuntimeService', () => {
   let service: BlocklyGeneratorRuntimeService;
@@ -277,5 +278,124 @@ describe('BlocklyGeneratorRuntimeService', () => {
     expect(service.getActiveGenerator()).toBeNull();
     service.destroy(owner);
     expect(internal.session).toBeNull(); expect(session.iframe.isConnected).toBeFalse();
+  });
+
+  describe('host-owned context menus', () => {
+    const hostId = 'testHostContextMenu';
+    const runtimeId = 'testRuntimeContextMenu';
+    const componentIds = ['blockExplainWithAi', 'ailyProjectBreakpointAddOrRebind',
+      'ailyProjectBreakpointToggle', 'ailyProjectBreakpointRemove'];
+    const registry = Blockly.ContextMenuRegistry.registry;
+    let originalItems: Map<string, Blockly.ContextMenuRegistry.RegistryItem | null>;
+
+    beforeEach(() => {
+      originalItems = new Map([hostId, runtimeId, ...componentIds].map(id => [id, registry.getItem(id)]));
+    });
+    afterEach(() => {
+      service.destroy();
+      for (const [id, item] of originalItems) {
+        if (registry.getItem(id)) registry.unregister(id);
+        if (item) registry.register(item);
+      }
+    });
+
+    function menu(id: string): Blockly.ContextMenuRegistry.RegistryItem {
+      return { id, displayText: id, callback: jasmine.createSpy(id),
+        preconditionFn: () => 'enabled', scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK, weight: 0 };
+    }
+    function sync(item: Blockly.ContextMenuRegistry.RegistryItem, registered: boolean): void {
+      service.syncHostContextMenuSnapshot(item, registered);
+    }
+    function component(): any {
+      const owner: any = Object.create(BlocklyComponent.prototype);
+      owner.generatorRuntime = service;
+      owner.hostContextMenuItems = new Map();
+      owner.registerBlockExplainContextMenu();
+      owner.registerProjectBreakpointContextMenus();
+      return owner;
+    }
+
+    it('retains a host menu registered after activation across a rebuild', () => {
+      activateRuntime();
+      const item = menu(hostId);
+      registry.register(item); sync(item, true);
+      service.rebuild();
+      expect(registry.getItem(hostId)).toBe(item);
+      registry.getItem(hostId)!.callback({}, new Event('contextmenu'), new Event('click'), new Blockly.utils.Coordinate(0, 0));
+      expect(item.callback).toHaveBeenCalled();
+    });
+
+    it('cleans up library menus without merging the current registry into the host checkpoint', () => {
+      activateRuntime();
+      const item = menu(hostId);
+      registry.register(item); sync(item, true);
+      service.loadGenerator('context-menu/generator.js', `
+        Blockly.ContextMenuRegistry.registry.register({ id: '${runtimeId}', displayText: 'runtime',
+          callback: () => {}, preconditionFn: () => 'enabled',
+          scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK, weight: 0 });
+      `);
+      sync(item, true);
+      service.rebuild();
+      expect(registry.getItem(hostId)).toBe(item);
+      expect(registry.getItem(runtimeId)).toBeNull();
+    });
+
+    it('retains the current host callback after an update rather than restoring its old object', () => {
+      activateRuntime();
+      const previous = menu(hostId), replacement = menu(hostId);
+      registry.register(previous); sync(previous, true);
+      registry.unregister(hostId); sync(previous, false);
+      registry.register(replacement); sync(replacement, true);
+      service.rebuild();
+      expect(registry.getItem(hostId)).toBe(replacement);
+      registry.getItem(hostId)!.callback({}, new Event('contextmenu'), new Event('click'), new Blockly.utils.Coordinate(0, 0));
+      expect(replacement.callback).toHaveBeenCalled();
+      expect(previous.callback).not.toHaveBeenCalled();
+    });
+
+    it('does not resurrect a host menu removed from an inactive failed runtime', () => {
+      activateRuntime();
+      const item = menu(hostId);
+      registry.register(item); sync(item, true);
+      (service as any).markFailed((service as any).session);
+      registry.unregister(hostId); sync(item, false);
+      service.destroy();
+      expect(registry.getItem(hostId)).toBeNull();
+    });
+
+    it('does not let an old component remove or resurrect a newer component registration', () => {
+      activateRuntime();
+      const older = component(), newer = component();
+      const currentItems = componentIds.map(id => registry.getItem(id));
+      older.unregisterProjectBreakpointContextMenus();
+      componentIds.forEach((id, index) => expect(registry.getItem(id)).toBe(currentItems[index]));
+      older.unregisterHostContextMenus(componentIds);
+      service.rebuild();
+      componentIds.forEach((id, index) => expect(registry.getItem(id)).toBe(currentItems[index]));
+      newer.unregisterHostContextMenus(componentIds);
+      service.destroy();
+      componentIds.forEach(id => expect(registry.getItem(id)).toBeNull());
+    });
+
+    it('does not adopt a foreign same-ID replacement or resurrect a missing owned menu during cleanup', () => {
+      activateRuntime();
+      const owner = component();
+      const replacedId = componentIds[1], missingId = componentIds[2];
+      service.loadGenerator('context-menu/replacement.js', `
+        Blockly.ContextMenuRegistry.registry.unregister('${replacedId}');
+        Blockly.ContextMenuRegistry.registry.register({ id: '${replacedId}', displayText: 'foreign',
+          callback: () => {}, preconditionFn: () => 'enabled',
+          scopeType: Blockly.ContextMenuRegistry.ScopeType.BLOCK, weight: 0 });
+      `);
+      const foreign = registry.getItem(replacedId);
+      expect(() => sync(owner.hostContextMenuItems.get(replacedId), true))
+        .toThrowError('Host context menu changed before checkpoint synchronization.');
+      registry.unregister(missingId);
+      owner.unregisterHostContextMenus(componentIds);
+      expect(registry.getItem(replacedId)).toBe(foreign);
+      expect(registry.getItem(missingId)).toBeNull();
+      service.destroy();
+      componentIds.forEach(id => expect(registry.getItem(id)).toBeNull());
+    });
   });
 });
