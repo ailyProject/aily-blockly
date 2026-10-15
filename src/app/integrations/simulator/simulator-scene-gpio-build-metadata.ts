@@ -28,21 +28,38 @@ export function createSimulatorSceneGpioBuildMetadata(
   const endpoints = collectSceneGpioEndpoints(document);
   const directions = new Map<string, 'input' | 'output'>();
   const pulls = new Map<string, 'up' | 'down'>();
-  for (const hint of inferArduinoHardwareHints(sourceText)) {
-    const direction = gpioDirection(hint);
-    if (!direction) continue;
-    for (const pin of hint.pins) {
-      const endpoint = endpoints.get(normalizePinAlias(pin));
-      if (!endpoint) continue;
-      const previous = directions.get(endpoint);
-      if (previous && previous !== direction) {
-        throw new Error(
-          `Firmware GPIO direction is ambiguous for Scene endpoint ${endpoint}.`,
-        );
-      }
-      directions.set(endpoint, direction);
-      if (direction === 'input' && (hint.pull === 'up' || hint.pull === 'down')) {
-        pulls.set(endpoint, hint.pull);
+  const configuredPulls = new Map<string, 'up' | 'down' | 'none'>();
+  const configuredEndpoints = new Set<string>();
+  const configuration = inferArduinoHardwareHints(sourceText, 'gpio-configuration');
+  const usage = inferArduinoHardwareHints(sourceText);
+  for (const [explicit, hints] of [[true, configuration], [false, usage]] as const) {
+    for (const hint of hints) {
+      const direction = gpioDirection(hint);
+      if (!direction) continue;
+      for (const pin of hint.pins) {
+        const endpoint = endpoints.get(normalizePinAlias(pin));
+        if (!endpoint) continue;
+        // Reading an output (or writing an input) does not configure its mode.
+        if (!explicit && configuredEndpoints.has(endpoint)) continue;
+        const previous = directions.get(endpoint);
+        if (previous && previous !== direction) {
+          throw new Error(
+            `Firmware GPIO direction is ambiguous for Scene endpoint ${endpoint}.`,
+          );
+        }
+        directions.set(endpoint, direction);
+        if (explicit) configuredEndpoints.add(endpoint);
+        if (explicit && direction === 'input'
+          && (hint.pull === 'up' || hint.pull === 'down' || hint.pull === 'none')) {
+          const previousPull = configuredPulls.get(endpoint);
+          if (previousPull !== undefined && previousPull !== hint.pull) {
+            throw new Error(`Firmware GPIO pull is ambiguous for Scene endpoint ${endpoint}.`);
+          }
+          configuredPulls.set(endpoint, hint.pull);
+        }
+        if (direction === 'input' && (hint.pull === 'up' || hint.pull === 'down')) {
+          pulls.set(endpoint, hint.pull);
+        }
       }
     }
   }
@@ -63,6 +80,8 @@ function collectSceneGpioEndpoints(
   const terminals = records(document['terminals']);
   const configs = record(document['componentConfigs']);
   const terminalPins = new Map<string, Set<string>>();
+  const padByEndpoint = new Map<string, string>();
+  const endpointByPad = new Map<string, string>();
   for (const terminal of terminals) {
     const instanceId = text(terminal['instanceId']);
     const pinId = text(terminal['pinId']);
@@ -70,6 +89,13 @@ function collectSceneGpioEndpoints(
     const pins = terminalPins.get(instanceId) ?? new Set<string>();
     pins.add(pinId);
     terminalPins.set(instanceId, pins);
+    const pad = physicalPadIdentity(terminal);
+    if (pad) {
+      const endpoint = `${instanceId}.${pinId}`;
+      padByEndpoint.set(endpoint, pad);
+      const previous = endpointByPad.get(pad);
+      if (!previous || endpoint.localeCompare(previous) < 0) endpointByPad.set(pad, endpoint);
+    }
   }
 
   const endpoints = new Map<string, string>();
@@ -83,7 +109,9 @@ function collectSceneGpioEndpoints(
     for (const pin of records(config['pins'])) {
       const pinId = text(pin['id']);
       if (!pinId || !connectedPins.has(pinId)) continue;
-      const endpoint = `${instanceId}.${pinId}`;
+      const terminalEndpoint = `${instanceId}.${pinId}`;
+      const pad = padByEndpoint.get(terminalEndpoint);
+      const endpoint = pad ? endpointByPad.get(pad)! : terminalEndpoint;
       const aliases = new Set<string>([
         pinId,
         text(pin['name']),
@@ -104,6 +132,23 @@ function collectSceneGpioEndpoints(
     }
   }
   return endpoints;
+}
+
+/** Only declared physical routing proves that two contacts are one MCU pad.
+ * Appearance GPIO labels select aliases; they never establish pad identity. */
+function physicalPadIdentity(terminal: Record<string, unknown>): string | null {
+  const semantic = record(record(terminal['extensions'])['ailyComponentPinSemantic']);
+  const instanceId = text(terminal['instanceId']);
+  const physicalPin = text(semantic['physicalPin']);
+  if (semantic['schemaVersion'] !== 1 || !instanceId || !physicalPin) return null;
+  const gpio = record(semantic['gpio']);
+  const channels = semantic['gpio'] === null
+    ? records(semantic['adcChannels']) : [gpio];
+  if (channels.length === 0) return null;
+  const routes = channels.map(channel => [text(channel['controllerId']), text(channel['channel'])]);
+  if (routes.some(([controller, channel]) => !controller || !channel)) return null;
+  return JSON.stringify([instanceId, physicalPin, semantic['gpio'] === null ? 'adc' : 'gpio',
+    routes.map(route => JSON.stringify(route)).sort()]);
 }
 
 function resolveComponentConfig(

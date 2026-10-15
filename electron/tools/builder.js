@@ -62,6 +62,7 @@ const lifecycle = createManagedToolLifecycle({
   packageName: PACKAGE_NAME,
   probe: probeAilyBuilderCommand,
   emptyState: () => ({ path: getAilyBuilderCommandPath() }),
+  statusFields: state => ({ entryPath: state.ok ? state.entryPath || '' : '' }),
   missingChildPathError: 'AILY_CHILD_PATH 未设置',
   missingReadyError: 'aily-builder 命令不存在',
   installIncompleteError: `${PACKAGE_NAME} 安装完成但缺少 CLI 入口`,

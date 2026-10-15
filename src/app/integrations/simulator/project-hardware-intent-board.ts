@@ -1,9 +1,9 @@
-export interface ProjectHardwareIntentBoard {
-  fqbn: string;
-  boardId: string;
-  architecture: string;
-  mcu: string;
-}
+import {
+  validateProjectHardwareIntentBoardV1,
+  type ProjectHardwareIntentBoardV1,
+} from '@aily-project/simulator-protocol/scene';
+
+export type ProjectHardwareIntentBoard = ProjectHardwareIntentBoardV1;
 
 /**
  * Projects may select a concrete board variant through a package-owned option
@@ -14,6 +14,7 @@ export interface ProjectHardwareIntentBoard {
 export function resolveProjectHardwareIntentBoard(
   boardValue: unknown,
   projectValue: unknown,
+  installedBoardPackageValue?: unknown,
 ): ProjectHardwareIntentBoard {
   const board = record(boardValue);
   const project = record(projectValue);
@@ -41,7 +42,19 @@ export function resolveProjectHardwareIntentBoard(
       'Current board metadata is incomplete for Scene generation.',
     );
   }
-  return { fqbn, boardId, architecture, mcu };
+  let projectPackage: ProjectHardwareIntentBoard['projectPackage'];
+  if (installedBoardPackageValue !== undefined) {
+    const installed = record(installedBoardPackageValue);
+    const name = text(installed['name']);
+    if (![project['dependencies'], project['boardDependencies']]
+      .some(group => Object.hasOwn(record(group), name))) {
+      throw new Error('Installed Board package is not selected by the current project.');
+    }
+    projectPackage = { name, version: text(installed['version']) };
+  }
+  return validateProjectHardwareIntentBoardV1({ fqbn, boardId, architecture, mcu,
+    ...(projectPackage ? { projectPackage } : {}),
+  });
 }
 
 function commandMcu(command: string): string {

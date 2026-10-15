@@ -6,6 +6,7 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
 import { ProjectService } from '@domain/project/public-api';
 import { createAlignedSimulatorProjectFirmwareEvidenceSource } from './simulator-project-firmware-evidence-source';
 import { resolveProjectHardwareIntentBoard } from './project-hardware-intent-board';
+import { ProjectCompilerConfigurationService } from '../build/project-compiler-configuration.service';
 
 interface SceneGenerationIdentity {
   readonly requestId: string;
@@ -18,6 +19,7 @@ export class ProjectHardwareIntentProviderService {
   constructor(
     private readonly projectService: ProjectService,
     private readonly blocklyService: BlocklyService,
+    private readonly compilerConfiguration: ProjectCompilerConfigurationService,
   ) {}
 
   async resolve(
@@ -61,14 +63,38 @@ export class ProjectHardwareIntentProviderService {
         this.projectService.currentBoardConfig ??
         (await this.projectService.getBoardJson());
       throwIfAborted(signal);
+      stage = 'installed-board-package';
+      const installedBoardPackage = await this.projectService.getBoardPackageJson();
+      const loadedBoardModule = this.projectService.getRuntimeBoardModule();
+      if (loadedBoardModule && installedBoardPackage.name !== loadedBoardModule) {
+        throw new Error('Loaded Board configuration does not match the project-installed package.');
+      }
+      throwIfAborted(signal);
+      stage = 'compiler-configuration';
+      const compileContext = await this.compilerConfiguration.read(projectRoot, signal);
+      throwIfAborted(signal);
+      if (this.projectService.currentProjectPath !== projectRoot) {
+        throw new Error('Project context changed during hardware intent inspection.');
+      }
+      stage = 'source-bookend';
+      const currentSource = await this.blocklyService.waitForReusableGeneratedCode({ signal, timeoutMs: 30_000 });
+      throwIfAborted(signal);
+      if (currentSource !== generatedSource || this.projectService.currentProjectPath !== projectRoot
+          || JSON.stringify(packageJson) !== JSON.stringify(await this.projectService.getPackageJson())
+          || JSON.stringify(installedBoardPackage) !== JSON.stringify(await this.projectService.getBoardPackageJson())
+          || loadedBoardModule !== this.projectService.getRuntimeBoardModule()
+          || boardConfig !== this.projectService.currentBoardConfig) {
+        throw new Error('Project context changed during hardware intent inspection.');
+      }
       stage = 'snapshot';
       return await buildProjectHardwareIntentSnapshot({
         request: {
           requestId: request.requestId,
           projectIdentity: request.projectIdentity,
         },
-        board: resolveProjectHardwareIntentBoard(boardConfig, packageJson),
+        board: resolveProjectHardwareIntentBoard(boardConfig, packageJson, installedBoardPackage),
         sourceText,
+        compileContext,
         libraries: resolveLibraries(packageJson),
         userIntent: request.instruction ?? null,
       });
