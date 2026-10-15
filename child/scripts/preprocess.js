@@ -141,7 +141,7 @@ async function preprocessProject(config, workspace) {
     const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
     const testContextInputs = targetCompileContext.captureInputs([
         projectPackageJsonPath, boardJsonPath, boardPackageJsonPath,
-    ]);
+    ], { projectManifest: projectPackageJsonPath });
     const boardDependencies = boardPackageJson.boardDependencies || {};
 
     // 缓存文件路径

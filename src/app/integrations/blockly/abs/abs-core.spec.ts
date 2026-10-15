@@ -70,6 +70,18 @@ describe('ABS field contracts', () => {
       type: 'field_dropdown', options: [['lower', 'false'], ['upper', 'FALSE']],
     })).toThrow();
   });
+  it('resolves unquoted boolean spellings to the current definition without changing literal enums or text', () => {
+    for (const value of ['true', 'false']) {
+      expect(resolveAbsFieldValue(readAbsFieldToken(value.toUpperCase()), dropdown)).toBe(value);
+      const upper = { type: 'field_dropdown', options: [['boolean', value.toUpperCase()]] as const };
+      expect(resolveAbsFieldValue(readAbsFieldToken(value), upper)).toBe(value.toUpperCase());
+      expect(resolveAbsFieldValue(readAbsFieldToken(value.toUpperCase()), upper)).toBe(value.toUpperCase());
+    }
+    expect(resolveAbsFieldValue(readAbsFieldToken('FALSE'), { type: 'field_input' })).toBe('FALSE');
+    expect(() => resolveAbsFieldValue(readAbsFieldToken('FALSE'), {
+      type: 'field_dropdown', options: [['FALSE', 'off']],
+    })).toThrow();
+  });
 
   it('accepts exact numeric dropdown lexemes without approximating other enum keys', () => {
     const pins = { type: 'field_dropdown', options: [['pin', '18'], ['padded', '018']] as const };
