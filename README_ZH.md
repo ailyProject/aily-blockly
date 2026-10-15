@@ -122,3 +122,4 @@ AI 会根据需求自主规划任务，逐步理解项目依赖和库的使用�
   </tr>
 </table>
 
+架构、实现方案、接口约定及原 docs/contracts 已统一迁至独立 **aily-blockly-docs** 仓库，见[文档维护入口](DOCUMENTATION.md)。

@@ -140,7 +140,7 @@ npx tsc -p tsconfig.app.json --noEmit
 
 ```bash
 npm run architecture:services:inventory
-node scripts/check-angular-service-architecture.mjs --write-inventory
+AILY_DOCS_ROOT=/path/to/aily-blockly-docs node scripts/check-angular-service-architecture.mjs --write-inventory
 ```
 
 涉及 Angular 构建链路时，再运行：
@@ -151,17 +151,8 @@ npx ng build --configuration development
 
 ## 当前架构状态
 
-架构守卫当前记录为 0 条违规、0 个循环依赖组：
+2026-10-15 文档迁移时实际检查：203 个服务相关文件、0 个循环依赖组；`src/app/main-window/components/update-dialog/update-dialog.component.spec.ts` 仍有 1 处 `external-deep-import` 违规。该引用已存在于迁移前源码，本次未修改测试或放宽基线。之前“当前 0 违规”的说明已过时，后续以实际命令输出为准。
 
-| 类型 | 数量 | 含义 |
-| --- | ---: | --- |
-| `cross-domain-deep-import` | 0 | 跨领域引用均通过公开入口 |
-| `domain-ui-import` | 0 | 业务领域不再反向依赖 app-shell、页面或 editor |
-| `integration-ui-import` | 0 | 集成层通过 port 使用宿主 UI/editor 能力 |
-| 循环依赖组 | 0 | `services` 静态 import 图无强连通循环 |
+架构检查关注目录和静态依赖边界，不代表所有超大 facade 都已完成业务拆分；职责拆分仍需契约测试和 Electron 业务回归。
 
-初始基线为 123 条违规和 1 个循环依赖组，现已全部清零；基线文件因此保存为空数组，不再豁免历史问题。架构检查会直接阻止任何新增的深层跨域引用、UI 反向依赖、根目录散落服务或循环依赖。
-
-这里的“清零”特指目录和静态依赖边界，不代表所有超大 facade 都已经完成业务拆分。`ProjectService`、`AuthService` 等后续如继续按职责拆小，仍需独立契约测试和 Electron 业务回归。
-
-大服务拆分顺序、风险和验收要求见 [Angular services 目录重构方案](../../../docs/2026-08-24/Angular-services目录重构方案.md)。当前服务清单见 [angular-service-inventory.json](../../../docs/2026-08-24/angular-service-inventory.json)。
+现行架构说明和服务清单统一维护在独立 `aily-blockly-docs` 仓库，入口见 [文档维护位置](../../../DOCUMENTATION.md)。清单输出到该仓库的 `docs/reference/angular-service-inventory.json`；旧重构计划仅作为历史档案保留。

@@ -120,3 +120,5 @@ Tao Dong (Tianwei Electronics) | Xia Qing (Mushroom Cloud Maker Space) | Du Zhon
     <td>Free code signing on Windows provided by <a href="https://signpath.io/">SignPath.io</a>, certificate by <a href="https://signpath.org/">SignPath Foundation</a></td>
   </tr>
 </table>
+
+Documentation and implementation contracts are maintained in the separate **aily-blockly-docs** repository. See [documentation location and workflow](DOCUMENTATION.md).

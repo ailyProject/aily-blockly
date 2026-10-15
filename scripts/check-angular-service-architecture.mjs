@@ -11,12 +11,6 @@ const repositoryRoot = path.resolve(scriptDirectory, '..');
 const appRoot = path.join(repositoryRoot, 'src', 'app');
 const servicesRoot = path.join(appRoot, 'services');
 const baselinePath = path.join(scriptDirectory, 'angular-service-architecture-baseline.json');
-const inventoryPath = path.join(
-  repositoryRoot,
-  'docs',
-  '2026-08-24',
-  'angular-service-inventory.json',
-);
 const architectureRoots = [
   path.join(servicesRoot, 'core'),
   path.join(servicesRoot, 'domains'),
@@ -360,12 +354,30 @@ const inventory = architectureFiles
 
 const argumentsSet = new Set(process.argv.slice(2));
 if (argumentsSet.has('--write-inventory')) {
+  const docsRoot = process.env.AILY_DOCS_ROOT?.trim();
+  if (!docsRoot || !fs.existsSync(docsRoot) || !fs.statSync(docsRoot).isDirectory()) {
+    console.error('Set AILY_DOCS_ROOT to an existing aily-blockly-docs checkout before using --write-inventory. Use --inventory for stdout only.');
+    process.exit(1);
+  }
+  const physicalDocsRoot = fs.realpathSync(docsRoot);
+  const physicalRepositoryRoot = fs.realpathSync(repositoryRoot);
+  if (physicalDocsRoot === physicalRepositoryRoot || physicalDocsRoot.startsWith(physicalRepositoryRoot + path.sep)) {
+    console.error('AILY_DOCS_ROOT must be outside the software repository; documentation is maintained in aily-blockly-docs.');
+    process.exit(1);
+  }
+  const inventoryPath = path.join(physicalDocsRoot, 'docs', 'reference', 'angular-service-inventory.json');
   fs.mkdirSync(path.dirname(inventoryPath), { recursive: true });
   fs.writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
   console.log(`Wrote ${path.relative(repositoryRoot, inventoryPath)} (${inventory.length} entries).`);
 }
 if (argumentsSet.has('--inventory')) {
-  process.stdout.write(`${JSON.stringify(inventory, null, 2)}\n`);
+  // Finish the full JSON before exiting, including when stdout is a pipe.
+  await new Promise((resolve, reject) => {
+    process.stdout.write(`${JSON.stringify(inventory, null, 2)}\n`, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
   process.exit(0);
 }
 if (argumentsSet.has('--write-baseline')) {

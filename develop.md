@@ -14,8 +14,8 @@ cd electron
 npm i
 ```  
 
-Blockly 核心从 npm 安装：[aily-project-blockly@1.0.3](https://www.npmjs.com/package/aily-project-blockly)，
-上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.3` 别名，
+Blockly 核心从 npm 安装：[aily-project-blockly@1.0.5](https://www.npmjs.com/package/aily-project-blockly)，
+上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.5` 别名，
 现有 `blockly` 导入保持不变；npm/pnpm override 让插件共用同一核心。
 本地 tarball、补丁快照和源码同步入口已移除，无需邻接核心源码仓库。
 复现锁定依赖可在宿主根目录执行 `npm ci` 或 `pnpm install --frozen-lockfile`。
@@ -60,8 +60,10 @@ npm run build
 该部分是安装/卸载程序的脚本。
 在安装应用时，安装程序会将`child\node-v22.19.0-win-x64.7z`解压到`child\node`。  
 
-### /src/app/blockly/plugins
+### /src/app/editors/blockly-editor/components/blockly/plugins
 blockly相关插件
 
-### /src/app/blockly/custom-field
+### /src/app/editors/blockly-editor/components/blockly/custom-field
 自定义的特殊block
+
+业务文档与接口约定统一维护在独立 **aily-blockly-docs** 仓库，见[文档维护入口](DOCUMENTATION.md)。
