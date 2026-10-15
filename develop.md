@@ -3,6 +3,12 @@
 ## 软件框架
 软件主体使用electron开发，渲染端使用angular开发  
 
+## 开发文档协作
+
+需求、架构、实现说明和接口协议维护在 [aily-blockly-docs](https://github.com/ailyProject/aily-blockly-docs)。开始修改功能前，从该仓库的 `docs/目录.md` 查找对应说明并核对当前源码；修改软件行为时，在同一任务中同步相关文档，两个仓库分别提交并记录关联源码 commit。
+
+文档仓库可按需单独克隆，普通运行和构建无需它。克隆、更新、检索及提交方式见 [文档仓库管理与使用](DOCUMENTATION.md)，不要在主软件中恢复原 `docs/`、`contracts/` 或 `.draft/` 目录。
+
 ## 开发&&打包  
 
 **依赖安装**
@@ -65,5 +71,3 @@ blockly相关插件
 
 ### /src/app/editors/blockly-editor/components/blockly/custom-field
 自定义的特殊block
-
-业务文档与接口约定统一维护在独立 **aily-blockly-docs** 仓库，见[文档维护入口](DOCUMENTATION.md)。
