@@ -1,23 +1,16 @@
 # 文档维护入口
 
-从 2026-10-15 起，原 `docs/` 与 `contracts/` 整体迁移至独立 **aily-blockly-docs** 仓库，现行方案、接口约定、历史证据和后续改进文档统一在那里维护。
+原 `docs/`、`contracts/`、`.draft/` 已迁移整理至独立 **aily-blockly-docs** 仓库。之后按需求日期统一维护在 **`docs/YYYY-MM-DD/`**，接口协议也使用同样的目录方式。
 
-本机入口：[aily-blockly-docs](../../ZCK/aily-blockly-docs/README.md)。该相对链接对应当前工作区布局；其他机器使用自己的检出位置，文档仓库不是运行/构建依赖。
+入口位于 `aily-blockly-docs` 仓库的 `docs/目录.md`。按仓库实际检出位置打开；文档仓库不是软件运行或构建依赖。
 
-| 内容 | 文档仓库内位置 |
-| --- | --- |
-| 总索引与源码基线 | `README.md`、`source-baseline.json` |
-| 当前实现 | `docs/architecture.md`、`docs/abs-sync.md`、`docs/subapps.md` 等 |
-| 当前协议 | `contracts/` |
-| 历史归档与迁移去向 | `archive/`、`docs/migration-review.md`、`migration-manifest.json` |
-| 协同维护规则 | `AGENTS.md`、`docs/maintenance.md` |
+- 文档名称使用简洁中文，记录需求、当前实现、源码位置、必要结论与未完成项。
+- 不收录端到端测试报告、截图、测试日志和证明附件。
+- 本次实现核对在 `docs/2026-10-15/`，包含 ABS 同步/存储/文件锁、子应用、Coder、Project Data 等说明。
+- 不另设 contracts、archive 或 proposals 目录。提案也放在对应日期，明确标为未实现。
+- 原 docs/contracts 全量迁移保存在文档仓库提交 `4e8228b`；旧 `.draft` 原文保留在主软件 Git 历史，对应需求整理到 2026-06-24 和 2026-06-29。
+- 修改主软件时同步对应日期需求文档，两仓分别提交；保留其他任务的未提交改动。
 
-修改主软件行为时同步新仓库对应说明，记录源码 commit 和实际验证范围；尚未实现的建议标为提案。不要在主软件重建 `docs/` 或 `contracts/`。
+文档仓库只保存 Markdown，不保存 JSON 清单或源码校验元数据，也不记录用户绝对路径。源码版本与相对路径直接写在相关文档中。
 
-服务架构检查仍可独立运行；需要归档清单时显式指定文档根：
-
-```sh
-AILY_DOCS_ROOT=/path/to/aily-blockly-docs node scripts/check-angular-service-architecture.mjs --write-inventory
-```
-
-不写文件的查看命令仍为 `npm run architecture:services:inventory`。
+临时查看服务结构使用 `npm run architecture:services:inventory`，只输出到终端。

@@ -136,11 +136,10 @@ npm run architecture:services
 npx tsc -p tsconfig.app.json --noEmit
 ```
 
-涉及目录调整时，再生成并检查服务清单：
+涉及目录调整时，再查看服务结构（仅输出到终端）：
 
 ```bash
 npm run architecture:services:inventory
-AILY_DOCS_ROOT=/path/to/aily-blockly-docs node scripts/check-angular-service-architecture.mjs --write-inventory
 ```
 
 涉及 Angular 构建链路时，再运行：
@@ -155,4 +154,4 @@ npx ng build --configuration development
 
 架构检查关注目录和静态依赖边界，不代表所有超大 facade 都已完成业务拆分；职责拆分仍需契约测试和 Electron 业务回归。
 
-现行架构说明和服务清单统一维护在独立 `aily-blockly-docs` 仓库，入口见 [文档维护位置](../../../DOCUMENTATION.md)。清单输出到该仓库的 `docs/reference/angular-service-inventory.json`；旧重构计划仅作为历史档案保留。
+现行架构说明统一维护在独立 `aily-blockly-docs` 仓库，入口见 [文档维护位置](../../../DOCUMENTATION.md)。文档仓库仅保存 Markdown，服务清单通过上述命令临时查看，不写入文档仓库。
