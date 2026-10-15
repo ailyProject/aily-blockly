@@ -324,7 +324,7 @@ npm --prefix e2e run test:fast -- full-flow.spec.ts
 
 ### 10.2 最终安装包与升级验收
 
-Playwright 当前直接启动 `electron/main.js` 并加载暂存的生产 `dist/renderer/`，不安装 electron-builder 产物。因此每个发布平台和 flavor 还必须验证：
+Playwright 当前直接启动 `electron/main.js` 并加载暂存的生产 `renderer/`，不安装 electron-builder 产物。因此每个发布平台和 flavor 还必须验证：
 
 1. 全新安装：安装、首次启动、主窗口、版本号、builder/linter 初始化、新建项目和代表板编译。
 2. 覆盖升级：从上一正式版升级到候选版，确认下载、退出安装、重启、版本变化和用户项目/设置保留。

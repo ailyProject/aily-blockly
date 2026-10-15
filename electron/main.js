@@ -424,7 +424,7 @@ const packagedRendererServer = createPackagedRendererServer();
 async function ensurePackagedRendererServerStarted() {
   if (serve) return null;
   return packagedRendererServer.start({
-    rootDirectory: path.join(__dirname, "..", "dist", "renderer"),
+    rootDirectory: path.join(__dirname, "..", "renderer"),
   });
 }
 
@@ -484,11 +484,11 @@ let pendingQueryParams = null;
 /** 当前主进程已持有的项目锁（规范化路径） */
 let heldProjectLockNormalized = null;
 
-/** 主进程读取 i18n JSON：开发态在仓库 public；打包后 Angular 资源在 app.asar/dist/renderer */
+/** 主进程读取 i18n JSON：开发态在仓库 public；打包后 Angular 资源在 app.asar/renderer */
 function getMainProcessI18nJsonPath(pack) {
   const file = path.join(pack, `${pack}.json`);
   if (app.isPackaged) {
-    return path.join(__dirname, "..", "dist", "renderer", "i18n", file);
+    return path.join(__dirname, "..", "renderer", "i18n", file);
   }
   return path.join(__dirname, "..", "public", "i18n", file);
 }

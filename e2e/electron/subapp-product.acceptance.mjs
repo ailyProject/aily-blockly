@@ -63,7 +63,7 @@ try {
   junction(path.join(hostRoot, 'node_modules'), path.join(stage, 'node_modules'));
   if (fs.existsSync(path.join(hostRoot, 'electron/node_modules'))) junction(path.join(hostRoot, 'electron/node_modules'), path.join(stage, 'electron/node_modules'));
   junction(path.join(hostRoot, 'child'), path.join(stage, 'child'));
-  junction(renderer, path.join(stage, 'dist', 'renderer'));
+  junction(renderer, path.join(stage, 'renderer'));
   fs.copyFileSync(path.join(hostRoot, 'e2e/electron/fixtures/subapp-product-bootstrap.cjs'), path.join(stage, 'electron/bootstrap.cjs'));
   const metadata = JSON.parse(fs.readFileSync(path.join(hostRoot, 'package.json')));
   writeJson(path.join(stage, 'package.json'), { ...metadata, main: 'electron/bootstrap.cjs' });

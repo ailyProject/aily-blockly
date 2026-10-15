@@ -4,8 +4,8 @@ import { defineConfig } from '@playwright/test';
  * Playwright 配置 —— 用于 aily-blockly Electron 桌面应用的端到端测试。
  *
  * 测试针对「生产构建产物」运行：global-setup 会执行 `ng build` 并把渲染层
- * 暂存到 <root>/dist/renderer，随后由 Electron 主进程通过本地 HTTP 服务
- * 加载（即非 --serve 的生产加载路径）。
+ * 暂存到 <root>/renderer，随后由 Electron 主进程以 loadFile('renderer/index.html')
+ * 方式加载（即非 --serve 的生产加载路径）。
  *
  * 由于每个测试会真实启动一个 Electron 实例，测试串行执行（workers: 1），
  * 避免多个 Electron 进程互相争抢窗口/端口/用户数据目录。
