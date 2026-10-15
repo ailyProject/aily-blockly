@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
+const { readProjectMode } = require('./project-companion');
 
 const fields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -195,12 +196,22 @@ class LibraryDependencies {
       }
       // Read the CURRENT saved manifest: Chat restore/external edits are never
       // overwritten with an old in-memory baseline.
-      await this.run(root, { add: [], remove: [], options: state?.options });
+      await this.run(root, {
+        add: [], remove: [], options: state?.options,
+        // Only Coder's clean reopen uses the fast tree check. Blockly retains
+        // its existing npm reconciliation, including Chat history reloads.
+        reconcileOnly: reconcile && !state && !historyRestored && isCoderProject(root),
+      });
       this.states.delete(root);
       await this.locals.restore(root);
       return this.status(root);
     }));
   }
+}
+
+function isCoderProject(root) {
+  try { return readProjectMode(root) === 'coder'; }
+  catch { return false; }
 }
 
 function runDependencyWorker(root, request) {

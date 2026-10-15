@@ -10,6 +10,7 @@ describe('CodeEditorFrameComponent dependency preparation', () => {
     const session = lifecycle.beginPreparation('/project');
     const component: any = Object.create(CodeEditorFrameComponent.prototype);
     component.coderBootstrapGeneration = 0;
+    component.electronService = { isElectron: false };
     component.projectService = {
       getProjectDependencySession: (path: string) => lifecycle.ensure(path),
       assertProjectDependencySession: (current: any) => lifecycle.assertCurrent(current),
@@ -42,6 +43,43 @@ describe('CodeEditorFrameComponent dependency preparation', () => {
     } finally { window['path'] = originalPath; }
   }));
 
+  it('prepares the runtime during library recovery and mounts only after recovery completes', fakeAsync(() => {
+    const originalPath = window['path'];
+    window['path'] = { resolve: (path: string) => path };
+    const lifecycle = (Object.create(ProjectService.prototype) as any).dependencyLifecycle;
+    lifecycle.beginPreparation('/project');
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    component.coderBootstrapGeneration = 0;
+    component.electronService = { isElectron: true };
+    let restore!: () => void;
+    component.projectService = {
+      getProjectDependencySession: (path: string) => lifecycle.ensure(path),
+      assertProjectDependencySession: (session: any) => lifecycle.assertCurrent(session),
+      runProjectDependencyTask: (session: any, work: () => Promise<any>) => lifecycle.run(session, work),
+      finishProjectDependencyPreparation: (session: any) => lifecycle.finishPreparation(session),
+      discardLibraryChanges: () => new Promise<void>(resolve => { restore = resolve; }),
+    };
+    const runtime = Promise.resolve({ url: 'http://127.0.0.1:1234/' });
+    component.prepareCoderRuntime = jasmine.createSpy('prepareRuntime').and.returnValue(runtime);
+    component.beginCoderEmbedLoading = () => {};
+    component.ensureProjectPackageJsonExists = async () => {};
+    component.loadProject = jasmine.createSpy('loadProject').and.resolveTo();
+    component.initCoderEmbed = jasmine.createSpy('initEmbed').and.resolveTo();
+    component.setupBuildOutputsWatch = () => {};
+    component.ensureNpmDepsWithRetry = async () => {};
+    try {
+      component.bootstrap('/project');
+      flushMicrotasks();
+      expect(component.prepareCoderRuntime).toHaveBeenCalledTimes(1);
+      expect(component.loadProject).not.toHaveBeenCalled();
+      expect(component.initCoderEmbed).not.toHaveBeenCalled();
+      restore();
+      flushMicrotasks();
+      expect(component.initCoderEmbed).toHaveBeenCalledOnceWith('/project', false, lifecycle.get('/project'), runtime);
+      expect(lifecycle.isBusy('/project')).toBeFalse();
+    } finally { window['path'] = originalPath; }
+  }));
+
   it('does not write delayed embed hints after its session is cancelled', async () => {
     const originalPath = window['path'];
     const originalFs = window['fs'];
@@ -63,6 +101,40 @@ describe('CodeEditorFrameComponent dependency preparation', () => {
       expect(window['fs'].mkdirSync).not.toHaveBeenCalled();
       expect(component.electronService.writeFile).not.toHaveBeenCalled();
     } finally { window['path'] = originalPath; window['fs'] = originalFs; }
+  });
+
+  it('shares pending runtime preparation and still waits for the startup update gate', async () => {
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    let finishUpdate!: () => void;
+    component.requiredSubapps = { ensureInstalled: jasmine.createSpy('install').and.resolveTo() };
+    component.coderEditorUpdates = { ensureUpdatedBeforeLaunch: jasmine.createSpy('update').and.returnValue(
+      new Promise<void>(resolve => { finishUpdate = resolve; }),
+    ) };
+    component.acquireCoderRuntime = jasmine.createSpy('acquire').and.resolveTo({ url: 'http://127.0.0.1:1234/' });
+    const first = component.prepareCoderRuntime();
+    expect(component.prepareCoderRuntime()).toBe(first);
+    await Promise.resolve();
+    expect(component.acquireCoderRuntime).not.toHaveBeenCalled();
+    finishUpdate();
+    await first;
+    expect(component.requiredSubapps.ensureInstalled).toHaveBeenCalledTimes(1);
+    expect(component.acquireCoderRuntime).toHaveBeenCalledTimes(1);
+    expect(component.coderRuntimePreparationPromise).toBeNull();
+  });
+
+  it('does not start a runtime for a frame closed while package preparation was pending', async () => {
+    const component: any = Object.create(CodeEditorFrameComponent.prototype);
+    let installed!: () => void;
+    component.requiredSubapps = { ensureInstalled: () => new Promise<void>(resolve => { installed = resolve; }) };
+    component.coderEditorUpdates = { ensureUpdatedBeforeLaunch: jasmine.createSpy('update') };
+    component.acquireCoderRuntime = jasmine.createSpy('acquire');
+    const pending = component.prepareCoderRuntime();
+    component.destroyed = true;
+    installed();
+    await expectAsync(pending).toBeRejectedWithError(/closed during package preparation/);
+    expect(component.coderEditorUpdates.ensureUpdatedBeforeLaunch).not.toHaveBeenCalled();
+    expect(component.acquireCoderRuntime).not.toHaveBeenCalled();
+    expect(component.coderRuntimePreparationPromise).toBeNull();
   });
 });
 

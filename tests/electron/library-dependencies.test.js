@@ -6,6 +6,32 @@ const path = require('node:path');
 const { LibraryDependencies, runDependencyWorker } = require('../../electron/library-dependencies');
 const { LibraryDependencySessions } = require('../../electron/library-dependency-sessions');
 
+test('clean reconciliation is fast only for Coder; Blockly, unknown, dirty and history-restored projects keep npm recovery', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-reconcile-mode-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const requests = [];
+  const api = new LibraryDependencies({ run: async (_root, request) => {
+    requests.push(request);
+    return { manifest: api.read(root) };
+  } });
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'mode-test' }));
+  const check = async (expected, options = {}) => {
+    await api.discard(root, { reconcile: true, ...options });
+    assert.equal(requests.at(-1).reconcileOnly, expected);
+  };
+  await check(false);
+  fs.writeFileSync(path.join(root, 'project.aci'), '');
+  await check(true);
+  fs.writeFileSync(path.join(root, 'project.abi'), '{}');
+  await check(false);
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'mode-test', type: 'coder' }));
+  await check(true);
+  await check(false, { historyRestored: true });
+  await api.patch(root, { nickname: 'unsaved metadata' });
+  await check(false);
+  await check(true);
+});
+
 async function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-library-save-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -94,6 +120,7 @@ test('Coder metadata-only edit and expired child transaction can be discarded wi
 
 test('real npm: cumulative installs/removals, save, discard and no draft files', async t => {
   const f = await fixture(t), { root, api } = f;
+  assert.notEqual((await runDependencyWorker(root, { reconcileOnly: true })).unchanged, true, 'local sources must still use npm reconciliation');
   const before = ['package.json', 'package-lock.json'].map(f.read);
   for (const [operation, expected] of [
     [() => f.remove('b'), ['test-a']],
@@ -175,7 +202,9 @@ test('real registry resolution pins pending versions, retains transitives and sa
     const body = fs.readFileSync(file);
     artifacts.set(name, { manifest, body, integrity: `sha512-${crypto.createHash('sha512').update(body).digest('base64')}` });
   }
+  let requests = 0;
   const server = http.createServer((request, response) => {
+    requests++;
     const name = request.url.split('/')[1], pkg = artifacts.get(name);
     if (!pkg) { response.writeHead(404); response.end(); return; }
     if (request.url.endsWith('.tgz')) { response.end(pkg.body); return; }
@@ -198,4 +227,38 @@ test('real registry resolution pins pending versions, retains transitives and sa
   await f.api.save(f.root);
   assert.equal(fs.statSync(installedManifest).ino, originalInode, 'save must not reinstall an already active library');
   assert.deepEqual(JSON.parse(f.read('package-lock.json')).packages[''].dependencies, JSON.parse(f.read('package.json')).dependencies);
+  // A fresh host has no in-memory edit state. Reopening a consistent registry
+  // tree can be read-only, while crash leftovers still require real npm repair.
+  // Local file dependencies deliberately retain the conservative npm path.
+  const clean = { name: 'registry-reopen', version: '1.0.0', type: 'coder', dependencies: { 'registry-a': '1.0.0', 'registry-b': '^1.0.0' } };
+  f.write('package.json', clean);
+  fs.rmSync(path.join(f.root, 'node_modules'), { recursive: true });
+  fs.unlinkSync(path.join(f.root, 'package-lock.json'));
+  await runDependencyWorker(f.root, { options, save: true });
+  await runDependencyWorker(f.root, { options });
+  const baseline = ['package.json', 'package-lock.json'].map(f.read);
+  const requestsBeforeReopen = requests;
+  assert.equal((await runDependencyWorker(f.root, { options, reconcileOnly: true })).unchanged, true);
+  assert.equal(requests, requestsBeforeReopen, 'a consistent tree must not contact the registry');
+  assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), baseline);
+  fs.unlinkSync(path.join(f.root, 'package-lock.json'));
+  assert.equal((await runDependencyWorker(f.root, { options, reconcileOnly: true })).unchanged, true, 'Coder projects without a root lockfile are checked too');
+  const extra = path.join(f.root, 'node_modules/crash-leftover');
+  fs.mkdirSync(extra); fs.writeFileSync(path.join(extra, 'package.json'), JSON.stringify({ name: 'crash-leftover', version: '1.0.0' }));
+  assert.notEqual((await runDependencyWorker(f.root, { options, reconcileOnly: true })).unchanged, true);
+  assert.equal(fs.existsSync(extra), false);
+  fs.rmSync(path.join(f.root, 'node_modules/registry-transitive'), { recursive: true });
+  assert.notEqual((await runDependencyWorker(f.root, { options, reconcileOnly: true })).unchanged, true);
+  assert.equal(JSON.parse(f.read('node_modules/registry-transitive/package.json')).version, '1.0.0');
+  // A stale hidden lockfile must not hide metadata edited in place.
+  const manifestPath = path.join(f.root, 'node_modules/registry-a/package.json');
+  const original = fs.readFileSync(manifestPath, 'utf8');
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...JSON.parse(original), version: '0.0.1' }));
+  assert.notEqual((await runDependencyWorker(f.root, { options, reconcileOnly: true })).unchanged, true);
+  fs.writeFileSync(manifestPath, original);
+  // Even a clean actual tree must honor a restored saved manifest's removals.
+  f.write('package.json', { ...clean, dependencies: { 'registry-b': '^1.0.0' } });
+  const fresh = new LibraryDependencies();
+  await fresh.discard(f.root, { reconcile: true });
+  assert.deepEqual(f.installed(), ['registry-b']);
 });

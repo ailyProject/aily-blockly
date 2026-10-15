@@ -217,6 +217,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private readonly coderDevEmbedBase = 'http://127.0.0.1:5174/';
   private coderRuntimeHostInfo: ChildToolHostInfo | null = null;
   private coderRuntimeAcquirePromise: Promise<ChildToolHostInfo> | null = null;
+  private coderRuntimePreparationPromise: Promise<ChildToolHostInfo> | null = null;
   private coderEditorUpdateState: CoderEditorUpdateState = {
     state: 'current',
     visible: false,
@@ -489,6 +490,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(resolved);
         await this.ensureProjectPackageJsonExists(resolved);
         if (!isCurrent()) return;
+        // Package/update/runtime preparation does not read the workspace. Start
+        // it while the saved library tree is restored, but mount the iframe only
+        // after restoration so its first filesystem reads see the saved state.
+        const runtimePreparation = this.electronService.isElectron ? this.prepareCoderRuntime() : undefined;
+        void runtimePreparation?.catch(() => {}); // initCoderEmbed owns error presentation.
         // Reopening (including a renderer refresh / Chat history restore) uses
         // the saved manifest. Reify also repairs an unsaved uninstall on restart.
         await this.projectService.discardLibraryChanges(resolved, true, historyRestored);
@@ -497,7 +503,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         if (!isCurrent()) return;
         const dependencies = this.ensureNpmDepsWithRetry(resolved, session);
         try {
-          await this.initCoderEmbed(resolved, false, session);
+          await this.initCoderEmbed(resolved, false, session, runtimePreparation);
           if (!isCurrent()) return;
           this.setupBuildOutputsWatch(resolved);
         } finally {
@@ -687,7 +693,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     return run();
   }
 
-  private async initCoderEmbed(projectPath: string, resetLoading = true, session = this.dependencySession) {
+  private async initCoderEmbed(projectPath: string, resetLoading = true, session = this.dependencySession, runtimePreparation?: Promise<ChildToolHostInfo>) {
     try {
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       if (resetLoading) {
@@ -698,12 +704,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       this.coderLoadingStage = 'dependency';
       let base: string;
       if (this.electronService.isElectron) {
-        await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
-        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
-        await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
-        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
-        this.coderLoadingStage = 'runtime';
-        base = (await this.acquireCoderRuntime()).url;
+        base = (await (runtimePreparation ?? this.prepareCoderRuntime())).url;
       } else {
         this.coderLoadingStage = 'runtime';
         base = this.coderDevEmbedBase;
@@ -745,6 +746,23 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       this.coderEmbedError = e?.message || String(e);
       this.message.error('无法启动内嵌代码编辑器：' + this.coderEmbedError);
     }
+  }
+
+  private prepareCoderRuntime(): Promise<ChildToolHostInfo> {
+    if (this.coderRuntimePreparationPromise) return this.coderRuntimePreparationPromise;
+    const pending = (async () => {
+      await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
+      if (this.destroyed) throw new Error('Coder editor was closed during package preparation');
+      await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
+      if (this.destroyed) throw new Error('Coder editor was closed during update preparation');
+      // Keep the project stage while library restoration is still pending.
+      if (this.coderLoadingStage === 'dependency') this.coderLoadingStage = 'runtime';
+      return this.acquireCoderRuntime();
+    })().finally(() => {
+      if (this.coderRuntimePreparationPromise === pending) this.coderRuntimePreparationPromise = null;
+    });
+    this.coderRuntimePreparationPromise = pending;
+    return pending;
   }
 
   /**
