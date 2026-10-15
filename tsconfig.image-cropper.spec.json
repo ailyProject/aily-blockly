@@ -1,7 +1,0 @@
-{
-  "extends": "./tsconfig.spec.json",
-  "include": [
-    "src/app/editors/blockly-editor/components/blockly/components/image-upload-dialog/image-upload-dialog.component.spec.ts"
-  ],
-  "exclude": []
-}

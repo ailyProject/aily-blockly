@@ -3,14 +3,14 @@ document_type: ai-executable-runbook
 repository_root: aily-blockly
 default_shell: PowerShell
 test_framework: Playwright Electron
-primary_entry: npm run test:e2e
+primary_entry: npm --prefix e2e run test
 ---
 
 # E2E 测试 AI 执行手册
 
 本文供 AI 编码代理和发布执行者选择、运行并汇报 aily-blockly 的 E2E 测试。内容按“要完成的操作”分类，而不是按测试文件分类。
 
-实现原理、全部环境变量和测试代码索引见 [README.md](README.md)。如果本文与代码不一致，以 `package.json`、`playwright.config.ts`、`scripts/run-e2e.mjs` 和实际 spec 为准，并同步修正文档。
+实现原理、全部环境变量和测试代码索引见 [README.md](README.md)。如果本文与代码不一致，以 `package.json`、`e2e/playwright.config.ts`、`e2e/scripts/run-e2e.mjs` 和实际 spec 为准，并同步修正文档。
 
 ## 1. AI 执行约定
 
@@ -19,13 +19,13 @@ primary_entry: npm run test:e2e
 1. 先从第 3 节选择一个操作类型，不得用“跑过一些 E2E”代替明确的测试范围。
 2. 所有命令默认在仓库根目录执行。
 3. 所有 E2E 入口都会先重新构建并暂存生产渲染层；不得通过环境变量或手工保留产物绕过构建。
-4. `test:e2e:fast` 仅为历史兼容入口，执行行为与 `test:e2e` 相同，不再复用旧产物。
+4. `test:fast` 仅为历史兼容入口，执行行为与 `test` 相同，不再复用旧产物。
 5. 必须记录退出码、失败、跳过项和未覆盖项。环境变量未开启而被跳过的测试不算通过。
 6. AI 或 CI 无人值守执行批量全流程时，设置 `AILY_E2E_STOP_ON_ERROR=0`，跑完后统一汇总。
 7. `AILY_E2E_CLEAR_APPDATA=1` 会删除 aily-project 应用数据中的开发板包、编译器、SDK 和工具安装。仅在任务明确要求“全新环境/冷启动/发布完整验收”时使用。
 8. 不得删除真实项目。测试自动创建的项目会自行清理；`AILY_E2E_PROJECT` 必须指向可用于测试的项目。
 9. E2E 中断时只按一次 `Ctrl+C` 并等待进程清理。再次按下会强制结束，报告可能不完整。
-10. 测试失败时保留 `playwright-report/`、`test-results/` 和相关 checkpoint；先报告根因，不得通过弱化断言来获得通过结果。
+10. 测试失败时保留 `e2e/playwright-report/`、`test-results/` 和相关 checkpoint；先报告根因，不得通过弱化断言来获得通过结果。
 
 ## 2. 通用准备
 
@@ -60,12 +60,12 @@ Get-ChildItem Env:AILY_E2E_* -ErrorAction SilentlyContinue | Remove-Item
 
 | 目的 | 命令 | 使用限制 |
 |---|---|---|
-| 当前代码完整 E2E | `npm run test:e2e` | 会重新构建生产渲染层；正式结论优先使用 |
-| 历史兼容入口 | `npm run test:e2e:fast` | 与 `test:e2e` 一样重新构建，不复用旧产物 |
-| 指定 spec | `npm run test:e2e -- smoke.spec.ts` | `--` 后参数透传给 Playwright |
-| 有界面调试 | `npm run test:e2e:headed -- smoke.spec.ts` | 用于定位，不代替无交互验收 |
-| Playwright UI | `npm run test:e2e:ui` | 用于开发测试，不作为最终发布证据 |
-| 打开上次报告 | `npm run test:e2e:report` | 不会重新运行测试 |
+| 当前代码完整 E2E | `npm --prefix e2e run test` | 会重新构建生产渲染层；正式结论优先使用 |
+| 历史兼容入口 | `npm --prefix e2e run test:fast` | 与 `test` 一样重新构建，不复用旧产物 |
+| 指定 spec | `npm --prefix e2e run test -- smoke.spec.ts` | `--` 后参数透传给 Playwright |
+| 有界面调试 | `npm --prefix e2e run test:headed -- smoke.spec.ts` | 用于定位，不代替无交互验收 |
+| Playwright UI | `npm --prefix e2e run test:ui` | 用于开发测试，不作为最终发布证据 |
+| 打开上次报告 | `npm --prefix e2e run report` | 不会重新运行测试 |
 
 ## 3. 按操作类型选择测试
 
@@ -85,7 +85,7 @@ Get-ChildItem Env:AILY_E2E_* -ErrorAction SilentlyContinue | Remove-Item
 先运行冒烟测试和受影响页面。首次命令使用非 fast 入口：
 
 ```powershell
-npm run test:e2e -- smoke.spec.ts <affected.spec.ts>
+npm --prefix e2e run test -- smoke.spec.ts <affected.spec.ts>
 ```
 
 页面与 spec 的映射：
@@ -100,20 +100,20 @@ npm run test:e2e -- smoke.spec.ts <affected.spec.ts>
 受影响 spec 通过后，合并前至少运行一次默认集合：
 
 ```powershell
-npm run test:e2e
+npm --prefix e2e run test
 ```
 
 通过标准：命令退出码为 `0`，受影响 spec 没有失败；必须单独列出因缺少环境变量而跳过的项目/编译/全流程用例。
 
 ## 5. `OP-E2E-INFRA`：修改 E2E 配置、夹具或失败处理
 
-适用文件包括 `playwright.config.ts`、`scripts/run-e2e.mjs`、`e2e/global-setup.ts`、`e2e/fixtures/`、诊断、错误决策和 checkpoint 实现。
+适用文件包括 `e2e/playwright.config.ts`、`e2e/scripts/run-e2e.mjs`、`e2e/global-setup.ts`、`e2e/fixtures/`、诊断、错误决策和 checkpoint 实现。
 
 运行：
 
 ```powershell
-npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
-npm run test:e2e:fast
+npm --prefix e2e run test -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-mode.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
+npm --prefix e2e run test:fast
 ```
 
 如果修改了进程清理或中断转发，还要人工执行一次：启动较长用例，只按一次 `Ctrl+C`，确认 Electron 及编译/终端子进程退出且 HTML 报告生成。该人工检查必须在结果中标为 `manual`，不能伪装成自动化通过。
@@ -126,7 +126,7 @@ npm run test:e2e:fast
 
 ```powershell
 $env:AILY_E2E_PROJECT = (Resolve-Path 'D:\path\to\project').Path
-npm run test:e2e -- blockly-editor.spec.ts
+npm --prefix e2e run test -- blockly-editor.spec.ts
 ```
 
 验证一次真实编译：
@@ -134,7 +134,7 @@ npm run test:e2e -- blockly-editor.spec.ts
 ```powershell
 $env:AILY_E2E_PROJECT = (Resolve-Path 'D:\path\to\project').Path
 $env:AILY_E2E_COMPILE = '1'
-npm run test:e2e -- compile.spec.ts
+npm --prefix e2e run test -- compile.spec.ts
 ```
 
 通过标准：编辑器、工作区和工具箱可见；编译场景出现“编译完成”或 Flash/RAM 成功信息，且日志面板有输出。`compile.spec.ts` 只验证一次编译，不能替代 `OP-BUILDER` 的冷/热两轮编译。
@@ -158,7 +158,7 @@ npm run test:e2e -- compile.spec.ts
 ### 7.2 先跑无外部资源的辅助逻辑回归
 
 ```powershell
-npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
+npm --prefix e2e run test -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts error-decision.spec.ts full-flow-checkpoint.spec.ts project-plaza-selection.spec.ts
 ```
 
 ### 7.3 指定代表性开发板做冷/热两轮编译
@@ -169,7 +169,7 @@ npm run test:e2e -- compile-diagnostic.spec.ts electron-app-cleanup.spec.ts erro
 $env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
-npm run test:e2e -- full-flow.spec.ts
+npm --prefix e2e run test -- full-flow.spec.ts
 ```
 
 如果只测一块板，使用 `AILY_E2E_BOARD_KEYWORD`；多个关键字使用逗号分隔的 `AILY_E2E_BOARD_KEYWORDS`，后者优先。
@@ -187,7 +187,7 @@ $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
 $env:AILY_E2E_CLEAR_APPDATA = '1'
 $env:AILY_E2E_ALLOW_TOOL_REFRESH = '1'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
-npm run test:e2e -- full-flow.spec.ts
+npm --prefix e2e run test -- full-flow.spec.ts
 Remove-Item Env:AILY_E2E_CLEAR_APPDATA -ErrorAction SilentlyContinue
 Remove-Item Env:AILY_E2E_ALLOW_TOOL_REFRESH -ErrorAction SilentlyContinue
 ```
@@ -210,7 +210,7 @@ $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_RATE = '0.5'
 $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED = [guid]::NewGuid().ToString('N')
 $env:AILY_E2E_STOP_ON_ERROR = '0'
 Write-Host "sample seed: $env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED"
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 日志会输出抽样总数、seed 和项目清单。重跑时不得生成新 seed，也不得删除 checkpoint；必须复用首次记录的 `AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED`。
@@ -231,7 +231,7 @@ AI 确认项目自身问题后，在同一终端设置逗号分隔的项目 ID�
 
 ```powershell
 $env:AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS = '<project-id-1>,<project-id-2>'
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 测试会从 checkpoint 中移除这些项目并记录“根据 AI 已确认的项目自身问题跳过”，不会再次下载或编译它们，然后继续其他失败/未完成项。跳过项目必须写入最终结果的 `skipped_projects`，不能计入 `passed_scopes`。只要剩余 builder 相关项目全部成功，项目自身问题的跳过不阻止 `builder_decision: pass`；它仍然是项目广场内容问题，需要另行反馈。
@@ -258,7 +258,7 @@ npm run test:e2e:fast -- full-flow.spec.ts
 $env:AILY_E2E_MODE = 'specified-boards'
 $env:AILY_E2E_BOARD_KEYWORD = '<board search keyword>'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
-npm run test:e2e -- full-flow.spec.ts
+npm --prefix e2e run test -- full-flow.spec.ts
 ```
 
 若开发板包变更了依赖、编译器或 SDK 定义，再用 `AILY_E2E_CLEAR_APPDATA=1` 从零安装重跑。通过标准是“选板 → 创建项目 → 安装依赖 → 第一次完整编译 → 第二次编译”全部成功。
@@ -276,7 +276,7 @@ Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SAMPLE_SEED -ErrorAction SilentlyContinue
 Remove-Item Env:AILY_E2E_PROJECT_PLAZA_SKIP_PROJECT_IDS -ErrorAction SilentlyContinue
 $env:AILY_E2E_MODE = 'project-plaza'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
-npm run test:e2e -- full-flow.spec.ts
+npm --prefix e2e run test -- full-flow.spec.ts
 ```
 
 默认并发数为 `2`，可用 `AILY_E2E_PROJECT_PLAZA_CONCURRENCY` 调整。每个项目会下载、进入 Blockly 或代码编辑器、等待依赖并编译一次。
@@ -291,7 +291,7 @@ npm run test:e2e -- full-flow.spec.ts
 
 1. 记录待发布 commit、`package.json` 版本、目标平台和 CN/global flavor。
 2. 清除所有 `AILY_E2E_*` 遗留变量。
-3. 运行默认生产渲染层 E2E：`npm run test:e2e`。
+3. 运行默认生产渲染层 E2E：`npm --prefix e2e run test`。
 4. 删除 `specified-boards` checkpoint，在允许清空应用数据的测试机上，以 `AILY_E2E_CLEAR_APPDATA=1` 对 `uno r4,esp32` 或发布负责人指定的代表板运行 builder 全流程。
 5. 按第 7.5 节从项目广场随机抽取 50%，完成 builder 兼容性验证；项目自身问题可按规则跳过，builder/环境/未知问题不可跳过。
 6. 清除全流程模式变量、抽样变量、项目跳过变量和 `AILY_E2E_CLEAR_APPDATA`。
@@ -315,7 +315,7 @@ npm run test:e2e -- full-flow.spec.ts
 Remove-Item e2e\.artifacts\full-flow-checkpoints\all-boards.json* -Force -ErrorAction SilentlyContinue
 $env:AILY_E2E_MODE = 'all-boards'
 $env:AILY_E2E_STOP_ON_ERROR = '0'
-npm run test:e2e:fast -- full-flow.spec.ts
+npm --prefix e2e run test:fast -- full-flow.spec.ts
 ```
 
 步骤 3 已经为同一 commit 生成生产渲染层后，后续长流程可以使用 `fast`；如果期间代码或构建配置有变化，重新执行非 fast 构建。
@@ -341,7 +341,7 @@ Playwright 当前直接启动 `electron/main.js` 并加载暂存的生产 `rende
 ### 11.1 普通用例失败
 
 1. 查看控制台中的首个产品错误，而不是只看 Playwright 最后一行。
-2. 打开报告：`npm run test:e2e:report`。
+2. 打开报告：`npm --prefix e2e run report`。
 3. 检查 `test-results/` 中保留的 trace、截图和视频。
 4. 修复后先定向运行失败 spec；当前构建可信时可使用 fast。
 5. 定向通过后，重新运行该操作类型要求的完整集合。
@@ -420,7 +420,7 @@ manual_checks:
   - name: <check>
     result: <passed|failed|not-run>
 artifacts:
-  html_report: playwright-report/index.html
+  html_report: e2e/playwright-report/index.html
   test_results: test-results/
 not_covered:
   - <explicit gap>

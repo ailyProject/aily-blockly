@@ -13,4 +13,4 @@
 
 文档仓库只保存 Markdown，不保存 JSON 清单或源码校验元数据，也不记录用户绝对路径。源码版本与相对路径直接写在相关文档中。
 
-临时查看服务结构使用 `npm run architecture:services:inventory`，只输出到终端。
+临时查看服务结构使用 `npm --prefix tests run architecture:services:inventory`，只输出到终端。

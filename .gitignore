@@ -76,12 +76,14 @@ child/aily-builder*
 /renderer
 /test-results
 /playwright-report
+/e2e/playwright-report/
 /e2e/logs
 /out-tsc/e2e
 /e2e/.artifacts
 
 **/*.spec.ts
 !/src/**/*.spec.ts
+!/tests/**/*.spec.ts
 !/e2e/tests/**/*.spec.ts
 !/e2e/performance/**/*.spec.ts
 **/__tests__/**/*

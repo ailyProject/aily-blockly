@@ -132,14 +132,14 @@ import { SomeComponent } from '../../../components/some/some.component';
 7. 提交前运行架构检查和 TypeScript 检查。
 
 ```bash
-npm run architecture:services
+npm --prefix tests run architecture:services
 npx tsc -p tsconfig.app.json --noEmit
 ```
 
 涉及目录调整时，再查看服务结构（仅输出到终端）：
 
 ```bash
-npm run architecture:services:inventory
+npm --prefix tests run architecture:services:inventory
 ```
 
 涉及 Angular 构建链路时，再运行：

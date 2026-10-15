@@ -169,7 +169,7 @@
         "test": {
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
-            "tsConfig": "tsconfig.spec.json",
+            "tsConfig": "tests/tsconfig.spec.json",
             "polyfills": [
               "zone.js",
               "zone.js/testing"
@@ -192,7 +192,7 @@
           },
           "configurations": {
             "abs-sync": {
-              "tsConfig": "tsconfig.abs-sync.spec.json",
+              "tsConfig": "tests/tsconfig.abs-sync.spec.json",
               "include": [
                 "src/app/integrations/blockly/board-config-operation.spec.ts",
                 "src/app/integrations/blockly/board-switch-operation.spec.ts",
@@ -216,7 +216,7 @@
               ]
             },
             "abs-project-load": {
-              "tsConfig": "tsconfig.abs-sync.spec.json",
+              "tsConfig": "tests/tsconfig.abs-sync.spec.json",
               "preserveSymlinks": false,
               "include": [
                 "src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
@@ -224,7 +224,7 @@
               ]
             },
             "coder-board-menu": {
-              "tsConfig": "tsconfig.coder-board-menu.spec.json",
+              "tsConfig": "tests/tsconfig.coder-board-menu.spec.json",
               "include": [
                 "src/app/integrations/coder/board-config/*.spec.ts",
                 "src/app/integrations/coder/coder-board-config.service.spec.ts",
