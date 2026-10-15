@@ -11,8 +11,8 @@ import path from 'node:path';
  *
  * 关键点：
  *  - 以项目根目录为 cwd，args 传 '.' —— Electron 把项目根作为 app 路径，
- *    主进程 electron/main.js 走「非 --serve」分支，loadFile('renderer/index.html')
- *    加载 global-setup 暂存好的生产渲染层。
+ *    主进程 electron/main.js 走「非 --serve」分支，通过本地 HTTP 服务
+ *    加载 global-setup 暂存到 dist/renderer 的生产渲染层。
  *  - 传入临时 --user-data-dir：main.js 的 setupPooledUserDataPath() 会在该目录下
  *    创建 instances/instance-N 隔离实例，从而不污染真实用户数据、也不触碰真实实例锁。
  *  - main.js 会预缓冲若干隐藏子窗口（通用池为 about:blank，另有设置专用预热窗）。因此必须用

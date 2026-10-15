@@ -59,7 +59,7 @@
       },
       {
         "from": "dist/aily-blockly/browser",
-        "to": "renderer"
+        "to": "dist/renderer"
       }
     ],
     "extraResources": [

@@ -9,7 +9,7 @@ const { prepareChildResources } = require('../scripts/prepare-child-resources');
  *
  * Responsibilities:
  * 1. Run the shared Angular/native-candidate build to produce `dist/aily-blockly/browser`.
- * 2. Stage that browser output into `<root>/renderer`, matching the production
+ * 2. Stage that browser output into `<root>/dist/renderer`, matching the production
  *    electron-builder mapping used by `electron/main.js`.
  * 3. Prepare the platform's locked child resources before starting Electron.
  *
@@ -18,7 +18,7 @@ const { prepareChildResources } = require('../scripts/prepare-child-resources');
 const ROOT = path.resolve(__dirname, '..');
 const ANGULAR_RUNNER = path.join(ROOT, 'scripts', 'run-angular.cjs');
 const BUILD_OUTPUT = path.join(ROOT, 'dist', 'aily-blockly', 'browser');
-const RENDERER_DIR = path.join(ROOT, 'renderer');
+const RENDERER_DIR = path.join(ROOT, 'dist', 'renderer');
 
 const BUILD_INPUTS = [
   path.join(ROOT, 'src'),

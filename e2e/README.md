@@ -15,7 +15,7 @@
 
 运行前注意：
 
-- 所有 E2E 测试入口都会先重新执行 Angular 构建并暂存 `renderer/`，不会复用上一次运行留下的渲染产物。`test:fast` 仅作为历史兼容命令保留。
+- 所有 E2E 测试入口都会先重新执行 Angular 构建并暂存 `dist/renderer/`，不会复用上一次运行留下的渲染产物。`test:fast` 仅作为历史兼容命令保留。
 - 运行中需要停止时只按一次 `Ctrl+C`，等待测试关闭 Electron、编译/终端子进程并生成 HTML 报告；再次按下会强制终止，此时报告可能不完整。
 - PowerShell 环境变量会保留在当前终端。全流程场景统一使用 `AILY_E2E_MODE` 选择，切换场景时直接覆盖该变量即可。
 - 旧版的 `AILY_E2E_FULLFLOW`、`AILY_E2E_ALL_BOARDS`、`AILY_E2E_PROJECT_PLAZA` 仍兼容单独使用；若同时启用多个，测试会立即报错，不再串到其他场景。
@@ -191,11 +191,11 @@ rm -rf e2e/.artifacts/full-flow-checkpoints
 ## 工作原理
 
 1. 所有测试模式下，`global-setup`（[global-setup.ts](global-setup.ts)）都会先执行 `ng build --base-href ./`，
-   再删除并重建项目根目录下的 `renderer/`，其内容来自 `dist/aily-blockly/browser`。历史 `fast` 入口也执行同一流程。
-   这正是 `electron-builder` 打包时的映射关系（`browser` → `renderer`）。
+   再删除并重建 `dist/renderer/`，其内容来自 `dist/aily-blockly/browser`。历史 `fast` 入口也执行同一流程。
+   这正是 `electron-builder` 打包时的映射关系（`browser` → `dist/renderer`）。
 2. 启动夹具（[fixtures/electron-app.ts](fixtures/electron-app.ts)）用 `_electron.launch`
    以项目根为 `cwd`、`args: ['.']` 启动 Electron。主进程走「非 `--serve`」分支，
-   通过 `loadFile('renderer/index.html')` 加载生产渲染层 —— 无需完整 `electron-builder` 打包。
+   通过本地 HTTP 服务加载 `dist/renderer/index.html` 及其资源，无需完整 `electron-builder` 打包。
 3. 每个测试使用独立的临时 `--user-data-dir`，隔离 Electron 的用户配置；全流程所需的开发板包、编译器与 SDK 仍使用配置中的应用数据目录。
 
 应用采用 hash 路由（`withHashLocation()`），测试用 `navigate(win, '/路由')` 切换页面。
@@ -206,10 +206,10 @@ rm -rf e2e/.artifacts/full-flow-checkpoints
 # 完整跑（每次重新构建渲染层，最接近真实）
 npm --prefix e2e run test
 
-# 快速迭代（复用已暂存的 renderer/，跳过重新构建）
+# 历史兼容入口（同样重新构建渲染层）
 npm --prefix e2e run test:fast
 
-# 注意：fast 是兼容名称，同样重新构建并暂存 renderer/。
+# 注意：fast 是兼容名称，同样重新构建并暂存 dist/renderer/。
 
 # 可视化 / 调试
 npm --prefix e2e run test:ui
@@ -334,4 +334,4 @@ CI、输入或输出不是 TTY，或者直接调用 Playwright CLI 时不会等�
 - Playwright 用例仍串行执行（`workers: 1`）；项目广场通常内部并发处理 2 个隔离 Electron，交互错误决策模式下会临时降为单并发。
 - 选择器优先使用组件标签（如 `app-header`、`app-terminal`）与稳定 CSS 类；
   应用目前几乎没有 `data-testid`，后续可逐步补充以提升稳定性。
-- `renderer/`、`test-results/`、`e2e/playwright-report/` 已加入 `.gitignore`。
+- `dist/renderer/` 由 `.gitignore` 的 `/dist` 规则覆盖，`test-results/`、`e2e/playwright-report/` 也已忽略。

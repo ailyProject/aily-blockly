@@ -2872,7 +2872,7 @@ function readSubappBusyDialogStringsFromI18n(getLocale = () => 'en') {
       .toLowerCase();
     const pack = loc.startsWith('zh') ? (loc.includes('hk') || loc.includes('tw') ? 'zh_hk' : 'zh_cn') : 'en';
     const file = path.join(pack, `${pack}.json`);
-    const packagedPath = path.join(__dirname, '..', 'renderer', 'i18n', file);
+    const packagedPath = path.join(__dirname, '..', 'dist', 'renderer', 'i18n', file);
     const devPath = path.join(__dirname, '..', 'public', 'i18n', file);
     const fp = fs.existsSync(packagedPath) ? packagedPath : devPath;
     if (!fs.existsSync(fp)) return defaults;

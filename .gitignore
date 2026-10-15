@@ -73,7 +73,6 @@ child/aily-builder*
 /child/aily-coder-editor.json
 
 # Playwright E2E
-/renderer
 /test-results
 /playwright-report
 /e2e/playwright-report/
