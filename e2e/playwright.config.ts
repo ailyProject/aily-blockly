@@ -12,8 +12,7 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests',
-  // Keep attachments at the repository root after adding e2e/package.json.
-  outputDir: '../test-results',
+  outputDir: './test-results',
   // 构建 + 启动 Electron 较慢，给足超时。
   globalSetup: './global-setup.ts',
   timeout: 120_000,

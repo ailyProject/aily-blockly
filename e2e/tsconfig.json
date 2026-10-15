@@ -3,7 +3,7 @@
   "compilerOptions": {
     "module": "CommonJS",
     "moduleResolution": "node",
-    "outDir": "../out-tsc/e2e",
+    "outDir": "./out-tsc",
     "types": ["node"],
     "skipLibCheck": true,
     "noEmit": true

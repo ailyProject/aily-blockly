@@ -279,7 +279,7 @@ jobs:
           name: esp32s3-simulator-debug-e2e-reports
           path: |
             aily-blockly/e2e/.artifacts/*.json
-            aily-blockly/test-results/**
+            aily-blockly/e2e/test-results/**
             aily-blockly/e2e/playwright-report/**
             aily-simulator/.runtime/distribution/aily-simulator-runtime-win32-x64/aily-simulator-runtime.json
           if-no-files-found: warn

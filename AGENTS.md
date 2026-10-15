@@ -14,3 +14,4 @@
 - Node 单元测试及模块集成测试放 `tests/`，Electron 相关测试放 `tests/electron/`；完整产品流程验收放 `e2e/`，辅助文件跟随对应测试放入 `fixtures/`。`electron/` 保留生产代码，不放测试及测试夹具。
 - 移动脚本时同步 npm 命令、CI、文档、模块解析、preload 和子进程路径；共享构建入口 `scripts/run-angular.cjs` 保留原位。
 - 根 `package.json` 的 scripts 只保留主软件运行、构建、资源准备和发布相关命令。单元/集成/架构检查由 `tests/package.json` 管理，端到端与性能验收由 `e2e/package.json` 管理；在根目录使用 `npm --prefix tests run <命令>` 或 `npm --prefix e2e run <命令>`。依赖仍在根目录统一安装。
+- 测试报告、截图、trace、覆盖率及测试编译输出放在所属 `tests/` 或 `e2e/` 内并加入 Git 忽略规则；不同套件使用独立输出目录，避免相互清空结果。调整输出路径时同步 CI 附件收集与执行文档。

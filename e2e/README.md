@@ -11,7 +11,9 @@
 
 端到端、模拟器验收和性能命令统一由 `e2e/package.json` 管理；单元、集成和架构检查使用 `tests/package.json`。子目录命令会先回到主软件根目录，保留相对路径、构建和报告位置的原有语义。依赖仍在根目录安装，不需要分别安装子目录依赖。
 
-主配置位于 `e2e/playwright.config.ts`，HTML 报告输出到 `e2e/playwright-report/`；npm 入口自动使用这些路径。直接使用 Playwright CLI 时，运行 `npx playwright test -c e2e/playwright.config.ts`，查看报告使用 `npx playwright show-report e2e/playwright-report`。测试代码仍在 `e2e/tests/`，失败附件仍在 `test-results/`。
+主配置位于 `e2e/playwright.config.ts`，HTML 报告输出到 `e2e/playwright-report/`；npm 入口自动使用这些路径。直接使用 Playwright CLI 时，运行 `npx playwright test -c e2e/playwright.config.ts`，查看报告使用 `npx playwright show-report e2e/playwright-report`。测试代码仍在 `e2e/tests/`，失败附件输出到 `e2e/test-results/`。
+
+测试产物按套件归类：默认 E2E 附件位于 `e2e/test-results/`，性能对比与真实工程性能附件分别位于 `e2e/performance/test-results/compare/`、`e2e/performance/test-results/real/`；各专项已有的 `e2e/.artifacts/<专项>/` 和日志目录保持独立。单测覆盖率由 `tests/karma.conf.cjs` 配置到 `tests/coverage/aily-blockly/`；单测与 E2E 的 TypeScript 输出目录分别为 `tests/out-tsc/`、`e2e/out-tsc/`。这些生成目录不提交 Git。
 
 运行前注意：
 
@@ -334,4 +336,4 @@ CI、输入或输出不是 TTY，或者直接调用 Playwright CLI 时不会等�
 - Playwright 用例仍串行执行（`workers: 1`）；项目广场通常内部并发处理 2 个隔离 Electron，交互错误决策模式下会临时降为单并发。
 - 选择器优先使用组件标签（如 `app-header`、`app-terminal`）与稳定 CSS 类；
   应用目前几乎没有 `data-testid`，后续可逐步补充以提升稳定性。
-- `renderer/`、`test-results/`、`e2e/playwright-report/` 已加入 `.gitignore`。
+- `renderer/`、`e2e/test-results/`、`e2e/playwright-report/` 已加入 `.gitignore`。

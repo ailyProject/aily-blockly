@@ -25,7 +25,7 @@ primary_entry: npm --prefix e2e run test
 7. `AILY_E2E_CLEAR_APPDATA=1` 会删除 aily-project 应用数据中的开发板包、编译器、SDK 和工具安装。仅在任务明确要求“全新环境/冷启动/发布完整验收”时使用。
 8. 不得删除真实项目。测试自动创建的项目会自行清理；`AILY_E2E_PROJECT` 必须指向可用于测试的项目。
 9. E2E 中断时只按一次 `Ctrl+C` 并等待进程清理。再次按下会强制结束，报告可能不完整。
-10. 测试失败时保留 `e2e/playwright-report/`、`test-results/` 和相关 checkpoint；先报告根因，不得通过弱化断言来获得通过结果。
+10. 测试失败时保留 `e2e/playwright-report/`、`e2e/test-results/` 和相关 checkpoint；先报告根因，不得通过弱化断言来获得通过结果。
 
 ## 2. 通用准备
 
@@ -342,7 +342,7 @@ Playwright 当前直接启动 `electron/main.js` 并加载暂存的生产 `rende
 
 1. 查看控制台中的首个产品错误，而不是只看 Playwright 最后一行。
 2. 打开报告：`npm --prefix e2e run report`。
-3. 检查 `test-results/` 中保留的 trace、截图和视频。
+3. 检查 `e2e/test-results/` 中保留的 trace、截图和视频。
 4. 修复后先定向运行失败 spec；当前构建可信时可使用 fast。
 5. 定向通过后，重新运行该操作类型要求的完整集合。
 
@@ -421,7 +421,7 @@ manual_checks:
     result: <passed|failed|not-run>
 artifacts:
   html_report: e2e/playwright-report/index.html
-  test_results: test-results/
+  test_results: e2e/test-results/
 not_covered:
   - <explicit gap>
 builder_decision: <pass|blocked|not-applicable>

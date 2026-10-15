@@ -40,7 +40,6 @@ yarn.lock
 /.angular/cache
 .sass-cache/
 /connect.lock
-/coverage
 /libpeerconnection.log
 testem.log
 /typings
@@ -72,13 +71,17 @@ child/aily-builder*
 /child/aily-coder-editor.tgz
 /child/aily-coder-editor.json
 
+# Unit tests
+/tests/coverage/
+/tests/out-tsc/
+
 # Playwright E2E
 /renderer
-/test-results
-/playwright-report
+/e2e/test-results/
+/e2e/performance/test-results/
 /e2e/playwright-report/
 /e2e/logs
-/out-tsc/e2e
+/e2e/out-tsc/
 /e2e/.artifacts
 
 **/*.spec.ts
