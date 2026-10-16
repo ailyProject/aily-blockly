@@ -161,7 +161,7 @@ test('the real public renderer IPC handler cannot manufacture private Node contr
         sanitizeChildToolId: value => value, childToolSessions: new Map([['fixture', {}]]),
         authorizeChildToolMessagePortSend: () => ({ success: true, streamId: 'registered' }),
         sendCmdProcessMessage: async () => { sends++; return { success: true }; } });
-    for (const type of Object.values(TYPES)) {
+    for (const type of [...Object.values(TYPES), ...Object.values(require('./subapp-browser-owner-bridge').TYPES)]) {
         const outcome = await handler({ sender: { id: 1 } }, { toolId: 'fixture', message: { type, context: { actor: 'view', sessionId: 'forged' } } });
         assert.equal(outcome.success, false); assert.equal(outcome.reason, 'reserved-message-type');
     }
@@ -202,6 +202,7 @@ test('real forked Node IPC drains request/cancel/detach and uses the production 
     const streams = new Map(), delivered = [], methods = new Map(), leases = require('./child-tool-session-leases');
     const portInfo = stream => stream === f.lease.runtimeId && child.connected ? { maxMessageBytes: 1024 * 1024 } : null;
     const context = { childToolSessions: streams, getCmdProcessMessagePortInfo: portInfo, nodeControlBroker: f.broker,
+        browserOwnerBridge: new (require('./subapp-browser-owner-bridge').SubappBrowserOwnerBridge)({ send: async () => ({ success: true }), resolveRuntime: () => null }),
         browserProcessBroker: { handle: () => false }, ailyHostAuthRelay: null, deliverChildToolProcessMessage: (...args) => delivered.push(args), bufferPendingChildToolProcessMessage() {} };
     Object.assign(context, { ipcMain: { handle: (name, handler) => methods.set(name, handler) },
         sanitizeChildToolId: value => value, trackChildToolSessionOwner: sender => sender.id,

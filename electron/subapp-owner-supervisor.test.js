@@ -89,6 +89,22 @@ test('native owner guard requires acknowledgement and pins owner/runtime/generat
     await h.supervisor.release(h.renderer, h.binding()); assert.throws(guard, { code: 'SUBAPP_OWNER_EXPIRED' });
 });
 
+test('Main captures only an acknowledged private process lease and executes Browser cleanup before ordinary callbacks and Node release', async () => {
+    const fs = require('node:fs'), order = [], h = harness(async value => {
+        order.push(value.method); if (value.method === 'fixture.release') assert.equal(fs.existsSync(value.processLease.leaseFile), false);
+    });
+    h.runtime.hostInfo.runtimeConfig.agent.lifecycle.ownerLease = { method: 'fixture.lease', protocol: 'process-file-v1' };
+    await h.supervisor.track(h.renderer, { ...h.binding(), leaseFile: 'renderer-forged' });
+    const guard = h.supervisor.createOwnerGuard(h.renderer, h.binding()), lease = guard.processLeaseIdentity();
+    assert.notEqual(lease.leaseFile, 'renderer-forged'); assert.equal(Object.isFrozen(lease), true);
+    guard.attachCleanup(async () => { order.push('ordinary'); });
+    const held = Promise.withResolvers();
+    guard.attachCleanup(async () => { assert.equal(fs.existsSync(lease.leaseFile), false); order.push('browser'); await held.promise; }, { priority: 'execution' });
+    const releasing = h.supervisor.release(h.renderer, h.binding()); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(order, ['fixture.lease', 'browser']); held.resolve(); await releasing;
+    assert.deepEqual(order, ['fixture.lease', 'browser', 'ordinary', 'fixture.release']);
+});
+
 test('native Runtime cleanup joins registered callbacks without sending public owner RPC', async () => {
     const h = harness(); h.runtime.nativeOwnerControl = true;
     delete h.runtime.hostInfo.runtimeConfig;
@@ -172,6 +188,20 @@ test('unreachable Runtime is never launched and failure diagnostics omit endpoin
     assert.equal(h.calls.length, 3);
     assert.equal(h.errors.length, 1);
     assert.doesNotMatch(JSON.stringify(h.errors), /secret|ws:\/\//);
+});
+
+test('failed renderer-exit cleanup keeps the original binding and can retry without adopting another generation', async () => {
+    const h = harness(); let fail = true, calls = 0;
+    await h.supervisor.track(h.renderer, h.binding());
+    h.supervisor.createOwnerGuard(h.renderer, h.binding()).attachCleanup(async () => {
+        calls++; if (fail) throw Error('Actual Worker/Node receipt is still unconfirmed');
+    }, { priority: 'execution' });
+    await h.supervisor.invalidate(h.renderer.id);
+    assert.equal(calls, 3); assert.equal(h.supervisor.renderers.get(h.renderer.id).bindings.size, 1);
+    assert.equal(h.calls.length, 0, 'Node owner.release must not run around failed Browser cleanup.');
+    fail = false; await h.supervisor.invalidate(h.renderer.id);
+    assert.equal(calls, 4); assert.equal(h.supervisor.renderers.get(h.renderer.id).bindings.size, 0);
+    assert.equal(h.calls.length, 1);
 });
 
 test('IPC validates sender generation and rejects an unowned or non-local runtime', async () => {

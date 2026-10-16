@@ -14,16 +14,19 @@ class SubappBrowserProcessBroker {
         this.connections = new Map(); this.owners = new Map(); this.pendingCount = 0; this.pendingBytes = 0;
     }
 
-    async bind({ lease, guard, toolId, maxMessageBytes }) {
+    async bind({ lease, guard, toolId, maxMessageBytes, beforeAdmit, expectedConnectionId }) {
         guard();
         const key = JSON.stringify([lease.runtimeId, lease.executionId, lease.ownerId, lease.leaseId]);
         const existing = this.owners.get(key);
         if (existing) {
             if (existing.retiring) throw new Error('Browser process connection is being revoked');
+            if (expectedConnectionId && existing.connection?.connectionId !== expectedConnectionId) throw new Error('Previous Browser owner connection requires confirmed retirement');
+            if (existing.admissionFailed && beforeAdmit) existing.opening = this.admit(existing, beforeAdmit);
             const result = await existing.opening; guard();
             if (existing.closed || existing.retiring || !this.host.isCurrent(lease)) throw new Error('Browser process connection ended');
             return { endpoint: { kind: 'browser-message-port', runtimeId: lease.executionId }, connectionId: result.connectionId };
         }
+        if (expectedConnectionId) throw new Error('Previous Browser owner connection requires confirmed retirement');
         const stream = this.resolveStream(lease.runtimeId);
         if (!stream || stream.toolId !== toolId || !stream.messagePort || guard.runtime.streamId !== lease.runtimeId) {
             throw new Error('Browser execution requires its registered process message port');
@@ -34,9 +37,26 @@ class SubappBrowserProcessBroker {
         this.owners.set(key, record);
         try { record.removeCleanup = guard.attachCleanup(() => this.revoke(record)); }
         catch (error) { this.owners.delete(key); throw error; }
-        record.opening = this.host.connectRuntime({ ...lease, guard, onClosed: () => this.ended(record) });
+        record.opening = (async () => {
+            record.connection = await this.host.connectRuntime({ ...lease, guard, onClosed: () => this.ended(record) });
+            return this.admit(record, beforeAdmit);
+        })();
         try {
-            const connection = record.connection = await record.opening; guard();
+            const connection = await record.opening; guard();
+            return { endpoint: { kind: 'browser-message-port', runtimeId: lease.executionId }, connectionId: connection.connectionId };
+        } catch (error) {
+            // A failed private Node ACK keeps this exact Main-held connection
+            // for retry; minting another connection would replace its binding.
+            if (!record.admissionFailed) await this.revoke(record);
+            throw error;
+        }
+    }
+
+    async admit(record, beforeAdmit) {
+        record.admissionFailed = false;
+        try { await beforeAdmit?.(record.connection.connectionId); }
+        catch (error) { record.admissionFailed = true; throw error; }
+        const { lease, guard, connection } = record; guard();
             if (record.retiring || record.closed || !this.host.isCurrent(lease)) throw new Error('Browser process connection ended during binding');
             this.connections.set(connection.connectionId, record);
             connection.port.on('message', ({ data, ports = [] }) => {
@@ -45,8 +65,7 @@ class SubappBrowserProcessBroker {
             });
             connection.port.on('close', () => { if (!record.closed && !record.retiring) void this.revoke(record).catch(() => {}); });
             connection.port.start();
-            return { endpoint: { kind: 'browser-message-port', runtimeId: lease.executionId }, connectionId: connection.connectionId };
-        } catch (error) { await this.revoke(record); throw error; }
+        return connection;
     }
 
     handle(streamId, input) {

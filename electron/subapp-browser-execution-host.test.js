@@ -15,6 +15,7 @@ const { registerBrowserExecutionHandlers } = require('./subapp-browser-execution
 const { SubappBrowserProcessBroker, REQUEST, RESULT } = require('./subapp-browser-process-broker');
 const { SubappNodeControlBroker, TYPES: NODE_CONTROL_TYPES } = require('./subapp-node-control-broker');
 const { readNodeControlSource, PROTOCOL: NODE_CONTROL_PROTOCOL } = require('./subapp-node-control-source');
+const { SubappBrowserOwnerBridge, TYPES: OWNER_TYPES } = require('./subapp-browser-owner-bridge');
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t) {
@@ -57,6 +58,7 @@ function harness(t, options = {}) {
                 const port = ports[0]; this.hostPort = port;
                 port.on('message', ({ data: message, ports: attached }) => {
                     lifecycle.push(message);
+                    options.onLifecycle?.(message);
                     if (message.type === 'attach') activePorts.set(message.connectionId, attached[0]);
                     if (message.type === 'detach') {
                         if (options.detachFailure?.()) { port.postMessage({ id: message.id, ok: false }); return; }
@@ -86,7 +88,10 @@ function harness(t, options = {}) {
         return { runtimeId, source, ownerId: id, leaseId, guard, cleanups,
             async revoke() { valid = false; for (const cleanup of [...cleanups]) { await cleanup(); cleanups.delete(cleanup); } } };
     }
-    t.after(() => host.closeAll());
+    t.after(async () => {
+        if (options.unconfirmedCrash) await assert.rejects(host.closeAll(), /unconfirmed|owned/);
+        else await host.closeAll();
+    });
     return { ...f, source, host, windows, lifecycle, activePorts, owner, runtimeId,
         get serverCloses() { return serverCloses; }, get servers() { return servers; } };
 }
@@ -100,6 +105,202 @@ test('only a selected package version, bounded local entry and matching HTML has
     f.declaration.entry = 'execution.html'; f.declaration.sha256 = '0'.repeat(64); f.save(); assert.throws(f.source, /integrity/);
     f.declaration.sha256 = createHash('sha256').update(fs.readFileSync(path.join(f.dir, 'public/execution.html'))).digest('hex');
     f.manifest.ailySubapp.runtime.headless = true; f.save(); assert.throws(f.source, /supported/);
+});
+
+async function supervisedBrowserOwner(t, options = {}) {
+    const order = [], h = harness(t, { ...options, onLifecycle: message => {
+        order.push(`worker:${message.type}`); options.onLifecycle?.(message);
+    } });
+    const renderer = new Contents(), handlers = new Map(), frames = []; renderer.mainFrame = {};
+    const runtime = { streamId: h.runtimeId, messagePort: { maxMessageBytes: 32768 }, hostInfo: {
+        wsUrl: 'ws://127.0.0.1:49151/ws', runtimeConfig: { ...h.config, agent: { lifecycle: {
+            ownerLease: { method: 'fixture.lease', protocol: 'process-file-v1' }, ownerRelease: { method: 'fixture.release' },
+        } } } } };
+    const supervisor = new SubappOwnerSupervisor({ resolveRuntime: () => runtime, onError() {}, send: async request => {
+        order.push(request.method); if (request.method === 'fixture.release') {
+            assert.equal(fs.existsSync(request.processLease.leaseFile), false);
+            options.onNodeOwnerRelease?.(request);
+        }
+    } });
+    const generation = supervisor.connect(renderer).generation;
+    const input = sessionId => ({ generation, ownerSessionId: sessionId, toolId: 'fixture' });
+    let bridge;
+    bridge = new SubappBrowserOwnerBridge({ timeoutMs: 100, resolveRuntime: () => runtime, send: async (stream, frame) => {
+        frames.push(frame); order.push(frame.type);
+        const send = () => bridge.handle(stream, { type: frame.type === OWNER_TYPES.bind ? OWNER_TYPES.bound : OWNER_TYPES.acknowledged,
+            version: 1, requestId: frame.requestId, streamId: frame.streamId, executionId: frame.executionId,
+            bindingId: frame.bindingId, sessionId: frame.owner.sessionId, ...(frame.releaseId ? { releaseId: frame.releaseId } : {}),
+            ok: true });
+        await options.nodeAck?.(frame); send(); return { success: true };
+    } });
+    const broker = new SubappBrowserProcessBroker({ host: h.host, send: async () => ({ success: true }),
+        resolveStream: stream => stream === runtime.streamId ? { toolId: 'fixture', messagePort: runtime.messagePort } : null });
+    registerBrowserExecutionHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, host: h.host, supervisor,
+        broker, ownerBridge: bridge, resolveRuntime: () => runtime, prepareLaunch: async () => ({ config: h.config, release() {} }) });
+    const invoke = (sessionId, payload) => handlers.get('subapp-browser-execution')({ sender: renderer, senderFrame: renderer.mainFrame }, { ...input(sessionId), ...payload });
+    const track = sessionId => supervisor.track(renderer, input(sessionId));
+    return { ...h, bridge, broker, supervisor, renderer, runtime, order, frames, input, invoke, track };
+}
+
+test('Main private binding is gated by the real Node ACK and is reserved before ordinary process traffic', async t => {
+    const held = Promise.withResolvers(); let bound;
+    const h = await supervisedBrowserOwner(t, { nodeAck: async frame => { if (frame.type === OWNER_TYPES.bind) { bound = frame; await held.promise; } } });
+    await h.track('chat-a'); let done = false;
+    const binding = h.invoke('chat-a', { action: 'bindProcess', leaseFile: 'renderer-forged' }).then(value => { done = true; return value; });
+    while (!bound) await tick();
+    assert.equal(done, false); assert.equal(h.broker.connections.size, 0); assert.equal(h.broker.owners.size, 1);
+    assert.equal(bound.owner.ownerPid, process.pid); assert.notEqual(bound.owner.leaseFile, 'renderer-forged');
+    assert.equal(fs.existsSync(bound.owner.leaseFile), true);
+    const concurrent = h.invoke('chat-a', { action: 'bindProcess' }); await tick(); assert.equal(h.frames.length, 1);
+    held.resolve(); const [one, two] = await Promise.all([binding, concurrent]); assert.deepEqual(one, two);
+    assert.equal(one.connectionId, bound.bindingId); assert.equal(one.endpoint.runtimeId, bound.executionId);
+    assert.equal(h.broker.connections.size, 1); assert.equal(h.bridge.pendingCount, 0);
+    assert.equal(JSON.stringify(one).includes(bound.owner.leaseFile), false);
+    await h.supervisor.release(h.renderer, h.input('chat-a'));
+});
+
+test('actual owner departure fences the lease, waits Worker then Node evidence before disconnect and runtime release while B stays alive', async t => {
+    const held = Promise.withResolvers(); let evidence;
+    const h = await supervisedBrowserOwner(t, { nodeAck: async frame => { if (frame.type === OWNER_TYPES.released && frame.owner.sessionId === 'chat-a') { evidence = frame; await held.promise; } } });
+    await h.track('chat-a'); await h.track('chat-b');
+    const a = await h.invoke('chat-a', { action: 'bindProcess' }), b = await h.invoke('chat-b', { action: 'bindProcess' });
+    const before = h.order.length, releasing = h.supervisor.release(h.renderer, h.input('chat-a'));
+    while (!evidence) await tick();
+    assert.equal(fs.existsSync(evidence.owner.leaseFile), false);
+    assert.equal(h.broker.connections.size, 2); assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 2);
+    assert.deepEqual(h.order.slice(before), ['worker:owner-release', OWNER_TYPES.released]);
+    const bAgain = await h.invoke('chat-b', { action: 'bindProcess' }); assert.deepEqual(bAgain, b);
+    held.resolve(); assert.equal((await releasing).ok, true);
+    assert.deepEqual(h.order.slice(before), ['worker:owner-release', OWNER_TYPES.released, 'worker:detach', 'fixture.release']);
+    assert.equal(h.broker.connections.size, 1); assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 1);
+    assert.equal(h.windows[0].isDestroyed(), false); assert.notEqual(a.connectionId, b.connectionId);
+    await h.supervisor.release(h.renderer, h.input('chat-b'));
+});
+
+test('public execution release revokes Node admission before a held Worker ACK and preserves B', async t => {
+    let workerRelease, hold = true;
+    const h = await supervisedBrowserOwner(t, { ignore: message => message.type === 'owner-release' && hold,
+        onLifecycle: message => { if (message.type === 'owner-release') workerRelease = message; } });
+    await h.track('chat-a'); await h.track('chat-b');
+    const a = await h.invoke('chat-a', { action: 'bindProcess' }), b = await h.invoke('chat-b', { action: 'bindProcess' });
+    const lease = h.frames.find(frame => frame.owner.sessionId === 'chat-a').owner;
+    let done = false;
+    const releasing = h.invoke('chat-a', { action: 'release', runtimeId: a.endpoint.runtimeId }).then(value => { done = true; return value; });
+    while (!workerRelease) await tick();
+    assert.equal(done, false); assert.equal(fs.existsSync(lease.leaseFile), false, 'The actual process-file admission capability is removed before Worker release.');
+    assert.throws(() => h.supervisor.createOwnerGuard(h.renderer, h.input('chat-a')), /binding has ended/);
+    await assert.rejects(h.invoke('chat-a', { action: 'bindProcess' }), /binding has ended/);
+    assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 0);
+    hold = false; h.windows[0].hostPort.postMessage({ id: workerRelease.id, ok: true });
+    const receipt = await releasing; assert.equal(receipt.released, true); assert.equal(receipt.refCount, 1);
+    assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 1); assert.equal(h.windows[0].isDestroyed(), false);
+    await h.supervisor.release(h.renderer, h.input('chat-b'));
+});
+
+test('public release retries failed Worker or evidence with the same revoked owner instead of reopening its guard', async t => {
+    for (const failure of ['worker', 'evidence']) {
+        let fail = true;
+        const h = await supervisedBrowserOwner(t, { ownerReleaseFailure: () => failure === 'worker' && fail,
+            nodeAck: async frame => { if (failure === 'evidence' && fail && frame.type === OWNER_TYPES.released) throw Error('Node evidence unavailable'); } });
+        await h.track('chat-a'); await h.track('chat-b');
+        const a = await h.invoke('chat-a', { action: 'bindProcess' }), b = await h.invoke('chat-b', { action: 'bindProcess' });
+        await assert.rejects(h.invoke('chat-a', { action: 'release', runtimeId: a.endpoint.runtimeId }), /requires retry/);
+        assert.throws(() => h.supervisor.createOwnerGuard(h.renderer, h.input('chat-a')), /binding has ended/);
+        assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+        const original = h.frames.find(frame => frame.type === OWNER_TYPES.released);
+        fail = false;
+        assert.equal((await h.invoke('chat-a', { action: 'release', runtimeId: a.endpoint.runtimeId })).refCount, 1);
+        if (original) for (const frame of h.frames.filter(frame => frame.type === OWNER_TYPES.released)) {
+            assert.equal(frame.releaseId, original.releaseId); assert.equal(frame.bindingId, original.bindingId);
+        }
+        assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 1);
+        await h.supervisor.release(h.renderer, h.input('chat-b'));
+    }
+});
+
+test('public release retains the successful physical Host receipt when the final Node owner RPC needs retry', async t => {
+    let fail = true;
+    const h = await supervisedBrowserOwner(t, { onNodeOwnerRelease: request => {
+        if (request.ownerSessionId === 'chat-a' && fail) throw Error('Actual Node owner finalizer failed');
+    } });
+    await h.track('chat-a'); await h.track('chat-b');
+    const a = await h.invoke('chat-a', { action: 'bindProcess' }); await h.invoke('chat-b', { action: 'bindProcess' });
+    await assert.rejects(h.invoke('chat-a', { action: 'release', runtimeId: a.endpoint.runtimeId }), /requires retry/);
+    assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 1);
+    assert.equal(h.supervisor.renderers.get(h.renderer.id).bindings.size, 2);
+    const releases = h.order.filter(value => value === 'worker:owner-release').length;
+    fail = false;
+    const receipt = await h.invoke('chat-a', { action: 'release', runtimeId: a.endpoint.runtimeId });
+    assert.equal(receipt.refCount, 1); assert.equal(h.order.filter(value => value === 'worker:owner-release').length, releases);
+    assert.equal(h.supervisor.renderers.get(h.renderer.id).bindings.size, 1);
+    await h.supervisor.release(h.renderer, h.input('chat-b'));
+});
+
+test('an evidence timeout retains the exact Main owner and release UUID for retry without replaying Worker release', async t => {
+    let fail = true;
+    const h = await supervisedBrowserOwner(t, { nodeAck: async frame => { if (frame.type === OWNER_TYPES.released && fail) throw Error('actual Node receipt unavailable'); } });
+    await h.track('chat-a'); await h.track('chat-b');
+    await h.invoke('chat-a', { action: 'bindProcess' }); await h.invoke('chat-b', { action: 'bindProcess' });
+    assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, false);
+    const released = h.frames.find(frame => frame.type === OWNER_TYPES.released);
+    assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 2); assert.equal(h.bridge.pendingCount, 1);
+    await assert.rejects(h.invoke('chat-a', { action: 'bindProcess' }), /binding has ended/);
+    fail = false; assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, true);
+    const retried = h.frames.filter(frame => frame.type === OWNER_TYPES.released);
+    assert.equal(retried[1].releaseId, released.releaseId); assert.equal(retried[1].bindingId, released.bindingId);
+    assert.equal(h.order.filter(value => value === 'worker:owner-release').length, 1);
+    assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 1); assert.equal(h.bridge.pendingCount, 0);
+    await h.supervisor.release(h.renderer, h.input('chat-b'));
+});
+
+test('a failed Worker owner ACK never publishes Node evidence and retains A while B remains usable', async t => {
+    let fail = true; const h = await supervisedBrowserOwner(t, { ownerReleaseFailure: () => fail });
+    await h.track('chat-a'); await h.track('chat-b');
+    await h.invoke('chat-a', { action: 'bindProcess' }); const b = await h.invoke('chat-b', { action: 'bindProcess' });
+    assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, false);
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 0);
+    assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 2);
+    assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+    fail = false; assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, true);
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 1);
+    await h.supervisor.release(h.renderer, h.input('chat-b'));
+});
+
+test('owner release during held Node binding cannot admit a late Agent context', async t => {
+    const held = Promise.withResolvers(); let entered = false;
+    const h = await supervisedBrowserOwner(t, { nodeAck: async frame => { if (frame.type === OWNER_TYPES.bind) { entered = true; await held.promise; } } });
+    await h.track('chat-a');
+    const binding = h.invoke('chat-a', { action: 'bindProcess' }), rejected = assert.rejects(binding, /ended|expired|revoked/i);
+    while (!entered) await tick();
+    let done = false; const releasing = h.supervisor.release(h.renderer, h.input('chat-a')).then(value => { done = true; return value; });
+    await tick(); assert.equal(done, false); assert.equal(h.broker.connections.size, 0);
+    held.resolve(); await rejected; assert.equal((await releasing).ok, true);
+    assert.equal(h.broker.connections.size, 0); assert.equal(h.broker.owners.size, 0); assert.equal(h.host.runtimes.size, 0);
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 1);
+});
+
+test('closing a View or replacing an Agent connection is not release evidence and cannot silently rebind another connection', async t => {
+    const h = await supervisedBrowserOwner(t); await h.track('chat-a');
+    const endpoint = await h.invoke('chat-a', { action: 'bindProcess' });
+    const view = await h.invoke('chat-a', { action: 'openView', runtimeId: endpoint.endpoint.runtimeId, surface: 'full' });
+    await h.invoke('chat-a', { action: 'closeView', runtimeId: endpoint.endpoint.runtimeId, connectionId: view.connectionId });
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 0);
+    const record = h.broker.connections.get(endpoint.connectionId); await h.broker.revoke(record);
+    await assert.rejects(h.invoke('chat-a', { action: 'bindProcess' }), /confirmed retirement/);
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.bind).length, 1);
+    await h.supervisor.release(h.renderer, h.input('chat-a'));
+});
+
+test('an actual execution crash cannot manufacture a Worker release ACK or private Node evidence', async t => {
+    const h = await supervisedBrowserOwner(t, { unconfirmedCrash: true }); await h.track('chat-a');
+    await h.invoke('chat-a', { action: 'bindProcess' });
+    h.windows[0].webContents.emit('render-process-gone'); await tick(); await tick();
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 0);
+    assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, false);
+    assert.equal(h.host.runtimes.size, 1); assert.equal(h.supervisor.renderers.get(h.renderer.id).bindings.size, 1);
+    assert.equal(h.windows[0].isDestroyed(), true);
+    assert.equal(h.order.filter(value => value === 'fixture.release').length, 0);
 });
 
 test('Node control is disabled unless the Main-selected installed package declares the exact registered protocol', t => {
@@ -299,7 +500,7 @@ test('IPC concurrent acquire shares selection; release fences reacquire until it
     const first = invoke({ action: 'acquire' }), second = invoke({ action: 'acquire' });
     assert.equal(selectionCount, 1); selected.resolve(); const [a, b] = await Promise.all([first, second]); assert.deepEqual(a, b);
     const releasing = invoke({ action: 'release', runtimeId: a.endpoint.runtimeId }); await tick();
-    await assert.rejects(invoke({ action: 'acquire' }), /being released/);
+    await assert.rejects(invoke({ action: 'acquire' }), /being released|binding has ended/);
     const shutdown = h.lifecycle.find(message => message.type === 'shutdown');
     h.windows[0].hostPort.postMessage({ id: shutdown.id, ok: true });
     assert.equal((await releasing).physicalClosed, true); assert.equal(h.host.runtimes.size, 0);

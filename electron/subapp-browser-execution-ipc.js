@@ -5,7 +5,7 @@ const { readNodeControlSource } = require('./subapp-node-control-source');
 
 /** Low-frequency trusted composition only. The JSON endpoint contains an opaque
  * instance id; the actual port is handed off separately to its authorized owner. */
-function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLaunch, resolveRuntime, broker, nodeControlBroker }) {
+function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLaunch, resolveRuntime, broker, nodeControlBroker, ownerBridge }) {
     const leases = new Map();
     const owner = (event, input) => {
         if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) throw new Error('Browser execution requires the owner main frame');
@@ -13,6 +13,16 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
         const runtime = resolveRuntime(input.toolId, event.sender.id);
         if (!runtime || runtime.streamId !== guard.runtime.streamId) throw new Error('Registered Runtime changed');
         return { guard, runtime, key: JSON.stringify([event.sender.id, input.generation, input.ownerSessionId, input.toolId]) };
+    };
+    const bindProcess = async (lease, guard, runtime, toolId) => {
+        if (!broker || !runtime.messagePort) throw new Error('Browser execution process message transport is unavailable');
+        return broker.bind({ lease, guard, toolId, maxMessageBytes: runtime.messagePort.maxMessageBytes,
+            expectedConnectionId: lease.bindingId,
+            ...(ownerBridge ? { beforeAdmit: async bindingId => {
+                if (lease.bindingId && lease.bindingId !== bindingId) throw new Error('Previous Browser owner connection requires confirmed retirement');
+                lease.bindingId = bindingId;
+                await host.bindNodeOwner({ ...lease, guard, bindingId, bridge: ownerBridge });
+            } } : {}) });
     };
     async function acquire(event, input, guard, runtime, key) {
             const existing = leases.get(key);
@@ -26,7 +36,12 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
             const record = { runtimeId: runtime.streamId, ownerId: event.sender.id, leaseId: input.ownerSessionId };
             leases.set(key, record);
             try {
-                record.removeCleanup = guard.attachCleanup(() => { record.revoked = true; if (leases.get(key) === record) leases.delete(key); });
+                record.removeCleanup = guard.attachCleanup(() => {
+                    record.revoked = true;
+                    // Public release retains its actual Host receipt until the
+                    // supervised Node finalizer also succeeds, including retry.
+                    if (!record.releasing && leases.get(key) === record) leases.delete(key);
+                });
             } catch (error) { if (leases.get(key) === record) leases.delete(key); throw error; }
             record.pending = (async () => {
             // Selection and manifest come from main-process package manager, never IPC.
@@ -52,6 +67,28 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
             catch (error) { if (leases.get(key) === record) leases.delete(key); record.removeCleanup?.(); throw error; }
     }
     ipcMain.handle('subapp-browser-execution', async (event, input = {}) => {
+        if (input.action === 'release') {
+            if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) throw new Error('Browser execution requires the owner main frame');
+            // Cleanup validates the original renderer incarnation and lease;
+            // ordinary admission is already revoked on an authorized retry.
+            supervisor.require(event.sender, input.generation);
+            const key = JSON.stringify([event.sender.id, input.generation, input.ownerSessionId, input.toolId]);
+            const lease = leases.get(key);
+            if (!lease || input.runtimeId !== lease.executionId) throw new Error('Browser execution handle is stale or belongs to another owner');
+            lease.releasing = true;
+            const supervised = supervisor.release(event.sender, input);
+            const actualHost = lease.hostReceipt ? Promise.resolve(lease.hostReceipt)
+                : host.release(lease).then(receipt => { lease.hostReceipt = receipt; return receipt; });
+            const [supervision, execution] = await Promise.allSettled([supervised, actualHost]);
+            const failures = [supervision, execution].filter(result => result.status === 'rejected').map(result => result.reason);
+            if (supervision.status === 'fulfilled' && !supervision.value.ok) {
+                failures.push(new Error('Supervised Node owner cleanup remains unconfirmed'));
+            }
+            if (failures.length) throw new AggregateError(failures, 'Browser execution owner release requires retry');
+            if (leases.get(key) === lease) leases.delete(key);
+            lease.removeCleanup?.();
+            return execution.value;
+        }
         const { guard, runtime, key } = owner(event, input);
         if (input.action === 'acquire') return acquire(event, input, guard, runtime, key);
         if (input.action === 'bindProcess') {
@@ -59,7 +96,7 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
             await acquire(event, input, guard, runtime, key); guard();
             const lease = leases.get(key);
             if (!lease || lease.revoked || lease.releasing) throw new Error('Browser execution owner ended during process binding');
-            return broker.bind({ lease, guard, toolId: input.toolId, maxMessageBytes: runtime.messagePort.maxMessageBytes });
+            return bindProcess(lease, guard, runtime, input.toolId);
         }
         const lease = leases.get(key);
         if (!lease || lease.runtimeId !== runtime.streamId || input.runtimeId !== lease.executionId) {
@@ -67,13 +104,14 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
         }
         if (lease.releasing && input.action !== 'release') throw new Error('Browser execution owner is being released');
         if (input.action === 'connect') {
+            if (ownerBridge) await bindProcess(lease, guard, runtime, input.toolId);
             return host.connect({ ...lease, guard, target: event.sender, purpose: 'agent' });
         }
         if (input.action === 'openView') {
             let browserExecution;
-            if (lease.nodeControlSource) {
-                if (!nodeControlBroker || !broker || !runtime.messagePort) throw new Error('Registered Node control is unavailable');
-                browserExecution = await broker.bind({ lease, guard, toolId: input.toolId, maxMessageBytes: runtime.messagePort.maxMessageBytes });
+            if (lease.nodeControlSource || ownerBridge) {
+                if (lease.nodeControlSource && !nodeControlBroker) throw new Error('Registered Node control is unavailable');
+                browserExecution = await bindProcess(lease, guard, runtime, input.toolId);
                 guard();
             }
             const view = await host.openView({ ...lease, guard, surface: input.surface });
@@ -93,13 +131,6 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
             }
         }
         if (input.action === 'closeView') return host.closeView({ ...lease, guard, connectionId: input.connectionId });
-        if (input.action === 'release') {
-            lease.releasing = true;
-            const receipt = await host.release(lease);
-            if (leases.get(key) === lease) leases.delete(key);
-            lease.removeCleanup?.();
-            return receipt;
-        }
         throw new Error('Unknown Browser execution action');
     });
     return host;

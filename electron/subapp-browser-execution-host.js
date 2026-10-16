@@ -44,8 +44,8 @@ class SubappBrowserExecutionHost {
         if (!state.ownerHandles.has(key)) state.ownerHandles.set(key, randomUUID());
         if (!state.bindings.has(key)) {
             try {
-                const remove = guard.attachCleanup(() => this.release({ runtimeId, ownerId, leaseId }));
-                state.bindings.set(key, remove);
+                const remove = guard.attachCleanup(() => this.release({ runtimeId, ownerId, leaseId }), { priority: 'execution' });
+                state.bindings.set(key, { remove });
             } catch (error) { releaseOwner(state, ownerId, leaseId); state.ownerHandles.delete(key);
                 if (!ownerCount(state)) this.runtimes.delete(runtimeId); throw error; }
         }
@@ -154,6 +154,26 @@ class SubappBrowserExecutionHost {
     }
 
     async connect(input) { return this.connectEndpoint(input, false); }
+
+    /** Main-only binding over an acknowledged process lease. The real Agent
+     * connection is reserved internally before Node learns its identity. */
+    async bindNodeOwner({ runtimeId, executionId, ownerId, leaseId, guard, bindingId, bridge }) {
+        guard();
+        const state = this.runtimes.get(runtimeId), key = ownerKey(ownerId, leaseId), binding = state?.bindings.get(key);
+        if (!state || !binding || !this.isCurrent({ runtimeId, executionId, ownerId, leaseId })) throw fault('Browser owner is no longer current');
+        const connection = state.connections.get(bindingId);
+        if (!connection || connection.key !== key || connection.disconnecting) throw fault('Browser owner binding requires its actual live connection');
+        if (binding.node && binding.node.bindingId !== bindingId) throw fault('Previous Browser owner connection requires confirmed retirement');
+        if (!binding.node) {
+            const owner = guard.processLeaseIdentity();
+            if (owner.sessionId !== leaseId) throw fault('Private process lease identity changed');
+            binding.node = { streamId: runtimeId, executionId, bindingId, packageName: state.source.packageName,
+                packageVersion: state.source.version, owner, releaseId: randomUUID() };
+            binding.bridge = bridge;
+        }
+        await binding.bridge.bind(binding.node); guard();
+        if (!this.isCurrent({ runtimeId, executionId, ownerId, leaseId })) throw fault('Browser owner ended during Node binding');
+    }
 
     /** Main-only registered-process broker endpoint. Never serialized to IPC. */
     async connectRuntime(input) { return this.connectEndpoint({ ...input, purpose: 'agent' }, true); }
@@ -282,19 +302,33 @@ class SubappBrowserExecutionHost {
             await state.starting?.catch(() => {});
             if (state.closing) return state.closing;
             if (state.failed || state.cancelled) return this.close(state);
+            // Connection detach is not Chat/Runtime ownership release. A timeout
+            // may replace a connection while this owner keeps its MCU running.
+            await this.confirmOwnerRelease(state, key, state.bindings.get(key));
             const detached = await Promise.allSettled([...state.connections.values()].filter(binding => binding.key === key)
                 .map(binding => this.disconnect(state, binding.connectionId)));
             if (detached.some(result => result.status === 'rejected')) throw fault('Connection detach was not acknowledged');
-            // Connection detach is not Chat/Runtime ownership release. A timeout
-            // may replace a connection while this owner keeps its MCU running.
-            await this.request(state, 'owner-release', { ownerHandle: state.ownerHandles.get(key) });
             releaseOwner(state, ownerId, leaseId); state.ownerHandles.delete(key);
             if (!ownerCount(state)) return this.close(state);
-            state.bindings.get(key)?.(); state.bindings.delete(key); state.retiring.delete(key);
+            state.bindings.get(key)?.remove(); state.bindings.delete(key); state.retiring.delete(key);
             return { released: true, refCount: ownerCount(state) };
         })();
         state.releases.set(key, pending);
         try { return await pending; } finally { if (state.releases.get(key) === pending) state.releases.delete(key); }
+    }
+
+    async confirmOwnerRelease(state, key, binding) {
+        if (!binding) return;
+        if (!binding.workerReleased) {
+            if (state.failed || !state.ready || !state.window || state.window.isDestroyed()) throw fault('Browser Worker owner release is unconfirmed');
+            await this.request(state, 'owner-release', { ownerHandle: state.ownerHandles.get(key) });
+            binding.workerReleased = true;
+        }
+        if (binding.node) {
+            // A lost bind ACK remains an actual I/O owner until its retry joins.
+            await binding.bridge.bind(binding.node);
+            await binding.bridge.released(binding.node);
+        }
     }
 
     async close(state) {
@@ -305,6 +339,8 @@ class SubappBrowserExecutionHost {
             // Startup catches do not call close, so this join cannot wait on itself.
             // It also prevents a late server.listen() or loadURL() resurrecting resources.
             await state.starting?.catch(() => {});
+            const ownerCleanup = await Promise.allSettled([...state.bindings].filter(([, binding]) => binding.node)
+                .map(([key, binding]) => this.confirmOwnerRelease(state, key, binding)));
             const connectionCleanup = await Promise.allSettled([...state.connections.values()].flatMap(binding =>
                 [...(binding.cleanups || [])].map(async cleanup => { await cleanup(); binding.cleanups.delete(cleanup); })));
             let acknowledged = false, value;
@@ -318,11 +354,11 @@ class SubappBrowserExecutionHost {
             if (state.window && !state.window.isDestroyed()) state.window.destroy();
             if (state.window && !state.window.isDestroyed()) throw fault('Browser execution physical teardown unconfirmed');
             await state.server?.close();
-            const failures = connectionCleanup.filter(result => result.status === 'rejected');
+            const failures = [...ownerCleanup, ...connectionCleanup].filter(result => result.status === 'rejected');
             if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'View Node control cleanup remains owned');
             for (const binding of state.connections.values()) binding.remove();
             state.connections.clear();
-            for (const remove of state.bindings.values()) remove();
+            for (const binding of state.bindings.values()) binding.remove();
             state.bindings.clear(); state.owners.clear();
             state.ownerHandles.clear();
             if (this.runtimes.get(state.runtimeId) === state) this.runtimes.delete(state.runtimeId);

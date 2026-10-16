@@ -67,6 +67,11 @@ const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+const { SubappBrowserOwnerBridge } = require('./subapp-browser-owner-bridge');
+const browserOwnerBridge = new SubappBrowserOwnerBridge({ send: sendCmdProcessMessage,
+    resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
+        && !session.exit && getCmdProcessMessagePortInfo(streamId)) || null,
+});
 const { SubappNodeControlBroker } = require('./subapp-node-control-broker');
 const nodeControlBroker = new SubappNodeControlBroker({ MessageChannelMain, send: sendCmdProcessMessage,
     resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
@@ -354,6 +359,7 @@ function routeChildToolProcessMessage(event) {
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
     if (sessionEntry) {
+        if (browserOwnerBridge.handle(streamId, event.message)) return;
         if (nodeControlBroker.handle(streamId, event.message)) return;
         if (browserProcessBroker.handle(streamId, event.message)) return;
         if (ailyHostAuthRelay?.handle(sessionEntry[0], sessionEntry[1].streamId, event.message)) {
@@ -2345,6 +2351,7 @@ module.exports = {
     browserExecutionRegistry: {
         broker: browserProcessBroker,
         nodeControlBroker,
+        ownerBridge: browserOwnerBridge,
         host: browserExecutionHost,
         supervisor: subappOwnerSupervisor,
         resolveRuntime: (toolId, ownerId) => {
