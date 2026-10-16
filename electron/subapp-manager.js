@@ -3146,6 +3146,13 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
       || verifyInstalledSubappStartup,
   });
 
+  if (handlerOptions.browserExecutionRegistry) {
+    require('./subapp-browser-execution-ipc').registerBrowserExecutionHandlers({
+      ipcMain, ...handlerOptions.browserExecutionRegistry,
+      prepareLaunch: payload => defaultManager.prepareLaunch(payload),
+    });
+  }
+
   const handleMutation = (action) => async (_event, payload = {}) => {
     const result = await defaultManager[action](payload);
     const mainWindow = getMainWindow();

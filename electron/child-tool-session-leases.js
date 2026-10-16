@@ -238,6 +238,7 @@ module.exports = {
   hasOwner,
   hasOwnerId,
   ownerCount,
+  ownerKey,
   releaseOwner,
   releaseOwnerFromSessions,
   setMessageControllerOwner,

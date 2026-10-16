@@ -760,6 +760,7 @@ const {
   getRunningSubappConfig,
   stopAllChildToolSessions,
   nativeSubappRegistry,
+  browserExecutionRegistry,
   beginWindowShutdown,
 } = require("./window");
 const { createApplicationQuitCoordinator } = require('./application-quit');
@@ -2709,6 +2710,7 @@ function createWindow() {
   registerBleHandlers();
   const subappReleaseTrustRoot = loadBundledSubappReleaseTrustRoot();
   registerSubappManagerHandlers(() => mainWindow, {
+    browserExecutionRegistry,
     releaseTrustPolicies: subappReleaseTrustRoot.policies,
     canMutateSharedTree: () => !hasOtherRunningInstances(),
     getRunningSubappConfig,

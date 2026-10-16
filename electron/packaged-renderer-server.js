@@ -8,6 +8,7 @@ const MAX_REQUEST_URL_LENGTH = 16 * 1024;
 function createPackagedRendererServer(options = {}) {
   const createHttpServer = options.createHttpServer || http.createServer;
   const fsImplementation = options.fs || fs;
+  const indexFile = options.indexFile || 'index.html';
   let state = null;
   let startTask = null;
   let closeTask = null;
@@ -28,7 +29,7 @@ function createPackagedRendererServer(options = {}) {
     );
     const indexPath = resolveContainedFile(
       rootDirectory,
-      'index.html',
+      indexFile,
       fsImplementation,
     );
     if (!indexPath) {
@@ -43,6 +44,8 @@ function createPackagedRendererServer(options = {}) {
         rootDirectory,
         expectedHost,
         fsImplementation,
+        indexFile,
+        securityOptions: options,
       }).catch(() => {
         if (!response.headersSent) {
           writeEmpty(response, 500);
@@ -84,7 +87,7 @@ function createPackagedRendererServer(options = {}) {
     const closing = state;
     state = null;
     if (!closing) return Promise.resolve();
-    closeTask = closeHttpServer(closing.server).finally(() => {
+    closeTask = closeHttpServer(closing.server, options.strictPublicFiles === true).finally(() => {
       closeTask = null;
     });
     return closeTask;
@@ -105,8 +108,10 @@ async function handleRequest(options) {
     rootDirectory,
     expectedHost,
     fsImplementation,
+    indexFile,
+    securityOptions,
   } = options;
-  applySecurityHeaders(response);
+  applySecurityHeaders(response, securityOptions);
   if (!expectedHost || request.headers.host !== expectedHost) {
     writeEmpty(response, 421);
     return;
@@ -123,10 +128,14 @@ async function handleRequest(options) {
   }
   const filePath = resolveContainedFile(
     rootDirectory,
-    relativePath || 'index.html',
+    relativePath || indexFile,
     fsImplementation,
   );
   if (!filePath) {
+    writeEmpty(response, 404);
+    return;
+  }
+  if (securityOptions?.strictPublicFiles === true && !isStrictPublicFile(rootDirectory, relativePath || indexFile, fsImplementation)) {
     writeEmpty(response, 404);
     return;
   }
@@ -258,11 +267,26 @@ function createRendererUrl(origin, hash = '') {
   return `${parsed.origin}/${normalizedHash}`;
 }
 
-function applySecurityHeaders(response) {
+function applySecurityHeaders(response, options = {}) {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (options.crossOriginIsolated === true) response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  if (options.contentSecurityPolicy) response.setHeader('Content-Security-Policy', options.contentSecurityPolicy);
+}
+
+function isStrictPublicFile(rootDirectory, relativePath, fsImplementation) {
+  const extensions = new Set(['.html', '.js', '.mjs', '.css', '.json', '.map', '.svg', '.png', '.jpg', '.jpeg',
+    '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.wasm', '.txt', '.bin', '.hex', '.elf', '.data', '.rom', '.dat']);
+  if (!extensions.has(path.extname(relativePath).toLowerCase())) return false;
+  let candidate = rootDirectory;
+  for (const part of relativePath.split('/')) {
+    if (!part || part.startsWith('.')) return false;
+    candidate = path.join(candidate, part);
+    try { if (fsImplementation.lstatSync(candidate).isSymbolicLink()) return false; } catch { return false; }
+  }
+  return true;
 }
 
 function writeEmpty(response, statusCode) {
@@ -274,9 +298,10 @@ function writeEmpty(response, statusCode) {
 function pipeFile(fsImplementation, filePath, response) {
   return new Promise((resolve, reject) => {
     const stream = fsImplementation.createReadStream(filePath);
+    const finished = () => { stream.destroy(); resolve(); };
     stream.once('error', reject);
-    response.once('finish', resolve);
-    response.once('close', resolve);
+    response.once('finish', finished);
+    response.once('close', finished);
     stream.pipe(response);
   });
 }
@@ -302,13 +327,14 @@ function listen(server) {
   });
 }
 
-function closeHttpServer(server) {
+function closeHttpServer(server, forceConnections = false) {
   return new Promise((resolve, reject) => {
     if (!server.listening) {
       resolve();
       return;
     }
     server.close((error) => error ? reject(error) : resolve());
+    if (forceConnections) server.closeAllConnections?.();
   });
 }
 
