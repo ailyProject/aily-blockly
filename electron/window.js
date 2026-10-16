@@ -67,6 +67,18 @@ const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+const { SubappBrowserProcessBroker } = require('./subapp-browser-process-broker');
+const browserProcessBroker = new SubappBrowserProcessBroker({ host: browserExecutionHost,
+    send: sendCmdProcessMessage,
+    resolveStream: streamId => {
+        for (const [toolId, session] of childToolSessions) {
+            if (session.streamId === streamId && !session.stopping && isChildToolSessionAlive(session) && getCmdProcessMessagePortInfo(streamId)) {
+                return { toolId, messagePort: session.messagePort };
+            }
+        }
+        return null;
+    },
+});
 const { SubappOwnerSupervisor, registerSubappOwnerSupervisor } = require('./subapp-owner-supervisor');
 const subappOwnerSupervisor = new SubappOwnerSupervisor({
     resolveRuntime: (toolId, ownerId) => {
@@ -335,6 +347,7 @@ function routeChildToolProcessMessage(event) {
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
     if (sessionEntry) {
+        if (browserProcessBroker.handle(streamId, event.message)) return;
         if (ailyHostAuthRelay?.handle(sessionEntry[0], sessionEntry[1].streamId, event.message)) {
             return;
         }
@@ -2316,6 +2329,7 @@ module.exports = {
     listChildToolHoldersForCatalogId,
     getRunningSubappConfig,
     browserExecutionRegistry: {
+        broker: browserProcessBroker,
         host: browserExecutionHost,
         supervisor: subappOwnerSupervisor,
         resolveRuntime: (toolId, ownerId) => {

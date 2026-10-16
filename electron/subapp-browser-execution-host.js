@@ -33,18 +33,21 @@ class SubappBrowserExecutionHost {
         if (!state) {
             if (this.runtimes.size >= 32) throw fault('Browser execution domain limit reached');
             state = { runtimeId, source, executionId: randomUUID(), owners: new Map(), bindings: new Map(),
-                connections: new Map(), pending: new Map(), sequence: 0, cancelled: false, retiring: new Set(), releases: new Map() };
+                connections: new Map(), pending: new Map(), sequence: 0, cancelled: false,
+                retiring: new Set(), releases: new Map(), ownerHandles: new Map() };
             this.runtimes.set(runtimeId, state);
             // Publish ownership before asynchronous startup so revoke cannot miss it.
         }
         if (ownerCount(state) >= 256 && !hasOwner(state, ownerId, leaseId)) throw fault('Browser execution owner limit reached');
         const lease = acquireOwner(state, ownerId, leaseId);
         if (!lease.success) throw fault('Invalid execution owner lease');
+        if (!state.ownerHandles.has(key)) state.ownerHandles.set(key, randomUUID());
         if (!state.bindings.has(key)) {
             try {
                 const remove = guard.attachCleanup(() => this.release({ runtimeId, ownerId, leaseId }));
                 state.bindings.set(key, remove);
-            } catch (error) { releaseOwner(state, ownerId, leaseId); if (!ownerCount(state)) this.runtimes.delete(runtimeId); throw error; }
+            } catch (error) { releaseOwner(state, ownerId, leaseId); state.ownerHandles.delete(key);
+                if (!ownerCount(state)) this.runtimes.delete(runtimeId); throw error; }
         }
         if (!state.starting && !state.cancelled) state.starting = this.start(state);
         try {
@@ -150,29 +153,38 @@ class SubappBrowserExecutionHost {
         return this.bounded(promise, `Browser execution ${type}`).finally(() => state.pending.delete(id));
     }
 
-    async connect({ runtimeId, executionId, ownerId, leaseId, guard, target, purpose = 'agent', surface }) {
+    async connect(input) { return this.connectEndpoint(input, false); }
+
+    /** Main-only registered-process broker endpoint. Never serialized to IPC. */
+    async connectRuntime(input) { return this.connectEndpoint({ ...input, purpose: 'agent' }, true); }
+
+    async connectEndpoint({ runtimeId, executionId, ownerId, leaseId, guard, target, purpose = 'agent', surface, onClosed }, internal) {
         guard();
         const state = this.runtimes.get(runtimeId), key = ownerKey(ownerId, leaseId);
         if (!state || state.executionId !== executionId || !state.ready || state.closing || state.failed || state.cancelled || state.retiring.has(key) || !hasOwner(state, ownerId, leaseId)
             || guard.runtime?.streamId !== runtimeId || guard.ownerSessionId !== leaseId
-            || !target || target.isDestroyed() || !['agent', 'view'].includes(purpose)) throw fault('Browser execution connection is unavailable');
+            || !internal && (!target || target.isDestroyed()) || !['agent', 'view'].includes(purpose)) throw fault('Browser execution connection is unavailable');
         if (state.connections.size >= 32) throw fault('Browser execution connection limit reached');
         if (purpose === 'view') {
             const entry = state.source.surfaces[surface];
             if (!entry || target.getURL() !== `${state.origin}/${entry}`) throw fault('View source or version is not trusted');
-        } else if (target.id !== ownerId) throw fault('Agent port must return to its owning renderer');
+        } else if (!internal && target.id !== ownerId) throw fault('Agent port must return to its owning renderer');
         const { port1, port2 } = new this.MessageChannelMain(), connectionId = randomUUID();
         const binding = { key, connectionId, target };
         const ended = () => { void this.disconnect(state, connectionId).catch(() => {}); };
         const navigate = (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) ended(); };
-        binding.remove = () => { target.removeListener('destroyed', ended); target.removeListener('render-process-gone', ended); target.removeListener('did-start-navigation', navigate); };
-        target.once('destroyed', ended); target.once('render-process-gone', ended); target.on('did-start-navigation', navigate);
+        binding.remove = internal ? () => { port2.close(); onClosed?.(); } : () => {
+            target.removeListener('destroyed', ended); target.removeListener('render-process-gone', ended); target.removeListener('did-start-navigation', navigate);
+        };
+        if (!internal) { target.once('destroyed', ended); target.once('render-process-gone', ended); target.on('did-start-navigation', navigate); }
         state.connections.set(connectionId, binding);
         try {
-            await this.request(state, 'attach', { connectionId, purpose, ...(surface ? { surface } : {}) }, [port1]);
+            await this.request(state, 'attach', { connectionId, ownerHandle: state.ownerHandles.get(key), purpose,
+                ...(surface ? { surface } : {}) }, [port1]);
             guard();
             if (!state.connections.has(connectionId) || binding.disconnecting || state.closing || state.cancelled || state.failed
-                || state.retiring.has(key) || !hasOwner(state, ownerId, leaseId) || target.isDestroyed()) throw fault('Connection ended during attachment');
+                || state.retiring.has(key) || !hasOwner(state, ownerId, leaseId) || !internal && target.isDestroyed()) throw fault('Connection ended during attachment');
+            if (internal) return { connectionId, executionId: state.executionId, port: port2, close: () => this.disconnect(state, connectionId) };
             target.postMessage('subapp-browser-execution-port', { protocol: PROTOCOL, role: 'connection',
                 executionId: state.executionId, connectionId, purpose, version: state.source.version }, [port2]);
             return { connectionId, executionId: state.executionId };
@@ -231,13 +243,26 @@ class SubappBrowserExecutionHost {
         if (!state) return { released: true, refCount: 0 };
         const key = ownerKey(ownerId, leaseId);
         if (state.releases.has(key)) return state.releases.get(key);
+        if (!hasOwner(state, ownerId, leaseId) && !state.ownerHandles.has(key)) {
+            if (!ownerCount(state) && state.bindings.has(key)) return this.close(state);
+            return { released: true, refCount: ownerCount(state) };
+        }
         state.retiring.add(key); // Fence held attach and same-owner reacquire before any await.
         const pending = (async () => {
-            releaseOwner(state, ownerId, leaseId);
+            // A startup with no remaining live owner may be cancelled before the
+            // document receives any owner/connection capability.
+            if (!state.ready && [...state.owners.keys()].every(owner => state.retiring.has(owner))) return this.close(state);
+            await state.starting?.catch(() => {});
+            if (state.closing) return state.closing;
+            if (state.failed || state.cancelled) return this.close(state);
             const detached = await Promise.allSettled([...state.connections.values()].filter(binding => binding.key === key)
                 .map(binding => this.disconnect(state, binding.connectionId)));
-            if (!ownerCount(state)) return this.close(state);
             if (detached.some(result => result.status === 'rejected')) throw fault('Connection detach was not acknowledged');
+            // Connection detach is not Chat/Runtime ownership release. A timeout
+            // may replace a connection while this owner keeps its MCU running.
+            await this.request(state, 'owner-release', { ownerHandle: state.ownerHandles.get(key) });
+            releaseOwner(state, ownerId, leaseId); state.ownerHandles.delete(key);
+            if (!ownerCount(state)) return this.close(state);
             state.bindings.get(key)?.(); state.bindings.delete(key); state.retiring.delete(key);
             return { released: true, refCount: ownerCount(state) };
         })();
@@ -267,6 +292,7 @@ class SubappBrowserExecutionHost {
             await state.server?.close();
             for (const remove of state.bindings.values()) remove();
             state.bindings.clear(); state.owners.clear();
+            state.ownerHandles.clear();
             if (this.runtimes.get(state.runtimeId) === state) this.runtimes.delete(state.runtimeId);
             return { released: true, refCount: 0, physicalClosed: true, acknowledged, value };
         })();

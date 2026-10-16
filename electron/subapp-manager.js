@@ -825,11 +825,17 @@ function readInstalledState(rootDir, entry) {
     );
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
     const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);
+    const browserExecution = declaredRuntime.browserExecution
+      ? { protocol: require('./subapp-browser-execution-source').readBrowserExecutionSource({
+        packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
+      }).protocol }
+      : null;
     const runtime = {
       ...(declaredRuntime.headless === true ? { headless: true } : {}),
       ...(declaredRuntime.observer === true ? { observer: true } : {}),
       ...(apiServer ? { apiServer } : {}),
       ...(processMessagePort ? { processMessagePort } : {}),
+      ...(browserExecution ? { browserExecution } : {}),
       ...(resourceLifecycle ? { resourceLifecycle } : {}),
     };
     let agent = null;

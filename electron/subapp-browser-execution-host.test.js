@@ -12,6 +12,7 @@ const { readBrowserExecutionSource, PROTOCOL } = require('./subapp-browser-execu
 const { createPackagedRendererServer } = require('./packaged-renderer-server');
 const { SubappOwnerSupervisor } = require('./subapp-owner-supervisor');
 const { registerBrowserExecutionHandlers } = require('./subapp-browser-execution-ipc');
+const { SubappBrowserProcessBroker, REQUEST, RESULT } = require('./subapp-browser-process-broker');
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t) {
@@ -60,6 +61,7 @@ function harness(t, options = {}) {
                         activePorts.get(message.connectionId)?.close(); activePorts.delete(message.connectionId);
                     }
                     if (message.type === 'shutdown') { for (const connection of activePorts.values()) connection.close(); activePorts.clear(); }
+                    if (message.type === 'owner-release' && options.ownerReleaseFailure?.()) { port.postMessage({ id: message.id, ok: false }); return; }
                     if (!options.ignore?.(message)) port.postMessage({ id: message.id, ok: true, value: { resources: 0 } });
                 });
                 if (ready()) port.postMessage({ type: 'ready', protocol: PROTOCOL });
@@ -72,7 +74,7 @@ function harness(t, options = {}) {
     }
     const host = new SubappBrowserExecutionHost({ BrowserWindow: Window, MessageChannelMain: Channel, timeoutMs: options.timeoutMs || 100,
         createServer: () => ({ async start() { servers++; await options.serverStart?.(); return { origin: 'http://127.0.0.1:49152' }; },
-            async close() { serverCloses++; } }) });
+            async close() { serverCloses++; if (options.serverCloseFailure?.()) throw new Error('Static listener close unconfirmed'); } }) });
     const runtimeId = 'registered-fixture-stream', source = f.source();
     function owner(id = 1, leaseId = randomUUID()) {
         let valid = true; const cleanups = new Set();
@@ -283,4 +285,79 @@ test('IPC concurrent acquire shares selection; release fences reacquire until it
     const shutdown = h.lifecycle.find(message => message.type === 'shutdown');
     h.windows[0].hostPort.postMessage({ id: shutdown.id, ok: true });
     assert.equal((await releasing).physicalClosed, true); assert.equal(h.host.runtimes.size, 0);
+});
+
+test('real supervised IPC bindProcess returns an owner-scoped JSON capability and routes only its registered process', async t => {
+    const h = harness(t), renderer = new Contents(), handlers = new Map(), sent = []; renderer.mainFrame = {};
+    const runtime = { streamId: h.runtimeId, nativeOwnerControl: true, messagePort: { maxMessageBytes: 4096 },
+        hostInfo: { wsUrl: 'ws://127.0.0.1:49151/ws', runtimeConfig: h.config } };
+    const supervisor = new SubappOwnerSupervisor({ resolveRuntime: () => runtime });
+    const input = { generation: supervisor.connect(renderer).generation, ownerSessionId: randomUUID(), toolId: 'fixture' };
+    const broker = new SubappBrowserProcessBroker({ host: h.host, send: async (stream, message) => { sent.push({ stream, message }); },
+        resolveStream: stream => stream === runtime.streamId ? { toolId: 'fixture', messagePort: runtime.messagePort } : null });
+    registerBrowserExecutionHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, host: h.host, supervisor, broker,
+        resolveRuntime: () => runtime, prepareLaunch: async () => ({ config: h.config, release() {} }) });
+    const invoke = payload => handlers.get('subapp-browser-execution')({ sender: renderer, senderFrame: renderer.mainFrame }, { ...input, ...payload });
+    await assert.rejects(invoke({ action: 'bindProcess', ownerSessionId: 'forged' }), /binding has ended/);
+    await supervisor.track(renderer, input);
+    const [one, same] = await Promise.all([invoke({ action: 'bindProcess' }), invoke({ action: 'bindProcess' })]);
+    assert.deepEqual(one, same); assert.deepEqual(Object.keys(one), ['endpoint', 'connectionId']); assert.equal(JSON.stringify(one).includes('127.0.0.1'), false);
+    assert.equal(renderer.received.length, 0, 'Node binding never hands the private execution port to a renderer');
+    const request = { type: REQUEST, version: 1, runtimeId: one.endpoint.runtimeId, connectionId: one.connectionId, requestId: 'finite', payload: {} };
+    broker.handle(runtime.streamId, request); await tick();
+    h.activePorts.get(one.connectionId).postMessage({ ...request, type: RESULT, ok: true, result: { snapshot: 'bounded' } }); await tick();
+    assert.equal(sent.at(-1).stream, runtime.streamId); assert.deepEqual(sent.at(-1).message.result, { snapshot: 'bounded' });
+    await supervisor.release(renderer, input);
+    assert.equal(h.host.runtimes.size, 0); assert.equal(broker.connections.size, 0); assert.equal(broker.pendingCount, 0);
+});
+
+test('private owner handle survives connection replacement/View close; only actual owner departure releases domain holds', async t => {
+    const h = harness(t), a = h.owner(), b = h.owner(2), acquired = await h.host.acquire(a); await h.host.acquire(b);
+    const first = await h.host.connectRuntime({ ...a, executionId: acquired.executionId });
+    const handle = h.lifecycle.find(message => message.type === 'attach').ownerHandle;
+    assert.match(handle, /^[a-f0-9-]{36}$/); assert.notEqual(handle, a.leaseId);
+    assert.equal(JSON.stringify(acquired).includes(handle), false);
+    await first.close();
+    await h.host.connectRuntime({ ...a, executionId: acquired.executionId });
+    const view = await h.host.openView({ ...a, executionId: acquired.executionId, surface: 'full' }, { show: false });
+    await h.host.closeView({ ...a, ...view });
+    assert.equal(h.lifecycle.filter(message => message.type === 'owner-release').length, 0);
+    assert.ok(h.lifecycle.filter(message => message.type === 'attach').every(message => message.ownerHandle === handle));
+    assert.equal((await h.host.release(a)).refCount, 1);
+    assert.deepEqual(h.lifecycle.filter(message => message.type === 'owner-release').map(message => message.ownerHandle), [handle]);
+    assert.equal(h.windows[0].isDestroyed(), false);
+});
+
+test('failed private owner release retains its owner/handle and cleanup for retry while another owner runs', async t => {
+    let fail = true; const h = harness(t, { ownerReleaseFailure: () => fail }), a = h.owner(), b = h.owner(2);
+    await h.host.acquire(a); await h.host.acquire(b);
+    await assert.rejects(a.revoke(), /lifecycle request failed/);
+    const state = h.host.runtimes.get(a.runtimeId);
+    assert.equal(state.owners.size, 2); assert.equal(state.ownerHandles.size, 2); assert.equal(a.cleanups.size, 1);
+    assert.equal(h.host.isCurrent({ ...a, executionId: state.executionId }), false);
+    assert.equal(h.host.isCurrent({ ...b, executionId: state.executionId }), true);
+    fail = false; await a.revoke(); assert.equal(state.owners.size, 1); assert.equal(state.ownerHandles.size, 1);
+    await b.revoke(); assert.equal(h.host.runtimes.size, 0);
+});
+
+test('final physical listener close failure retains owner cleanup even after domain owner-release ACK', async t => {
+    let fail = true; const h = harness(t, { serverCloseFailure: () => fail }), a = h.owner(); await h.host.acquire(a);
+    await assert.rejects(h.host.release(a), /listener close unconfirmed/);
+    assert.equal(h.host.runtimes.size, 1); assert.equal(a.cleanups.size, 1);
+    fail = false; await a.revoke(); assert.equal(h.host.runtimes.size, 0); assert.equal(a.cleanups.size, 0);
+});
+
+test('strict static server retains a failed close resource until a subsequent real close acknowledgement', async t => {
+    const f = fixture(t); let fail = true, attempts = 0;
+    const serverInstance = Object.assign(new EventEmitter(), { listening: false,
+        listen() { this.listening = true; queueMicrotask(() => this.emit('listening')); },
+        address() { return { port: 49153 }; },
+        close(callback) { attempts++; if (fail) callback(new Error('Controlled socket close failure')); else { this.listening = false; callback(); } },
+        closeAllConnections() {},
+    });
+    const server = createPackagedRendererServer({ strictPublicFiles: true, indexFile: 'execution.html', createHttpServer: () => serverInstance });
+    await server.start({ rootDirectory: path.join(f.dir, 'public') });
+    await assert.rejects(server.close(), /socket close failure/);
+    assert.equal(server.status().state, 'ready'); assert.equal(serverInstance.listening, true);
+    fail = false; await server.close(); assert.equal(attempts, 2); assert.equal(server.status().state, 'stopped');
 });

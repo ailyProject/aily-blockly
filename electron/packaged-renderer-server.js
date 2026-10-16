@@ -14,6 +14,7 @@ function createPackagedRendererServer(options = {}) {
   let closeTask = null;
 
   async function start(startOptions = {}) {
+    if (options.strictPublicFiles === true && closeTask) await closeTask;
     if (state) return publicState(state);
     if (startTask) return startTask;
     startTask = startInternal(startOptions).finally(() => {
@@ -85,9 +86,11 @@ function createPackagedRendererServer(options = {}) {
   function close() {
     if (closeTask) return closeTask;
     const closing = state;
-    state = null;
+    if (options.strictPublicFiles !== true) state = null;
     if (!closing) return Promise.resolve();
-    closeTask = closeHttpServer(closing.server, options.strictPublicFiles === true).finally(() => {
+    closeTask = closeHttpServer(closing.server, options.strictPublicFiles === true).then(() => {
+      if (state === closing) state = null;
+    }).finally(() => {
       closeTask = null;
     });
     return closeTask;

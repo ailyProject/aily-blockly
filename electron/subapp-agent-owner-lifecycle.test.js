@@ -18,7 +18,10 @@ async function harness(t, options = {}) {
   const { SubappAgentBridgeService, replaceChildToolConfigs } = await bridgeModule;
   replaceChildToolConfigs([{
     id: 'fixture', namespace: 'FIXTURE', titleKey: 'Fixture',
-    ...(options.processMessagePort ? { runtime: { processMessagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } } : {}),
+    ...(options.processMessagePort || options.browserExecution ? { runtime: {
+      ...(options.processMessagePort ? { processMessagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
+      ...(options.browserExecution ? { browserExecution: { protocol: 'aily-browser-execution-v1' } } : {}),
+    } } : {}),
     agent: { protocolVersion: 1, transport: 'aily-child-rpc', lifecycle: options.lifecycle ?? lifecycle, tools: [{
       name: 'fixture_tool', rpc: { method: 'fixture.work' }, supportsCancellation: true, presentation: options.presentation,
     }] },
@@ -55,7 +58,9 @@ async function harness(t, options = {}) {
   }
   const previous = global.WebSocket;
   const previousWindow = global.window;
-  if (options.supervise) global.window = { electronAPI: { childToolSession: { superviseOwner: options.supervise } } };
+  if (options.supervise) global.window = { electronAPI: { childToolSession: { superviseOwner: options.supervise,
+    ...(options.bindProcess ? { browserExecution: options.bindProcess } : {}),
+  } } };
   global.WebSocket = Socket;
   const service = new SubappAgentBridgeService({
     async acquire() { acquired++; await options.acquireBarrier?.promise; return { wsUrl: 'ws://fixture' }; },
@@ -440,6 +445,43 @@ test('cancellation during main-process binding never sends a late domain RPC', a
   controller.abort();
   tracking.resolve();
   await result;
+  assert.equal(h.messages.length, 0);
+});
+
+test('declared Browser package binds its real standard Agent owner before Node RPC without opening FullUI', async t => {
+  const calls = [];
+  const connection = { endpoint: { kind: 'browser-message-port', runtimeId: '12345678-1234-4234-8234-123456789abc' },
+    connectionId: '87654321-4321-4321-8321-cba987654321' };
+  const h = await harness(t, { browserExecution: true, processMessagePort: true,
+    supervise: async input => { calls.push(input); return { ok: true, generation: 'real-main-generation' }; },
+    bindProcess: async input => { assert.equal(calls.at(-1).action, 'track'); calls.push(input); return connection; },
+    automation: { openChildApp() { assert.fail('Browser execution must start without FullUI'); } },
+  });
+  const lease = await h.acquire('browser-agent');
+  assert.equal((await h.execute(lease)).ok, true);
+  assert.deepEqual(calls.map(call => call.action), ['connect', 'track', 'bindProcess']);
+  assert.equal(calls.at(-1).ownerSessionId, lease.ownerLeaseId);
+  assert.equal(calls.at(-1).generation, 'real-main-generation');
+  assert.deepEqual(h.messages[0].context.browserExecution, connection);
+  assert.equal(h.messages[0].context.sessionId, lease.ownerLeaseId);
+});
+
+test('Browser binding failure never falls back to FullUI or sends an unbound Node domain request', async t => {
+  const h = await harness(t, { browserExecution: true, supervise: async () => ({ ok: true, generation: 'generation' }),
+    automation: { openChildApp() { assert.fail('No FullUI fallback'); } },
+  });
+  await assert.rejects(h.call('owner-a'), /Restart the host to enable Browser execution/);
+  assert.equal(h.messages.length, 0);
+});
+
+test('request cancellation while Browser binding is held cannot send a late Node request', async t => {
+  const gate = deferred(), entered = deferred(), controller = new AbortController();
+  const h = await harness(t, { browserExecution: true, supervise: async () => ({ ok: true, generation: 'generation' }),
+    bindProcess: async () => { entered.resolve(); await gate.promise; return { endpoint: { kind: 'browser-message-port',
+      runtimeId: '12345678-1234-4234-8234-123456789abc' }, connectionId: '87654321-4321-4321-8321-cba987654321' }; },
+  });
+  const cancelled = assert.rejects(h.call('owner-a', 'fixture.work', controller.signal), { code: 'SUBAPP_RPC_CANCELLED' });
+  await entered.promise; controller.abort(); gate.resolve(); await cancelled;
   assert.equal(h.messages.length, 0);
 });
 

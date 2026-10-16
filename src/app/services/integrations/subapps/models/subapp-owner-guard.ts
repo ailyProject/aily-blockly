@@ -46,6 +46,21 @@ export class SubappOwnerGuard {
     return result['handled'] === true;
   }
 
+  async browserExecution(toolId: string, ownerSessionId: string): Promise<{ browserExecution: {
+    endpoint: { kind: 'browser-message-port'; runtimeId: string }; connectionId: string;
+  } }> {
+    if (!ownerSessionId || !this.api() || this.closed) throw new Error('Browser execution requires a live Subapp owner');
+    const generation = await this.generation();
+    const session = (window as any).electronAPI?.childToolSession || window['childToolSession'];
+    if (this.closed || typeof session?.browserExecution !== 'function') throw new Error('Restart the host to enable Browser execution');
+    const result = await session.browserExecution({ action: 'bindProcess', generation, toolId, ownerSessionId });
+    if (this.closed || result?.endpoint?.kind !== 'browser-message-port'
+      || !/^[a-f0-9-]{36}$/.test(result.endpoint.runtimeId || '') || !/^[a-f0-9-]{36}$/.test(result.connectionId || '')) {
+      throw new Error('Invalid Browser process connection');
+    }
+    return { browserExecution: { endpoint: { kind: 'browser-message-port', runtimeId: result.endpoint.runtimeId }, connectionId: result.connectionId } };
+  }
+
   close(): Promise<void> {
     this.closed = true;
     return this.closing ??= (async () => {

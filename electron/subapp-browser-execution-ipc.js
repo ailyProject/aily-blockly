@@ -4,7 +4,7 @@ const { readBrowserExecutionSource } = require('./subapp-browser-execution-sourc
 
 /** Low-frequency trusted composition only. The JSON endpoint contains an opaque
  * instance id; the actual port is handed off separately to its authorized owner. */
-function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLaunch, resolveRuntime }) {
+function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLaunch, resolveRuntime, broker }) {
     const leases = new Map();
     const owner = (event, input) => {
         if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) throw new Error('Browser execution requires the owner main frame');
@@ -13,9 +13,7 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
         if (!runtime || runtime.streamId !== guard.runtime.streamId) throw new Error('Registered Runtime changed');
         return { guard, runtime, key: JSON.stringify([event.sender.id, input.generation, input.ownerSessionId, input.toolId]) };
     };
-    ipcMain.handle('subapp-browser-execution', async (event, input = {}) => {
-        const { guard, runtime, key } = owner(event, input);
-        if (input.action === 'acquire') {
+    async function acquire(event, input, guard, runtime, key) {
             const existing = leases.get(key);
             if (existing) {
                 if (existing.releasing) throw new Error('Browser execution owner is being released');
@@ -50,6 +48,16 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
             })();
             try { return await record.pending; }
             catch (error) { if (leases.get(key) === record) leases.delete(key); record.removeCleanup?.(); throw error; }
+    }
+    ipcMain.handle('subapp-browser-execution', async (event, input = {}) => {
+        const { guard, runtime, key } = owner(event, input);
+        if (input.action === 'acquire') return acquire(event, input, guard, runtime, key);
+        if (input.action === 'bindProcess') {
+            if (!broker || !runtime.messagePort) throw new Error('Browser execution process message transport is unavailable');
+            await acquire(event, input, guard, runtime, key); guard();
+            const lease = leases.get(key);
+            if (!lease || lease.revoked || lease.releasing) throw new Error('Browser execution owner ended during process binding');
+            return broker.bind({ lease, guard, toolId: input.toolId, maxMessageBytes: runtime.messagePort.maxMessageBytes });
         }
         const lease = leases.get(key);
         if (!lease || lease.runtimeId !== runtime.streamId || input.runtimeId !== lease.executionId) {

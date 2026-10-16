@@ -523,6 +523,9 @@ export class SubappAgentBridgeService implements OnDestroy {
       // Lifecycle callbacks must never restart a dead Runtime merely to clean it.
       const socket = trackLease ? await this.ensureSocket(channel) : channel.socket;
       const ownerContext = trackLease && !signal?.aborted ? await this.ownerGuard.track(toolId, ownerSessionId) : {};
+      const runtimeConfig = channel.hostInfo?.runtimeConfig || getChildToolConfig(toolId);
+      const browserContext = trackLease && !signal?.aborted && runtimeConfig?.runtime?.browserExecution
+        ? await this.ownerGuard.browserExecution(toolId, ownerSessionId) : {};
       if (signal?.aborted) throw new SubappRpcError('Subapp Agent request was cancelled', 'SUBAPP_RPC_CANCELLED');
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         throw new SubappRpcError('Subapp Runtime connection is not open', 'SUBAPP_RUNTIME_CLOSED');
@@ -567,6 +570,7 @@ export class SubappAgentBridgeService implements OnDestroy {
             actor: 'agent',
             actorId: 'subapp-agent-host',
             ...ownerContext,
+            ...browserContext,
             ...(ownerSessionId ? { sessionId: ownerSessionId } : {}),
             ...(String(executionContext.toolCallId || '').trim()
               ? { toolCallId: String(executionContext.toolCallId).trim() }
