@@ -228,16 +228,8 @@ export class UiService {
             const regionKey = typeof message.data?.regionKey === 'string'
               ? message.data.regionKey.trim()
               : '';
-            if (!this.configService.getEnabledRegionList().some((region) => region.key === regionKey)) {
-              throw new Error('Unknown or disabled service region');
-            }
-            await switchServiceRegionAndRequestLogin(regionKey, {
-              closeProtectedTools: () => this.closeAuthRequiredTools(),
-              clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
-              stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
-              setRegion: (nextRegionKey) => this.configService.setRegion(nextRegionKey),
-              requestLogin: (reason) => this.authService.requestLogin(reason),
-            });
+
+            await this.switchHostServiceRegion(regionKey);
             data = { success: true };
           } catch (error) {
             console.error('切换服务区域失败:', error);
@@ -527,6 +519,20 @@ export class UiService {
 
   getOpenAuthRequiredToolIds(): string[] {
     return collectOpenAuthRequiredToolIds(this.openToolList, this.openWindowPathList);
+  }
+
+  async switchHostServiceRegion(regionKey: string): Promise<void> {
+    if (!this.configService.getEnabledRegionList().some(region => region.key === regionKey)) {
+      throw new Error('Unknown or disabled service region');
+    }
+
+    await switchServiceRegionAndRequestLogin(regionKey, {
+      closeProtectedTools: () => this.closeAuthRequiredTools(),
+      clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
+      stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
+      setRegion: nextRegionKey => this.configService.setRegion(nextRegionKey),
+      requestLogin: reason => this.authService.requestLogin(reason),
+    });
   }
 
   async closeAuthRequiredTools(toolIds = this.getOpenAuthRequiredToolIds()): Promise<void> {

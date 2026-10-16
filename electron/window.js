@@ -1,5 +1,5 @@
 // 管理主窗口和子窗口的创建、状态同步及窗口控制操作。
-const { ipcMain, BrowserWindow, app, screen, webContents } = require("electron");
+const { ipcMain, BrowserWindow, app, screen, webContents, safeStorage } = require("electron");
 const { requestWindowAttention } = require('./window-attention');
 const {
     getActiveCmdProcesses,
@@ -30,6 +30,7 @@ const {
     stopChildToolSessionProcess: stopChildToolSessionProcessWithDependencies,
 } = require('./child-tool-session-process');
 const { AilyHostAuthRelay } = require('./aily-host-auth-relay');
+const { handleSubappSafeStorageMessage } = require('./subapp-safe-storage-bridge');
 const {
     BUILTIN_SUB_WINDOW_MINIMUM_SIZE,
     CHILD_WINDOW_LAYOUTS,
@@ -267,6 +268,9 @@ function routeChildToolProcessMessage(event) {
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
     if (sessionEntry) {
+        if (handleSubappSafeStorageMessage(sessionEntry[0], streamId, event.message, safeStorage, sendCmdProcessMessage)) {
+            return;
+        }
         if (ailyHostAuthRelay?.handle(sessionEntry[0], sessionEntry[1].streamId, event.message)) {
             return;
         }
@@ -311,6 +315,8 @@ function flushPendingChildToolProcessMessages(toolId, session) {
     const pending = pendingChildToolProcessMessages.get(session.streamId) || [];
     pendingChildToolProcessMessages.delete(session.streamId);
     for (const entry of pending) {
+        if (handleSubappSafeStorageMessage(toolId, session.streamId, entry.message, safeStorage, sendCmdProcessMessage)) continue;
+        if (ailyHostAuthRelay?.handle(toolId, session.streamId, entry.message)) continue;
         deliverChildToolProcessMessage(toolId, session, entry.message);
     }
 }

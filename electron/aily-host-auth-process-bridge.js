@@ -1,12 +1,14 @@
 'use strict';
 
 const AILY_HOST_AUTH_CHANNEL = 'aily-host-auth-v1';
-const SUPPORTED_OPERATIONS = new Set(['access-token', 'refresh-access-token', 'logout']);
-const HOST_MANAGED_AILY_TOOL_IDS = new Set(['aily-chat']);
+const TOOL_OPERATIONS = new Map([
+    ['aily-chat', new Set(['access-token', 'refresh-access-token', 'logout'])],
+    ['device-manager', new Set(['access-token', 'refresh-access-token'])],
+]);
 
 function parseAilyHostAuthRequest(toolId, message) {
     if (
-        !HOST_MANAGED_AILY_TOOL_IDS.has(toolId)
+        !TOOL_OPERATIONS.has(toolId)
         || message?.channel !== AILY_HOST_AUTH_CHANNEL
         || message?.type !== 'request'
     ) {
@@ -15,7 +17,9 @@ function parseAilyHostAuthRequest(toolId, message) {
 
     const requestId = typeof message.requestId === 'string' ? message.requestId.trim() : '';
     const operation = typeof message.operation === 'string' ? message.operation.trim() : '';
-    if (!requestId || requestId.length > 128 || !SUPPORTED_OPERATIONS.has(operation)) {
+
+    if (!requestId || requestId.length > 128
+        || !TOOL_OPERATIONS.get(toolId)?.has(operation)) {
         return {
             handled: true,
             valid: false,
@@ -52,11 +56,13 @@ function normalizeAilyHostAuthResult(value) {
     if (value.ok === true) {
         const accessToken = typeof value.accessToken === 'string' ? value.accessToken.trim() : '';
         const apiServer = normalizeApiServer(value.apiServer);
+        const accountId = typeof value.accountId === 'string' && value.accountId.length <= 128 ? value.accountId : '';
         return {
             ok: true,
             authenticated: value.authenticated === true,
             ...(Number.isInteger(generation) && generation >= 0 ? { generation } : {}),
             ...(accessToken ? { accessToken } : {}),
+            ...(accountId ? { accountId } : {}),
             ...(apiServer ? { apiServer } : {}),
         };
     }
