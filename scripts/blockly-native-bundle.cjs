@@ -2,7 +2,6 @@ const { createRequire } = require('node:module');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { patchBlocklyFocus } = require('./patch-blockly-focus.cjs');
 
 const root = path.resolve(__dirname, '..');
 // Use the compiler already installed with Angular, not a second version/dependency.
@@ -23,7 +22,6 @@ function assertIndependentBundle(result) {
 }
 
 async function prepareNativeBundle({ watch = false } = {}) {
-  patchBlocklyFocus();
   const context = await esbuild.context({
     absWorkingDir: root,
     entryPoints: ['src/app/editors/blockly-editor/services/blockly-native-candidate.entry.ts'],
