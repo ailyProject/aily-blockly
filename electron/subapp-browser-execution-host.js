@@ -272,6 +272,13 @@ class SubappBrowserExecutionHost {
         if (binding.disconnecting) return binding.disconnecting;
         binding.disconnecting = (async () => {
             try {
+                const owner = state.bindings.get(binding.key);
+                // Worker owner cleanup closes its connection peers before its
+                // control ACK. Join only that owner's evidence, never release()
+                // itself: release subsequently joins this connection cleanup.
+                if (owner && (state.retiring.has(binding.key) || owner.confirmation)) {
+                    await this.confirmOwnerRelease(state, binding.key, owner);
+                }
                 const results = await Promise.allSettled([
                     ...[...(binding.cleanups || [])].map(async cleanup => { await cleanup(); binding.cleanups.delete(cleanup); }),
                     ...(!state.closing && !state.failed ? [this.request(state, 'detach', { connectionId })] : []),
@@ -317,18 +324,30 @@ class SubappBrowserExecutionHost {
         try { return await pending; } finally { if (state.releases.get(key) === pending) state.releases.delete(key); }
     }
 
-    async confirmOwnerRelease(state, key, binding) {
-        if (!binding) return;
-        if (!binding.workerReleased) {
-            if (state.failed || !state.ready || !state.window || state.window.isDestroyed()) throw fault('Browser Worker owner release is unconfirmed');
-            await this.request(state, 'owner-release', { ownerHandle: state.ownerHandles.get(key) });
-            binding.workerReleased = true;
-        }
-        if (binding.node) {
-            // A lost bind ACK remains an actual I/O owner until its retry joins.
-            await binding.bridge.bind(binding.node);
-            await binding.bridge.released(binding.node);
-        }
+    confirmOwnerRelease(state, key, binding) {
+        if (!binding) return Promise.resolve();
+        if (binding.confirmation) return binding.confirmation;
+        // Publish before dispatch: a peer-close event can request disconnect
+        // while Worker cleanup is still preparing its owner-release ACK.
+        const confirmation = Promise.resolve().then(async () => {
+            if (!binding.workerReleased) {
+                if (state.failed || !state.ready || !state.window || state.window.isDestroyed()) throw fault('Browser Worker owner release is unconfirmed');
+                await this.request(state, 'owner-release', { ownerHandle: state.ownerHandles.get(key) });
+                binding.workerReleased = true;
+            }
+            if (binding.node) {
+                // A lost bind ACK remains an actual I/O owner until its retry joins.
+                await binding.bridge.bind(binding.node);
+                await binding.bridge.released(binding.node);
+            }
+        });
+        binding.confirmation = confirmation;
+        // Success stays cached until this original binding is removed. Failure
+        // retains its Worker/bridge state and allows the same receipt to retry.
+        void confirmation.catch(() => {
+            if (binding.confirmation === confirmation) binding.confirmation = null;
+        });
+        return confirmation;
     }
 
     async close(state) {

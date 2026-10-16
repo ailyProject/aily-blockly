@@ -177,6 +177,137 @@ test('actual owner departure fences the lease, waits Worker then Node evidence b
     await h.supervisor.release(h.renderer, h.input('chat-b'));
 });
 
+test('Worker peer close waits for the same owner confirmation before Agent detach while B stays live', async t => {
+    const evidenceGate = Promise.withResolvers(); let workerRelease, evidence, a, h, releasing;
+    let holdWorker = true;
+    h = await supervisedBrowserOwner(t, {
+        ignore: message => message.type === 'owner-release' && holdWorker,
+        onLifecycle: message => {
+            if (message.type !== 'owner-release' || !holdWorker) return;
+            workerRelease = message;
+            h.activePorts.get(a.connectionId).close();
+            h.broker.connections.get(a.connectionId).connection.port.emit('close');
+        },
+        nodeAck: async frame => {
+            if (frame.type === OWNER_TYPES.released && frame.owner.sessionId === 'chat-a') {
+                evidence = frame; await evidenceGate.promise;
+            }
+        },
+    });
+    await h.track('chat-a'); await h.track('chat-b');
+    a = await h.invoke('chat-a', { action: 'bindProcess' });
+    const b = await h.invoke('chat-b', { action: 'bindProcess' });
+    try {
+        releasing = h.supervisor.release(h.renderer, h.input('chat-a'));
+        while (!workerRelease) await tick();
+        await tick();
+        assert.equal(h.lifecycle.filter(message => message.type === 'detach').length, 0,
+            'Closing the actual Worker peer before its owner ACK cannot start Main detach.');
+        assert.equal(h.broker.connections.size, 2);
+        holdWorker = false;
+        h.windows[0].hostPort.postMessage({ id: workerRelease.id, ok: true });
+        while (!evidence) await tick();
+        await tick();
+        assert.equal(h.lifecycle.filter(message => message.type === 'detach').length, 0,
+            'The Worker ACK alone is insufficient while the Node evidence ACK is held.');
+        assert.equal(h.broker.connections.size, 2);
+        assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+        evidenceGate.resolve();
+        assert.equal((await releasing).ok, true);
+        assert.equal(h.lifecycle.filter(message => message.type === 'owner-release').length, 1);
+        assert.deepEqual(h.lifecycle.filter(message => message.type === 'detach').map(message => message.connectionId), [a.connectionId]);
+        assert.equal(h.broker.connections.size, 1);
+        assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 1);
+        assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+    } finally {
+        holdWorker = false; evidenceGate.resolve();
+        if (workerRelease) h.windows[0].hostPort.postMessage({ id: workerRelease.id, ok: true });
+        await releasing?.catch(() => {});
+        await h.supervisor.release(h.renderer, h.input('chat-b'));
+    }
+});
+
+test('Worker peer close retains its connection on failed evidence and retries the original owner confirmation', async t => {
+    let fail = true, a, h;
+    h = await supervisedBrowserOwner(t, {
+        onLifecycle: message => {
+            if (message.type !== 'owner-release') return;
+            const record = h.broker.connections.get(a.connectionId);
+            if (record) { h.activePorts.get(a.connectionId).close(); record.connection.port.emit('close'); }
+        },
+        nodeAck: async frame => {
+            if (fail && frame.type === OWNER_TYPES.released && frame.owner.sessionId === 'chat-a') throw Error('Actual Node evidence send failed');
+        },
+    });
+    await h.track('chat-a'); await h.track('chat-b');
+    a = await h.invoke('chat-a', { action: 'bindProcess' });
+    const b = await h.invoke('chat-b', { action: 'bindProcess' });
+    try {
+        assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, false);
+        assert.equal(h.lifecycle.filter(message => message.type === 'detach').length, 0);
+        assert.equal(h.broker.connections.size, 2);
+        assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 2);
+        const original = h.frames.find(frame => frame.type === OWNER_TYPES.released);
+        assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+        fail = false;
+        assert.equal((await h.supervisor.release(h.renderer, h.input('chat-a'))).ok, true);
+        const retried = h.frames.filter(frame => frame.type === OWNER_TYPES.released);
+        assert.ok(retried.length >= 2);
+        assert.ok(retried.every(frame => frame.requestId === original.requestId && frame.bindingId === original.bindingId && frame.releaseId === original.releaseId));
+        assert.equal(h.lifecycle.filter(message => message.type === 'owner-release').length, 1);
+        assert.deepEqual(h.lifecycle.filter(message => message.type === 'detach').map(message => message.connectionId), [a.connectionId]);
+        assert.equal(h.broker.connections.size, 1);
+    } finally {
+        fail = false;
+        await h.supervisor.release(h.renderer, h.input('chat-a'));
+        await h.supervisor.release(h.renderer, h.input('chat-b'));
+    }
+});
+
+test('Worker peer close during global close retains Agent connections until their real owner evidence ACKs', async t => {
+    const evidenceGate = Promise.withResolvers(); let h, closing, evidenceCount = 0;
+    h = await supervisedBrowserOwner(t, {
+        onLifecycle: message => {
+            if (message.type !== 'owner-release') return;
+            const state = h.host.runtimes.get(h.runtimeId);
+            for (const [connectionId, connection] of state.connections) {
+                if (state.ownerHandles.get(connection.key) !== message.ownerHandle) continue;
+                h.activePorts.get(connectionId).close();
+                h.broker.connections.get(connectionId).connection.port.emit('close');
+            }
+        },
+        nodeAck: async frame => { if (frame.type === OWNER_TYPES.released) { evidenceCount++; await evidenceGate.promise; } },
+    });
+    await h.track('chat-a'); await h.track('chat-b');
+    await h.invoke('chat-a', { action: 'bindProcess' }); await h.invoke('chat-b', { action: 'bindProcess' });
+    try {
+        closing = h.host.closeAll();
+        while (evidenceCount < 2) await tick();
+        await tick();
+        assert.equal(h.broker.connections.size, 2,
+            'A global close must retain each real connection while its Node evidence ACK is held.');
+        assert.equal(h.lifecycle.filter(message => message.type === 'shutdown').length, 0);
+        evidenceGate.resolve(); await closing;
+        assert.equal(h.broker.connections.size, 0); assert.equal(h.bridge.pendingCount, 0);
+        assert.equal(h.host.runtimes.size, 0);
+    } finally { evidenceGate.resolve(); await closing?.catch(() => {}); }
+});
+
+test('Worker peer close outside owner departure detaches only that connection without publishing release evidence', async t => {
+    const h = await supervisedBrowserOwner(t); await h.track('chat-a'); await h.track('chat-b');
+    const a = await h.invoke('chat-a', { action: 'bindProcess' }), b = await h.invoke('chat-b', { action: 'bindProcess' });
+    h.activePorts.get(a.connectionId).close();
+    h.broker.connections.get(a.connectionId).connection.port.emit('close');
+    while (h.broker.connections.has(a.connectionId)) await tick();
+    assert.deepEqual(h.lifecycle.filter(message => message.type === 'detach').map(message => message.connectionId), [a.connectionId]);
+    assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.released).length, 0);
+    assert.equal(h.lifecycle.filter(message => message.type === 'owner-release').length, 0);
+    assert.equal(h.host.runtimes.get(h.runtimeId).owners.size, 2);
+    assert.deepEqual(await h.invoke('chat-b', { action: 'bindProcess' }), b);
+    await h.supervisor.release(h.renderer, h.input('chat-a'));
+    await h.supervisor.release(h.renderer, h.input('chat-b'));
+});
+
 test('public execution release revokes Node admission before a held Worker ACK and preserves B', async t => {
     let workerRelease, hold = true;
     const h = await supervisedBrowserOwner(t, { ignore: message => message.type === 'owner-release' && hold,
