@@ -1407,6 +1407,11 @@ export class ProjectService {
     } catch (error) {
       if (session) this.dependencyLifecycle.finishPreparation(session);
       if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return false;
+      // Router/editor teardown can fail before the new Blockly component exists
+      // to report a load failure. Close this load transaction here as well.
+      if (this.isSameProjectPath(projectPath, this.loadingBlocklyProjectPath)) {
+        this.markBlocklyProjectLoadFailed(projectPath, error instanceof Error ? error.message : String(error));
+      }
       throw error;
     } finally {
       task.lease.release();

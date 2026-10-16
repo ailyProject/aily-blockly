@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "./blockly-interaction-recovery.spec.ts",
+    "../src/app/editors/blockly-editor/utils/blockly-drag-layer.spec.ts",
+    "../src/app/editors/blockly-editor/utils/blockly-multiselect-v13.spec.ts",
+    "../src/app/editors/blockly-editor/components/dev-tool/dev-tool-coder.spec.ts",
+    "../src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+    "../src/**/*.d.ts"
+  ],
+  "exclude": []
+}

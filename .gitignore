@@ -73,6 +73,7 @@ child/aily-builder*
 # Unit tests
 /tests/coverage/
 /tests/out-tsc/
+/tests/test-results/
 
 # Playwright E2E
 /renderer
