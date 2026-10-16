@@ -67,6 +67,11 @@ const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+const { SubappNodeControlBroker } = require('./subapp-node-control-broker');
+const nodeControlBroker = new SubappNodeControlBroker({ MessageChannelMain, send: sendCmdProcessMessage,
+    resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
+        && !session.exit && getCmdProcessMessagePortInfo(streamId)) || null,
+});
 const { SubappBrowserProcessBroker } = require('./subapp-browser-process-broker');
 const browserProcessBroker = new SubappBrowserProcessBroker({ host: browserExecutionHost,
     send: sendCmdProcessMessage,
@@ -273,10 +278,12 @@ function stopAllChildToolSessions() {
             pendingChildToolProcessMessages.delete(session.streamId);
         }
     }));
-    childToolSessionsStopPromise = Promise.allSettled([browserDrain, processDrain]).then(([browserResult, processResult]) => {
+    const nodeControlDrain = nodeControlBroker.closeAll();
+    childToolSessionsStopPromise = Promise.allSettled([browserDrain, processDrain, nodeControlDrain]).then(([browserResult, processResult, nodeControlResult]) => {
         const results = processResult.status === 'fulfilled' ? processResult.value : [];
         const failures = [];
         if (browserResult.status === 'rejected') failures.push(browserResult.reason);
+        if (nodeControlResult.status === 'rejected') failures.push(nodeControlResult.reason);
         if (processResult.status === 'rejected') failures.push(processResult.reason);
         for (let index = 0; index < results.length; index += 1) {
             if (results[index].status === 'rejected' || results[index].value !== true) {
@@ -347,6 +354,7 @@ function routeChildToolProcessMessage(event) {
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
     if (sessionEntry) {
+        if (nodeControlBroker.handle(streamId, event.message)) return;
         if (browserProcessBroker.handle(streamId, event.message)) return;
         if (ailyHostAuthRelay?.handle(sessionEntry[0], sessionEntry[1].streamId, event.message)) {
             return;
@@ -400,6 +408,7 @@ onCmdProcessMessage(routeChildToolProcessMessage);
 onCmdProcessExit(handleChildToolProcessExit);
 
 function handleChildToolProcessExit(event) {
+    nodeControlBroker.runtimeExited(event.streamId);
     void browserExecutionHost.closeRuntime(event.streamId).catch(error => {
         console.warn('[BrowserExecution] Runtime exit teardown remains unconfirmed', error.message);
     });
@@ -2065,6 +2074,11 @@ function registerWindowHandlers(mainWindow, options = {}) {
             payload,
         );
         if (!authorization.success) return authorization;
+        // This lifecycle namespace is issued only by the Main-owned View
+        // broker. A legacy renderer controller cannot manufacture its context.
+        if (typeof payload.message?.type === 'string' && payload.message.type.startsWith('aily-subapp-node-control.')) {
+            return { success: false, reason: 'reserved-message-type' };
+        }
         return await sendCmdProcessMessage(authorization.streamId, payload.message);
     });
 
@@ -2330,6 +2344,7 @@ module.exports = {
     getRunningSubappConfig,
     browserExecutionRegistry: {
         broker: browserProcessBroker,
+        nodeControlBroker,
         host: browserExecutionHost,
         supervisor: subappOwnerSupervisor,
         resolveRuntime: (toolId, ownerId) => {

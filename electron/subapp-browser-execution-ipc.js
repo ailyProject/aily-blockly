@@ -1,10 +1,11 @@
 'use strict';
 
 const { readBrowserExecutionSource } = require('./subapp-browser-execution-source');
+const { readNodeControlSource } = require('./subapp-node-control-source');
 
 /** Low-frequency trusted composition only. The JSON endpoint contains an opaque
  * instance id; the actual port is handed off separately to its authorized owner. */
-function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLaunch, resolveRuntime, broker }) {
+function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLaunch, resolveRuntime, broker, nodeControlBroker }) {
     const leases = new Map();
     const owner = (event, input) => {
         if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) throw new Error('Browser execution requires the owner main frame');
@@ -38,6 +39,7 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
                     throw new Error('Browser execution selected package differs from the running Runtime');
                 }
                 const source = readBrowserExecutionSource(config);
+                record.nodeControlSource = readNodeControlSource(config);
                 const acquired = await host.acquire({ runtimeId: runtime.streamId, source, ownerId: event.sender.id,
                     leaseId: input.ownerSessionId, guard });
                 guard();
@@ -67,7 +69,29 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
         if (input.action === 'connect') {
             return host.connect({ ...lease, guard, target: event.sender, purpose: 'agent' });
         }
-        if (input.action === 'openView') return host.openView({ ...lease, guard, surface: input.surface });
+        if (input.action === 'openView') {
+            let browserExecution;
+            if (lease.nodeControlSource) {
+                if (!nodeControlBroker || !broker || !runtime.messagePort) throw new Error('Registered Node control is unavailable');
+                browserExecution = await broker.bind({ lease, guard, toolId: input.toolId, maxMessageBytes: runtime.messagePort.maxMessageBytes });
+                guard();
+            }
+            const view = await host.openView({ ...lease, guard, surface: input.surface });
+            if (!lease.nodeControlSource) return view;
+            const connection = host.viewConnection({ ...lease, guard, connectionId: view.connectionId });
+            let node;
+            try {
+                node = nodeControlBroker.connectView({ lease, guard, source: lease.nodeControlSource,
+                    target: connection.target, assertCurrent: connection.assertCurrent, browserExecution });
+                connection.attachCleanup(node.close);
+                await node.ready; connection.assertCurrent(); return view;
+            } catch (error) {
+                const cleanup = await Promise.allSettled([node?.close(), host.closeView({ ...lease, guard, connectionId: view.connectionId })]);
+                const failures = cleanup.filter(result => result.status === 'rejected');
+                if (failures.length) throw new AggregateError([error, ...failures.map(result => result.reason)], 'Installed View cleanup requires retry');
+                throw error;
+            }
+        }
         if (input.action === 'closeView') return host.closeView({ ...lease, guard, connectionId: input.connectionId });
         if (input.action === 'release') {
             lease.releasing = true;

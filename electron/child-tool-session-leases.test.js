@@ -204,6 +204,7 @@ test('Runtime exit clears its controller binding and cached negotiation', () => 
   session.lastProviderNegotiationRequest = { type: 'fixture-negotiation' };
   const context = {
     browserExecutionHost: { closeRuntime: async () => {} },
+    nodeControlBroker: { runtimeExited() {} },
     childToolSessions: new Map([['fixture', session]]),
     pendingChildToolProcessMessages: new Map(), ailyHostAuthRelay: null,
     applicationIsQuitting: false,

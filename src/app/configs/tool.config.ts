@@ -69,6 +69,8 @@ export interface ChildToolRuntimeResourceLifecycleConfig {
 export interface ChildToolRuntimeConfig {
   /** Package-local sandbox execution document, owned independently of Views. */
   browserExecution?: { protocol: 'aily-browser-execution-v1' };
+  /** Explicit opt-in; installed Views receive only a Main-bound JSON port. */
+  nodeControl?: { protocol: 'aily-subapp-node-control-v1' };
   /** Native/headless runtime; no iframe entry or UI surfaces. */
   headless?: boolean;
   /** Host-projected observation UI. Never starts or retains the execution Runtime. */

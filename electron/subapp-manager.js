@@ -830,12 +830,17 @@ function readInstalledState(rootDir, entry) {
         packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
       }).protocol }
       : null;
+    const nodeControl = declaredRuntime.nodeControl === undefined ? null
+      : { protocol: require('./subapp-node-control-source').readNodeControlSource({
+        packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
+      }).protocol };
     const runtime = {
       ...(declaredRuntime.headless === true ? { headless: true } : {}),
       ...(declaredRuntime.observer === true ? { observer: true } : {}),
       ...(apiServer ? { apiServer } : {}),
       ...(processMessagePort ? { processMessagePort } : {}),
       ...(browserExecution ? { browserExecution } : {}),
+      ...(nodeControl ? { nodeControl } : {}),
       ...(resourceLifecycle ? { resourceLifecycle } : {}),
     };
     let agent = null;

@@ -224,13 +224,40 @@ class SubappBrowserExecutionHost {
         return { detached: true, physicalClosed: binding.window.isDestroyed() };
     }
 
+    /** Main-only installed View composition. The View cannot supply a target,
+     * owner, source URL or cleanup callback through its domain port. */
+    viewConnection({ runtimeId, executionId, ownerId, leaseId, guard, connectionId }) {
+        const state = this.runtimes.get(runtimeId), binding = state?.connections.get(connectionId);
+        const assertCurrent = () => {
+            guard();
+            if (!this.isCurrent({ runtimeId, executionId, ownerId, leaseId }) || !binding?.window
+                || binding.key !== ownerKey(ownerId, leaseId) || state.connections.get(connectionId) !== binding
+                || binding.disconnecting || binding.target.isDestroyed()
+                || !Object.values(state.source.surfaces).some(entry => binding.target.getURL() === `${state.origin}/${entry}`)) {
+                throw fault('Installed View connection is no longer current');
+            }
+        };
+        assertCurrent();
+        return { target: binding.target, assertCurrent, attachCleanup(cleanup) {
+            assertCurrent();
+            if (typeof cleanup !== 'function') throw new TypeError('View cleanup must be a function');
+            (binding.cleanups ||= new Set()).add(cleanup);
+            return () => binding.cleanups.delete(cleanup);
+        } };
+    }
+
     async disconnect(state, connectionId) {
         const binding = state.connections.get(connectionId);
         if (!binding) return;
         if (binding.disconnecting) return binding.disconnecting;
         binding.disconnecting = (async () => {
             try {
-                if (!state.closing && !state.failed) await this.request(state, 'detach', { connectionId });
+                const results = await Promise.allSettled([
+                    ...[...(binding.cleanups || [])].map(async cleanup => { await cleanup(); binding.cleanups.delete(cleanup); }),
+                    ...(!state.closing && !state.failed ? [this.request(state, 'detach', { connectionId })] : []),
+                ]);
+                const failures = results.filter(result => result.status === 'rejected');
+                if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'View connection cleanup was not acknowledged');
                 binding.remove(); state.connections.delete(connectionId);
                 if (binding.window && !binding.window.isDestroyed()) binding.window.destroy();
             } finally { binding.disconnecting = null; }
@@ -278,18 +305,23 @@ class SubappBrowserExecutionHost {
             // Startup catches do not call close, so this join cannot wait on itself.
             // It also prevents a late server.listen() or loadURL() resurrecting resources.
             await state.starting?.catch(() => {});
+            const connectionCleanup = await Promise.allSettled([...state.connections.values()].flatMap(binding =>
+                [...(binding.cleanups || [])].map(async cleanup => { await cleanup(); binding.cleanups.delete(cleanup); })));
             let acknowledged = false, value;
             try { if (state.port && !state.failed && state.window && !state.window.isDestroyed()) {
                 value = await this.request(state, 'shutdown'); acknowledged = true;
             } } catch { /* Physical document teardown remains mandatory and observable. */ }
             for (const pending of state.pending.values()) pending.reject(fault('Browser execution closed'));
             state.pending.clear();
-            for (const binding of state.connections.values()) binding.remove();
-            state.connections.clear(); state.port?.close();
+            state.port?.close();
             for (const win of state.views || []) if (!win.isDestroyed()) win.destroy();
             if (state.window && !state.window.isDestroyed()) state.window.destroy();
             if (state.window && !state.window.isDestroyed()) throw fault('Browser execution physical teardown unconfirmed');
             await state.server?.close();
+            const failures = connectionCleanup.filter(result => result.status === 'rejected');
+            if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'View Node control cleanup remains owned');
+            for (const binding of state.connections.values()) binding.remove();
+            state.connections.clear();
             for (const remove of state.bindings.values()) remove();
             state.bindings.clear(); state.owners.clear();
             state.ownerHandles.clear();

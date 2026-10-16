@@ -182,6 +182,22 @@ test('headless declaration is explicit and cannot mask invalid backend or contra
   assert.match(check({ headless: true }, { main: '../outside.js' }).installError, /Unsafe Subapp entry/);
 });
 
+test('installed Node control projection requires exact opt-in and an existing process transport', t => {
+  const f = fixture(t), root = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(root, '0.1.33');
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const check = runtime => { manifest.ailySubapp.runtime = runtime;
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify(manifest)); return readInstalledState(f.rootDir, f.entry); };
+  assert.equal(check({}).config.runtime?.nodeControl, undefined);
+  const nodeControl = { protocol: 'aily-subapp-node-control-v1' };
+  assert.match(check({ nodeControl }).installError, /requires a registered process/);
+  const processMessagePort = { transport: 'node-ipc-v1', maxMessageBytes: 2 * 1024 * 1024 };
+  const selected = check({ nodeControl, processMessagePort });
+  assert.equal(selected.installed, true); assert.deepEqual(selected.config.runtime.nodeControl, nodeControl);
+  assert.deepEqual(Object.keys(selected.config.runtime.nodeControl), ['protocol']);
+  assert.match(check({ nodeControl: { ...nodeControl, url: 'http://arbitrary' }, processMessagePort }).installError, /Unsupported/);
+});
+
 test('reads a legacy B installation and emits the version-selected environment contract', (t) => {
   const f = fixture(t);
   const legacy = packagePathFor(f.rootDir, PACKAGE);

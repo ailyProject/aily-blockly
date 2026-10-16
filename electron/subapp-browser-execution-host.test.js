@@ -13,6 +13,8 @@ const { createPackagedRendererServer } = require('./packaged-renderer-server');
 const { SubappOwnerSupervisor } = require('./subapp-owner-supervisor');
 const { registerBrowserExecutionHandlers } = require('./subapp-browser-execution-ipc');
 const { SubappBrowserProcessBroker, REQUEST, RESULT } = require('./subapp-browser-process-broker');
+const { SubappNodeControlBroker, TYPES: NODE_CONTROL_TYPES } = require('./subapp-node-control-broker');
+const { readNodeControlSource, PROTOCOL: NODE_CONTROL_PROTOCOL } = require('./subapp-node-control-source');
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t) {
@@ -98,6 +100,22 @@ test('only a selected package version, bounded local entry and matching HTML has
     f.declaration.entry = 'execution.html'; f.declaration.sha256 = '0'.repeat(64); f.save(); assert.throws(f.source, /integrity/);
     f.declaration.sha256 = createHash('sha256').update(fs.readFileSync(path.join(f.dir, 'public/execution.html'))).digest('hex');
     f.manifest.ailySubapp.runtime.headless = true; f.save(); assert.throws(f.source, /supported/);
+});
+
+test('Node control is disabled unless the Main-selected installed package declares the exact registered protocol', t => {
+    const f = fixture(t);
+    assert.equal(readNodeControlSource(f.config), null);
+    f.manifest.ailySubapp.runtime.nodeControl = { protocol: NODE_CONTROL_PROTOCOL }; f.save();
+    assert.throws(() => readNodeControlSource(f.config), /requires a registered/);
+    f.manifest.ailySubapp.runtime.processMessagePort = { transport: 'node-ipc-v1', maxMessageBytes: 2 * 1024 * 1024 }; f.save();
+    const selected = readNodeControlSource(f.config);
+    assert.equal(selected.maxMessageBytes, 1024 * 1024); assert.equal(selected.packageName, f.manifest.name);
+    assert.equal(Object.isFrozen(selected), true);
+    assert.throws(() => readNodeControlSource({ ...f.config, version: 'other-version' }), /identity changed/);
+    f.manifest.ailySubapp.runtime.nodeControl.owner = 'renderer-selected'; f.save();
+    assert.throws(() => readNodeControlSource(f.config), /Unsupported/);
+    f.manifest.ailySubapp.runtime.nodeControl = { protocol: 'unregistered-protocol' }; f.save();
+    assert.throws(() => readNodeControlSource(f.config), /Unsupported/);
 });
 
 test('concurrent owners share one sandbox execution document and pinned version', async t => {
@@ -309,6 +327,52 @@ test('real supervised IPC bindProcess returns an owner-scoped JSON capability an
     assert.equal(sent.at(-1).stream, runtime.streamId); assert.deepEqual(sent.at(-1).message.result, { snapshot: 'bounded' });
     await supervisor.release(renderer, input);
     assert.equal(h.host.runtimes.size, 0); assert.equal(broker.connections.size, 0); assert.equal(broker.pendingCount, 0);
+});
+
+test('opted-in installed View gets an independent private Node port; close failure remains joined and retryable', async t => {
+    const h = harness(t), renderer = new Contents(), handlers = new Map(), sent = []; renderer.mainFrame = {};
+    h.manifest.ailySubapp.runtime.nodeControl = { protocol: NODE_CONTROL_PROTOCOL };
+    h.manifest.ailySubapp.runtime.processMessagePort = { transport: 'node-ipc-v1', maxMessageBytes: 1024 * 1024 }; h.save();
+    const runtime = { streamId: h.runtimeId, nativeOwnerControl: true, messagePort: { maxMessageBytes: 1024 * 1024 },
+        hostInfo: { wsUrl: 'ws://127.0.0.1:49151/ws', runtimeConfig: h.config } };
+    const supervisor = new SubappOwnerSupervisor({ resolveRuntime: () => runtime });
+    const input = { generation: supervisor.connect(renderer).generation, ownerSessionId: randomUUID(), toolId: 'fixture' };
+    const broker = new SubappBrowserProcessBroker({ host: h.host, send: async () => ({ success: true }),
+        resolveStream: stream => stream === runtime.streamId ? { toolId: 'fixture', messagePort: runtime.messagePort } : null });
+    let detachFails = true;
+    const nodeControlBroker = new SubappNodeControlBroker({ MessageChannelMain: Channel, timeoutMs: 100,
+        resolveRuntime: stream => stream === runtime.streamId ? runtime : null,
+        send: async (stream, frame) => {
+            sent.push({ stream, frame }); const ok = frame.type !== NODE_CONTROL_TYPES.detach || !detachFails;
+            queueMicrotask(() => nodeControlBroker.handle(stream, { type: frame.type === NODE_CONTROL_TYPES.attach ? NODE_CONTROL_TYPES.attached : NODE_CONTROL_TYPES.detached,
+                version: 1, runtimeId: frame.runtimeId, connectionId: frame.connectionId, requestId: frame.requestId, ok,
+                ...(!ok ? { errorCode: 'FIXTURE_FAILURE', error: 'Actual Node detach failed' } : {}) }));
+            return { success: true };
+        } });
+    t.after(async () => { detachFails = false; await nodeControlBroker.closeAll(); });
+    registerBrowserExecutionHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, host: h.host, supervisor, broker, nodeControlBroker,
+        resolveRuntime: () => runtime, prepareLaunch: async () => ({ config: h.config, release() {} }) });
+    const invoke = payload => handlers.get('subapp-browser-execution')({ sender: renderer, senderFrame: renderer.mainFrame }, { ...input, ...payload });
+    await supervisor.track(renderer, input);
+    const acquired = await invoke({ action: 'acquire' });
+    const view = await invoke({ action: 'openView', runtimeId: acquired.endpoint.runtimeId, surface: 'full', owner: 'forged', url: 'http://attacker' });
+    const target = h.windows[1].webContents;
+    assert.deepEqual(target.received.map(frame => frame.channel), ['subapp-browser-execution-port', 'subapp-node-control-port']);
+    const attachment = sent.find(item => item.frame.type === NODE_CONTROL_TYPES.attach);
+    assert.equal(attachment.stream, runtime.streamId); assert.equal(attachment.frame.packageName, h.config.packageName);
+    assert.equal(attachment.frame.context.sessionId, input.ownerSessionId);
+    assert.deepEqual(attachment.frame.context.browserExecution.endpoint, acquired.endpoint);
+    assert.equal(attachment.frame.context.browserExecution.connectionId, [...broker.connections.keys()][0]);
+    assert.equal(JSON.stringify(target.received.at(-1).data).includes(input.ownerSessionId), false);
+    await assert.rejects(invoke({ action: 'closeView', runtimeId: acquired.endpoint.runtimeId, connectionId: view.connectionId }), /cleanup was not acknowledged/);
+    assert.equal(h.windows[1].isDestroyed(), false); assert.equal(nodeControlBroker.connections.size, 1);
+    assert.equal(h.host.runtimes.get(runtime.streamId).connections.size, 2);
+    detachFails = false;
+    await invoke({ action: 'closeView', runtimeId: acquired.endpoint.runtimeId, connectionId: view.connectionId });
+    assert.equal(h.windows[1].isDestroyed(), true); assert.equal(nodeControlBroker.connections.size, 0);
+    assert.equal(h.host.runtimes.size, 1); assert.equal(broker.connections.size, 1);
+    await supervisor.release(renderer, input);
+    assert.equal(h.host.runtimes.size, 0); assert.equal(broker.connections.size, 0);
 });
 
 test('private owner handle survives connection replacement/View close; only actual owner departure releases domain holds', async t => {
