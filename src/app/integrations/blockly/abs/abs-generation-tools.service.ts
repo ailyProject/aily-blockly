@@ -32,6 +32,13 @@ export class AbsGenerationToolsService {
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
         if (params['action'] === 'inspect') return { ...reply, ok: true, ...await this.sync.inspectGeneration(), requiresReload: false };
+        if (params['action'] === 'restore_committed' && typeof params['generation'] === 'string'
+          && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation'])
+          && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
+          const result = await this.sync.restoreCommittedMirrors(params['generation'], params['token']);
+          return { ...reply, ...result, ok: result.publication.status === 'COMMITTED',
+            receipt: { ...reply.receipt, generation: params['generation'], token: params['token'], output: result.evidence } };
+        }
         if (params['action'] === 'refresh' && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
           const result = await this.sync.exportGeneration({ preserveDraft: params['token'] });
           const ok = result.publication.status === 'COMMITTED' && !!result.evidence && !!result.draftArchive;
@@ -49,7 +56,7 @@ export class AbsGenerationToolsService {
           await this.sync.abandonGeneration(params['generation']);
           return { ...reply, ok: true, requiresReload: true };
         }
-        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Recovery requires inspect, recover, abandon/read_draft with a generation, or refresh with an inspection token.');
+        throw new AbsSyncError('ABS_REQUEST_INVALID', 'Recovery requires inspect, recover, abandon/read_draft with a generation, or refresh/restore_committed with its current inspection token and generation.');
       }
       if (typeof source !== 'string' || !source.trim()) throw new AbsSyncError('ABS_REQUEST_INVALID', 'Candidate source is empty.');
       if (operation === 'abs_validate') {

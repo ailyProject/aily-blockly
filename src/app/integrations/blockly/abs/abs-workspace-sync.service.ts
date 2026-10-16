@@ -591,6 +591,25 @@ export class AbsWorkspaceSyncService {
     const result = await store.recover(context.assertCurrent); context.assertCurrent(); return result;
   }
 
+  /** Explicit disk repair only. The old canvas remains quarantined until reload. */
+  async restoreCommittedMirrors(generation: string, token: string) {
+    return this.run(async (context, lease, store) => {
+      try {
+        const result = await store.restoreCommittedMirrors(generation, token, context.assertCurrent);
+        context.assertCurrent();
+        lease.quarantine('Committed project mirrors were restored; reload without saving the old canvas.');
+        return { publication: result.publication, restorationArchive: result.restorationArchive,
+          evidence: await generationEvidence(result.projection, result.abi), abs: result.projection.abs,
+          requiresReload: true };
+      } catch (error) {
+        if (context.isCurrent() && await store.inspectPending().then(Boolean, () => true)) {
+          lease.quarantine('Mirror restoration needs explicit project_recover recover; do not save the old canvas.');
+        }
+        throw error;
+      }
+    }, false);
+  }
+
   async abandonGeneration(generation: string): Promise<void> {
     const context = this.context();
     const store = await this.store(context);

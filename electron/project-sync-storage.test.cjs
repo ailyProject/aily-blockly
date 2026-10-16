@@ -184,3 +184,19 @@ test('a pending journal blocks ordinary saves after lock release, including malf
   await store.withLock(async locked => locked.replace('prepared.json', hash('malformed but retained'), null));
   assert.equal((await replaceProjectText({ ...request(root), expectedHash: hash('single writer') }, guard)).status, 'COMMITTED');
 });
+
+test('only exact immutable committed-restoration archive keys are admitted; their prepared journal blocks ordinary saves', async () => {
+  const root = project(), store = await openProjectSyncStorage(root, guard);
+  const key = `restorations/restore_${'a'.repeat(64)}.json`;
+  for (const invalid of ['restorations/anything.json', 'restorations/restore_short.json', 'restorations/../outside.json']) {
+    await assert.rejects(store.read(invalid), { code: 'ABS_STORAGE_KEY_INVALID' });
+  }
+  await store.withLock(async locked => {
+    assert.equal(await locked.replace(key, null, 'exact original bytes'), true);
+    await assert.rejects(locked.replace(key, hash('exact original bytes'), 'replacement'), { code: 'ABS_STORAGE_WRITE_INVALID' });
+    await assert.rejects(locked.replace(key, hash('exact original bytes'), null), { code: 'ABS_STORAGE_WRITE_INVALID' });
+    await locked.replace('prepared.json', null, '{"kind":"aily-abs-committed-mirror-restoration"}');
+  });
+  assert.equal((await replaceProjectText(request(root), guard)).code, 'ABS_TRANSACTION_PENDING');
+  assert.equal(await store.read(key), 'exact original bytes');
+});

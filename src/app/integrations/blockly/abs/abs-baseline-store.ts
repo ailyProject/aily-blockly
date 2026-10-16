@@ -1,5 +1,5 @@
 import { absJson, assertCurrentAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
-import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
+import { ABS_PROJECTION_VERSION, AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 
 /**
  * Project-scoped host capability. Keys are relative to its private sync directory,
@@ -37,6 +37,14 @@ interface GenerationRecord extends Omit<AbsGenerationInput, 'expected'> {
   previousCommitted: string | null;
 }
 interface GenerationPointer { schemaVersion: 1; generation: string; hash: string }
+interface CommittedMirrorRestoration {
+  schemaVersion: 1;
+  kind: 'aily-abs-committed-mirror-restoration';
+  generation: string;
+  token: string;
+  committed: string;
+  original: AbsDiskSnapshot;
+}
 export interface AbsPublishResult {
   status: 'COMMITTED' | 'NOT_COMMITTED' | 'MIRROR_PENDING' | 'CONFLICT';
   generation: string;
@@ -50,6 +58,7 @@ const ABS = 'project.abs';
 const MAP = 'project.abs.map.json';
 const PREPARED = 'prepared.json';
 const COMMITTED = 'committed.json';
+const RESTORATION_KIND = 'aily-abs-committed-mirror-restoration';
 
 export function absBaselineKey(generation: string): string {
   if (!/^[A-Za-z0-9_-]{1,96}$/.test(generation)) throw new AbsSyncError('ABS_GENERATION_INVALID', 'Invalid generation identifier.');
@@ -149,6 +158,11 @@ export class AbsBaselineStore {
   async inspectPending(): Promise<(AbsPublishResult & { mode: 'import' | 'export' }) | null> {
     const text = await this.port.read(PREPARED);
     if (text === null) return null;
+    if (this.isRestoration(text)) {
+      const state = await this.readRestoration(this.port, text);
+      const disk = await this.captureDisk();
+      return { ...this.restorationPublication(state, disk, 'MIRROR_PENDING'), mode: 'import' };
+    }
     const pointer = this.parsePointer(text);
     const { record, pointer: actual } = await this.readGeneration(this.port, pointer.generation);
     if (absJson(pointer) !== absJson(actual)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Prepared baseline checksum mismatch.');
@@ -197,6 +211,7 @@ export class AbsBaselineStore {
     return this.port.withLock(async storage => {
       const text = await storage.read(PREPARED);
       if (text === null) return null;
+      if (this.isRestoration(text)) return (await this.restoreMirrorsLocked(storage, text, assertCurrent)).publication;
       const pointer = this.parsePointer(text);
       const { record, pointer: actual } = await this.readGeneration(storage, pointer.generation);
       if (absJson(pointer) !== absJson(actual)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Prepared baseline checksum mismatch.');
@@ -210,6 +225,7 @@ export class AbsBaselineStore {
     await this.port.withLock(async storage => {
       const text = await storage.read(PREPARED);
       if (text === null) return;
+      if (this.isRestoration(text)) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Committed mirror restoration must be recovered; its original bytes remain archived.');
       const pointer = this.parsePointer(text);
       const { record, pointer: actual } = await this.readGeneration(storage, generation);
       if (absJson(pointer) !== absJson(actual)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cannot abandon a different or corrupt transaction.');
@@ -218,6 +234,139 @@ export class AbsBaselineStore {
       }
       if (!await storage.replace(PREPARED, await hashAbsText(text), null)) throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'Prepared record changed.');
     });
+  }
+
+  /** Explicit repair authority is bound to current bytes, not an edited public map. */
+  async inspectCommittedRestoration() {
+    return this.port.withLock(async storage => {
+      const prepared = await storage.read(PREPARED);
+      if (prepared !== null) return undefined; // Existing journals belong only to explicit recover.
+      let state;
+      try { state = await this.prepareRestoration(storage); }
+      catch (error) { if ((error as any)?.code === 'ABS_RESTORE_UNAVAILABLE') return undefined; throw error; }
+      if (!state || absJson(state.record.original) === absJson(state.target)) return undefined;
+      return { token: state.record.token, generation: state.record.generation, scope: this.scope,
+        hashes: state.hashes, committedPointerHash: await hashAbsText(state.record.committed), pending: false };
+    });
+  }
+
+  async restoreCommittedMirrors(generation: string, token: string, assertCurrent: () => void) {
+    if (!/^sha256:[a-f0-9]{64}$/.test(token)) throw new AbsSyncError('ABS_RESTORE_STALE', 'Inspect committed mirror restoration before acting.');
+    return this.port.withLock(async storage => {
+      if (await storage.read(PREPARED) !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the existing prepared transaction first.');
+      const state = await this.prepareRestoration(storage);
+      if (!state || state.record.generation !== generation || state.record.token !== token) {
+        throw new AbsSyncError('ABS_RESTORE_STALE', 'Committed generation or mirror bytes changed; inspect again.');
+      }
+      const text = absJson(state.record);
+      const archived = await storage.read(state.archiveKey);
+      assertCurrent();
+      if (archived !== text && (archived !== null || !await storage.replace(state.archiveKey, null, text))) {
+        throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Restoration archive cannot be replaced.');
+      }
+      if (await storage.read(COMMITTED) !== state.record.committed
+        || absJson(await this.captureDisk(storage)) !== absJson(state.record.original)) {
+        throw new AbsSyncError('ABS_RESTORE_STALE', 'Project changed while archiving restoration inputs.');
+      }
+      assertCurrent();
+      if (!await storage.replace(PREPARED, null, text)) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Another transaction was prepared.');
+      return this.restoreMirrorsLocked(storage, text, assertCurrent);
+    });
+  }
+
+  private isRestoration(text: string): boolean {
+    try { return JSON.parse(text)?.kind === RESTORATION_KIND; } catch { return false; }
+  }
+
+  private async prepareRestoration(storage: Pick<AbsSyncStorageAccess, 'read'>) {
+    const committed = await storage.read(COMMITTED);
+    if (committed === null) return undefined;
+    const original = await this.captureDisk(storage);
+    const pointer = this.parsePointer(committed);
+    const loaded = await this.readGeneration(storage, pointer.generation, true);
+    if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Committed baseline checksum mismatch.');
+    if (absJson(loaded.record.projection.map.scope) !== absJson(this.scope)
+      || loaded.record.projection.map.projectionVersion !== ABS_PROJECTION_VERSION) return undefined;
+    assertCurrentAbsProjection(loaded.record.projection);
+    const hashes = await this.hashDisk(original);
+    const token = await hashAbsText(absJson({ kind: RESTORATION_KIND, scope: this.scope,
+      committed: await hashAbsText(committed), hashes }));
+    const record: CommittedMirrorRestoration = { schemaVersion: 1, kind: RESTORATION_KIND,
+      generation: pointer.generation, token, committed, original };
+    return this.restorationState(record, loaded.record, hashes);
+  }
+
+  private async restorationState(record: CommittedMirrorRestoration, baseline: GenerationRecord, hashes: AbsDiskSnapshot) {
+    const abi = baseline.mode === 'import' ? baseline.abi : record.original.abi;
+    // An export stores no ABI bytes. Its current exact saved ABI is usable only
+    // when it still proves the immutable record's byte and canonical bindings.
+    if (abi === null || baseline.mode === 'export' && await hashAbsText(abi) !== baseline.expected.abi
+      || await hashAbsText(absJson(JSON.parse(abi))) !== baseline.projection.map.savedAbiHash) {
+      throw new AbsSyncError('ABS_RESTORE_UNAVAILABLE', 'The committed baseline cannot prove exact saved ABI bytes.');
+    }
+    const id = `restore_${record.token.slice(7)}`;
+    return { record, hashes, archiveKey: `restorations/${id}.json`,
+      archive: { id, hashes }, projection: baseline.projection,
+      target: { abi, abs: baseline.projection.abs, map: absJson(baseline.projection.map) } };
+  }
+
+  private async readRestoration(storage: Pick<AbsSyncStorageAccess, 'read'>, text: string) {
+    try {
+      const record: CommittedMirrorRestoration = JSON.parse(text);
+      if (record.schemaVersion !== 1 || record.kind !== RESTORATION_KIND
+        || Object.keys(record).sort().join(',') !== 'committed,generation,kind,original,schemaVersion,token'
+        || typeof record.committed !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(record.token)
+        || !record.original || Object.keys(record.original).sort().join(',') !== 'abi,abs,map'
+        || Object.values(record.original).some(value => value !== null && typeof value !== 'string')) throw new Error('Invalid restoration record.');
+      const pointer = this.parsePointer(record.committed);
+      if (pointer.generation !== record.generation) throw new Error('Restoration generation mismatch.');
+      const loaded = await this.readGeneration(storage, record.generation);
+      if (absJson(pointer) !== absJson(loaded.pointer)) throw new Error('Restoration baseline checksum mismatch.');
+      assertCurrentAbsProjection(loaded.record.projection);
+      const hashes = await this.hashDisk(record.original);
+      if (record.token !== await hashAbsText(absJson({ kind: RESTORATION_KIND, scope: this.scope,
+        committed: await hashAbsText(record.committed), hashes }))) throw new Error('Restoration token binding mismatch.');
+      const state = await this.restorationState(record, loaded.record, hashes);
+      if (await storage.read(state.archiveKey) !== text) throw new Error('Immutable restoration archive is missing or changed.');
+      return state;
+    } catch (error) { throw new AbsSyncError('ABS_BASELINE_CORRUPT', String(error)); }
+  }
+
+  private restorationPublication(state: Awaited<ReturnType<AbsBaselineStore['readRestoration']>>,
+    disk: AbsDiskSnapshot, status: AbsPublishResult['status']): AbsPublishResult {
+    return { status, generation: state.record.generation, abiSaved: disk.abi === state.target.abi,
+      absMirrored: disk.abs === state.target.abs, mapPublished: disk.map === state.target.map };
+  }
+
+  private async restoreMirrorsLocked(storage: AbsSyncStorageAccess, text: string, assertCurrent: () => void) {
+    const state = await this.readRestoration(storage, text);
+    const check = async () => {
+      if (await storage.read(PREPARED) !== text || await storage.read(COMMITTED) !== state.record.committed) {
+        throw new AbsSyncError('ABS_RESTORE_STALE', 'Committed pointer or restoration journal changed.');
+      }
+      const disk = await this.captureDisk(storage);
+      for (const key of ['abi', 'abs', 'map'] as const) {
+        if (disk[key] !== state.record.original[key] && disk[key] !== state.target[key]) {
+          throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'A newer mirror edit was retained; restoration cannot overwrite it.');
+        }
+      }
+      assertCurrent(); return disk;
+    };
+    for (const [key, property] of [[ABI, 'abi'], [ABS, 'abs'], [MAP, 'map']] as const) {
+      const disk = await check();
+      if (disk[property] === state.target[property]) continue;
+      assertCurrent();
+      if (!await storage.replace(key, state.hashes[property], state.target[property])) {
+        throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', `${key} changed during restoration; recovery state was retained.`);
+      }
+    }
+    const publication = this.restorationPublication(state, await check(), 'COMMITTED');
+    if (!publication.abiSaved || !publication.absMirrored || !publication.mapPublished) {
+      throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'Mirrors changed after restoration; recovery state was retained.');
+    }
+    assertCurrent();
+    if (!await storage.replace(PREPARED, await hashAbsText(text), null)) publication.status = 'MIRROR_PENDING';
+    return { publication, restorationArchive: state.archive, projection: state.projection, abi: state.target.abi };
   }
 
   private async publish(storage: AbsSyncStorageAccess, record: GenerationRecord, pointerText: string, assertCurrent: () => void): Promise<AbsPublishResult> {

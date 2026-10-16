@@ -19,6 +19,24 @@ function unavailableConfiguration() {
         limitations: ['cpp-preprocessing-not-performed', 'configuration-unavailable'] };
 }
 
+function unavailableInspection() {
+    return { compileContext: unavailableConfiguration(), targetMarkers: null };
+}
+
+function projectTargetMarkers(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some(key => key !== 'boardId' && key !== 'mcu')) throw new Error('resolved-target-markers');
+    const result = {};
+    for (const key of ['boardId', 'mcu']) {
+        if (value[key] === undefined) continue;
+        if (typeof value[key] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(value[key])) {
+            throw new Error('resolved-target-markers');
+        }
+        result[key] = value[key];
+    }
+    return result;
+}
+
 function safeScalar(value) {
     return value.length <= 256 && (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
         || /^[+-]?(?:0[xX][0-9A-Fa-f]+|[0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)[uUlLfF]*$/.test(value));
@@ -92,7 +110,8 @@ function resolveBuilderPackage(entryPath, readJson = filename => JSON.parse(read
     if (manifest.name !== '@aily-project/aily-builder' || typeof declared !== 'string'
         || path.resolve(root, declared) !== entry || !fs.existsSync(entry)) throw new Error('builder-entry');
     return { root, parser: path.join(root, 'dist', 'src', 'ArduinoConfigParser.js'),
-        compiler: path.join(root, 'dist', 'src', 'CompileConfigManager.js') };
+        compiler: path.join(root, 'dist', 'src', 'CompileConfigManager.js'),
+        targetMarkers: path.join(root, 'dist', 'src', 'ArduinoCompiler.js') };
 }
 
 async function readCompilerConfiguration(request, options = {}) {
@@ -143,10 +162,11 @@ async function readCompilerConfiguration(request, options = {}) {
         }
         stage = 'builder';
         const builder = resolveBuilderPackage(request.entryPath, json);
-        capture(builder.parser); capture(builder.compiler);
+        capture(builder.parser); capture(builder.compiler); capture(builder.targetMarkers);
         const modules = options.loadBuilderModules ? options.loadBuilderModules(builder) : {
             ArduinoConfigParser: require(builder.parser).ArduinoConfigParser,
             CompileConfigManager: require(builder.compiler).CompileConfigManager,
+            resolveArtifactTargetMarkers: require(builder.targetMarkers).resolveArtifactTargetMarkers,
         };
         // Parser compatibility variables are confined to this short-lived child.
         const environment = { ...process.env };
@@ -164,7 +184,10 @@ async function readCompilerConfiguration(request, options = {}) {
                 || !/^[A-Za-z0-9_.:,=-]+$/.test(effective) || !effective.startsWith(fqbn)) throw new Error('resolved-target');
             const version = parsed.targetSelection?.platform?.version;
             if (version !== null && (typeof version !== 'string' || !VERSION.test(version))) throw new Error('platform-version');
-            const result = projectCppCommandLineDefinitions(configuration.args?.cpp, effective, version);
+            const compileContext = projectCppCommandLineDefinitions(configuration.args?.cpp, effective, version);
+            if (compileContext.status === 'unavailable') throw new Error('compiler-configuration-unavailable');
+            stage = 'target-markers';
+            const targetMarkers = projectTargetMarkers(modules.resolveArtifactTargetMarkers(fqbn, parsed.board));
             stage = 'bookend';
             for (const [filename, fact] of inputs) {
                 if (fact === null ? fs.existsSync(filename)
@@ -172,14 +195,14 @@ async function readCompilerConfiguration(request, options = {}) {
                     throw new Error('configuration-changed');
                 }
             }
-            return result;
+            return { compileContext, targetMarkers };
         } finally {
             for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key];
             Object.assign(process.env, environment);
         }
     } catch {
         options.onFailure?.(stage);
-        return unavailableConfiguration();
+        return unavailableInspection();
     }
 }
 
@@ -194,10 +217,10 @@ async function main() {
         result = await readCompilerConfiguration(decodeRequest(process.argv[2]), {
             onFailure: stage => warn(`[ProjectCompilerConfiguration] stage=${stage}\n`),
         });
-    } catch { result = unavailableConfiguration(); warn('[ProjectCompilerConfiguration] stage=request\n'); }
+    } catch { result = unavailableInspection(); warn('[ProjectCompilerConfiguration] stage=request\n'); }
     process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
 module.exports = { decodeRequest, projectCppCommandLineDefinitions, readCompilerConfiguration,
-    resolveBuilderPackage, unavailableConfiguration };
+    resolveBuilderPackage, unavailableConfiguration, unavailableInspection };
 if (require.main === module) void main();

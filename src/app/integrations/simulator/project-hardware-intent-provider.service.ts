@@ -71,7 +71,7 @@ export class ProjectHardwareIntentProviderService {
       }
       throwIfAborted(signal);
       stage = 'compiler-configuration';
-      const compileContext = await this.compilerConfiguration.read(projectRoot, signal);
+      const { compileContext, targetMarkers } = await this.compilerConfiguration.read(projectRoot, signal);
       throwIfAborted(signal);
       if (this.projectService.currentProjectPath !== projectRoot) {
         throw new Error('Project context changed during hardware intent inspection.');
@@ -92,7 +92,7 @@ export class ProjectHardwareIntentProviderService {
           requestId: request.requestId,
           projectIdentity: request.projectIdentity,
         },
-        board: resolveProjectHardwareIntentBoard(boardConfig, packageJson, installedBoardPackage),
+        board: resolveProjectHardwareIntentBoard(boardConfig, packageJson, installedBoardPackage, targetMarkers),
         sourceText,
         compileContext,
         libraries: resolveLibraries(packageJson),

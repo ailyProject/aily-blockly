@@ -60,4 +60,49 @@ describe('Project hardware Board identity', () => {
       expect(() => resolveProjectHardwareIntentBoard(board, { dependencies: { [name]: '3.3.10' } }, installed)).toThrow();
     }
   });
+
+  const genericF1 = { name: 'STM32F1 Series', type: 'STMicroelectronics:stm32:GenF1', core: 'STMicroelectronics:stm32',
+    linkUploadParam: 'probe-rs download --chip ${pnum} --verify firmware.elf' };
+  const f1Package = { name: '@aily-project/board-stm32f1', version: '3.0.0' };
+  const f1Project = (pnum: string) => ({ projectConfig: { pnum }, dependencies: { [f1Package.name]: '3.0.0' } });
+
+  for (const [pnum, mcu] of [['GENERIC_F103C8TX', 'STM32F103C8'], ['GENERIC_F103CBTX', 'STM32F103CB']]) {
+    it(`uses the normal compiler exact target without mutating generic Board metadata: ${mcu}`, () => {
+      const input = { ...genericF1 };
+      const result = resolveProjectHardwareIntentBoard(input, f1Project(pnum), f1Package, { boardId: pnum, mcu });
+      expect(result.mcu).toBe(mcu.toLowerCase()); expect(result.boardId).toBe(pnum);
+      expect(Object.hasOwn(input, 'mcu')).toBeFalse();
+    });
+  }
+
+  it('does not treat a shared GenF1 FQBN or display name as exact MCU evidence', () => {
+    for (const markers of [undefined, null, {}]) {
+      expect(() => resolveProjectHardwareIntentBoard(genericF1, f1Project('GENERIC_F103CBTX'), f1Package, markers))
+        .toThrowError(/requires current resolved compiler target markers/u);
+    }
+  });
+
+  it('rejects a stale compiler selection and conflicting exact C8 versus CB declarations', () => {
+    expect(() => resolveProjectHardwareIntentBoard(genericF1, f1Project('GENERIC_F103CBTX'), f1Package,
+      { boardId: 'GENERIC_F103C8TX', mcu: 'STM32F103C8' })).toThrowError(/Board identity conflicts/u);
+    expect(() => resolveProjectHardwareIntentBoard({ ...genericF1, mcu: 'stm32f103c8' }, f1Project('GENERIC_F103CBTX'), f1Package,
+      { boardId: 'GENERIC_F103CBTX', mcu: 'STM32F103CB' })).toThrowError(/MCU conflicts/u);
+  });
+
+  it('keeps an exact explicit F407 declaration when the compiler marker is only its broad family', () => {
+    const result = resolveProjectHardwareIntentBoard({ type: 'STMicroelectronics:stm32:GenF4', core: 'STMicroelectronics:stm32', mcu: 'stm32f407vg' },
+      { projectConfig: { pnum: 'BLACK_F407VG' } }, undefined, { boardId: 'BLACK_F407VG', mcu: 'STM32F407xx' });
+    expect(result.mcu).toBe('stm32f407vg');
+    expect(() => resolveProjectHardwareIntentBoard({ type: 'STMicroelectronics:stm32:GenF4', core: 'STMicroelectronics:stm32', mcu: 'stm32f407vg' },
+      { projectConfig: { pnum: 'BLACK_F407VG' } }, undefined, { boardId: 'BLACK_F407VG', mcu: 'STM32F103CB' })).toThrowError(/MCU conflicts/u);
+  });
+
+  it('preserves prior ESP and AVR exact declarations and rejects contradictory resolved targets', () => {
+    for (const [type, core, mcu] of [['esp32:esp32:esp32', 'esp32:esp32', 'esp32'],
+      ['arduino:avr:uno', 'arduino:avr', 'atmega328p']]) {
+      expect(resolveProjectHardwareIntentBoard({ type, core, mcu }, {}, undefined, { mcu }).mcu).toBe(mcu);
+      expect(() => resolveProjectHardwareIntentBoard({ type, core, mcu }, {}, undefined, { mcu: 'different-chip' }))
+        .toThrowError(/MCU conflicts/u);
+    }
+  });
 });

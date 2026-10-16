@@ -36,12 +36,15 @@ describe('Read-only project compiler configuration query', () => {
   });
   afterEach(() => { window['builder'] = previous.builder; window['path'] = previous.path; });
   async function launched() { for (let index = 0; index < 8 && !cmd.spawn.calls.count(); index++) await Promise.resolve(); expect(cmd.spawn).toHaveBeenCalled(); }
-  function success(value: any = context) { stream.next({ type: 'stdout', data: JSON.stringify(value) }); stream.next({ type: 'close', code: 0, signal: null }); }
+  function success(value: any = context, targetMarkers: any = { mcu: 'esp32' }) {
+    stream.next({ type: 'stdout', data: JSON.stringify({ compileContext: value, targetMarkers }) });
+    stream.next({ type: 'close', code: 0, signal: null });
+  }
 
   it('requires the managed package entry instead of guessing the builder cache directory', async () => {
     builder.status.and.resolveTo({ installed: true });
     const result = await service.read('/project');
-    expect(result.status).toBe('unavailable'); expect(cmd.spawn).not.toHaveBeenCalled();
+    expect(result.compileContext.status).toBe('unavailable'); expect(result.targetMarkers).toBeNull(); expect(cmd.spawn).not.toHaveBeenCalled();
   });
 
   it('uses bounded shell-free Node input and waits for an actual successful close', async () => {
@@ -52,13 +55,13 @@ describe('Read-only project compiler configuration query', () => {
     expect(options.projectSessionId).toBe(session.projectSessionId);
     const request = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(args[1]), ch => ch.charCodeAt(0))));
     expect(request.entryPath).toContain('/dist/main.js'); expect(Object.keys(request).sort()).toEqual(['appDataPath', 'boardModule', 'entryPath', 'projectPath', 'schemaVersion']);
-    success(); expect(await pending).toEqual(context as any); expect(cmd.kill).not.toHaveBeenCalled();
+    success(); expect(await pending).toEqual({ compileContext: context, targetMarkers: { mcu: 'esp32' } } as any); expect(cmd.kill).not.toHaveBeenCalled();
   });
 
   it('silent execution preserves stdout through the Main transport filter', async () => {
     const pending = service.read('/project'); await launched();
     success();
-    expect((await pending).status).toBe('available');
+    expect((await pending).compileContext.status).toBe('available');
     const [, , options, silent] = cmd.spawn.calls.mostRecent().args;
     expect(options.forwardStdout).not.toBeFalse(); expect(silent).toBeTrue();
   });
@@ -66,26 +69,26 @@ describe('Read-only project compiler configuration query', () => {
   it('rejects output without a confirmed close and reclaims its exact stream', async () => {
     const pending = service.read('/project'); await launched();
     stream.next({ type: 'stdout', data: JSON.stringify(context) }); stream.complete();
-    expect((await pending).status).toBe('unavailable');
+    expect((await pending).compileContext.status).toBe('unavailable');
     expect(cmd.kill).toHaveBeenCalledOnceWith(cmd.spawn.calls.mostRecent().args[2].streamId);
   });
 
   it('does not mix facts after the current project configuration changes', async () => {
     const pending = service.read('/project'); await launched();
     manifest = { ...manifest, projectConfig: { Mode: 'different' } }; success();
-    expect((await pending).status).toBe('unavailable');
+    expect((await pending).compileContext.status).toBe('unavailable');
   });
 
   it('does not mix facts after a managed builder replacement', async () => {
     const pending = service.read('/project'); await launched();
     builder.status.and.resolveTo({ installed: true, installing: false, entryPath: '/different/dist/main.js' }); success();
-    expect((await pending).status).toBe('unavailable');
+    expect((await pending).compileContext.status).toBe('unavailable');
   });
 
   it('rejects malformed unsafe output through the shared protocol validator', async () => {
     const pending = service.read('/project'); await launched();
     success({ ...context, definitions: [{ name: 'CURRENT', value: 'C:/private', state: 'defined' }] });
-    expect((await pending).status).toBe('unavailable');
+    expect((await pending).compileContext.status).toBe('unavailable');
   });
 
   it('cancellation waits for tree cleanup before rejecting the query', async () => {
@@ -97,7 +100,7 @@ describe('Read-only project compiler configuration query', () => {
 
   it('borrows the existing session without creating a different project operation', async () => {
     const pending = service.read('/project'); await launched(); success();
-    expect((await pending).status).toBe('available');
+    expect((await pending).compileContext.status).toBe('available');
     expect(project.getProjectDependencySession).toHaveBeenCalledOnceWith('/project');
     expect(project.assertProjectDependencySession).toHaveBeenCalledWith(session);
     const options = cmd.spawn.calls.mostRecent().args[2];
@@ -121,7 +124,7 @@ describe('Read-only project compiler configuration query', () => {
     stream = new Subject();
     const fresh = service.read('/project');
     for (let index = 0; index < 8 && cmd.spawn.calls.count() < 2; index++) await Promise.resolve();
-    expect(cmd.spawn.calls.count()).toBe(2); success(); expect((await fresh).status).toBe('available');
+    expect(cmd.spawn.calls.count()).toBe(2); success(); expect((await fresh).compileContext.status).toBe('available');
     expect(cmd.spawn.calls.first().args[2].projectSessionId).toBe(old.projectSessionId);
     expect(cmd.spawn.calls.mostRecent().args[2].projectSessionId).toBe(session.projectSessionId);
   });
@@ -129,7 +132,7 @@ describe('Read-only project compiler configuration query', () => {
   it('asserts the captured session again at the bookend even when its signal was not aborted', async () => {
     const pending = service.read('/project'); await launched();
     session = { ...session, projectSessionId: 'different-activation' }; success();
-    expect((await pending).status).toBe('unavailable');
+    expect((await pending).compileContext.status).toBe('unavailable');
   });
 
   it('unconfirmed termination is a blocking error rather than an unavailable success', async () => {
@@ -143,8 +146,31 @@ describe('Read-only project compiler configuration query', () => {
     try {
       const pending = service.read('/project'); await launched();
       jasmine.clock().tick(30_001);
-      expect((await pending).status).toBe('unavailable');
+      expect((await pending).compileContext.status).toBe('unavailable');
       expect(cmd.kill).toHaveBeenCalledOnceWith(cmd.spawn.calls.mostRecent().args[2].streamId);
     } finally { jasmine.clock().uninstall(); }
+  });
+
+  it('keeps exact resolved markers outside the unchanged public compile context', async () => {
+    const pending = service.read('/project'); await launched();
+    success(context, { boardId: 'GENERIC_F103CBTX', mcu: 'STM32F103CB' });
+    const result = await pending;
+    expect(result.targetMarkers).toEqual({ boardId: 'GENERIC_F103CBTX', mcu: 'STM32F103CB' });
+    expect(Object.isFrozen(result.targetMarkers)).toBeTrue();
+    expect(Object.hasOwn(result.compileContext, 'targetMarkers')).toBeFalse();
+  });
+
+  for (const markers of [null, { mcu: '' }, { mcu: 'C:/private' }, { mcu: 'esp32', recipe: 'not permitted' }]) {
+    it(`rejects invalid private target marker transport: ${JSON.stringify(markers)}`, async () => {
+      const pending = service.read('/project'); await launched(); success(context, markers);
+      const result = await pending;
+      expect(result.compileContext.status).toBe('unavailable'); expect(result.targetMarkers).toBeNull();
+    });
+  }
+
+  it('rejects the retired scalar transport shape rather than dropping target identity', async () => {
+    const pending = service.read('/project'); await launched();
+    stream.next({ type: 'stdout', data: JSON.stringify(context) }); stream.next({ type: 'close', code: 0, signal: null });
+    expect((await pending).compileContext.status).toBe('unavailable');
   });
 });

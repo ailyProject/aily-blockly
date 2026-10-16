@@ -21,6 +21,7 @@ export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsId
   const canRebind = !!baseline && issues.length > 0
     && issues.every(issue => ['ABS_SCOPE_INVALID', 'ABS_MAP_INVALID', 'ABS_PROJECTION_UPGRADE_REQUIRED'].includes(issue));
   const hashes = await hashAbsDisk(disk);
+  const restoreCommitted = await store.inspectCommittedRestoration();
   const rebind = canRebind ? { token: await hashAbsText(absJson({ scope, hashes, committed: committed!.pointerHash })),
     from: baseline!.map.scope, to: scope } : undefined;
   // Detect an external writer during the asynchronous inspection as well as at commit.
@@ -32,7 +33,8 @@ export async function inspectAbsGeneration(store: AbsBaselineStore, scope: AbsId
   }
   return { disk, committed, pending, diagnostics: { scope, generation: baseline?.map.generation,
     baselineScope: baseline?.map.scope, issues, hashes,
-    status: rebind ? 'rebind-required' : issues.length ? 'blocked' : 'ready', ...(rebind ? { rebind } : {}) } };
+    status: rebind ? 'rebind-required' : issues.length ? 'blocked' : 'ready', ...(rebind ? { rebind } : {}),
+    ...(restoreCommitted ? { restoreCommitted } : {}) } };
 }
 
 async function hashAbsDisk(disk: AbsDiskSnapshot) {

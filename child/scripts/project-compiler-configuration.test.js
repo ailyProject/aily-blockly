@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { decodeRequest, projectCppCommandLineDefinitions: project,
-    readCompilerConfiguration, resolveBuilderPackage, unavailableConfiguration } = require('./project-compiler-configuration');
+    readCompilerConfiguration, resolveBuilderPackage, unavailableConfiguration, unavailableInspection } = require('./project-compiler-configuration');
 
 const fqbn = 'vendor:architecture:board';
 const definition = (name, value, state = 'defined') => ({ name, value, state });
@@ -78,6 +78,7 @@ function fixture(t) {
     fs.writeFileSync(entryPath, '');
     fs.writeFileSync(path.join(builder, 'dist', 'src', 'ArduinoConfigParser.js'), '');
     fs.writeFileSync(path.join(builder, 'dist', 'src', 'CompileConfigManager.js'), '');
+    fs.writeFileSync(path.join(builder, 'dist', 'src', 'ArduinoCompiler.js'), '');
     const calls = [];
     const modules = {
         ArduinoConfigParser: class {
@@ -88,6 +89,7 @@ function fixture(t) {
             }
         },
         CompileConfigManager: class { parseCompileConfig() { return { args: { cpp: '-DSELECTED=0' } }; } },
+        resolveArtifactTargetMarkers: () => ({ mcu: 'atmega328p' }),
     };
     const request = { schemaVersion: 1, projectPath, boardModule, entryPath, appDataPath };
     return { root, request, modules, calls, packageFile, boardFile, sdk, builder };
@@ -97,6 +99,7 @@ test('managed package entry locates distributed parser modules, not a cache root
     const f = fixture(t), resolved = resolveBuilderPackage(f.request.entryPath);
     assert.equal(resolved.root, f.builder);
     assert.equal(resolved.parser, path.join(f.builder, 'dist', 'src', 'ArduinoConfigParser.js'));
+    assert.equal(resolved.targetMarkers, path.join(f.builder, 'dist', 'src', 'ArduinoCompiler.js'));
     assert.throws(() => resolveBuilderPackage(path.join(f.builder, 'main.js')), /builder-entry/);
 });
 
@@ -113,8 +116,9 @@ test('the managed builder status exposes an entry only for a ready installation'
 test('current SDK selection uses the original parser and manager without writing a workspace', async t => {
     const f = fixture(t), oldSdk = process.env.SDK_PATH;
     const result = await readCompilerConfiguration(f.request, { loadBuilderModules: () => f.modules });
-    assert.equal(result.status, 'available');
-    assert.equal(result.effectiveFqbn, `${fqbn}:Mode=exact`);
+    assert.equal(result.compileContext.status, 'available');
+    assert.equal(result.compileContext.effectiveFqbn, `${fqbn}:Mode=exact`);
+    assert.deepEqual(result.targetMarkers, { mcu: 'atmega328p' });
     assert.deepEqual(f.calls, [[fqbn, { Mode: 'exact' }, { 'esp32-arduino-libs': '5.5.1' }, ['CUSTOM=1']]]);
     assert.equal(process.env.SDK_PATH, oldSdk);
     assert.equal(fs.existsSync(path.join(f.request.projectPath, '.build')), false);
@@ -131,7 +135,7 @@ for (const changed of ['packageFile', 'boardFile', 'sdk']) test(`changed ${chang
     };
     const failures = [];
     const result = await readCompilerConfiguration(f.request, { loadBuilderModules: () => f.modules, onFailure: stage => failures.push(stage) });
-    assert.deepEqual(result, unavailableConfiguration());
+    assert.deepEqual(result, unavailableInspection());
     assert.deepEqual(failures, ['bookend']);
 });
 
@@ -148,7 +152,56 @@ test('CLI failure outputs only an explicit unavailable DTO and a safe stage', t 
     const result = spawnSync(process.execPath, [path.join(__dirname, 'project-compiler-configuration.js'),
         Buffer.from(JSON.stringify(f.request)).toString('base64')], { encoding: 'utf8', shell: false, timeout: 5_000, windowsHide: true });
     assert.equal(result.status, 0);
-    assert.deepEqual(JSON.parse(result.stdout), unavailableConfiguration());
+    assert.deepEqual(JSON.parse(result.stdout), unavailableInspection());
     assert.match(result.stderr, /stage=parser/);
     assert.doesNotMatch(result.stdout + result.stderr, /private|Bearer|credential|secret/);
 });
+
+test('projects exact markers through the normal Builder function and original parsed properties', async t => {
+    const f = fixture(t);
+    const selected = { 'build.board': 'GENERIC_F103CBTX', 'build.product_line': 'STM32F103xB',
+        'build.variant': 'STM32F1xx/F103C8T_F103CB(T-U)', 'upload.maximum_size': '131072', 'upload.maximum_data_size': '20480' };
+    f.modules.ArduinoConfigParser = class {
+        async parseByFQBN() { return { board: selected,
+            targetSelection: { effectiveFqbn: fqbn, platform: { version: '3.0.0' } } }; }
+    };
+    let calls = 0;
+    f.modules.resolveArtifactTargetMarkers = (actualFqbn, actualProperties) => {
+        calls++; assert.equal(actualFqbn, fqbn); assert.equal(actualProperties, selected);
+        return { boardId: 'GENERIC_F103CBTX', mcu: 'STM32F103CB' };
+    };
+    const result = await readCompilerConfiguration(f.request, { loadBuilderModules: () => f.modules });
+    assert.equal(calls, 1);
+    assert.deepEqual(result.targetMarkers, { boardId: 'GENERIC_F103CBTX', mcu: 'STM32F103CB' });
+    assert.equal(result.compileContext.platformVersion, '3.0.0');
+    assert.equal(Object.hasOwn(result.compileContext, 'targetMarkers'), false);
+});
+
+test('a normal Builder target rejection cannot fall back to names or a compiler family', async t => {
+    const f = fixture(t), failures = [];
+    f.modules.resolveArtifactTargetMarkers = () => { throw new Error('variant or capacity conflict with private paths'); };
+    assert.deepEqual(await readCompilerConfiguration(f.request, {
+        loadBuilderModules: () => f.modules, onFailure: stage => failures.push(stage),
+    }), unavailableInspection());
+    assert.deepEqual(failures, ['target-markers']);
+});
+
+test('target module changes reject otherwise valid configuration at the same bookend', async t => {
+    const f = fixture(t), failures = [];
+    f.modules.resolveArtifactTargetMarkers = () => {
+        fs.appendFileSync(path.join(f.builder, 'dist', 'src', 'ArduinoCompiler.js'), '\n');
+        return { mcu: 'esp32' };
+    };
+    assert.deepEqual(await readCompilerConfiguration(f.request, {
+        loadBuilderModules: () => f.modules, onFailure: stage => failures.push(stage),
+    }), unavailableInspection());
+    assert.deepEqual(failures, ['bookend']);
+});
+
+for (const target of [null, { mcu: 'C:/private' }, { mcu: '' }, { mcu: 'esp32', recipe: 'not permitted' }]) {
+    test(`invalid Builder target marker projection fails closed: ${JSON.stringify(target)}`, async t => {
+        const f = fixture(t);
+        f.modules.resolveArtifactTargetMarkers = () => target;
+        assert.deepEqual(await readCompilerConfiguration(f.request, { loadBuilderModules: () => f.modules }), unavailableInspection());
+    });
+}

@@ -15,6 +15,7 @@ export function resolveProjectHardwareIntentBoard(
   boardValue: unknown,
   projectValue: unknown,
   installedBoardPackageValue?: unknown,
+  targetMarkers?: Readonly<{ boardId?: string; mcu?: string }> | null,
 ): ProjectHardwareIntentBoard {
   const board = record(boardValue);
   const project = record(projectValue);
@@ -32,8 +33,19 @@ export function resolveProjectHardwareIntentBoard(
     coreSegments.at(-1) ||
     fqbnSegments.at(-2) ||
     fqbnSegments[0];
+  const declaredMcu = text(board['mcu']).toLowerCase();
+  const resolvedMcu = text(targetMarkers?.mcu).toLowerCase();
+  if (targetMarkers?.boardId !== undefined && targetMarkers.boardId !== boardId) {
+    throw new Error('Resolved compiler Board identity conflicts with the current project selection.');
+  }
+  if (declaredMcu && resolvedMcu && !compatibleMcu(declaredMcu, resolvedMcu)) {
+    throw new Error('Resolved compiler MCU conflicts with the current Board declaration.');
+  }
+  if (!declaredMcu && architecture === 'stm32' && !resolvedMcu) {
+    throw new Error('Exact STM32 MCU identity requires current resolved compiler target markers.');
+  }
   const mcu =
-    text(board['mcu']) ||
+    declaredMcu || resolvedMcu ||
     commandMcu(text(board['linkUploadParam'])) ||
     commandMcu(text(board['uploadParam'])) ||
     inferMcu(boardId, text(board['name']), fqbn);
@@ -55,6 +67,14 @@ export function resolveProjectHardwareIntentBoard(
   return validateProjectHardwareIntentBoardV1({ fqbn, boardId, architecture, mcu,
     ...(projectPackage ? { projectPackage } : {}),
   });
+}
+
+function compatibleMcu(left: string, right: string): boolean {
+  if (left === right) return true;
+  // A compiler product family may be less specific than an explicit Board
+  // declaration. It cannot replace that declaration or equate distinct chips.
+  return (/^stm32[a-z]\d{3}xx$/u.test(left) && inferStm32Mcu(right) === left)
+    || (/^stm32[a-z]\d{3}xx$/u.test(right) && inferStm32Mcu(left) === right);
 }
 
 function commandMcu(command: string): string {

@@ -2172,6 +2172,96 @@ describe('v2 actual workspace generation coordinator', () => {
     version: 2, requestId: crypto.randomUUID(), action: 'refresh', token,
   }) as Promise<any>;
 
+  const committedMirrorMismatch = async () => {
+    const { tools, request, source } = await wireBase();
+    const store = new AbsBaselineStore(port, scope), original = await store.captureDisk();
+    const validated: any = await tools.execute('abs_validate', request, source);
+    expect(validated.ok).withContext(JSON.stringify(validated)).toBeTrue();
+    const applied: any = await tools.execute('abs_apply', {
+      version: 2, requestId: request.requestId, validation: validated.receipt,
+    }, source);
+    expect(applied.ok).withContext(JSON.stringify(applied)).toBeTrue();
+    const target = await store.captureDisk(), committed = disk.get('committed.json');
+    // Model the observed history defect without altering immutable generations:
+    // public mirrors return to the prior coherent tuple while committed stays new.
+    for (const [key, value] of [["project.abi", original.abi], ["project.abs", original.abs], ["project.abs.map.json", original.map]]) {
+      if (value === null) disk.delete(key); else disk.set(key, value);
+    }
+    editor.prepareProjectCode.calls.reset(); editor.restoreProjectWorkspaceSnapshot.calls.reset();
+    (project.publishPreparedSaveOutputs as jasmine.Spy).calls.reset();
+    (projectDataRuntime.flushPending as jasmine.Spy).calls.reset();
+    return { tools, original, target, committed, output: applied.receipt.output };
+  };
+
+  it('committed-mirror recovery wire inspect exposes a byte-bound offer without writing or preparing the canvas', async () => {
+    const { tools, committed } = await committedMirrorMismatch();
+    const before = [...disk], state = absJson(nativeState());
+    const response = await inspect(tools), offer = response.diagnostics.restoreCommitted;
+    expect(response.ok).withContext(JSON.stringify(response)).toBeTrue();
+    expect(offer).toEqual(jasmine.objectContaining({
+      generation: JSON.parse(committed!).generation, scope, pending: false,
+      token: jasmine.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      committedPointerHash: await hashAbsText(committed!),
+      hashes: { abi: await hashAbsText(disk.get('project.abi')!), abs: await hashAbsText(disk.get('project.abs')!),
+        map: await hashAbsText(disk.get('project.abs.map.json')!) },
+    }));
+    expect([...disk]).toEqual(before); expect(absJson(nativeState())).toBe(state); expect(gate.blocked).toBeFalse();
+    expect(projectDataRuntime.flushPending).not.toHaveBeenCalled(); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+  });
+
+  it('committed-mirror recovery wire binds explicit generation and token to exact output and archived originals', async () => {
+    const f = await committedMirrorMismatch(), offer = (await inspect(f.tools)).diagnostics.restoreCommitted;
+    const restore = spyOn(service, 'restoreCommittedMirrors').and.callThrough();
+    const requestId = crypto.randomUUID();
+    const result: any = await f.tools.execute('abs_recovery', {
+      version: 2, requestId, action: 'restore_committed', generation: offer.generation, token: offer.token,
+    });
+    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+    expect(restore).toHaveBeenCalledOnceWith(offer.generation, offer.token);
+    expect(result.receipt).toEqual({ version: 2, requestId, action: 'restore_committed',
+      generation: offer.generation, token: offer.token, output: f.output });
+    expect(result.publication).toEqual({ status: 'COMMITTED', generation: offer.generation,
+      abiSaved: true, absMirrored: true, mapPublished: true });
+    expect(result.requiresReload).toBeTrue();
+    expect(result.restorationArchive).toEqual({ id: `restore_${offer.token.slice(7)}`, hashes: offer.hashes });
+    const archive = JSON.parse(disk.get(`restorations/${result.restorationArchive.id}.json`)!);
+    expect(archive.original).toEqual(f.original); expect(archive.committed).toBe(f.committed);
+    expect(await new AbsBaselineStore(port, scope).captureDisk()).toEqual(f.target);
+    expect(disk.get('committed.json')).toBe(f.committed); expect(disk.has('prepared.json')).toBeFalse();
+  });
+
+  it('committed-mirror recovery success quarantines the old canvas and rejects a normal save until reload', async () => {
+    const { tools } = await committedMirrorMismatch(), offer = (await inspect(tools)).diagnostics.restoreCommitted;
+    const state = absJson(nativeState());
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'restore_committed', generation: offer.generation, token: offer.token });
+    expect(result.ok).toBeTrue(); expect(result.requiresReload).toBeTrue(); expect(gate.blocked).toBeTrue();
+    const files = [...disk];
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_WORKSPACE_TAINTED' }));
+    expect([...disk]).toEqual(files); expect(absJson(nativeState())).toBe(state);
+    expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled();
+    expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('committed-mirror recovery mid-failure quarantines pending state and only explicit recover can finish it', async () => {
+    const f = await committedMirrorMismatch(), offer = (await inspect(f.tools)).diagnostics.restoreCommitted;
+    const state = absJson(nativeState()); failWrite = 'project.abs';
+    const failed: any = await f.tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'restore_committed', generation: offer.generation, token: offer.token });
+    expect(failed.ok).toBeFalse(); expect(gate.blocked).toBeTrue(); expect(disk.has('prepared.json')).toBeTrue();
+    const pending = await inspect(f.tools);
+    expect(pending.ok).toBeTrue(); expect(pending.pending.abiSaved).toBeTrue();
+    expect(pending.diagnostics.restoreCommitted).toBeUndefined();
+    failWrite = undefined;
+    const recovered: any = await f.tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'recover' });
+    expect(recovered.ok).withContext(JSON.stringify(recovered)).toBeTrue();
+    expect(recovered.requiresReload).toBeTrue(); expect(recovered.publication.status).toBe('COMMITTED');
+    expect(await new AbsBaselineStore(port, scope).captureDisk()).toEqual(f.target);
+    expect(disk.get('committed.json')).toBe(f.committed); expect(gate.blocked).toBeTrue();
+    expect(absJson(nativeState())).toBe(state); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled();
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_WORKSPACE_TAINTED' }));
+  });
+
   it('validates an existing draft with a shrinking unused dropdown domain using current options', async () => {
     let options: [string, string][] = [['first', 'A'], ['unused', 'B']];
     Blockly.Blocks['abs_dynamic_domain'] = { init() {

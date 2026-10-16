@@ -7,6 +7,7 @@ const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, 
 const PROJECT_SYNC_STORAGE_VERSION = 2;
 const mirrors = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
 const baseline = /^baselines\/[A-Za-z0-9_-]{1,96}\.json$/;
+const restoration = /^restorations\/restore_[a-f0-9]{64}\.json$/;
 
 /** A project-bound, revocable host capability, not an IPC lock token or a second transaction engine. */
 async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) {
@@ -19,12 +20,13 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
   const access = createProjectFileAccess(root, projectPath, files);
   const directories = [path.join(root, '.aily'), path.join(root, '.aily', 'abs-sync')];
   const locate = (key, create = false) => {
-    if (typeof key !== 'string' || !(mirrors.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key))) {
+    if (typeof key !== 'string' || !(mirrors.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || restoration.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
     access.checkRoot();
     if (mirrors.has(key)) return path.join(root, key);
-    const parents = baseline.test(key) ? [...directories, path.join(directories[1], 'baselines')] : directories;
+    const parents = baseline.test(key) || restoration.test(key)
+      ? [...directories, path.join(directories[1], key.split('/')[0])] : directories;
     for (const directory of parents) {
       if (create) {
         try { files.mkdirSync(directory); } catch (error) { if (error.code !== 'EEXIST') throw error; }
@@ -64,7 +66,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
         if (!(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
           || !(content === null || typeof content === 'string')
           || (content === null && key !== 'prepared.json')
-          || (baseline.test(key) && expectedHash !== null)) {
+          || ((baseline.test(key) || restoration.test(key)) && expectedHash !== null)) {
           throw fault('ABS_STORAGE_WRITE_INVALID', 'Invalid conditional sync write or immutable baseline mutation.');
         }
         const bytes = content === null ? null : Buffer.from(content, 'utf8');

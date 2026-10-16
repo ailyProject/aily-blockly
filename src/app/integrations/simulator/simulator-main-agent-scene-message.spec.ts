@@ -73,7 +73,8 @@ describe('Simulator main Agent Scene message', () => {
     expect(resources[1].content).toContain('abs_export');
     expect(resources[1].content).toContain('abs_validate(abs=<完整 ABS>)');
     expect(resources[1].content).toContain('abs_apply(abs=<完整 ABS>)');
-    expect(resources[1].content).toContain('gpio.channel 的十进制值');
+    expect(resources[1].content).toContain('gpio.channel 的十进制值用于识别和比对物理 GPIO，不决定 ABS 参数写法');
+    expect(resources[1].content).not.toContain('ESP32 Arduino 数字引脚使用 gpio.channel 的十进制值');
     expect(resources[1].content).toContain('Host 会在本轮成功结束后调用正常 Builder');
   });
 
@@ -168,6 +169,17 @@ describe('Simulator main Agent Scene message', () => {
       expect(rules).toContain('signalKind=gpio 或普通 GPIO 的 selectedFunction 本身不排除 PWM');
       expect(rules).toContain('软件 UART/I²C/SPI');
       expect(rules).toContain('保留已有硬件/软件实现及频率、占空比、延时和协议时序');
+      expect(rules).toContain('Scene 不是完整程序清单');
+      expect(rules).toContain('端子未接线、未出现在 net 或没有外部器件，不等于旧拓扑残留');
+      expect(rules).toContain('不构成删除现有代码的依据');
+      expect(rules).toContain('保留已有初始化、未接线 GPIO 输出、软件波形/仪器探针及其配套延时、条件和状态');
+      expect(rules).toContain('只有已证实的代码与 Scene 冲突或用户明确要求变更时');
+      expect(rules).toContain('无法确定程序意图时停止并报告，不自行删减功能');
+      expect(rules).toContain('gpio.channel 的十进制值用于识别和比对物理 GPIO，不决定 ABS 参数写法');
+      expect(rules).toContain('ABS 引脚参数遵循当前板包/库的精确 dropdown 值');
+      expect(rules).toContain('保留已核验的合法 SDK 引脚别名');
+      expect(rules).toContain('不强制改写成十进制，不把别名中的数字当作物理 GPIO');
+      expect(rules).not.toContain('ESP32 Arduino 数字引脚使用');
       expect(rules).toContain('不证明 SDK 存在同名对象');
       expect(rules).toContain('保留已匹配的 SDK 对象和显式片选');
       expect(rules).toContain('只核验当前开发板/菜单对应的 SDK 相关声明与 variant 路由');
@@ -177,6 +189,33 @@ describe('Simulator main Agent Scene message', () => {
       expect(rules).not.toContain('SPI2');
       expect(rules).not.toContain('TIM4');
       expect(createSimulatorMainAgentSceneMessage({ ...request, reason })).not.toContain('连线与代码解释原则');
+    });
+
+    it(`preserves unwired terminal capabilities and aliases in the Scene projection for ${reason}`, () => {
+      const connected = {
+        terminalId: 'mcu.pad7', instanceId: 'mcu', pinId: 'pad7', selectedFunction: 'GPIO7',
+        extensions: { ailyComponentPinSemantic: { gpio: { channel: 7 } } },
+      };
+      const unwired = {
+        terminalId: 'mcu.pad9', instanceId: 'mcu', pinId: 'pad9', selectedFunction: 'GPIO9',
+        extensions: { ailyComponentPinSemantic: {
+          gpio: { channel: 9 }, arduinoAliases: ['D9'],
+          pwmChannels: [{ timer: 2, channel: 1 }],
+        } },
+      };
+      const net = { netId: 'signal-1', signalKind: 'gpio', terminalIds: [connected.terminalId] };
+      const resources = createSimulatorMainAgentSceneResources({
+        ...request, reason,
+        sceneDocument: {
+          ...request.sceneDocument, terminals: [connected, unwired], nets: [net],
+        } as unknown as SimulatorMainAgentSceneChangeRequest['sceneDocument'],
+      });
+      const projection = JSON.parse(resources[0].content || '{}').document;
+
+      expect(projection.terminals).toEqual([connected, unwired]);
+      expect(projection.nets).toEqual([net]);
+      expect(projection.nets[0].terminalIds).not.toContain(unwired.terminalId);
+      expect(projection.terminals[1].extensions.ailyComponentPinSemantic.arduinoAliases).toEqual(['D9']);
     });
 
     it(`passes ${reason} to the ordinary visible main-Agent session with the matching action title`, async () => {

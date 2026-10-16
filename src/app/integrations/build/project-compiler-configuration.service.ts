@@ -6,6 +6,10 @@ import { validateProjectHardwareIntentCompileContextV1,
   type ProjectHardwareIntentCompileContextV1 } from '@aily-project/simulator-protocol/scene';
 
 type CompilerConfiguration = ProjectHardwareIntentCompileContextV1;
+export interface ProjectCompilerConfigurationInspection {
+  compileContext: CompilerConfiguration;
+  targetMarkers: Readonly<{ boardId?: string; mcu?: string }> | null;
+}
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -17,7 +21,7 @@ export class ProjectCompilerConfigurationService {
     private readonly cmd: CmdService,
   ) {}
 
-  async read(projectPath: string, signal?: AbortSignal): Promise<CompilerConfiguration> {
+  async read(projectPath: string, signal?: AbortSignal): Promise<ProjectCompilerConfigurationInspection> {
     const deadline = Date.now() + 30_000;
     const board = this.project.currentBoardConfig;
     const boardModule = this.project.getRuntimeBoardModule();
@@ -65,11 +69,11 @@ export class ProjectCompilerConfigurationService {
       if (error instanceof Error && error.message === 'configuration-query-termination-unconfirmed') throw error;
       if (signal?.aborted) throw cancellationError();
       console.warn('[ProjectCompilerConfiguration]', { stage, status: 'unavailable' });
-      return unavailableConfiguration();
+      return { compileContext: unavailableConfiguration(), targetMarkers: null };
     }
   }
 
-  private query(helper: string, request: string, cwd: string, projectSessionId: string, deadline: number, signal?: AbortSignal): Promise<CompilerConfiguration> {
+  private query(helper: string, request: string, cwd: string, projectSessionId: string, deadline: number, signal?: AbortSignal): Promise<ProjectCompilerConfigurationInspection> {
     const streamId = `compiler-config-${crypto.randomUUID()}`;
     return new Promise((resolve, reject) => {
       let output = '', closed = false, settled = false;
@@ -85,7 +89,7 @@ export class ProjectCompilerConfigurationService {
           return;
         }
         if (error) { reject(error); return; }
-        try { resolve(validateProjectHardwareIntentCompileContextV1(JSON.parse(output))); }
+        try { resolve(validateInspection(JSON.parse(output))); }
         catch { reject(new Error('configuration-query-invalid-output')); }
       };
       const onAbort = () => { void finish(cancellationError()); };
@@ -112,6 +116,35 @@ export class ProjectCompilerConfigurationService {
       });
     });
   }
+}
+
+function validateInspection(value: unknown): ProjectCompilerConfigurationInspection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).length !== 2
+      || Object.keys(value).some(key => key !== 'compileContext' && key !== 'targetMarkers')) {
+    throw new Error('configuration-query-invalid-output');
+  }
+  const candidate = value as Record<string, unknown>;
+  const compileContext = validateProjectHardwareIntentCompileContextV1(candidate['compileContext']);
+  const markers = candidate['targetMarkers'];
+  if (compileContext.status === 'unavailable') {
+    if (markers !== null) throw new Error('configuration-query-invalid-output');
+    return { compileContext, targetMarkers: null };
+  }
+  if (!markers || typeof markers !== 'object' || Array.isArray(markers)
+      || Object.keys(markers).some(key => key !== 'boardId' && key !== 'mcu')) {
+    throw new Error('configuration-query-invalid-target-markers');
+  }
+  const targetMarkers: { boardId?: string; mcu?: string } = {};
+  for (const key of ['boardId', 'mcu'] as const) {
+    if (!Object.hasOwn(markers, key)) continue;
+    const marker = (markers as Record<string, unknown>)[key];
+    if (typeof marker !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(marker)) {
+      throw new Error('configuration-query-invalid-target-markers');
+    }
+    targetMarkers[key] = marker;
+  }
+  return { compileContext, targetMarkers: Object.freeze(targetMarkers) };
 }
 
 function unavailableConfiguration(): CompilerConfiguration {
