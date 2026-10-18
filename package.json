@@ -47,7 +47,12 @@
         "filter": [
           "**/*",
           "!package-lock.json",
-          "!.gitignore"
+          "!.gitignore",
+          "!dev-app-update.yml",
+          "!**/*.test.{js,cjs,mjs}",
+          "!test{,/**/*}",
+          "!tests{,/**/*}",
+          "!**/*.md"
         ]
       },
       {
@@ -66,7 +71,12 @@
       },
       {
         "from": "child/scripts",
-        "to": "child/scripts"
+        "to": "child/scripts",
+        "filter": [
+          "**/*",
+          "!**/*.test.{js,cjs,mjs}",
+          "!**/*.md"
+        ]
       },
       {
         "from": "public/icon.ico",

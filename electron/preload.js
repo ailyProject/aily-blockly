@@ -47,6 +47,17 @@ async function invokeAilyConnector(channel, payload) {
   return envelope.result;
 }
 
+// 保留主进程的错误码，便于页面区分连接失败、任务取消、源码变化等情况。
+async function invokeCloudBuild(payload) {
+  const envelope = await ipcRenderer.invoke('cloud-build', payload);
+  if (!envelope?.ok) {
+    const error = new Error(envelope?.error?.message || 'Cloud build failed.');
+    error.code = envelope?.error?.code || 'CLOUD_BUILD_ERROR';
+    throw error;
+  }
+  return envelope.result;
+}
+
 const pathApi = {
   getUserHome: () => require("os").homedir(),
   getAilyChildPath: () => process.env.AILY_CHILD_PATH,
@@ -546,6 +557,24 @@ contextBridge.exposeInMainWorld("electronAPI", {
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),
     waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
+  },
+  // 只暴露云任务操作和进度订阅；签名校验与本地烧录进程保留在主进程内。
+  cloudBuild: {
+    configuration: () => invokeCloudBuild({ action: 'configuration' }),
+    health: () => invokeCloudBuild({ action: 'health' }),
+    targets: options => invokeCloudBuild({ action: 'targets', ...options }),
+    run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
+    cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
+    artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
+    reusable: options => invokeCloudBuild({ action: 'reusable', ...options }),
+    invalidate: options => invokeCloudBuild({ action: 'invalidate', ...options }),
+    upload: options => invokeCloudBuild({ action: 'upload', ...options }),
+    cancelUpload: options => invokeCloudBuild({ action: 'cancelUpload', ...options }),
+    onProgress: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('cloud-build-progress', listener);
+      return () => ipcRenderer.removeListener('cloud-build-progress', listener);
+    },
   },
   connector: {
     status: () => ipcRenderer.invoke("aily-connector-status"),

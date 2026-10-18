@@ -406,6 +406,13 @@
             "CACHE": "Cache Management"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Cloud compilation",
+            "CLOUD_COMPILATION_DESC": "Compile in the cloud and upload to the board locally. The service is checked when enabling.",
+            "CLOUD_ENABLE_CHECKING": "Checking the cloud compilation service…",
+            "CLOUD_ENABLE_SUCCESS": "Cloud compilation enabled.",
+            "CLOUD_ENABLE_FAILED": "Could not enable cloud compilation. Please try again later.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Could not enable cloud compilation. Fully quit and restart the application, then try again.",
+            "CLOUD_DISABLE_FAILED": "Could not disable cloud compilation. Please try again.",
             "PROJECT_FOLDER": "Project Folder",
             "LANGUAGE": "Language",
             "DEVELOPMENT_MODE_PREFERENCE": "Default Dev Mode",
@@ -1203,6 +1210,7 @@
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
         "DEPENDENCY_TASKS_STOPPED": "Project dependency tasks have been stopped",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
+        "CLOUD_TARGET_UNAVAILABLE": "This board version or content is not registered as an available cloud target.",
         "SDK_CONFIG_NOT_READY": "SDK is not ready. Some board settings are temporarily unavailable.",
         "BOARD_SWITCH_COMPLETE": "Board switch complete",
         "BOARD_SWITCH_SUCCESS": "Board switched successfully",
@@ -1407,5 +1415,22 @@
         "ERR_PATH_EXISTS": "A folder with the same name already exists",
         "ERR_PATH_INVALID": "Save path contains invalid characters",
         "ERR_CREATE_FAILED": "Failed to create project. Please try again."
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "Preparing build inputs",
+            "UPLOADING": "Uploading build inputs",
+            "QUEUED": "Waiting in the build queue",
+            "DISPATCHING": "Assigning a build server",
+            "PREPARING": "Preparing the build environment",
+            "RESOURCES": "Preparing build resources",
+            "ANALYZING": "Analyzing the project",
+            "COMPILING": "Compiling in the cloud",
+            "FINALIZING": "Checking build outputs",
+            "DOWNLOADING": "Downloading build outputs",
+            "VERIFYING": "Verifying build outputs",
+            "RECONNECTING": "Reconnecting to the gateway",
+            "COMPLETE": "Cloud build complete"
+        }
     }
 }

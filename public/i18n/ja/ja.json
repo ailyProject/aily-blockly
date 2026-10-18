@@ -341,6 +341,13 @@
             "CACHE": "キャッシュ管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "クラウドコンパイル",
+            "CLOUD_COMPILATION_DESC": "クラウドでコンパイルし、このコンピューターからボードに書き込みます。有効化時にサービスを確認します。",
+            "CLOUD_ENABLE_CHECKING": "クラウドコンパイルサービスを確認中…",
+            "CLOUD_ENABLE_SUCCESS": "クラウドコンパイルを有効にしました。",
+            "CLOUD_ENABLE_FAILED": "有効化に失敗しました。しばらくしてから再試行してください。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "有効化に失敗しました。アプリを完全に終了して再起動し、もう一度お試しください。",
+            "CLOUD_DISABLE_FAILED": "無効化に失敗しました。再試行してください。",
             "PROJECT_FOLDER": "プロジェクトフォルダ",
             "LANGUAGE": "言語",
             "DEVELOPMENT_MODE_PREFERENCE": "既定の開発モード",
@@ -1040,6 +1047,7 @@
         "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
     },
     "PROJECT": {
+        "CLOUD_TARGET_UNAVAILABLE": "このボードのバージョンまたは内容は利用可能なクラウドターゲットとして登録されていません。",
       "MODE_UNKNOWN": "プロジェクトの種類を識別できません。有効な Aily Blockly または Aily Coder プロジェクトを選択してください。",
       "MODE_CREATE_RESTRICTED": "現在の {{application}} モードではこの種類のプロジェクトを作成できません。{{targetApplication}} を使用してください。",
       "MODE_MISMATCH_TITLE": "プロジェクトモードが一致しません",
@@ -1250,5 +1258,22 @@
         "ERR_PATH_EXISTS": "同名のフォルダが既に存在します",
         "ERR_PATH_INVALID": "保存パスに無効な文字が含まれています",
         "ERR_CREATE_FAILED": "プロジェクトの作成に失敗しました。もう一度お試しください。"
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "ビルド用ファイルを準備中",
+            "UPLOADING": "ビルド用ファイルをアップロード中",
+            "QUEUED": "ビルドの順番待ち",
+            "DISPATCHING": "ビルドサーバーを割り当て中",
+            "PREPARING": "ビルド環境を準備中",
+            "RESOURCES": "ビルドリソースを準備中",
+            "ANALYZING": "プロジェクトを解析中",
+            "COMPILING": "クラウドでコンパイル中",
+            "FINALIZING": "ビルド成果物を確認中",
+            "DOWNLOADING": "ビルド成果物をダウンロード中",
+            "VERIFYING": "ビルド成果物を検証中",
+            "RECONNECTING": "ゲートウェイに再接続中",
+            "COMPLETE": "クラウドビルドが完了しました"
+        }
     }
 }

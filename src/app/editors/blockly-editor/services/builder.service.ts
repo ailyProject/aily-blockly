@@ -35,6 +35,7 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-publication.utils';
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation } from '../../../utils/cloud-build-progress.utils';
 import {
   PYTHON_PROJECT_ENTRY,
   normalizeProjectMode,
@@ -81,6 +82,9 @@ export class _BuilderService {
   private buildPromiseReject: any = null; // 保存 Promise 的 reject 函数
   private buildCancellation: AbortController | null = null;
   private activeBuildRequestId: string | null = null;
+  // 云任务独立绑定请求号和取消回执，忽略上一轮编译的进度，并等取消完成后释放构建状态。
+  private activeCloudRequestId: string | null = null;
+  private cloudCancelPromise: Promise<unknown> | null = null;
   private buildCompleted = false;
   private isErrored = false; // 标识是否为错误状态
   private buildStartTime: number = 0; // 编译开始时间
@@ -113,6 +117,14 @@ export class _BuilderService {
 
   private t(key: string, params?: Record<string, any>): string {
     return this.translate.instant(`BLOCKLY_EDITOR.BUILD.${key}`, params);
+  }
+
+  private isCloudBuild(): boolean {
+    return this.configService.getCompileBackend() === 'cloud';
+  }
+
+  private compileSettingsKey(): string {
+    return this.configService.getCompileSettingsKey();
   }
 
   private buildNoticeTitle(boardName: string): string {
@@ -422,6 +434,8 @@ export class _BuilderService {
 
   private shouldCancelBackgroundPreprocess(runGeneration: number): boolean {
     if (!this.initialized) return true;
+    // 云模式由服务器分析依赖，不启动依赖本机 SDK 的后台预处理。
+    if (this.isCloudBuild()) { this.pendingPrecompile = false; return true; }
     const shouldCancel = runGeneration !== this.preprocessRunGeneration
       || this.projectService.isProjectTransitionInProgress?.(this.projectService.currentProjectPath)
       || this.blocklyService.aiWaiting
@@ -436,6 +450,7 @@ export class _BuilderService {
   }
 
   private triggerPendingPrecompile(reason: string, logMessage: string): void {
+    if (this.isCloudBuild()) { this.pendingPrecompile = false; return; }
     if (!this.pendingPrecompile) {
       return;
     }
@@ -545,6 +560,11 @@ export class _BuilderService {
         debounceTime(500),
       ).subscribe(async (data) => {
       const runGeneration = ++this.preprocessRunGeneration;
+      if (this.isCloudBuild()) {
+        this.pendingPrecompile = false;
+        try { await this.stopPreprocess(); } catch (error) { console.warn('Stopping local preprocessing failed:', error); }
+        return;
+      }
       // 检查项目加载状态，如果正在加载中则跳过预处理
       if (!data || this.projectService.stateSubject.value === 'loading') {
         console.log('项目正在加载中，跳过依赖预处理');
@@ -922,6 +942,7 @@ export class _BuilderService {
   /** Upload owns scheduling before it owns the device. Let an already-running
    * preprocess finish; queued background work must not start during this handoff. */
   async waitForUploadPreprocess(isCancelled: () => boolean): Promise<void> {
+    if (this.isCloudBuild()) { await this.stopPreprocess(); return; }
     ++this.preprocessRunGeneration;
     const projectPath = this.projectService.currentProjectPath;
     const startedAt = Date.now();
@@ -936,6 +957,7 @@ export class _BuilderService {
 
   async canReuseBuildForUpload(isCancelled: () => boolean): Promise<boolean> {
     const projectPath = this.projectService.currentProjectPath;
+    const settingsKey = this.compileSettingsKey();
     if (!this.passed || projectPath !== this.currentProjectPath) return false;
     const boardModule = await this.projectService.getBoardModule();
     if (isCancelled() || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
@@ -943,6 +965,21 @@ export class _BuilderService {
       assertCurrent();
       // Pure read: do not publish headers/macros or acquire a build workspace
       // merely to decide whether to upload an existing firmware.
+      // 云产物是否可复用由主进程按完整项目/库内容核对，不能只比较生成的 sketch 代码。
+      if (this.isCloudBuild()) {
+        if (prepared.code !== this.lastCode || !window['cloudBuild']?.reusable) return false;
+        if (!prepared.sourceWorkspace) return false;
+        const config = { currentProjectPath: projectPath, boardModule, code: prepared.code,
+          projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts };
+        // 与实际编译使用相同的工作区快照；遗漏该字段会让主进程始终判定固件已过期。
+        const sourceCapture = captureBuildSource(config, prepared.sourceWorkspace);
+        const reusable = await window['cloudBuild'].reusable({ config: { ...config, sourceCapture } });
+        assertCurrent();
+        if (isCancelled() || projectPath !== this.projectService.currentProjectPath || settingsKey !== this.compileSettingsKey()) {
+          throw new Error('Upload build configuration changed or was cancelled.');
+        }
+        return reusable === true;
+      }
       return prepared.code === this.lastCode && window['builder']?.canReuseBlocklyUpload?.({
         currentProjectPath: projectPath, boardModule, code: prepared.code,
         projectMacros: prepared.projectMacros, generatedArtifacts: prepared.artifacts,
@@ -1115,6 +1152,11 @@ export class _BuilderService {
     requestId?: string,
     checkpoint: BuildCheckpoint = {},
   ): Promise<ActionState> {
+    // 提交时固定本地/云端分支；后续切换设置或项目会使本次构建失效，不能混用两类产物。
+    const cloudBuild = this.isCloudBuild();
+    if (cloudBuild && graphSemanticRevision !== undefined) {
+      return Promise.reject({ state: 'error', text: 'Cloud compilation does not support simulator graph builds yet.' });
+    }
     if (
       graphSemanticRevision !== undefined
       && !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
@@ -1172,6 +1214,7 @@ export class _BuilderService {
     this.hasReceivedRealProgress = false; // 重置进度标记
 
     const requestedProjectPath = this.projectService.currentProjectPath;
+    const requestedSettingsKey = this.compileSettingsKey();
     const cancellation = new AbortController();
     this.buildCancellation = cancellation;
     let preparing: Promise<void>;
@@ -1183,11 +1226,13 @@ export class _BuilderService {
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
         this.buildStartTime = Date.now(); // 记录编译开始时间
+        if (!cloudBuild && window['cloudBuild']?.invalidate) await window['cloudBuild'].invalidate({ projectPath: requestedProjectPath });
 
         const tempPath = this.electronService.pathJoin(this.currentProjectPath, '.temp');
+        if (cloudBuild && (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop)) await this.stopPreprocess();
 
         // 1. 检查是否有预编译程序正在运行，等待其完成
-        if (this.preprocessProcess) {
+        if (!cloudBuild && this.preprocessProcess) {
           this.safeUpdateNotice({
             title: this.t('PREPARING_TITLE'),
             text: this.t('PRECOMPILE_RUNNING'),
@@ -1263,7 +1308,12 @@ export class _BuilderService {
           const assertBoard = captureBuildRequestGuard(() => ['board.json', 'package.json'].map(name =>
             window['fs'].readFileSync(this.electronService.pathJoin(projectPath, 'node_modules', boardModule, name), 'utf8')));
           const boardJson = await this.projectService.getBoardJson();
-          await this.waitForAilyBuilderReady();
+          // 云端仅需要项目和库源码；本地分支继续等待 aily-builder、SDK 和编译器准备完成。
+          if (cloudBuild) {
+            if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()) throw new Error('Cloud build configuration changed or was cancelled.');
+            await this.npmService.ensureCloudLibrarySources(projectPath);
+          }
+          if (!cloudBuild) await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
           // 获取最新代码，并在同一次同步 generator 调用内冻结其块映射。
           const {
@@ -1301,6 +1351,28 @@ export class _BuilderService {
           buildConfig.sourceCapture = captureBuildSource(buildConfig, sourceWorkspace);
           if (graphSemanticRevision) {
             buildConfig.graphSemanticRevision = graphSemanticRevision;
+          }
+          if (cloudBuild) {
+            const assertCurrent = () => {
+              assertPackage(); assertBoard(); assertFresh();
+              if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
+                || projectPath !== this.projectService.currentProjectPath) throw new Error('BUILD_SOURCE_STALE: Cloud build configuration changed or was cancelled.');
+            };
+            const state = await this.runCloudCompilation(buildConfig, boardName, assertCurrent);
+            assertCurrent();
+            const codeHash = await this.electronService.calculateHash(code);
+            assertCurrent();
+            const duration = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
+            await this.saveBuildInfo(projectPath, 'success', duration, codeHash);
+            assertCurrent();
+            this.compileValidationService.triggerAfterSuccessfulCompile();
+            this.passed = true;
+            this.buildCompleted = true;
+            this.buildPromiseReject = null;
+            this.safeUpdateNotice({ title: this.t('COMPLETE_TITLE'), text: state.text, state: 'done', progress: 100, setTimeout: 600000 });
+            this.workflowService.finishBuild(true);
+            resolve(state);
+            return;
           }
           const configFilePath = await this.writeCompileRequest(buildConfig);
           assertPackage(); assertBoard(); assertFresh();
@@ -1651,6 +1723,12 @@ export class _BuilderService {
           throw error;
         }
       } catch (error) {
+        if (cloudBuild && cancellation.signal.aborted) {
+          this.passed = false;
+          this.workflowService.finishBuild(false, 'Cancelled');
+          reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
+          return;
+        }
         const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
         this.handleCompileError(error.message, true, fullErrorMessage);
         this.workflowService.finishBuild(false, error.message);
@@ -1669,9 +1747,50 @@ export class _BuilderService {
       if (this.buildCancellation === cancellation) {
         this.buildCancellation = null;
         this.activeBuildRequestId = null;
+        this.activeCloudRequestId = null;
+        this.cloudCancelPromise = null;
       }
     });
     }
+
+  /** 复用 Blockly 的构建生命周期；传输、签名校验和产物发布由桌面主进程负责。 */
+  private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState> {
+    const bridge = window['cloudBuild'];
+    if (!bridge?.run || !bridge?.cancel || !bridge?.onProgress) throw new Error('Cloud compilation bridge is unavailable.');
+    if (config.graphSemanticRevision || config.recordProjectDelivery) throw new Error('Cloud compilation does not support simulator or full delivery builds yet.');
+    const requestId = this.activeBuildRequestId || crypto.randomUUID();
+    this.activeCloudRequestId = requestId;
+    assertCurrent();
+    const profile = await this.projectService.getCloudBoardProfile({ refresh: true });
+    assertCurrent();
+    if (profile.capabilities?.compile !== true) throw new Error('This cloud target does not support compilation.');
+    const settings = this.configService.getCloudBuildSettings();
+    try {
+      this.safeUpdateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
+        state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(requestId) });
+      const result = await runCloudBuildWithProgress({ requestId, config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
+        isCurrent: () => {
+          if (this.cancelled || this.activeCloudRequestId !== requestId) return false;
+          try { assertCurrent(); return true; } catch { return false; }
+        },
+        log: (text, stream) => {
+          this.logService.update({ detail: text, state: stream === 'stderr' ? 'error' : 'doing' });
+          this.appendCompileLog(text, stream === 'stderr' ? 'ERROR' : 'INFO');
+        },
+        progress: event => {
+          const presentation = cloudBuildProgressPresentation(event, key => this.translate.instant(key));
+          this.currentProgress = presentation.progress;
+          this.safeUpdateNotice({ title: this.buildNoticeTitle(boardName), ...presentation, state: 'doing',
+            setTimeout: 0, stop: () => this.cancel(requestId) });
+        },
+      });
+      assertCurrent();
+      if (result?.success !== true || result?.state !== 'done') throw new Error(result?.text || 'Cloud compilation failed.');
+      return { state: 'done', text: result.text || this.t('COMPLETE_TITLE'), desc: result.artifactPath };
+    } finally {
+      await this.cloudCancelPromise;
+    }
+  }
 
     /**
      * Keep the build hand-off independent from Blockly generator internals.
@@ -1915,6 +2034,7 @@ export class _BuilderService {
     if (
       requestId !== undefined
       && requestId !== this.activeBuildRequestId
+      && requestId !== this.activeCloudRequestId
     ) {
       console.warn('Ignoring cancellation for a non-active Build request.', {
         requestId,
@@ -1940,6 +2060,11 @@ export class _BuilderService {
     // 立即设置取消标志，防止任何后续处理
     this.cancelled = true;
     this.buildCancellation?.abort();
+    // 取消远程请求后仍等待主进程完成撤销，避免下一轮编译与旧任务发布产物发生竞争。
+    if (this.activeCloudRequestId && window['cloudBuild']?.cancel) {
+      const requestId = this.activeCloudRequestId;
+      this.cloudCancelPromise = Promise.resolve().then(() => window['cloudBuild'].cancel({ requestId })).catch(() => undefined);
+    }
     this.clearProgressTimer(); // 清理定时器
     
     // 计算已经花费的时间

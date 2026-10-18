@@ -341,6 +341,13 @@
             "CACHE": "Gerenciamento de cache"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Compilação na nuvem",
+            "CLOUD_COMPILATION_DESC": "Compile na nuvem e envie para a placa neste computador. O serviço é verificado ao ativar.",
+            "CLOUD_ENABLE_CHECKING": "Verificando o serviço de compilação na nuvem…",
+            "CLOUD_ENABLE_SUCCESS": "Compilação na nuvem ativada.",
+            "CLOUD_ENABLE_FAILED": "Não foi possível ativar a compilação na nuvem. Tente novamente mais tarde.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Não foi possível ativar. Feche completamente o aplicativo, reinicie-o e tente novamente.",
+            "CLOUD_DISABLE_FAILED": "Não foi possível desativar a compilação na nuvem. Tente novamente.",
             "PROJECT_FOLDER": "Pasta do projeto",
             "LANGUAGE": "Idioma",
             "DEVELOPMENT_MODE_PREFERENCE": "Modo de desenvolvimento padrão",
@@ -1040,6 +1047,7 @@
         "NO_TUTORIAL_PROVIDED": "O autor da biblioteca não forneceu um tutorial"
     },
     "PROJECT": {
+        "CLOUD_TARGET_UNAVAILABLE": "Esta versão ou conteúdo da placa não está registrado como destino disponível na nuvem.",
       "MODE_UNKNOWN": "Tipo de projeto desconhecido. Selecione um projeto válido do Aily Blockly ou Aily Coder.",
       "MODE_CREATE_RESTRICTED": "O modo atual do {{application}} não pode criar este tipo de projeto. Use {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Modo do projeto incompatível",
@@ -1250,5 +1258,22 @@
         "ERR_PATH_EXISTS": "Já existe uma pasta com o mesmo nome",
         "ERR_PATH_INVALID": "O caminho de salvamento contém caracteres inválidos",
         "ERR_CREATE_FAILED": "Falha ao criar o projeto. Tente novamente."
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "Preparando as entradas de compilação",
+            "UPLOADING": "Enviando as entradas de compilação",
+            "QUEUED": "Aguardando na fila de compilação",
+            "DISPATCHING": "Atribuindo um servidor de compilação",
+            "PREPARING": "Preparando o ambiente de compilação",
+            "RESOURCES": "Preparando os recursos de compilação",
+            "ANALYZING": "Analisando o projeto",
+            "COMPILING": "Compilando na nuvem",
+            "FINALIZING": "Conferindo os resultados da compilação",
+            "DOWNLOADING": "Baixando os resultados da compilação",
+            "VERIFYING": "Verificando os resultados da compilação",
+            "RECONNECTING": "Reconectando ao gateway",
+            "COMPLETE": "Compilação na nuvem concluída"
+        }
     }
 }

@@ -82,6 +82,10 @@ export class _UploaderService {
   private processExitCode: number | null = null; // 记录进程退出码
   cancelled = false;
   private coderBuildActive = false;
+  // 这是云产物的本地烧录请求号；串口与烧录子进程始终由本机主进程管理。
+  private activeCloudUploadId: string | null = null;
+  // 覆盖编译、工具准备及本机烧录的整个云产物上传流程，取消前半程也必须等旧流程退出。
+  private cloudUploadInProgress = false;
   private uploadPromiseReject: any = null; // 保存 Promise 的 reject 函数
 
   private initialized = false; // 防止重复初始化
@@ -296,6 +300,9 @@ export class _UploaderService {
   }
 
   async upload(): Promise<UploadActionState> {
+    if (this.uploadInProgress || this.cloudUploadInProgress) {
+      throw { state: 'warn', text: this.uploadT('BUSY_UPLOADING') };
+    }
     this.isErrored = false;
     this.cancelled = false;
     this.uploadCompleted = false;
@@ -308,6 +315,17 @@ export class _UploaderService {
       this.uploadPromiseReject = reject;
       
       try {
+        // 烧录全过程绑定项目、后端和依赖会话，切换项目或设置后不能继续烧录旧固件。
+        const projectPath = this.projectService.currentProjectPath;
+        const cloud = this.projectService.isCloudBuild();
+        this.cloudUploadInProgress = cloud;
+        const dependencySession = cloud ? this.projectService.getProjectDependencySession(projectPath) : undefined;
+        const activationCurrent = this.projectService.captureCurrentProjectGuard();
+        const assertContext = () => {
+          if (this.cancelled || !activationCurrent() || this.projectService.currentProjectPath !== projectPath
+              || cloud !== this.projectService.isCloudBuild()) throw new Error('Upload project, settings or activation changed or was cancelled.');
+          if (dependencySession) this.projectService.assertProjectDependencySession(dependencySession);
+        };
         // 重置ESP32上传状态，防止进度累加
         const esp32UploadState: Esp32UploadProgressState = {
           expectedFiles: 0,
@@ -320,6 +338,9 @@ export class _UploaderService {
         // 先判断当前是否处于编译状态
         if (this.workflowService.currentState === ProcessState.BUILDING) {
           const message = this.uploadT('BUILDING_RETRY_LATER');
+          // 尚未取得上传流程所有权，拒绝时立即撤销入口标记，避免本地模式后续上传被误判为重入。
+          this.uploadInProgress = false;
+          this.uploadPromiseReject = null;
           this.message.warning(message);
           reject({ state: 'warn', text: message });
           return;
@@ -328,6 +349,9 @@ export class _UploaderService {
         // 提前捕获串口号，避免 build 期间设备重新插拔导致端口变化的竞态条件
         const capturedSerialPort = this.serialService.currentPort;
         const capturedPortInfo = this.serialService.currentPortInfo;
+        if (cloud && capturedPortInfo?.type && capturedPortInfo.type !== 'serial') {
+          throw new Error('Cloud compilation currently supports local serial upload with avrdude or esptool.');
+        }
         if (!capturedSerialPort) {
           this.uploadInProgress = false;
           const message = this.uploadT('SELECT_PORT_MESSAGE');
@@ -337,6 +361,7 @@ export class _UploaderService {
         }
 
         const boardJson = await this.projectService.getBoardJson();
+        assertContext();
         const isDebuggerUpload = capturedPortInfo?.type === 'debugger';
         const debuggerUploadParam = getLinkUploadParam(boardJson);
         if (isDebuggerUpload && !debuggerUploadParam) {
@@ -384,15 +409,22 @@ export class _UploaderService {
         // 第一步：检查是否需要编译。Coder 页面没有 Blockly workspace，
         // 但仍复用后续同一套板卡上传脚本、进度、错误和资源恢复流程；
         // 唯一差异是从 package.json.entry 构建并使用 Coder 的实际产物目录。
-        const projectPath = this.projectService.currentProjectPath;
         const isAilyCodeProject = this.projectService.isAilyCodeProject(projectPath);
         let buildPath: string;
 
         if (isAilyCodeProject) {
           try {
             this.coderBuildActive = true;
-            const buildResult = await this.hostBuilderService.build(projectPath);
-            console.log('Coder build result:', buildResult);
+            const reusable = cloud && await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled);
+            assertContext();
+            if (!reusable) {
+              const buildResult = await this.hostBuilderService.build(projectPath);
+              console.log('Coder build result:', buildResult);
+              assertContext();
+              if (cloud && !await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled)) {
+                throw new Error('BUILD_SOURCE_STALE: Coder inputs changed during compilation; build again before upload.');
+              }
+            }
             buildPath = await this.projectService.getBuildPath();
             if (!buildPath || !window['fs'].existsSync(buildPath)) {
               throw new Error(`Coder build output directory does not exist: ${buildPath || '(empty)'}`);
@@ -429,7 +461,8 @@ export class _UploaderService {
           }
           await this._builderService.waitForUploadPreprocess(() => this.cancelled);
           if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
-          buildPath = await this.projectService.getBuildPath();
+          // 云产物尚不存在时先走正常编译流程，不能被旧产物查询提前阻断。
+          buildPath = cloud ? '' : await this.projectService.getBuildPath();
           const needsBuild = !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
           if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
 
@@ -440,7 +473,7 @@ export class _UploaderService {
               console.log("build result:", buildResult);
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
-              if (window['builder']?.canReuseBlocklyUpload
+              if ((cloud || window['builder']?.canReuseBlocklyUpload)
                 && !await this._builderService.canReuseBuildForUpload(() => this.cancelled)) {
                 throw new Error('BUILD_SOURCE_STALE: Project inputs or firmware changed during compilation; build again before upload.');
               }
@@ -479,6 +512,16 @@ export class _UploaderService {
             }
           }
         }
+
+        if (cloud) {
+          assertContext();
+          buildPath = await this.projectService.getBuildPath();
+          await this.prepareCloudUploader(assertContext);
+          assertContext();
+          // 下载烧录工具后再次核对源码身份；主进程在真正烧录前还会检查签名与文件内容。
+          if (!await window['cloudBuild'].artifactPath({ projectPath })) throw new Error('BUILD_SOURCE_STALE: Cloud firmware is no longer current.');
+          assertContext();
+        }
         
         // 检查是否在编译期间被取消
         if (this.cancelled) {
@@ -511,6 +554,14 @@ export class _UploaderService {
 
         // 设置上传状态（uploadInProgress 已在方法开始时设置）
         this._builderService.isUploading = true;
+
+        if (cloud) {
+          assertContext();
+          const result = await this.uploadCloudResult(projectPath, capturedSerialPort, assertContext);
+          this.uploadPromiseReject = null;
+          resolve(result);
+          return;
+        }
 
         if (capturedPortInfo?.type === 'ble') {
           try {
@@ -1058,6 +1109,7 @@ export class _UploaderService {
         this.uploadInProgress = false;
         this._builderService.isUploading = false; // 确保在异常情况下设置为false
         if (this.cancelled) {
+          this.workflowService.finishUpload(false, 'Cancelled');
           this.uploadPromiseReject = null;
           reject({ state: 'warn', text: this.uploadT('CANCELLED') });
           return;
@@ -1072,7 +1124,75 @@ export class _UploaderService {
           ...(resourceRecovery ? { resourceRecovery } : {}),
         });
       }
+    }).finally(() => {
+      // 云流程取消后仍等待所有异步准备和本机烧录退出，期间拒绝下一轮上传，避免旧回调清掉新状态。
+      if (this.cloudUploadInProgress) {
+        this.cloudUploadInProgress = false;
+        this.uploadInProgress = false;
+        this._builderService.isUploading = false;
+        this.uploadPromiseReject = null;
+      }
     });
+  }
+
+  /** 云编译不需要本机 SDK，只在烧录时按已注册目标的版本声明补齐轻量烧录工具。 */
+  private async prepareCloudUploader(assertContext: () => void): Promise<void> {
+    assertContext();
+    const profile = await this.projectService.getCloudBoardProfile();
+    assertContext();
+    const dependencies = await this.projectService.getBoardDependencies();
+    assertContext();
+    const toolsPath = await window['env'].get('AILY_TOOLS_PATH');
+    assertContext();
+    const tools: Array<[string, string]> = [['avrdude', '@aily-project/tool-avrdude'], ['esptool_py', '@aily-project/tool-esptool_py']];
+    let supported = false;
+    for (const [id, name] of tools) {
+      const runtimeVersion = profile['toolVersions']?.[id];
+      if (!runtimeVersion || !dependencies[name]) continue;
+      supported = true;
+      const version = String(dependencies[name]);
+      if (!/^[~^]?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)
+          || !/^[A-Za-z0-9.+_-]+$/.test(runtimeVersion)) throw new Error('Invalid local uploader version.');
+      const directory = window['path'].join(toolsPath, `${id}@${runtimeVersion}`);
+      if (!window['fs'].existsSync(directory)) await this.npmService.installTool({ name, version });
+      assertContext();
+    }
+    if (!supported) throw new Error('This cloud target has no declared local avrdude or esptool uploader.');
+  }
+
+  /** 使用主进程已校验的云产物在本机烧录，保留现有设备占用、取消和通知生命周期。 */
+  private async uploadCloudResult(projectPath: string, serialPort: string, assertContext: () => void): Promise<UploadActionState> {
+    const bridge = window['cloudBuild'];
+    if (!bridge?.upload || !bridge?.onProgress) throw new Error('Cloud upload bridge is unavailable.');
+    const requestId = `cloud-upload-${crypto.randomUUID()}`;
+    this.activeCloudUploadId = requestId;
+    let dispose: (() => void) | undefined;
+    let progress = 0;
+    try {
+      assertContext();
+      dispose = bridge.onProgress((event: any) => {
+        if (event?.requestId !== requestId || this.cancelled) return;
+        try { assertContext(); } catch { return; }
+        if (typeof event.progress === 'number' && Number.isFinite(event.progress)) {
+          progress = Math.max(progress, Math.min(100, event.progress));
+        }
+        if (event.log) this.appendUploadLog(event.log);
+        this.safeUpdateNotice({ title: this.uploadT('UPLOADING_TITLE'), text: event.log || this.uploadT('UPLOADING'),
+          progress, state: 'doing', setTimeout: 0, stop: () => this.cancel() });
+      });
+      const result = await bridge.upload({ requestId, projectPath, serialPort });
+      assertContext();
+      if (!result?.success || this.cancelled) throw new Error('Cloud artifact upload did not complete.');
+      this.uploadCompleted = true;
+      this.workflowService.finishUpload(true);
+      this.safeUpdateNotice({ title: this.uploadT('COMPLETE_TITLE'), text: this.uploadT('COMPLETE_TEXT'), state: 'done', progress: 100, setTimeout: 3000 });
+      return { state: 'done', text: this.uploadT('COMPLETE_TEXT') };
+    } finally {
+      dispose?.();
+      this.activeCloudUploadId = null;
+      this.uploadInProgress = false;
+      this._builderService.isUploading = false;
+    }
   }
 
   /**
@@ -1607,6 +1727,18 @@ export class _UploaderService {
     
     // 立即设置取消标志，阻止所有后续处理
     this.cancelled = true;
+    if (this.cloudUploadInProgress) {
+      this.noticeService.update({ title: this.uploadT('CANCELLED'), text: this.uploadT('CANCELLED'), state: 'warn', setTimeout: 55000, isCancellationNotice: true });
+      if (this.activeCloudUploadId) {
+        const requestId = this.activeCloudUploadId;
+        void Promise.resolve().then(() => window['cloudBuild'].cancelUpload({ requestId })).catch(() => undefined);
+      } else if (this.workflowService.currentState === ProcessState.BUILDING) {
+        if (this.coderBuildActive) this.hostBuilderService.cancel();
+        else this._builderService.cancel();
+      }
+      // 尚未启动本机烧录时由各异步准备后的上下文检查退出；不提前 reject 或释放本轮状态。
+      return;
+    }
     this.uploadInProgress = false;
     this._builderService.isUploading = false;
     this.uploaderBleService.cancel();

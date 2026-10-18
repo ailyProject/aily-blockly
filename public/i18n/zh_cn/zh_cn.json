@@ -402,6 +402,13 @@
             "CACHE": "缓存管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "云编译",
+            "CLOUD_COMPILATION_DESC": "在云端编译，烧录仍在本机进行。开启时自动检测服务。",
+            "CLOUD_ENABLE_CHECKING": "正在检测云编译服务…",
+            "CLOUD_ENABLE_SUCCESS": "开启成功",
+            "CLOUD_ENABLE_FAILED": "开启失败，请稍后重试。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "开启失败，请完整退出并重新启动软件后重试。",
+            "CLOUD_DISABLE_FAILED": "关闭失败，请重试。",
             "PROJECT_FOLDER": "项目文件夹",
             "LANGUAGE": "语言",
             "DEVELOPMENT_MODE_PREFERENCE": "默认开发模式",
@@ -1199,6 +1206,7 @@
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "DEPENDENCY_TASKS_STOPPED": "项目依赖任务已停止",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
+        "CLOUD_TARGET_UNAVAILABLE": "此开发板版本或内容尚未注册为可用的云编译目标。",
         "SDK_CONFIG_NOT_READY": "SDK 尚未就绪，部分开发板配置暂不可用",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",
         "BOARD_SWITCH_SUCCESS": "开发板切换成功",
@@ -1403,5 +1411,22 @@
         "ERR_PATH_EXISTS": "同名目录已存在，请更换项目名",
         "ERR_PATH_INVALID": "保存路径包含非法字符",
         "ERR_CREATE_FAILED": "创建失败，请稍后重试"
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "正在准备编译文件",
+            "UPLOADING": "正在上传编译文件",
+            "QUEUED": "正在排队等待编译",
+            "DISPATCHING": "正在分配编译服务器",
+            "PREPARING": "正在准备编译环境",
+            "RESOURCES": "正在准备编译资源",
+            "ANALYZING": "正在分析项目",
+            "COMPILING": "正在云端编译",
+            "FINALIZING": "正在检查编译产物",
+            "DOWNLOADING": "正在下载编译产物",
+            "VERIFYING": "正在校验编译产物",
+            "RECONNECTING": "正在重新连接网关",
+            "COMPLETE": "云端编译已完成"
+        }
     }
 }
