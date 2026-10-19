@@ -12,6 +12,7 @@ describe('DevToolComponent in Coder mode', () => {
       boardChangeSubject: new Subject<void>(),
       isProjectOpening: false,
       getProjectMode: jasmine.createSpy('getProjectMode').and.returnValue(mode),
+      getBlocklyProjectLoadStatus: jasmine.createSpy('getBlocklyProjectLoadStatus').and.returnValue({ready: true}),
       getCoderOperation: jasmine.createSpy('getCoderOperation').and.returnValue(null),
       getBoardPackagePath: jasmine.createSpy('getBoardPackagePath').and.callFake(async () =>
         `${projectService.currentProjectPath}/node_modules/board`),
@@ -60,6 +61,27 @@ describe('DevToolComponent in Coder mode', () => {
     await component.reload();
     expect(projectService.save).not.toHaveBeenCalled();
     expect(projectService.projectOpen).toHaveBeenCalledOnceWith(projectPath, { reason: 'reload', saveBeforeReload: false });
+    component.ngOnDestroy();
+  });
+
+  it('retries a known failed Blockly load without saving the partial runtime', async () => {
+    const { component, projectService } = createHarness('blockly');
+    projectService.getBlocklyProjectLoadStatus.and.returnValue({ready: false, error: 'teardown failed'});
+    projectService.save.and.resolveTo({success: false, error: 'project load failed'});
+    await component.reload();
+    expect(projectService.save).not.toHaveBeenCalled();
+    expect(projectService.projectOpen).toHaveBeenCalledOnceWith(projectPath, {reason: 'reload', saveBeforeReload: false});
+    expect(component.isReloading).toBeFalse();
+    component.ngOnDestroy();
+  });
+
+  it('still blocks reload if saving a normally loaded Blockly project fails', async () => {
+    const { component, projectService, messageService } = createHarness('blockly');
+    projectService.save.and.resolveTo({success: false, error: 'disk full'});
+    await component.reload();
+    expect(projectService.projectOpen).not.toHaveBeenCalled();
+    expect(messageService.error).toHaveBeenCalledWith('Save project failed: disk full');
+    expect(component.isReloading).toBeFalse();
     component.ngOnDestroy();
   });
 
