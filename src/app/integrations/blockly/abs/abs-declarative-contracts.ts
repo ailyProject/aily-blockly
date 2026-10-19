@@ -64,11 +64,17 @@ export function compileAbsDeclarativeContract(json: Record<string, any>, support
           }
           value = arg.value ?? 0; break;
         case 'field_checkbox': value = arg.checked ?? false; break;
-        case 'field_dropdown':
+        case 'field_dropdown': {
           if (!Array.isArray(arg.options) || !arg.options.length
-            || arg.options.some(option => !Array.isArray(option) || option.length !== 2 || typeof option[1] !== 'string')) return undefined;
-          field.options = arg.options.map(option => [null, option[1]]);
-          value = arg.options[0][1]; break;
+            || arg.options.some(option => option !== 'separator'
+              && (!Array.isArray(option) || option.length !== 2 || typeof option[1] !== 'string'))) return undefined;
+          // The normal library loader turns legacy divider pairs into Blockly
+          // display separators. They have no persisted/selectable field value.
+          const options = arg.options.filter(option => option !== 'separator');
+          if (!options.length) return undefined;
+          field.options = options.map(option => [null, option[1]]);
+          value = options[0][1]; break;
+        }
         case 'field_variable':
           if (arg.variableTypes !== undefined && (!Array.isArray(arg.variableTypes) || arg.variableTypes.some(type => typeof type !== 'string'))) return undefined;
           field.symbol = { kind: 'variable', storage: 'variable-state', ...(arg.variableTypes ? { allowedTypes: arg.variableTypes } : {}) };
