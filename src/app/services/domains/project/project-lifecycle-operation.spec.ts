@@ -6,6 +6,7 @@ import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@
 describe('dirty checks after a rejected Blockly open', () => {
   function fixture(mode: string | null, status: { ready: boolean; error?: string }) {
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/failed');
     service.stateSubject = new BehaviorSubject('error');
     service.getProjectMode = () => mode;

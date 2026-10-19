@@ -341,6 +341,13 @@
             "CACHE": "Gestión de caché"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Compilación en la nube",
+            "CLOUD_COMPILATION_DESC": "Compila en la nube y carga a la placa desde este equipo. El servicio se comprueba al activar.",
+            "CLOUD_ENABLE_CHECKING": "Comprobando el servicio de compilación en la nube…",
+            "CLOUD_ENABLE_SUCCESS": "Compilación en la nube activada.",
+            "CLOUD_ENABLE_FAILED": "No se pudo activar la compilación en la nube. Inténtalo más tarde.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "No se pudo activar. Cierra completamente la aplicación, vuelve a abrirla e inténtalo de nuevo.",
+            "CLOUD_DISABLE_FAILED": "No se pudo desactivar la compilación en la nube. Inténtalo de nuevo.",
             "PROJECT_FOLDER": "Carpeta de Proyecto",
             "LANGUAGE": "Idioma",
             "DEVELOPMENT_MODE_PREFERENCE": "Modo de desarrollo predeterminado",
@@ -1049,6 +1056,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_TARGET_UNAVAILABLE": "Esta versión o contenido de la placa no está registrado como destino disponible en la nube.",
       "MODE_UNKNOWN": "Tipo de proyecto desconocido. Seleccione un proyecto válido de Aily Blockly o Aily Coder.",
       "MODE_CREATE_RESTRICTED": "El modo actual de {{application}} no puede crear este tipo de proyecto. Utilice {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "El modo del proyecto no coincide",
@@ -1259,5 +1267,22 @@
         "ERR_PATH_EXISTS": "Ya existe una carpeta con el mismo nombre",
         "ERR_PATH_INVALID": "La ruta de guardado contiene caracteres no válidos",
         "ERR_CREATE_FAILED": "No se pudo crear el proyecto. Inténtalo de nuevo."
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "Preparando las entradas de compilación",
+            "UPLOADING": "Subiendo las entradas de compilación",
+            "QUEUED": "Esperando en la cola de compilación",
+            "DISPATCHING": "Asignando un servidor de compilación",
+            "PREPARING": "Preparando el entorno de compilación",
+            "RESOURCES": "Preparando los recursos de compilación",
+            "ANALYZING": "Analizando el proyecto",
+            "COMPILING": "Compilando en la nube",
+            "FINALIZING": "Comprobando los resultados de compilación",
+            "DOWNLOADING": "Descargando los resultados de compilación",
+            "VERIFYING": "Verificando los resultados de compilación",
+            "RECONNECTING": "Reconectando con la puerta de enlace",
+            "COMPLETE": "Compilación en la nube completada"
+        }
     }
 }

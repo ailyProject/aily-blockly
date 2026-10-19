@@ -434,6 +434,20 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         if (root) void this.pushAilyCoderHostContext(root);
       }),
     );
+    // 切换编译后端时只重建依赖上下文，保留正在运行的编辑器及尚未保存的代码。
+    let compileSettingsKey = this.configService.getCompileSettingsKey();
+    this.componentSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
+      const nextKey = this.configService.getCompileSettingsKey();
+      if (nextKey === compileSettingsKey) return;
+      compileSettingsKey = nextKey;
+      const root = this.coderEmbedWorkspaceRoot;
+      if (!root || this.destroyed) return;
+      const session = this.projectService.getProjectDependencySession(root);
+      this.dependencySession = session;
+      if (this.projectService.isCloudBuild()) this.codeSuggestionHostBridge.registerDeclarationRoots([]);
+      void this.ensureNpmDepsWithRetry(root, session);
+      void this.pushAilyCoderHostContext(root, session);
+    }));
 
     void this.bootstrap(this.projectPath);
 
@@ -1180,7 +1194,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
               ...(mainHexAbs ? { mainHexAbs, ...(mainHexRelPath ? { mainHexRelPath } : {}) } : {}),
             }
           : {}),
-        ...(platformPackages.length > 0 ? { platformPackages } : {}),
+        // 切入云模式时显式清空，防止子应用合并上下文后仍使用旧的本机 SDK 路径。
+        platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
       };
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
@@ -1251,7 +1266,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                 : {}),
             }
           : {}),
-        ...(platformPackages.length > 0 ? { platformPackages } : {}),
+        platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
         meta: { theme: this.themeService.theme(), lang: hostLanguage },
       };
@@ -1359,6 +1374,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   /** 从当前主板包的依赖声明解析全局 sdk/tools 目录。 */
   private async loadPlatformPackagesForEmbed() {
+    // 云模式使用已注册的开发板元数据，不向代码编辑器发布本机不存在的 SDK 路径。
+    if (this.projectService.isCloudBuild()) return [];
     try {
       return await resolvePlatformPackagesForCurrentProject(async () => {
         return this.projectService.getBoardDependencies();

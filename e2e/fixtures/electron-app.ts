@@ -85,7 +85,9 @@ export async function launchAilyElectron(options: {
         AILY_APPDATA_PATH: userDataDir,
       },
     });
-    if (process.env['AILY_E2E_DEV_URL']) {
+    // The normal dev URL already matches main-process window ownership checks.
+    // Redirecting it to itself would loop and prevent any renderer from loading.
+    if (process.env['AILY_E2E_DEV_URL'] && !/^http:\/\/localhost:4200\/?$/.test(process.env['AILY_E2E_DEV_URL'])) {
       await app.context().route('http://localhost:4200/**', route => route.fulfill({
         status: 302, headers: { location: process.env['AILY_E2E_DEV_URL']! },
       }));

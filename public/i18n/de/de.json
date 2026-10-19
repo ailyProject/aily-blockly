@@ -341,6 +341,13 @@
             "CACHE": "Cache-Verwaltung"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Cloud-Kompilierung",
+            "CLOUD_COMPILATION_DESC": "In der Cloud kompilieren und auf diesem Computer auf das Board übertragen. Der Dienst wird beim Aktivieren geprüft.",
+            "CLOUD_ENABLE_CHECKING": "Cloud-Kompilierungsdienst wird geprüft…",
+            "CLOUD_ENABLE_SUCCESS": "Cloud-Kompilierung aktiviert.",
+            "CLOUD_ENABLE_FAILED": "Aktivierung fehlgeschlagen. Bitte später erneut versuchen.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Aktivierung fehlgeschlagen. Bitte die Anwendung vollständig beenden, neu starten und erneut versuchen.",
+            "CLOUD_DISABLE_FAILED": "Deaktivierung fehlgeschlagen. Bitte erneut versuchen.",
             "PROJECT_FOLDER": "Projektordner",
             "LANGUAGE": "Sprache",
             "DEVELOPMENT_MODE_PREFERENCE": "Standard-Entwicklungsmodus",
@@ -1049,6 +1056,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_TARGET_UNAVAILABLE": "Diese Board-Version oder dieser Inhalt ist nicht als verfügbares Cloud-Ziel registriert.",
       "MODE_UNKNOWN": "Unbekannter Projekttyp. Wählen Sie ein gültiges Aily Blockly- oder Aily Coder-Projekt.",
       "MODE_CREATE_RESTRICTED": "Der aktuelle Modus {{application}} kann diesen Projekttyp nicht erstellen. Verwenden Sie {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Projektmodus stimmt nicht überein",
@@ -1259,5 +1267,22 @@
         "ERR_PATH_EXISTS": "Ein Ordner mit demselben Namen existiert bereits",
         "ERR_PATH_INVALID": "Speicherpfad enthält ungültige Zeichen",
         "ERR_CREATE_FAILED": "Projekt konnte nicht erstellt werden. Bitte erneut versuchen."
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "Build-Eingaben werden vorbereitet",
+            "UPLOADING": "Build-Eingaben werden hochgeladen",
+            "QUEUED": "Warten in der Build-Warteschlange",
+            "DISPATCHING": "Build-Server wird zugewiesen",
+            "PREPARING": "Build-Umgebung wird vorbereitet",
+            "RESOURCES": "Build-Ressourcen werden vorbereitet",
+            "ANALYZING": "Projekt wird analysiert",
+            "COMPILING": "Kompilierung in der Cloud",
+            "FINALIZING": "Build-Ausgaben werden geprüft",
+            "DOWNLOADING": "Build-Ausgaben werden heruntergeladen",
+            "VERIFYING": "Build-Ausgaben werden verifiziert",
+            "RECONNECTING": "Verbindung zum Gateway wird wiederhergestellt",
+            "COMPLETE": "Cloud-Build abgeschlossen"
+        }
     }
 }

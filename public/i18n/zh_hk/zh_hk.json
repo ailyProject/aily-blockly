@@ -369,6 +369,13 @@
             "CACHE": "緩存管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "雲端編譯",
+            "CLOUD_COMPILATION_DESC": "在雲端編譯，燒錄仍在本機進行。開啟時自動檢查服務。",
+            "CLOUD_ENABLE_CHECKING": "正在檢查雲端編譯服務…",
+            "CLOUD_ENABLE_SUCCESS": "開啟成功",
+            "CLOUD_ENABLE_FAILED": "開啟失敗，請稍後重試。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "開啟失敗，請完全結束並重新啟動軟件後重試。",
+            "CLOUD_DISABLE_FAILED": "關閉失敗，請重試。",
             "PROJECT_FOLDER": "專案資料夾",
             "LANGUAGE": "語言",
             "DEVELOPMENT_MODE_PREFERENCE": "預設開發模式",
@@ -1126,6 +1133,7 @@
       "CONVERT_CODER_INSTALLING": "正在安裝 Coder 專案依賴",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "依賴準備失敗，請檢查安裝日誌後重試",
       "CONVERT_CODER_OPEN_FAILED": "Coder 專案已儲存至 {{path}}，請使用 Aily Coder 開啟。",
+        "CLOUD_TARGET_UNAVAILABLE": "此開發板版本或內容尚未註冊為可用的雲端編譯目標。",
       "MODE_UNKNOWN": "無法識別專案類型，請選擇有效的 Aily Blockly 或 Aily Coder 專案。",
       "MODE_CREATE_RESTRICTED": "目前 {{application}} 模式無法建立此類專案，請使用 {{targetApplication}} 建立。",
       "MODE_MISMATCH_TITLE": "專案模式不符",
@@ -1363,5 +1371,22 @@
         "ERR_PATH_EXISTS": "同名目錄已存在，請更換專案名",
         "ERR_PATH_INVALID": "儲存路徑包含非法字元",
         "ERR_CREATE_FAILED": "建立失敗，請稍後重試"
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "正在準備編譯檔案",
+            "UPLOADING": "正在上傳編譯檔案",
+            "QUEUED": "正在排隊等候編譯",
+            "DISPATCHING": "正在分配編譯伺服器",
+            "PREPARING": "正在準備編譯環境",
+            "RESOURCES": "正在準備編譯資源",
+            "ANALYZING": "正在分析專案",
+            "COMPILING": "正在雲端編譯",
+            "FINALIZING": "正在檢查編譯產物",
+            "DOWNLOADING": "正在下載編譯產物",
+            "VERIFYING": "正在驗證編譯產物",
+            "RECONNECTING": "正在重新連接閘道",
+            "COMPLETE": "雲端編譯已完成"
+        }
     }
 }

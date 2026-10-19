@@ -6,6 +6,7 @@
     "test:ui": "cd .. && node ./e2e/scripts/run-e2e.mjs ui",
     "test:headed": "cd .. && node ./e2e/scripts/run-e2e.mjs headed",
     "test:fast": "cd .. && node ./e2e/scripts/run-e2e.mjs fast",
+    "test:cloud-build": "cd .. && playwright test -c e2e/cloud-build.config.ts",
     "report": "cd .. && node ./e2e/scripts/run-e2e.mjs report",
     "prepare:simulator-debug": "cd .. && node ./e2e/scripts/prepare-simulator-debug-e2e.mjs",
     "test:simulator-debug": "cd .. && node ./e2e/scripts/run-simulator-debug-e2e.mjs",

@@ -22,6 +22,7 @@ describe('Uploader command lifecycle during project close', () => {
     output = new Subject();
     service = Object.create(_UploaderService.prototype);
     service.projectService = {
+      isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', isProjectTransitionInProgress: () => false,
       isAilyCodeProject: () => false, getBuildPath: async () => '/project/build',
       getBoardJson: async () => ({ name: 'board', uploadParam: 'flash' }),

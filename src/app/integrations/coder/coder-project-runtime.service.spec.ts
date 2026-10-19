@@ -75,7 +75,7 @@ describe('Coder concurrent process integration', () => {
       { provide: CrossPlatformCmdService, useValue: {} },
       { provide: ElectronService, useValue: { pathJoin: (...parts: string[]) => parts.join('/'), isWindowFocused: () => true } },
       { provide: PlatformService, useValue: { za7: '/7z' } },
-      { provide: ConfigService, useValue: { data: {}, isCoderProduct: () => true } },
+      { provide: ConfigService, useValue: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } },
       { provide: HttpClient, useValue: {} },
       { provide: NzMessageService, useValue: { warning: () => {}, error: () => {} } },
       { provide: TranslateService, useValue: { instant: (key: string) => key } },

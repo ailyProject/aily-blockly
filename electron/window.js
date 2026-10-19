@@ -139,6 +139,17 @@ function isDevServeSubWindow() {
     return process.env.DEV === 'true' || process.env.DEV === true;
 }
 
+// 设置窗口只在仍停留于本应用的完整来源和路由时，才能读取部署信息或检测云连接。
+function isAppSettingsWindowUrl(actual, expected) {
+    try {
+        const source = new URL(actual), application = new URL(expected);
+        return ['http:', 'https:'].includes(application.protocol)
+            && !application.username && !application.password && !source.username && !source.password && source.origin === application.origin
+            && source.pathname === application.pathname && source.search === application.search
+            && /^#\/settings(?:\?[^#]*)?$/u.test(source.hash);
+    } catch { return false; }
+}
+
 /**
  * 与正式子窗口一致的 webPreferences，用于预热池与即用窗口�?
  */
@@ -2239,6 +2250,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     scheduleReplenishSubWindowPool(loadSubWindowBasePage);
+
+    return {
+        isSettingsWindowSender(sender) {
+            // 只有当前设置窗口本人且仍停留在设置路由，才能读取云部署信息和检测连接。
+            const win = settingsWarmWindow;
+            if (!win || win.isDestroyed() || win.webContents.isDestroyed()
+                || sender !== win.webContents || sender.isDestroyed()) return false;
+            return isAppSettingsWindowUrl(sender.getURL(), resolveSubWindowRouteUrl('settings'));
+        },
+    };
 }
 
 

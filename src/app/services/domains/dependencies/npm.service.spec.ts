@@ -391,7 +391,7 @@ describe('NpmService installBoardDeps', () => {
       service.prjService.getProjectDependencySession(),
       true,
     );
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(true, undefined);
     expect(service.isInstalling).toBeFalse();
   });
 
@@ -414,7 +414,7 @@ describe('NpmService installBoardDeps', () => {
     expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
       { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(), true,
     );
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(true, undefined);
   });
 
   it('waits through platform installation and its final refresh before reporting ready', fakeAsync(() => {
@@ -481,7 +481,7 @@ describe('NpmService installBoardDeps', () => {
     lifecycle.cancel(session.projectPath);
     finish();
     flushMicrotasks();
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(false);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(false, undefined);
     expect(service.isInstalling).toBeFalse();
   }));
 });

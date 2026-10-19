@@ -341,6 +341,13 @@
             "CACHE": "Управление кэшем"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Облачная компиляция",
+            "CLOUD_COMPILATION_DESC": "Компиляция выполняется в облаке, а прошивка платы — на этом компьютере. При включении проверяется сервис.",
+            "CLOUD_ENABLE_CHECKING": "Проверка сервиса облачной компиляции…",
+            "CLOUD_ENABLE_SUCCESS": "Облачная компиляция включена.",
+            "CLOUD_ENABLE_FAILED": "Не удалось включить облачную компиляцию. Повторите попытку позже.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Не удалось включить. Полностью закройте приложение, запустите его заново и повторите попытку.",
+            "CLOUD_DISABLE_FAILED": "Не удалось выключить облачную компиляцию. Повторите попытку.",
             "PROJECT_FOLDER": "Папка проекта",
             "LANGUAGE": "Язык",
             "DEVELOPMENT_MODE_PREFERENCE": "Режим разработки по умолчанию",
@@ -1049,6 +1056,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_TARGET_UNAVAILABLE": "Эта версия или содержимое платы не зарегистрированы как доступная облачная цель.",
       "MODE_UNKNOWN": "Неизвестный тип проекта. Выберите допустимый проект Aily Blockly или Aily Coder.",
       "MODE_CREATE_RESTRICTED": "Текущий режим {{application}} не позволяет создавать проекты этого типа. Используйте {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Несовместимый режим проекта",
@@ -1259,5 +1267,22 @@
         "ERR_PATH_EXISTS": "Папка с таким именем уже существует",
         "ERR_PATH_INVALID": "Путь сохранения содержит недопустимые символы",
         "ERR_CREATE_FAILED": "Не удалось создать проект. Попробуйте снова."
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "Подготовка файлов сборки",
+            "UPLOADING": "Загрузка файлов сборки на сервер",
+            "QUEUED": "Ожидание в очереди сборки",
+            "DISPATCHING": "Назначение сервера сборки",
+            "PREPARING": "Подготовка среды сборки",
+            "RESOURCES": "Подготовка ресурсов сборки",
+            "ANALYZING": "Анализ проекта",
+            "COMPILING": "Компиляция в облаке",
+            "FINALIZING": "Проверка результатов сборки",
+            "DOWNLOADING": "Скачивание результатов сборки",
+            "VERIFYING": "Проверка целостности результатов сборки",
+            "RECONNECTING": "Повторное подключение к шлюзу",
+            "COMPLETE": "Облачная сборка завершена"
+        }
     }
 }

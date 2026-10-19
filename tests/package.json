@@ -4,6 +4,7 @@
   "scripts": {
     "test": "cd .. && node scripts/run-angular.cjs test",
     "test:unit:ci": "cd .. && node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless",
+    "test:cloud-build": "node scripts/run-cloud-build.cjs",
     "test:blockly-recovery": "cd .. && node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless --ts-config=tests/tsconfig.blockly-recovery.spec.json --include=../tests/blockly-interaction-recovery.spec.ts --include=../tests/blockly-viewport-focus.spec.ts --include=src/app/editors/blockly-editor/utils/blockly-drag-layer.spec.ts --include=src/app/editors/blockly-editor/utils/blockly-multiselect-v13.spec.ts --include=src/app/services/domains/project/project-lifecycle-operation.spec.ts --include=src/app/editors/blockly-editor/components/dev-tool/dev-tool-coder.spec.ts",
     "test:abs-sync": "cd .. && node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless",
     "guard:aily-chat-mainline": "cd .. && node tests/architecture/guard-aily-chat-mainline.js",

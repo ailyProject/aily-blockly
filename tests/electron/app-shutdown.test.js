@@ -40,6 +40,11 @@ function host(overrides = {}) {
     releaseAllAuthCredentialsLocks: () => calls.push('release-auth'),
     getActiveCmdProcesses: () => [], getActiveNpmProcesses: () => [],
     getActiveTerminals: () => [], getActiveAilyServicesStreams: () => [],
+    require: name => {
+      assert.equal(name, './library-dependencies');
+      return { stopLibraryDependencyWorkers: async () => calls.push('stop-libraries') };
+    },
+    cloudBuildController: { shutdown: async () => calls.push('stop-cloud') },
     killAllCmdProcesses: async () => { calls.push('stop-commands'); return true; },
     killAllNpmProcesses: async () => { calls.push('stop-npm'); return true; },
     killAllTerminals: async () => {}, cancelAllAilyServicesStreams: async () => {},
@@ -59,10 +64,25 @@ test('quit blocks new commands and installers before stopping registered process
   const h = host();
   assert.equal(h.begin(), true);
   await settle();
-  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth', 'stop-commands', 'stop-npm', 'release-auth']);
+  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth', 'stop-libraries', 'stop-cloud', 'stop-commands', 'stop-npm', 'release-auth']);
   assert.equal(h.completed, true);
   assert.equal(h.quits, 1);
   assert.equal(h.begin(), false);
+});
+
+test('quit waits for both pending library mutations and cloud cancellation', async () => {
+  let finishLibrary, finishCloud;
+  const h = host({
+    require: () => ({ stopLibraryDependencyWorkers: () => new Promise(resolve => { finishLibrary = resolve; }) }),
+    cloudBuildController: { shutdown: () => new Promise(resolve => { finishCloud = resolve; }) },
+  });
+  h.begin(); await settle();
+  assert.equal(h.quits, 0);
+  finishLibrary(); await settle();
+  assert.equal(h.quits, 0);
+  finishCloud(); await settle();
+  assert.equal(h.quits, 1);
+  assert.equal(h.completed, true);
 });
 
 test('duplicate quit shares cleanup and waits for registered process cleanup', async () => {

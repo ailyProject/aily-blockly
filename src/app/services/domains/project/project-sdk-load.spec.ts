@@ -32,6 +32,9 @@ describe('board configuration menu SDK readiness', () => {
 
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
+    // 原型夹具也需提供工程和后端身份，保留菜单异步过程中的上下文变更校验。
+    service.currentProjectPathSubject = { value: '/project' };
+    service.configService = { data: { compile: { backend: 'local' } }, getCompileSettingsKey: () => 'local' };
     const manifest: any = { projectConfig: { CDCOnBoot: 'cdc' } };
     service.isAilyCodeProject = () => false;
     service.currentBoardConfig = { type: 'esp32:esp32:esp32s3' };

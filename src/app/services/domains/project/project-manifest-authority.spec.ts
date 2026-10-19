@@ -26,6 +26,7 @@ describe('ProjectService root manifest authority', () => {
     service = Object.create(ProjectService.prototype);
     service.currentProjectPathSubject = new BehaviorSubject(root);
     service.libraryChanges = new Map();
+    service.coderProjectContexts = new Map();
   });
 
   afterEach(() => Object.assign(window, previous));
@@ -71,7 +72,7 @@ describe('ProjectService root manifest authority', () => {
     const discard = jasmine.createSpy('discard').and.resolveTo({ dirty: false, manifest: restored });
     window['libraryDependencies'] = { discard };
     await service.discardLibraryChanges(root, true);
-    expect(discard).toHaveBeenCalledOnceWith(root, { reconcile: true });
+    expect(discard).toHaveBeenCalledOnceWith(root, { reconcile: true, historyRestored: false });
     expect(service.currentPackageData).toEqual(restored);
     expect(JSON.parse(service.getEffectivePackageText(root))).toEqual(restored);
     expect(files.get(legacyPath)).toBe(JSON.stringify(current));

@@ -47,6 +47,19 @@ async function invokeAilyConnector(channel, payload) {
   return envelope.result;
 }
 
+// contextBridge 复制 Error 时会丢弃自定义属性；使用可复制的数据保留错误码。
+async function invokeCloudBuild(payload) {
+  const envelope = await ipcRenderer.invoke('cloud-build', payload);
+  if (!envelope?.ok) {
+    throw {
+      name: 'CloudBuildError',
+      message: envelope?.error?.message || 'Cloud build failed.',
+      code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
+    };
+  }
+  return envelope.result;
+}
+
 const pathApi = {
   getUserHome: () => require("os").homedir(),
   getAilyChildPath: () => process.env.AILY_CHILD_PATH,
@@ -546,6 +559,24 @@ contextBridge.exposeInMainWorld("electronAPI", {
     checkForUpdate: () => ipcRenderer.invoke("aily-builder-check-update"),
     update: () => ipcRenderer.invoke("aily-builder-update"),
     waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
+  },
+  // 只暴露云任务操作和进度订阅；签名校验与本地烧录进程保留在主进程内。
+  cloudBuild: {
+    configuration: () => invokeCloudBuild({ action: 'configuration' }),
+    health: () => invokeCloudBuild({ action: 'health' }),
+    targets: options => invokeCloudBuild({ action: 'targets', ...options }),
+    run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
+    cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
+    artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
+    reusable: options => invokeCloudBuild({ action: 'reusable', ...options }),
+    invalidate: options => invokeCloudBuild({ action: 'invalidate', ...options }),
+    upload: options => invokeCloudBuild({ action: 'upload', ...options }),
+    cancelUpload: options => invokeCloudBuild({ action: 'cancelUpload', ...options }),
+    onProgress: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('cloud-build-progress', listener);
+      return () => ipcRenderer.removeListener('cloud-build-progress', listener);
+    },
   },
   connector: {
     status: () => ipcRenderer.invoke("aily-connector-status"),

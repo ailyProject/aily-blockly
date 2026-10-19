@@ -341,6 +341,13 @@
             "CACHE": "إدارة ذاكرة التخزين المؤقتة"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "التجميع السحابي",
+            "CLOUD_COMPILATION_DESC": "التجميع في السحابة، والرفع إلى اللوحة على هذا الكمبيوتر. يتم فحص الخدمة عند التفعيل.",
+            "CLOUD_ENABLE_CHECKING": "جارٍ فحص خدمة التجميع السحابي…",
+            "CLOUD_ENABLE_SUCCESS": "تم تفعيل التجميع السحابي.",
+            "CLOUD_ENABLE_FAILED": "تعذر التفعيل. تحقق من الخدمة وحاول مجددًا.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "تعذر التفعيل. أغلق التطبيق بالكامل ثم أعد تشغيله وحاول مجددًا.",
+            "CLOUD_DISABLE_FAILED": "تعذر إيقاف التجميع السحابي. حاول مجددًا.",
             "PROJECT_FOLDER": "مجلد المشروع",
             "LANGUAGE": "اللغة",
             "DEVELOPMENT_MODE_PREFERENCE": "وضع التطوير الافتراضي",
@@ -1049,6 +1056,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_TARGET_UNAVAILABLE": "لم يُسجل هذا الإصدار أو المحتوى للوحة كهدف سحابي متاح.",
       "MODE_UNKNOWN": "نوع المشروع غير معروف. اختر مشروع Aily Blockly أو Aily Coder صالحًا.",
       "MODE_CREATE_RESTRICTED": "لا يمكن لوضع {{application}} الحالي إنشاء هذا النوع من المشاريع. استخدم {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "وضع المشروع غير متوافق",
@@ -1259,5 +1267,22 @@
         "ERR_PATH_EXISTS": "مجلد بنفس الاسم موجود بالفعل",
         "ERR_PATH_INVALID": "مسار الحفظ يحتوي على أحرف غير صالحة",
         "ERR_CREATE_FAILED": "فشل إنشاء المشروع. يرجى المحاولة مرة أخرى."
+    },
+    "CLOUD_BUILD": {
+        "STAGES": {
+            "CAPTURING": "جارٍ تجهيز ملفات البناء",
+            "UPLOADING": "جارٍ رفع ملفات البناء",
+            "QUEUED": "في انتظار دور البناء",
+            "DISPATCHING": "جارٍ تعيين خادم البناء",
+            "PREPARING": "جارٍ تجهيز بيئة البناء",
+            "RESOURCES": "جارٍ تجهيز موارد البناء",
+            "ANALYZING": "جارٍ تحليل المشروع",
+            "COMPILING": "جارٍ الترجمة البرمجية في السحابة",
+            "FINALIZING": "جارٍ فحص نتائج البناء",
+            "DOWNLOADING": "جارٍ تنزيل نتائج البناء",
+            "VERIFYING": "جارٍ التحقق من سلامة نتائج البناء",
+            "RECONNECTING": "جارٍ إعادة الاتصال بالبوابة",
+            "COMPLETE": "اكتمل البناء السحابي"
+        }
     }
 }

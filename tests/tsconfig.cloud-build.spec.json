@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/services/domains/project/project-coder-menu.spec.ts",
+    "../src/app/services/domains/project/project-sdk-load.spec.ts",
+    "../src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+    "../src/app/services/domains/project/project-manifest-authority.spec.ts",
+    "../src/app/services/domains/project/project-save-as.spec.ts",
+    "../src/app/services/domains/dependencies/npm.service.spec.ts",
+    "../src/app/services/domains/dependencies/coder-dependency-readiness.spec.ts",
+    "../src/app/services/domains/build/builder.service.spec.ts",
+    "../src/app/services/domains/build/coder-build-info.service.spec.ts",
+    "../src/app/editors/blockly-editor/services/builder.service.spec.ts",
+    "../src/app/editors/blockly-editor/services/uploader.service.spec.ts",
+    "../src/app/editors/blockly-editor/services/build-upload-flow.spec.ts",
+    "../src/app/services/integrations/subapps/partition-manager/partition-manager-host.spec.ts",
+    "../src/app/windows/settings/settings.component.spec.ts",
+    "../src/app/services/core/preferences/config.service.spec.ts",
+    "../src/app/services/domains/device/uploader-dependency-readiness.spec.ts",
+    "../src/app/integrations/coder/coder-board-config.service.spec.ts",
+    "../src/app/integrations/coder/coder-project-runtime.service.spec.ts",
+    "../src/app/editors/code-editor-pro/code-editor-pro-workspace.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

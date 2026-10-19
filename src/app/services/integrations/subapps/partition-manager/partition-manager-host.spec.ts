@@ -35,6 +35,7 @@ describe('Partition manager project persistence', () => {
       } };
     Object.assign(window, { fs, path: paths });
     project = {
+      isCloudBuild: () => false,
       currentProjectPath: '/project', currentBoardConfig: { core: 'esp32', type: 'esp32:esp32:esp32s3' }, currentPackageData: pkg,
       isAilyCodeProject: () => false, getSdkPath: async () => '', getBoardFile: async () => null,
       getPackageJson: async () => JSON.parse(files.get(pkgPath)!),
@@ -54,6 +55,24 @@ describe('Partition manager project persistence', () => {
     expect(result.success).toBeTrue(); expect(result.context.csv).toBe(csv());
     expect([...files]).toEqual(before); expect(builder.triggerPreprocess).not.toHaveBeenCalled();
     expect(result.context['projectConfig']).toBeUndefined();
+  });
+
+  it('loads cloud partition metadata without an SDK and invalidates the draft after switching backend', async () => {
+    files.delete(csvPath);
+    project.isCloudBuild = () => true;
+    project.getSdkPath = jasmine.createSpy('local SDK').and.rejectWith(new Error('cloud must not read SDK'));
+    project.getBoardBuildProperties = async () => ({ 'build.partitions': 'default', 'build.flash_size': '8MB' });
+    project.getCloudPartitionTemplate = jasmine.createSpy('cloud template').and.resolveTo(csv());
+    const before = [...files];
+    const loaded = await load();
+    expect(loaded.success).toBeTrue();
+    expect(loaded.context.source).toBe('cloud');
+    expect(loaded.context.csv).toBe(csv());
+    expect(project.getSdkPath).not.toHaveBeenCalled();
+    project.isCloudBuild = () => false;
+    expect((await save(loaded.context.token)).success).toBeFalse();
+    expect([...files]).toEqual(before);
+    expect(builder.triggerPreprocess).not.toHaveBeenCalled();
   });
 
   it('commits CSV and root project config together, leaving legacy backups untouched', async () => {

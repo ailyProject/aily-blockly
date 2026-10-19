@@ -48,6 +48,7 @@ describe('Coder retained project workspaces', () => {
       coderWorkspaceSubject: new BehaviorSubject(null),
       boardConfigUpdatedSubject: new Subject(),
       configService: {
+        getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local',
         data: { recentlyProjects: [] },
         save: jasmine.createSpy('save'),
         getApplicationName: () => 'Coder',

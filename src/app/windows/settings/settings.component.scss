@@ -398,3 +398,6 @@ ngx-simplebar {
   color: var(--aily-text-primary);
   line-height: 1.6;
 }
+// 开关说明和连接结果保持紧凑，检测状态变化时不会覆盖操作控件。
+.cloud-build-description { opacity: .7; font-size: 12px; margin: 8px 0 16px; }
+.cloud-build-status { font-size: 12px; line-height: 1.6; }

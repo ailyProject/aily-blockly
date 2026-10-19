@@ -149,7 +149,7 @@ describe('Coder build metadata', () => {
     const service = new CompileService(
       project, {} as any, { createDirectory: async () => {} } as any, electron,
       { startBuild: () => true, finishBuild: () => {}, updateNotice: () => {} } as any,
-      { za7: '/7z' } as any, { data: {}, isCoderProduct: () => true } as any,
+      { za7: '/7z' } as any, { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } as any,
       { warning: () => {}, error: () => {} } as any,
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,

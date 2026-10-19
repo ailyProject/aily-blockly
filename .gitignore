@@ -39,6 +39,8 @@ yarn.lock
 /.angular/cache
 .sass-cache/
 /connect.lock
+# TypeScript 诊断日志可重新生成，不纳入源码和发布版本。
+/tsc_output.txt
 /libpeerconnection.log
 testem.log
 /typings
@@ -95,3 +97,5 @@ child/aily-builder*
 todo.md
 plans/
 /.generated/blockly-runtime/
+# 本机临时草稿不属于应用源码。
+.draft/
