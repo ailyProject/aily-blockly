@@ -469,10 +469,13 @@ for (const protocol of PROTOCOLS) {
 // 文件关联处理
 let pendingFileToOpen = null;
 let projectOpenRendererReady = false;
+const pendingProjectImports = [];
+let projectImportRunning = false;
 ipcMain.on('project-open-ready', (event) => {
   if (mainWindow && event.sender === mainWindow.webContents) {
     projectOpenRendererReady = true;
     if (pendingFileToOpen) void updateMainWindowWithPendingData();
+    void processPendingProjectImports();
   }
 });
 let pendingRoute = null;
@@ -609,8 +612,14 @@ function handleCommandLineArgs(argv, cwd = process.cwd()) {
 // 在应用启动时处理命令行参数
 handleCommandLineArgs(process.argv);
 
+function protocolLogValue(value) {
+  // Download URLs may contain signed query parameters; keep them out of application logs.
+  return typeof value === 'string' && /^(abis|acis|ailyblockly|ailycoder):\/\/project\/import(?:[?#]|$)/i.test(value)
+    ? '[project import]' : value;
+}
+
 function handleProtocol(url) {
-  console.log('收到协议链接:', url);
+  console.log('收到协议链接:', protocolLogValue(url));
 
   try {
     const urlObj = new URL(url);
@@ -622,6 +631,13 @@ function handleProtocol(url) {
     let fullPath = urlObj.pathname;
     if (urlObj.hostname && urlObj.hostname !== '') {
       fullPath = '/' + urlObj.hostname + urlObj.pathname;
+    }
+
+    if (fullPath === '/project/import') {
+      const archiveUrl = require('./project-url-import').parseProjectImportUrl(url, getBuildProduct());
+      if (!pendingProjectImports.includes(archiveUrl)) pendingProjectImports.push(archiveUrl);
+      void processPendingProjectImports();
+      return;
     }
 
     // 检查是否是OAuth回调（使用完整路径）
@@ -760,6 +776,32 @@ function handleProtocol(url) {
     console.error('解析协议链接失败:', error);
     // dialog.showErrorBox('协议错误', `无法解析协议链接: ${url}`);
   }
+}
+
+async function processPendingProjectImports() {
+  if (projectImportRunning || !projectOpenRendererReady) return;
+  projectImportRunning = true;
+  try {
+    while (pendingProjectImports.length && projectOpenRendererReady) {
+      const archiveUrl = pendingProjectImports[0];
+      try {
+        let projectRoot = String(process.env.AILY_PROJECT_PATH || '').trim();
+        if (!projectRoot) projectRoot = path.join(app.getPath('documents'), 'aily-project');
+        projectRoot = projectRoot.replace(/^%HOMEPATH%[\\/]Documents(?=$|[\\/])/i, () => app.getPath('documents'))
+          .replace(/^~(?=$|[\\/])/, () => os.homedir());
+        const directory = await require('./project-url-import').importProjectUrl({
+          url: archiveUrl, product: getBuildProduct(),
+          projectRoot, sevenZipPath: process.env.AILY_7ZA_PATH,
+        });
+        pendingFileToOpen = directory;
+        await updateMainWindowWithPendingData();
+      } catch (error) {
+        await dialog.showMessageBox({ type: 'error', title: '工程导入失败', message: error.message });
+      } finally {
+        pendingProjectImports.shift();
+      }
+    }
+  } finally { projectImportRunning = false; }
 }
 
 // ipc handlers模块
@@ -2849,12 +2891,12 @@ if (shouldUseMultiInstance()) {
 
   // 监听second-instance事件，用于处理协议链接
   app.on('second-instance', (event, commandLine, workingDirectory) => {
-    console.log('收到second-instance事件，命令行参数:', commandLine);
+    console.log('收到second-instance事件，命令行参数:', commandLine.map(protocolLogValue));
 
     // 查找协议链接
     const protocolUrl = commandLine.find(isSupportedProtocolUrl);
     if (protocolUrl) {
-      console.log('在second-instance中处理协议链接:', protocolUrl);
+      console.log('在second-instance中处理协议链接:', protocolLogValue(protocolUrl));
 
       // 检查是否是示例相关的URL，如果是则忽略（由新实例处理）
       try {
@@ -2910,7 +2952,7 @@ if (shouldUseMultiInstance()) {
       // 查找协议链接
       const protocolUrl = commandLine.find(isSupportedProtocolUrl);
       if (protocolUrl) {
-        console.log('在second-instance中处理协议链接:', protocolUrl);
+        console.log('在second-instance中处理协议链接:', protocolLogValue(protocolUrl));
         handleProtocol(protocolUrl);
       } else {
         // 处理其他类型的启动参数（如.abi文件、路由参数等）
@@ -3010,6 +3052,13 @@ app.on("ready", async () => {
         fullPath = '/' + urlObj.hostname + urlObj.pathname;
       }
 
+      // The existing instance handles project imports; forwarding must not create another copy/window.
+      if (fullPath === '/project/import' && !gotTheLock) {
+        require('./project-url-import').parseProjectImportUrl(protocolUrl, getBuildProduct());
+        app.quit();
+        return;
+      }
+
       // OAuth 回调：无需创建窗口，直接转发给已运行的实例后退出
       if (fullPath === '/auth/callback') {
         console.log('检测到 OAuth 回调协议启动，跳过窗口创建，直接转发处理');
@@ -3044,7 +3093,7 @@ app.on("ready", async () => {
   }
 
   if (protocolUrl) {
-    console.log('应用启动时检测到协议参数:', protocolUrl);
+    console.log('应用启动时检测到协议参数:', protocolLogValue(protocolUrl));
     // 延迟处理协议，确保窗口创建完成
     setTimeout(() => {
       handleProtocol(protocolUrl);
@@ -3275,7 +3324,7 @@ app.on('open-file', (event, filePath) => {
 // macOS下处理协议链接
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  console.log('macOS open-url:', url);
+  console.log('macOS open-url:', protocolLogValue(url));
   handleProtocol(url);
 });
 
