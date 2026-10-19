@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { spawnSync } = require('node:child_process');
 const { test, after } = require('node:test');
 const { copyProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
 const roots = [];
@@ -12,7 +13,7 @@ after(() => { for (const root of roots) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 
-test('project copies exclude only writer/lifecycle transient files and preserve recovery/resource data', () => {
+test('project copies exclude writer/lifecycle transient files and preserve recovery/resource data', () => {
   const source = directory(); const target = directory();
   const id = '12345678-1234-1234-1234-123456789abc';
   const excluded = ['.aily/project-files.write.lock', '.aily/project-open.lock', `.project.abi.${id}.tmp`, `.project.abs.${id}.tmp`,
@@ -30,6 +31,30 @@ test('project copies exclude only writer/lifecycle transient files and preserve 
   for (const file of included) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
 });
 
+test('save-as copies exclude root runtime directories without filtering nested project content', () => {
+  const source = directory(); const target = directory();
+  const excluded = ['.workspace-history/snapshot.json', '.temp/sketch/sketch.ino', '.log/compile/latest-result.json', '.build/firmware.bin'];
+  const included = ['sketch/src/main.cpp', 'sketch/libraries/Local/.temp/source.h', '.workspace-history-backup/keep.json', '.git/config'];
+  for (const file of [...excluded, ...included]) {
+    const full = path.join(source, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
+  }
+  copyProjectDirectory(source, target);
+  for (const file of excluded) {
+    assert.equal(fs.existsSync(path.join(target, file.split('/')[0])), false);
+    assert.equal(fs.readFileSync(path.join(source, file), 'utf8'), file);
+  }
+  for (const file of included) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
+});
+
+test('save-as skips history junctions when Electron cannot create symbolic links', t => {
+  const result = spawnSync(require('electron'), [path.join(__dirname, 'fixtures/project-copy-history-symlink.cjs'), directory()], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true, timeout: 15000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  t.diagnostic(result.stdout.trim());
+});
+
 test('project copies reject self, descendant, linked or nonempty targets without merging', () => {
   const source = directory(); const child = path.join(source, 'child'); fs.mkdirSync(child);
   const occupied = directory(); fs.writeFileSync(path.join(occupied, 'keep'), 'keep');
@@ -39,13 +64,22 @@ test('project copies reject self, descendant, linked or nonempty targets without
   assert.throws(() => copyProjectDirectory('relative', directory()));
 });
 
-test('writer artifact filtering respects Windows path case equivalence', () => {
+test('save-as preserves ordinary files named like runtime directories', () => {
+  const source = directory(); const target = directory();
+  fs.writeFileSync(path.join(source, '.workspace-history'), 'user file');
+  copyProjectDirectory(source, target);
+  assert.equal(fs.readFileSync(path.join(target, '.workspace-history'), 'utf8'), 'user file');
+});
+
+test('project copy filtering respects Windows path case equivalence', () => {
   const source = directory(); const target = directory();
   const name = '.AILY/PROJECT-FILES.WRITE.LOCK';
   fs.mkdirSync(path.dirname(path.join(source, name))); fs.writeFileSync(path.join(source, name), 'owner');
+  fs.mkdirSync(path.join(source, '.TEMP')); fs.writeFileSync(path.join(source, '.TEMP/cache'), 'cache');
   copyProjectDirectory(source, target);
   assert.equal(fs.existsSync(path.join(target, name)), process.platform !== 'win32');
   assert.equal(fs.readFileSync(path.join(source, name), 'utf8'), 'owner');
+  assert.equal(fs.existsSync(path.join(target, '.TEMP/cache')), process.platform !== 'win32');
 });
 
 test('imports the actual project from a single archive wrapper and filters its lock before copying', () => {
@@ -53,11 +87,16 @@ test('imports the actual project from a single archive wrapper and filters its l
   fs.mkdirSync(path.join(wrapped, '.aily'), { recursive: true });
   fs.writeFileSync(path.join(wrapped, 'package.json'), '{}'); fs.writeFileSync(path.join(wrapped, 'project.abi'), 'original');
   fs.writeFileSync(path.join(wrapped, '.aily/project-files.write.lock'), 'source owner');
+  const runtimeFiles = ['.workspace-history/snapshot.json', '.temp/cache', '.log/output', '.build/firmware.bin'];
+  for (const file of runtimeFiles) {
+    const full = path.join(wrapped, file); fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, file);
+  }
   const target = path.join(parent, 'copy with spaces');
   assert.equal(importProjectDirectory(source, target, true), target);
   assert.equal(fs.readFileSync(path.join(target, 'project.abi'), 'utf8'), 'original');
   assert.equal(fs.existsSync(path.join(target, '.aily/project-files.write.lock')), false);
   assert.equal(fs.readFileSync(path.join(wrapped, '.aily/project-files.write.lock'), 'utf8'), 'source owner');
+  for (const file of runtimeFiles) assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), file);
 });
 
 test('imports read-only archive metadata as writable copies without changing the source', () => {

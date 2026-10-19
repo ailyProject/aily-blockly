@@ -1909,9 +1909,6 @@ export class ProjectService {
       packageJson.nickname = name;
       if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
       window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
-      for (const directory of ['.temp', '.log', '.build']) {
-        await window['fsp'].rm(window['path'].join(path, directory), { recursive: true, force: true });
-      }
     } catch (error) {
       try { await window['fsp'].rm(path, { recursive: true, force: true }); }
       catch (cleanupError) { console.warn('清理未完成的 Blockly 另存为目录失败:', path, cleanupError); }
