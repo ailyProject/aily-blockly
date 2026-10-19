@@ -145,7 +145,7 @@
           <div id="SETTINGS.SECTIONS.COMPILATION" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.COMPILATION' | translate }}</h2>
             <div class="right-inner">
-              <div class="item">
+              <div class="item cloud-build-item">
                 <label for="cloud-compilation-enabled">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION' | translate }}:</label>
                 <nz-switch nzId="cloud-compilation-enabled" [ngModel]="cloudCompilationEnabled" [nzControl]="true"
                   [nzLoading]="cloudConnectionChecking || cloudConnectionSaving" [nzDisabled]="applying"
@@ -153,8 +153,10 @@
                   (keydown.arrowleft)="onCloudCompilationChange(false); $event.preventDefault()"
                   (keydown.arrowright)="onCloudCompilationChange(true); $event.preventDefault()"></nz-switch>
               </div>
-              <div class="cloud-build-description">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION_DESC' | translate }}</div>
-              <div class="cloud-build-status" role="status" aria-live="polite" aria-atomic="true">{{ cloudConnectionStatus }}</div>
+              <div class="cloud-build-details">
+                <div class="cloud-build-description">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION_DESC' | translate }}</div>
+                <div class="cloud-build-status" role="status" aria-live="polite" aria-atomic="true">{{ cloudConnectionStatus }}</div>
+              </div>
             </div>
           </div>
           <!-- 仓库设置 -->

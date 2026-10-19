@@ -398,6 +398,28 @@ ngx-simplebar {
   color: var(--aily-text-primary);
   line-height: 1.6;
 }
-// 开关说明和连接结果保持紧凑，检测状态变化时不会覆盖操作控件。
-.cloud-build-description { opacity: .7; font-size: 12px; margin: 8px 0 16px; }
-.cloud-build-status { font-size: 12px; line-height: 1.6; }
+// 与其他设置项共用 120px 标签列，保留 label 与开关的关联。
+.window-content .right .right-inner .cloud-build-item {
+  margin-bottom: 4px;
+
+  > label {
+    flex: 0 0 120px;
+    padding-right: 12px;
+  }
+}
+
+.cloud-build-details {
+  margin: 0 0 16px 120px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.cloud-build-description {
+  color: var(--aily-text-secondary);
+}
+
+.cloud-build-status:not(:empty) {
+  margin-top: 6px;
+}
