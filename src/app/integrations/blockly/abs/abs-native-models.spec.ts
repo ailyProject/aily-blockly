@@ -60,6 +60,39 @@ describe('native initializer model preparation', () => {
       .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CHANGED' }));
   });
 
+  for (const source of [
+    'variable_define("i")\ncontrols_for($i, null, null, null)',
+    'controls_for($i, null, null, null)\nvariable_define("i")',
+  ]) it('keeps loop identity bound to its producer when an ordinary declaration reuses it: ' + source, async () => {
+    const value = request(source);
+    value.steps = [{ kind: 'context', mode: 'arduino' }, { kind: 'definitions', definitions: [
+      { type: 'variable_define', message0: '%1', args0: [{ type: 'field_input', name: 'NAME', text: 'i' }],
+        previousStatement: null, nextStatement: null },
+      { type: 'controls_for', message0: '%1 %2 %3 %4 %5', args0: [
+        { type: 'field_variable', name: 'VAR' }, ...['FROM', 'TO', 'BY'].map(name => ({ type: 'input_value', name })),
+        { type: 'input_statement', name: 'DO' },
+      ], previousStatement: null, nextStatement: null },
+    ] }, { kind: 'script', label: 'ordinary-and-loop-declarations', source: `
+      function registerVariableToBlockly(name, type) { Blockly.getMainWorkspace().createVariable(name, type); }
+      Arduino.forBlock.variable_define = block => { registerVariableToBlockly(block.getFieldValue('NAME'), ''); return ''; };
+      Arduino.forBlock.controls_for = () => '';
+    ` }];
+    const result = await run(value), declarations = result.binding!.modelDeclarations!;
+    expect(declarations.length).toBe(1);
+    const effect = declarations[0], start = value.abs!.indexOf('controls_for');
+    expect(effect).toEqual(jasmine.objectContaining({ start, blockType: 'controls_for', kind: 'loop', name: 'i', type: '' }));
+    expect(effect.id).toBe(`abs-model:${value.modelRequestId}:${start}:0`);
+    const replay = await run({ ...value, variables: result.state['variables'],
+      identities: result.binding!.instances.map(item => ({ start: item.start, id: 'owned-' + item.start })), creations: [] });
+    expect(replay.binding!.modelDeclarations).toEqual(declarations);
+    const verify = { state: normalizeAbsSerializedWorkspace(replay.state),
+      contracts: { fields: Object.fromEntries(replay.binding!.instances.map(item => [item.id, item.shape.fields])) },
+      modelDeclarations: [{ ...effect, ownerId: 'owned-' + start }] };
+    await run({ blocks: [], steps: value.steps, verify });
+    await expectAsync(run({ ...value, abs: value.abs + '\nvariable_define("i")' }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CONFLICT' }));
+  });
+
   it('accepts the local-library scaffold declaration pattern and typed consumers in one ABS batch', async () => {
     const value = request('scaffold_read($output)\nscaffold_begin("output")');
     value.steps = [{ kind: 'context', mode: 'arduino' }, {
@@ -92,6 +125,32 @@ describe('native initializer model preparation', () => {
       modelDeclarations: [{ ...declaration, ownerId: result.binding!.instances.find(item => item.start === declaration.start)!.id }] } });
     await expectAsync(run({ ...value, abs: '# ABS Schema: 2\nscaffold_read($undeclared)' }))
       .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SYMBOL_MISSING' }));
+  });
+
+  for (const receiver of ['window', 'Arduino']) it('owns the registration helper on ' + receiver + ' and preserves its receiver', async () => {
+    const value = request('helper_read($sensor)\nhelper_init("sensor")');
+    value.steps = [{ kind: 'context', mode: 'arduino' }, { kind: 'definitions', definitions: [
+      { type: 'helper_init', message0: '%1', args0: [{ type: 'field_input', name: 'NAME', text: 'sensor' }], previousStatement: null, nextStatement: null },
+      { type: 'helper_read', message0: '%1', args0: [{ type: 'field_variable', name: 'VAR', variableTypes: ['Sensor'], defaultType: 'Sensor' }], output: 'Number' },
+    ] }, { kind: 'script', label: 'receiver-registration', source: `
+      delete window.registerVariableToBlockly;
+      ${receiver}.registerVariableToBlockly = function(name, type) {
+        if (this !== ${receiver}) throw new Error('Registration helper receiver changed');
+        Blockly.getMainWorkspace().createVariable(name, type);
+      };
+      Arduino.forBlock.helper_init = block => { ${receiver}.registerVariableToBlockly(block.getFieldValue('NAME'), 'Sensor'); return ''; };
+      Arduino.forBlock.helper_read = block => [block.getField('VAR').getVariable().name + '.read()', 0];
+    ` }];
+    const result = await run(value), effect = result.binding!.modelDeclarations![0];
+    expect(effect).toEqual(jasmine.objectContaining({ name: 'sensor', type: 'Sensor', blockType: 'helper_init' }));
+    await run({ blocks: [], steps: value.steps, verify: { state: normalizeAbsSerializedWorkspace(result.state),
+      contracts: { fields: Object.fromEntries(result.binding!.instances.map(item => [item.id, item.shape.fields])) },
+      modelDeclarations: [{ ...effect, ownerId: result.binding!.instances.find(item => item.start === effect.start)!.id }] } });
+    for (const target of ['window', 'Arduino']) {
+      const changed = { ...value, steps: [...value.steps, { kind: 'script' as const, label: 'replace-helper',
+        source: `Arduino.forBlock.helper_init = block => { ${target}.registerVariableToBlockly = () => {}; return ''; };` }] };
+      await expectAsync(run(changed)).toBeRejectedWithError(/replaced the model registration boundary/);
+    }
   });
 
   it('runs the installed DHT full generator and binds README syntax without manually creating DHT models', async () => {
