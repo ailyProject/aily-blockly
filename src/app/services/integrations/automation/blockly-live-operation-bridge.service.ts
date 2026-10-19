@@ -819,6 +819,7 @@ export class BlocklyLiveOperationBridgeService {
       project: this.projectService.currentProjectPath,
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,
+      result: toolResult.metadata?.['buildResult'],
       toolResult,
     };
   }

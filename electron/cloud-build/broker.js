@@ -402,8 +402,9 @@ class CloudBuildBroker {
       let lastSeq = 0;
       let logRequest;
       const pullLogs = advertisedLastSeq => {
-        if (logRequest || (Number.isSafeInteger(advertisedLastSeq) && advertisedLastSeq >= 0 && advertisedLastSeq <= lastSeq)) return;
-        // 日志异步读取，不能阻塞状态刷新或结果发布；同一时刻只有一个请求推进日志游标。
+        if (logRequest) return logRequest;
+        if (Number.isSafeInteger(advertisedLastSeq) && advertisedLastSeq >= 0 && advertisedLastSeq <= lastSeq) return;
+        // 运行期间异步读取，不阻塞状态刷新；失败返回前等待末尾诊断。
         logRequest = this.request(record.settings, `/api/v1/build/jobs/${record.jobId}/logs?afterSeq=${lastSeq}`, undefined,
           AbortSignal.any([record.controller.signal, record.logsController.signal])).then(logs => {
           for (const line of logs.logs || logs.entries || []) {
@@ -411,6 +412,7 @@ class CloudBuildBroker {
           }
         }).catch(() => { /* 日志失败不改变任务状态和签名产物的可信性。 */ })
           .finally(() => { logRequest = undefined; });
+        return logRequest;
       };
       const waitBudget = caps.statusWait?.version === 1 && Number.isSafeInteger(caps.statusWait.maxWaitMs)
         ? Math.min(Math.max(0, this.statusWaitMs), caps.statusWait.maxWaitMs, this.requestTimeoutMs - 2000) : 0;
@@ -447,7 +449,19 @@ class CloudBuildBroker {
         record.attempt = status.attempt;
         this.progress(record, { stage: status.stage || status.status, progress: status.progress ?? status.stageProgress ?? 0, status: status.status, attempt: status.attempt });
         pullLogs(status.lastSeq);
-        if (['failed', 'cancelled', 'timed_out'].includes(status.status)) throw protocol.error(status.error?.code || 'COMPILE_ERROR', status.error?.message || 'Cloud compilation failed.');
+        if (['failed', 'cancelled', 'timed_out'].includes(status.status)) {
+          // 状态可能先于日志请求完成。按终态游标补齐分页，避免 finally
+          // 取消尚未返回的编译器错误；日志不可用/不前进时仍返回原始失败。
+          if (status.status !== 'cancelled') {
+            let previousSeq;
+            do {
+              previousSeq = lastSeq;
+              await pullLogs(status.lastSeq);
+            } while (!record.controller.signal.aborted && lastSeq > previousSeq
+              && (!Number.isSafeInteger(status.lastSeq) || lastSeq < status.lastSeq));
+          }
+          throw protocol.error(status.error?.code || 'COMPILE_ERROR', status.error?.message || 'Cloud compilation failed.');
+        }
         if (status.status === 'succeeded') break;
       }
       await this.assertCurrent(record);

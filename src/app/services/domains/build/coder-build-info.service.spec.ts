@@ -212,6 +212,18 @@ describe('Coder build metadata', () => {
     expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
   });
 
+  it('preserves compiler diagnostics when a cloud-style error reaches the shared failure handler', async () => {
+    const detail = "src/main.cpp:4:3: error: 'missing_symbol' was not declared in this scope\n  4 | missing_symbol();";
+    const service = createCompiler(() => {
+      throw Object.assign(new Error('Compiler exited with code 1'), { fullStdErr: detail });
+    });
+    const result = await service.runCompileFromDisk({ projectPath: root });
+    expect(result.success).toBeFalse();
+    expect(result.result.fullStdErr).toBe(detail);
+    expect(result.result.text).toBe('Compiler exited with code 1');
+    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail);
+  });
+
   it('records successful compilation against the captured project even after a project switch', async () => {
     const service = createCompiler(() => {
       project.currentProjectPath = '/projects/other';

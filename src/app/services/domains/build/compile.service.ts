@@ -400,8 +400,9 @@ export class CompileService {
         return { success: false, result: { state: 'warn', text } };
       }
       this.message.error(msg);
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, msg);
-      return { success: false, result: { state: 'error', text: msg, fullStdErr: msg } };
+      const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail);
+      return { success: false, result: { state: 'error', text: msg, fullStdErr: detail } };
     } finally {
       // Cancellation resolves the UI command promptly, but metadata is another
       // workspace writer: wait for supervised process-tree cleanup first.

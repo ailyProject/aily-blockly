@@ -1729,10 +1729,10 @@ export class _BuilderService {
           reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
           return;
         }
-        const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
+        const fullErrorMessage = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
         this.handleCompileError(error.message, true, fullErrorMessage);
         this.workflowService.finishBuild(false, error.message);
-        reject({ state: 'error', text: error.message });
+        reject({ state: 'error', text: error.message, fullStdErr: fullErrorMessage });
       }
       })().catch(reject);
       });

@@ -33,6 +33,7 @@ export async function runProjectBuild(
     const stderr = stripAnsi(String(buildResult?.fullStdErr || ''));
     return {
       is_error: true,
+      metadata: { buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr } },
       content: JSON.stringify({
         success: false,
         message: `编译失败: ${buildResult?.text || error?.message || String(error)}`,

@@ -20,6 +20,7 @@ interface CloudBuildRunResult {
   state?: string;
   text?: string;
   artifactPath?: string;
+  fullStdErr?: string;
 }
 
 interface CloudBuildProgressBridge {
@@ -143,12 +144,29 @@ export async function runCloudBuildWithProgress(
     throw new Error('Cloud build bridge is unavailable; restart the desktop application.');
   }
   const buffer = new CloudBuildProgressBuffer(callbacks);
+  // Keep this invocation's raw output independently of the throttled UI buffer.
+  // Compiler diagnostics can arrive on stdout (e.g. Ninja), not just stderr.
+  const logs: string[] = [];
   let unsubscribe: (() => void) | void = undefined;
   try {
     unsubscribe = bridge.onProgress(event => {
-      if (event?.requestId === request.requestId && callbacks.isCurrent()) buffer.push(event);
+      if (event?.requestId === request.requestId && callbacks.isCurrent()) {
+        if (typeof event.log === 'string' && event.log) logs.push(event.log);
+        buffer.push(event);
+      }
     });
-    return await bridge.run(request);
+    const result = await bridge.run(request);
+    if (result?.success === false) {
+      throw Object.assign(new Error(result.text || 'Cloud compilation failed.'), result);
+    }
+    return result;
+  } catch (error) {
+    const message = error?.message || String(error);
+    const output = [error?.fullStdErr, ...logs].filter(text => typeof text === 'string' && text).join('\n');
+    // contextBridge may reject with a plain object; retain its code and message.
+    throw Object.assign(new Error(message), error, {
+      fullStdErr: output ? (output.includes(message) ? output : `${output}\n${message}`) : message,
+    });
   } finally {
     try { if (typeof unsubscribe === 'function') unsubscribe(); }
     finally { buffer.dispose(); }
