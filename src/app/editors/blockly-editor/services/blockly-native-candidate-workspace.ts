@@ -13,6 +13,7 @@ import { AbsSyncError, type AbsAbiBlock } from '../../../integrations/blockly/ab
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { initializeNativeCandidateBlock } from './blockly-native-graphics';
 import { assertNativeBudget } from './blockly-native-budget';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 const sameJsonValue = (actual: unknown, expected: unknown): boolean =>
   actual !== undefined && expected !== undefined && absJson(actual) === absJson(expected);
@@ -195,6 +196,7 @@ export class NativeCandidateWorkspace {
       this.assertClean();
     };
     assertOwnership(); assertValues();
+    captureCustomFunctionRegistration(this.native.Blocks)?.prepareSerialization(this.workspace);
     const state = this.native.serialization.workspaces.save(this.workspace);
     assertOwnership();
     if (Object.keys(state).some(key => !['blocks', 'variables'].includes(key))) throw new Error('Native serialization created unrequested models.');
