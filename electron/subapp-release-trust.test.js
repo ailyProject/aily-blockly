@@ -38,6 +38,7 @@ test('verifies the generic signed Subapp entry against exact downloaded bytes', 
     indexUrl: INDEX_URL,
     policies,
     tarballPath: fixture.tarballPath,
+    platform: 'win32', arch: 'x64',
   });
 
   assert.equal(result.verified, true);
@@ -55,6 +56,8 @@ test('manager verifies signed bytes before extraction and never falls back on ta
   let tamperDownload = true;
   const manager = createSubappManager({
     rootDir,
+    updateRootDir: path.join(rootDir, 'updates'),
+    platform: 'win32', arch: 'x64',
     indexUrl: INDEX_URL,
     releaseTrustPolicies: [fixture.policy],
     fetchImpl: async () => ({
@@ -106,6 +109,8 @@ test('manager rejects stripped or untrusted signed distribution metadata before 
       let downloads = 0;
       const manager = createSubappManager({
         rootDir,
+        updateRootDir: path.join(rootDir, 'updates'),
+        platform: 'win32', arch: 'x64',
         indexUrl: INDEX_URL,
         releaseTrustPolicies: testCase.policies,
         fetchImpl: async () => ({
@@ -128,7 +133,28 @@ test('manager rejects stripped or untrusted signed distribution metadata before 
   }
 });
 
-function createSignedFixture(t) {
+test('platform-specific trust policies coexist and reject signatures for another host', async t => {
+  const windows = createSignedFixture(t, 'win32-x64');
+  const mac = createSignedFixture(t, 'darwin-arm64');
+  const policies = normalizeSubappReleaseTrustPolicies([windows.policy, mac.policy]);
+  assert.equal(policies.length, 2);
+
+  for (const [fixture, platform, arch] of [[windows, 'win32', 'x64'], [mac, 'darwin', 'arm64']]) {
+    const verified = await verifyDownloadedSubappDistribution({ entry: fixture.entry, indexUrl: INDEX_URL,
+      policies, tarballPath: fixture.tarballPath, platform, arch });
+    assert.equal(verified.verified, true);
+    assert.equal(requiresTrustedSubappDistribution({ ...fixture.entry, distribution: undefined },
+      INDEX_URL, policies, { platform, arch }), true);
+  }
+
+  await assert.rejects(verifyDownloadedSubappDistribution({ entry: windows.entry, indexUrl: INDEX_URL,
+    policies, tarballPath: windows.tarballPath, platform: 'darwin', arch: 'arm64' }),
+  error => error.code === 'SUBAPP_RELEASE_TRUST_FAILED');
+  assert.throws(() => normalizeSubappReleaseTrustPolicies([mac.policy, mac.policy]),
+    error => error.code === 'SUBAPP_RELEASE_TRUST_FAILED');
+});
+
+function createSignedFixture(t, platform = 'win32-x64') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-release-fixture-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const tarballPath = path.join(root, 'aily-simulator-0.1.0.tgz');
@@ -146,7 +172,7 @@ function createSignedFixture(t) {
     subappId: 'aily-simulator',
     packageName: '@aily-project/aily-simulator',
     packageVersion: '0.1.0',
-    platform: 'win32-x64',
+    platform,
     registryOrigin: REGISTRY_ORIGIN,
     tarballUrl,
     tarballIntegrity,
@@ -173,7 +199,7 @@ function createSignedFixture(t) {
   const distribution = validateSubappDistribution({
     schemaVersion: 1,
     channel: 'stable',
-    platform: 'win32-x64',
+    platform,
     tarballUrl,
     tarballIntegrity,
     releaseSignature: signature,
@@ -205,7 +231,7 @@ function createSignedFixture(t) {
       kind: 'aily-subapp-release-trusted-inputs',
       subappId: 'aily-simulator',
       packageName: '@aily-project/aily-simulator',
-      platform: 'win32-x64',
+      platform,
       registryOrigin: REGISTRY_ORIGIN,
       subappIndexOrigin: 'https://subapps.example.invalid',
       releasePublicKeys: {

@@ -2,6 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   readFileSync,
   realpathSync,
@@ -47,6 +48,9 @@ const cliSource = readFileSync(
 if (!cliSource.startsWith('#!/usr/bin/env node\n')) {
   throw new Error('dist/main.js 缺少 Node shebang，npm CLI shim 将无法可靠执行。');
 }
+
+// tsc recreates the target; npm may retain an existing global link without restoring its mode.
+if (process.platform !== 'win32') chmodSync(path.join(builderRoot, 'dist', 'main.js'), 0o755);
 
 run('npm', [
   'install',

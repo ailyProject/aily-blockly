@@ -407,8 +407,12 @@ if (shouldUseMultiInstance()) {
   }
 }
 
-for (const protocol of PROTOCOLS) {
-  app.removeAsDefaultProtocolClient(protocol);
+const usesMacDevelopmentProtocol = process.platform === 'darwin' && process.defaultApp;
+
+if (!usesMacDevelopmentProtocol) {
+  for (const protocol of PROTOCOLS) {
+    app.removeAsDefaultProtocolClient(protocol);
+  }
 }
 
 const args = process.argv.slice(1);
@@ -442,6 +446,9 @@ if (serve) {
 
 // 注册协议处理
 for (const protocol of PROTOCOLS) {
+  // macOS development registers its dedicated receiver when login starts.
+  if (usesMacDevelopmentProtocol) continue;
+
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(protocol, process.execPath, createDevelopmentProtocolArgs({
@@ -3592,7 +3599,18 @@ ipcMain.on("host-auth-state-changed", (event, data = {}) => {
 ipcMain.handle("host-auth-state-get", () => ({ ...hostAuthState }));
 
 // OAuth状态管理的IPC处理器
-ipcMain.handle("oauth-register-state", (event, state) => {
+ipcMain.handle("oauth-register-state", async (event, state) => {
+  if (usesMacDevelopmentProtocol) {
+    const { registerMacDevelopmentProtocol } = require('./macos-development-protocol');
+    await registerMacDevelopmentProtocol({
+      cacheRoot: path.join(app.getPath('home'), 'Library', 'Caches', 'aily-development-protocol'),
+      executable: process.execPath,
+      appEntry: path.resolve(process.argv[1]),
+      product: getBuildProduct(),
+      serve,
+    });
+  }
+
   return registerOAuthInstance(state);
 });
 

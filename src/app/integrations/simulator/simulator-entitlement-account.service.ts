@@ -1,5 +1,10 @@
 import { Injectable } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom, fromEvent, Subscription, takeUntil, timeout } from 'rxjs';
+import { validateSignedSimulatorEntitlementLease, validateSignedSimulatorEntitlementRevocations } from '@aily-project/simulator-protocol/entitlement';
+import type { SimulatorSubappHostEntitlementLeaseRequestV1 } from '@aily-project/simulator-protocol/host';
+import type { SimulatorEntitlementHostLeaseDecision } from '@aily-project/simulator-host-sdk';
+import { API } from '../../configs/api.config';
 
 import { AuthService } from '@core/auth/public-api';
 import type {
@@ -11,7 +16,9 @@ import type {
 @Injectable({ providedIn: 'root' })
 export class SimulatorEntitlementAccountService
 implements SimulatorEntitlementAccountPort {
-  constructor(private readonly auth: AuthService) {}
+  private deliveredScope: { generation: number; endpoint: string } | null = null;
+
+  constructor(private readonly auth: AuthService, private readonly http: HttpClient) {}
 
   readSnapshot(): SimulatorEntitlementAccountSnapshot {
     const initialization = this.auth.getAuthInitializationState();
@@ -25,6 +32,64 @@ implements SimulatorEntitlementAccountPort {
             : 'checking',
       connectivity: readConnectivity(),
     });
+  }
+
+  async requestLease(
+    request: SimulatorSubappHostEntitlementLeaseRequestV1,
+    signal: AbortSignal,
+  ): Promise<SimulatorEntitlementHostLeaseDecision> {
+    signal.throwIfAborted();
+    const generation = this.auth.getAuthCredentialGeneration();
+    const endpoint = API.simulatorEntitlementLease;
+    const unavailable = (): SimulatorEntitlementHostLeaseDecision => ({
+      disposition: 'unavailable',
+      unavailableReason: this.readSnapshot().state === 'signed-out'
+        || this.deliveredScope !== null && (this.deliveredScope.generation !== generation
+          || this.deliveredScope.endpoint !== endpoint)
+        || this.auth.getAuthCredentialGeneration() !== generation
+        || API.simulatorEntitlementLease !== endpoint
+        ? 'sign-in-required' : 'temporarily-unavailable',
+      lease: null,
+      revocations: null,
+    });
+
+    if (this.readSnapshot().state !== 'authenticated') return unavailable();
+
+    try {
+      // The existing account interceptor owns bearer tokens and refresh. Only
+      // signed public artifacts cross the Simulator Host Provider boundary.
+      const response = await firstValueFrom(this.http.post<unknown>(endpoint, {
+        product: 'aily-simulator', currentLeaseId: request.currentLeaseId,
+      }).pipe(timeout(15_000), takeUntil(fromEvent(signal, 'abort'))));
+
+      signal.throwIfAborted();
+
+      if (this.auth.getAuthCredentialGeneration() !== generation
+        || API.simulatorEntitlementLease !== endpoint
+        || this.readSnapshot().state !== 'authenticated') return unavailable();
+
+      if (!response || typeof response !== 'object' || Array.isArray(response)) return unavailable();
+
+      const envelope = response as Record<string, unknown>;
+      const data = envelope['data'];
+
+      if (envelope['status'] !== 200 || !data || typeof data !== 'object' || Array.isArray(data)
+        || Object.keys(data).sort().join(',') !== 'lease,revocations') return unavailable();
+
+      const signed = data as Record<string, unknown>;
+
+      const decision = Object.freeze({ disposition: 'granted' as const, unavailableReason: null,
+        lease: validateSignedSimulatorEntitlementLease(signed['lease']),
+        revocations: validateSignedSimulatorEntitlementRevocations(signed['revocations']) });
+
+      this.deliveredScope = { generation, endpoint };
+
+      return decision;
+    } catch {
+      signal.throwIfAborted();
+
+      return unavailable();
+    }
   }
 
   subscribe(

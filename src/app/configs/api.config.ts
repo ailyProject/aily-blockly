@@ -81,6 +81,7 @@ export const API = {
   get creditSnapshot() { return `${getServerUrl()}/api/v1/credits/me`; },
   get changeNickname() { return `${getServerUrl()}/api/v1/auth/me/nickname`; },
   get benefits() { return `${getServerUrl()}/api/v1/entitlements/me/benefits`; },
+  get simulatorEntitlementLease() { return `${getServerUrl()}/api/v1/entitlements/simulator/lease`; },
   // invitation
   get invitationValidateCompile() { return `${getServerUrl()}/api/v1/invitation/validate-compile`; },
   // github oauth

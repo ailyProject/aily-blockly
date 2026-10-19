@@ -21,6 +21,8 @@ const { acquireInstallLock: acquireUpdateLock } = require('./subapp-install-lock
 const { extractNpmTarballInBackground } = require('./subapp-package-worker-client');
 const { resolveAilyNpmPrefix } = require('./appdata-path');
 const subappBinRouter = require('./subapp-bin-router');
+const { validateDistribution, validatePlatformDistributions, selectSubappPlatformEntry,
+  selectSubappPlatformIndex, assertPackagePlatform } = require('./subapp-platform-distribution');
 
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
@@ -167,20 +169,6 @@ function validateUpdatePolicy(value, id) {
   };
 }
 
-function validateDistribution(value, id) {
-  if (value === undefined) return null;
-  if (!isObject(value)) throw new Error(`${id} dist must be an object`);
-  const tarball = requireText(value.tarball, `${id} dist.tarball`);
-  if (!/^https?:\/\//i.test(tarball)) {
-    throw new Error(`${id} dist.tarball must be an HTTP(S) URL`);
-  }
-  const integrity = requireText(value.integrity, `${id} dist.integrity`);
-  if (!/^(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2}$/.test(integrity)) {
-    throw new Error(`${id} dist.integrity must be a supported SRI digest`);
-  }
-  return { tarball, integrity };
-}
-
 function validateIndex(rawIndex) {
   if (!isObject(rawIndex)) {
     throw new Error('Subapp index must be a JSON object');
@@ -208,6 +196,7 @@ function validateIndex(rawIndex) {
     const defaultLocale = normalizeLocale(i18n.defaultLocale || 'en');
     const update = validateUpdatePolicy(rawEntry.update, id);
     const dist = validateDistribution(rawEntry.dist, id);
+    const platforms = validatePlatformDistributions(rawEntry.platforms, id);
 
     index[id] = {
       ...rawEntry,
@@ -243,6 +232,7 @@ function validateIndex(rawIndex) {
       },
       ...(update ? { update } : {}),
       ...(dist ? { dist } : {}),
+      ...(platforms ? { platforms } : {}),
       ...(isObject(rawEntry.compatibility) ? { compatibility: rawEntry.compatibility } : {}),
       ...(rawEntry.distribution !== undefined
         ? { distribution: validateSubappDistribution(rawEntry.distribution) }
@@ -944,6 +934,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           installedState,
           meta.updateOperations?.get(`${entry.id}@${entry.version}`) || null,
           rootDir,
+          meta,
         );
         const copy = resolveLocalizedCopy(entry, locale);
         const toolId = TOOL_ID_ALIASES[entry.id] || entry.id;
@@ -1480,7 +1471,7 @@ function verifyStagedAssets(updateRootDir, record) {
   return paths;
 }
 
-function readSubappUpdateStatus(updateRootDir, entry, installedState, operation = null, rootDir = null) {
+function readSubappUpdateStatus(updateRootDir, entry, installedState, operation = null, rootDir = null, options = {}) {
   const targetVersion = entry.version;
   if (installedState.development
     || installedState.localNext
@@ -1503,7 +1494,7 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
 
   if (rootDir) {
     try {
-      const prepared = readPreparedVersion(rootDir, entry);
+      const prepared = readPreparedVersion(rootDir, entry, options);
       if (prepared) return { state: 'ready', targetVersion, ready: true, downloadedAt: prepared.installedAt };
     } catch (error) {
       return { state: 'failed', targetVersion, ready: false, error: error.message };
@@ -1546,8 +1537,11 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
 }
 
 // Extraction and dependency resolution happen in a private generation. Activation never runs npm.
-function validatePreparedPackage(packagePath, entry) {
+function validatePreparedPackage(packagePath, entry, options = {}) {
   const manifest = readJson(path.join(packagePath, 'package.json'));
+
+  assertPackagePlatform(manifest, options);
+
   if (manifest.name !== entry.package || manifest.version !== entry.version) {
     throw new Error(`Prepared subapp package identity does not match: ${entry.id}@${entry.version}`);
   }
@@ -1606,14 +1600,25 @@ function portablePackageStatus(packagePath, manifest, options = {}) {
   return { portable: true };
 }
 
-function readPreparedVersion(rootDir, entry) {
+function readPreparedVersion(rootDir, entry, options = {}) {
   const prepared = versions.readPrepared(rootDir, entry);
   if (!prepared) return null;
-  validatePreparedPackage(prepared.packagePath, entry);
+  validatePreparedPackage(prepared.packagePath, entry, options);
+
+  const expected = entry.distribution
+    ? { tarball: entry.distribution.tarballUrl, integrity: entry.distribution.tarballIntegrity } : entry.dist;
+
+  if (expected && (prepared.integrity !== expected.integrity
+    || prepared.distribution?.tarball !== expected.tarball)) {
+    throw new Error(`Prepared subapp distribution does not match: ${entry.id}@${entry.version}`);
+  }
   return prepared;
 }
 
 async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
+  entry = selectSubappPlatformEntry(entry, options);
+  if (!entry) throw new Error(`Subapp has no distribution for ${options.platform || process.platform}-${options.arch || process.arch}`);
+
   const trusted = trustedPackageDistribution(entry, options);
   const lockRoot = path.join(rootDir, 'store', '.locks', versions.storeKeyForPackage(entry.package));
   const release = await waitForUpdateLock(lockRoot);
@@ -1625,7 +1630,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
     }
     if (!options.reinstall) {
       try {
-        const existing = readPreparedVersion(rootDir, entry);
+        const existing = readPreparedVersion(rootDir, entry, options);
         if (existing) return existing;
       } catch {
         // Repair into a new generation; never overwrite files a running process may hold.
@@ -1637,7 +1642,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
     const bundle = options.bundledCoderFallback;
     const distribution = trusted
       ? { tarball: trusted.tarballUrl, integrity: trusted.tarballIntegrity }
-      : bundle ? null : (options.distribution || await resolvePackageDistribution(entry, npmRunner, options));
+      : bundle ? null : (entry.dist || options.distribution || await resolvePackageDistribution(entry, npmRunner, options));
     const source = bundle?.tarballPath || options.tarballPath;
     if (source) {
       await fs.promises.copyFile(source, tarball);
@@ -1649,12 +1654,13 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
     tracker?.setDownload(100);
     if (trusted) await verifyDownloadedSubappDistribution({
       entry, indexUrl: options.indexUrl, policies: options.releaseTrustPolicies, tarballPath: tarball,
+      platform: options.platform, arch: options.arch,
     });
     await extractNpmTarballInBackground(tarball, candidate.source, {
       integrity: bundle?.integrity || distribution.integrity,
       onProgress: percent => tracker?.setExtract(percent),
     });
-    let { manifest } = validatePreparedPackage(candidate.source, entry);
+    let { manifest } = validatePreparedPackage(candidate.source, entry, options);
     let portability = portablePackageStatus(candidate.source, manifest, options);
     if (bundle && !portability.portable) {
       // The application-owned offline fallback is validated as a self-contained artifact below.
@@ -1669,7 +1675,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
         '--foreground-scripts', '--cache', path.join(rootDir, 'store', versions.storeKeyForPackage(entry.package), 'download-cache', 'npm-cache'),
         '--prefer-offline',
       ], withProgressOutput({ ...options, cwd: npmSource }, tracker));
-      ({ manifest } = validatePreparedPackage(candidate.source, entry));
+      ({ manifest } = validatePreparedPackage(candidate.source, entry, options));
     }
     if (bundle) {
       if (manifest.ailySubapp?.id !== entry.id
@@ -2337,7 +2343,7 @@ async function renamePackagePathWithForceClose(src, dest, entry, options = {}) {
 }
 
 async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
-  let prepared = readPreparedVersion(rootDir, entry);
+  let prepared = readPreparedVersion(rootDir, entry, options);
   if (!prepared) {
     const record = readUpdateRecord(updateRootDir, entry);
     if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
@@ -2365,16 +2371,22 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
 }
 
 function trustedPackageDistribution(entry, options) {
-  const required = requiresTrustedSubappDistribution(entry, options.indexUrl, options.releaseTrustPolicies);
+  if (entry.distribution && entry.distribution.platform !== `${options.platform || process.platform}-${options.arch || process.arch}`) {
+    throw new SubappReleaseTrustError('Subapp signed distribution does not match the host platform.');
+  }
+
+  const required = requiresTrustedSubappDistribution(entry, options.indexUrl, options.releaseTrustPolicies, options);
   if (required && !entry.distribution) throw new SubappReleaseTrustError(`A signed distribution is required for ${entry.package}@${entry.version}.`);
   if (!required && entry.distribution) throw new SubappReleaseTrustError(`No trusted release policy matches ${entry.package}@${entry.version}.`);
   return required ? entry.distribution : null;
 }
 
 async function activatePreparedSubapp(rootDir, entry, prepared, options) {
+  validatePreparedPackage(prepared.packagePath, entry, options);
   if (trustedPackageDistribution(entry, options)) await verifyDownloadedSubappDistribution({
     entry, indexUrl: options.indexUrl, policies: options.releaseTrustPolicies,
     tarballPath: path.join(prepared.project, 'package.tgz'),
+    platform: options.platform, arch: options.arch,
   });
   // Version-store activation is an atomic pointer update. Check the candidate
   // first; failure leaves the previous active version and its runtime untouched.
@@ -2595,6 +2607,12 @@ function createSubappManager(options = {}) {
   }
 
   async function loadIndex(strategy = 'network-first') {
+    const loaded = await loadCatalogIndex(strategy);
+
+    return { ...loaded, index: selectSubappPlatformIndex(loaded.index, options) };
+  }
+
+  async function loadCatalogIndex(strategy = 'network-first') {
     const bundle = readBundledCoderFallback(options);
     if (!bundle) return loadConfiguredIndex(strategy);
     let loaded;
@@ -2744,6 +2762,8 @@ function createSubappManager(options = {}) {
       ...meta,
       updateRootDir,
       updateOperations,
+      platform: options.platform,
+      arch: options.arch,
     });
     for (const item of state.apps) {
       const runningConfig = options.getRunningSubappConfig?.(item.id);
@@ -2852,7 +2872,7 @@ function createSubappManager(options = {}) {
         continue;
       }
       const key = updateKey(entry);
-      const status = readSubappUpdateStatus(updateRootDir, entry, installedState, null, rootDir);
+      const status = readSubappUpdateStatus(updateRootDir, entry, installedState, null, rootDir, options);
       const canDownload = status.state === 'available'
         || (status.state === 'failed' && status.ready !== true);
       if (!canDownload || backgroundAttempts.has(key)) continue;
@@ -2886,7 +2906,7 @@ function createSubappManager(options = {}) {
         && index.dev !== true && !installed.development && !installed.localNext && installed.installed
         && hasUpdate(installed.installedVersion, entry.version)) {
         try {
-          const prepared = readPreparedVersion(rootDir, entry);
+          const prepared = readPreparedVersion(rootDir, entry, options);
           if (prepared) {
             await activatePreparedSubapp(rootDir, entry, prepared, { ...options, indexUrl: resolveIndexUrl(), releaseTrustPolicies });
             installed = readInstalledState(rootDir, entry);
@@ -2897,6 +2917,8 @@ function createSubappManager(options = {}) {
         }
       }
       if (!installed.installed) throw new Error(`Subapp is not installed: ${entry.id}`);
+
+      assertPackagePlatform(readJson(path.join(installed.packagePath, 'package.json')), options);
       return { config: installed.config, release };
     } catch (error) {
       release();
@@ -2974,7 +2996,7 @@ function createSubappManager(options = {}) {
           const downloading = backgroundDownloads.get(updateKey(entry));
           if (downloading) await downloading;
           if (action === 'install-update') {
-            prepared = readPreparedVersion(rootDir, entry);
+            prepared = readPreparedVersion(rootDir, entry, options);
             if (!prepared) {
               const record = readUpdateRecord(updateRootDir, entry);
               if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
