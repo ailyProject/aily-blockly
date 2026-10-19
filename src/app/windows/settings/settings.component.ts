@@ -136,9 +136,9 @@ export class SettingsComponent implements OnDestroy {
 
   get items() {
     // 独立 Coder 的启动/构建身份决定可用设置，不改写共享 Blockly 配置。
-    return this.coderProduct
-      ? this.sectionItems.filter(item => item.name !== 'SETTINGS.SECTIONS.BLOCKLY')
-      : this.sectionItems;
+    return this.sectionItems.filter(item =>
+      (item.name !== 'SETTINGS.SECTIONS.BLOCKLY' || !this.coderProduct)
+      && (item.name !== 'SETTINGS.SECTIONS.COMPILATION' || this.showCloudCompilation));
   }
 
   // 缓存管理
@@ -395,6 +395,7 @@ export class SettingsComponent implements OnDestroy {
   cloudConnectionStatus = '';
   private cloudConnectionRequestId = 0;
 
+  get showCloudCompilation(): boolean { return window['platform']?.type === 'win32'; }
   get cloudCompilationEnabled(): boolean { return this.configService.getCompileBackend() === 'cloud'; }
 
   private invalidateCloudConnectionCheck(): void {
