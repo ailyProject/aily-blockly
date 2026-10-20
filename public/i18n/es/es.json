@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "No se pudo procesar el inicio de sesión. Inténtelo de nuevo"
     },
     "COMMON": {
+    "RESTART": "Reiniciar",
+    "LOADING_WITH_NAME": "Cargando {{name}}…",
         "FEATURE_COMING_SOON": "Función próximamente",
         "AUTH_SESSION_REPLACED_NOTICE": "Esta cuenta inició sesión en otro dispositivo. Se cerró la sesión en este dispositivo. Vuelva a iniciar sesión.",
         "SAFE_LOGOUT_TITLE": "¿Cerrar sesión?",

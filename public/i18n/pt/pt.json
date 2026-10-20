@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "Não foi possível processar o login. Tente novamente"
     },
     "COMMON": {
+    "RESTART": "Reiniciar",
+    "LOADING_WITH_NAME": "Carregando {{name}}…",
         "FEATURE_COMING_SOON": "Recurso em breve",
         "AUTH_SESSION_REPLACED_NOTICE": "Esta conta iniciou sessão noutro dispositivo. A sessão neste dispositivo foi terminada. Inicie sessão novamente.",
         "SAFE_LOGOUT_TITLE": "Sair?",

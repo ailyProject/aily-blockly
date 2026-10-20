@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "فشلت معالجة تسجيل الدخول. يرجى المحاولة مرة أخرى"
     },
     "COMMON": {
+    "RESTART": "إعادة التشغيل",
+    "LOADING_WITH_NAME": "جارٍ تحميل {{name}}…",
         "FEATURE_COMING_SOON": "الميزة قادمة قريباً",
         "AUTH_SESSION_REPLACED_NOTICE": "تم تسجيل الدخول إلى هذا الحساب على جهاز آخر. تم تسجيل خروجك من هذا الجهاز. يرجى تسجيل الدخول مرة أخرى.",
         "SAFE_LOGOUT_TITLE": "تسجيل الخروج؟",

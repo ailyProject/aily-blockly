@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "Не удалось обработать вход. Повторите попытку"
     },
     "COMMON": {
+    "RESTART": "Перезапустить",
+    "LOADING_WITH_NAME": "Загрузка {{name}}…",
         "FEATURE_COMING_SOON": "Функция скоро появится",
         "AUTH_SESSION_REPLACED_NOTICE": "В эту учетную запись вошли на другом устройстве. Сеанс на этом устройстве завершен. Войдите снова.",
         "SAFE_LOGOUT_TITLE": "Выйти?",

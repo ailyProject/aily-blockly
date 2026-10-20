@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "로그인 처리에 실패했습니다. 다시 시도하세요"
     },
     "COMMON": {
+    "RESTART": "다시 시작",
+    "LOADING_WITH_NAME": "{{name}} 로드 중…",
         "FEATURE_COMING_SOON": "기능 출시 예정",
         "AUTH_SESSION_REPLACED_NOTICE": "이 계정이 다른 기기에서 로그인되어 현재 기기의 로그인이 만료되었습니다. 다시 로그인해 주세요.",
         "SAFE_LOGOUT_TITLE": "로그아웃할까요?",

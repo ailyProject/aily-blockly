@@ -77,7 +77,7 @@
   <div class="child-host-header-actions">
     @if (!isNativeObserver) {
     <button class="child-host-header-btn ccenter" type="button" [disabled]="hostStatus === 'starting'"
-      (click)="restart()" nz-tooltip nzTooltipPlacement="bottom" nzTooltipTitle="Restart" aria-label="Restart">
+      (click)="restart()" nz-tooltip nzTooltipPlacement="bottom" [nzTooltipTitle]="'COMMON.RESTART' | translate" [attr.aria-label]="'COMMON.RESTART' | translate">
       <i class="fa-light fa-rotate-right"></i>
     </button>
     }
@@ -100,7 +100,7 @@
       @if (isLoading) {
       <div class="host-overlay loading" role="status" aria-live="polite" aria-busy="true">
         <div class="host-loading-spinner" aria-hidden="true"></div>
-        <div class="host-loading-text">{{ titleKey | translate }}加载中</div>
+        <div class="host-loading-text">{{ 'COMMON.LOADING_WITH_NAME' | translate: { name: (titleKey | translate) } }}</div>
       </div>
       }
 

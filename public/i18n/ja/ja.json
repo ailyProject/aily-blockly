@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "ログイン処理に失敗しました。もう一度お試しください"
     },
     "COMMON": {
+    "RESTART": "再起動",
+    "LOADING_WITH_NAME": "{{name}} を読み込み中…",
         "FEATURE_COMING_SOON": "機能は近日公開予定",
         "AUTH_SESSION_REPLACED_NOTICE": "このアカウントは別のデバイスでログインされました。このデバイスのログインは無効になりました。再度ログインしてください。",
         "SAFE_LOGOUT_TITLE": "ログアウトしますか？",
