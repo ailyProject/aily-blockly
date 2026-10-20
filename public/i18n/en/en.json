@@ -1427,19 +1427,20 @@
         "ERR_CREATE_FAILED": "Failed to create project. Please try again."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Reused verified build result (time: {{seconds}}s)",
+        "REUSED_RESULT": "Reused verified cloud build result (time: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Cloud build complete (time: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "Preparing build inputs",
-            "UPLOADING": "Uploading build inputs",
-            "QUEUED": "Waiting in the build queue",
-            "DISPATCHING": "Assigning a build server",
-            "PREPARING": "Preparing the build environment",
-            "RESOURCES": "Preparing build resources",
+            "CAPTURING": "Preparing cloud build inputs",
+            "UPLOADING": "Uploading cloud build inputs",
+            "QUEUED": "Waiting in the cloud build queue",
+            "DISPATCHING": "Assigning a cloud build server",
+            "PREPARING": "Preparing the cloud build environment",
+            "RESOURCES": "Preparing cloud build resources",
             "ANALYZING": "Analyzing the project",
             "COMPILING": "Compiling in the cloud",
-            "FINALIZING": "Checking build outputs",
-            "DOWNLOADING": "Downloading build outputs",
-            "VERIFYING": "Verifying build outputs",
+            "FINALIZING": "Checking cloud build outputs",
+            "DOWNLOADING": "Downloading cloud build outputs",
+            "VERIFYING": "Verifying cloud build outputs",
             "RECONNECTING": "Reconnecting to the gateway",
             "COMPLETE": "Cloud build complete"
         }

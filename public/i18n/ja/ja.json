@@ -1270,19 +1270,20 @@
         "ERR_CREATE_FAILED": "プロジェクトの作成に失敗しました。もう一度お試しください。"
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "検証済みのビルド結果を再利用しました (所要時間: {{seconds}}s)",
+        "REUSED_RESULT": "検証済みのクラウドビルド結果を再利用しました (所要時間: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "クラウドビルドが完了しました (所要時間: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "ビルド用ファイルを準備中",
-            "UPLOADING": "ビルド用ファイルをアップロード中",
-            "QUEUED": "ビルドの順番待ち",
-            "DISPATCHING": "ビルドサーバーを割り当て中",
-            "PREPARING": "ビルド環境を準備中",
-            "RESOURCES": "ビルドリソースを準備中",
+            "CAPTURING": "クラウドビルド用ファイルを準備中",
+            "UPLOADING": "クラウドビルド用ファイルをアップロード中",
+            "QUEUED": "クラウドビルドの順番待ち",
+            "DISPATCHING": "クラウドビルドサーバーを割り当て中",
+            "PREPARING": "クラウドビルド環境を準備中",
+            "RESOURCES": "クラウドビルドリソースを準備中",
             "ANALYZING": "プロジェクトを解析中",
             "COMPILING": "クラウドでコンパイル中",
-            "FINALIZING": "ビルド成果物を確認中",
-            "DOWNLOADING": "ビルド成果物をダウンロード中",
-            "VERIFYING": "ビルド成果物を検証中",
+            "FINALIZING": "クラウドビルド成果物を確認中",
+            "DOWNLOADING": "クラウドビルド成果物をダウンロード中",
+            "VERIFYING": "クラウドビルド成果物を検証中",
             "RECONNECTING": "ゲートウェイに再接続中",
             "COMPLETE": "クラウドビルドが完了しました"
         }

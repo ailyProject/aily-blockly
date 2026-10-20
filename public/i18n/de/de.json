@@ -1270,19 +1270,20 @@
         "ERR_CREATE_FAILED": "Projekt konnte nicht erstellt werden. Bitte erneut versuchen."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Geprüftes Build-Ergebnis wiederverwendet (Dauer: {{seconds}}s)",
+        "REUSED_RESULT": "Geprüftes Cloud-Build-Ergebnis wiederverwendet (Dauer: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Cloud-Build abgeschlossen (Dauer: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "Build-Eingaben werden vorbereitet",
-            "UPLOADING": "Build-Eingaben werden hochgeladen",
-            "QUEUED": "Warten in der Build-Warteschlange",
-            "DISPATCHING": "Build-Server wird zugewiesen",
-            "PREPARING": "Build-Umgebung wird vorbereitet",
-            "RESOURCES": "Build-Ressourcen werden vorbereitet",
+            "CAPTURING": "Cloud-Build-Eingaben werden vorbereitet",
+            "UPLOADING": "Cloud-Build-Eingaben werden hochgeladen",
+            "QUEUED": "Warten in der Cloud-Build-Warteschlange",
+            "DISPATCHING": "Cloud-Build-Server wird zugewiesen",
+            "PREPARING": "Cloud-Build-Umgebung wird vorbereitet",
+            "RESOURCES": "Cloud-Build-Ressourcen werden vorbereitet",
             "ANALYZING": "Projekt wird analysiert",
             "COMPILING": "Kompilierung in der Cloud",
-            "FINALIZING": "Build-Ausgaben werden geprüft",
-            "DOWNLOADING": "Build-Ausgaben werden heruntergeladen",
-            "VERIFYING": "Build-Ausgaben werden verifiziert",
+            "FINALIZING": "Cloud-Build-Ausgaben werden geprüft",
+            "DOWNLOADING": "Cloud-Build-Ausgaben werden heruntergeladen",
+            "VERIFYING": "Cloud-Build-Ausgaben werden verifiziert",
             "RECONNECTING": "Verbindung zum Gateway wird wiederhergestellt",
             "COMPLETE": "Cloud-Build abgeschlossen"
         }

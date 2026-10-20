@@ -1788,7 +1788,7 @@ export class _BuilderService {
       if (result?.success !== true || result?.state !== 'done') throw new Error(result?.text || 'Cloud compilation failed.');
       const seconds = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
       return { state: 'done', text: result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
-        : this.t('COMPLETE_WITH_TIME', { seconds }), desc: result.artifactPath };
+        : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds }), desc: result.artifactPath };
     } finally {
       await this.cloudCancelPromise;
     }

@@ -1270,19 +1270,20 @@
         "ERR_CREATE_FAILED": "프로젝트 생성에 실패했습니다. 다시 시도해 주세요."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "검증된 빌드 결과를 재사용했습니다 (소요 시간: {{seconds}}s)",
+        "REUSED_RESULT": "검증된 클라우드 빌드 결과를 재사용했습니다 (소요 시간: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "클라우드 빌드 완료 (소요 시간: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "빌드 파일 준비 중",
-            "UPLOADING": "빌드 파일 업로드 중",
-            "QUEUED": "빌드 대기열에서 대기 중",
-            "DISPATCHING": "빌드 서버 할당 중",
-            "PREPARING": "빌드 환경 준비 중",
-            "RESOURCES": "빌드 리소스 준비 중",
+            "CAPTURING": "클라우드 빌드 파일 준비 중",
+            "UPLOADING": "클라우드 빌드 파일 업로드 중",
+            "QUEUED": "클라우드 빌드 대기열에서 대기 중",
+            "DISPATCHING": "클라우드 빌드 서버 할당 중",
+            "PREPARING": "클라우드 빌드 환경 준비 중",
+            "RESOURCES": "클라우드 빌드 리소스 준비 중",
             "ANALYZING": "프로젝트 분석 중",
             "COMPILING": "클라우드에서 컴파일 중",
-            "FINALIZING": "빌드 결과 확인 중",
-            "DOWNLOADING": "빌드 결과 다운로드 중",
-            "VERIFYING": "빌드 결과 검증 중",
+            "FINALIZING": "클라우드 빌드 결과 확인 중",
+            "DOWNLOADING": "클라우드 빌드 결과 다운로드 중",
+            "VERIFYING": "클라우드 빌드 결과 검증 중",
             "RECONNECTING": "게이트웨이에 다시 연결 중",
             "COMPLETE": "클라우드 빌드 완료"
         }

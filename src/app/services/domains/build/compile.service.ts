@@ -277,7 +277,7 @@ export class CompileService {
         const seconds = ((Date.now() - started) / 1000).toFixed(2);
         const completeText = options.preprocessOnly ? '云端预处理完成'
           : result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
-          : this.t('COMPLETE_WITH_TIME', { seconds });
+          : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds });
         this.application.updateNotice({ title: this.t('COMPLETE_TITLE'), text: completeText, state: 'done', setTimeout: 600000 });
         this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
         return { success: true, result: { state: 'done', text: completeText } };

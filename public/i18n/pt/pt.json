@@ -1270,19 +1270,20 @@
         "ERR_CREATE_FAILED": "Falha ao criar o projeto. Tente novamente."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Resultado de compilação verificado reutilizado (tempo: {{seconds}}s)",
+        "REUSED_RESULT": "Resultado de compilação na nuvem verificado reutilizado (tempo: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Compilação na nuvem concluída (tempo: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "Preparando as entradas de compilação",
-            "UPLOADING": "Enviando as entradas de compilação",
-            "QUEUED": "Aguardando na fila de compilação",
-            "DISPATCHING": "Atribuindo um servidor de compilação",
-            "PREPARING": "Preparando o ambiente de compilação",
-            "RESOURCES": "Preparando os recursos de compilação",
+            "CAPTURING": "Preparando as entradas de compilação na nuvem",
+            "UPLOADING": "Enviando as entradas de compilação na nuvem",
+            "QUEUED": "Aguardando na fila de compilação na nuvem",
+            "DISPATCHING": "Atribuindo um servidor de compilação na nuvem",
+            "PREPARING": "Preparando o ambiente de compilação na nuvem",
+            "RESOURCES": "Preparando os recursos de compilação na nuvem",
             "ANALYZING": "Analisando o projeto",
             "COMPILING": "Compilando na nuvem",
-            "FINALIZING": "Conferindo os resultados da compilação",
-            "DOWNLOADING": "Baixando os resultados da compilação",
-            "VERIFYING": "Verificando os resultados da compilação",
+            "FINALIZING": "Conferindo os resultados da compilação na nuvem",
+            "DOWNLOADING": "Baixando os resultados da compilação na nuvem",
+            "VERIFYING": "Verificando os resultados da compilação na nuvem",
             "RECONNECTING": "Reconectando ao gateway",
             "COMPLETE": "Compilação na nuvem concluída"
         }

@@ -1270,19 +1270,20 @@
         "ERR_CREATE_FAILED": "Échec de la création du projet. Veuillez réessayer."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Résultat de compilation vérifié réutilisé (durée: {{seconds}}s)",
+        "REUSED_RESULT": "Résultat de compilation cloud vérifié réutilisé (durée: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Compilation cloud terminée (durée: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "Préparation des données de compilation",
-            "UPLOADING": "Envoi des données de compilation",
-            "QUEUED": "En attente dans la file de compilation",
-            "DISPATCHING": "Attribution d’un serveur de compilation",
-            "PREPARING": "Préparation de l’environnement de compilation",
-            "RESOURCES": "Préparation des ressources de compilation",
+            "CAPTURING": "Préparation des données de compilation cloud",
+            "UPLOADING": "Envoi des données de compilation cloud",
+            "QUEUED": "En attente dans la file de compilation cloud",
+            "DISPATCHING": "Attribution d’un serveur de compilation cloud",
+            "PREPARING": "Préparation de l’environnement de compilation cloud",
+            "RESOURCES": "Préparation des ressources de compilation cloud",
             "ANALYZING": "Analyse du projet",
             "COMPILING": "Compilation dans le cloud",
-            "FINALIZING": "Contrôle des résultats de compilation",
-            "DOWNLOADING": "Téléchargement des résultats de compilation",
-            "VERIFYING": "Vérification des résultats de compilation",
+            "FINALIZING": "Contrôle des résultats de compilation cloud",
+            "DOWNLOADING": "Téléchargement des résultats de compilation cloud",
+            "VERIFYING": "Vérification des résultats de compilation cloud",
             "RECONNECTING": "Reconnexion à la passerelle",
             "COMPLETE": "Compilation cloud terminée"
         }

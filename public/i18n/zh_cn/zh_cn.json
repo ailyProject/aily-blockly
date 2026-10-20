@@ -1423,21 +1423,22 @@
         "ERR_CREATE_FAILED": "创建失败，请稍后重试"
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "已复用编译结果 (耗时: {{seconds}}s)",
+        "REUSED_RESULT": "已复用云编译结果 (耗时: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "云编译完成 (耗时: {{seconds}}s)",
         "STAGES": {
-            "CAPTURING": "正在准备编译文件",
-            "UPLOADING": "正在上传编译文件",
-            "QUEUED": "正在排队等待编译",
-            "DISPATCHING": "正在分配编译服务器",
-            "PREPARING": "正在准备编译环境",
-            "RESOURCES": "正在准备编译资源",
+            "CAPTURING": "正在准备云编译文件",
+            "UPLOADING": "正在上传云编译文件",
+            "QUEUED": "正在排队等待云编译",
+            "DISPATCHING": "正在分配云编译服务器",
+            "PREPARING": "正在准备云编译环境",
+            "RESOURCES": "正在准备云编译资源",
             "ANALYZING": "正在分析项目",
-            "COMPILING": "正在云端编译",
-            "FINALIZING": "正在检查编译产物",
-            "DOWNLOADING": "正在下载编译产物",
-            "VERIFYING": "正在校验编译产物",
+            "COMPILING": "正在云编译",
+            "FINALIZING": "正在检查云编译产物",
+            "DOWNLOADING": "正在下载云编译产物",
+            "VERIFYING": "正在校验云编译产物",
             "RECONNECTING": "正在重新连接网关",
-            "COMPLETE": "云端编译已完成"
+            "COMPLETE": "云编译完成"
         }
     }
 }
