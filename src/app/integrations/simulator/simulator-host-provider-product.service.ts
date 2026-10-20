@@ -11,7 +11,6 @@ import type {
 import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
-import { SimulatorEntitlementAccountService } from './simulator-entitlement-account.service';
 import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-scene-change.service';
 import {
   SubappHostProviderDispatcher,
@@ -24,9 +23,6 @@ import { SimulatorBuildProductComposition } from './simulator-build-product-comp
 import {
   SimulatorBlocklyEditorCallbackAuthority,
 } from './simulator-blockly-editor-callback-authority';
-import {
-  SimulatorEntitlementCallbackAuthority,
-} from './simulator-entitlement-callback-authority';
 import type {
   SimulatorActiveProjectBindingPort,
 } from './simulator-build-execution-port';
@@ -37,7 +33,7 @@ const SIMULATOR_TOOL_ID = 'simulator';
 const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
 
 /**
- * Registers Blockly's Project/Build/Editor/Entitlement callbacks for the independently
+ * Registers Blockly's Project/Build/Editor callbacks for the independently
  * installed Simulator Subapp. It never acquires or controls the Child Tool
  * process; the generic Child Tool Host supplies and owns that lifecycle.
  */
@@ -51,7 +47,6 @@ export class SimulatorHostProviderProductService {
     private readonly builder: BuilderService,
     private readonly simulatorMainAgent: SimulatorMainAgentSceneChangeService,
     private readonly hardwareIntent: ProjectHardwareIntentProviderService,
-    private readonly entitlementAccount: SimulatorEntitlementAccountService,
     private readonly blockly: BlocklyService,
     private readonly projectDebug: ProjectDebugConfigurationService,
     private readonly ngZone: NgZone,
@@ -184,9 +179,6 @@ export class SimulatorHostProviderProductService {
         },
       },
     });
-    const entitlement = new SimulatorEntitlementCallbackAuthority({
-      account: this.entitlementAccount,
-    });
     const projectActivationSubscription =
       this.project.projectActivation$.subscribe(() => {
         const activeRoot = this.project.currentProjectPath;
@@ -218,11 +210,9 @@ export class SimulatorHostProviderProductService {
           },
           build: composition.buildCallbacks,
           editor: editor.callbacks,
-          entitlement: entitlement.callbacks,
         });
     } catch (error) {
       projectActivationSubscription.unsubscribe();
-      entitlement.close();
       editor.close();
       composition.close();
       throw error;
@@ -233,8 +223,7 @@ export class SimulatorHostProviderProductService {
       () => {
         projectActivationSubscription.unsubscribe();
         bundle.close();
-        entitlement.close();
-        editor.close();
+          editor.close();
         composition.close();
       },
     );
