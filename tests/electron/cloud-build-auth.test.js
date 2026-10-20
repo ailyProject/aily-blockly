@@ -10,7 +10,7 @@ const { registerCloudBuildHandlers } = require('../../electron/cloud-build/ipc')
 
 const apiServer = 'https://api.aily.pro';
 const userId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-const token = (id = userId, label = 'initial') => `e30.${Buffer.from(JSON.stringify({ sub: id, jti: label })).toString('base64url')}.fixture`;
+const token = (id = userId, label = 'initial', role = 'user') => `e30.${Buffer.from(JSON.stringify({ sub: JSON.stringify({ id, user_type: role }), jti: label })).toString('base64url')}.fixture`;
 const account = (extra = {}) => ({ ok: true, authenticated: true, accessToken: token(), apiServer, generation: 1, ...extra });
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -49,22 +49,58 @@ test('JSON and artifact requests use the user credential and preserve artifact v
   await assert.rejects(broker.downloadArtifact(record, { ...artifact, sha256: '0'.repeat(64) }, new URL('/api/v1/build/artifacts/job/file', apiServer), new AbortController().signal), { code: 'ARTIFACT_INVALID' });
 });
 
-test('401 refreshes through the host once with the same user and generation', async () => {
+test('401 refreshes through the host once for the same user even when the role changes', async () => {
   const authRequests = [], tokens = [];
   const broker = new CloudBuildBroker({ getAuth: async request => {
     authRequests.push(request);
-    return account(request.operation === 'refresh-access-token' ? { accessToken: token(userId, 'refreshed'), generation: 2 } : {});
+    return account(request.operation === 'refresh-access-token' ? { accessToken: token(userId, 'refreshed', 'admin'), generation: 2 } : {});
   }, fetch: async (_url, options) => {
     tokens.push(options.headers.Authorization);
     return tokens.length === 1 ? json({ errorCode: 'AUTH_TOKEN_INVALID' }, 401) : json({ profiles: [] });
   } });
   await broker.request({ gatewayUrl: apiServer }, '/api/v1/build/targets');
-  assert.deepEqual(tokens, [`Bearer ${token()}`, `Bearer ${token(userId, 'refreshed')}`]);
+  assert.deepEqual(tokens, [`Bearer ${token()}`, `Bearer ${token(userId, 'refreshed', 'admin')}`]);
   assert.deepEqual(authRequests, [{ operation: 'access-token' }, { operation: 'refresh-access-token', rejectedGeneration: 1 }]);
   broker.fetch = async () => json({ errorCode: 'AUTH_TOKEN_INVALID', errorMessage: 'Invalid session' }, 401);
   authRequests.length = 0;
   await assert.rejects(broker.request({ gatewayUrl: apiServer }, '/api/v1/build/targets'), { code: 'AUTH_TOKEN_INVALID', httpStatus: 401 });
   assert.equal(authRequests.length, 2);
+});
+
+test('explicit loopback builder override skips host credentials for JSON and artifacts without refreshing', async t => {
+  const names = ['AILY_API_SERVER', 'AILY_CLOUD_BUILD_GATEWAY_URL'];
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, index) => saved[index] === undefined ? delete process.env[name] : process.env[name] = saved[index]));
+  process.env.AILY_API_SERVER = apiServer;
+  process.env.AILY_CLOUD_BUILD_GATEWAY_URL = 'http://127.0.0.1:4318';
+  const calls = [], bytes = Buffer.from('local firmware');
+  const broker = new CloudBuildBroker({ getAuth: async () => { assert.fail('Local builder must not read host credentials.'); },
+    fetch: async (url, options) => {
+      calls.push(options);
+      return String(url).includes('/artifacts/') ? new Response(bytes) : json({ profiles: [] });
+    } });
+  const settings = await broker.configuration();
+  await broker.request(settings, '/api/v1/build/targets');
+  const record = { settings, controller: new AbortController() };
+  await broker.downloadArtifact(record, { sizeBytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') },
+    new URL('/api/v1/build/artifacts/job/file', settings.gatewayUrl), record.controller.signal);
+  broker.fetch = async (_url, options) => { calls.push(options); return json({ error: { code: 'unauthorized', message: 'Rejected' } }, 401); };
+  await assert.rejects(broker.request(settings, '/api/v1/build/targets'), { code: 'unauthorized', httpStatus: 401 });
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(call => !call.headers.Authorization && !call.headers['X-User-Id']));
+});
+
+test('loopback Aily API keeps user authentication when it is the selected API origin', async t => {
+  const names = ['AILY_API_SERVER', 'AILY_CLOUD_BUILD_GATEWAY_URL'];
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, index) => saved[index] === undefined ? delete process.env[name] : process.env[name] = saved[index]));
+  const localApi = 'http://127.0.0.1:8080';
+  process.env.AILY_API_SERVER = process.env.AILY_CLOUD_BUILD_GATEWAY_URL = localApi;
+  let credentials = 0;
+  const broker = new CloudBuildBroker({ getAuth: async () => { credentials++; return account({ apiServer: localApi }); },
+    fetch: async (_url, options) => { assert.equal(options.headers.Authorization, `Bearer ${token()}`); return json({ profiles: [] }); } });
+  await broker.request(await broker.configuration(), '/api/v1/build/targets');
+  assert.equal(credentials, 1);
 });
 
 test('account switches, logout, and foreign origins never send a new user credential to an old task', async () => {

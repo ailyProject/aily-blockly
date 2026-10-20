@@ -109,7 +109,11 @@ class CloudBuildBroker {
   }
   async authorization(settings, signal, refresh) {
     const destination = gatewayUrl(settings.gatewayUrl);
-    if (!this.getAuth && destination.local) return { headers: {} };
+    // 显式回环覆盖用于直连开发构建服务；选中的本地 Aily API 仍执行用户鉴权。
+    const override = process.env.AILY_CLOUD_BUILD_GATEWAY_URL;
+    const localBuilder = destination.local && override && gatewayUrl(override).url === destination.url
+      && new URL(destination.url).origin !== new URL(gatewayUrl(process.env.AILY_API_SERVER || 'https://api.aily.pro').url).origin;
+    if (destination.local && (!this.getAuth || localBuilder)) return { headers: {} };
     if (!this.getAuth) throw protocol.error('AUTH_TOKEN_MISSING', 'Sign in before using cloud compilation.');
     const auth = await this.getAuth(refresh || { operation: 'access-token' }, signal);
     signal?.throwIfAborted();
@@ -121,7 +125,10 @@ class CloudBuildBroker {
     }
     // sub 只用于本机任务绑定；Token 真伪和权限仍由 Aily Gateway 验证。
     let userId;
-    try { userId = JSON.parse(Buffer.from(auth.accessToken.split('.')[1], 'base64url').toString('utf8')).sub; }
+    try {
+      const subject = JSON.parse(Buffer.from(auth.accessToken.split('.')[1], 'base64url').toString('utf8')).sub;
+      userId = (typeof subject === 'string' ? JSON.parse(subject) : subject)?.id;
+    }
     catch { /* 无法取得主体时不能把任务绑定到可能滞后的用户快照。 */ }
     if (typeof userId !== 'string' || !userId) throw protocol.error('AUTH_TOKEN_INVALID', 'The host access token has no user identity.');
     userId = userId.toLowerCase();
@@ -132,7 +139,7 @@ class CloudBuildBroker {
   async fetchAuthorized(settings, url, options) {
     const auth = await this.authorization(settings, options.signal);
     let response = await this.fetch(url, { ...options, headers: { ...options.headers, ...auth.headers } });
-    if (response.status === 401 && this.getAuth) {
+    if (response.status === 401 && this.getAuth && auth.headers.Authorization) {
       const refreshed = await this.authorization(settings, options.signal, { operation: 'refresh-access-token', rejectedGeneration: auth.generation });
       await response.body?.cancel?.();
       response = await this.fetch(url, { ...options, headers: { ...options.headers, ...refreshed.headers } });
@@ -538,6 +545,7 @@ class CloudBuildBroker {
     if (action !== 'compile' || !previous || previous.sender !== record.sender
         || previous.generation !== record.generation || previous.controller.signal.aborted
         || previous.activationId !== record.activationId
+        || previous.settings?.[AUTH_USER] !== record.settings[AUTH_USER]
         || previous.gatewayUrl !== gatewayUrl(record.settings.gatewayUrl).url
         || previous.publicKey.trim() !== record.publicKey.trim()
         || previous.manifest.action !== action
@@ -560,7 +568,7 @@ class CloudBuildBroker {
       lease.assertOwned();
     } catch { return null; } // Missing/corrupt/unavailable output falls back to a real build.
     finally { lease?.release(); }
-    this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config),
+    this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config), settings: record.settings,
       activationId: record.activationId, controller: new AbortController(), profile: record.profile });
     this.progress(record, { stage: 'complete', progress: 100, reused: true });
     // This is the original completed job, not a newly executed cloud task.
@@ -696,7 +704,7 @@ class CloudBuildBroker {
         // 已验证产物的复用和烧录权限只保存在当前进程内，不额外写入无读取方的磁盘指针。
         const config = retainedBuildConfig(record.config);
         this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,
-          config, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
+          config, settings: record.settings, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
           gatewayUrl: gatewayUrl(record.settings.gatewayUrl).url,
           snapshot: { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion },
           directory: published, manifest, signature: result.signature });
