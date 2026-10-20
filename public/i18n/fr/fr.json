@@ -1270,6 +1270,7 @@
         "ERR_CREATE_FAILED": "Échec de la création du projet. Veuillez réessayer."
     },
     "CLOUD_BUILD": {
+        "REUSED_RESULT": "Résultat de compilation vérifié réutilisé",
         "STAGES": {
             "CAPTURING": "Préparation des données de compilation",
             "UPLOADING": "Envoi des données de compilation",

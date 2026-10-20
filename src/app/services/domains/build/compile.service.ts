@@ -274,7 +274,8 @@ export class CompileService {
         if (result?.success !== true) throw new Error(result?.text || 'Cloud compilation failed.');
         buildStatus = 'success';
         if (!options.preprocessOnly) this.compileValidationService.triggerAfterSuccessfulCompile();
-        const completeText = options.preprocessOnly ? '云端预处理完成' : this.t('COMPLETE_WITH_TIME', {
+        const completeText = options.preprocessOnly ? '云端预处理完成'
+          : result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT') : this.t('COMPLETE_WITH_TIME', {
           seconds: ((Date.now() - started) / 1000).toFixed(2),
         });
         this.application.updateNotice({ title: this.t('COMPLETE_TITLE'), text: completeText, state: 'done', setTimeout: 600000 });

@@ -10,6 +10,7 @@ import { NativeCandidateModels } from './blockly-native-models';
 import { nativeCandidateValues } from './blockly-native-values';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-declarations';
 import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
@@ -133,6 +134,7 @@ export function installNativeCandidateRealm(): void {
           if (mode === 'arduino') {
             adaptBundledArduinoProcedureCalls(generator);
             adaptArduinoTextLiterals(generator);
+            adaptXiaozhiParameterDeclarations(generator, realm);
             await registerCustomFunctionContract(step.source, realm, native.Blocks, workspace, () => !!workspace);
           }
         } else if (step.kind === 'definitions') {

@@ -108,6 +108,25 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
         : w.ng.getComponent(document.querySelector('app-header')).builderService.canReuseBuildForUpload(project);
     }, { project, mode });
     expect(await reuse()).toBe(true);
+    // A second Compile verifies live inputs/target and every signed byte,
+    // without submitting a new job for the same result.
+    await win.evaluate(() => {
+      const w = window as any;
+      w.__liveCloudEvents = [];
+      w.cloudBuild.onProgress((event: any) => w.__liveCloudEvents.push(event));
+    });
+    const repeatedAt = Date.now();
+    await win.locator('app-header app-act-btn[data-action="compile"]').click();
+    await expect.poll(async () => {
+      const pkg = JSON.parse(await readFile(path.join(project, 'package.json'), 'utf8'));
+      return Date.parse(pkg.buildInfo?.lastBuildTime || '') >= repeatedAt ? pkg.buildInfo.lastBuildStatus : 'pending';
+    }, { timeout: 30_000, intervals: [200, 500] }).toBe('success');
+    expect(await win.evaluate(project => (window as any).cloudBuild.artifactPath({ projectPath: project }), project)).toBe(artifactPath);
+    const repeatedEvents = await win.evaluate(() => (window as any).__liveCloudEvents);
+    expect(repeatedEvents.some((event: any) => event.stage === 'complete' && event.reused === true)).toBe(true);
+    expect(repeatedEvents.some((event: any) => event.stage === 'queued')).toBe(false);
+    await expect(win.locator('body')).toContainText('已复用编译结果');
+    expect(await reuse()).toBe(true);
     // Invalid serial input must be rejected before any physical device is opened.
     const uploadError = await win.evaluate(async project => {
       try { await (window as any).cloudBuild.upload({ projectPath: project, requestId: 'merge-invalid-port', serialPort: 'TEST-NO-DEVICE' }); return null; }

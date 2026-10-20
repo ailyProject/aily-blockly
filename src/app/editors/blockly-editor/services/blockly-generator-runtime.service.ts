@@ -11,6 +11,7 @@ import * as Blockly from 'blockly';
 import { normalizeLegacyVariableToolboxSource } from '../utils/blockly-legacy-library-compat';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-declarations';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { registerCustomFunctionContract, clearCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { registerVariableDeclarationContract, clearVariableDeclarationRegistration } from './blockly-variable-declaration-contract';
@@ -374,6 +375,7 @@ export class BlocklyGeneratorRuntimeService {
     wrapProjectDataGeneratorFunctions(session.generator, result.registeredBlockTypes);
     if (session.context.mode === 'arduino') {
       adaptBundledArduinoProcedureCalls(session.generator);
+      adaptXiaozhiParameterDeclarations(session.generator, session.realmWindow);
       session.projectEffects.wrap(session.generator);
     }
     if (session.context.mode === 'arduino') result.contractsReady = Promise.all([

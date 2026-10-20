@@ -1423,6 +1423,7 @@
         "ERR_CREATE_FAILED": "创建失败，请稍后重试"
     },
     "CLOUD_BUILD": {
+        "REUSED_RESULT": "已复用编译结果",
         "STAGES": {
             "CAPTURING": "正在准备编译文件",
             "UPLOADING": "正在上传编译文件",
