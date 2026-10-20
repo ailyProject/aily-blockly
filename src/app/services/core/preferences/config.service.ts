@@ -1,7 +1,8 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { lastValueFrom, ReplaySubject, Subject, timeout } from 'rxjs';
+import { combineLatest, distinctUntilChanged, lastValueFrom, map, ReplaySubject, Subject, timeout } from 'rxjs';
 import { ElectronService } from '@core/platform/public-api';
+import { AuthService } from '@core/auth/public-api';
 import { API, setServerUrl, setRegistryUrl, setToolWebUrl } from '../../../configs/api.config';
 import { calculateSimilarity, extractKeywords } from '../../../utils/fuzzy-search.utils';
 import { normalizeLanguageCode } from '../../../utils/language-code';
@@ -106,17 +107,33 @@ export class ConfigService {
 
   constructor(
     private http: HttpClient,
-    private electronService: ElectronService
-  ) { }
+    private electronService: ElectronService,
+    private authService: AuthService,
+  ) {
+    combineLatest([this.authService.isLoggedIn$, this.authService.authSnapshot$]).pipe(
+      map(() => this.canUseCloudCompilation),
+      distinctUntilChanged(),
+    ).subscribe(() => {
+      // 权益变化与设置切换一样，使旧的依赖准备和构建复用判断失效。
+      this.compileSettingsGeneration++;
+      this.configReloaded$.next();
+    });
+  }
 
-  getCompileBackend(): CompileBackend { return getCompileBackend(this.data); }
+  get canUseCloudCompilation(): boolean { return this.authService.canUseCloudCompilation; }
+  getCompileBackend(): CompileBackend {
+    return this.canUseCloudCompilation ? getCompileBackend(this.data) : 'local';
+  }
   getCloudBuildSettings(): CloudBuildSettings { return getCloudBuildSettings(this.data); }
-  getCompileSettingsKey(): string { return JSON.stringify([getCompileSettingsKey(this.data), this.compileSettingsGeneration]); }
+  getCompileSettingsKey(): string {
+    return JSON.stringify([getCompileSettingsKey(this.data), this.getCompileBackend(), this.compileSettingsGeneration]);
+  }
 
   /** 云开关独立落盘并同步其他窗口，保留设置页中尚未应用的其他修改。 */
   async saveCompileSettings(): Promise<void> {
     // 关闭云模式时无需连接或校验网关，服务异常也不能妨碍用户切回本地编译。
-    const backend = this.getCompileBackend();
+    // 保存用户偏好；实际执行始终通过 getCompileBackend() 检查当前账号权益。
+    const backend = getCompileBackend(this.data);
     const cloud = backend === 'cloud' ? this.getCloudBuildSettings() : { ...(this.data.cloud || {}) };
     this.data.compile = { ...(this.data.compile || {}), backend };
     this.data.cloud = { ...(this.data.cloud || {}), ...cloud };

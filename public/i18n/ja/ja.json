@@ -343,6 +343,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "クラウドコンパイル",
             "CLOUD_COMPILATION_DESC": "クラウドでコンパイルし、このコンピューターからボードに書き込みます。有効化時にサービスを確認します。",
+            "CLOUD_PRO_REQUIRED": "Pro アカウントでログインすると利用できます",
             "CLOUD_ENABLE_CHECKING": "クラウドコンパイルサービスを確認中…",
             "CLOUD_ENABLE_SUCCESS": "クラウドコンパイルを有効にしました。",
             "CLOUD_ENABLE_FAILED": "有効化に失敗しました。しばらくしてから再試行してください。",

@@ -1,5 +1,5 @@
 import { EMPTY } from 'rxjs';
-import { ConfigService } from '../../../services/core/preferences/config.service';
+import { ConfigService } from '@core/preferences/public-api';
 import { UpdateDialogComponent } from './update-dialog.component';
 
 describe('UpdateDialogComponent changelog requests', () => {
@@ -9,7 +9,7 @@ describe('UpdateDialogComponent changelog requests', () => {
     ['blockly', 'zh-CN', 'https://dl.yiyu.pro/blockly', 'https://dl.yiyu.pro/blockly/CHANGELOG_ZH.md'],
   ]) {
     it(`loads the ${product} changelog for ${language}`, () => {
-      const config = new ConfigService({} as any, {} as any);
+      const config = new ConfigService({} as any, {} as any, { isLoggedIn$: EMPTY, authSnapshot$: EMPTY, canUseCloudCompilation: false } as any);
       (config as any).runtimeBuildProduct = product;
       config.data = { region: 'cn', regions: { cn: { updater: baseUrl } } };
       const http = { get: jasmine.createSpy('get').and.returnValue(EMPTY) };

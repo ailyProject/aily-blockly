@@ -343,6 +343,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "Compilación en la nube",
             "CLOUD_COMPILATION_DESC": "Compila en la nube y carga a la placa desde este equipo. El servicio se comprueba al activar.",
+            "CLOUD_PRO_REQUIRED": "Inicia sesión con una cuenta Pro",
             "CLOUD_ENABLE_CHECKING": "Comprobando el servicio de compilación en la nube…",
             "CLOUD_ENABLE_SUCCESS": "Compilación en la nube activada.",
             "CLOUD_ENABLE_FAILED": "No se pudo activar la compilación en la nube. Inténtalo más tarde.",

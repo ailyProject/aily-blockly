@@ -404,6 +404,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "云编译",
             "CLOUD_COMPILATION_DESC": "在云端编译，烧录仍在本机进行。开启时自动检测服务。",
+            "CLOUD_PRO_REQUIRED": "登录 Pro 账号后可用",
             "CLOUD_ENABLE_CHECKING": "正在检测云编译服务…",
             "CLOUD_ENABLE_SUCCESS": "开启成功",
             "CLOUD_ENABLE_FAILED": "开启失败，请稍后重试。",

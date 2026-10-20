@@ -371,6 +371,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "雲端編譯",
             "CLOUD_COMPILATION_DESC": "在雲端編譯，燒錄仍在本機進行。開啟時自動檢查服務。",
+            "CLOUD_PRO_REQUIRED": "登入 Pro 帳戶後可用",
             "CLOUD_ENABLE_CHECKING": "正在檢查雲端編譯服務…",
             "CLOUD_ENABLE_SUCCESS": "開啟成功",
             "CLOUD_ENABLE_FAILED": "開啟失敗，請稍後重試。",

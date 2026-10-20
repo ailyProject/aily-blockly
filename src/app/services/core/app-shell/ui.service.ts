@@ -168,6 +168,7 @@ export class UiService {
             success: true,
             authenticated: this.authService.isLoggedIn,
             initializationState: this.authService.getAuthInitializationState(),
+            canUseCloudCompilation: this.authService.canUseCloudCompilation,
             openProtectedToolIds: this.getOpenAuthRequiredToolIds(),
           };
         } else if (message.data?.action === 'request-login') {

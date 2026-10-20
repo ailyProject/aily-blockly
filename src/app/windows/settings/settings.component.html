@@ -148,11 +148,14 @@
             <div class="right-inner">
               <div class="item cloud-build-item">
                 <label for="cloud-compilation-enabled">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION' | translate }}:</label>
-                <nz-switch nzId="cloud-compilation-enabled" [ngModel]="cloudCompilationEnabled" [nzControl]="true"
-                  [nzLoading]="cloudConnectionChecking || cloudConnectionSaving" [nzDisabled]="applying"
-                  (click)="onCloudCompilationChange(!cloudCompilationEnabled)"
-                  (keydown.arrowleft)="onCloudCompilationChange(false); $event.preventDefault()"
-                  (keydown.arrowright)="onCloudCompilationChange(true); $event.preventDefault()"></nz-switch>
+                <span class="cloud-build-switch" [class.cloud-build-switch-disabled]="!canUseCloudCompilation"
+                  nz-tooltip [nzTooltipTitle]="canUseCloudCompilation ? null : ('SETTINGS.FIELDS.CLOUD_PRO_REQUIRED' | translate)">
+                  <nz-switch nzId="cloud-compilation-enabled" [ngModel]="cloudCompilationEnabled" [nzControl]="true"
+                    [nzLoading]="cloudConnectionChecking || cloudConnectionSaving" [nzDisabled]="applying || !canUseCloudCompilation"
+                    (click)="onCloudCompilationChange(!cloudCompilationEnabled)"
+                    (keydown.arrowleft)="onCloudCompilationChange(false); $event.preventDefault()"
+                    (keydown.arrowright)="onCloudCompilationChange(true); $event.preventDefault()"></nz-switch>
+                </span>
               </div>
               <div class="cloud-build-details">
                 <div class="cloud-build-description">{{ 'SETTINGS.FIELDS.CLOUD_COMPILATION_DESC' | translate }}</div>

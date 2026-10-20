@@ -343,6 +343,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "Compilation dans le cloud",
             "CLOUD_COMPILATION_DESC": "Compilez dans le cloud et téléversez sur la carte depuis cet ordinateur. Le service est vérifié à l’activation.",
+            "CLOUD_PRO_REQUIRED": "Connectez-vous avec un compte Pro",
             "CLOUD_ENABLE_CHECKING": "Vérification du service de compilation cloud…",
             "CLOUD_ENABLE_SUCCESS": "Compilation cloud activée.",
             "CLOUD_ENABLE_FAILED": "Impossible d’activer la compilation cloud. Réessayez plus tard.",

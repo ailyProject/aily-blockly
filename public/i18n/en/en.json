@@ -408,6 +408,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "Cloud compilation",
             "CLOUD_COMPILATION_DESC": "Compile in the cloud and upload to the board locally. The service is checked when enabling.",
+            "CLOUD_PRO_REQUIRED": "Sign in with a Pro account to use",
             "CLOUD_ENABLE_CHECKING": "Checking the cloud compilation service…",
             "CLOUD_ENABLE_SUCCESS": "Cloud compilation enabled.",
             "CLOUD_ENABLE_FAILED": "Could not enable cloud compilation. Please try again later.",

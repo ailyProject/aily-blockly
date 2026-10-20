@@ -343,6 +343,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "Cloud-Kompilierung",
             "CLOUD_COMPILATION_DESC": "In der Cloud kompilieren und auf diesem Computer auf das Board übertragen. Der Dienst wird beim Aktivieren geprüft.",
+            "CLOUD_PRO_REQUIRED": "Mit einem Pro-Konto anmelden",
             "CLOUD_ENABLE_CHECKING": "Cloud-Kompilierungsdienst wird geprüft…",
             "CLOUD_ENABLE_SUCCESS": "Cloud-Kompilierung aktiviert.",
             "CLOUD_ENABLE_FAILED": "Aktivierung fehlgeschlagen. Bitte später erneut versuchen.",

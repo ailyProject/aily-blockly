@@ -52,6 +52,7 @@ interface CacheStats {
 
 interface HostAuthState {
   authenticated: boolean;
+  canUseCloudCompilation: boolean;
   openProtectedToolIds: string[];
 }
 
@@ -320,6 +321,7 @@ export class SettingsComponent implements OnDestroy {
         : [];
       return {
         authenticated: response.authenticated === true,
+        canUseCloudCompilation: response.canUseCloudCompilation === true,
         openProtectedToolIds: [...new Set(openProtectedToolIds)],
       };
     }
@@ -329,6 +331,7 @@ export class SettingsComponent implements OnDestroy {
     }
     return {
       authenticated: this.authService.isAuthenticated,
+      canUseCloudCompilation: this.authService.canUseCloudCompilation,
       openProtectedToolIds: this.uiService.getOpenAuthRequiredToolIds(),
     };
   }
@@ -394,9 +397,29 @@ export class SettingsComponent implements OnDestroy {
   cloudConnectionSaving = false;
   cloudConnectionStatus = '';
   private cloudConnectionRequestId = 0;
+  private hostCloudCompilationAllowed: boolean | null = null;
+  private cloudAccessRequestId = 0;
+  private cloudAuthListenerCleanup?: () => void;
 
   get showCloudCompilation(): boolean { return window['platform']?.type === 'win32'; }
-  get cloudCompilationEnabled(): boolean { return this.configService.getCompileBackend() === 'cloud'; }
+  get canUseCloudCompilation(): boolean {
+    return this.hostCloudCompilationAllowed ?? this.configService.canUseCloudCompilation;
+  }
+  get cloudCompilationEnabled(): boolean {
+    return this.canUseCloudCompilation && this.configData?.compile?.backend === 'cloud';
+  }
+
+  private async refreshCloudCompilationAccess(): Promise<void> {
+    const requestId = ++this.cloudAccessRequestId;
+    let allowed = false;
+    try {
+      allowed = (await this.getHostAuthState()).canUseCloudCompilation;
+    } catch { /* 主窗口状态不可用时保持禁用，不沿用旧权益。 */ }
+    if (this.destroyed || requestId !== this.cloudAccessRequestId) return;
+    this.hostCloudCompilationAllowed = allowed;
+    if (!allowed) this.invalidateCloudConnectionCheck();
+    this.cdr.markForCheck();
+  }
 
   private invalidateCloudConnectionCheck(): void {
     this.cloudConnectionRequestId++;
@@ -406,7 +429,7 @@ export class SettingsComponent implements OnDestroy {
 
   /** 开启必须检测网关成功后才生效；关闭可直接保存，以便服务故障时恢复本地编译。 */
   async onCloudCompilationChange(enabled: boolean): Promise<void> {
-    if (this.destroyed || this.applying || this.cloudConnectionSaving) return;
+    if (this.destroyed || this.applying || this.cloudConnectionSaving || !this.canUseCloudCompilation) return;
     if (!enabled && !this.cloudCompilationEnabled) {
       this.invalidateCloudConnectionCheck();
       this.configData.compile = { ...(this.configData.compile || {}), backend: 'local' };
@@ -425,7 +448,8 @@ export class SettingsComponent implements OnDestroy {
         const bridge = window['cloudBuild'];
         if (!bridge?.health) throw Object.assign(new Error('Cloud gateway bridge is unavailable; restart the desktop host.'), { code: 'CLOUD_BRIDGE_UNAVAILABLE' });
         const health = await bridge.health();
-        if (requestId !== this.cloudConnectionRequestId || this.destroyed) return;
+        if (this.electronService.isElectron) await this.refreshCloudCompilationAccess();
+        if (requestId !== this.cloudConnectionRequestId || this.destroyed || !this.canUseCloudCompilation) return;
         if (health?.healthy !== true) throw new Error('Invalid gateway health response.');
         if (health.settings) {
           this.configData.cloud = { ...(this.configData.cloud || {}), ...health.settings };
@@ -437,7 +461,8 @@ export class SettingsComponent implements OnDestroy {
       this.cloudConnectionSaving = true;
       await this.configService.saveCompileSettings();
       if (requestId === this.cloudConnectionRequestId && !this.destroyed) {
-        this.cloudConnectionStatus = enabled ? this.translateService.instant('SETTINGS.FIELDS.CLOUD_ENABLE_SUCCESS') : '';
+        this.cloudConnectionStatus = enabled && this.canUseCloudCompilation
+          ? this.translateService.instant('SETTINGS.FIELDS.CLOUD_ENABLE_SUCCESS') : '';
       }
     } catch (error: any) {
       if (startedSaving) {
@@ -533,13 +558,14 @@ export class SettingsComponent implements OnDestroy {
         this.cdr.markForCheck();
       });
     this.configReloadSubscription = this.configService.configReloaded$.subscribe(() => {
-      if (!this.cloudConnectionSaving) this.invalidateCloudConnectionCheck();
+      if (!this.cloudConnectionSaving || !this.canUseCloudCompilation) this.invalidateCloudConnectionCheck();
       this.cdr.markForCheck();
     });
   }
 
   ngOnDestroy() {
     this.destroyed = true;
+    this.cloudAuthListenerCleanup?.();
     this.invalidateCloudConnectionCheck();
     this.cleanupDestroyed$.next();
     this.cleanupDestroyed$.complete();
@@ -559,7 +585,21 @@ export class SettingsComponent implements OnDestroy {
   }
 
   async ngOnInit() {
-    // await this.configService.init();
+    // 设置是独立渲染窗口，直接读取主窗口权益，不建立第二份登录会话。
+    if (this.electronService.isElectron) {
+      this.hostCloudCompilationAllowed = false;
+      this.cloudAuthListenerCleanup = window['ipcRenderer']?.on?.('host-auth-state-changed', (_event: unknown, state: { authenticated?: boolean }) => {
+        if (state?.authenticated === false) {
+          this.cloudAccessRequestId++;
+          this.hostCloudCompilationAllowed = false;
+          this.invalidateCloudConnectionCheck();
+          this.cdr.markForCheck();
+          return;
+        }
+        void this.refreshCloudCompilationAccess();
+      });
+      await this.refreshCloudCompilationAccess();
+    }
   }
 
   ngAfterViewInit() {

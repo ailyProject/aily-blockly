@@ -66,7 +66,7 @@ import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import {
   canonicalCloudJson, cloudBoardProperties, getCloudBoardOptions, getCloudBoardProfileFreeSlots,
-  getCloudBuildSettings, getCompileBackend, isCloudBoardProfileOnline, selectCloudBoardProfile,
+  getCloudBuildSettings, isCloudBoardProfileOnline, selectCloudBoardProfile,
   type CloudBoardProfile,
 } from '../../../utils/cloud-build-settings.utils';
 
@@ -2677,7 +2677,7 @@ export class ProjectService {
     }
   }
 
-  isCloudBuild(): boolean { return getCompileBackend(this.configService?.data) === 'cloud'; }
+  isCloudBuild(): boolean { return this.configService?.getCompileBackend?.() === 'cloud'; }
 
   private cloudBoardProfileCache?: { key: string; profile: CloudBoardProfile };
   private cloudBoardProfileLookups?: Map<string, Promise<CloudBoardProfile>>;

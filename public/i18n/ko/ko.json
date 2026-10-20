@@ -343,6 +343,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "클라우드 컴파일",
             "CLOUD_COMPILATION_DESC": "클라우드에서 컴파일하고 이 컴퓨터에서 보드에 업로드합니다. 활성화할 때 서비스를 확인합니다.",
+            "CLOUD_PRO_REQUIRED": "Pro 계정으로 로그인하면 이용할 수 있습니다",
             "CLOUD_ENABLE_CHECKING": "클라우드 컴파일 서비스 확인 중…",
             "CLOUD_ENABLE_SUCCESS": "클라우드 컴파일이 활성화되었습니다.",
             "CLOUD_ENABLE_FAILED": "활성화하지 못했습니다. 잠시 후 다시 시도하세요.",

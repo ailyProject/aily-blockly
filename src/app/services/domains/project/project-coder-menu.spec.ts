@@ -8,7 +8,7 @@ describe('Coder board menu context ownership', () => {
     window['path'] = { join: (...parts: string[]) => parts.join('/') };
     project = Object.create(ProjectService.prototype);
     Object.assign(project, {
-      configService: { data: { compile: { backend: 'local' } }, getCompileSettingsKey: () => 'local' },
+      configService: { data: { compile: { backend: 'local' } }, getCompileBackend() { return this.data.compile.backend; }, getCompileSettingsKey: () => 'local' },
       currentProjectPathSubject: new BehaviorSubject('/a'), stateSubject: new BehaviorSubject('loaded'),
       coderProjectContexts: new Map(), boardConfigUpdatedSubject: new Subject(),
       getProjectMode: () => 'coder', currentBoardMenuConfig: [{ key: 'old-blockly-menu' }], currentBoardMenuI18nDir: '/old',

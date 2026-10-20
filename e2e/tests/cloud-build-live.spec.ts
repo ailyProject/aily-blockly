@@ -49,11 +49,28 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
     const win = await getMainWindow(launch.app);
     win.on('pageerror', error => errors.push(error.message));
     await win.addLocatorHandler(win.locator('app-login .login-close'), button => button.click());
+    // This network test has no real user credentials. Supply Pro client state
+    // only in its disposable profile; account gating has its own regression.
+    await expect.poll(() => win.evaluate(() => (window as any).ng.getComponent(document.querySelector('app-main-window'))
+      .authService.getAuthInitializationState())).toBe('signed_out');
+    await win.evaluate(() => {
+      const auth = (window as any).ng.getComponent(document.querySelector('app-main-window')).authService;
+      auth.isLoggedInSubject.next(true);
+      auth.setCurrentUserInfo({ id: 'cloud-live-fixture', subscription_plan: { name: 'pro' } });
+    });
     await win.evaluate(() => (window as any).electronAPI.subWindow.open({ path: 'settings', windowClass: 'builtin', width: 700, height: 550 }));
     await expect.poll(() => launch.app.windows().some(page => page.url().includes('#/settings'))).toBe(true);
     const settings = launch.app.windows().find(page => page.url().includes('#/settings'))!;
+    await settings.locator('app-settings').waitFor();
+    await settings.evaluate(() => {
+      const w = window as any;
+      const component = w.ng.getComponent(document.querySelector('app-settings'));
+      Object.defineProperty(component, 'showCloudCompilation', { get: () => true });
+      w.ng.applyChanges(component);
+    });
     const toggle = settings.locator('#cloud-compilation-enabled');
     await toggle.scrollIntoViewIfNeeded();
+    await expect(toggle).toBeEnabled();
     await expect(toggle).not.toHaveClass(/ant-switch-checked/);
     await toggle.click();
     await expect(toggle).toHaveClass(/ant-switch-checked/);

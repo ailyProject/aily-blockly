@@ -21,7 +21,7 @@ import {
 
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
-import { getCloudEditorDependencies, getCompileBackend } from '../../../utils/cloud-build-settings.utils';
+import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 
 import {
@@ -610,7 +610,7 @@ export class NpmService {
       : this.prjService;
   }
 
-  private isCloudBuild(): boolean { return getCompileBackend(this.configService?.data) === 'cloud'; }
+  private isCloudBuild(): boolean { return this.configService?.getCompileBackend?.() === 'cloud'; }
 
   /** Coder execution preflight: completed preparation plus the current files on disk. */
   async assertCoderDependenciesReady(projectPath: string): Promise<void> {

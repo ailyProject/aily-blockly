@@ -343,6 +343,7 @@
         "FIELDS": {
             "CLOUD_COMPILATION": "التجميع السحابي",
             "CLOUD_COMPILATION_DESC": "التجميع في السحابة، والرفع إلى اللوحة على هذا الكمبيوتر. يتم فحص الخدمة عند التفعيل.",
+            "CLOUD_PRO_REQUIRED": "سجّل الدخول بحساب Pro للاستخدام",
             "CLOUD_ENABLE_CHECKING": "جارٍ فحص خدمة التجميع السحابي…",
             "CLOUD_ENABLE_SUCCESS": "تم تفعيل التجميع السحابي.",
             "CLOUD_ENABLE_FAILED": "تعذر التفعيل. تحقق من الخدمة وحاول مجددًا.",

@@ -408,6 +408,18 @@ ngx-simplebar {
   }
 }
 
+.cloud-build-switch {
+  display: inline-flex;
+
+  &.cloud-build-switch-disabled {
+    cursor: not-allowed;
+
+    nz-switch {
+      pointer-events: none;
+    }
+  }
+}
+
 .cloud-build-details {
   margin: 0 0 16px 120px;
   min-width: 0;
