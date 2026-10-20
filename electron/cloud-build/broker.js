@@ -53,6 +53,10 @@ function trustedGateway(settings, caps) {
   catch { throw protocol.error('SIGNATURE_INVALID', 'Gateway requires a valid Ed25519 signing public key.'); }
   return publicKey;
 }
+function retainedBuildConfig(config) {
+  return Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
+    .filter(key => config[key] !== undefined).map(key => [key, config[key]]));
+}
 function supportedRequest(input) {
   if ((input.action && !['compile', 'analysis'].includes(input.action)) || (input.recordProjectDelivery !== undefined && input.recordProjectDelivery !== false)
       || (input.config?.recordProjectDelivery !== undefined && input.config.recordProjectDelivery !== false) || input.graph !== undefined || input.config?.graph !== undefined
@@ -378,6 +382,11 @@ class CloudBuildBroker {
       inputMetrics: { captureMs: 0, identityMs: 0, encodingMs: 0, encodedFiles: 0,
         manifestPrepareMs: 0, manifestResolveMs: 0, blobUploadMs: 0, commitMs: 0,
         rawBytes: 0, uniqueBytes: 0, transferredBytes: 0, uploadedBytes: 0, reusedBytes: 0, libraryHits: 0 } };
+    // Keep the previous directory alive while checking this request, but revoke
+    // its upload authority immediately. Only fresh inputs and a live target can
+    // restore it; a failed/cancelled request must not retain the old authority.
+    const previous = this.active.get(root);
+    const releasePrevious = previous ? this.protectArtifact(previous) : undefined;
     this.requests.set(requestId, record); this.active.delete(root);
     const deadline = setTimeout(() => record.controller.abort(protocol.error('BUILD_TIMEOUT', 'Cloud task exceeded its client deadline.')), this.deadlineMs);
     deadline.unref?.();
@@ -409,6 +418,11 @@ class CloudBuildBroker {
       } }); }
       finally { record.inputMetrics.captureMs += performance.now() - captureStarted; }
       await this.assertCurrent(record);
+      if (previous) {
+        const reused = await this.reuseCompletedResult(record, previous, input.action || 'compile');
+        if (reused) return reused;
+        await this.assertCurrent(record);
+      }
       this.progress(record, { stage: 'uploading', progress: 0 });
       const uploaded = await this.uploadSnapshot(record, caps);
       if (uploaded.inputDigest !== record.snapshot.inputDigest) throw protocol.error('INPUT_DIGEST_MISMATCH', 'Gateway sealed different build inputs.');
@@ -516,8 +530,42 @@ class CloudBuildBroker {
       catch { /* 防休眠清理异常不能覆盖编译结果或原始错误。 */ }
       record.logsController.abort();
       if (this.requests.get(requestId) === record) this.requests.delete(requestId);
+      releasePrevious?.();
       this.collectArtifacts(root);
     }
+  }
+  async reuseCompletedResult(record, previous, action) {
+    if (action !== 'compile' || !previous || previous.sender !== record.sender
+        || previous.generation !== record.generation || previous.controller.signal.aborted
+        || previous.activationId !== record.activationId
+        || previous.gatewayUrl !== gatewayUrl(record.settings.gatewayUrl).url
+        || previous.publicKey.trim() !== record.publicKey.trim()
+        || previous.manifest.action !== action
+        || previous.manifest.profileDigest !== (record.profile.digest || record.profile.profileDigest)
+        || previous.snapshot.inputDigest !== record.snapshot.inputDigest) return null;
+    let lease;
+    try {
+      lease = this.acquireArtifactLease(previous);
+      if (fs.realpathSync(previous.directory) !== previous.directory || fs.lstatSync(previous.directory).isSymbolicLink()) return null;
+      await this.assertCurrent(record); lease.assertOwned();
+      protocol.verifyManifest(previous.manifest, previous.signature, record.publicKey);
+      for (const artifact of previous.manifest.artifacts) {
+        const filename = path.join(previous.directory, ...artifact.path.split('/'));
+        const stat = fs.lstatSync(filename);
+        if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(filename) !== filename
+            || stat.size !== artifact.sizeBytes || protocol.sha256(fs.readFileSync(filename)) !== artifact.sha256) return null;
+      }
+      // No awaits after the byte checks: only the freshly checked request can
+      // regain upload authority. A disk-only receipt never grants permission.
+      lease.assertOwned();
+    } catch { return null; } // Missing/corrupt/unavailable output falls back to a real build.
+    finally { lease?.release(); }
+    this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config),
+      activationId: record.activationId, controller: new AbortController(), profile: record.profile });
+    this.progress(record, { stage: 'complete', progress: 100, reused: true });
+    // This is the original completed job, not a newly executed cloud task.
+    return { success: true, state: 'done', reused: true, text: 'Reused verified cloud build result.',
+      jobId: previous.manifest.jobId, inputDigest: record.snapshot.inputDigest, artifactPath: previous.directory };
   }
   async cancelRemote(record) {
     if (!record.jobId && !record.posted) return;
@@ -646,10 +694,10 @@ class CloudBuildBroker {
         fs.writeFileSync(path.join(staging, 'aily-cloud-result.json'), JSON.stringify({ manifest, signature: result.signature }));
         fs.renameSync(staging, published);
         // 已验证产物的复用和烧录权限只保存在当前进程内，不额外写入无读取方的磁盘指针。
-        const config = Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
-          .filter(key => record.config[key] !== undefined).map(key => [key, record.config[key]]));
+        const config = retainedBuildConfig(record.config);
         this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,
-          config, settings: record.settings, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
+          config, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
+          gatewayUrl: gatewayUrl(record.settings.gatewayUrl).url,
           snapshot: { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion },
           directory: published, manifest, signature: result.signature });
         this.trimCompletedRecords();

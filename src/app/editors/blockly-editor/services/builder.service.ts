@@ -1786,7 +1786,8 @@ export class _BuilderService {
       });
       assertCurrent();
       if (result?.success !== true || result?.state !== 'done') throw new Error(result?.text || 'Cloud compilation failed.');
-      return { state: 'done', text: result.text || this.t('COMPLETE_TITLE'), desc: result.artifactPath };
+      return { state: 'done', text: result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT')
+        : result.text || this.t('COMPLETE_TITLE'), desc: result.artifactPath };
     } finally {
       await this.cloudCancelPromise;
     }

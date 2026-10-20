@@ -114,8 +114,9 @@ export class ConfigService {
       map(() => this.canUseCloudCompilation),
       distinctUntilChanged(),
     ).subscribe(() => {
-      // 权益变化与设置切换一样，使旧的依赖准备和构建复用判断失效。
-      this.compileSettingsGeneration++;
+      // 仅云编译偏好受权益影响。本地工程刷新时恢复账号不能取消正在进行的加载；
+      // 云偏好仍递增代号，防止退出再登录后复用退出前的云任务。
+      if (getCompileBackend(this.data) === 'cloud') this.compileSettingsGeneration++;
       this.configReloaded$.next();
     });
   }

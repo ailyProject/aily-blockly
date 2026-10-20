@@ -1270,6 +1270,7 @@
         "ERR_CREATE_FAILED": "プロジェクトの作成に失敗しました。もう一度お試しください。"
     },
     "CLOUD_BUILD": {
+        "REUSED_RESULT": "検証済みのビルド結果を再利用しました",
         "STAGES": {
             "CAPTURING": "ビルド用ファイルを準備中",
             "UPLOADING": "ビルド用ファイルをアップロード中",

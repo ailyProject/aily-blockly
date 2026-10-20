@@ -892,7 +892,9 @@ export class ProjectService {
     this.dependencyLifecycle.assertCurrent(session);
     const settingsKey = this.dependencyBackendKeys?.get(session);
     if (settingsKey !== undefined && settingsKey !== this.getCompileBackendKey()) {
-      throw Object.assign(new Error('Compile backend changed. Prepare project dependencies again.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+      throw Object.assign(new Error('编译设置已变化，请重新加载项目。'), {
+        code: 'PROJECT_DEPENDENCY_CANCELLED', reason: 'compile-settings-changed',
+      });
     }
   }
 

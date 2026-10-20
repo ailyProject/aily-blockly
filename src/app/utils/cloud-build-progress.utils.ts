@@ -17,6 +17,7 @@ interface CloudBuildProgressCallbacks {
 
 interface CloudBuildRunResult {
   success?: boolean;
+  reused?: boolean;
   state?: string;
   text?: string;
   artifactPath?: string;

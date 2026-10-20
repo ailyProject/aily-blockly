@@ -59,9 +59,16 @@ describe('cloud compilation account access', () => {
 
   it('uses the current Credit plan and invalidates old cloud work across logout and login', () => {
     account(true, 'pro');
+    const project = Object.assign(Object.create(ProjectService.prototype), { configService: config });
+    const session = project.getProjectDependencySession('/cloud');
     const before = config.getCompileSettingsKey();
     account(false, 'pro');
     expect(config.getCompileBackend()).toBe('local');
+    let cancellation: any;
+    try { project.assertProjectDependencySession(session); } catch (error) { cancellation = error; }
+    expect(cancellation).toEqual(jasmine.objectContaining({
+      code: 'PROJECT_DEPENDENCY_CANCELLED', reason: 'compile-settings-changed',
+    }));
     account(true, 'pro');
     expect(config.getCompileSettingsKey()).not.toBe(before);
     account(true, 'pro', 'free');
@@ -69,6 +76,26 @@ describe('cloud compilation account access', () => {
     auth.authSessionInvalidating = true;
     account(true, 'pro');
     expect(config.getCompileBackend()).toBe('local');
+  });
+
+  it('keeps a local project preparation alive when account access is restored during refresh', async () => {
+    config.data.compile.backend = 'local';
+    const project = Object.assign(Object.create(ProjectService.prototype), { configService: config });
+    const session = project.getProjectDependencySession('/refresh');
+    const settingsKey = config.getCompileSettingsKey();
+    const reloaded = jasmine.createSpy('reloaded');
+    const subscription = config.configReloaded$.subscribe(reloaded);
+    try {
+      await project.runProjectDependencyTask(session, async () => {
+        account(true, 'pro');
+        project.assertProjectDependencySession(session);
+        account(false, null);
+        project.assertProjectDependencySession(session);
+      });
+      expect(config.getCompileSettingsKey()).toBe(settingsKey);
+      expect(project.getProjectDependencySession('/refresh')).toBe(session);
+      expect(reloaded).toHaveBeenCalled();
+    } finally { subscription.unsubscribe(); }
   });
 
   it('restores local SDK requirements when Pro access is lost', () => {
