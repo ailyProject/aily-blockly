@@ -1427,7 +1427,7 @@
         "ERR_CREATE_FAILED": "Failed to create project. Please try again."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Reused verified build result",
+        "REUSED_RESULT": "Reused verified build result (time: {{seconds}}s)",
         "STAGES": {
             "CAPTURING": "Preparing build inputs",
             "UPLOADING": "Uploading build inputs",

@@ -1270,7 +1270,7 @@
         "ERR_CREATE_FAILED": "프로젝트 생성에 실패했습니다. 다시 시도해 주세요."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "검증된 빌드 결과를 재사용했습니다",
+        "REUSED_RESULT": "검증된 빌드 결과를 재사용했습니다 (소요 시간: {{seconds}}s)",
         "STAGES": {
             "CAPTURING": "빌드 파일 준비 중",
             "UPLOADING": "빌드 파일 업로드 중",

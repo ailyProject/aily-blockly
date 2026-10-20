@@ -1374,7 +1374,7 @@
         "ERR_CREATE_FAILED": "建立失敗，請稍後重試"
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "已重用編譯結果",
+        "REUSED_RESULT": "已重用編譯結果 (耗時: {{seconds}}s)",
         "STAGES": {
             "CAPTURING": "正在準備編譯檔案",
             "UPLOADING": "正在上傳編譯檔案",

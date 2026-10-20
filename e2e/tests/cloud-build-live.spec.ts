@@ -95,6 +95,7 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
       const pkg = JSON.parse(await readFile(path.join(project, 'package.json'), 'utf8'));
       return Date.parse(pkg.buildInfo?.lastBuildTime || '') >= started ? pkg.buildInfo.lastBuildStatus : 'pending';
     }, { timeout: 240_000, intervals: [500, 1000] }).toBe('success');
+    await expect(win.locator('body')).toContainText(/编译完成 \(耗时: \d+\.\d{2}s\)/);
     const artifactPath = await win.evaluate(project => (window as any).cloudBuild.artifactPath({ projectPath: project }), project);
     expect(typeof artifactPath).toBe('string');
     const result = JSON.parse(await readFile(path.join(artifactPath, 'aily-cloud-result.json'), 'utf8'));
@@ -125,7 +126,7 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
     const repeatedEvents = await win.evaluate(() => (window as any).__liveCloudEvents);
     expect(repeatedEvents.some((event: any) => event.stage === 'complete' && event.reused === true)).toBe(true);
     expect(repeatedEvents.some((event: any) => event.stage === 'queued')).toBe(false);
-    await expect(win.locator('body')).toContainText('已复用编译结果');
+    await expect(win.locator('body')).toContainText(/已复用编译结果 \(耗时: \d+\.\d{2}s\)/);
     expect(await reuse()).toBe(true);
     // Invalid serial input must be rejected before any physical device is opened.
     const uploadError = await win.evaluate(async project => {

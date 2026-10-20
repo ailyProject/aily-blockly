@@ -1270,7 +1270,7 @@
         "ERR_CREATE_FAILED": "Projekt konnte nicht erstellt werden. Bitte erneut versuchen."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Geprüftes Build-Ergebnis wiederverwendet",
+        "REUSED_RESULT": "Geprüftes Build-Ergebnis wiederverwendet (Dauer: {{seconds}}s)",
         "STAGES": {
             "CAPTURING": "Build-Eingaben werden vorbereitet",
             "UPLOADING": "Build-Eingaben werden hochgeladen",

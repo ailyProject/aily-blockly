@@ -1270,7 +1270,7 @@
         "ERR_CREATE_FAILED": "No se pudo crear el proyecto. Inténtalo de nuevo."
     },
     "CLOUD_BUILD": {
-        "REUSED_RESULT": "Resultado de compilación verificado reutilizado",
+        "REUSED_RESULT": "Resultado de compilación verificado reutilizado (tiempo: {{seconds}}s)",
         "STAGES": {
             "CAPTURING": "Preparando las entradas de compilación",
             "UPLOADING": "Subiendo las entradas de compilación",
