@@ -17,7 +17,8 @@ import {
   ProtectedToolCloseError,
   switchServiceRegionAndRequestLogin,
 } from '@core/auth/public-api';
-import { getChildToolConfig } from '../../../configs/tool.config';
+
+import { getChildToolConfig, isWindowOnlyTool } from '../../../configs/tool.config';
 import { ConfigService } from '@core/preferences/public-api';
 import { BoardSelectorDialogComponent } from '../../../main-window/components/board-selector-dialog/board-selector-dialog.component';
 import {
@@ -386,6 +387,8 @@ export class UiService {
    */
   openToolEmbedded(name: string): boolean {
     if (getChildToolConfig(name)?.app?.extension === true) return false;
+    if (isWindowOnlyTool(name)) return false;
+
     if (this.requestLoginForProtectedTool(name)) {
       return false;
     }
@@ -398,6 +401,13 @@ export class UiService {
     if (!name || this.requestLoginForProtectedTool(name)) {
       return;
     }
+
+    if (isWindowOnlyTool(name)) {
+      this.openToolWindow(name, { title: getChildToolConfig(name)?.app?.name || name });
+
+      return;
+    }
+
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.openToolList.push(name);
     this.actionSubject.next({ action: 'open', type: 'tool', data: name });

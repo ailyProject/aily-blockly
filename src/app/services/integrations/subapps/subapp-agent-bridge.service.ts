@@ -6,6 +6,7 @@ import {
   ChildToolConfig,
   getChildToolConfig,
   getChildToolConfigs,
+  isWindowOnlyTool,
 } from '../../../configs/tool.config';
 import { ChildToolHostInfo, ChildToolProcessService } from './child-tool-process.service';
 import {
@@ -130,6 +131,16 @@ export class SubappAgentBridgeService implements OnDestroy {
       const presentationPolicy = (nativeBatch && !resolved.config.runtime?.observer) || resolved.config.app?.extension === true
         ? { uiMode: 'none' as const, activityPresentation: undefined }
         : resolveSubappAgentPresentation(params, resolved.definition, activeMode);
+
+      if (isWindowOnlyTool(resolved.config.id) && presentationPolicy.activityPresentation) {
+        presentationPolicy.uiMode = 'window';
+
+        presentationPolicy.activityPresentation = {
+          ...presentationPolicy.activityPresentation,
+          mode: 'window',
+        };
+      }
+
       this.subappActivityService.recordInvocationStarted({
         sessionId: activitySessionId,
         toolId: resolved.config.id,

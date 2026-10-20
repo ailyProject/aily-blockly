@@ -10,7 +10,7 @@ import { Connection, WindowMessenger, connect } from 'penpal';
 import { combineLatest, firstValueFrom, merge, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
-import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication } from '../../configs/tool.config';
+import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication, isWindowOnlyTool } from '../../configs/tool.config';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   ChildToolHostInfo,
@@ -252,6 +252,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   get isStandalone(): boolean {
     return this.currentUrl.startsWith('/child-tool/');
+  }
+
+  get visibleStandaloneWinBtns(): string[] {
+    return isWindowOnlyTool(this.resolvedToolId)
+      ? this.standaloneWinBtns.filter(button => button !== 'go-main')
+      : this.standaloneWinBtns;
   }
 
   get backendFailedKey(): string {
@@ -669,6 +675,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   async embed(): Promise<Record<string, unknown>> {
+    if (isWindowOnlyTool(this.resolvedToolId)) {
+      return { ok: false, toolId: this.resolvedToolId, action: 'embed', message: '此工具仅支持独立窗口，不能切换为内嵌模式。' };
+    }
+
     if (!this.isStandalone) {
       return { ok: true, toolId: this.resolvedToolId, action: 'embed', message: '子应用已经处于内嵌模式。' };
     }
@@ -2014,6 +2024,17 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     const config = getChildToolConfig(toolId);
     const surface = current.presentation?.surface || 'compact';
+
+    if (surfaceState === 'expanded' && isWindowOnlyTool(toolId)) {
+      const opened = await this.mainUiAutomation.openChildApp({ toolId, mode: 'window' });
+
+      if (opened['ok'] !== true) return opened;
+
+      this.subappActivityService.setSurfaceState(sessionId, toolId, 'collapsed');
+
+      return { ok: true, sessionId, toolId, surfaceState: 'collapsed' };
+    }
+
     if (surfaceState === 'expanded' && !config?.runtime?.observer && !config?.ui?.surfaces?.[surface]?.entry) {
       // A window-only subapp remains usable from the activity bar without
       // mounting a Dock iframe for an undeclared surface.

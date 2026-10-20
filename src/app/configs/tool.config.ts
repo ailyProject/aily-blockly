@@ -196,6 +196,13 @@ export function isChildTool(toolId: string): boolean {
   return !!getChildToolConfig(toolId);
 }
 
+// 宿主产品展示约束，独立于子应用版本及各入口的默认打开方式。
+const WINDOW_ONLY_TOOL_IDS: ReadonlySet<string> = new Set(['simulator']);
+
+export function isWindowOnlyTool(toolId: string): boolean {
+  return WINDOW_ONLY_TOOL_IDS.has(toolId);
+}
+
 export function getChildToolAppItems(): AppItem[] {
   return Object.values(getChildToolConfigs())
     .filter(config => config.app?.available !== false)

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 
-import { getChildToolConfig } from '../../../configs/tool.config';
+import { getChildToolConfig, isWindowOnlyTool } from '../../../configs/tool.config';
 import {
   type ChildAppOpenMode,
   MainUiAutomationService,
@@ -46,7 +46,7 @@ export class InstalledChildToolLauncherService {
     options: InstalledChildToolLaunchOptions = {},
   ): Promise<InstalledChildToolLaunchResult> {
     const normalizedToolId = typeof toolId === 'string' ? toolId.trim() : '';
-    const mode = options.mode ?? 'embedded';
+    const mode = isWindowOnlyTool(normalizedToolId) ? 'window' : options.mode ?? 'embedded';
     if (!normalizedToolId) {
       return {
         toolId: '',

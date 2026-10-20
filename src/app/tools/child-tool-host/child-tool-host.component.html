@@ -1,5 +1,5 @@
 @if (isStandalone) {
-<app-sub-window [title]="titleKey | translate" [winBtns]="standaloneWinBtns"
+<app-sub-window [title]="titleKey | translate" [winBtns]="visibleStandaloneWinBtns"
   (goMainEvent)="embed()" (closeEvent)="close()">
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
