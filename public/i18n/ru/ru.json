@@ -1057,6 +1057,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Компонент облачной компиляции устарел. Полностью закройте и перезапустите приложение, затем повторите попытку; перезагрузки страницы недостаточно.",
         "CLOUD_TARGET_UNAVAILABLE": "Эта версия или содержимое платы не зарегистрированы как доступная облачная цель.",
         "CLOUD_BOARD_NOT_ENABLED": "Облачная компиляция не включена для этой версии платы.",
         "CLOUD_BOARD_UNSUPPORTED": "Эта версия платы не поддерживает облачную компиляцию.",

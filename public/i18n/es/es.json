@@ -1057,6 +1057,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "El componente de compilación en la nube está desactualizado. Cierra por completo y reinicia la aplicación antes de volver a intentarlo; recargar la página no es suficiente.",
         "CLOUD_TARGET_UNAVAILABLE": "Esta versión o contenido de la placa no está registrado como destino disponible en la nube.",
         "CLOUD_BOARD_NOT_ENABLED": "La compilación en la nube no está habilitada para esta versión de placa.",
         "CLOUD_BOARD_UNSUPPORTED": "Esta versión de placa no admite la compilación en la nube.",

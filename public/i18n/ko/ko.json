@@ -1057,6 +1057,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "클라우드 컴파일 구성 요소가 최신 버전이 아닙니다. 앱을 완전히 종료한 후 다시 시작하고 재시도하세요. 페이지 새로고침만으로는 업데이트되지 않습니다.",
         "CLOUD_TARGET_UNAVAILABLE": "이 보드 버전 또는 내용은 사용 가능한 클라우드 대상으로 등록되지 않았습니다.",
         "CLOUD_BOARD_NOT_ENABLED": "이 보드 버전의 클라우드 컴파일이 활성화되지 않았습니다.",
         "CLOUD_BOARD_UNSUPPORTED": "이 보드 버전은 클라우드 컴파일을 지원하지 않습니다.",

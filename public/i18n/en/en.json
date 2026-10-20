@@ -1220,6 +1220,7 @@
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
         "DEPENDENCY_TASKS_STOPPED": "Project dependency tasks have been stopped",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "The cloud compilation component is out of date. Fully quit and restart the application, then try again; reloading the page is not enough.",
         "CLOUD_TARGET_UNAVAILABLE": "This board version or content is not registered as an available cloud target.",
         "CLOUD_BOARD_NOT_ENABLED": "Cloud compilation is not enabled for this board version.",
         "CLOUD_BOARD_UNSUPPORTED": "This board version does not support cloud compilation.",

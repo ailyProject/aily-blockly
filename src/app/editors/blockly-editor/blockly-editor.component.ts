@@ -539,6 +539,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     try {
       await this.npmService.installBoardDeps(session);
     } catch (error) {
+      // 项目和生成器已经就绪。登录或切换编译设置仅使旧依赖任务失效，
+      // 不能把已打开的项目改成加载失败；下次编译会按新会话重新准备依赖。
+      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
       assertCurrent();
       console.error('install board dependencies error', error);
     }

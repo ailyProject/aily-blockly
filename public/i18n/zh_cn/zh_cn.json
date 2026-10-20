@@ -1216,6 +1216,7 @@
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "DEPENDENCY_TASKS_STOPPED": "项目依赖任务已停止",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "云编译组件尚未更新，请完整退出并重新启动软件后重试；仅刷新页面无效。",
         "CLOUD_TARGET_UNAVAILABLE": "此开发板版本或内容尚未注册为可用的云编译目标。",
         "CLOUD_BOARD_NOT_ENABLED": "此开发板版本尚未启用云编译。",
         "CLOUD_BOARD_UNSUPPORTED": "此开发板版本暂不支持云编译。",

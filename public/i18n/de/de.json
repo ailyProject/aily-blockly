@@ -1057,6 +1057,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Die Cloud-Kompilierungskomponente ist veraltet. Beenden und starten Sie die Anwendung vollständig neu und versuchen Sie es erneut; das Neuladen der Seite reicht nicht aus.",
         "CLOUD_TARGET_UNAVAILABLE": "Diese Board-Version oder dieser Inhalt ist nicht als verfügbares Cloud-Ziel registriert.",
         "CLOUD_BOARD_NOT_ENABLED": "Die Cloud-Kompilierung ist für diese Board-Version nicht aktiviert.",
         "CLOUD_BOARD_UNSUPPORTED": "Diese Board-Version unterstützt keine Cloud-Kompilierung.",

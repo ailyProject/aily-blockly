@@ -2716,7 +2716,17 @@ export class ProjectService {
     if (!refresh && cached?.settingsKey === settingsKey && cached.boardModule === boardModule && cached.boardVersion === boardVersion) {
       return cached.cloud ? 'cloud' : 'local';
     }
-    const support = await window['cloudBuild'].boardSupport({ ...getCloudBuildSettings(this.configService.data), boardModule, boardVersion });
+    const bridge = window['cloudBuild'];
+    const restartRequired = () => Object.assign(new Error(this.translate.instant('PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED')),
+      { code: 'CLOUD_BRIDGE_UNAVAILABLE' });
+    if (typeof bridge?.boardSupport !== 'function') throw restartRequired();
+    const support = await bridge.boardSupport({ ...getCloudBuildSettings(this.configService.data), boardModule, boardVersion })
+      .catch(error => {
+        guard();
+        // 开发时刷新页面会重载 preload，但不会更新已运行的主进程 IPC。
+        if (error?.code === 'CLOUD_BUILD_ERROR' && error?.message === 'Unknown cloud build operation.') throw restartRequired();
+        throw error;
+      });
     guard();
     const currentModule = await this.getBoardModule();
     guard();

@@ -61,7 +61,8 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: live board supp
   }
 });
 
-test('unsupported board completes a real local Blockly compilation with cloud preference enabled', async ({}, info) => {
+for (const loginTiming of ['before-open', 'after-open', 'during-preparation']) test(`unsupported board completes a real local Blockly compilation: ${loginTiming}`, async ({}, info) => {
+  const loginAfterOpen = loginTiming !== 'before-open';
   const seed = process.env['AILY_E2E_CLOUD_SEED'];
   const toolchain = process.env['AILY_E2E_BOARD_SUPPORT_TOOLCHAIN_SEED'];
   test.skip(!seed || !toolchain || process.env['AILY_E2E_BOARD_SUPPORT_LOCAL'] !== '1', 'Requires installed board packages and the matching local toolchain.');
@@ -95,6 +96,22 @@ test('unsupported board completes a real local Blockly compilation with cloud pr
     await main.addLocatorHandler(main.locator('app-login .login-close'), button => button.click());
     await expect.poll(() => main.evaluate(() => (window as any).ng.getComponent(document.querySelector('app-main-window'))
       .authService.getAuthInitializationState())).toBe('signed_out');
+    if (loginTiming === 'during-preparation') await main.evaluate(() => {
+      // Hold one real preparation boundary to reproduce login during a slow SDK
+      // preparation. The original implementation still runs after release.
+      const w = window as any, npm = w.ng.getComponent(document.querySelector('app-main-window')).npmService;
+      const original = npm.installBoardDeps.bind(npm);
+      npm.installBoardDeps = async (...args: any[]) => {
+        npm.installBoardDeps = original;
+        await new Promise<void>(resolve => { w.__releaseBoardPreparation = resolve; });
+        return original(...args);
+      };
+    });
+    if (loginAfterOpen) {
+      await openBlocklyProject(main, project);
+      await expect.poll(async () => (await readAilyHostOperation(launch.app, 'project_load_status', project)).ready,
+        { timeout: 120_000 }).toBe(true);
+    }
     await main.evaluate(() => {
       const w = window as any, auth = w.ng.getComponent(document.querySelector('app-main-window')).authService;
       auth.isLoggedInSubject.next(true);
@@ -107,15 +124,22 @@ test('unsupported board completes a real local Blockly compilation with cloud pr
         run: async (options: any) => { w.__cloudSubmissions++; return original.run(options); },
       };
     });
-    await openBlocklyProject(main, project);
+    if (loginTiming === 'during-preparation') {
+      await expect.poll(() => main.evaluate(() => typeof (window as any).__releaseBoardPreparation)).toBe('function');
+      await main.evaluate(() => (window as any).__releaseBoardPreparation());
+      await expect.poll(() => main.evaluate(projectPath => {
+        const component = (window as any).ng.getComponent(document.querySelector('app-blockly-editor'));
+        return { loaded: component.loadedProjectPath, error: component.projectService.getBlocklyProjectLoadStatus(projectPath).error || '' };
+      }, project), { timeout: 10_000 }).toEqual({ loaded: project, error: '' });
+    }
+    if (!loginAfterOpen) await openBlocklyProject(main, project);
     await expect.poll(async () => (await readAilyHostOperation(launch.app, 'project_load_status', project)).ready,
       { timeout: 120_000 }).toBe(true);
     const readBackend = () => main.evaluate(() => {
       const header = (window as any).ng.getComponent(document.querySelector('app-header'));
       return { cloud: header.projectService.isCloudBuild(), saved: header.configService.data.compile.backend };
     });
-    await expect.poll(readBackend).toEqual({ cloud: false, saved: 'cloud' });
-    const backend = await readBackend();
+    if (!loginAfterOpen) await expect.poll(readBackend).toEqual({ cloud: false, saved: 'cloud' });
     const started = Date.now();
     await main.locator('app-header app-act-btn[data-action="compile"]').click();
     await expect.poll(async () => {
@@ -127,6 +151,16 @@ test('unsupported board completes a real local Blockly compilation with cloud pr
     }));
     expect(evidence.support.some((result: any) => result.supported === false)).toBe(true);
     expect(evidence.cloudSubmissions).toBe(0);
+    const backend = await readBackend();
+    expect(backend).toEqual({ cloud: false, saved: 'cloud' });
+    if (loginAfterOpen) {
+      await main.evaluate(async projectPath => {
+        const service = (window as any).ng.getComponent(document.querySelector('app-header')).projectService;
+        const opened = await service.projectOpen(projectPath, { reason: 'reload' });
+        if (!opened) throw new Error('Project reload did not complete.');
+      }, project);
+      await expect.poll(async () => (await readAilyHostOperation(launch.app, 'project_load_status', project)).ready).toBe(true);
+    }
     await info.attach('local-fallback', { body: JSON.stringify({ backend, ...evidence }, null, 2), contentType: 'application/json' });
     await main.screenshot({ path: info.outputPath('local-fallback-compiled.png') });
   } finally {

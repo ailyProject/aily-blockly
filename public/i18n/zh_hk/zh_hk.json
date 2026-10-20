@@ -1134,6 +1134,7 @@
       "CONVERT_CODER_INSTALLING": "正在安裝 Coder 專案依賴",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "依賴準備失敗，請檢查安裝日誌後重試",
       "CONVERT_CODER_OPEN_FAILED": "Coder 專案已儲存至 {{path}}，請使用 Aily Coder 開啟。",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "雲編譯元件尚未更新，請完整退出並重新啟動軟件後重試；僅重新整理頁面無效。",
         "CLOUD_TARGET_UNAVAILABLE": "此開發板版本或內容尚未註冊為可用的雲端編譯目標。",
         "CLOUD_BOARD_NOT_ENABLED": "此開發板版本尚未啟用雲端編譯。",
         "CLOUD_BOARD_UNSUPPORTED": "此開發板版本暫不支援雲端編譯。",

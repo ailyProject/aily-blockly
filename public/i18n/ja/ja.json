@@ -1057,6 +1057,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "クラウドコンパイルのコンポーネントが更新されていません。アプリを完全に終了して再起動してから、もう一度お試しください。ページの再読み込みだけでは更新されません。",
         "CLOUD_TARGET_UNAVAILABLE": "このボードのバージョンまたは内容は利用可能なクラウドターゲットとして登録されていません。",
         "CLOUD_BOARD_NOT_ENABLED": "このボードのバージョンではクラウドコンパイルが有効になっていません。",
         "CLOUD_BOARD_UNSUPPORTED": "このボードのバージョンはクラウドコンパイルに対応していません。",

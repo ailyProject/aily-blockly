@@ -1057,6 +1057,7 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Le composant de compilation dans le cloud est obsolète. Quittez complètement puis redémarrez l’application avant de réessayer ; recharger la page ne suffit pas.",
         "CLOUD_TARGET_UNAVAILABLE": "Cette version ou ce contenu de carte ne figure pas parmi les cibles cloud disponibles.",
         "CLOUD_BOARD_NOT_ENABLED": "La compilation cloud n’est pas activée pour cette version de carte.",
         "CLOUD_BOARD_UNSUPPORTED": "Cette version de carte ne prend pas en charge la compilation cloud.",

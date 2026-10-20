@@ -83,6 +83,16 @@ describe('board cloud support and local fallback', () => {
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
   });
 
+  for (const oldHost of ['preload', 'main-process']) it(`requests a full restart for an outdated ${oldHost} without treating it as an unsupported board`, async () => {
+    if (oldHost === 'preload') delete window['cloudBuild'].boardSupport;
+    else window['cloudBuild'].boardSupport.and.rejectWith({ code: 'CLOUD_BUILD_ERROR', message: 'Unknown cloud build operation.' });
+    await expectAsync(npm.prepareCompileBackend('/project')).toBeRejectedWith(jasmine.objectContaining({
+      code: 'CLOUD_BRIDGE_UNAVAILABLE', message: 'PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED',
+    }));
+    expect(project.isCloudBuild()).toBeTrue();
+    expect(npm.installBoardDeps).not.toHaveBeenCalled();
+  });
+
   it('does not start local SDK installation after the build was cancelled during lookup', async () => {
     await expectAsync(npm.prepareCompileBackend('/project', () => true)).toBeRejectedWith(jasmine.objectContaining({ code: 'CANCELLED' }));
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
