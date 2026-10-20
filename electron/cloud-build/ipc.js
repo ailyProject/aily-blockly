@@ -4,7 +4,7 @@ const path = require('node:path');
 const { CloudBuildBroker } = require('./broker');
 const { uploadCloudArtifact } = require('./uploader');
 // 集中接收云编译 IPC，校验窗口身份并管理取消；烧录仍调用本机轻量工具。
-function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => false, getGatewaySettings, querySource, getRuntimeRoot, backend, powerSaveBlocker, uploadArtifact = uploadCloudArtifact }) {
+function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => false, getGatewaySettings, getAuth, querySource, getRuntimeRoot, backend, powerSaveBlocker, uploadArtifact = uploadCloudArtifact }) {
   const uploads = new Map();
   const operations = new Set();
   let currentBackend = backend === 'cloud' ? 'cloud' : 'local', backendRevision = 0;
@@ -21,7 +21,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       try { powerSaveBlocker.stop(id); } catch { /* 清理异常不能覆盖编译或烧录结果。 */ }
     };
   };
-  const broker = new CloudBuildBroker({ getOwner, getGatewaySettings, querySource, acquirePowerSaveBlocker });
+  const broker = new CloudBuildBroker({ getOwner, getGatewaySettings, getAuth, querySource, acquirePowerSaveBlocker });
   const assertCloudBackend = revision => {
     if (currentBackend !== 'cloud') throw Object.assign(new Error('Cloud compilation is disabled.'), { code: 'CLOUD_BUILD_DISABLED' });
     if (revision !== backendRevision) throw Object.assign(new Error('Cloud compilation settings changed.'), { code: 'BUILD_SOURCE_STALE' });
@@ -34,13 +34,14 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
   const handle = async (event, payload) => {
     try {
       if (shuttingDown) throw Object.assign(new Error('Cloud build services are shutting down.'), { code: 'CLOUD_BUILD_SHUTDOWN' });
-      const request = payload || {};
+      const request = { ...payload };
       const revision = backendRevision;
       if (event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) throw Object.assign(new Error('Cloud operations require an application top-level frame.'), { code: 'CLOUD_BUILD_FORBIDDEN' });
       const deploymentRead = request.action === 'health' || request.action === 'configuration';
       const owner = getOwner(event.sender);
       // 设置子窗口只有连接检查权限；提交任务、读取固件及烧录必须属于当前主页面。
       if (!owner && !(deploymentRead && canReadGateway(event.sender))) throw Object.assign(new Error('Cloud build operations require the current main window; application settings can only read deployment identity or check Gateway health.'), { code: 'CLOUD_BUILD_FORBIDDEN' });
+      if (['targets', 'compile', 'analysis'].includes(request.action)) request.settings = await broker.configuration();
       // 跨窗口设置保存可能早于旧页面的 IPC 到达；主进程必须拒绝关闭后的迟到任务。
       if (['compile', 'analysis', 'upload'].includes(request.action)) assertCloudBackend(revision);
       const send = progress => {
@@ -105,6 +106,10 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
     return operation;
   });
   return {
+    invalidateAuthentication() {
+      backendRevision += 1;
+      return invalidateAll();
+    },
     setBackend(value) {
       const next = value === 'cloud' ? 'cloud' : 'local';
       if (shuttingDown) return shutdownPromise;

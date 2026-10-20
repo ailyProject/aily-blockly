@@ -16,11 +16,11 @@ const { acquireBuildWorkspace } = require(path.join(childRoot, 'scripts/build-wo
 
 // 默认部署仅由本代理使用，保留 provider 注入用于本地模拟；正式网关始终固定签名公钥。
 function deploymentSettings(environment = process.env) {
-  const defaultGatewayUrl = 'https://134.175.61.54';
+  const defaultGatewayUrl = environment.AILY_API_SERVER || 'https://api.aily.pro';
   const defaultPublicKey = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA6cyEcuUSYKvLP261cICDWmV263f/qf56iUGnvuw1s18=\n-----END PUBLIC KEY-----\n';
   const configuredUrl = environment.AILY_CLOUD_BUILD_GATEWAY_URL || defaultGatewayUrl;
   let production = false;
-  try { production = new URL(configuredUrl).toString().replace(/\/+$/u, '') === defaultGatewayUrl; }
+  try { production = ['https://api.aily.pro', 'https://api.yiyu.pro'].includes(new URL(configuredUrl).toString().replace(/\/+$/u, '')); }
   catch { /* 无效部署地址由请求入口统一拒绝。 */ }
   return { gatewayUrl: configuredUrl, publicKey: environment.AILY_CLOUD_BUILD_PUBLIC_KEY || (production ? defaultPublicKey : undefined) };
 }
@@ -36,6 +36,7 @@ function gatewayUrl(value) {
   return { url: url.toString().replace(/\/$/u, ''), local };
 }
 const abortFault = () => protocol.error('CANCELLED', 'Cloud build cancelled.');
+const AUTH_USER = Symbol('cloud-build-user');
 const CLIENT_INPUT_METRICS = ['captureMs', 'identityMs', 'manifestPrepareMs', 'manifestResolveMs', 'blobUploadMs', 'commitMs', 'encodingMs',
   'rawBytes', 'uniqueBytes', 'uploadedBytes', 'transferredBytes', 'reusedBytes', 'fileCount', 'blobCount', 'libraryCount', 'libraryHits', 'encodedFiles'];
 function clientInputMetrics(value) {
@@ -96,13 +97,46 @@ class CloudBuildBroker {
     this.cancelTimeoutMs = Math.max(1, Math.min(this.requestTimeoutMs, options.cancelTimeoutMs ?? 3000));
     this.healthTimeoutMs = options.healthTimeoutMs || 5000;
     this.getGatewaySettings = options.getGatewaySettings || deploymentSettings;
+    this.getAuth = options.getAuth;
     this.deadlineMs = options.deadlineMs || 20 * 60 * 1000;
     this.artifactRetryDelayMs = options.artifactRetryDelayMs ?? 250;
     this.retention = options.retention || {};
     this.requests = new Map(); this.active = new Map(); this.artifactUsers = new Map(); this.catalogCapabilities = new Map();
   }
+  async authorization(settings, signal, refresh) {
+    const destination = gatewayUrl(settings.gatewayUrl);
+    if (!this.getAuth && destination.local) return { headers: {} };
+    if (!this.getAuth) throw protocol.error('AUTH_TOKEN_MISSING', 'Sign in before using cloud compilation.');
+    const auth = await this.getAuth(refresh || { operation: 'access-token' }, signal);
+    signal?.throwIfAborted();
+    if (auth?.ok !== true || auth.authenticated !== true || !auth.accessToken) {
+      throw protocol.error(auth?.errorCode || 'AUTH_TOKEN_MISSING', auth?.message || 'Sign in before using cloud compilation.');
+    }
+    if (new URL(destination.url).origin !== new URL(gatewayUrl(auth.apiServer).url).origin) {
+      throw protocol.error('GATEWAY_UNTRUSTED', 'Cloud compilation must use the signed-in account API server.');
+    }
+    // sub 只用于本机任务绑定；Token 真伪和权限仍由 Aily Gateway 验证。
+    let userId;
+    try { userId = JSON.parse(Buffer.from(auth.accessToken.split('.')[1], 'base64url').toString('utf8')).sub; }
+    catch { /* 无法取得主体时不能把任务绑定到可能滞后的用户快照。 */ }
+    if (typeof userId !== 'string' || !userId) throw protocol.error('AUTH_TOKEN_INVALID', 'The host access token has no user identity.');
+    userId = userId.toLowerCase();
+    if (settings[AUTH_USER] && settings[AUTH_USER] !== userId) throw protocol.error('AUTH_ACCOUNT_CHANGED', 'The cloud build account changed.');
+    settings[AUTH_USER] = userId;
+    return { headers: { Authorization: `Bearer ${auth.accessToken}` }, generation: auth.generation };
+  }
+  async fetchAuthorized(settings, url, options) {
+    const auth = await this.authorization(settings, options.signal);
+    let response = await this.fetch(url, { ...options, headers: { ...options.headers, ...auth.headers } });
+    if (response.status === 401 && this.getAuth) {
+      const refreshed = await this.authorization(settings, options.signal, { operation: 'refresh-access-token', rejectedGeneration: auth.generation });
+      await response.body?.cancel?.();
+      response = await this.fetch(url, { ...options, headers: { ...options.headers, ...refreshed.headers } });
+    }
+    return response;
+  }
   async request(settings, endpoint, body, signal, bodyOptions = {}) {
-    // 普通用户匿名请求云编译；仍限定网关来源、禁止重定向，并限制请求时间和响应体积。
+    // 登录凭据只发送给当前账号的 API 网关；任务身份在刷新 Token 时保持不变。
     const destination = gatewayUrl(settings.gatewayUrl);
     const resolved = new URL(`${destination.url}${endpoint}`);
     if (resolved.origin !== new URL(destination.url).origin) throw protocol.error('GATEWAY_INVALID', 'Cloud URL escaped its gateway.');
@@ -118,12 +152,13 @@ class CloudBuildBroker {
     signal?.throwIfAborted();
     const timeout = AbortSignal.timeout(Math.min(this.requestTimeoutMs, bodyOptions.timeoutMs || this.requestTimeoutMs));
     let response;
-    try { response = await this.fetch(resolved, { method: body === undefined ? 'GET' : 'POST', headers,
+    try { response = await this.fetchAuthorized(settings, resolved, { method: body === undefined ? 'GET' : 'POST', headers,
       body: payload, credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       bodyOptions.onPayload?.({ transferredBytes: payload === undefined ? 0 : Buffer.byteLength(payload), uncompressedBytes }); }
     catch (error) {
       if (signal?.aborted) throw signal.reason || abortFault();
       if (timeout.aborted) throw protocol.error('GATEWAY_TIMEOUT', 'Gateway request timed out.');
+      if (/^(?:AUTH_|HOST_)/u.test(error.code || '') || error.code === 'GATEWAY_UNTRUSTED') throw error;
       throw Object.assign(protocol.error('GATEWAY_UNREACHABLE', 'Could not connect to the cloud gateway.'), { cause: error });
     }
     let bytes;
@@ -141,7 +176,7 @@ class CloudBuildBroker {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw Object.assign(protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid JSON object.'), { httpStatus: response.status });
     }
-    if (!response.ok) throw Object.assign(protocol.error(value.error?.code || value.code || 'GATEWAY_ERROR', value.error?.message || value.message || `Gateway request failed (${response.status}).`), { httpStatus: response.status });
+    if (!response.ok) throw Object.assign(protocol.error(value.error?.code || value.errorCode || value.code || 'GATEWAY_ERROR', value.error?.message || value.errorMessage || value.message || `Gateway request failed (${response.status}).`), { httpStatus: response.status });
     return value;
   }
   capabilities(settings, signal) { return this.request(settings, '/api/v1/build/capabilities', undefined, signal); }
@@ -297,6 +332,7 @@ class CloudBuildBroker {
     if (record.controller.signal.aborted) throw record.controller.signal.reason || abortFault();
     const owner = this.owner(record.sender);
     if (owner.generation !== record.generation || (this.requests.get(record.requestId) !== record && this.active.get(record.root) !== record)) throw protocol.error('BUILD_OWNER_EXPIRED', 'Build owner changed.');
+    if (record.settings && this.getAuth) await this.authorization(record.settings, record.controller.signal);
     if (config.sourceCapture) confirmBuildSource(config);
     if (this.querySource) {
       const answer = await this.querySource(record.root, record.controller.signal);
@@ -613,7 +649,7 @@ class CloudBuildBroker {
         const config = Object.fromEntries(['currentProjectPath', 'boardModule', 'code', 'projectMacros', 'partitionFilePath', 'sourceCapture']
           .filter(key => record.config[key] !== undefined).map(key => [key, record.config[key]]));
         this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,
-          config, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
+          config, settings: record.settings, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
           snapshot: { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion },
           directory: published, manifest, signature: result.signature });
         this.trimCompletedRecords();
@@ -631,7 +667,7 @@ class CloudBuildBroker {
       const timeout = AbortSignal.timeout(this.requestTimeoutMs), signal = AbortSignal.any([shared, timeout]);
       try {
         signal.throwIfAborted();
-        const response = await this.fetch(url, { credentials: 'omit', redirect: 'error', signal });
+        const response = await this.fetchAuthorized(record.settings, url, { credentials: 'omit', redirect: 'error', signal });
         if (!response.ok) throw Object.assign(protocol.error('ARTIFACT_DOWNLOAD_FAILED', 'Artifact download failed.'), { httpStatus: response.status });
         const bytes = await boundedBytes(response, artifact.sizeBytes, onBytes);
         signal.throwIfAborted();
