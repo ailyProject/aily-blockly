@@ -564,6 +564,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   cloudBuild: {
     configuration: () => invokeCloudBuild({ action: 'configuration' }),
     health: () => invokeCloudBuild({ action: 'health' }),
+    boardSupport: options => invokeCloudBuild({ ...options, action: 'boardSupport' }),
     targets: options => invokeCloudBuild({ action: 'targets', ...options }),
     run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
     cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),

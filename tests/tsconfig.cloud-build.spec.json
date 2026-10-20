@@ -2,6 +2,7 @@
   "extends": "./tsconfig.spec.json",
   "include": [
     "../tests/cloud-compilation-access.spec.ts",
+    "../tests/cloud-board-support.spec.ts",
     "../tests/cloud-build-diagnostics.spec.ts",
     "../src/app/editors/blockly-editor/services/blockly-xiaozhi-parameter-declarations.spec.ts",
     "../src/app/editors/blockly-editor/services/blockly-generator-runtime.service.spec.ts",

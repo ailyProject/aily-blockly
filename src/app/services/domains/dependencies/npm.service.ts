@@ -610,7 +610,31 @@ export class NpmService {
       : this.prjService;
   }
 
-  private isCloudBuild(): boolean { return this.configService?.getCompileBackend?.() === 'cloud'; }
+  private isCloudBuild(projectPath?: string): boolean {
+    return this.configService?.getCompileBackend?.() === 'cloud' && this.prjService.isCloudBuild(projectPath);
+  }
+
+  /** 编译入口刷新支持状态；运行中由云切到本地时补齐正常本地依赖链。 */
+  async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false): Promise<void> {
+    if (this.configService.getCompileBackend() !== 'cloud') return;
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const project = this.getDependencyProject(session);
+    const boardModule = await project.getBoardModule();
+    this.assertDependencySession(session);
+    if (!boardModule) return;
+    const wasCloud = project.isCloudBuild();
+    const backend = await project.resolveCompileBackend(session, true);
+    this.assertDependencySession(session);
+    if (isCancelled()) throw Object.assign(new Error('Build cancelled during board support lookup.'), { code: 'CANCELLED' });
+    if (wasCloud && backend === 'local') {
+      await this.installBoardDeps(session);
+      if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
+        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      }
+      await project.syncCurrentBoardConfig(session);
+      this.assertDependencySession(session);
+    }
+  }
 
   /** Coder execution preflight: completed preparation plus the current files on disk. */
   async assertCoderDependenciesReady(projectPath: string): Promise<void> {
@@ -634,13 +658,13 @@ export class NpmService {
       if (boardModule) {
         const boardPackage = await project.getBoardPackageJson();
         this.assertDependencySession(session);
-        if (this.isCloudBuild()) {
+        if (this.isCloudBuild(projectPath)) {
           await project.getCloudBoardProfile({}, session);
           this.assertDependencySession(session);
         }
         // Use the same version check as Blockly's build preflight, plus extracted SDK/tools.
-        const missing = this.getMissingBoardDependencies(boardPackage);
-        const localDependencies = this.isCloudBuild() ? getCloudEditorDependencies(boardPackage) : boardPackage?.boardDependencies || {};
+        const missing = this.getMissingBoardDependencies(boardPackage, projectPath);
+        const localDependencies = this.isCloudBuild(projectPath) ? getCloudEditorDependencies(boardPackage) : boardPackage?.boardDependencies || {};
         if (missing.length || !await this.areBoardPlatformDepsReady(localDependencies)) {
           throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
             name: missing.length ? missing.join(', ') : boardModule,
@@ -688,7 +712,7 @@ export class NpmService {
         this.assertDependencySession(session);
         if (this.prjService.isAilyCodeProject(projectPath) && !await this.prjService.getBoardModule()) return true;
         // 上一步已经展开库源码；统一链不再重复扫描。单独调用 installBoardDeps 仍完整准备。
-        if (this.isCloudBuild()) await this.installBoardDeps(session, { prepareCloudSources: false });
+        if (this.isCloudBuild(projectPath)) await this.installBoardDeps(session, { prepareCloudSources: false });
         else await this.installBoardDeps(session);
         this.assertDependencySession(session);
         await options?.onBoardDepsSettled?.();
@@ -713,7 +737,12 @@ export class NpmService {
           onRetryInstall, deferCoderSources: true, deferSuccessNotice: true, cloudInventory,
         }, session)) return false;
         this.assertDependencySession(session);
-        const cloudSources = this.isCloudBuild();
+        const project = this.getDependencyProject(session);
+        if (this.configService.getCompileBackend() === 'cloud' && await project.getBoardModule()) {
+          await project.resolveCompileBackend(session);
+          this.assertDependencySession(session);
+        }
+        const cloudSources = this.isCloudBuild(projectPath);
         // 云端源码在扫描之后立即准备，不跨越后续 editor 资源安装复用旧目录清单。
         if (cloudSources && !await this.ensureCoderDependencyLibrarySources(
           projectPath, { onRetryInstall }, session, cloudInventory.value,
@@ -773,7 +802,11 @@ export class NpmService {
         const project = this.getDependencyProject(session);
         const boardPackageJson = await project.getBoardPackageJson() || {};
         this.assertDependencySession(session);
-        if (this.isCloudBuild()) {
+        if (this.configService.getCompileBackend() === 'cloud') {
+          await project.resolveCompileBackend(session);
+          this.assertDependencySession(session);
+        }
+        if (this.isCloudBuild(session.projectPath)) {
           await project.getCloudBoardProfile({}, session);
           this.assertDependencySession(session);
           // 云编译仅保留编辑器资源和库源码，SDK/编译器由云端提供；烧录工具仍按需在本地准备。
@@ -1313,10 +1346,10 @@ export class NpmService {
     return true;
   }
 
-  getMissingBoardDependencies(packageJson: any): string[] {
+  getMissingBoardDependencies(packageJson: any, projectPath?: string): string[] {
     const appDataPath = window['path'].getAppDataPath();
     // 云端模式不因本地缺少大型 SDK/编译器而触发下载，仍校验显式声明的编辑器依赖。
-    const boardDependencies = this.isCloudBuild() ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
+    const boardDependencies = this.isCloudBuild(projectPath) ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
     const missingDependencies: string[] = [];
 
     for (const [key, version] of Object.entries(boardDependencies)) {
@@ -1345,7 +1378,7 @@ export class NpmService {
   // 安装开发板依赖
   async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession, showSuccessNotice = true) {
     this.assertDependencySession(session);
-    const boardDependencies: Record<string, string> = this.isCloudBuild() ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
+    const boardDependencies: Record<string, string> = this.isCloudBuild(session?.projectPath) ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
     if (Object.keys(boardDependencies).length === 0) return;
 
     if (!force && await this.areBoardPlatformDepsReady(boardDependencies)) {
@@ -1861,7 +1894,7 @@ export class NpmService {
    * 检查顶层依赖，并递归检查积木库声明的其他积木库依赖。
    */
   async installedOk(path: string, session?: ProjectDependencySession, inventory?: { value?: CloudDependencyInventory }): Promise<boolean> {
-    if (this.isCloudBuild()) {
+    if (this.isCloudBuild(path)) {
       // 将同一次扫描结果交给源码准备步骤，避免依赖检查通过后立即重复扫描。
       const ownerSession = session ?? this.prjService.getProjectDependencySession(path);
       try {
@@ -2120,7 +2153,7 @@ export class NpmService {
     session?: ProjectDependencySession,
     inventory?: CloudDependencyInventory,
   ): Promise<boolean> {
-    if (!this.isCloudBuild() && !this.isAilyCodeProjectRoot(projectPath)) return true;
+    if (!this.isCloudBuild(projectPath) && !this.isAilyCodeProjectRoot(projectPath)) return true;
 
     try {
       if (this.configService.isCoderProduct()) {
@@ -2131,7 +2164,7 @@ export class NpmService {
           state: 'doing', showProgress: false,
         });
       }
-      if (this.isCloudBuild()) await this.ensureCloudLibrarySources(projectPath, session, inventory);
+      if (this.isCloudBuild(projectPath)) await this.ensureCloudLibrarySources(projectPath, session, inventory);
       else await this.application.materializeCoderProjectLibraries(projectPath);
       this.assertDependencySession(session);
 

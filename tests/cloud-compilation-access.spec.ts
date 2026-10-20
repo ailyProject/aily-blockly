@@ -50,8 +50,8 @@ describe('cloud compilation account access', () => {
   ]) it(`gates saved cloud preference for ${JSON.stringify(state)}`, () => {
     account(state.loggedIn, state.plan);
     expect(config.getCompileBackend()).toBe(state.allowed ? 'cloud' : 'local');
-    const project = Object.assign(Object.create(ProjectService.prototype), { configService: config });
-    const blockly = Object.assign(Object.create(_BuilderService.prototype), { configService: config });
+    const project = Object.assign(Object.create(ProjectService.prototype), { configService: config, currentProjectPathSubject: { value: '/project' } });
+    const blockly = Object.assign(Object.create(_BuilderService.prototype), { configService: config, projectService: project });
     expect(project.isCloudBuild()).toBe(state.allowed);
     expect(blockly.isCloudBuild()).toBe(state.allowed);
     expect(config.data.compile.backend).toBe('cloud');
@@ -100,7 +100,8 @@ describe('cloud compilation account access', () => {
 
   it('restores local SDK requirements when Pro access is lost', () => {
     window['path'] = { getAppDataPath: () => '/sdk', isExists: () => false };
-    const npm = Object.assign(Object.create(NpmService.prototype), { configService: config });
+    const project = Object.assign(Object.create(ProjectService.prototype), { configService: config, currentProjectPathSubject: { value: '/project' } });
+    const npm = Object.assign(Object.create(NpmService.prototype), { configService: config, prjService: project });
     const board = { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } };
     account(true, 'pro');
     expect(npm.getMissingBoardDependencies(board)).toEqual([]);

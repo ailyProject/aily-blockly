@@ -149,6 +149,35 @@ class CloudBuildBroker {
     return value;
   }
   capabilities(settings, signal) { return this.request(settings, '/api/v1/build/capabilities', undefined, signal); }
+  async boardSupport(settings, selector, signal) {
+    const { boardModule, boardVersion } = selector;
+    if (typeof boardModule !== 'string' || boardModule.length > 256
+        || !/^@[^/\\]+\/(?:board|coder)-[A-Za-z0-9_.-]+$/u.test(boardModule) || /[\x00-\x1f]/u.test(boardModule)
+        || typeof boardVersion !== 'string' || !boardVersion || boardVersion.length > 256 || /[\x00-\x1f]/u.test(boardVersion)) {
+      throw protocol.error('TARGET_UNSUPPORTED', 'Invalid board support selector.');
+    }
+    const query = new URLSearchParams({ boardModule, boardVersion });
+    const support = await this.request(settings, `/api/v1/build/board-support?${query}`, undefined, signal,
+      { maxResponseBytes: 1024 * 1024 });
+    if (support.boardModule !== boardModule || support.boardVersion !== boardVersion
+        || typeof support.supported !== 'boolean' || typeof support.available !== 'boolean') {
+      throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid board support response.');
+    }
+    return support;
+  }
+  assertBoardSupported(support) {
+    const { boardModule, boardVersion } = support;
+    // 离线时接口也会返回 supported:false；保留原因，避免误报为永久不支持。
+    // supported:true 时仍由精确目标和队列处理容量，不能把忙碌误判为不支持。
+    if (!support.supported) {
+      const [code, message] = support.reason === 'not_enabled'
+        ? ['CLOUD_BOARD_NOT_ENABLED', 'Cloud compilation is not enabled for this board version.']
+        : support.reason === 'offline'
+          ? ['CLOUD_BOARD_OFFLINE', 'The cloud compiler for this board is offline. Please try again later.']
+          : ['CLOUD_BOARD_UNSUPPORTED', 'This board version does not support cloud compilation.'];
+      throw protocol.error(code, `${message} (${boardModule}@${boardVersion})`);
+    }
+  }
   async uploadSnapshot(record, caps) {
     // 新协议先按库内容键和文件哈希协商，只上传缺失字节；旧网关仍支持完整快照。
     const snapshot = record.snapshot, metrics = record.inputMetrics;
@@ -270,6 +299,8 @@ class CloudBuildBroker {
       return this.request(settings, '/api/v1/build/targets' + query, undefined, signal);
     }
     return (async () => {
+      // 先按板包名称和已安装版本检查支持，再保留内容摘要及编译环境的精确匹配。
+      this.assertBoardSupported(await this.boardSupport(settings, selector, signal));
       // 旧网关可能拒绝未知筛选参数，先协商能力，再选择服务端或本地筛选。
       const key = gatewayUrl(settings.gatewayUrl).url;
       let cached = this.catalogCapabilities.get(key);
@@ -361,15 +392,18 @@ class CloudBuildBroker {
       catch { /* 防休眠不可用时仍允许编译。 */ }
       this.progress(record, { stage: 'preparing', progress: 0 });
       await this.assertCurrent(record);
-      const discovery = new AbortController(), discoverySignal = AbortSignal.any([record.controller.signal, discovery.signal]);
-      let caps, catalog;
-      try {
-        [caps, catalog] = await Promise.all([this.capabilities(record.settings, discoverySignal), this.targets(record.settings, discoverySignal, input.profileDigest)]);
-      } catch (error) { discovery.abort(error); throw error; }
-      record.publicKey = trustedGateway(record.settings, caps);
       const boardRoot = path.join(root, 'node_modules', record.config.boardModule);
       const boardPackage = JSON.parse(fs.readFileSync(path.join(boardRoot, 'package.json'), 'utf8'));
       const identity = protocol.boardDigest(boardPackage, JSON.parse(fs.readFileSync(path.join(boardRoot, 'board.json'), 'utf8')));
+      const discovery = new AbortController(), discoverySignal = AbortSignal.any([record.controller.signal, discovery.signal]);
+      let caps, catalog;
+      try {
+        [caps, catalog] = await Promise.all([this.capabilities(record.settings, discoverySignal),
+          this.targets(record.settings, discoverySignal, input.profileDigest, {
+            boardModule: record.config.boardModule, boardVersion: boardPackage.version, boardDigest: identity,
+          })]);
+      } catch (error) { discovery.abort(error); throw error; }
+      record.publicKey = trustedGateway(record.settings, caps);
       record.profile = catalog.profiles?.find(profile => (profile.digest || profile.profileDigest) === input.profileDigest
         && profile.boardModule === record.config.boardModule && profile.boardVersion === boardPackage.version && profile.boardDigest === identity && profile.runner === 'aily-builder'
         && profile.metadata?.fixture !== true && (input.action === 'analysis' || profile.capabilities?.compile === true));

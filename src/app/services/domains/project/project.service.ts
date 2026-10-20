@@ -249,6 +249,7 @@ export class ProjectService {
     void this.dependencyLifecycle;
     // 克隆的 Coder 工程上下文共享后端标记，统一识别设置切换后失效的依赖会话。
     this.dependencyBackendKeys ??= new WeakMap();
+    this.boardCompileBackends ??= new Map();
     const context: ProjectService = Object.assign(Object.create(ProjectService.prototype), this);
     Object.assign(context, {
       isCoderProjectContext: true,
@@ -2627,6 +2628,10 @@ export class ProjectService {
   // 获取开发板名称（Blockly: @aily-project/board-*；Aily Code: @aily-project/coder-*）
   async getBoardModule() {
     const prjPackageJson = await this.getPackageJson();
+    return this.boardModuleFromManifest(prjPackageJson, this.currentProjectPath);
+  }
+
+  private boardModuleFromManifest(prjPackageJson: any, projectPath: string): string | undefined {
     const deps = Object.keys(prjPackageJson.dependencies || {});
     const fromDeps =
       deps.find((dep) => isAilyBoardPackageName(dep))
@@ -2641,8 +2646,8 @@ export class ProjectService {
     if (fromBoardDeps) {
       return fromBoardDeps;
     }
-    if (this.currentProjectPath) {
-      const aciPath = `${this.currentProjectPath}/project.aci`;
+    if (projectPath) {
+      const aciPath = `${projectPath}/project.aci`;
       if (window['fs'].existsSync(aciPath)) {
         try {
           const aci = JSON.parse(this.electronService.readFile(aciPath));
@@ -2679,7 +2684,55 @@ export class ProjectService {
     }
   }
 
-  isCloudBuild(): boolean { return this.configService?.getCompileBackend?.() === 'cloud'; }
+  private boardCompileBackends?: Map<string, { settingsKey: string; boardModule: string; boardVersion: string; cloud: boolean }>;
+
+  isCloudBuild(projectPath = this.currentProjectPath): boolean {
+    if (this.configService?.getCompileBackend?.() !== 'cloud') return false;
+    const selected = this.boardCompileBackends?.get(projectPath);
+    if (!selected || selected.cloud || selected.settingsKey !== this.getCompileBackendKey()) return true;
+    try {
+      const boardModule = this.boardModuleFromManifest(JSON.parse(this.getEffectivePackageText(projectPath)), projectPath);
+      const pkg = JSON.parse(this.electronService.readFile(`${projectPath}/node_modules/${boardModule}/package.json`));
+      return boardModule !== selected.boardModule || pkg.version !== selected.boardVersion;
+    } catch { return true; }
+  }
+
+  /** 只对接口明确不支持的板包回退本地；保留云偏好，并按工程、板包版本隔离选择。 */
+  async resolveCompileBackend(session?: ProjectDependencySession, refresh = false): Promise<'cloud' | 'local'> {
+    if (this.configService.getCompileBackend() !== 'cloud') return 'local';
+    const projectPath = this.currentProjectPath, settingsKey = this.getCompileBackendKey();
+    const guard = () => {
+      if (session) this.assertProjectDependencySession(session);
+      if (projectPath !== this.currentProjectPath || settingsKey !== this.getCompileBackendKey()) {
+        throw Object.assign(new Error('Board support lookup was replaced.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+      }
+    };
+    const boardModule = await this.getBoardModule();
+    guard();
+    if (!boardModule) return 'local';
+    const boardVersion = (await this.getBoardPackageJson(boardModule)).version;
+    guard();
+    const cached = this.boardCompileBackends?.get(projectPath);
+    if (!refresh && cached?.settingsKey === settingsKey && cached.boardModule === boardModule && cached.boardVersion === boardVersion) {
+      return cached.cloud ? 'cloud' : 'local';
+    }
+    const support = await window['cloudBuild'].boardSupport({ ...getCloudBuildSettings(this.configService.data), boardModule, boardVersion });
+    guard();
+    const currentModule = await this.getBoardModule();
+    guard();
+    if (currentModule !== boardModule) {
+      throw Object.assign(new Error('Board changed during support lookup.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
+    const currentVersion = (await this.getBoardPackageJson(currentModule)).version;
+    guard();
+    if (currentVersion !== boardVersion) {
+      throw Object.assign(new Error('Board changed during support lookup.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+    }
+    // 以接口支持字段为准；HTTP、超时和协议错误由主进程保留，不作为不支持。
+    const fallback = support.supported === false;
+    (this.boardCompileBackends ??= new Map()).set(projectPath, { settingsKey, boardModule, boardVersion, cloud: !fallback });
+    return fallback ? 'local' : 'cloud';
+  }
 
   private cloudBoardProfileCache?: { key: string; profile: CloudBoardProfile };
   private cloudBoardProfileLookups?: Map<string, Promise<CloudBoardProfile>>;
@@ -2757,7 +2810,14 @@ export class ProjectService {
       }
       this.cloudBoardProfileCache = { key, profile };
       return profile;
-    })();
+    })().catch(error => {
+      guard();
+      if (['CLOUD_BOARD_NOT_ENABLED', 'CLOUD_BOARD_UNSUPPORTED', 'CLOUD_BOARD_OFFLINE'].includes(error?.code)) {
+        throw Object.assign(new Error(`${this.translate.instant(`PROJECT.${error.code}`)} (${boardModule}@${boardVersion})`),
+          { code: error.code });
+      }
+      throw error;
+    });
     pending.set(key, promise);
     try { return await promise; }
     finally { if (pending.get(key) === promise) pending.delete(key); }

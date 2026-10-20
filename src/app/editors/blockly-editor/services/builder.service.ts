@@ -120,7 +120,7 @@ export class _BuilderService {
   }
 
   private isCloudBuild(): boolean {
-    return this.configService.getCompileBackend() === 'cloud';
+    return this.configService.getCompileBackend() === 'cloud' && this.projectService.isCloudBuild();
   }
 
   private compileSettingsKey(): string {
@@ -1153,10 +1153,7 @@ export class _BuilderService {
     checkpoint: BuildCheckpoint = {},
   ): Promise<ActionState> {
     // 提交时固定本地/云端分支；后续切换设置或项目会使本次构建失效，不能混用两类产物。
-    const cloudBuild = this.isCloudBuild();
-    if (cloudBuild && graphSemanticRevision !== undefined) {
-      return Promise.reject({ state: 'error', text: 'Cloud compilation does not support simulator graph builds yet.' });
-    }
+    let cloudBuild = this.isCloudBuild();
     if (
       graphSemanticRevision !== undefined
       && !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
@@ -1226,6 +1223,13 @@ export class _BuilderService {
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
         this.buildStartTime = Date.now(); // 记录编译开始时间
+        if (this.configService.getCompileBackend() === 'cloud') {
+          await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted);
+          if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
+            || requestedProjectPath !== this.projectService.currentProjectPath) throw new Error('Build configuration changed or was cancelled.');
+          cloudBuild = this.isCloudBuild();
+        }
+        if (cloudBuild && graphSemanticRevision !== undefined) throw new Error('Cloud compilation does not support simulator graph builds yet.');
         if (!cloudBuild && window['cloudBuild']?.invalidate) await window['cloudBuild'].invalidate({ projectPath: requestedProjectPath });
 
         const tempPath = this.electronService.pathJoin(this.currentProjectPath, '.temp');

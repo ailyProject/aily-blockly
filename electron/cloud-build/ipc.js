@@ -50,6 +50,7 @@ function registerCloudBuildHandlers({ ipcMain, getOwner, canReadGateway = () => 
       let result;
       if (request.action === 'health') result = await broker.health();
       else if (request.action === 'configuration') result = await broker.configuration();
+      else if (request.action === 'boardSupport') result = await broker.boardSupport(request.settings || request, request);
       else if (request.action === 'targets') result = await broker.targets(request.settings || request, undefined, request.profileDigest, request);
       else if (request.action === 'compile' || request.action === 'analysis') {
         const stopped = () => { void broker.cancel(event.sender, request.requestId); };

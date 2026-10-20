@@ -115,15 +115,10 @@ export class CompileService {
   async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
     const context: DiskCompileContext = {
-      cloud: this.configService.getCompileBackend() === 'cloud',
+      cloud: this.configService.getCompileBackend() === 'cloud' && this.projectService.isCloudBuild(root),
       settingsKey: this.configService.getCompileSettingsKey(),
     };
     if (context.cloud) context.settings = { ...this.configService.getCloudBuildSettings() };
-
-    if (context.cloud && ((options.recordProjectDelivery !== undefined && options.recordProjectDelivery !== false)
-      || (options.graphSemanticRevision !== undefined && options.graphSemanticRevision !== ''))) {
-      return { success: false, result: { state: 'error', text: 'PROTOCOL_UNSUPPORTED: Cloud compilation does not support simulator or delivery builds.' } };
-    }
 
     if (!root) {
       this.message.warning('No project is currently open.');
@@ -131,6 +126,24 @@ export class CompileService {
         success: false,
         result: { state: 'warn', text: 'No project is currently open; build cannot start.' },
       };
+    }
+
+    try {
+      if (this.configService.getCompileBackend() === 'cloud') {
+        await this.npmService.prepareCompileBackend(root);
+        if (context.settingsKey !== this.configService.getCompileSettingsKey() || root !== this.projectService.currentProjectPath) {
+          throw new Error('BUILD_SOURCE_STALE: Build settings or the active project changed.');
+        }
+        context.cloud = this.projectService.isCloudBuild(root);
+        if (context.cloud) context.settings = { ...this.configService.getCloudBuildSettings() };
+      }
+    } catch (error) {
+      const text = error?.message || String(error);
+      return { success: false, result: { state: 'error', text } };
+    }
+    if (context.cloud && ((options.recordProjectDelivery !== undefined && options.recordProjectDelivery !== false)
+      || (options.graphSemanticRevision !== undefined && options.graphSemanticRevision !== ''))) {
+      return { success: false, result: { state: 'error', text: 'PROTOCOL_UNSUPPORTED: Cloud compilation does not support simulator or delivery builds.' } };
     }
 
     const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
@@ -449,10 +462,10 @@ export class CompileService {
 
   /** 调用方先保存编辑器，主进程再核对整个项目和库内容；一致时直接复用已校验的云产物。 */
   async canReuseCloudBuildForUpload(root: string, isCancelled: () => boolean = () => false): Promise<boolean> {
-    if (this.configService.getCompileBackend() !== 'cloud' || !window['cloudBuild']?.reusable) return false;
+    if (!this.projectService.isCloudBuild(root) || !window['cloudBuild']?.reusable) return false;
     const settingsKey = this.configService.getCompileSettingsKey();
     const isCurrent = () => !isCancelled() && this.projectService.currentProjectPath === root
-      && this.configService.getCompileSettingsKey() === settingsKey && this.configService.getCompileBackend() === 'cloud';
+      && this.configService.getCompileSettingsKey() === settingsKey && this.projectService.isCloudBuild(root);
     try {
       if (!isCurrent() || this.projectService.getProjectDependencyBlockMessage(root)) return false;
       await this.npmService.assertCoderDependenciesReady(root);
