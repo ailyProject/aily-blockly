@@ -169,7 +169,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           // An old normalization/publication may finish after navigation. It must
           // neither load into nor tear down the new project's workspace/Realm.
           if (!isCurrent() || (dataSession !== null && this.projectService.currentProjectPath !== requestedProjectPath)) return;
-          if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
+          const cancellation = error as { code?: string; reason?: string };
+          if (cancellation?.code === 'PROJECT_DEPENDENCY_CANCELLED'
+            && cancellation.reason !== 'compile-settings-changed') return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
           if (error instanceof ProjectToolboxOnlyLoadError || this.toolboxReadyProjectPath === requestedProjectPath) {
@@ -265,6 +267,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   async loadProject(projectPath, assertCurrent: () => void = () => {}) {
+    // Ctrl/Cmd+R enters this route directly, before AppComponent's async init
+    // completes. Capture dependency settings only after the shared local config
+    // is loaded; warm project opens reuse the same resolved promise.
+    await this.configService.init();
+    assertCurrent();
     const session = this.projectService.getProjectDependencySession(projectPath);
     const assertSession = () => {
       assertCurrent();
