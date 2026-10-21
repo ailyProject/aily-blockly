@@ -1431,6 +1431,11 @@
         "ERR_CREATE_FAILED": "Failed to create project. Please try again."
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Switch to local compilation",
+        "SWITCH_TO_CLOUD": "Switch back to cloud compilation",
+        "SWITCHING_TO_CLOUD": "Stopping local compilation to switch back to the cloud…",
+        "SWITCHING_TO_LOCAL": "Cancelling cloud compilation to continue locally…",
+        "PREPARING_LOCAL": "Preparing local compilation…",
         "REUSED_RESULT": "Reused verified cloud build result (time: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "Cloud build complete (time: {{seconds}}s)",
         "STAGES": {

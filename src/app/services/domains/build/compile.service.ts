@@ -17,7 +17,8 @@ import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
-import { runCloudBuildWithProgress, cloudBuildProgressPresentation } from '../../../utils/cloud-build-progress.utils';
+import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
 import {
   BUILD_APPLICATION_PORT,
   type BuildActionState,
@@ -58,11 +59,12 @@ interface OneShotCommandResult {
   signal: string | null;
 }
 
-/** 固定本次 Coder 构建的后端和配置身份，设置切换后拒绝继续发布旧任务结果。 */
+/** 保存本次 Coder 构建的后端及固定配置身份；用户修改设置后拒绝发布旧结果。 */
 interface DiskCompileContext {
   cloud: boolean;
   settingsKey?: string;
   settings?: ReturnType<ConfigService['getCloudBuildSettings']>;
+  backendOperation?: ReturnType<ProjectService['beginBuildBackendOperation']>;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -74,6 +76,8 @@ export class CompileService {
   // 云请求独立于本地子进程；取消时等待主进程撤销远程任务后再释放构建锁。
   private activeCloudRequestId: string | null = null;
   private stopPending: Promise<unknown> = Promise.resolve();
+  private localSwitchAction?: () => void;
+  private localSwitchPending: Promise<unknown> = Promise.resolve();
 
   constructor(
     private projectService: ProjectService,
@@ -178,6 +182,9 @@ export class CompileService {
 
     this.cancelled = false;
     this.stopPending = Promise.resolve();
+    this.localSwitchAction = undefined;
+    this.localSwitchPending = Promise.resolve();
+    context.backendOperation = this.projectService.beginBuildBackendOperation(root);
     this.application.updateNotice({ title: this.t('PREPARING_TITLE'), text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
       state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
     try {
@@ -189,6 +196,8 @@ export class CompileService {
       if (this.cancelled) this.updateCancelledNotice(text);
       else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
       return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text } };
+    } finally {
+      context.backendOperation.release();
     }
   }
 
@@ -205,10 +214,11 @@ export class CompileService {
     let compiledHash: string | undefined;
     let buildStatus: 'success' | 'failed' = 'failed';
     let finishReason: string | undefined;
+    const cloudOrigin = context.cloud;
 
     try {
       const assertCloudContext = () => {
-        if (!context.cloud) return;
+        if (!cloudOrigin) return;
         if (this.configService.getCompileSettingsKey() !== context.settingsKey
           || this.projectService.currentProjectPath !== root) {
           throw new Error('BUILD_SOURCE_STALE: Cloud build settings or the active project changed; build again.');
@@ -250,8 +260,8 @@ export class CompileService {
             : '当前云编译节点不支持 compile。');
         }
       }
-      const ailyBuilderPath = context.cloud ? undefined : window['path'].getAilyBuilderPath();
-      const ailyChildPath = context.cloud ? undefined : window['path'].getAilyChildPath();
+      let ailyBuilderPath = context.cloud ? undefined : window['path'].getAilyBuilderPath();
+      let ailyChildPath = context.cloud ? undefined : window['path'].getAilyChildPath();
 
       if (!context.cloud && (!ailyBuilderPath || !ailyChildPath)) {
         finishReason = 'Missing builder paths';
@@ -278,131 +288,184 @@ export class CompileService {
       assertCloudContext();
       if (this.cancelled) throw new Error('Build cancelled before launch.');
 
-      // 云端分析/编译和本地执行共用源码捕获，后续由主进程校验并保存可烧录产物。
-      if (context.cloud) {
-        const result = await this.runCloudCompile(root, { ...buildConfig, sourceCapture }, context.settings!,
-          cloudProfile!.profileDigest, options.preprocessOnly ? 'analysis' : 'compile', boardName, context.settingsKey);
-        assertCloudContext(); assertManifest();
-        if (this.cancelled) throw new Error('Cloud build cancelled.');
-        if (result?.success !== true) throw new Error(result?.text || 'Cloud compilation failed.');
-        buildStatus = 'success';
-        if (!options.preprocessOnly) this.compileValidationService.triggerAfterSuccessfulCompile();
-        const seconds = ((Date.now() - started) / 1000).toFixed(2);
-        const completeText = options.preprocessOnly ? '云端预处理完成'
-          : result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
-          : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds });
-        this.application.updateNotice({ title: this.t('COMPLETE_TITLE'), text: completeText, state: 'done', setTimeout: 600000 });
-        this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
-        return { success: true, result: { state: 'done', text: completeText } };
-      }
-
-      const configFilePath = await writeBuildRequest(root, { ...buildConfig, sourceCapture }, {
-        join: (...parts) => this.electronService.pathJoin(...parts),
-        exists: filename => window['path'].isExists(filename),
-        mkdir: directory => this.crossPlatformCmdService.createDirectory(directory, true),
-        write: (filename, text) => window['fs'].writeFileSync(filename, text),
-      });
-      assertManifest();
-      if (this.cancelled) throw new Error('Build cancelled before launch.');
-
-      // Normal compile.js owns its preprocessing transaction; do not perform
-      // the same mutable preparation twice with an unlocked gap in between.
-      if (options.preprocessOnly) {
-        const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
-        const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
-          this.publishBuildLog(root, line.line, line.type);
-        }, root);
-        if (this.cancelled) {
-          finishReason = 'Cancelled';
-          const sec = ((Date.now() - started) / 1000).toFixed(2);
-          const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
-          this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
-          this.updateCancelledNotice(text);
-          return { success: false, result: { state: 'warn', text } };
-        }
-        if (pre.exitCode !== 0) {
-          const detail = pre.combined || pre.stderr + pre.stdout;
-          finishReason = 'Preprocess failed';
-          this.handleFailNotice(
-            root,
-            this.t('PRECOMPILE_FAILED_TITLE'),
-            this.t('PRECOMPILE_FAILED_DETAIL'),
-            detail,
-          );
-          return {
-            success: false,
-            result: {
-              state: 'error',
-              text: this.t('MESSAGE_WITH_DURATION', {
-                message: this.t('PRECOMPILE_FAILED_TITLE'),
-                seconds: ((Date.now() - started) / 1000).toFixed(2),
-              }),
-              fullStdErr: detail,
-            },
-          };
-        }
-
-        buildStatus = 'success';
-        const completeText = this.t('PRECOMPILE_COMPLETE_TITLE');
-        this.application.updateNotice({ title: completeText, text: completeText,
-          state: 'done', progress: 100, setTimeout: 3000 });
-        return { success: true, result: { state: 'done', text: completeText } };
-      }
-
-      const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');
-      const progressState: DiskCompileProgressState = {
-        percent: 0,
-        text: this.t('FAST_BUILD_HINT'),
-        hasStructuredProgress: false,
+      let allowCloudSwitch = cloudOrigin;
+      const localSwitch = {
+        boardName,
+        isCurrent: () => {
+          try { assertCloudContext(); assertManifest(); return !this.cancelled && this.configService.getCompileBackend() === 'cloud'; }
+          catch { return false; }
+        },
       };
-      this.application.updateNotice({
-        title: buildTitle,
-        text: progressState.text,
-        state: 'doing',
-        progress: 0,
-        setTimeout: 0,
-        stop: () => this.cancel(),
-      });
-      const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath,
-        ...(options.recordProjectDelivery === true ? { buildDeliveryRequest: configFilePath } : {}) }, (line) => {
-        if (this.consumeBuildProgressLine(line.line, boardName, progressState)) {
-          return;
+      // Every attempt retains the original caller, source capture and workflow lock.
+      while (true) {
+        try {
+          // 云端分析/编译和本地执行共用源码捕获，后续由主进程校验并保存可烧录产物。
+          if (context.cloud) {
+            let result: any;
+            try {
+              result = await this.runCloudCompile(root, { ...buildConfig, sourceCapture }, context.settings!,
+                cloudProfile!.profileDigest, options.preprocessOnly ? 'analysis' : 'compile', boardName, context.settingsKey);
+            } catch (error) {
+              if (error?.code !== CLOUD_BUILD_LOCAL_REQUESTED) throw error;
+              assertCloudContext(); assertManifest();
+              if (this.cancelled) throw new Error('Build cancelled.');
+              context.backendOperation!.useLocal();
+              this.application.updateNotice({ title: this.t('PREPARING_TITLE'),
+                text: this.translate.instant('CLOUD_BUILD.PREPARING_LOCAL'), state: 'doing', progress: 0,
+                setTimeout: 0, stop: () => this.cancel() });
+              await this.npmService.prepareLocalCompileBackend(root, () => this.cancelled, () => this.cancel());
+              assertCloudContext(); assertManifest();
+              context.cloud = false;
+              ailyBuilderPath = window['path'].getAilyBuilderPath();
+              ailyChildPath = window['path'].getAilyChildPath();
+              if (!ailyBuilderPath || !ailyChildPath) throw new Error('aily-builder path is unavailable.');
+              buildConfig.ailyBuilderPath = ailyBuilderPath;
+            }
+            if (result) {
+              assertCloudContext(); assertManifest();
+              if (this.cancelled) throw new Error('Cloud build cancelled.');
+              if (result?.success !== true) throw new Error(result?.text || 'Cloud compilation failed.');
+              buildStatus = 'success';
+              if (!options.preprocessOnly) this.compileValidationService.triggerAfterSuccessfulCompile();
+              const seconds = ((Date.now() - started) / 1000).toFixed(2);
+              const completeText = options.preprocessOnly ? '云端预处理完成'
+                : result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
+                : this.translate.instant('CLOUD_BUILD.COMPLETE_WITH_TIME', { seconds });
+              this.application.updateNotice({ title: this.t('COMPLETE_TITLE'), text: completeText, state: 'done', setTimeout: 600000 });
+              this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
+              return { success: true, result: { state: 'done', text: completeText } };
+            }
+          }
+
+          const configFilePath = await writeBuildRequest(root, { ...buildConfig, sourceCapture }, {
+            join: (...parts) => this.electronService.pathJoin(...parts),
+            exists: filename => window['path'].isExists(filename),
+            mkdir: directory => this.crossPlatformCmdService.createDirectory(directory, true),
+            write: (filename, text) => window['fs'].writeFileSync(filename, text),
+          });
+          assertManifest();
+          assertCloudContext();
+          if (this.cancelled) throw new Error('Build cancelled before launch.');
+
+          // Normal compile.js owns its preprocessing transaction; do not perform
+          // the same mutable preparation twice with an unlocked gap in between.
+          if (options.preprocessOnly) {
+            const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
+            const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
+              this.publishBuildLog(root, line.line, line.type);
+            }, root, allowCloudSwitch ? localSwitch : undefined);
+            if (this.cancelled) {
+              finishReason = 'Cancelled';
+              const sec = ((Date.now() - started) / 1000).toFixed(2);
+              const text = this.t('CANCELLED_WITH_TIME', { seconds: sec });
+              this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
+              this.updateCancelledNotice(text);
+              return { success: false, result: { state: 'warn', text } };
+            }
+            if (pre.exitCode !== 0) {
+              const detail = pre.combined || pre.stderr + pre.stdout;
+              finishReason = 'Preprocess failed';
+              this.handleFailNotice(
+                root,
+                this.t('PRECOMPILE_FAILED_TITLE'),
+                this.t('PRECOMPILE_FAILED_DETAIL'),
+                detail,
+              );
+              return {
+                success: false,
+                result: {
+                  state: 'error',
+                  text: this.t('MESSAGE_WITH_DURATION', {
+                    message: this.t('PRECOMPILE_FAILED_TITLE'),
+                    seconds: ((Date.now() - started) / 1000).toFixed(2),
+                  }),
+                  fullStdErr: detail,
+                },
+              };
+            }
+
+            buildStatus = 'success';
+            const completeText = this.t('PRECOMPILE_COMPLETE_TITLE');
+            this.application.updateNotice({ title: completeText, text: completeText,
+              state: 'done', progress: 100, setTimeout: 3000 });
+            return { success: true, result: { state: 'done', text: completeText } };
+          }
+
+          const compileScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'compile.js');
+          const progressState: DiskCompileProgressState = {
+            percent: 0,
+            text: this.t('FAST_BUILD_HINT'),
+            hasStructuredProgress: false,
+          };
+          this.application.updateNotice({
+            title: buildTitle,
+            text: progressState.text,
+            state: 'doing',
+            progress: 0,
+            setTimeout: 0,
+            stop: () => this.cancel(),
+          });
+          const cmp = await this.runOneShotCommand({ scriptPath: compileScriptPath, configFilePath,
+            ...(options.recordProjectDelivery === true ? { buildDeliveryRequest: configFilePath } : {}) }, (line) => {
+            if (this.consumeBuildProgressLine(line.line, boardName, progressState)) {
+              return;
+            }
+            this.publishBuildLog(root, line.line, line.type);
+          }, root, allowCloudSwitch ? localSwitch : undefined);
+          const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
+
+          if (this.cancelled) {
+            finishReason = 'Cancelled';
+            const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
+            this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
+            this.updateCancelledNotice(text);
+            return { success: false, result: { state: 'warn', text } };
+          }
+
+          if (cmp.exitCode !== 0) {
+            const detail = cmp.combined || cmp.stderr + cmp.stdout;
+            finishReason = 'Compile failed';
+            const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
+            this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
+            return {
+              success: false,
+              result: { state: 'error', text, fullStdErr: detail },
+            };
+          }
+
+          buildStatus = 'success';
+          this.compileValidationService.triggerAfterSuccessfulCompile();
+          const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
+          this.application.updateNotice({
+            title: this.t('COMPLETE_TITLE'),
+            text: completeText,
+            state: 'done',
+            setTimeout: 600000,
+          });
+          this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
+
+          return { success: true, result: { state: 'done', text: completeText } };
+        } catch (error) {
+          if (error?.code !== CLOUD_BUILD_CLOUD_REQUESTED) throw error;
+          await this.localSwitchPending;
+          assertCloudContext(); assertManifest();
+          if (this.cancelled) throw new Error('Build cancelled.');
+          context.backendOperation!.useCloud();
+          context.cloud = await this.npmService.prepareCloudCompileBackend(root, () => this.cancelled);
+          assertCloudContext(); assertManifest();
+          if (context.cloud) {
+            cloudProfile = await this.projectService.getCloudBoardProfile({ refresh: true });
+            assertCloudContext(); assertManifest();
+            if (cloudProfile.boardModule !== boardModule) throw new Error('BUILD_SOURCE_STALE: The selected cloud board changed.');
+            if (cloudProfile.capabilities?.[options.preprocessOnly ? 'analysis' : 'compile'] !== true) {
+              throw new Error('This cloud target does not support the requested build action.');
+            }
+          } else {
+            context.backendOperation!.useLocal();
+            allowCloudSwitch = false;
+          }
         }
-        this.publishBuildLog(root, line.line, line.type);
-      }, root);
-      const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
-
-      if (this.cancelled) {
-        finishReason = 'Cancelled';
-        const text = this.t('CANCELLED_WITH_TIME', { seconds: buildDuration });
-        this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
-        this.updateCancelledNotice(text);
-        return { success: false, result: { state: 'warn', text } };
       }
-
-      if (cmp.exitCode !== 0) {
-        const detail = cmp.combined || cmp.stderr + cmp.stdout;
-        finishReason = 'Compile failed';
-        const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
-        this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
-        return {
-          success: false,
-          result: { state: 'error', text, fullStdErr: detail },
-        };
-      }
-
-      buildStatus = 'success';
-      this.compileValidationService.triggerAfterSuccessfulCompile();
-      const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
-      this.application.updateNotice({
-        title: this.t('COMPLETE_TITLE'),
-        text: completeText,
-        state: 'done',
-        setTimeout: 600000,
-      });
-      this.publishBuildLog(root, completeText, 'stdout', 'done', this.t('COMPLETE_TITLE'));
-
-      return { success: true, result: { state: 'done', text: completeText } };
     } catch (e: any) {
       const msg = e?.message || String(e);
       buildStatus = 'failed';
@@ -420,7 +483,7 @@ export class CompileService {
     } finally {
       // Cancellation resolves the UI command promptly, but metadata is another
       // workspace writer: wait for supervised process-tree cleanup first.
-      await this.stopPending;
+      await Promise.all([this.stopPending, this.localSwitchPending]);
       let metadataError: string | undefined;
       if (compiledHash) {
         try {
@@ -499,15 +562,26 @@ export class CompileService {
     const gateway = window['cloudBuild'];
     const requestId = `coder_${crypto.randomUUID()}`;
     this.activeCloudRequestId = requestId;
+    let switchToLocal: (() => boolean) | undefined;
+    const requestLocal = () => {
+      if (!switchToLocal?.()) return;
+      this.application.updateNotice({ title: this.buildNoticeTitle(boardName), text: this.translate.instant('CLOUD_BUILD.SWITCHING_TO_LOCAL'),
+        state: 'doing', setTimeout: 0, stop: () => this.cancel() });
+    };
     try {
       return await runCloudBuildWithProgress({ requestId, config, settings, profileDigest, action }, gateway, {
+        localSwitch: request => {
+          switchToLocal = request;
+          this.application.updateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
+            state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(), onSwitchToLocal: requestLocal });
+        },
         isCurrent: () => this.activeCloudRequestId === requestId && !this.cancelled
           && this.projectService.currentProjectPath === root && this.configService.getCompileSettingsKey() === settingsKey,
         log: (text, stream) => this.publishBuildLog(root, text, stream),
         progress: event => {
           const presentation = cloudBuildProgressPresentation(event, key => this.translate.instant(key));
           this.application.updateNotice({ title: this.buildNoticeTitle(boardName), ...presentation,
-            state: 'doing', setTimeout: 0, stop: () => this.cancel() });
+            state: 'doing', setTimeout: 0, stop: () => this.cancel(), onSwitchToLocal: requestLocal });
         },
       });
     } finally {
@@ -660,6 +734,7 @@ export class CompileService {
       progress: state.percent,
       setTimeout: 0,
       stop: () => this.cancel(),
+      onSwitchToCloud: this.localSwitchAction,
     });
   }
 
@@ -717,6 +792,7 @@ export class CompileService {
     request: { scriptPath: string; configFilePath: string; buildDeliveryRequest?: string },
     onLine?: (line: AilyBuilderOutputLine) => void,
     buildWorkspace?: string,
+    localSwitch?: { boardName: string; isCurrent: () => boolean },
   ): Promise<OneShotCommandResult> {
     return new Promise((resolve, reject) => {
       let stdout = '';
@@ -740,6 +816,7 @@ export class CompileService {
           this.activeCommandCancel = null;
         }
         this.activeStreamId = null;
+        this.localSwitchAction = undefined;
       };
 
       const settle = (cancelCommand: () => void) => {
@@ -762,10 +839,26 @@ export class CompileService {
       this.activeCommandCancel = cancelCommand;
       const streamId = `disk_build_${crypto.randomUUID()}`;
       this.activeStreamId = streamId;
-      sub = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
+      const command = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
         cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId,
         ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
-      }).subscribe({
+      });
+      const output = localSwitch ? withLocalBuildSwitch(command, {
+        isCurrent: localSwitch.isCurrent,
+        stop: () => this.cmdService.kill(streamId),
+        ready: action => {
+          this.localSwitchAction = () => { action(); };
+          this.application.updateNotice({ title: this.buildNoticeTitle(localSwitch.boardName), text: this.t('FAST_BUILD_HINT'),
+            state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(), onSwitchToCloud: this.localSwitchAction });
+        },
+        switching: pending => {
+          this.localSwitchPending = pending.catch(() => undefined);
+          this.localSwitchAction = undefined;
+          this.application.updateNotice({ title: this.buildNoticeTitle(localSwitch.boardName),
+            text: this.translate.instant('CLOUD_BUILD.SWITCHING_TO_CLOUD'), state: 'doing', setTimeout: 0, stop: () => this.cancel() });
+        },
+      }) : command;
+      sub = output.subscribe({
         next: (o: CmdOutput) => {
           if (!this.activeStreamId && o.streamId) {
             this.activeStreamId = o.streamId;
@@ -800,7 +893,7 @@ export class CompileService {
             return;
           }
           settled = true;
-          emitLines(lineBuffer.flush());
+          if (err?.code !== CLOUD_BUILD_CLOUD_REQUESTED) emitLines(lineBuffer.flush());
           cleanup(cancelCommand);
           reject(err);
         },

@@ -86,6 +86,7 @@ export class NpmService {
 
   isInstalling = false;
   private boardDependencyInstallProgress?: BoardDependencyInstallProgress;
+  private localCompilePreparation?: { session: ProjectDependencySession; isCancelled: () => boolean; stop: () => void };
   // 只有启动安装状态的工程会话才能结束该状态，防止旧任务覆盖新工程的进度。
   private boardInstallOwnerSession?: ProjectDependencySession;
   private boardDepsInstallPromise?: { session: ProjectDependencySession; promise: Promise<void> };
@@ -169,6 +170,8 @@ export class NpmService {
 
   private updateBoardDependencyNotice(progress: BoardDependencyInstallProgress, value: number) {
     if (!this.isDependencySessionCurrent(progress.session)) return;
+    const preparation = this.localCompilePreparation?.session === progress.session ? this.localCompilePreparation : undefined;
+    if (preparation?.isCancelled()) return;
     const nextProgress = Math.max(progress.lastProgress, this.clampProgress(value));
 
     progress.lastProgress = nextProgress;
@@ -177,7 +180,8 @@ export class NpmService {
       title: this.translate.instant('NPM.DEPENDENCY_INSTALLING_TITLE'),
       text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: progress.name }),
       state: 'doing',
-      progress: nextProgress
+      progress: nextProgress,
+      ...(preparation ? { stop: preparation.stop, setTimeout: 0 } : {}),
     });
   }
 
@@ -634,6 +638,51 @@ export class NpmService {
       await project.syncCurrentBoardConfig(session);
       this.assertDependencySession(session);
     }
+  }
+
+  /** 云任务已撤销后，在原任务内补齐本地编译依赖，保留取消和项目身份检查。 */
+  async prepareLocalCompileBackend(projectPath: string, isCancelled: () => boolean, stop: () => void): Promise<void> {
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const project = this.getDependencyProject(session);
+    const guard = () => {
+      this.assertDependencySession(session);
+      if (isCancelled()) throw Object.assign(new Error('Build cancelled during local preparation.'), { code: 'CANCELLED' });
+      if (project.isCloudBuild()) throw new Error('Local build operation is no longer active.');
+    };
+    const preparation = { session, isCancelled, stop };
+    this.localCompilePreparation = preparation;
+    try {
+      guard();
+      await window['cloudBuild']?.invalidate?.({ projectPath });
+      guard();
+      await this.installBoardDeps(session, { showSuccessNotice: false });
+      guard();
+      if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
+        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      }
+      guard();
+      // 只补齐执行依赖；重发板配置会重建 Blockly 运行时，使原任务的源码快照失效。
+      // 板包、用户配置没有变化，本地编译器与上传器会按本次后端重新读取 SDK。
+    } finally {
+      if (this.localCompilePreparation === preparation) this.localCompilePreparation = undefined;
+    }
+  }
+
+  /** 本地进程已停止后刷新主板支持状态，不改变用户偏好或编辑器运行时。 */
+  async prepareCloudCompileBackend(projectPath: string, isCancelled: () => boolean): Promise<boolean> {
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const project = this.getDependencyProject(session);
+    const guard = () => {
+      this.assertDependencySession(session);
+      if (isCancelled()) throw Object.assign(new Error('Build cancelled during cloud preparation.'), { code: 'CANCELLED' });
+    };
+    guard();
+    const backend = await project.resolveCompileBackend(session, true);
+    guard();
+    if (backend !== 'cloud') return false;
+    await this.ensureCloudLibrarySources(projectPath, session);
+    guard();
+    return true;
   }
 
   /** Coder execution preflight: completed preparation plus the current files on disk. */
@@ -2162,6 +2211,8 @@ export class NpmService {
           title: this.translate.instant('NPM.INSTALLING_TITLE'),
           text: this.translate.instant('NPM.PREPARING_LIBRARY_SOURCES'),
           state: 'doing', showProgress: false,
+          ...(this.localCompilePreparation && this.localCompilePreparation.session === session
+            ? { stop: this.localCompilePreparation.stop, setTimeout: 0 } : {}),
         });
       }
       if (this.isCloudBuild(projectPath)) await this.ensureCloudLibrarySources(projectPath, session, inventory);

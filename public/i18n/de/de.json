@@ -1274,6 +1274,11 @@
         "ERR_CREATE_FAILED": "Projekt konnte nicht erstellt werden. Bitte erneut versuchen."
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Lokal kompilieren",
+        "SWITCH_TO_CLOUD": "Zur Cloud-Kompilierung zurückkehren",
+        "SWITCHING_TO_CLOUD": "Lokale Kompilierung wird für den Wechsel zur Cloud beendet…",
+        "SWITCHING_TO_LOCAL": "Cloud-Kompilierung wird abgebrochen, um lokal fortzufahren…",
+        "PREPARING_LOCAL": "Lokale Kompilierung wird vorbereitet…",
         "REUSED_RESULT": "Geprüftes Cloud-Build-Ergebnis wiederverwendet (Dauer: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "Cloud-Build abgeschlossen (Dauer: {{seconds}}s)",
         "STAGES": {

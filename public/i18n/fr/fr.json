@@ -1274,6 +1274,11 @@
         "ERR_CREATE_FAILED": "Échec de la création du projet. Veuillez réessayer."
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Compiler en local",
+        "SWITCH_TO_CLOUD": "Revenir à la compilation cloud",
+        "SWITCHING_TO_CLOUD": "Arrêt de la compilation locale pour revenir au cloud…",
+        "SWITCHING_TO_LOCAL": "Annulation de la compilation cloud pour continuer en local…",
+        "PREPARING_LOCAL": "Préparation de la compilation locale…",
         "REUSED_RESULT": "Résultat de compilation cloud vérifié réutilisé (durée: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "Compilation cloud terminée (durée: {{seconds}}s)",
         "STAGES": {

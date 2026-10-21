@@ -21,4 +21,7 @@ export interface NoticeOptions {
   isCancellationNotice?: boolean;
   /** 错误通知上的“重试”动作，例如 Aily Code npm install 失败后再执行一次。 */
   onRetry?: () => void;
+  /** 当前云编译任务切换为本地编译，继续原调用。 */
+  onSwitchToLocal?: () => void;
+  onSwitchToCloud?: () => void;
 }

@@ -1274,6 +1274,11 @@
         "ERR_CREATE_FAILED": "프로젝트 생성에 실패했습니다. 다시 시도해 주세요."
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "로컬 컴파일로 전환",
+        "SWITCH_TO_CLOUD": "클라우드 컴파일로 돌아가기",
+        "SWITCHING_TO_CLOUD": "클라우드로 돌아가기 위해 로컬 컴파일을 중지하는 중…",
+        "SWITCHING_TO_LOCAL": "로컬에서 계속하기 위해 클라우드 컴파일을 취소하는 중…",
+        "PREPARING_LOCAL": "로컬 컴파일 준비 중…",
         "REUSED_RESULT": "검증된 클라우드 빌드 결과를 재사용했습니다 (소요 시간: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "클라우드 빌드 완료 (소요 시간: {{seconds}}s)",
         "STAGES": {

@@ -309,6 +309,7 @@ export class _UploaderService {
     this.processExitCode = null; // 重置进程退出码
     this.uploadInProgress = true; // 立即设置为true，使取消功能生效
     let resourceRecovery: UploadRecoveryPolicy | undefined;
+    let backendOperation: ReturnType<ProjectService['beginBuildBackendOperation']> | undefined;
 
     return new Promise<UploadActionState>(async (resolve, reject) => {
       // 保存 reject 函数，以便 cancel() 方法可以立即中断
@@ -317,13 +318,15 @@ export class _UploaderService {
       try {
         // 烧录全过程绑定项目、后端和依赖会话，切换项目或设置后不能继续烧录旧固件。
         const projectPath = this.projectService.currentProjectPath;
-        const cloud = this.projectService.isCloudBuild();
+        const initialCloud = this.projectService.isCloudBuild();
+        let cloud = initialCloud;
+        backendOperation = this.projectService.beginBuildBackendOperation(projectPath);
         this.cloudUploadInProgress = cloud;
         const dependencySession = cloud ? this.projectService.getProjectDependencySession(projectPath) : undefined;
         const activationCurrent = this.projectService.captureCurrentProjectGuard();
         const assertContext = () => {
           if (this.cancelled || !activationCurrent() || this.projectService.currentProjectPath !== projectPath
-              || cloud !== this.projectService.isCloudBuild()) throw new Error('Upload project, settings or activation changed or was cancelled.');
+              || (initialCloud && !backendOperation.local) !== this.projectService.isCloudBuild()) throw new Error('Upload project, settings or activation changed or was cancelled.');
           if (dependencySession) this.projectService.assertProjectDependencySession(dependencySession);
         };
         // 重置ESP32上传状态，防止进度累加
@@ -421,6 +424,7 @@ export class _UploaderService {
               const buildResult = await this.hostBuilderService.build(projectPath);
               console.log('Coder build result:', buildResult);
               assertContext();
+              cloud = initialCloud && !backendOperation.local;
               if (cloud && !await this.hostBuilderService.canReuseBuildForUpload(projectPath, () => this.cancelled)) {
                 throw new Error('BUILD_SOURCE_STALE: Coder inputs changed during compilation; build again before upload.');
               }
@@ -471,6 +475,9 @@ export class _UploaderService {
             try {
               const buildResult = await this._builderService.build();
               console.log("build result:", buildResult);
+              assertContext();
+              cloud = initialCloud && !backendOperation.local;
+              if (!cloud) buildPath = await this.projectService.getBuildPath();
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
               if ((cloud || window['builder']?.canReuseBlocklyUpload)
@@ -554,6 +561,7 @@ export class _UploaderService {
 
         // 设置上传状态（uploadInProgress 已在方法开始时设置）
         this._builderService.isUploading = true;
+        if (!cloud) this.cloudUploadInProgress = false;
 
         if (cloud) {
           assertContext();
@@ -1125,6 +1133,7 @@ export class _UploaderService {
         });
       }
     }).finally(() => {
+      backendOperation?.release();
       // 云流程取消后仍等待所有异步准备和本机烧录退出，期间拒绝下一轮上传，避免旧回调清掉新状态。
       if (this.cloudUploadInProgress) {
         this.cloudUploadInProgress = false;

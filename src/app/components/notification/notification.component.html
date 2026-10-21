@@ -43,6 +43,12 @@
         <div class="title">{{data.title}}</div>
         <div class="text">{{data.text}}</div>
         <div class="btns">
+            @if (data.state=='doing' && data.onSwitchToLocal) {
+            <button type="button" class="btn link switch-to-local" (click)="data.onSwitchToLocal()">{{ 'CLOUD_BUILD.SWITCH_TO_LOCAL' | translate }}</button>
+            }
+            @if (data.state=='doing' && data.onSwitchToCloud) {
+            <button type="button" class="btn link switch-to-cloud" (click)="data.onSwitchToCloud()">{{ 'CLOUD_BUILD.SWITCH_TO_CLOUD' | translate }}</button>
+            }
             @if (data.state=='doing'&& data.stop) {
             <div class="btn link red" (click)="stop()">{{ 'NOTIFICATION.STOP' | translate }}</div>
             }

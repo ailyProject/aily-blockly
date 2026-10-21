@@ -22,6 +22,7 @@ describe('Uploader command lifecycle during project close', () => {
     output = new Subject();
     service = Object.create(_UploaderService.prototype);
     service.projectService = {
+      beginBuildBackendOperation: () => ({ local: false, release() {} }),
       isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', isProjectTransitionInProgress: () => false,
       isAilyCodeProject: () => false, getBuildPath: async () => '/project/build',
@@ -41,13 +42,35 @@ describe('Uploader command lifecycle during project close', () => {
       run: jasmine.createSpy('run').and.returnValue(output),
       kill: jasmine.createSpy('kill').and.resolveTo(true),
     };
-    service.uploaderBleService = { findFirmwareFile: () => '/project/build/firmware.bin' };
+    service.uploaderBleService = { cancel() {}, findFirmwareFile: () => '/project/build/firmware.bin' };
     service.getNetworkOtaTarget = () => ({ host: '127.0.0.1', port: 80, username: '', password: '', uploadPath: '/' });
     service.appendUploadLog = () => {};
     service.logNetworkOtaUpload = () => {};
   });
 
   afterEach(() => Object.assign(window, original));
+
+  it('stops the local upload process after its cloud prerequisite was switched to local', fakeAsync(() => {
+    const operation = { local: false, release: jasmine.createSpy('release') };
+    Object.assign(service.projectService, {
+      beginBuildBackendOperation: () => operation, isCloudBuild: () => !operation.local,
+      getProjectDependencySession: () => ({}), assertProjectDependencySession() {},
+    });
+    service._builderService.canReuseBuildForUpload = async () => operation.local;
+    service._builderService.build = async () => { operation.local = true; return { state: 'done' }; };
+    service._builderService.cancel = jasmine.createSpy('cancelBuild');
+    let result: any;
+    service.upload().then(value => { result = value; }, error => { result = error; });
+    flushMicrotasks();
+    expect(service.cmdService.spawn).toHaveBeenCalledTimes(1);
+    expect(service.cloudUploadInProgress).toBeFalse();
+    output.next({ type: 'stdout', data: 'writing firmware', streamId: 'local-upload' });
+    service.cancel(); flushMicrotasks();
+    expect(service.cmdService.kill).toHaveBeenCalledWith('local-upload');
+    expect(result.state).toBe('warn');
+    expect(operation.release).toHaveBeenCalledTimes(1);
+    expect(service.uploadInProgress).toBeFalse();
+  }));
 
   for (const mode of ['serial', 'network-ota', 'softdevice']) {
     function start(): Promise<any> {

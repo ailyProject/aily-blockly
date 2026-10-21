@@ -98,6 +98,20 @@ describe('board cloud support and local fallback', () => {
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
   });
 
+  for (const supported of [true, false]) it(`refreshes board support before returning to cloud (supported=${supported})`, async () => {
+    support.supported = true;
+    await project.resolveCompileBackend();
+    const operation = project.beginBuildBackendOperation(); operation.useLocal();
+    support.supported = supported;
+    npm.ensureCloudLibrarySources = jasmine.createSpy('cloudSources').and.resolveTo();
+    operation.useCloud();
+    expect(await npm.prepareCloudCompileBackend('/project', () => false)).toBe(supported);
+    expect(window['cloudBuild'].boardSupport).toHaveBeenCalledTimes(2);
+    expect(npm.ensureCloudLibrarySources.calls.count()).toBe(supported ? 1 : 0);
+    expect(project.syncCurrentBoardConfig).not.toHaveBeenCalled();
+    operation.release();
+  });
+
   it('enters the normal disk compiler branch after fallback', async () => {
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
     const compile = Object.assign(Object.create(CompileService.prototype), {
@@ -106,6 +120,49 @@ describe('board cloud support and local fallback', () => {
     });
     expect((await compile.runCompileFromDisk()).success).toBeTrue();
     expect(runCompile.calls.mostRecent().args[2].cloud).toBeFalse();
+  });
+
+  it('prepares local SDKs and sources only after invalidating the cloud artifact', async () => {
+    const operation = project.beginBuildBackendOperation(); operation.useLocal();
+    const events: string[] = [];
+    window['cloudBuild'].invalidate = async () => { events.push('invalidate'); };
+    npm.installBoardDeps.and.callFake(async () => { events.push('SDK'); });
+    npm.ensureCoderDependencyLibrarySources.and.callFake(async () => { events.push('sources'); return true; });
+    await npm.prepareLocalCompileBackend('/project', () => false, () => {});
+    expect(events).toEqual(['invalidate', 'SDK', 'sources']);
+    expect(project.syncCurrentBoardConfig).not.toHaveBeenCalled();
+    operation.release(); expect(project.isCloudBuild()).toBeTrue();
+  });
+
+  it('does not continue local preparation after cancellation or missing sources', async () => {
+    const operation = project.beginBuildBackendOperation(); operation.useLocal();
+    window['cloudBuild'].invalidate = async () => {};
+    await expectAsync(npm.prepareLocalCompileBackend('/project', () => true, () => {})).toBeRejectedWith(jasmine.objectContaining({ code: 'CANCELLED' }));
+    expect(npm.installBoardDeps).not.toHaveBeenCalled();
+    npm.ensureCoderDependencyLibrarySources.and.resolveTo(false);
+    await expectAsync(npm.prepareLocalCompileBackend('/project', () => false, () => {})).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
+    expect(project.syncCurrentBoardConfig).not.toHaveBeenCalled();
+    operation.release();
+  });
+
+  it('keeps Stop available while downloading SDKs and ignores progress after cancellation', async () => {
+    const operation = project.beginBuildBackendOperation(); operation.useLocal();
+    const notice = jasmine.createSpy('notice'); npm.application = { updateNotice: notice };
+    let cancelled = false;
+    const stop = () => { cancelled = true; };
+    npm.installBoardDeps.and.callFake(async (session: any) => {
+      const progress = { session, lastProgress: 0, name: 'SDK' };
+      npm.updateBoardDependencyNotice(progress, 10);
+      expect(notice.calls.mostRecent().args[0].stop).toBe(stop);
+      notice.calls.mostRecent().args[0].stop();
+      npm.updateBoardDependencyNotice(progress, 20);
+      expect(notice).toHaveBeenCalledTimes(1);
+    });
+    await expectAsync(npm.prepareLocalCompileBackend('/project', () => cancelled, stop))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'CANCELLED' }));
+    expect(npm.localCompilePreparation).toBeUndefined();
+    expect(npm.ensureCoderDependencyLibrarySources).not.toHaveBeenCalled();
+    operation.release();
   });
 
   it('enters the Blockly local branch and invalidates cloud artifacts after fallback', async () => {
