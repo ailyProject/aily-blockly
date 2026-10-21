@@ -40,6 +40,9 @@ const packages = Object.freeze([
     version: '0.1.0',
     source: 'packages/simulator-protocol',
   },
+  ...['simulator-registry', 'component-catalog', 'simulator-target-model', 'simulator-board-package', 'simulator-catalog'].map(name => ({
+    name: `@aily-project/${name}`, version: '0.1.0', source: `packages/${name}`,
+  })),
   {
     name: '@aily-project/simulator-host-sdk',
     version: '0.1.0',

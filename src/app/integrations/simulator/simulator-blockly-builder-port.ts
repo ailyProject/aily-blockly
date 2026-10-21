@@ -1,3 +1,4 @@
+import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import type {
   SimulatorBlocklyBuilderPort,
   SimulatorBlocklyBuildRequest,
@@ -8,6 +9,7 @@ export interface SimulatorBlocklyBuilderServicePort {
     readonly projectPath: string;
     readonly graphSemanticRevision: string;
     readonly requestId: string;
+    readonly sceneDocument: SceneEditorDocumentV2;
   }): Promise<unknown>;
   cancelActiveBlocklyProjectBuild(requestId: string): void;
 }
@@ -36,6 +38,7 @@ export function createSimulatorBlocklyBuilderPort(
         projectPath: request.projectRoot,
         graphSemanticRevision: request.graphSemanticRevision,
         requestId: request.requestId,
+        sceneDocument: request.sceneDocument,
       });
       let cancellationSent = false;
       const cancel = () => {

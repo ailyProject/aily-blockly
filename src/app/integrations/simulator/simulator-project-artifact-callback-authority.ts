@@ -1,3 +1,4 @@
+import { readSimulatorLegacyCircuit } from './simulator-legacy-circuit-reader';
 import {
   SimulatorHostArtifactChunkError,
   SimulatorHostProviderOperationError,
@@ -91,7 +92,7 @@ interface ArtifactReference {
   files: ReadonlyMap<string, ArtifactReferenceFile>;
 }
 
-interface StoredScene { head: ProjectSceneHeadV1; bytes: Uint8Array }
+interface StoredScene { head: ProjectSceneHeadV1; bytes: Uint8Array | null }
 
 interface ArtifactReferenceFile {
   readonly filePath: string;
@@ -266,7 +267,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   ): Promise<SimulatorSubappHostProjectSceneReadResultV1> {
     this.requireSceneScope(request.projectIdentity, request.sceneId);
     this.requireActive(signal);
-    const scene = await this.readStoredScene(signal, true);
+    const scene = await this.readStoredScene(signal, true, true);
     if (!scene) {
       return {
         schemaVersion: 1,
@@ -296,7 +297,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
       ) {
         throw new SimulatorHostProviderOperationError('invalid-request');
       }
-      const current = await this.readStoredScene(signal, true);
+      const current = await this.readStoredScene(signal, true, true);
       const currentRevision = current?.head.descriptor.storageRevision
         ?? EMPTY_STORAGE_REVISION;
       if (currentRevision !== request.expectedStorageRevision) {
@@ -408,6 +409,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private async readStoredScene(
     signal: AbortSignal,
     allowMissing: boolean,
+    importLegacy = false,
   ): Promise<StoredScene | null> {
     const bytes = await this.readRegularFile(
       this.sceneFilePath,
@@ -415,7 +417,25 @@ export class SimulatorProjectArtifactCallbackAuthority {
       signal,
       allowMissing,
     );
-    if (!bytes) return null;
+    if (!bytes) {
+      if (!importLegacy) return null;
+      const document = await readSimulatorLegacyCircuit({
+        projectRoot: this.projectRoot, sceneId: this.sceneId, files: this.files,
+      }, signal);
+      this.requireActive(signal);
+      if (!document) return null;
+      const head = await createProjectSceneHeadV1({
+        commitId: `connection-import-${document.visualRevision}`,
+        descriptor: {
+          schemaVersion: 1, kind: 'aily-project-scene-network-descriptor',
+          projectIdentity: this.projectIdentity, sceneId: this.sceneId,
+          storageRevision: EMPTY_STORAGE_REVISION, document,
+          runtimeAttachment: null, artifactAlignment: 'detached',
+        },
+      });
+      // Opening an old diagram is read-only. The first edit publishes V2 with create-only CAS.
+      return { head, bytes: null };
+    }
     let value: unknown;
     try {
       value = JSON.parse(new TextDecoder().decode(bytes));

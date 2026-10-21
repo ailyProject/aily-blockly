@@ -1,3 +1,4 @@
+import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import { Injectable, NgZone } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import {
@@ -403,7 +404,7 @@ export class _BuilderService {
   }
 
   private async writeSimulatorSceneGpioBuildMetadata(
-    currentProjectPath: string,
+    sceneDocument: SceneEditorDocumentV2,
     tempPath: string,
     sourceText: string,
     graphSemanticRevision: string,
@@ -411,20 +412,8 @@ export class _BuilderService {
     sceneGpioDirectionsPath: string;
     sceneGpioPullsPath: string;
   }> {
-    const sceneHeadPath = this.electronService.pathJoin(
-      currentProjectPath,
-      '.aily',
-      'simulator',
-      'scene-network-v2.json',
-    );
-    if (!window['path'].isExists(sceneHeadPath)) {
-      throw new Error(
-        'Active Simulator Scene is missing; refusing to build a revision-aligned Artifact.',
-      );
-    }
-    const sceneHead = JSON.parse(window['fs'].readFileSync(sceneHeadPath, 'utf8'));
     const metadata = createSimulatorSceneGpioBuildMetadata(
-      sceneHead,
+      sceneDocument,
       sourceText,
       graphSemanticRevision,
     );
@@ -581,7 +570,7 @@ export class _BuilderService {
         const sourceDocumentSchemaVersion =
           action.payload?.sourceDocumentSchemaVersion as 1 | 2 | undefined;
         const requestId = action.payload?.requestId as string | undefined;
-        const result = await this.build(graphSemanticRevision, requestId, sourceDocumentSchemaVersion, checkpoint);
+        const result = await this.build(graphSemanticRevision, requestId, sourceDocumentSchemaVersion, checkpoint, action.payload?.sceneDocument);
         return { success: true, result, checkpoint };
       } catch (msg) {
         return { success: false, result: msg, checkpoint };
@@ -1189,6 +1178,7 @@ export class _BuilderService {
     requestId?: string,
     sourceDocumentSchemaVersion?: 1 | 2,
     checkpoint: BuildCheckpoint = {},
+    sceneDocument?: SceneEditorDocumentV2,
   ): Promise<ActionState> {
     if (
       graphSemanticRevision !== undefined
@@ -1403,7 +1393,7 @@ export class _BuilderService {
             buildConfig.graphSemanticRevision = graphSemanticRevision;
             const sceneGpioMetadata =
               await this.writeSimulatorSceneGpioBuildMetadata(
-                this.currentProjectPath,
+                sceneDocument!,
                 tempPath,
                 code,
                 graphSemanticRevision,

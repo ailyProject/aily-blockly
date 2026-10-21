@@ -72,7 +72,7 @@ describe('Simulator Scene GPIO build metadata', () => {
 
   it('projects Arduino pin modes onto revision-locked Scene endpoints', () => {
     const metadata = createSimulatorSceneGpioBuildMetadata(
-      sceneHead(),
+      sceneHead().descriptor.document,
       `
         void setup() {
           pinMode(3, OUTPUT);
@@ -95,7 +95,7 @@ describe('Simulator Scene GPIO build metadata', () => {
 
   it('rejects metadata generation after the Scene revision changes', () => {
     expect(() => createSimulatorSceneGpioBuildMetadata(
-      sceneHead('b'.repeat(64)),
+      sceneHead('b'.repeat(64)).descriptor.document,
       'pinMode(3, OUTPUT);',
       graphSemanticRevision,
     )).toThrowError(/Scene changed/u);
@@ -103,7 +103,7 @@ describe('Simulator Scene GPIO build metadata', () => {
 
   it('keeps explicitly configured directions when firmware reads outputs or writes inputs', () => {
     expect(createSimulatorSceneGpioBuildMetadata(
-      sceneHead(),
+      sceneHead().descriptor.document,
       'pinMode(D2, OUTPUT); digitalRead(D2); pinMode(D3, INPUT_PULLUP); digitalWrite(D3, HIGH);',
       graphSemanticRevision,
     )).toEqual({
@@ -117,7 +117,7 @@ describe('Simulator Scene GPIO build metadata', () => {
 
   it('retains ADC usage as input evidence when no pin mode is configured', () => {
     expect(createSimulatorSceneGpioBuildMetadata(
-      sceneHead(),
+      sceneHead().descriptor.document,
       'analogRead(D2);',
       graphSemanticRevision,
     )).toEqual({
@@ -128,7 +128,7 @@ describe('Simulator Scene GPIO build metadata', () => {
 
   it('resolves constants and multiline configurations without treating comments as modes', () => {
     expect(createSimulatorSceneGpioBuildMetadata(
-      sceneHead(),
+      sceneHead().descriptor.document,
       '#define LED D2\npinMode(\n LED,\n OUTPUT\n); digitalRead(LED); // pinMode(LED, INPUT);',
       graphSemanticRevision,
     ).directions).toEqual({ 'xiao_esp32s3.pin_3': 'output' });
@@ -136,7 +136,7 @@ describe('Simulator Scene GPIO build metadata', () => {
 
   it('rejects conflicting explicit firmware directions for one Scene endpoint', () => {
     expect(() => createSimulatorSceneGpioBuildMetadata(
-      sceneHead(),
+      sceneHead().descriptor.document,
       'pinMode(3, INPUT); pinMode(D2, OUTPUT);',
       graphSemanticRevision,
     )).toThrowError(/direction is ambiguous/u);
@@ -145,14 +145,14 @@ describe('Simulator Scene GPIO build metadata', () => {
   it('coalesces repeated contacts only through their same declared physical pad', () => {
     const head = duplicatedContact();
     const expected = { directions: { 'xiao_esp32s3.pin_3': 'input' }, pulls: { 'xiao_esp32s3.pin_3': 'up' } } as const;
-    expect(createSimulatorSceneGpioBuildMetadata(head, 'pinMode(3, INPUT_PULLUP);', graphSemanticRevision)).toEqual(expected);
+    expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document, 'pinMode(3, INPUT_PULLUP);', graphSemanticRevision)).toEqual(expected);
     head.descriptor.document.terminals.reverse();
     head.descriptor.document.componentConfigs.xiao_esp32s3.pins.reverse();
-    expect(createSimulatorSceneGpioBuildMetadata(head, 'pinMode(D2, INPUT_PULLUP);', graphSemanticRevision)).toEqual(expected);
+    expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document, 'pinMode(D2, INPUT_PULLUP);', graphSemanticRevision)).toEqual(expected);
   });
 
   it('keeps direction conflicts visible after same-pad contact coalescing', () => {
-    expect(() => createSimulatorSceneGpioBuildMetadata(duplicatedContact(),
+    expect(() => createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
       'pinMode(3, INPUT); pinMode(D2, OUTPUT);', graphSemanticRevision)).toThrowError(/direction is ambiguous/u);
   });
 
@@ -162,24 +162,24 @@ describe('Simulator Scene GPIO build metadata', () => {
       ['INPUT_PULLUP', 'INPUT'], ['INPUT', 'INPUT_PULLUP'],
       ['INPUT_PULLDOWN', 'INPUT'], ['INPUT', 'INPUT_PULLDOWN'],
     ]) {
-      expect(() => createSimulatorSceneGpioBuildMetadata(duplicatedContact(),
+      expect(() => createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
         `pinMode(3, ${first}); pinMode(D2, ${second});`, graphSemanticRevision)).toThrowError(/pull is ambiguous/u);
     }
   });
 
   it('accepts repeated equal explicit pulls without letting unknown usage clear them', () => {
     for (const [mode, pull] of [['INPUT_PULLUP', 'up'], ['INPUT_PULLDOWN', 'down']] as const) {
-      expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact(),
+      expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
         `pinMode(3, ${mode}); pinMode(D2, ${mode}); digitalRead(3); analogRead(D2);`, graphSemanticRevision))
         .toEqual({ directions: { 'xiao_esp32s3.pin_3': 'input' }, pulls: { 'xiao_esp32s3.pin_3': pull } });
     }
-    expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact(),
+    expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
       'pinMode(3, INPUT); pinMode(D2, INPUT); digitalRead(3);', graphSemanticRevision))
       .toEqual({ directions: { 'xiao_esp32s3.pin_3': 'input' }, pulls: {} });
   });
 
   it('does not merge real cross-pad aliases even when their GPIO labels match', () => {
-    expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact('PA5'),
+    expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact('PA5').descriptor.document,
       'pinMode(3, OUTPUT);', graphSemanticRevision).directions).toEqual({});
   });
 
@@ -188,7 +188,7 @@ describe('Simulator Scene GPIO build metadata', () => {
       const head = duplicatedContact(), semantic = head.descriptor.document.terminals[2]!.extensions.ailyComponentPinSemantic;
       semantic.gpio = { controllerId: difference === 'controller' ? 'other-gpio' : 'gpio',
         channel: difference === 'channel' ? '7' : '3' };
-      expect(createSimulatorSceneGpioBuildMetadata(head,
+      expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document,
         'pinMode(3, OUTPUT);', graphSemanticRevision).directions).toEqual({});
     }
   });
@@ -196,7 +196,7 @@ describe('Simulator Scene GPIO build metadata', () => {
   it('does not merge duplicated appearance labels without valid physical routing evidence', () => {
     const head = duplicatedContact();
     head.descriptor.document.terminals[2]!.extensions.ailyComponentPinSemantic.schemaVersion = 0;
-    expect(createSimulatorSceneGpioBuildMetadata(head,
+    expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document,
       'pinMode(3, OUTPUT);', graphSemanticRevision).directions).toEqual({});
   });
 
@@ -204,7 +204,7 @@ describe('Simulator Scene GPIO build metadata', () => {
     const head = duplicatedContact(), document = head.descriptor.document;
     document.components.push({ instanceId: 'other_mcu', componentId: 'component-xiao-esp32s3' });
     document.terminals[2]!.instanceId = 'other_mcu';
-    expect(createSimulatorSceneGpioBuildMetadata(head,
+    expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document,
       'pinMode(3, OUTPUT);', graphSemanticRevision).directions).toEqual({});
   });
 
@@ -217,10 +217,10 @@ describe('Simulator Scene GPIO build metadata', () => {
     }
     for (const pin of document.componentConfigs.xiao_esp32s3.pins.filter(pin => pin.id !== 'pin_4'))
       pin.functions = [{ name: 'A6', type: 'analog' }];
-    expect(createSimulatorSceneGpioBuildMetadata(head,
+    expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document,
       'analogRead(A6);', graphSemanticRevision).directions).toEqual({ 'xiao_esp32s3.pin_3': 'input' });
     document.terminals[2]!.extensions.ailyComponentPinSemantic.adcChannels[0]!.channel = '7';
-    expect(createSimulatorSceneGpioBuildMetadata(head,
+    expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document,
       'analogRead(A6);', graphSemanticRevision).directions).toEqual({});
   });
 });
