@@ -250,6 +250,7 @@ export class ProjectService {
     // 克隆的 Coder 工程上下文共享后端标记，统一识别设置切换后失效的依赖会话。
     this.dependencyBackendKeys ??= new WeakMap();
     this.boardCompileBackends ??= new Map();
+    this.localBuildOperations ??= new Map();
     const context: ProjectService = Object.assign(Object.create(ProjectService.prototype), this);
     Object.assign(context, {
       isCoderProjectContext: true,
@@ -2685,9 +2686,45 @@ export class ProjectService {
   }
 
   private boardCompileBackends?: Map<string, { settingsKey: string; boardModule: string; boardVersion: string; cloud: boolean }>;
+  private localBuildOperations?: Map<ProjectDependencySession, { local: boolean; owners: number }>;
+
+  /** 编译和它的外层上传共享一次后端选择，最后一个调用退出后恢复用户偏好。 */
+  beginBuildBackendOperation(projectPath = this.currentProjectPath) {
+    const session = this.getProjectDependencySession(projectPath);
+    const operations = this.localBuildOperations ??= new Map();
+    let operation = operations.get(session);
+    if (!operation) { operation = { local: false, owners: 0 }; operations.set(session, operation); }
+    operation.owners++;
+    let released = false;
+    const guard = () => {
+      if (released) throw new Error('Build operation has ended.');
+      this.assertProjectDependencySession(session);
+    };
+    return {
+      get local() { return operation.local; },
+      useLocal: () => { guard(); operation.local = true; },
+      useCloud: () => {
+        guard();
+        if (this.configService.getCompileBackend() !== 'cloud') throw new Error('Cloud compilation is no longer available.');
+        operation.local = false;
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        if (--operation.owners === 0 && operations.get(session) === operation) operations.delete(session);
+      },
+    };
+  }
+
+  private usesLocalBuildOperation(projectPath: string): boolean {
+    const session = this.dependencyLifecycle.get(projectPath);
+    return !!session && !session.signal.aborted && this.dependencyBackendKeys?.get(session) === this.getCompileBackendKey()
+      && !!this.localBuildOperations?.get(session)?.local;
+  }
 
   isCloudBuild(projectPath = this.currentProjectPath): boolean {
     if (this.configService?.getCompileBackend?.() !== 'cloud') return false;
+    if (this.usesLocalBuildOperation(projectPath)) return false;
     const selected = this.boardCompileBackends?.get(projectPath);
     if (!selected || selected.cloud || selected.settingsKey !== this.getCompileBackendKey()) return true;
     try {
@@ -2700,6 +2737,7 @@ export class ProjectService {
   /** 只对接口明确不支持的板包回退本地；保留云偏好，并按工程、板包版本隔离选择。 */
   async resolveCompileBackend(session?: ProjectDependencySession, refresh = false): Promise<'cloud' | 'local'> {
     if (this.configService.getCompileBackend() !== 'cloud') return 'local';
+    if (this.usesLocalBuildOperation(this.currentProjectPath)) return 'local';
     const projectPath = this.currentProjectPath, settingsKey = this.getCompileBackendKey();
     const guard = () => {
       if (session) this.assertProjectDependencySession(session);

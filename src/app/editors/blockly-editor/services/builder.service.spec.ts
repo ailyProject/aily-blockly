@@ -42,7 +42,7 @@ describe('BuilderService background preprocess ownership', () => {
   function queuedBuilder() {
     const service = Object.create(_BuilderService.prototype) as any;
     service.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} };
-    service.projectService = { currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
+    service.projectService = { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
     service.workflowService = { currentState: ProcessState.IDLE,
       startBuild: () => { service.workflowService.currentState = ProcessState.BUILDING; return true; },
       finishBuild: jasmine.createSpy('finishBuild').and.callFake(() => { service.workflowService.currentState = ProcessState.IDLE; }) };

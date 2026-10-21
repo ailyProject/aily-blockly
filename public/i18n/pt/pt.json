@@ -1274,6 +1274,11 @@
         "ERR_CREATE_FAILED": "Falha ao criar o projeto. Tente novamente."
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Compilar localmente",
+        "SWITCH_TO_CLOUD": "Voltar à compilação na nuvem",
+        "SWITCHING_TO_CLOUD": "Parando a compilação local para voltar à nuvem…",
+        "SWITCHING_TO_LOCAL": "Cancelando a compilação na nuvem para continuar localmente…",
+        "PREPARING_LOCAL": "Preparando a compilação local…",
         "REUSED_RESULT": "Resultado de compilação na nuvem verificado reutilizado (tempo: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "Compilação na nuvem concluída (tempo: {{seconds}}s)",
         "STAGES": {

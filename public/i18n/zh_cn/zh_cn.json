@@ -1427,6 +1427,11 @@
         "ERR_CREATE_FAILED": "创建失败，请稍后重试"
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "切换本地编译",
+        "SWITCH_TO_CLOUD": "切回云编译",
+        "SWITCHING_TO_CLOUD": "正在停止本地编译，准备切回云编译…",
+        "SWITCHING_TO_LOCAL": "正在取消云编译，准备切换到本地…",
+        "PREPARING_LOCAL": "正在准备本地编译环境…",
         "REUSED_RESULT": "已复用云编译结果 (耗时: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "云编译完成 (耗时: {{seconds}}s)",
         "STAGES": {

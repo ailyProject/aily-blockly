@@ -13,7 +13,11 @@ interface CloudBuildProgressCallbacks {
   isCurrent: () => boolean;
   log: (text: string, stream: 'stdout' | 'stderr') => void;
   progress: (event: CloudBuildProgressEvent) => void;
+  /** 注册本次任务的切换动作；返回 false 表示任务已结束或不再属于当前调用。 */
+  localSwitch?: (requestSwitch: () => boolean) => void;
 }
+
+export const CLOUD_BUILD_LOCAL_REQUESTED = 'CLOUD_BUILD_LOCAL_REQUESTED';
 
 interface CloudBuildRunResult {
   success?: boolean;
@@ -144,24 +148,47 @@ export async function runCloudBuildWithProgress(
   if (typeof bridge?.run !== 'function' || typeof bridge?.cancel !== 'function' || typeof bridge?.onProgress !== 'function') {
     throw new Error('Cloud build bridge is unavailable; restart the desktop application.');
   }
-  const buffer = new CloudBuildProgressBuffer(callbacks);
+  let switching = false;
+  let settled = false;
+  let cancellation: Promise<{ error?: unknown }> | undefined;
+  const buffer = new CloudBuildProgressBuffer({ ...callbacks, isCurrent: () => !switching && callbacks.isCurrent() });
   // Keep this invocation's raw output independently of the throttled UI buffer.
   // Compiler diagnostics can arrive on stdout (e.g. Ninja), not just stderr.
   const logs: string[] = [];
   let unsubscribe: (() => void) | void = undefined;
   try {
     unsubscribe = bridge.onProgress(event => {
-      if (event?.requestId === request.requestId && callbacks.isCurrent()) {
+      if (event?.requestId === request.requestId && !switching && callbacks.isCurrent()) {
         if (typeof event.log === 'string' && event.log) logs.push(event.log);
         buffer.push(event);
       }
     });
-    const result = await bridge.run(request);
+    const running = bridge.run(request);
+    callbacks.localSwitch?.(() => {
+      if (settled || switching || !callbacks.isCurrent()) return false;
+      switching = true;
+      cancellation = Promise.resolve().then(() => bridge.cancel({ requestId: request.requestId }))
+        .then(() => ({}), error => ({ error }));
+      return true;
+    });
+    let result: CloudBuildRunResult;
+    let failure: unknown;
+    try { result = await running; } catch (error) { failure = error; }
+    settled = true;
+    if (switching) {
+      // 等云请求释放工作区以及取消回执，两者完成前绝不能启动本地编译。
+      const cancelled = await cancellation;
+      if (cancelled?.error) throw cancelled.error;
+      if (callbacks.isCurrent()) throw Object.assign(new Error('Continue this build locally.'), { code: CLOUD_BUILD_LOCAL_REQUESTED });
+      throw failure || Object.assign(new Error('Cloud build was cancelled or replaced.'), { code: 'CANCELLED' });
+    }
+    if (failure) throw failure;
     if (result?.success === false) {
       throw Object.assign(new Error(result.text || 'Cloud compilation failed.'), result);
     }
     return result;
   } catch (error) {
+    if (error?.code === CLOUD_BUILD_LOCAL_REQUESTED) throw error;
     const message = error?.message || String(error);
     const output = [error?.fullStdErr, ...logs].filter(text => typeof text === 'string' && text).join('\n');
     // contextBridge may reject with a plain object; retain its code and message.
@@ -169,6 +196,8 @@ export async function runCloudBuildWithProgress(
       fullStdErr: output ? (output.includes(message) ? output : `${output}\n${message}`) : message,
     });
   } finally {
+    settled = true;
+    await cancellation;
     try { if (typeof unsubscribe === 'function') unsubscribe(); }
     finally { buffer.dispose(); }
   }

@@ -115,7 +115,7 @@ describe('cloud compilation account access', () => {
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
     const compile = Object.assign(Object.create(CompileService.prototype), {
       configService: config,
-      projectService: { currentProjectPath: '/project', getProjectDependencyBlockMessage: () => undefined },
+      projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', getProjectDependencyBlockMessage: () => undefined },
       application: { startBuild: () => true, updateNotice: () => {} },
       runCompile, t: (key: string) => key,
     });
@@ -131,7 +131,7 @@ describe('cloud compilation account access', () => {
     window['cloudBuild'] = { invalidate };
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
       configService: config,
-      projectService: { currentProjectPath: '/project', currentPackageData: {} },
+      projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {} },
       workflowService: { startBuild: () => true, finishBuild: () => {} },
       clearProgressTimer: () => {}, handleCompileError: () => {},
     });

@@ -1274,6 +1274,11 @@
         "ERR_CREATE_FAILED": "プロジェクトの作成に失敗しました。もう一度お試しください。"
     },
     "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "ローカルコンパイルに切り替え",
+        "SWITCH_TO_CLOUD": "クラウドコンパイルに戻す",
+        "SWITCHING_TO_CLOUD": "ローカルコンパイルを停止し、クラウドに戻しています…",
+        "SWITCHING_TO_LOCAL": "クラウドコンパイルをキャンセルしてローカルに切り替えています…",
+        "PREPARING_LOCAL": "ローカルコンパイルの準備中…",
         "REUSED_RESULT": "検証済みのクラウドビルド結果を再利用しました (所要時間: {{seconds}}s)",
         "COMPLETE_WITH_TIME": "クラウドビルドが完了しました (所要時間: {{seconds}}s)",
         "STAGES": {
