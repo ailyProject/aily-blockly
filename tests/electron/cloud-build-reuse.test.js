@@ -52,6 +52,14 @@ function fixture(t) {
   return f;
 }
 
+function authenticated(f) {
+  f.subject = { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', user_type: 'user' };
+  f.settings = { gatewayUrl: 'https://api.aily.pro', publicKey: f.keys.publicKey.export({ type: 'spki', format: 'pem' }) };
+  f.broker.getAuth = async () => ({ ok: true, authenticated: true, apiServer: f.settings.gatewayUrl, generation: 1,
+    accessToken: `e30.${Buffer.from(JSON.stringify({ sub: JSON.stringify(f.subject) })).toString('base64url')}.fixture` });
+  return f;
+}
+
 test('identical current inputs reuse signed bytes without upload or a new cloud job', async t => {
   const f = fixture(t); const first = await f.run(), second = await f.run();
   assert.equal(first.reused, undefined); assert.equal(second.reused, true);
@@ -60,6 +68,31 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest), true);
   assert.equal(f.events.at(-1).reused, true);
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
+});
+
+test('the same user can reuse signed output after token role and subject serialization change', async t => {
+  const f = authenticated(fixture(t)), first = await f.run();
+  f.subject = { user_type: 'admin', id: f.subject.id };
+  const second = await f.run();
+  assert.equal(second.reused, true); assert.equal(second.jobId, first.jobId);
+  assert.equal(f.jobs, 1); assert.equal(f.uploads, 1);
+  assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest), true);
+});
+
+test('an account switch creates a new cloud job instead of reusing the previous user output', async t => {
+  const f = authenticated(fixture(t)), first = await f.run();
+  f.subject.id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const second = await f.run();
+  assert.equal(second.reused, undefined); assert.notEqual(second.jobId, first.jobId);
+  assert.equal(f.jobs, 2); assert.equal(f.uploads, 2);
+});
+
+test('completed artifacts reject a different token user before any owner snapshot invalidation', async t => {
+  const f = authenticated(fixture(t)); await f.run();
+  f.subject.id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  await assert.rejects(f.broker.artifactPath(f.sender, f.root, f.config), { code: 'AUTH_ACCOUNT_CHANGED' });
+  assert.equal(await f.broker.reusable(f.sender, f.config, f.profile.profileDigest), false);
+  assert.equal(f.jobs, 1);
 });
 
 test('build metadata changes do not invalidate identical build inputs', async t => {

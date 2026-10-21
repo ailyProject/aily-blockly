@@ -1067,6 +1067,11 @@ function queryBuildSource(projectPath, signal) {
   return requestMainWindow('build-source-query', 'build-source-query:response', { projectPath }, 5000, signal);
 }
 
+async function queryCloudBuildAuth(request, signal) {
+  const answer = await requestMainWindow('cloud-build-auth-query', 'cloud-build-auth-query:response', request, 15000, signal);
+  return answer.result || { ok: false, errorCode: 'HOST_AUTH_UNAVAILABLE', message: answer.message || 'The host account is unavailable.' };
+}
+
 /** 处理来自 CLI 的命令 */
 async function handleCliBridgeCommand(action, payload) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
@@ -2739,6 +2744,7 @@ function createWindow() {
       getOwner: getCurrentRendererOwner,
       // 设置窗口和主页面初始化阶段仅可读取部署信息、检查连接，不能提交编译或烧录。
       canReadGateway: sender => isCurrentMainRenderer(sender) || windowController?.isSettingsWindowSender(sender) === true,
+      getAuth: queryCloudBuildAuth,
       querySource: queryBuildSource,
       getRuntimeRoot: () => process.env.AILY_TOOLS_PATH || path.join(process.env.AILY_APPDATA_PATH, 'tools'),
     });
@@ -3653,12 +3659,14 @@ ipcMain.on("host-auth-state-changed", (event, data = {}) => {
     return;
   }
 
+  const previousUserId = hostAuthState.authenticated ? hostAuthState.user?.id : undefined;
   hostAuthState = {
     authenticated: data.authenticated,
     ...(data.authenticated && data.user ? { user: data.user } : {}),
     ...(data.authenticated && data.quotaSnapshot ? { quotaSnapshot: data.quotaSnapshot } : {}),
     version: hostAuthState.version + 1,
   };
+  if (previousUserId && previousUserId !== hostAuthState.user?.id) void cloudBuildController?.invalidateAuthentication();
 
   BrowserWindow.getAllWindows().forEach((win) => {
     try {

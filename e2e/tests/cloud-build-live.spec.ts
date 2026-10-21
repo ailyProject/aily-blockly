@@ -6,10 +6,11 @@ import { expect, getMainWindow, launchAilyElectron, openBlocklyProject, readAily
 
 const seed = process.env['AILY_E2E_CLOUD_SEED'];
 const enabled = process.env['AILY_E2E_CLOUD_LIVE'] === '1';
+const accessToken = process.env['AILY_E2E_CLOUD_ACCESS_TOKEN'];
 const boardModule = '@aily-project/board-esp32s3';
 
 for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud compilation, signed artifact reuse and source invalidation`, async ({}, info) => {
-  test.skip(!enabled || !seed, 'Opt in with AILY_E2E_CLOUD_LIVE=1 and an installed package seed.');
+  test.skip(!enabled || !seed || !accessToken, 'Opt in with AILY_E2E_CLOUD_LIVE=1, an installed package seed and a Pro test access token.');
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'aily-cloud-merge-')));
   const project = path.join(root, 'project');
   const write = async (file: string, content: string) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, content); };
@@ -49,15 +50,13 @@ for (const mode of ['blockly', 'coder'] as const) test(`${mode}: real cloud comp
     const win = await getMainWindow(launch.app);
     win.on('pageerror', error => errors.push(error.message));
     await win.addLocatorHandler(win.locator('app-login .login-close'), button => button.click());
-    // This network test has no real user credentials. Supply Pro client state
-    // only in its disposable profile; account gating has its own regression.
     await expect.poll(() => win.evaluate(() => (window as any).ng.getComponent(document.querySelector('app-main-window'))
       .authService.getAuthInitializationState())).toBe('signed_out');
-    await win.evaluate(() => {
-      const auth = (window as any).ng.getComponent(document.querySelector('app-main-window')).authService;
-      auth.isLoggedInSubject.next(true);
-      auth.setCurrentUserInfo({ id: 'cloud-live-fixture', subscription_plan: { name: 'pro' } });
-    });
+    // Write only to the disposable profile; keep the token out of Playwright IPC traces.
+    await writeFile(path.join(launch.userDataDir, '.aily'), JSON.stringify({ access_token: accessToken }), { mode: 0o600 });
+    await win.evaluate(() => (window as any).ng.getComponent(document.querySelector('app-main-window')).authService.initializeAuth());
+    await expect.poll(() => win.evaluate(() => (window as any).ng.getComponent(document.querySelector('app-main-window'))
+      .authService.canUseCloudCompilation)).toBe(true);
     await win.evaluate(() => (window as any).electronAPI.subWindow.open({ path: 'settings', windowClass: 'builtin', width: 700, height: 550 }));
     await expect.poll(() => launch.app.windows().some(page => page.url().includes('#/settings'))).toBe(true);
     const settings = launch.app.windows().find(page => page.url().includes('#/settings'))!;
