@@ -68,8 +68,11 @@ export function resolveAbsFieldValue(token: AbsFieldToken, definition?: AbsField
     // README pin/enumeration literals are often numeric but Blockly persists
     // string keys. Match the exact lexeme, never a numeric approximation/label.
     if (!quoted && typeof value === 'number' && allowed.includes(token.raw)) return token.raw;
-    if (!quoted && typeof value === 'boolean') {
-      const candidates = allowed.filter(option => option === String(value) || option === String(value).toUpperCase());
+    // Unquoted ABS booleans may use Blockly's legacy uppercase spelling.
+    // Resolve against actual stored values, never labels or a global case fold.
+    if (!quoted && (typeof value === 'boolean' || value === 'TRUE' || value === 'FALSE')) {
+      const literal = String(value).toLowerCase();
+      const candidates = allowed.filter(option => option === literal || option === literal.toUpperCase());
       if (candidates.length === 1) return candidates[0];
     }
     throw new AbsSyncError('ABS_FIELD_OPTION_INVALID',

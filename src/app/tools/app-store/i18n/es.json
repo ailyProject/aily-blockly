@@ -42,6 +42,7 @@
         "CHECK_UPDATE_FAILED": "Update check failed: {{message}}",
         "UNINSTALL": "Uninstall",
         "CONFIRM_UNINSTALL": "Confirm uninstall",
+        "CODER_EDITOR_UNINSTALL_BLOCKED": "Cierra el proyecto actual antes de desinstalar Aily Coder Editor.",
         "CANCEL": "Cancel",
         "REFRESH": "Refresh catalog",
         "RETRY": "Retry",

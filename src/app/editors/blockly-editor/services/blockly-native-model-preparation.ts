@@ -2,7 +2,7 @@ import type * as Blockly from 'blockly';
 import { AbsSyncError, type AbsSyntaxNode } from '../../../integrations/blockly/abs/abs-state';
 import type { AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
 import type { NativeCandidateWorkspace } from './blockly-native-candidate-workspace';
-import { withNativeModelRegistrations } from './blockly-native-model-effects';
+import { hasNativeModelRegistrationHelper, withNativeModelRegistrations } from './blockly-native-model-effects';
 import { nativeLoopVariable } from './blockly-native-loop-model';
 import { assertNativeBudget } from './blockly-native-budget';
 
@@ -19,12 +19,13 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     return false;
   };
   const declarations = new Map<string, AbsNativeModelDeclaration>();
+  const initializers = new Map<string, AbsNativeModelDeclaration>();
   const retainedCalls = new Set(retained.retainedCalls), retainedIds = new Set(retained.retainedIds);
   const retainedNames = new Set<string>();
   const unchanged = (effect: AbsNativeModelDeclaration) => retainedCalls.has(effect.start) && retainedIds.has(effect.id);
   // Only the explicit counter declaration may seed a missing loop model. A
-  // later ordinary initializer can own that same model; shared loop counters
-  // reuse the first identity instead of inventing duplicate variable models.
+  // later ordinary initializer can reuse that same model; the loop keeps its
+  // producer because its source offset owns the deterministic model identity.
   for (const [node, block] of blocks) {
     const field = !disabled(block) && nativeLoopVariable(block), token = node.fields['VAR'];
     if (!field || !token) continue;
@@ -44,7 +45,7 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
   const effects = () => [...declarations.values()].sort((a, b) => a.start - b.start || a.name.localeCompare(b.name));
   // Without the library registration protocol only core lexical declarations
   // are preparable. Do not speculatively execute unrelated generators.
-  if (typeof window['registerVariableToBlockly'] !== 'function') return effects();
+  if (!hasNativeModelRegistrationHelper(window, generator)) return effects();
   // Once all references are bound there can be no unresolved descendant. Do not
   // repeatedly traverse complete input subtrees just to search an empty set.
   // With pending references, retain live topology reads: generators may change it.
@@ -55,6 +56,10 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     if (!node || disabled(block)) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', 'Only an active ABS initializer may prepare a model.');
     const effect = execution.models.declare(node.start, block.type, name, type, requestId);
     const key = effect.name.toLowerCase(), previous = declarations.get(key);
+    const initializer = initializers.get(key);
+    if (initializer && (initializer.start !== effect.start || initializer.type !== effect.type)) {
+      throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', `Multiple initializers declare ${JSON.stringify(name)}. Keep one declaration per object.`, node);
+    }
     // Still execute and validate the real helper/type/identity, but do not turn
     // unchanged registrations of an existing model into new producer ownership.
     if (unchanged(effect) && (!previous || previous.kind === 'loop')) { retainedNames.add(key); return; }
@@ -64,7 +69,10 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     if (previous && previous.kind !== 'loop' && (previous.start !== effect.start || previous.type !== effect.type)) {
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', `Multiple initializers declare ${JSON.stringify(name)}. Keep one declaration per object.`, node);
     }
-    declarations.set(key, effect); // Repeated registration by the same native producer is idempotent.
+    initializers.set(key, effect);
+    // A loop-created identity must retain its original producer in the receipt.
+    // Ordinary registration may reuse it, but cannot relabel its source offset.
+    if (previous?.kind !== 'loop') declarations.set(key, effect);
     assertNativeBudget('declarations', declarations.size, 'model-preparation');
   }, () => {
     generator.init(execution.workspace);

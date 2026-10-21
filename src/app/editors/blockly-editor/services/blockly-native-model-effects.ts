@@ -3,27 +3,33 @@ import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import type { AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
 import { nativeLoopVariable } from './blockly-native-loop-model';
 
+/** Libraries expose the same registration protocol globally or on Arduino. */
+export function hasNativeModelRegistrationHelper(realm: any, generator: Blockly.Generator): boolean {
+  return [realm, generator].some(target => typeof target.registerVariableToBlockly === 'function');
+}
+
 /** One synchronous capability boundary, independent of library names and generator
  * source text. Only a currently executing native block may call the registration
  * helper. Other workspace mutations remain subject to complete native readback. */
 export function withNativeModelRegistrations<T>(realm: any, generator: Blockly.Generator,
   register: (block: Blockly.Block, name: string, type: string) => void, action: () => T,
   visit?: (block: Blockly.Block) => void): T {
-  const original = realm.registerVariableToBlockly;
-  const hasHelper = typeof original === 'function';
+  const helpers = [...new Set<any>([realm, generator])].map(target => ({ target, original: target.registerVariableToBlockly }));
   let owner: Blockly.Block | undefined;
   let failure: unknown;
   const functions = new Map(Object.entries(generator.forBlock));
-  const helper = (name: string, type: string = '') => {
-    try {
-      if (!owner) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', 'A native model registration has no executing initializer.');
-      register(owner, name, type);
-      // The model now exists with the transaction-owned identity. Run the original
-      // helper too; custom helper side effects cannot be hidden by this adapter.
-      return original(name, type);
-    } catch (error) { failure = error; throw error; }
-  };
-  if (hasHelper) realm.registerVariableToBlockly = helper;
+  const installed = helpers.filter(entry => typeof entry.original === 'function').map(({ target, original }) => {
+    const helper = function(this: unknown, name: string, type: string = '') {
+      try {
+        if (!owner) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', 'A native model registration has no executing initializer.');
+        register(owner, name, type);
+        // Preserve the original receiver and side effects after owning the model.
+        return original.call(this, name, type);
+      } catch (error) { failure = error; throw error; }
+    };
+    target.registerVariableToBlockly = helper;
+    return { target, original, helper };
+  });
   const wrapped = new Map<string, Blockly.Generator['forBlock'][string]>();
   for (const [type, callback] of functions) {
     const scoped: Blockly.Generator['forBlock'][string] = function(block, current) {
@@ -35,13 +41,14 @@ export function withNativeModelRegistrations<T>(realm: any, generator: Blockly.G
   try {
     const result = action();
     if (failure) throw failure;
-    if (realm.registerVariableToBlockly !== (hasHelper ? helper : original)) throw new Error('Native generator replaced the model registration boundary.');
+    if (helpers.some(({ target, original }) => target.registerVariableToBlockly !==
+      (installed.find(entry => entry.target === target)?.helper ?? original))) throw new Error('Native generator replaced the model registration boundary.');
     if (Object.keys(generator.forBlock).length !== wrapped.size || [...wrapped].some(([type, callback]) => generator.forBlock[type] !== callback)) {
       throw new Error('Native model preparation changed the generator registry.');
     }
     return result;
   } finally {
-    if (hasHelper) realm.registerVariableToBlockly = original;
+    for (const { target, original } of installed) target.registerVariableToBlockly = original;
     for (const [type, callback] of functions) generator.forBlock[type] = callback;
   }
 }
@@ -54,6 +61,14 @@ export function verifyNativeModelRegistrations<T>(realm: any, generator: Blockly
   const result = withNativeModelRegistrations(realm, generator, (block, name, type) => {
     const effect = expected.find(item => item.name.toLowerCase() === String(name).toLowerCase());
     if (!effect) return;
+    // An ordinary declaration can reuse a lexical counter. Its registration
+    // must agree with the model; the loop visit below proves the owning identity.
+    if (effect.kind === 'loop') {
+      if (effect.name !== name || effect.type !== type) {
+        throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Complete generation changed a loop model registration name or type.');
+      }
+      return;
+    }
     if (effect.ownerId !== block.id || effect.blockType !== block.type || effect.name !== name || effect.type !== type) {
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Complete generation changed native model declaration ownership or type.');
     }

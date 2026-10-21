@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { Subscription } from 'rxjs';
+import { Subscription, merge } from 'rxjs';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyLibraryRuntimeRebuildOptions, BlocklyProjectDocument, BlocklyService } from './blockly.service';
 import { ActionService } from '@core/app-shell/public-api';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
@@ -45,8 +45,17 @@ export class _ProjectService {
     
     this.initialized = true;
     this.cleanState.clear();
-    this.hydration = this.blocklyService.projectPageHydrated.subscribe(({ before, after }) =>
-      this.cleanState.acceptHydration(this.cleanScope(), before, after));
+    this.blocklyService.projectDirtyState?.reset();
+    this.hydration = new Subscription();
+    this.hydration.add(this.blocklyService.projectPageHydrated.subscribe(({ before, after }) => {
+      const baseline = this.cleanState.acceptHydration(this.cleanScope(), before, after);
+      this.blocklyService.projectDirtyState?.acceptHydration(baseline);
+    }));
+    if (this.blocklyService.projectDirtyState) this.hydration.add(merge(
+      this.blocklyService.pagesSubject, this.blocklyService.activePageIdSubject,
+      this.blocklyService.openedPageIdsSubject, this.blocklyService.sharedModelSubject,
+      this.blocklyService.aiWriting$,
+    ).subscribe(() => this.blocklyService.projectDirtyState?.invalidate()));
 
     this.actionService.listen('project-save', async (action) => {
       await this.save(action.payload.path);
@@ -59,11 +68,14 @@ export class _ProjectService {
     this.actionService.unlisten('project-save-handler');
     this.actionService.unlisten('project-check-unsaved-handler');
     this.hydration?.unsubscribe();
+    this.blocklyService.projectDirtyState?.reset();
     this.cleanState.clear();
     this.initialized = false; // 重置初始化状态
   }
 
   async hasUnsavedChanges(): Promise<boolean> {
+    const libraries = await window['libraryDependencies']?.status(this.currentProjectPath);
+    if (libraries?.dirty || libraries?.busy) return true;
     const context = this.captureSaveContext(this.currentProjectPath);
     context.assertCurrent();
     await projectDataRuntime.flushPending(); context.assertCurrent();
@@ -95,6 +107,7 @@ export class _ProjectService {
         workspace => this.blocklyService.getWorkspaceLoadReadbackView(workspace));
       context.assertCurrent();
       this.cleanState.remember(this.cleanScope(), diskText, document);
+      this.blocklyService.projectDirtyState?.remember(document);
     } catch (error) {
       this.cleanState.reject(error);
       // The caller must abort activation before publishing ready, running GC or
@@ -236,6 +249,7 @@ export class _ProjectService {
           throw error;
         });
         if (publication?.warnings?.length) console.warn('Project ABI committed with host cleanup warnings:', publication.warnings);
+        await window['libraryDependencies']?.save(path);
         // ABI is now committed. Later derived-code failures must not imply it was rolled back.
         try {
           assertRevision();
@@ -263,6 +277,7 @@ export class _ProjectService {
     }
     this.cleanState.remember(this.cleanScope(), prepared.abiText,
       this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(JSON.parse(prepared.documentText))));
+    this.blocklyService.projectDirtyState?.remember(JSON.parse(prepared.documentText));
     if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
     this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
     await this.publishPreparedCode(path, generated, assertCurrent);
@@ -293,14 +308,17 @@ export class _ProjectService {
 
       const originalContent = window['fs'].readFileSync(packageJsonPath, 'utf8');
       const packageJson = JSON.parse(originalContent);
+      const previousLibraries = JSON.stringify(packageJson[AILY_BLOCKLY_USED_LIBRARIES_FIELD]);
       packageJson[AILY_BLOCKLY_USED_LIBRARIES_FIELD] = this.blocklyService.getProjectUsedLibraryManifest(packageJson, projectDocument);
-      const nextContent = JSON.stringify(packageJson, null, 2);
-      if (nextContent !== originalContent) {
-        window['fs'].writeFileSync(packageJsonPath, nextContent);
+      const changed = previousLibraries !== JSON.stringify(packageJson[AILY_BLOCKLY_USED_LIBRARIES_FIELD]);
+      // Loading/restoring a version must not rewrite its manifest merely to
+      // normalize whitespace when the derived library metadata is unchanged.
+      if (changed) {
+        window['fs'].writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
       }
       this.currentPackageData = packageJson;
       window['packageJson'] = packageJson;
-      return nextContent !== originalContent;
+      return changed;
     } catch (error) {
       console.error('更新项目使用库清单失败:', error);
       return false;

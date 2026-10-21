@@ -33,8 +33,10 @@ export class CrossPlatformCmdService {
       return await this.cmdService.runAsync(`New-Item -Path "${path}" -ItemType Directory ${forceFlag}`);
     } else {
       const recursiveFlag = recursive ? '-p' : '';
-      const escapedPath = this.escapePath(path);
-      return await this.cmdService.runAsync(`mkdir ${recursiveFlag} "${escapedPath}"`);
+      // Quote once: backslash-escaping spaces inside double quotes creates a
+      // different directory, and project names must never expand shell syntax.
+      const quotedPath = `'${path.replace(/'/g, "'\\''")}'`;
+      return await this.cmdService.runAsync(`mkdir ${recursiveFlag} -- ${quotedPath}`);
     }
   }
 

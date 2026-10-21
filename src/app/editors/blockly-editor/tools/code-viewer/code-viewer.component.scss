@@ -4,6 +4,20 @@ nz-code-editor {
     background-color:transparent;
 }
 
+.coder-open-btn {
+    width: 30px;
+    height: 30px;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    &:hover { background: var(--aily-bg-tertiary); }
+
+    &:disabled { cursor: wait; opacity: 0.5; }
+}
+
 // Block 选中高亮样式（需要 ::ng-deep 穿透 Monaco 编辑器的 Shadow DOM）
 ::ng-deep .block-highlight-line {
     background-color: rgba(255, 213, 79, 0.15) !important;

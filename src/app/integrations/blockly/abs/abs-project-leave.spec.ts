@@ -22,6 +22,7 @@ describe('save-before-leaving confirmation', () => {
       const dialog = new Subject<any>();
       const project = projectFixture({ getProjectMode: () => 'blockly',
         hasUnsavedChanges: jasmine.createSpy('dirty').and.resolveTo(true),
+        discardAllLibraryChanges: jasmine.createSpy('discard').and.resolveTo(),
         save: jasmine.createSpy('save').and.resolveTo({ success: true }) });
       const view: any = Object.create(entry === 'header' ? HeaderComponent.prototype : ProjectNewComponent.prototype);
       view.projectService = project;
@@ -93,13 +94,12 @@ describe('domain save completion and project ownership', () => {
     service.getProjectMode = () => 'coder';
     const dispatch = jasmine.createSpy('dispatch').and.resolveTo({ success: true });
     Object.defineProperty(service, 'application', { value: { dispatchProjectSave: dispatch } });
-    service.copyPackageJsonToTemp = jasmine.createSpy('metadata').and.resolveTo(true);
     service.getPackageJson = jasmine.createSpy('manifest').and.resolveTo({ name: 'original' });
     return { service, dispatch };
   }
-  for (const stage of ['dispatch', 'metadata', 'manifest']) it(`settles after ${stage} rejection instead of hanging`, async () => {
+  for (const stage of ['dispatch', 'manifest']) it(`settles after ${stage} rejection instead of hanging`, async () => {
     const { service, dispatch } = fixture();
-    const operation = stage === 'dispatch' ? dispatch : stage === 'metadata' ? service.copyPackageJsonToTemp : service.getPackageJson;
+    const operation = stage === 'dispatch' ? dispatch : service.getPackageJson;
     operation.and.rejectWith(new Error(`${stage} unavailable`));
     expect(await service.save()).toEqual({ success: false, error: `${stage} unavailable`, path: '/original' });
     expect(service.stateSubject.value).toBe('error');
@@ -109,7 +109,7 @@ describe('domain save completion and project ownership', () => {
     for (const reply of [undefined, { success: false, error: 'not committed' }, { success: 'true' }]) {
       dispatch.and.resolveTo(reply); expect((await service.save()).success).toBeFalse();
     }
-    expect(service.copyPackageJsonToTemp).not.toHaveBeenCalled();
+    expect(service.getPackageJson).not.toHaveBeenCalled();
   });
   for (const success of [true, false]) it(`does not publish stale save status after replacement (success=${success})`, async () => {
     const { service, dispatch } = fixture();

@@ -30,7 +30,7 @@ describe('Coder dependency installation and recovery', () => {
     npm = Object.create(NpmService.prototype);
     npm.prjService = project;
     npm.translate = project.translate;
-    project.configService = { isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(true) };
+    project.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(true) };
     npm.configService = { ...project.configService, withProjectNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
     npm.application = {
       updateNotice: jasmine.createSpy('notice'),

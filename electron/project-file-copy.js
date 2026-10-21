@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const SAVE_AS_EXCLUDED_DIRECTORIES = new Set(['.workspace-history', '.temp', '.log', '.build']);
 
 // Only transient artifacts owned by project writers/lifecycle. Do not exclude all .aily, *.tmp,
 // backups, resource files or future sync recovery records.
@@ -13,7 +14,7 @@ function isProjectWriterTransient(relativePath) {
 }
 
 /** Filtered directory copy, not a point-in-time snapshot or a multi-file transaction. */
-function copyProjectDirectory(source, destination) {
+function copyProjectDirectory(source, destination, excludeRuntimeDirectories = true) {
   if (!path.isAbsolute(source) || !path.isAbsolute(destination)) throw new Error('Project copy requires absolute paths.');
   const root = fs.realpathSync(source);
   const target = fs.realpathSync(destination); // Caller must reserve the destination first.
@@ -25,7 +26,13 @@ function copyProjectDirectory(source, destination) {
     || fs.lstatSync(destination).isSymbolicLink()) throw new Error('Project copy requires regular directories.');
   if (fs.readdirSync(target).length) throw new Error('Project copy destination must be empty.');
   fs.cpSync(root, target, { recursive: true, force: false, errorOnExist: true,
-    filter: file => !isProjectWriterTransient(path.relative(root, file)) });
+    filter: file => {
+      const relativePath = path.relative(root, file);
+      const name = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
+      return !isProjectWriterTransient(relativePath)
+        && !(excludeRuntimeDirectories && SAVE_AS_EXCLUDED_DIRECTORIES.has(name)
+          && fs.statSync(file, { throwIfNoEntry: false })?.isDirectory());
+    } });
 }
 
 // Resolve existing ancestors before creating anything, including destinations under a junction.
@@ -62,7 +69,8 @@ function importProjectDirectory(source, destination, unwrapArchive = false) {
   // An existing directory is never deleted or merged, even on random-name collision.
   fs.mkdirSync(parent, { recursive: true });
   fs.mkdirSync(target);
-  copyProjectDirectory(root, target);
+  // Import preserves the source contents; runtime directory exclusions apply only to save-as.
+  copyProjectDirectory(root, target, false);
   // Zip archives may mark project metadata read-only. These are fresh copies
   // that the importer and project-data writer must update; leave the archive
   // source and installed libraries untouched.

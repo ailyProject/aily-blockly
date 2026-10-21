@@ -47,6 +47,19 @@ async function invokeAilyConnector(channel, payload) {
   return envelope.result;
 }
 
+// contextBridge 复制 Error 时会丢弃自定义属性；使用可复制的数据保留错误码。
+async function invokeCloudBuild(payload) {
+  const envelope = await ipcRenderer.invoke('cloud-build', payload);
+  if (!envelope?.ok) {
+    throw {
+      name: 'CloudBuildError',
+      message: envelope?.error?.message || 'Cloud build failed.',
+      code: envelope?.error?.code || 'CLOUD_BUILD_ERROR',
+    };
+  }
+  return envelope.result;
+}
+
 const pathApi = {
   getUserHome: () => require("os").homedir(),
   getAilyChildPath: () => process.env.AILY_CHILD_PATH,
@@ -547,6 +560,25 @@ contextBridge.exposeInMainWorld("electronAPI", {
     update: () => ipcRenderer.invoke("aily-builder-update"),
     waitForReady: () => ipcRenderer.invoke("aily-builder-wait-ready"),
   },
+  // 只暴露云任务操作和进度订阅；签名校验与本地烧录进程保留在主进程内。
+  cloudBuild: {
+    configuration: () => invokeCloudBuild({ action: 'configuration' }),
+    health: () => invokeCloudBuild({ action: 'health' }),
+    boardSupport: options => invokeCloudBuild({ ...options, action: 'boardSupport' }),
+    targets: options => invokeCloudBuild({ action: 'targets', ...options }),
+    run: options => invokeCloudBuild({ ...options, action: options.action || 'compile' }),
+    cancel: options => invokeCloudBuild({ action: 'cancel', ...options }),
+    artifactPath: options => invokeCloudBuild({ action: 'artifactPath', ...options }),
+    reusable: options => invokeCloudBuild({ action: 'reusable', ...options }),
+    invalidate: options => invokeCloudBuild({ action: 'invalidate', ...options }),
+    upload: options => invokeCloudBuild({ action: 'upload', ...options }),
+    cancelUpload: options => invokeCloudBuild({ action: 'cancelUpload', ...options }),
+    onProgress: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('cloud-build-progress', listener);
+      return () => ipcRenderer.removeListener('cloud-build-progress', listener);
+    },
+  },
   connector: {
     status: () => ipcRenderer.invoke("aily-connector-status"),
     checkForUpdate: () => ipcRenderer.invoke("aily-connector-check-update"),
@@ -682,6 +714,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
     copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
     importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
+    convertBlocklyProjectToCoder: (src, entry) => require('./blockly-coder-conversion').convertBlocklyProjectToCoder(src, entry),
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);
@@ -797,6 +830,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 这个计划移除，替换成cmd.run
   npm: {
     run: (data) => ipcRenderer.invoke("npm-run", data),
+  },
+  libraryDependencies: {
+    onChanged: callback => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('library-dependencies:changed', listener);
+      return () => ipcRenderer.removeListener('library-dependencies:changed', listener);
+    },
+    status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath }),
+    mutate: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'mutate', projectPath, request }),
+    patch: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'patch', projectPath, request }),
+    save: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'save', projectPath }),
+    discard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'discard', projectPath, request }),
   },
   // 执行命令行命令
   cmd: {

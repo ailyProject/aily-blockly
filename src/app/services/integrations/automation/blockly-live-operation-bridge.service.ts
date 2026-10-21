@@ -303,6 +303,9 @@ export class BlocklyLiveOperationBridgeService {
         return this.executeAbsCandidateValidation(payload.params || {});
       case 'abs_recovery':
         return { project: this.projectService.currentProjectPath, ...await this.absGenerationTools.execute('abs_recovery', payload.params || {}) };
+      case 'abs_compose':
+      case 'abs_precheck':
+        return this.absGenerationTools.authoring(payload.operation, payload.params || {});
       case 'abs_capabilities':
         return { ok: true, operation: 'abs_capabilities', project: this.projectService.currentProjectPath,
           capabilities: this.absGenerationTools.capabilities(payload.params || {}) };
@@ -376,6 +379,8 @@ export class BlocklyLiveOperationBridgeService {
       'abs_validate',
       'abs_recovery',
       'abs_capabilities',
+      'abs_compose',
+      'abs_precheck',
       'block_metadata_snapshot',
       'library_runtime_sync',
       'blocks_tidy',
@@ -597,6 +602,7 @@ export class BlocklyLiveOperationBridgeService {
     return {
       ok: true,
       operation: 'project_abi_check',
+      unsavedLibraryChanges: await this.projectService.hasUnsavedLibraryChanges(),
       project: this.projectService.currentProjectPath,
       ...snapshot,
     };
@@ -813,6 +819,7 @@ export class BlocklyLiveOperationBridgeService {
       project: this.projectService.currentProjectPath,
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,
+      result: toolResult.metadata?.['buildResult'],
       toolResult,
     };
   }

@@ -238,9 +238,15 @@ export class BuilderService {
     }
   }
 
-  /*
-   * 取消当前编译过程
-   */
+  /** 先保存 Coder 编辑器内容，再让主进程核对云产物是否仍匹配当前完整输入，避免重复编译。 */
+  async canReuseBuildForUpload(projectPath: string, isCancelled: () => boolean = () => false): Promise<boolean> {
+    if (!this.projectService.isCloudBuild() || !this.projectService.isAilyCodeProject(projectPath)) return false;
+    await this.persistActiveCoderProjectBeforeBuild(projectPath);
+    if (isCancelled()) return false;
+    return this.compileService.canReuseCloudBuildForUpload(projectPath, isCancelled);
+  }
+
+  /** 取消当前编译过程。 */
   cancel(projectPath = this.projectService.currentProjectPath) {
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) { this.coderExecution.cancel(projectPath, 'build'); return; }
     this.compileService.cancel();

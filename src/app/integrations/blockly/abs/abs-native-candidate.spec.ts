@@ -261,6 +261,36 @@ describe('independent native candidate Realm', () => {
     await expectAsync(run(request)).toBeRejectedWithError(/extraState/);
   });
 
+  it('roundtrips legacy XML mutation state and rejects invalid or ignored state', async () => {
+    const request = candidate([{ kind: 'script', label: 'legacy-mutator', source: `
+      const oldInit = Blockly.Blocks.native_candidate_test.init;
+      Blockly.Blocks.native_candidate_test.init = function() {
+        oldInit.call(this); this.count = 0;
+        this.domToMutation = xml => { this.count = Number(xml.getAttribute('count')); };
+        this.mutationToDom = () => {
+          const xml = Blockly.utils.xml.createElement('mutation');
+          xml.setAttribute('count', String(this.count)); return xml;
+        };
+      };
+    ` }]);
+    const initial = (await run(request)).state['blocks'].blocks[0].extraState;
+    expect(typeof initial).toBe('string');
+    request.blocks[0].extraState = initial.replace('count="0"', 'count="2"');
+    const result = await run(request);
+    expect(result.state['blocks'].blocks[0].extraState).toBe(request.blocks[0].extraState);
+    expect(result.state['blocks'].blocks[0].fields.TEXT).toBe('edited');
+    request.blocks[0].extraState = { count: 2 };
+    await expectAsync(run(request)).toBeRejectedWithError(/XML/);
+    request.blocks[0].extraState = '<mutation';
+    await expectAsync(run(request)).toBeRejected();
+    request.blocks[0].extraState = initial.replace('count="0"', 'count="2"');
+    request.steps.push({ kind: 'script', label: 'ignored-legacy-state', source: `
+      const currentInit = Blockly.Blocks.native_candidate_test.init;
+      Blockly.Blocks.native_candidate_test.init = function() { currentInit.call(this); this.domToMutation = () => {}; };
+    ` });
+    await expectAsync(run(request)).toBeRejectedWithError(/requested extraState/);
+  });
+
   it('rejects serializer callbacks changing requested state after initial field checks', async () => {
     const request = candidate([{ kind: 'script', label: 'serializer-effect', source: `
       const oldInit = Blockly.Blocks.native_candidate_test.init;

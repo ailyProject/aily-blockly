@@ -3,6 +3,12 @@
 ## 软件框架
 软件主体使用electron开发，渲染端使用angular开发  
 
+## 开发文档协作
+
+需求、架构、实现说明和接口协议维护在 [aily-blockly-docs](https://github.com/ailyProject/aily-blockly-docs)。开始修改功能前，从该仓库的 `docs/目录.md` 查找对应说明并核对当前源码；修改软件行为时，在同一任务中同步相关文档，两个仓库分别提交并记录关联源码 commit。
+
+文档仓库可按需单独克隆，普通运行和构建无需它。克隆、更新、检索及提交方式见 [文档仓库管理与使用](DOCUMENTATION.md)，不要在主软件中恢复原 `docs/`、`contracts/` 或 `.draft/` 目录。
+
 ## 开发&&打包  
 
 **依赖安装**
@@ -14,8 +20,8 @@ cd electron
 npm i
 ```  
 
-Blockly 核心从 npm 安装：[aily-project-blockly@1.0.3](https://www.npmjs.com/package/aily-project-blockly)，
-上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.3` 别名，
+Blockly 核心从 npm 安装：[aily-project-blockly@1.0.5](https://www.npmjs.com/package/aily-project-blockly)，
+上游基线和运行时版本为 13.3.0。宿主使用 `blockly: npm:aily-project-blockly@1.0.5` 别名，
 现有 `blockly` 导入保持不变；npm/pnpm override 让插件共用同一核心。
 本地 tarball、补丁快照和源码同步入口已移除，无需邻接核心源码仓库。
 复现锁定依赖可在宿主根目录执行 `npm ci` 或 `pnpm install --frozen-lockfile`。
@@ -60,8 +66,8 @@ npm run build
 该部分是安装/卸载程序的脚本。
 在安装应用时，安装程序会将`child\node-v22.19.0-win-x64.7z`解压到`child\node`。  
 
-### /src/app/blockly/plugins
+### /src/app/editors/blockly-editor/components/blockly/plugins
 blockly相关插件
 
-### /src/app/blockly/custom-field
+### /src/app/editors/blockly-editor/components/blockly/custom-field
 自定义的特殊block

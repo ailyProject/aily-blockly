@@ -9,7 +9,7 @@ describe('CodeSuggestionHostBridgeService', () => {
   let posted: Array<Record<string, unknown>>;
   let target: Window;
   let fetchSpy: jasmine.Spy;
-  let auth: { isSessionInvalidating: boolean; getToken2: jasmine.Spy; refreshAuthToken: jasmine.Spy; userInfo$: BehaviorSubject<{ id: string } | null> };
+  let auth: { isSessionInvalidating: boolean; readonly isLoggedIn: boolean; isLoggedIn$: BehaviorSubject<boolean>; getToken2: jasmine.Spy; refreshAuthToken: jasmine.Spy; userInfo$: BehaviorSubject<{ id: string } | null> };
   const id = '11111111-1111-4111-8111-111111111111';
   function request(): SuggestionRequest {
     return { protocolVersion: 2, requestId: id, opportunityId: id, workspaceSessionId: 'workspace-test',
@@ -38,7 +38,7 @@ describe('CodeSuggestionHostBridgeService', () => {
   }
   beforeEach(() => {
     posted = []; target = { postMessage: (message: Record<string, unknown>) => posted.push(message) } as unknown as Window;
-    auth = { isSessionInvalidating: false, getToken2: jasmine.createSpy().and.resolveTo('host-only-token'), refreshAuthToken: jasmine.createSpy().and.resolveTo(true), userInfo$: new BehaviorSubject<{ id: string } | null>({ id: 'user-1' }) };
+    auth = { isSessionInvalidating: false, get isLoggedIn() { return this.isLoggedIn$.value; }, isLoggedIn$: new BehaviorSubject(true), getToken2: jasmine.createSpy().and.resolveTo('host-only-token'), refreshAuthToken: jasmine.createSpy().and.resolveTo(true), userInfo$: new BehaviorSubject<{ id: string } | null>({ id: 'user-1' }) };
     service = new CodeSuggestionHostBridgeService(auth as unknown as AuthService); service.registerFrame(target); fetchSpy = spyOn(globalThis, 'fetch');
   });
   afterEach(() => service.dispose());
@@ -60,9 +60,10 @@ describe('CodeSuggestionHostBridgeService', () => {
   it('cancels old-account output and notifies the child on sign-out', async () => {
     let resolve!: (response: Response) => void;
     fetchSpy.and.returnValue(new Promise<Response>(done => { resolve = done; })); dispatch();
-    await new Promise(done => setTimeout(done, 0)); auth.userInfo$.next(null); resolve(response());
+    await new Promise(done => setTimeout(done, 0)); auth.isLoggedIn$.next(false); auth.userInfo$.next(null); resolve(response());
     await new Promise(done => setTimeout(done, 10));
-    expect(posted.some(item => item['type'] === 'session-changed')).toBeTrue();
+    expect(posted.some(item => item['type'] === 'session-state' && item['authenticated'] === false)).toBeTrue();
+    expect(posted.some(item => item['type'] === 'session-changed' && item['authenticated'] === false)).toBeTrue();
     expect(posted.some(item => item['type'] === 'result')).toBeFalse();
   });
   it('forwards only the v4 request and host-owned auth, validating UTF-8 SSE', async () => {

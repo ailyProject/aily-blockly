@@ -20,6 +20,7 @@ import {
   type SubappInstallProgress,
   SubappManagerService,
   ChildAppHostRegistryService,
+  resolveChildCloseDecision,
   type ChildAppLifecycleOptions,
   type ChildAppWindowPlacement,
   RequiredSubappService,
@@ -35,7 +36,7 @@ import {
   ToolI18nService,
 } from '@core/preferences/public-api';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
-import { ElectronService, LogService } from '@core/platform/public-api';
+import { ElectronService, LogService, PlatformService } from '@core/platform/public-api';
 import { MainUiAutomationService, AiOperationRegistryService } from '@integration/automation/public-api';
 import { NoticeService, UiService } from '@core/app-shell/public-api';
 import { ProjectService, type CoderWorkspaceContext } from '@domain/project/public-api';
@@ -49,6 +50,7 @@ import {
 
 type HostStatus = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
+
 type ChildLifecycleReason = 'close' | 'restart' | 'update';
 
 interface HostProjectContext {
@@ -122,6 +124,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   subappUpdateProgress = 0;
   subappRestartInProgress = false;
   uiHealthFailed = false;
+  readonly standaloneWinBtns: string[];
 
   private config: ChildToolConfig | null = null;
   private initialized = false;
@@ -201,7 +204,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private subappActivityService: SubappActivityService,
     private requiredSubapps: RequiredSubappService,
     private aiOperationRegistry: AiOperationRegistryService,
+    platformService: PlatformService,
   ) {
+    this.standaloneWinBtns = platformService.isWindows()
+      ? ['go-main', 'minimize', 'maximize', 'close']
+      : ['go-main'];
     this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
     this.projectPathSubscription = combineLatest([
@@ -451,6 +458,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   async close(): Promise<Record<string, unknown>> {
     if (this.closing) return { ok: false, message: '子应用正在关闭' };
     this.closing = true;
+
+    if (this.resolvedToolId === 'ffs-manager-child' && !this.isStandalone) {
+      this.uiService.openToolEmbedded(this.resolvedToolId);
+    }
 
     const canClose = await this.notifyChildBeforeClose('close');
     if (!canClose) {
@@ -1598,12 +1609,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       const result = await this.withTimeout(
         Promise.resolve(beforeClose({
           reason,
+          waitForDecision: true,
           toolId: this.resolvedToolId,
           context: this.createHostContext()
         })),
         reason === 'restart' || reason === 'update' ? 10_000 : 1500
       );
-      const canClose = result !== false && result?.canClose !== false;
+      const canClose = await resolveChildCloseDecision(this.remoteApi, result);
 
       if (!canClose) {
         const message = this.stringifyHostMessageValue(result?.message || result?.reason)
@@ -1634,7 +1646,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         'beforeClose failed',
         `reason=${reason}${errorCode ? ` code=${errorCode}` : ''} error=${errorMessage}`
       );
-      return !strict;
+      // A lost partition UI handshake must never silently discard its draft.
+      return !strict && this.resolvedToolId !== 'ffs-manager-child';
     }
   }
 

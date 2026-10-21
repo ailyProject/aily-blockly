@@ -141,7 +141,7 @@ async function preprocessProject(config, workspace) {
     const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
     const testContextInputs = targetCompileContext.captureInputs([
         projectPackageJsonPath, boardJsonPath, boardPackageJsonPath,
-    ]);
+    ], { projectManifest: projectPackageJsonPath });
     const boardDependencies = boardPackageJson.boardDependencies || {};
 
     // 缓存文件路径
@@ -325,6 +325,7 @@ async function preprocessProject(config, workspace) {
                     currentProjectPath,
                     sketchPath,
                     customPartitionFilePath,
+                    boardModulePath,
                     compileSourcePath,
                     isAilyCode
                 });
@@ -462,6 +463,7 @@ function copyCustomPartitionFile({
     currentProjectPath,
     sketchPath,
     customPartitionFilePath,
+    boardModulePath,
     compileSourcePath,
     isAilyCode
 }) {
@@ -472,7 +474,10 @@ function copyCustomPartitionFile({
     const candidates = [
         { filePath: sourcePartitionFile, kind: 'source' },
         { filePath: legacyPartitionFile, kind: 'legacy' },
-        { filePath: customPartitionFilePath, kind: 'configured' }
+        { filePath: customPartitionFilePath, kind: 'configured' },
+        // A board may ship its required custom layout (for example AI-VOX).
+        // Use only the selected board's default, after every project-owned input.
+        { filePath: boardModulePath && path.join(boardModulePath, 'partitions.csv'), kind: 'board' }
     ].filter(candidate => candidate.filePath && fs.existsSync(candidate.filePath));
 
     const selected = candidates[0];
@@ -993,6 +998,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    copyCustomPartitionFile,
     collectComponentLibraries,
     collectDependencyLibraryPackages,
     collectWorkspaceLibraries,

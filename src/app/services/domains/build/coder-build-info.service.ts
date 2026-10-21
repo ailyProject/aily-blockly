@@ -78,9 +78,15 @@ export class CoderBuildInfoService {
         // preprocess materializes these fallback inputs beside the entry.
         // Hash them at that destination so the first build keeps the same hash.
         const legacyPartitionPath = this.electronService.pathJoin(projectPath, 'partitions.csv');
-        const partition = window['fs'].existsSync(legacyPartitionPath)
+        let partition = window['fs'].existsSync(legacyPartitionPath)
           ? window['fs'].readFileAsBase64(legacyPartitionPath)
           : files.find(([path]) => path === 'src/partitions.csv')?.[1];
+        if (partition === undefined) {
+          const board = Object.keys({ ...manifest.dependencies, ...manifest.boardDependencies })
+            .find(name => /^@aily-project(?:-coder)?\/(?:board-|coder-)/.test(name));
+          const boardPartition = board && this.electronService.pathJoin(projectPath, 'node_modules', board, 'partitions.csv');
+          if (boardPartition && window['fs'].existsSync(boardPartition)) partition = window['fs'].readFileAsBase64(boardPartition);
+        }
         if (partition !== undefined) files.push([partitionPath, partition]);
       }
     }

@@ -232,3 +232,56 @@ describe('BlocklyToolboxPaneComponent library publishing', () => {
     }
   });
 });
+
+describe('toolbox library removal persistence', () => {
+  const item = { libraryName: '@aily-project/lib-test', libraryPath: '/project/node_modules/@aily-project/lib-test', name: 'Test' };
+  function fixture() {
+    const component: any = Object.create(BlocklyToolboxPaneComponent.prototype);
+    component.removingLibraryNames = new Set();
+    component.blocklyService = { isLibraryUsedByCurrentProject: () => false };
+    component.projectService = {
+      currentProjectPath: '/project',
+      changeLibraries: jasmine.createSpy('changeLibraries').and.resolveTo(),
+      rebuildBlocklyRuntimeAfterLibraryChange: jasmine.createSpy('rebuild').and.resolveTo(),
+    };
+    component.workflowService = { startInstall: () => true, finishInstall: jasmine.createSpy('finish') };
+    component.message = { loading: () => {}, warning: jasmine.createSpy('warning'), success: jasmine.createSpy('success'), error: jasmine.createSpy('error') };
+    component.translate = { instant: (key: string) => key };
+    component.cdr = { markForCheck: () => {} };
+    return component;
+  }
+
+  it('uses the unsaved dependency session and waits for the runtime before reporting success', async () => {
+    const component = fixture();
+    let finish!: () => void;
+    component.projectService.rebuildBlocklyRuntimeAfterLibraryChange.and.returnValue(new Promise<void>(resolve => finish = resolve));
+    const pending = component.removeLibrary(item);
+    await Promise.resolve();
+    expect(component.projectService.changeLibraries).toHaveBeenCalledOnceWith('remove', [item.libraryName]);
+    expect(component.workflowService.finishInstall).not.toHaveBeenCalled();
+    finish(); await pending;
+    expect(component.workflowService.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(component.removingLibraryNames.size).toBe(0);
+  });
+
+  it('reports a failed removal and permits retry without rebuilding', async () => {
+    const component = fixture();
+    component.projectService.changeLibraries.and.rejectWith(new Error('remove failed'));
+    await component.removeLibrary(item);
+    expect(component.projectService.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+    expect(component.workflowService.finishInstall).toHaveBeenCalledOnceWith(false, 'remove failed');
+    expect(component.message.success).not.toHaveBeenCalled();
+    expect(component.removingLibraryNames.size).toBe(0);
+  });
+
+  it('does not rebuild a replacement project or remove a used library', async () => {
+    const component = fixture();
+    component.blocklyService.isLibraryUsedByCurrentProject = () => true;
+    await component.removeLibrary(item);
+    expect(component.projectService.changeLibraries).not.toHaveBeenCalled();
+    component.blocklyService.isLibraryUsedByCurrentProject = () => false;
+    component.projectService.changeLibraries.and.callFake(async () => { component.projectService.currentProjectPath = '/other'; });
+    await component.removeLibrary(item);
+    expect(component.projectService.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+  });
+});

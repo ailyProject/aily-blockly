@@ -290,6 +290,13 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     return app.extension === true && app.id === AILY_CODER_EDITOR_SUBAPP_ID;
   }
 
+  isSubappUninstallBlocked(app: AppItem): boolean {
+    return (app.id === AILY_CODER_EDITOR_SUBAPP_ID
+      || app.subapp?.catalogId === AILY_CODER_EDITOR_SUBAPP_ID)
+      && this.configService.isCoderProduct()
+      && !!this.projectService.currentProjectPath;
+  }
+
   requiresClientRestart(app: AppItem): boolean {
     return app.extension === true && !this.isCoderEditorExtension(app);
   }
@@ -352,6 +359,10 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   uninstallSubapp(app: AppItem): void {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId || this.pendingCatalogId) return;
+    if (this.isSubappUninstallBlocked(app)) {
+      this.clearUninstallConfirmation();
+      return;
+    }
     if (this.confirmUninstallCatalogId !== catalogId) {
       this.clearUninstallConfirmation();
       this.confirmUninstallCatalogId = catalogId;
@@ -480,6 +491,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
   private async runSubappAction(action: 'install' | 'uninstall', app: AppItem): Promise<void> {
     const subapp = app.subapp;
     if (!subapp || this.pendingCatalogId) return;
+    if (action === 'uninstall' && this.isSubappUninstallBlocked(app)) return;
     this.pendingCatalogId = subapp.catalogId;
     this.pendingProgress = 1;
     this.cdr.markForCheck();
@@ -713,6 +725,12 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     const catalogId = app.subapp?.catalogId;
     if (!catalogId) return;
 
+    const assertCanUninstall = () => {
+      if (action === 'uninstall' && this.isSubappUninstallBlocked(app)) {
+        throw new Error(this.translate.instant('APP_STORE.CODER_EDITOR_UNINSTALL_BLOCKED'));
+      }
+    };
+    assertCanUninstall();
     try {
       await this.subappManager[action](catalogId, { forceClose: options.forceClose === true });
     } catch (error) {
@@ -725,6 +743,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         (cancelled as Error & { code?: string }).code = 'EBUSY_CANCELLED';
         throw cancelled;
       }
+      assertCanUninstall();
       if (action === 'update' || action === 'installUpdate') {
         if (!app.extension) {
           this.uiService.openTool(app.id);

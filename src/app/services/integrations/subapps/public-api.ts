@@ -15,3 +15,4 @@ export * from './subapp-activity.service';
 export * from './subapp-agent-bridge.service';
 export * from './subapp-manager.service';
 export * from './subapp-resource-lifecycle.service';
+export { resolveChildCloseDecision } from './child-close-decision';

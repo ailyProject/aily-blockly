@@ -144,9 +144,24 @@ export function registerAilyChatHostAuthRuntimeBridge(
   };
 
   const cleanup = ipcRenderer.on(AILY_HOST_AUTH_REQUEST_CHANNEL, listener);
-  return typeof cleanup === 'function'
-    ? cleanup as () => void
-    : () => ipcRenderer.removeListener?.(AILY_HOST_AUTH_REQUEST_CHANNEL, listener);
+  // 云编译与子应用共用主窗口的凭据读取和刷新，不另存一份登录状态。
+  const cloudListener = (_event: unknown, payload: unknown): void => {
+    const request = asRecord(payload);
+    if (typeof request?.['requestId'] !== 'string') return;
+    const reply = (result: AilyHostAuthRuntimeResult) => ipcRenderer.send?.('cloud-build-auth-query:response', {
+      requestId: request['requestId'], rendererGeneration: request['rendererGeneration'], result,
+    });
+    void handleRequest(request as AilyHostAuthRuntimeRequest)
+      .then(reply)
+      .catch(() => reply(failure(authService, 'HOST_AUTH_FAILED', 'The host authentication operation failed')));
+  };
+  const cloudCleanup = ipcRenderer.on('cloud-build-auth-query', cloudListener);
+  return () => {
+    if (typeof cleanup === 'function') cleanup();
+    else ipcRenderer.removeListener?.(AILY_HOST_AUTH_REQUEST_CHANNEL, listener);
+    if (typeof cloudCleanup === 'function') cloudCleanup();
+    else ipcRenderer.removeListener?.('cloud-build-auth-query', cloudListener);
+  };
 }
 
 function failure(

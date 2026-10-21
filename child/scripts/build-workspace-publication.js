@@ -118,19 +118,7 @@ function patchBuildMetadata(projectPath, patch) {
         Object.assign(manifest, patch);
         const content = JSON.stringify(manifest, null, 2);
         if (Buffer.byteLength(content) > 2 * 1024 * 1024) fail('Project manifest exceeds 2 MiB.');
-        // Blockly retains a package mirror used by its existing save/open flow.
-        // Patch only metadata there too; never overwrite its dependency edits.
-        let mirror;
-        if (manifest.type !== 'coder') {
-            const previous = read(root, '.temp/package.json', 2 * 1024 * 1024);
-            const value = previous === null ? manifest : JSON.parse(previous);
-            if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Invalid package mirror.');
-            mirror = JSON.stringify({ ...value, ...patch }, null, 2);
-            if (Buffer.byteLength(mirror) > 2 * 1024 * 1024) fail('Package mirror exceeds 2 MiB.');
-            if (mirror === previous) mirror = undefined;
-        }
         if (content !== original) replace(root, 'package.json', content, assertOwned);
-        if (mirror !== undefined) replace(root, '.temp/package.json', mirror, assertOwned);
         return manifest;
     });
 }

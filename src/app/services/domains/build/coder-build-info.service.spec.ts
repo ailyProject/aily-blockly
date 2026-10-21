@@ -57,7 +57,7 @@ describe('Coder build metadata', () => {
         return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       },
     };
-    project = { currentProjectPath: root, isAilyCodeProject: () => true, copyPackageJsonToTemp: async () => true,
+    project = { currentProjectPath: root, isAilyCodeProject: () => true,
       getProjectDependencyBlockMessage: () => undefined };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
@@ -132,11 +132,24 @@ describe('Coder build metadata', () => {
     expect(await metadata.updateCodeHash(root)).not.toBe(hash);
   });
 
+  it('hashes the selected board custom partition fallback and preserves project overrides', async () => {
+    writeManifest({ ...readManifest(), projectConfig: { PartitionScheme: 'custom' } });
+    const boardCsv = `${root}/node_modules/@aily-project/board-test/partitions.csv`;
+    files.set(boardCsv, 'board partitions');
+    const before = await metadata.updateCodeHash(root);
+    files.set(`${root}/sketch/src/partitions.csv`, 'board partitions');
+    expect(await metadata.updateCodeHash(root)).toBe(before);
+    files.set(boardCsv, 'new board default');
+    expect(await metadata.updateCodeHash(root)).toBe(before);
+    files.set(`${root}/sketch/src/partitions.csv`, 'user partitions');
+    expect(await metadata.updateCodeHash(root)).not.toBe(before);
+  });
+
   function createCompiler(command: (call: number, service: CompileService) => number) {
     const service = new CompileService(
       project, {} as any, { createDirectory: async () => {} } as any, electron,
       { startBuild: () => true, finishBuild: () => {}, updateNotice: () => {} } as any,
-      { za7: '/7z' } as any, { data: {}, isCoderProduct: () => true } as any,
+      { za7: '/7z' } as any, { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } as any,
       { warning: () => {}, error: () => {} } as any,
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,
@@ -199,6 +212,18 @@ describe('Coder build metadata', () => {
     expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
   });
 
+  it('preserves compiler diagnostics when a cloud-style error reaches the shared failure handler', async () => {
+    const detail = "src/main.cpp:4:3: error: 'missing_symbol' was not declared in this scope\n  4 | missing_symbol();";
+    const service = createCompiler(() => {
+      throw Object.assign(new Error('Compiler exited with code 1'), { fullStdErr: detail });
+    });
+    const result = await service.runCompileFromDisk({ projectPath: root });
+    expect(result.success).toBeFalse();
+    expect(result.result.fullStdErr).toBe(detail);
+    expect(result.result.text).toBe('Compiler exited with code 1');
+    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail);
+  });
+
   it('records successful compilation against the captured project even after a project switch', async () => {
     const service = createCompiler(() => {
       project.currentProjectPath = '/projects/other';
@@ -244,10 +269,12 @@ describe('Coder build metadata', () => {
   it('records preprocess-only completion as successful and releases the build lock once', async () => {
     const service = createCompiler(() => 0);
     const finish = spyOn((service as any).application, 'finishBuild');
+    const notice = spyOn((service as any).application, 'updateNotice');
 
     expect((await service.runCompileFromDisk({ preprocessOnly: true })).success).toBeTrue();
     expect(readManifest().buildInfo.lastBuildStatus).toBe('success');
     expect(finish).toHaveBeenCalledOnceWith(true, undefined);
+    expect(notice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ state: 'done', progress: 100, setTimeout: 3000 }));
   });
 
   it('holds the build lock until build metadata has been persisted', async () => {

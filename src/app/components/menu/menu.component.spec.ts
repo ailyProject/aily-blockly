@@ -49,6 +49,52 @@ describe('MenuComponent submenu switching', () => {
     return fixture.nativeElement.querySelector('.submenu-box');
   }
 
+  it('dismisses when focus moves into an external iframe without consuming the editor click', fakeAsync(() => {
+    tick();
+    const closed = jasmine.createSpy('closed');
+    menu.closeEvent.subscribe(closed);
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const active = spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.body);
+    try {
+      const blur = new Event('blur', {cancelable: true});
+      window.dispatchEvent(blur);
+      expect(closed).not.toHaveBeenCalled();
+      // Chromium updates activeElement after dispatching window.blur.
+      active.and.returnValue(frame);
+      tick();
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(blur.defaultPrevented).toBeFalse();
+    } finally { frame.remove(); }
+  }));
+
+  it('keeps the menu open for ordinary window blur or focus inside its own content', fakeAsync(() => {
+    tick();
+    const closed = jasmine.createSpy('closed');
+    menu.closeEvent.subscribe(closed);
+    const active = spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.body);
+    window.dispatchEvent(new Event('blur')); tick();
+    expect(closed).not.toHaveBeenCalled();
+    const frame = document.createElement('iframe');
+    menu.menuBox.nativeElement.append(frame);
+    active.and.returnValue(frame);
+    window.dispatchEvent(new Event('blur')); tick();
+    expect(closed).not.toHaveBeenCalled();
+    frame.remove();
+  }));
+
+  it('removes iframe dismissal listeners and pending work when destroyed', fakeAsync(() => {
+    tick();
+    const closed = jasmine.createSpy('closed');
+    menu.closeEvent.subscribe(closed);
+    spyOnProperty(document, 'activeElement', 'get').and.returnValue(document.createElement('iframe'));
+    window.dispatchEvent(new Event('blur'));
+    fixture.destroy();
+    tick();
+    window.dispatchEvent(new Event('blur')); tick();
+    expect(closed).not.toHaveBeenCalled();
+  }));
+
   for (const mainMenu of [true, false]) {
     it(`keeps long ${mainMenu ? 'host' : 'shared'} submenus inside the viewport and the last option clickable`, fakeAsync(() => {
       tick();

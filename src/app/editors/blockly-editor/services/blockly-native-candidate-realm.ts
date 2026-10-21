@@ -10,6 +10,7 @@ import { NativeCandidateModels } from './blockly-native-models';
 import { nativeCandidateValues } from './blockly-native-values';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-declarations';
 import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
@@ -17,6 +18,7 @@ import { createNativeCandidateGraphics } from './blockly-native-graphics';
 import type { NativeCandidateProgress } from './blockly-native-progress';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
 import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { registerCustomFunctionContract, captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import { decodeNativeCandidateRequest, encodeNativeCandidateResult, type NativeCandidateWireRequest } from './blockly-native-transfer';
 
@@ -132,6 +134,8 @@ export function installNativeCandidateRealm(): void {
           if (mode === 'arduino') {
             adaptBundledArduinoProcedureCalls(generator);
             adaptArduinoTextLiterals(generator);
+            adaptXiaozhiParameterDeclarations(generator, realm);
+            await registerCustomFunctionContract(step.source, realm, native.Blocks, workspace, () => !!workspace);
           }
         } else if (step.kind === 'definitions') {
           for (const definition of step.definitions) registerProjectDataBlockDefinition(definition, step.libraryName);
@@ -183,6 +187,7 @@ export function installNativeCandidateRealm(): void {
           ? { generator, requestId: request.modelRequestId, retainedCalls: request.retainedModelCalls, retainedIds: request.retainedModelIds } : undefined), uiTasks) : undefined;
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
+        captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);
         progress('views');
         execution.initializeViews();
         progress('ui');

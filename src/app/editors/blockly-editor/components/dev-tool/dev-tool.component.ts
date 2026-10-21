@@ -268,9 +268,14 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.isReloading = true;
     try {
+      const isCoder = this.projectService.getProjectMode(projectPath) === 'coder';
+      // A failed/partially disposed Blockly runtime cannot produce an
+      // authoritative save. Retry the disk load instead of trapping reload
+      // behind save()'s project-not-ready guard.
+      const retryFailedLoad = !isCoder && !!this.projectService.getBlocklyProjectLoadStatus(projectPath).error;
       // Coder's projectOpen(reload) saves every open editor through its own
       // lifecycle bridge before replacing the iframe.
-      if (this.autoSave && this.projectService.getProjectMode(projectPath) !== 'coder') {
+      if (this.autoSave && !isCoder && !retryFailedLoad) {
         const result = await this.projectService.save(projectPath);
         if (!result.success) {
           this.messageService.error('Save project failed: ' + (result.error || 'unknown error'));
@@ -278,7 +283,9 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       }
 
-      await this.projectService.projectOpen(projectPath, { reason: 'reload' });
+      await this.projectService.projectOpen(projectPath, {
+        reason: 'reload', ...(this.autoSave && !retryFailedLoad ? {} : { saveBeforeReload: false }),
+      });
       this.loadBoardInfo();
     } catch (error) {
       console.error('Reload project failed:', error);

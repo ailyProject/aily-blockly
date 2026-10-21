@@ -169,7 +169,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           // An old normalization/publication may finish after navigation. It must
           // neither load into nor tear down the new project's workspace/Realm.
           if (!isCurrent() || (dataSession !== null && this.projectService.currentProjectPath !== requestedProjectPath)) return;
-          if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
+          const cancellation = error as { code?: string; reason?: string };
+          if (cancellation?.code === 'PROJECT_DEPENDENCY_CANCELLED'
+            && cancellation.reason !== 'compile-settings-changed') return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
           if (error instanceof ProjectToolboxOnlyLoadError || this.toolboxReadyProjectPath === requestedProjectPath) {
@@ -265,6 +267,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   async loadProject(projectPath, assertCurrent: () => void = () => {}) {
+    // Ctrl/Cmd+R enters this route directly, before AppComponent's async init
+    // completes. Capture dependency settings only after the shared local config
+    // is loaded; warm project opens reuse the same resolved promise.
+    await this.configService.init();
+    assertCurrent();
     const session = this.projectService.getProjectDependencySession(projectPath);
     const assertSession = () => {
       assertCurrent();
@@ -281,8 +288,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     assertCurrent();
     this.stopPackageJsonDependencyWatch();
     this.clearProjectLoadedCodeRefreshTimer();
-    // 处理 temp 下的 package.json：有则覆盖主项目，无则从主项目复制到 temp
-    await this.projectService.syncPackageJsonWithTemp(projectPath);
+    // 打开时按已保存的根清单恢复未保存的库安装状态。
+    await this.projectService.discardLibraryChanges(projectPath);
     assertCurrent();
     // 加载项目package.json
     let packageJson = JSON.parse(
@@ -424,17 +431,19 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       projectService: this.projectService,
     });
 
-    for (let index = 0; index < libraryModuleList.length; index++) {
-      const libPackageName = libraryModuleList[index];
-      this.uiService.updateFooterState({
-        state: 'doing',
-        text: this.translate.instant('BLOCKLY_EDITOR.LOADING_LIB', {
-          name: libPackageName,
-        }),
-      });
-      await this.blocklyService.loadLibrary(libPackageName, projectPath);
-      assertCurrent();
-    }
+    await this.blocklyService.withToolboxRefreshBatch(async () => {
+      for (let index = 0; index < libraryModuleList.length; index++) {
+        const libPackageName = libraryModuleList[index];
+        this.uiService.updateFooterState({
+          state: 'doing',
+          text: this.translate.instant('BLOCKLY_EDITOR.LOADING_LIB', {
+            name: libPackageName,
+          }),
+        });
+        await this.blocklyService.loadLibrary(libPackageName, projectPath);
+        assertCurrent();
+      }
+    });
     this.toolboxReadyProjectPath = projectPath;
     // 5. 加载project.abi数据
     this.uiService.updateFooterState({
@@ -473,7 +482,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
     const loadLease = this.blocklyService.acquireWorkspaceEditLease();
     try {
-      this.blocklyService.loadProjectDocument(projectDocument, false, loadLease);
+      await this.ngZone.runOutsideAngular(() =>
+        this.blocklyService.loadProjectDocumentForOpen(projectDocument, loadLease, assertCurrent));
       // Comments settle after rendering. Keep queued pointer/keyboard input out
       // of this frame gap: a drag can detach a child before /roots admission.
       await this.waitForNextFrame(session.signal);
@@ -529,6 +539,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     try {
       await this.npmService.installBoardDeps(session);
     } catch (error) {
+      // 项目和生成器已经就绪。登录或切换编译设置仅使旧依赖任务失效，
+      // 不能把已打开的项目改成加载失败；下次编译会按新会话重新准备依赖。
+      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
       assertCurrent();
       console.error('install board dependencies error', error);
     }
@@ -908,7 +921,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         return;
       }
 
-      nextPackageJson = JSON.parse(nextContent);
+      nextPackageJson = await this.projectService.getPackageJson(projectPath);
       this.watchedPackageJsonSignature = nextContent;
     } catch (error) {
       console.warn('[PackageJsonWatch] package.json read failed:', error);
@@ -1165,7 +1178,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this.stopPackageJsonDependencyWatch();
     try {
-      this.copyProjectPackageJsonToTemp(projectPath);
       const reopened = await this.projectService.projectOpen(projectPath, { reason: 'reload' });
       if (!reopened) {
         throw new Error('Project reload was not started');
@@ -1180,7 +1192,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** 在新开发板包就绪后，移除旧开发板、同步 temp/package.json，并重新打开项目。 */
+  /** 在新开发板包就绪后，移除旧开发板并重新打开项目。 */
   private async reloadProjectAfterBoardDependencyChange(projectPath: string): Promise<void> {
     const pending = this.pendingBoardDependencyReload;
     if (!pending || pending.projectPath !== projectPath || this.boardDependencyReloadInProgress) {
@@ -1215,7 +1227,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
         await this.cmdService.runAsyncChecked(`npm uninstall ${previousBoardNames.join(' ')}`, projectPath);
       }
 
-      this.copyProjectPackageJsonToTemp(projectPath);
       this.message.success(`开发板已切换为 ${addedBoardNames.join(', ')}，正在重新加载项目`, { nzDuration: 3000 });
       await this.projectService.reloadAfterBoardSwitch(projectPath);
       this.projectService.boardChangeSubject.next();
@@ -1226,27 +1237,6 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       console.error('[PackageJsonWatch] reload after board dependency change failed:', error);
       this.message.error(`切换开发板后重新加载项目失败: ${(error as Error)?.message || String(error)}`);
       this.startPackageJsonDependencyWatch(projectPath);
-    }
-  }
-
-  /** 将主项目 package.json 同步到 .temp，避免重载时被旧 temp 配置覆盖。 */
-  private copyProjectPackageJsonToTemp(projectPath: string): void {
-    const mainPackagePath = this.electronService.pathJoin(projectPath, 'package.json');
-    const tempDir = this.electronService.pathJoin(projectPath, '.temp');
-    const tempPackagePath = this.electronService.pathJoin(tempDir, 'package.json');
-
-    if (!this.electronService.exists(mainPackagePath)) {
-      return;
-    }
-
-    try {
-      if (!this.electronService.exists(tempDir)) {
-        window['fs'].mkdirSync(tempDir, { recursive: true });
-      }
-      const mainContent = this.electronService.readFile(mainPackagePath);
-      window['fs'].writeFileSync(tempPackagePath, mainContent);
-    } catch (error) {
-      console.warn('[PackageJsonWatch] failed to sync package.json to temp:', error);
     }
   }
 

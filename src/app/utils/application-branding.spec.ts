@@ -1,3 +1,4 @@
+import { EMPTY } from 'rxjs';
 import { HeaderComponent } from '../main-window/components/header/header.component';
 import { GuideComponent } from '../pages/guide/guide.component';
 import { ConfigService } from '@core/preferences/public-api';
@@ -5,7 +6,7 @@ import { AppStoreComponent } from '../tools/app-store/app-store.component';
 import { SettingsComponent } from '../windows/settings/settings.component';
 
 function createConfig(product: 'blockly' | 'coder'): ConfigService {
-  const config = new ConfigService({} as any, {} as any);
+  const config = new ConfigService({} as any, {} as any, { isLoggedIn$: EMPTY, authSnapshot$: EMPTY, canUseCloudCompilation: false } as any);
   (config as any).runtimeBuildProduct = product;
   config.data = { coder: { enabled: true }, developmentModePreference: 'blockly' };
   return config;

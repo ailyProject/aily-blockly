@@ -3,6 +3,7 @@ import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { absProgramWorkspace } from '../../../integrations/blockly/abs/abs-program-state';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 /** Candidate-local, virtual one-shot tasks. No event loop, waiting or arbitrary
  * async completion. Tasks are admitted by their observed semantic effects,
@@ -96,6 +97,7 @@ function semanticDifferencePath(before: string, after: string): string {
 /** Exclude display labels/tooltips, but include empty sockets, option keys,
  * checks, and all serializers. Empty inputs are not necessarily present in ABI. */
 export function nativeUiSemanticSnapshot(native: typeof Blockly, workspace: Blockly.Workspace): string {
+  captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace);
   return absJson({ state: absProgramWorkspace(native.serialization.workspaces.save(workspace)),
     shapes: workspace.getAllBlocks(false).map(block => ({ id: block.id,
       connections: [block.outputConnection, block.previousConnection, block.nextConnection].map(value => value && [value.type, value.getCheck()]),

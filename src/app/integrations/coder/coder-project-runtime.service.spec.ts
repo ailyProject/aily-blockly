@@ -51,6 +51,7 @@ describe('Coder concurrent process integration', () => {
       coderProjects: [{ path: '/a' }, { path: '/b' }],
       coderOperationsSubject: new BehaviorSubject(new Map()),
       getProjectMode: () => 'coder',
+      isProjectTransitionInProgress: jasmine.createSpy('transition').and.returnValue(false),
       getProjectDependencyBlockMessage: jasmine.createSpy('dependencyBlock').and.returnValue(undefined),
       beginCoderOperation: () => () => {},
       getCoderProjectContext(path: string) {
@@ -74,7 +75,7 @@ describe('Coder concurrent process integration', () => {
       { provide: CrossPlatformCmdService, useValue: {} },
       { provide: ElectronService, useValue: { pathJoin: (...parts: string[]) => parts.join('/'), isWindowFocused: () => true } },
       { provide: PlatformService, useValue: { za7: '/7z' } },
-      { provide: ConfigService, useValue: { data: {}, isCoderProduct: () => true } },
+      { provide: ConfigService, useValue: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } },
       { provide: HttpClient, useValue: {} },
       { provide: NzMessageService, useValue: { warning: () => {}, error: () => {} } },
       { provide: TranslateService, useValue: { instant: (key: string) => key } },
@@ -90,6 +91,12 @@ describe('Coder concurrent process integration', () => {
 
   function started(command: typeof commands[number]): void { command.output.next({ type: 'stdout', data: 'running\n', streamId: command.id }); }
   function finish(command: typeof commands[number]): void { command.output.next({ type: 'close', code: 0, streamId: command.id }); command.output.complete(); }
+
+  it('does not start a build while board source/configuration is being synchronized', async () => {
+    project.isProjectTransitionInProgress.and.returnValue(true);
+    await expectAsync(runtime.build('/a')).toBeRejectedWithError(/配置正在更新/);
+    expect(commands.length).toBe(0);
+  });
 
   it('rejects build and upload requests before creating processes while dependencies are unavailable', async () => {
     project.getProjectDependencyBlockMessage.and.returnValue('retry dependencies');

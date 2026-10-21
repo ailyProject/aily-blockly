@@ -27,6 +27,16 @@ const nativeGetVarModels = Blockly.Block.prototype.getVarModels;
 export function captureAbsPageReferenceContract(
   workspace: Blockly.Workspace, serialized: AbsAbiWorkspace, assertCurrent: () => void, definitions?: DeclarativeBlockSnapshot,
 ): AbsPageReferenceContract {
+  const capture = () => capturePageReferences(workspace, serialized, assertCurrent, definitions);
+  // This read verifies the entire workspace again after library getters run.
+  // Share declaration scans at the same boundaries instead of rescanning all
+  // previously used types for every field and procedure in a large project.
+  return definitions?.withSynchronousRead ? definitions.withSynchronousRead(capture) : capture();
+}
+
+function capturePageReferences(
+  workspace: Blockly.Workspace, serialized: AbsAbiWorkspace, assertCurrent: () => void, definitions?: DeclarativeBlockSnapshot,
+): AbsPageReferenceContract {
   assertCurrent();
   definitions?.customFunctions?.prepareSerialization(workspace);
   const save = () => {

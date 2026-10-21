@@ -17,7 +17,8 @@ describe('Blockly compile and upload handoff', () => {
   function uploadFixture() {
     const events: string[] = [];
     const prepared = { code: 'compiled code', artifacts: [], projectMacros: [] };
-    const project: any = { currentProjectPath: '/project', getBoardModule: async () => '@aily-project/board-test',
+    const project: any = { isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
+      currentProjectPath: '/project', getBoardModule: async () => '@aily-project/board-test',
       isAilyCodeProject: () => false, getBoardJson: async () => ({}), getBuildPath: async () => '/project/.build' };
     const workflow: any = { currentState: ProcessState.IDLE,
       // Stop at the device boundary; these tests never flash hardware.
@@ -25,6 +26,7 @@ describe('Blockly compile and upload handoff', () => {
     const builder: any = Object.create(_BuilderService.prototype);
     Object.assign(builder, { projectService: project, passed: true, lastCode: prepared.code, currentProjectPath: '/project',
       preprocessRunGeneration: 0, workflowService: workflow,
+      configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local' },
       blocklyService: { workspace: {} },
       runWithInteractiveProjectCode: async (_workspace: unknown, consume: any) => consume(prepared, () => {}),
       build: jasmine.createSpy('build').and.callFake(async () => {
@@ -123,7 +125,7 @@ describe('Blockly compile and upload handoff', () => {
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }) },
       workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
-      platformService: { za7: '/tool' }, configService: { data: {} }, translate: { instant: (x: string) => x },
+      platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
         getProjectPersistenceRevision: () => 1, publishPreparedCodeView() {} },
       runWithInteractiveProjectCode: async (_workspace: unknown, consume: any) => consume(prepared, () => {}),

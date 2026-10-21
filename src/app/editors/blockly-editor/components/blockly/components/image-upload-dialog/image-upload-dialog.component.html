@@ -18,7 +18,7 @@
         </div>
         }
 
-        <img #cropperImage [src]="imageUrl" [style.display]="imageUrl && !isLoading ? 'none' : 'none'">
+        <img #cropperImage style="display: none">
         <!-- 操作提示 -->
         @if (imageUrl && !isLoading) { <!-- 图片显示区域 -->
         <div class="operation-tips">
@@ -34,14 +34,14 @@
             <nz-switch nzSize="small" [(ngModel)]="options.endian" (ngModelChange)="onCropChange()"></nz-switch>
           </div> -->
           <div class="tip-item ccenter">颜色反转
-            <nz-switch nzSize="small" [(ngModel)]="options.invert" (ngModelChange)="onCropChange()"></nz-switch>
+            <nz-switch nzSize="small" [nzDisabled]="isConfirming" [(ngModel)]="options.invert" (ngModelChange)="onCropChange()"></nz-switch>
           </div>
           <div class="tip-item ccenter">使能抖动
-            <nz-switch nzSize="small" [(ngModel)]="options.dither" (ngModelChange)="onCropChange()"></nz-switch>
+            <nz-switch nzSize="small" [nzDisabled]="isConfirming" [(ngModel)]="options.dither" (ngModelChange)="onCropChange()"></nz-switch>
           </div>
           @if(!options.dither) {
           <div class="tip-item ccenter">取色阀值
-            <nz-input-number [(ngModel)]="options.threshold" (ngModelChange)="onCropChange()" [nzControls]="false"
+            <nz-input-number [nzDisabled]="isConfirming" [(ngModel)]="options.threshold" (ngModelChange)="onCropChange()" [nzControls]="false"
               nzSize="small" nzMin="1" nzMax="255" />
           </div>
           }
@@ -57,15 +57,15 @@
   <div footer class="footer">
     <button nz-button [nzSize]="'small'" nzType="default" (click)="onClose()">取消</button>
     <!-- 重选图片按钮 -->
-    <input #reSelectInput type="file" accept="image/*" (change)="onFileSelected($event)" style="display: none;" />
+    <input #reSelectInput type="file" [accept]="acceptedTypes.join(',')" [disabled]="isConfirming" (change)="onFileSelected($event)" style="display: none;" />
     @if (imageUrl && !isLoading) {
-    <button nz-button [nzSize]="'small'" nzType="default" (click)="reSelectInput.click()">
+    <button nz-button [nzSize]="'small'" nzType="default" [disabled]="isConfirming" (click)="reSelectInput.click()">
       重选图片
     </button>
     }
     <!-- 重置位置按钮 -->
     @if (imageUrl && !isLoading && cropper) {
-    <button nz-button [nzSize]="'small'" nzType="default" (click)="centerCropBox()" title="重置图片位置和缩放">
+    <button nz-button [nzSize]="'small'" nzType="default" [disabled]="isConfirming" (click)="centerCropBox()" title="重置图片位置和缩放">
       <i class="fa-light fa-arrows-rotate"></i>
       重置
     </button>
@@ -77,7 +77,7 @@
       </button>
       } -->
     <!-- 确定按钮 -->
-    <button nz-button [nzSize]="'small'" nzType="primary" [disabled]="!imageUrl || isLoading" [nzLoading]="isLoading"
+    <button nz-button [nzSize]="'small'" nzType="primary" [disabled]="!isReady || isLoading || isConfirming || currentCropSize.width < 1 || currentCropSize.height < 1" [nzLoading]="isLoading || isConfirming"
       (click)="onConfirm()">
       确定
     </button>

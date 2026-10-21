@@ -169,7 +169,8 @@
         "test": {
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
-            "tsConfig": "tsconfig.spec.json",
+            "tsConfig": "tests/tsconfig.spec.json",
+            "karmaConfig": "tests/karma.conf.cjs",
             "polyfills": [
               "zone.js",
               "zone.js/testing"
@@ -192,7 +193,7 @@
           },
           "configurations": {
             "abs-sync": {
-              "tsConfig": "tsconfig.abs-sync.spec.json",
+              "tsConfig": "tests/tsconfig.abs-sync.spec.json",
               "include": [
                 "src/app/integrations/blockly/board-config-operation.spec.ts",
                 "src/app/integrations/blockly/board-switch-operation.spec.ts",
@@ -216,11 +217,24 @@
               ]
             },
             "abs-project-load": {
-              "tsConfig": "tsconfig.abs-sync.spec.json",
+              "tsConfig": "tests/tsconfig.abs-sync.spec.json",
               "preserveSymlinks": false,
               "include": [
                 "src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
                 "src/app/pages/playground/example-list/example-list-import.spec.ts"
+              ]
+            },
+            "coder-board-menu": {
+              "tsConfig": "tests/tsconfig.coder-board-menu.spec.json",
+              "include": [
+                "src/app/integrations/coder/board-config/*.spec.ts",
+                "src/app/integrations/coder/coder-board-config.service.spec.ts",
+                "src/app/integrations/coder/coder-project-runtime.service.spec.ts",
+                "src/app/services/domains/project/project-coder-menu.spec.ts",
+                "src/app/services/domains/project/project-sdk-load.spec.ts",
+                "src/app/main-window/components/header/header-partition-manager.spec.ts",
+                "src/app/editors/code-editor-pro/code-editor-pro-workspace.spec.ts",
+                "src/app/main-window/components/header/header-board-menu.spec.ts"
               ]
             }
           }

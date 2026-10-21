@@ -5,6 +5,7 @@ import { AbsAbiWorkspace } from './abs-state';
 import { AbsReferenceContractCache } from './abs-reference-contract-cache';
 import { BlocklyProjectDocument, composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { absJson } from './abs-identity-map';
+import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 
 describe('actual-instance reference coverage', () => {
   let workspace: Blockly.Workspace;
@@ -27,6 +28,24 @@ describe('actual-instance reference coverage', () => {
     expect(result.contracts.fields['get']['VAR'].symbol?.kind).toBe('variable');
     expect(result.contracts.fields['text']['TEXT'].symbol).toBeUndefined();
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a declaration changed by a field getter inside the shared synchronous read', () => {
+    const catalog = new BlocklyDeclarativeBlockCatalog();
+    const json = { type: custom, message0: '%1', args0: [{ type: 'field_input', name: 'VALUE', text: 'value' }] };
+    Blockly.Blocks[custom] = { init() { this.jsonInit(json); } };
+    catalog.record(json, Blockly.Blocks[custom]);
+    const block = workspace.newBlock(custom);
+    const state = save(), definitions = catalog.capture(Blockly.Blocks);
+    definitions.get(custom);
+    const field = block.getField('VALUE')!;
+    const saveState = field.saveState;
+    spyOn(field, 'saveState').and.callFake(function(...args) {
+      json.message0 = 'changed %1';
+      return saveState.apply(this, args);
+    });
+    expect(() => captureAbsPageReferenceContract(workspace, state, () => {}, definitions))
+      .toThrowError(/definitions changed/);
   });
 
   it('verifies legacy parameter models and procedure call signatures from actual instances', () => {

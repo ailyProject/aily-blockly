@@ -45,6 +45,20 @@ describe('workspace edit lease', () => {
       expect(document.body.dispatchEvent(event('keydown'))).toBeTrue();
     } finally { release(); root.remove(); chat.remove(); }
   });
+  it('cancels keyboard defaults before existing passive document shortcut handlers run', () => {
+    const root = document.createElement('div'); document.body.appendChild(root);
+    const shortcut = jasmine.createSpy('document shortcut');
+    document.addEventListener('keydown', shortcut, { capture: true, passive: true });
+    const release = fenceBlocklyWorkspaceInput(root);
+    try {
+      const event = new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true });
+      expect(root.dispatchEvent(event)).toBeFalse();
+      expect(event.defaultPrevented).toBeTrue();
+      expect(shortcut).not.toHaveBeenCalled();
+      release(); root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+      expect(shortcut).toHaveBeenCalledTimes(1);
+    } finally { release(); document.removeEventListener('keydown', shortcut, true); root.remove(); }
+  });
 });
 
 describe('persisted project revision', () => {

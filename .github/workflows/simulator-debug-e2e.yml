@@ -20,9 +20,13 @@ on:
       - "e2e/fixtures/projects/esp32s3-debug/**"
       - "e2e/tests/simulator-debug.spec.ts"
       - "electron/simulator-gateway.js"
-      - "electron/simulator-gateway.test.js"
-      - "scripts/prepare-simulator-debug-e2e.mjs"
-      - "scripts/run-simulator-debug-e2e.mjs"
+      - "tests/integration/smoke-simulator-gateway-*.mjs"
+      - "e2e/package.json"
+      - "e2e/playwright.config.ts"
+      - "e2e/global-setup.ts"
+      - "e2e/scripts/run-e2e.mjs"
+      - "e2e/scripts/prepare-simulator-debug-e2e.mjs"
+      - "e2e/scripts/run-simulator-debug-e2e.mjs"
       - "src/app/services/project-debug-configuration.service.ts"
       - "src/app/tools/simulator/**"
   push:
@@ -34,8 +38,13 @@ on:
       - "e2e/fixtures/projects/esp32s3-debug/**"
       - "e2e/tests/simulator-debug.spec.ts"
       - "electron/simulator-gateway.js"
-      - "scripts/prepare-simulator-debug-e2e.mjs"
-      - "scripts/run-simulator-debug-e2e.mjs"
+      - "tests/integration/smoke-simulator-gateway-*.mjs"
+      - "e2e/package.json"
+      - "e2e/playwright.config.ts"
+      - "e2e/global-setup.ts"
+      - "e2e/scripts/run-e2e.mjs"
+      - "e2e/scripts/prepare-simulator-debug-e2e.mjs"
+      - "e2e/scripts/run-simulator-debug-e2e.mjs"
       - "src/app/services/project-debug-configuration.service.ts"
       - "src/app/tools/simulator/**"
 
@@ -183,7 +192,7 @@ jobs:
       - name: Run ESP32-S3 desktop debug closure
         working-directory: aily-blockly
         shell: pwsh
-        run: npm run test:e2e:simulator-debug -- --refresh-runtime
+        run: npm --prefix e2e run test:simulator-debug -- --refresh-runtime
         env:
           CI: "true"
           NODE_OPTIONS: --max-old-space-size=6144
@@ -191,7 +200,7 @@ jobs:
       - name: Validate iframe/GDB report contract
         working-directory: aily-blockly
         shell: pwsh
-        run: npm run validate:e2e:simulator-debug
+        run: npm --prefix e2e run validate:simulator-debug
 
       - name: Write job summary
         if: always()
@@ -270,8 +279,8 @@ jobs:
           name: esp32s3-simulator-debug-e2e-reports
           path: |
             aily-blockly/e2e/.artifacts/*.json
-            aily-blockly/test-results/**
-            aily-blockly/playwright-report/**
+            aily-blockly/e2e/test-results/**
+            aily-blockly/e2e/playwright-report/**
             aily-simulator/.runtime/distribution/aily-simulator-runtime-win32-x64/aily-simulator-runtime.json
           if-no-files-found: warn
           include-hidden-files: true

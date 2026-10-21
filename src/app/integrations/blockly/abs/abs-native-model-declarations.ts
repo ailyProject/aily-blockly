@@ -14,11 +14,19 @@ export interface AbsNativeModelDeclaration {
   kind?: 'loop';
 }
 
+// Whole-candidate evidence includes every initializer, not just explicit creation intents.
+// Keep this protocol capacity aligned with aily-agent/services/abs/model-declarations.
+export const ABS_NATIVE_MODEL_DECLARATION_LIMIT = 512;
+
 export function assertAbsNativeModelDeclarations(value: unknown): asserts value is AbsNativeModelDeclaration[] | undefined {
   if (value === undefined) return;
+  if (Array.isArray(value) && value.length > ABS_NATIVE_MODEL_DECLARATION_LIMIT) {
+    throw new AbsSyncError('ABS_MODEL_DECLARATION_INVALID',
+      `Native model declaration count ${value.length} exceeds the whole-candidate limit ${ABS_NATIVE_MODEL_DECLARATION_LIMIT}.`);
+  }
   const text = (item: unknown, empty = false) => typeof item === 'string' && (empty || !!item)
     && item.length <= 256 && item === item.trim() && !/[\u0000-\u001f\u007f]/.test(item);
-  if (!Array.isArray(value) || !value.length || value.length > 128 || value.some(item => !item
+  if (!Array.isArray(value) || !value.length || value.some(item => !item
     || Object.keys(item).some(key => !['start', 'blockType', 'id', 'name', 'type', 'kind'].includes(key))
     || item.kind !== undefined && item.kind !== 'loop'
     || !Number.isSafeInteger(item.start) || item.start < 0 || !text(item.blockType)

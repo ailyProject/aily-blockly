@@ -21,11 +21,13 @@ import {
 } from '../../configs/tool.config';
 import {
   ChildAppHostRegistryService,
+  resolveChildCloseDecision,
   type ChildAppWindowPlacement,
   ChildToolProcessService,
   type ChildToolHostInfo,
   type ChildToolRuntimeSnapshot,
   SubappActivityService,
+  DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID,
   type SubappActivitySummaryState,
 } from '@integration/subapps/public-api';
 import { ElectronService } from '@core/platform/public-api';
@@ -71,6 +73,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
   private currentUrl = '';
   private hostInfo: ChildToolHostInfo | null = null;
   private contextVersion = 0;
+  private closeTask: Promise<Record<string, unknown>> | null = null;
   private readonly contextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   constructor(
@@ -174,10 +177,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
         instanceId,
         message: 'Compact surfaces observe the shared Runtime and cannot restart it.',
       }),
-      close: async () => {
-        this.closeRequested.emit();
-        return { ok: true, toolId, instanceId, action: 'close', surface: this.surface };
-      },
+      close: () => this.close(),
       detach: options => this.openFull('window', options),
       embed: () => this.openFull('embedded'),
     }, {
@@ -310,7 +310,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
               : {},
           ),
           requestClose: () => {
-            this.ngZone.run(() => this.closeRequested.emit());
+            this.ngZone.run(() => { void this.close(); });
             return { ok: true };
           },
           requestRestart: () => ({
@@ -365,6 +365,32 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
         runtimeControl: false,
       },
     };
+  }
+
+  private close(): Promise<Record<string, unknown>> {
+    if (this.closeTask) return this.closeTask;
+    const task = (async () => {
+      try {
+        if (this.toolId === 'ffs-manager-child' && this.remoteApi?.beforeClose) {
+          if (this.uiService.isMainWindow && this.uiService.openToolList.includes(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID)) {
+            this.uiService.openToolEmbedded(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID);
+          }
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const result = await Promise.race([
+            Promise.resolve(this.remoteApi.beforeClose({ reason: 'close', toolId: this.toolId, waitForDecision: true })),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Partition UI close handshake timed out')), 1500); }),
+          ]).finally(() => clearTimeout(timer));
+          if (!await resolveChildCloseDecision(this.remoteApi, result)) return { ok: false, toolId: this.toolId };
+        }
+        this.closeRequested.emit();
+        return { ok: true, toolId: this.toolId, action: 'close', surface: this.surface };
+      } catch (error) {
+        return { ok: false, toolId: this.toolId, message: this.errorText(error) };
+      }
+    })();
+    this.closeTask = task;
+    void task.then(() => { if (this.closeTask === task) this.closeTask = null; });
+    return task;
   }
 
   private partitionManagerRequest(request: unknown): unknown {

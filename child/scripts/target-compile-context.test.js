@@ -46,6 +46,29 @@ test('configuration changes cannot be published as a ready test context', t => {
     assert.equal(result.status, 'unavailable');
     assert.match(result.reason, /changed during preprocessing/);
 });
+test('project manifest fingerprints ignore only build-owned results while board files remain byte-exact', t => {
+    const f = fixture(t);
+    const manifest = path.join(f.root, 'package.json');
+    const board = path.join(f.root, 'board-package.json');
+    const source = { board: 'esp32s3', dependencies: { logic: '1.0' }, projectConfig: { macros: ['ST7789'] } };
+    fs.writeFileSync(manifest, JSON.stringify(source));
+    fs.writeFileSync(board, '{}');
+    const inputs = captureInputs([manifest, board], { projectManifest: manifest });
+    fs.writeFileSync(manifest, JSON.stringify({ buildInfo: { timestamp: 42 }, ...source, codeHash: 'compiled' }, null, 2));
+    const context = createTargetCompileContext(f.file, f.root, inputs);
+    assert.equal(context.version, 2);
+    assert.equal(context.inputs[0].hashMode, 'project-manifest-v1');
+    for (const change of [{ board: 'other' }, { dependencies: { logic: '2.0' } },
+        { projectConfig: { macros: ['OTHER'] } }, { unknownSetting: true }]) {
+        fs.writeFileSync(manifest, JSON.stringify({ ...source, ...change }));
+        assert.throws(() => createTargetCompileContext(f.file, f.root, inputs), /changed during preprocessing/);
+    }
+    fs.writeFileSync(manifest, JSON.stringify(source));
+    fs.writeFileSync(board, '{"buildInfo":"still a board input"}');
+    assert.throws(() => createTargetCompileContext(f.file, f.root, inputs), /changed during preprocessing/);
+    const invalid = captureInputs([board], { projectManifest: board });
+    assert.throws(() => createTargetCompileContext(f.file, f.root, invalid), /project manifest/);
+});
 test('unsupported recipes and nested output flags invalidate rather than guess', t => {
     const f = fixture(t);
     f.data.compileConfig.args.cpp += ' {missing.flag}'; f.save();

@@ -1,3 +1,5 @@
+import { composeAbs } from './abs-compose';
+import { precheckAbs, AbsPrecheckFailure } from './abs-precheck';
 import { Injectable, NgZone, Optional } from '@angular/core';
 import { AbsApplicationFailure } from './abs-application-failure';
 import { createNativeCandidateRecovery } from '../../../editors/blockly-editor/services/blockly-native-candidate-recovery';
@@ -99,6 +101,33 @@ export class AbsWorkspaceSyncService {
     context.assertCurrent();
     return { version: 1, scope: context.scope, runtimeRevision, blocks,
       ...(selected ? { instanceSyntax: instanceSyntax ?? { scope: 'unavailable', reason: 'no-current-committed-snapshot' } } : {}) };
+  }
+
+  /** Read-only authoring advice; never acquires a write lease or publishes a generation. */
+  authoring(operation: 'abs_compose' | 'abs_precheck', input: Record<string, any>) {
+    const key = operation === 'abs_compose' ? 'program' : 'abs';
+    if (input['version'] !== 1 || Object.keys(input).some(name => !['version', key].includes(name))
+      || !Object.hasOwn(input, key) || operation === 'abs_precheck' && typeof input['abs'] !== 'string'
+      || JSON.stringify(input).length > 4 * 1024 * 1024) {
+      throw new AbsSyncError('ABS_REQUEST_INVALID', 'Invalid or oversized structured authoring request.');
+    }
+    const context = this.context();
+    const shapes = captureAbsDeclarativeContracts(context.definitions);
+    const procedures = captureAbsBundledProcedures(context.definitions);
+    const custom = captureAbsCustomFunctions(context.definitions);
+    const blockContract = (type: string, extra?: unknown, fields?: Readonly<Record<string, unknown>>) =>
+      custom.get(type, extra) ?? procedures.get(type, extra) ?? shapes.get(type, extra, fields);
+    const known = new Set(context.definitions.types);
+    const definitions = { blockContract, knownType: (type: string) => known.has(type),
+      deferType: (type: string) => !!context.definitions.procedure?.(type) || !!custom.describe(type),
+      argumentOrder: (type: string, extra?: unknown, fields?: Readonly<Record<string, unknown>>) => blockContract(type, extra, fields)?.argumentOrder,
+      fieldSelectors: (type: string) => shapes.get(type)?.fieldShape?.map(rule => rule.field),
+      fieldDefinition: (type: string, name: string) => custom.field(type, name) ?? shapes.get(type)?.fields[name] };
+    const read = () => operation === 'abs_compose' ? composeAbs(input['program'], definitions)
+      : { precheck: precheckAbs(input['abs'], definitions) };
+    const result = context.definitions.withSynchronousRead ? context.definitions.withSynchronousRead(read) : read();
+    context.assertCurrent();
+    return { ok: result.precheck.ok, operation, project: context.path, ...result };
   }
 
   /** initialize must be explicit when replacing an existing unversioned ABS mirror. */
@@ -312,6 +341,9 @@ export class AbsWorkspaceSyncService {
         hostPrepared: type => !!context.definitions.procedure?.(type) || !!custom.describe(type),
         ...(binding?.createVariables ? { variableCreation: { requestId: binding.requestId, variables: binding.createVariables } } : {}),
       };
+      const precheck = readDefinitions(() => precheckAbs(source, { ...reconcileOptions, blockContract, deferType: reconcileOptions.hostPrepared,
+        knownType: type => context.definitions.types.includes(type) }));
+      if (!precheck.ok) throw new AbsPrecheckFailure(precheck);
       assertAbsProcedureModelIntents(source, binding?.createVariables, reconcileOptions, type => {
         if (custom.describe(type)?.protocol.kind === 'definition') return { nameField: 'FUNC_NAME', modelType: 'FUNC' };
         return context.definitions.procedure?.(type)?.role === 'definition' ? {} : undefined;

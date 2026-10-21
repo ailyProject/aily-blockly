@@ -26,6 +26,7 @@ describe('declared field order at normal project load', () => {
   it('uses the real ordinary load entry and preserves a later-created field without mutating saved input', () => {
     const input = state(), before = absJson(input);
     BlocklyService.prototype.loadWorkspaceJson.call({ workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value),
+      prepareWorkspaceLoad: (BlocklyService.prototype as any).prepareWorkspaceLoad,
       adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
       assertWorkspaceEditAvailable() {}, captureDeclarativeBlockDefinitions: () => catalog.capture(Blockly.Blocks),
       scheduleWorkspaceRenderAfterLoad() {},
@@ -46,6 +47,7 @@ describe('declared field order at normal project load', () => {
   it('checks declaration freshness before clearing a live workspace', () => {
     workspace.newBlock(type, 'original');
     expect(() => BlocklyService.prototype.loadWorkspaceJson.call({ workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value),
+      prepareWorkspaceLoad: (BlocklyService.prototype as any).prepareWorkspaceLoad,
       adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
       assertWorkspaceEditAvailable() {}, captureDeclarativeBlockDefinitions: () => ({ assertCurrent() { throw Error('stale'); } }),
     } as any, state())).toThrowError('stale');
@@ -73,6 +75,7 @@ describe('declared field order at normal project load', () => {
     const page = { id: 'main', content: { blocks: { blocks: [local] } } };
     const document = { sharedModel: { procedureBlocks: [shared] }, pages: [page] };
     const context: any = { workspace, getActivePage: () => page, getStoredProjectDocument: () => document,
+      finishActivePageLoad: (BlocklyService.prototype as any).finishActivePageLoad,
       loadWorkspaceJson: value => Blockly.serialization.workspaces.load(value, workspace),
       selectedBlockSubject: { next() {} }, selectedBlockIdsSubject: { next() {} }, loadLibraryFinishedLoadingSubject: { next() {} },
       requestWorkspaceVisualRefresh: jasmine.createSpy('visualRefresh'),

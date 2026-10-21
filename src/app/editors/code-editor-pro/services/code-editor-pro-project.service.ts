@@ -45,9 +45,6 @@ export class CodeEditorProProjectService {
       async (action) => {
         const path = action.payload?.path || this.projectService.currentProjectPath;
         await this.saveAll(path);
-        if (path) {
-          await this.projectService.copyPackageJsonToTemp(path);
-        }
         return { success: true, path };
       },
       'code-editor-pro-project-save',
@@ -67,6 +64,7 @@ export class CodeEditorProProjectService {
     if (!bridge) throw new Error(`Aily Coder 保存通道尚未就绪: ${path}`);
     const result = await bridge.saveAll();
     if (!result.ok) throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
+    await this.projectService.saveLibraryChanges(path);
     if (path && this.projectService.isAilyCodeProject(path)) {
       await this.coderBuildInfo.updateCodeHash(path);
     }
@@ -79,15 +77,17 @@ export class CodeEditorProProjectService {
   }
 
   /** Missing/unmounted editors are unknown, never implicitly clean. No save. */
-  async hasSavedProject(path: string): Promise<boolean> {
+  async hasSavedProject(path: string, cachedLibraries = false): Promise<boolean> {
     const key = this.key(path), bridge = this.persistenceBridges.get(key);
     if (!bridge) return false;
-    const dirty = await bridge.hasUnsavedChanges();
+    const dirty = (cachedLibraries ? this.projectService.hasCachedLibraryChanges(path)
+      : await this.projectService.hasUnsavedLibraryChanges(path)) || await bridge.hasUnsavedChanges();
     return this.persistenceBridges.get(key) === bridge && dirty === false;
   }
 
   private async hasUnsavedChanges(): Promise<boolean> {
-    const states = await Promise.all([...this.persistenceBridges.values()].map(bridge => bridge.hasUnsavedChanges()));
+    const states = await Promise.all([...this.persistenceBridges.entries()].map(async ([path, bridge]) =>
+      await this.projectService.hasUnsavedLibraryChanges(path) || await bridge.hasUnsavedChanges()));
     return states.some(Boolean);
   }
 

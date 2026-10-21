@@ -35,6 +35,7 @@ export interface ProjectApplicationPort {
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;
+  materializeCoderProjectLibraries(projectPath: string): Promise<void>;
 }
 
 export const PROJECT_APPLICATION_PORT = new InjectionToken<ProjectApplicationPort>(

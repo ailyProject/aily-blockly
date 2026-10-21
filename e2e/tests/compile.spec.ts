@@ -1,4 +1,4 @@
-import { test, expect, getMainWindow, openBlocklyProject } from '../fixtures/electron-app';
+import { test, expect, getMainWindow, openBlocklyProject, readAilyHostOperation } from '../fixtures/electron-app';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 
@@ -11,7 +11,7 @@ import path from 'node:path';
  *
  *   $env:AILY_E2E_PROJECT = 'D:\\path\\to\\blockly-project'   # 一个可编译的项目
  *   $env:AILY_E2E_COMPILE = '1'                               # 显式开启编译用例
- *   npm run test:e2e -- compile.spec.ts
+ *   npm --prefix e2e run test -- compile.spec.ts
  *
  * 缺少上述任一环境变量时整套用例自动跳过。
  */
@@ -33,11 +33,11 @@ test.describe('编译', () => {
     // 等待编辑器与头部编译按钮就绪（编译按钮仅在编辑器路由下显示）。
     const compileBtn = win.locator('app-header app-act-btn[data-action="compile"]');
     await expect(compileBtn).toBeVisible({ timeout: 30_000 });
-    // Header visibility precedes project/library loading and dependency setup.
-    // Wait for the same ready signal used by the full-flow suite before clicking.
-    await expect.poll(() => messages.some(message =>
-      /后台预处理完成|同步预处理完成|发现预编译缓存|预编译完成/.test(message),
-    ), {timeout: 120_000}).toBe(true);
+    // Opening a project no longer starts background preprocessing. Wait for the
+    // host's actual project/library readiness before exercising the compile UI.
+    await expect.poll(async () => {
+      return (await readAilyHostOperation(electronApp, 'project_load_status', PROJECT_PATH!)).ready;
+    }, {timeout: 120_000}).toBe(true);
     const compileStartedAt = Date.now();
     await compileBtn.click();
 
