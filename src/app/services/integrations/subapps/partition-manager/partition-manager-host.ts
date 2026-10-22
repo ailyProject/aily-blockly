@@ -1,3 +1,5 @@
+import { resolvePartitionPaths } from '@shared/public-api';
+export { resolvePartitionPaths } from '@shared/public-api';
 import type { ProjectService } from '@domain/project/public-api';
 import type { BuilderService } from '@domain/build/public-api';
 import {
@@ -41,17 +43,6 @@ function isPartitionDraft(value: unknown): value is PartitionDraft {
     && Number.isSafeInteger(draft['flashBytes']) && Number(draft['flashBytes']) > 0 && Number(draft['flashBytes']) <= 256 * MIB
     && ['appBytes', 'storageBytes', 'nvsBytes'].every(key => Number.isSafeInteger(draft[key])
       && Number(draft[key]) >= 0 && Number(draft[key]) <= 256 * MIB && Number(draft[key]) % SECTOR === 0);
-}
-
-export function resolvePartitionPaths(projectPath: string, pkg: any, isCoder: boolean, path: any) {
-  const root = path.resolve(projectPath);
-  const source = isCoder ? path.dirname(path.join(root, pkg.arduinoSketch === true ? '.' : 'sketch', pkg.entry || 'src/main.cpp')) : path.join(root, 'src');
-  const filePath = path.join(source, 'partitions.csv');
-  const relative = path.relative(root, filePath);
-  if (!relative || relative === '..' || relative.startsWith('../') || relative.startsWith('..\\') || path.isAbsolute(relative)) {
-    throw new Error('项目入口路径超出当前项目，无法保存分区。');
-  }
-  return { filePath, legacyPath: path.join(root, 'partitions.csv') };
 }
 
 /** Stage all files first; roll back the whole update on a write/rename failure. */
