@@ -1327,12 +1327,17 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
       this.blockPreviewUrl = canvas.toDataURL('image/png');
     }
     this.blockDisplayImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', this.blockPreviewUrl);
-    if (this.outputWaveform.length === 0 && this.getValue().audioPath) {
+    // Preview decoding needs the live editor's file reader; native ABS candidates
+    // render the saved field synchronously without filesystem or Promise effects.
+    const fsApi = (window as any)['fs'];
+    if (this.outputWaveform.length === 0 && this.getValue().audioPath
+      && (typeof fsApi?.readFileBuffer === 'function' || typeof fsApi?.readFileAsBase64 === 'function')) {
       void this.loadOutputWaveformForPreview();
     }
   }
 
   private updateStatusFromValue() {
+    if (!this.statusElement) return;
     const value = this.getValue();
     this.setStatus(value.audioPath ? this.getInfoStatus(value) : translateAudioMessage('EMPTY'));
   }

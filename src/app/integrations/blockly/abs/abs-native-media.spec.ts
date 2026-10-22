@@ -47,6 +47,24 @@ describe('native read-only media snapshot and shared generator projection', () =
   };
   afterEach(() => expect(document.querySelector('[data-blockly-native-candidate]')).toBeNull());
 
+  it('binds and verifies saved audio without accessing project files or decoding previews', async () => {
+    const audio = { schemaVersion: 1, encoding: 'mp3-cbr-v1', sampleRate: 16000, channels: 1, bitRate: 16,
+      duration: 210.46154166666668, trimStart: 0, trimEnd: 31.25972898284314, outputDuration: 31.25975,
+      sourcePath: 'assets/audio/source.mp3', audioPath: 'audio/output.mp3' };
+    const input: NativeCandidateRequest = { steps: [
+      { kind: 'context', mode: 'arduino' },
+      { kind: 'definitions', definitions: [{ type: 'native_audio', message0: '%1',
+        args0: [{ type: 'field_audio', name: 'AUDIO' }], previousStatement: null, nextStatement: null }] },
+      { kind: 'script', label: 'audio-path-generator', source: `Arduino.forBlock.native_audio = block => {
+        if (block.getFieldValue('AUDIO').audioPath !== 'audio/output.mp3') throw Error('Audio path lost');
+        return '// existing audio\\n';
+      };` },
+    ], blocks: [], abs: '# ABS Schema: 2\nnative_audio(' + absJson(audio) + ')' };
+    const request = await verify(input), result = await run(request);
+    expect(result.state).toEqual(request.verify!.state);
+    expect(result.state['blocks'].blocks[0].fields.AUDIO).toEqual(audio);
+  });
+
   const imageFixture = async (bytes?: number[]) => {
     if (!bytes) {
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
