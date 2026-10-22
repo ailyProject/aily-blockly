@@ -8,7 +8,10 @@ const OWNER_ENV = 'AILY_BUILD_WORKSPACE_OWNER';
 const SUPERVISOR_ENV = 'AILY_BUILD_WORKSPACE_SUPERVISOR';
 const BUILDER_ENV = 'AILY_BUILDER_WORKSPACE';
 const BUILDER_MARKER = 'aily-builder.lock';
-const RECOVERY_MARKER = 'aily-workspace-recovery.lock';
+const LEGACY_RECOVERY_MARKER = 'aily-workspace-recovery.lock';
+// Only needed if a filesystem error prevents recording a failed claim's release.
+const abandonedClaims = new Set();
+const UUID = /^[a-f0-9-]{36}$/;
 const fault = (code, message) => Object.assign(new Error(`${code}: ${message}`), { code });
 const canonical = value => process.platform === 'win32' ? value.toLowerCase() : value;
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
@@ -40,10 +43,15 @@ function openWorkspace(projectPath) {
 function readOwner(workspace, filename = workspace.filename) {
     workspace.check();
     const stat = fs.lstatSync(filename);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 4096) throw fault('BUILD_WORKSPACE_INVALID', 'Unsafe build owner record.');
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 256 * 1024) throw fault('BUILD_WORKSPACE_INVALID', 'Unsafe build owner record.');
     const bytes = fs.readFileSync(filename, 'utf8');
     let record;
-    try { record = JSON.parse(bytes); } catch { throw fault('BUILD_WORKSPACE_INVALID', 'Incomplete build owner record; no automatic takeover.'); }
+    try { record = JSON.parse(bytes); }
+    catch {
+        // Host records are compact JSON; only an interrupted recovery has a journal.
+        try { record = JSON.parse(bytes.split('\n', 1)[0]); }
+        catch { throw fault('BUILD_WORKSPACE_INVALID', 'Incomplete build owner record; no automatic takeover.'); }
+    }
     if (record?.schemaVersion !== 1 || !Number.isSafeInteger(record.pid) || record.pid < 1
         || typeof record.token !== 'string' || !/^[a-f0-9-]{36}$/.test(record.token)
         || !OPERATIONS.has(record.operation)) throw fault('BUILD_WORKSPACE_INVALID', 'Invalid build owner record.');
@@ -61,43 +69,114 @@ function markerExists(workspace, filename) {
     catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
 
-function recoverPublication(workspace, previous) {
-    // An operation name is a contract, not evidence that a compiler stopped.
-    // Only operations which cannot delegate are eligible, with no Builder phase.
+// Recovery contenders append complete records in ONE O_APPEND write. The first
+// child of an election head wins; siblings can never become winners later. A
+// dead/relinquished winner can itself have a successor. No second lock file, no
+// unlink/create gap, and a delayed reader only ever writes its original inode.
+function recoveryHead(bytes, original) {
+    let head = { token: original.token, pid: original.pid, available: !processAlive(original.pid) };
+    const lines = bytes.split('\n');
+    for (const line of lines.slice(1, -1)) {
+        let item;
+        try { item = JSON.parse(line); } catch { continue; } // Interrupted short append.
+        if (!item || !UUID.test(item.token) || !Number.isSafeInteger(item.pid) || item.pid < 1) continue;
+        if (item.kind === 'claim' && item.parent === head.token && head.available) {
+            head = { token: item.token, pid: item.pid,
+                available: !processAlive(item.pid) || abandonedClaims.has(item.token) };
+        } else if (item.kind === 'retire' && item.token === head.token && item.pid === head.pid) {
+            head.available = true;
+        }
+    }
+    return head;
+}
+
+function readDescriptor(descriptor) {
+    const size = fs.fstatSync(descriptor).size;
+    if (size > 256 * 1024) throw fault('BUILD_WORKSPACE_INVALID', 'Build recovery journal exceeds its limit.');
+    const buffer = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+        const count = fs.readSync(descriptor, buffer, offset, size - offset, offset);
+        if (!count) throw fault('BUILD_WORKSPACE_CHANGED', 'Build recovery journal changed.');
+        offset += count;
+    }
+    return buffer.toString('utf8');
+}
+
+function appendRecovery(descriptor, record) {
+    const buffer = Buffer.from(`\n${JSON.stringify(record)}\n`);
+    // Never finish a short write with a second append: another contender's record
+    // may already follow ours. An incomplete record grants no ownership.
+    if (fs.writeSync(descriptor, buffer) !== buffer.length) throw fault('BUILD_WORKSPACE_INVALID', 'Incomplete recovery journal write.');
+}
+
+function recoverPublication(workspace, previous, record) {
     if (!NON_DELEGATING_OPERATIONS.has(previous.record.operation)
         || markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) return undefined;
-    const recoveryPath = path.join(workspace.directory, RECOVERY_MARKER);
-    let guard;
-    try { guard = fs.openSync(recoveryPath, 'wx', 0o600); }
-    catch (error) {
-        if (error.code === 'EEXIST') throw fault('BUILD_WORKSPACE_BUSY', 'Build workspace recovery is already in progress.');
-        throw error;
-    }
-    const identity = fs.fstatSync(guard);
+    // Do not reinterpret an externally reformatted/multiline owner as a journal.
+    try { JSON.parse(previous.bytes.split('\n', 1)[0]); } catch { return undefined; }
+    const temporary = path.join(workspace.directory, `.aily-workspace-${record.token}.tmp`);
+    let descriptor, installed = false, claimed = false;
     try {
-        fs.writeFileSync(guard, JSON.stringify({ pid: process.pid, ownerToken: previous.record.token }));
-        // Re-read under the exclusive recovery guard. Two windows may have read
-        // the same dead owner; a delayed contender must never unlink its successor.
-        let current;
-        try { current = readOwner(workspace); }
-        catch { throw fault('BUILD_WORKSPACE_BUSY', 'Build ownership changed during recovery; retry the current operation.'); }
-        if (!sameFile(previous.stat, current.stat) || previous.bytes !== current.bytes || processAlive(current.record.pid)) {
-            throw fault('BUILD_WORKSPACE_BUSY', 'Build ownership changed during recovery; retry the current operation.');
+        // Prepare the complete replacement BEFORE competing. Failed preparation
+        // does not reserve ownership, and rename never exposes an empty marker.
+        fs.writeFileSync(temporary, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+        descriptor = fs.openSync(workspace.filename, fs.constants.O_RDWR | fs.constants.O_APPEND);
+        const bytes = readDescriptor(descriptor);
+        if (bytes.split('\n', 1)[0] !== previous.bytes.split('\n', 1)[0]
+            || fs.fstatSync(descriptor).ino !== previous.stat.ino) {
+            throw fault('BUILD_WORKSPACE_BUSY', 'Build ownership changed before recovery.');
         }
+        const head = recoveryHead(bytes, previous.record);
+        if (!head.available) throw fault('BUILD_WORKSPACE_BUSY', 'Build workspace recovery is already in progress.');
+        claimed = true;
+        appendRecovery(descriptor, { kind: 'claim', pid: process.pid, token: record.token, parent: head.token });
+        if (recoveryHead(readDescriptor(descriptor), previous.record).token !== record.token) {
+            throw fault('BUILD_WORKSPACE_BUSY', 'Another recovery contender owns this workspace.');
+        }
+        // An older loaded host may still use the standalone recovery guard.
+        // After our append it cannot parse this marker for a new takeover; if
+        // it already passed that read, its guard must still be honored here.
+        checkLegacyRecovery(workspace);
+        const current = readOwner(workspace);
+        if (!sameFile(previous.stat, current.stat) || current.bytes.split('\n', 1)[0] !== previous.bytes.split('\n', 1)[0]
+            || processAlive(current.record.pid)) throw fault('BUILD_WORKSPACE_BUSY', 'Build ownership changed during recovery.');
         if (markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) return undefined;
-        fs.unlinkSync(workspace.filename);
-        // Reserve the replacement before dropping the guard. Normal acquisition
-        // still uses wx, so a contender can never share ownership with us.
-        try { return fs.openSync(workspace.filename, 'wx', 0o600); }
-        catch (error) {
-            if (error.code === 'EEXIST') throw fault('BUILD_WORKSPACE_BUSY', 'Another build acquired the recovered workspace.');
-            throw error;
-        }
+        fs.renameSync(temporary, workspace.filename);
+        installed = true;
+        return lease(workspace, readOwner(workspace), true);
     } finally {
-        fs.closeSync(guard);
-        workspace.check();
-        if (sameFile(identity, fs.lstatSync(recoveryPath))) fs.unlinkSync(recoveryPath);
+        if (descriptor !== undefined) {
+            try {
+                if (claimed && !installed) {
+                    abandonedClaims.add(record.token);
+                    try {
+                        appendRecovery(descriptor, { kind: 'retire', pid: process.pid, token: record.token });
+                        abandonedClaims.delete(record.token);
+                    } catch { /* Preserve the original error; a retry here or process exit releases the claim. */ }
+                }
+            } finally { fs.closeSync(descriptor); }
+        }
+        // A leftover unique staging file is inert. Cleanup must never turn a
+        // successful takeover into an exception or hide its initialized lease.
+        try { fs.unlinkSync(temporary); } catch { /* No shared ownership lives here. */ }
     }
+}
+
+function checkLegacyRecovery(workspace) {
+    const filename = path.join(workspace.directory, LEGACY_RECOVERY_MARKER);
+    if (!markerExists(workspace, filename)) return;
+    let record;
+    try {
+        const stat = fs.lstatSync(filename);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 4096) throw new Error('unsafe');
+        record = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    } catch { throw fault('BUILD_WORKSPACE_BUSY', 'An unreadable legacy recovery marker requires verified cleanup.'); }
+    if (!Number.isSafeInteger(record.pid) || record.pid < 1 || !UUID.test(record.ownerToken) || processAlive(record.pid)) {
+        throw fault('BUILD_WORKSPACE_BUSY', 'Legacy workspace recovery may still be running.');
+    }
+    // This old implementation cannot run after its process exits. Leave its
+    // evidence intact; it is no longer an acquisition gate in the new protocol.
 }
 
 function acquireBuildWorkspace(projectPath, operation, { inherited = undefined } = {}) {
@@ -113,9 +192,10 @@ function acquireBuildWorkspace(projectPath, operation, { inherited = undefined }
         }
         return lease(workspace, owner, false);
     }
-    if (markerExists(workspace, path.join(workspace.directory, RECOVERY_MARKER))) {
-        throw fault('BUILD_WORKSPACE_BUSY', 'Build workspace recovery is in progress. An interrupted recovery requires verified cleanup.');
-    }
+    checkLegacyRecovery(workspace);
+    const supervisor = process.env[SUPERVISOR_ENV];
+    const record = { schemaVersion: 1, pid: process.pid, token: randomUUID(), operation, startedAt: new Date().toISOString(),
+        ...(typeof supervisor === 'string' && UUID.test(supervisor) ? { supervisor } : {}) };
     let descriptor;
     try { descriptor = fs.openSync(workspace.filename, 'wx', 0o600); }
     catch (error) {
@@ -123,17 +203,15 @@ function acquireBuildWorkspace(projectPath, operation, { inherited = undefined }
         let previous;
         try { previous = readOwner(workspace); } catch { /* A partial/unsafe marker is still exclusive. */ }
         if (previous && !processAlive(previous.record.pid)) {
-            descriptor = recoverPublication(workspace, previous);
-            if (descriptor === undefined) {
+            const recovered = recoverPublication(workspace, previous, record);
+            if (recovered === undefined) {
                 throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Host owner PID ${previous.record.pid} exited. Do not retry or remove its marker until all compiler descendants are confirmed stopped; then explicitly clean only .build/aily-workspace.lock.`);
             }
+            return recovered;
         } else {
             throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project. Retry after it finishes. An interrupted owner requires verified cleanup; do not delete its marker while compiler descendants may be running.');
         }
     }
-    const supervisor = process.env[SUPERVISOR_ENV];
-    const record = { schemaVersion: 1, pid: process.pid, token: randomUUID(), operation, startedAt: new Date().toISOString(),
-        ...(typeof supervisor === 'string' && /^[a-f0-9-]{36}$/.test(supervisor) ? { supervisor } : {}) };
     try {
         fs.writeFileSync(descriptor, JSON.stringify(record), 'utf8');
         return lease(workspace, readOwner(workspace), true);

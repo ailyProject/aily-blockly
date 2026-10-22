@@ -4,7 +4,7 @@ import {cp, mkdir, readFile, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {expect, getMainWindow, launchAilyElectron, navigate, openBlocklyProject, readAilyHostOperation, ROOT, test} from '../fixtures/electron-app';
 
-test('issue 745: interrupted publication recovers through editor reopen and compile', async ({}, info) => {
+test('issue 745: interrupted publication and recovery survive editor reopen and compile', async ({}, info) => {
   const seed = process.env['AILY_E2E_PLATFORM_SEED'];
   test.skip(!seed, 'Set AILY_E2E_PLATFORM_SEED to installed platform assets.');
   const project = info.outputPath('project');
@@ -21,6 +21,16 @@ test('issue 745: interrupted publication recovers through editor reopen and comp
     `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'publish'); process.kill(process.pid, 'SIGKILL');`,
     path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project], {encoding: 'utf8'});
   expect(crashed.signal).toBe('SIGKILL');
+  if (process.env['AILY_ISSUE745_BASELINE'] !== '1') {
+    // Kill the next process DURING recovery, after it durably joins the election.
+    const interruptedRecovery = spawnSync(process.execPath, ['-e',
+      `const fs=require('node:fs'),write=fs.writeSync;
+       fs.writeSync=(...args)=>{const result=write(...args);
+         if(String(args[1]).includes('"kind":"claim"'))process.kill(process.pid,'SIGKILL');return result};
+       require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'publish');`,
+      path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project], {encoding: 'utf8'});
+    expect(interruptedRecovery.signal).toBe('SIGKILL');
+  }
   const marker = path.join(project, '.build/aily-workspace.lock');
   const abandoned = await readFile(marker, 'utf8');
   const launch = await launchAilyElectron({
@@ -55,7 +65,7 @@ test('issue 745: interrupted publication recovers through editor reopen and comp
         await expect(win.locator('app-blockly-editor')).toHaveCount(0);
       }
     }
-    await writeFile(info.outputPath('reopen-evidence.json'), JSON.stringify({abandoned: JSON.parse(abandoned), attempts, errors}, null, 2));
+    await writeFile(info.outputPath('reopen-evidence.json'), JSON.stringify({abandoned: JSON.parse(abandoned.split('\n')[0]), recoveryJournal: abandoned.split('\n').slice(1), attempts, errors}, null, 2));
     await win.screenshot({path: info.outputPath('reopened.png')});
     if (process.env['AILY_ISSUE745_BASELINE'] === '1') {
       expect(errors.filter(error => error.includes('BUILD_WORKSPACE_RECOVERY_REQUIRED')).length).toBeGreaterThanOrEqual(2);
@@ -64,6 +74,7 @@ test('issue 745: interrupted publication recovers through editor reopen and comp
     }
     for (const attempt of attempts) { expect(attempt.error).toBe(''); expect(attempt.code).toContain('void setup()'); }
     expect(existsSync(marker)).toBe(false);
+    expect(existsSync(path.join(project, '.build/aily-workspace-recovery.lock'))).toBe(false);
     // A native pointer gesture and save exercise the normal editor change chain.
     await expect(win.locator('.blockly-spin')).toHaveCount(0);
     await win.evaluate(() => (window as any).blocklyWorkspace.getBlockById('arduino_setup_id0').getSvgRoot().setAttribute('data-recovery-drag', 'setup'));
@@ -85,6 +96,7 @@ test('issue 745: interrupted publication recovers through editor reopen and comp
     }, {timeout: 180_000}).toBe('success');
     await win.screenshot({path: info.outputPath('compiled.png')});
     expect(existsSync(marker)).toBe(false);
+    expect(existsSync(path.join(project, '.build/aily-workspace-recovery.lock'))).toBe(false);
     expect(existsSync(path.join(project, '.build/sketch.elf'))).toBe(true);
     expect(existsSync(path.join(project, '.build/sketch.bin'))).toBe(true);
     expect(errors.filter(error => /BUILD_WORKSPACE_|Code generation error/.test(error))).toEqual([]);
