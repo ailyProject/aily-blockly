@@ -111,6 +111,69 @@ describe('Uploader command lifecycle during project close', () => {
     expect(f.outcome.result.state).toBe('done');
   }));
 
+  it('tracks multiple changed-sector blocks within one file after skipping unchanged boot files', fakeAsync(() => {
+    window['fs'].statSync = () => ({ size: 0x10000 });
+    const f = startProgressUpload();
+    f.emit('Executing: flasher --esptool esptool write-flash -z 0x0 "bootloader.bin" 0x8000 "partitions.bin" 0xe000 "boot_app0.bin" 0x10000 "sketch.bin"',
+      "Writing 'bootloader.bin' at 0x00000000...",
+      'No changed sectors found, verifying if data is in flash...',
+      "'bootloader.bin' at 0x00000000 verified.",
+      "Writing 'partitions.bin' at 0x00008000...",
+      'No changed sectors found, verifying if data is in flash...',
+      "'partitions.bin' at 0x00008000 verified.",
+      "Writing 'boot_app0.bin' at 0x0000e000...",
+      'Compressed 8192 bytes to 47...',
+      'Writing at 0x00010000 [==============================] 100.0% 47/47 bytes...',
+      'Hash of data verified.',
+      "Writing 'sketch.bin' at 0x00010000...",
+      'Changed data sectors found, fast reflashing...',
+      'Reflashing 1 changed sector at 0x00010000...',
+      'Flash will be erased from 0x00010000 to 0x00010fff...',
+      'Compressed 4096 bytes to 2048...',
+      'Writing at 0x00011000 [==============================] 100.0% 2048/2048 bytes...',
+      'Wrote 4096 bytes (2048 compressed) at 0x00010000 in 0.1 seconds (327.7 kbit/s).');
+    expect(f.progress()).toBeGreaterThanOrEqual(75);
+    expect(f.progress()).toBeLessThan(80);
+    expect(service.uploadCompleted).toBeFalse();
+
+    let previous = f.progress();
+    f.emit('Reflashing 11 changed sectors at 0x00014000...',
+      'Flash will be erased from 0x00014000 to 0x0001efff...',
+      'Compressed 45056 bytes to 20000...');
+    for (const [address, percent] of [['00014000', 0], ['00018000', 50], ['0001f000', 100]]) {
+      f.emit(`Writing at 0x${address} [==============>               ] ${percent}.0% ${Number(percent) * 200}/20000 bytes...`);
+      expect(f.progress()).toBeGreaterThan(previous);
+      expect(f.progress()).toBeLessThan(100);
+      previous = f.progress();
+    }
+    expect(service.uploadCompleted).toBeFalse();
+    f.emit('Verifying written data...', 'Hash of data verified.', 'Hard resetting via RTS pin...');
+    expect(f.progress()).toBe(100);
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.rejected).toBeFalse();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('completes unchanged files from their filename verification without write percentages', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('Executing: esptool write-flash -z 0x0 "bootloader.bin" 0x10000 "sketch.bin"',
+      "Writing 'bootloader.bin' at 0x00000000...",
+      'No changed sectors found, verifying if data is in flash...',
+      "'bootloader.bin' at 0x00000000 verified.");
+    expect(f.progress()).toBe(50);
+    expect(service.uploadCompleted).toBeFalse();
+    f.emit("Writing 'sketch.bin' at 0x00010000...",
+      'No changed sectors found, verifying if data is in flash...');
+    expect(f.progress()).toBe(50);
+    f.emit("'sketch.bin' at 0x00010000 verified.", 'Hard resetting via RTS pin...');
+    expect(f.progress()).toBe(100);
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.rejected).toBeFalse();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
   it('keeps byte weighting for legacy esptool ranges announced before compression', fakeAsync(() => {
     const f = startProgressUpload();
     f.emit('Executing: esptool write_flash -z 0x0 "bootloader.bin" 0x1000 "sketch.bin"',
