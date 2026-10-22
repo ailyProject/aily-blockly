@@ -139,6 +139,17 @@ function isDevServeSubWindow() {
     return process.env.DEV === 'true' || process.env.DEV === true;
 }
 
+// 设置窗口只在仍停留于本应用的完整来源和路由时，才能读取部署信息或检测云连接。
+function isAppSettingsWindowUrl(actual, expected) {
+    try {
+        const source = new URL(actual), application = new URL(expected);
+        return ['http:', 'https:'].includes(application.protocol)
+            && !application.username && !application.password && !source.username && !source.password && source.origin === application.origin
+            && source.pathname === application.pathname && source.search === application.search
+            && /^#\/settings(?:\?[^#]*)?$/u.test(source.hash);
+    } catch { return false; }
+}
+
 /**
  * 与正式子窗口一致的 webPreferences，用于预热池与即用窗口�?
  */
@@ -1324,22 +1335,28 @@ function registerWindowHandlers(mainWindow, options = {}) {
         return new Promise((resolve) => {
             const requestId = `child-app-host-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             const responseChannel = 'child-app-host-command-response';
-            const timer = setTimeout(() => {
+            const finish = result => {
+                clearTimeout(timer);
                 ipcMain.removeListener(responseChannel, listener);
-                resolve({ ok: false, message: `子应用宿主命令超时: ${command?.action || 'unknown'}` });
+                targetWindow.removeListener('closed', onClosed);
+                resolve(result);
+            };
+            // A confirmed close can destroy the renderer before its IPC reply arrives.
+            const onClosed = () => finish({ ok: command?.action === 'close' || command?.action === 'closeAll' });
+            const timer = setTimeout(() => {
+                finish({ ok: false, message: `子应用宿主命令超时: ${command?.action || 'unknown'}` });
             }, timeoutMs);
             const listener = (event, payload = {}) => {
                 if (event.sender !== targetWindow.webContents || payload.requestId !== requestId) {
                     return;
                 }
-                clearTimeout(timer);
-                ipcMain.removeListener(responseChannel, listener);
-                resolve(payload.result && typeof payload.result === 'object'
+                finish(payload.result && typeof payload.result === 'object'
                     ? payload.result
                     : { ok: false, message: '子应用宿主返回了无效结果' });
             };
 
             ipcMain.on(responseChannel, listener);
+            targetWindow.once('closed', onClosed);
             targetWindow.webContents.send('child-app-host-command', { requestId, command });
         });
     };
@@ -2159,7 +2176,8 @@ function registerWindowHandlers(mainWindow, options = {}) {
                     data: data.data,
                     messageId: messageId
                 });
-                if (data?.data?.action === 'request-login'
+                if (data?.data?.action === 'open-project-in-coder'
+                    || data?.data?.action === 'request-login'
                     || data?.data?.action === 'switch-service-region'
                     || data?.data?.action === 'auth-token-invalid') {
                     if (mainWindow.isMinimized()) {
@@ -2232,6 +2250,16 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     scheduleReplenishSubWindowPool(loadSubWindowBasePage);
+
+    return {
+        isSettingsWindowSender(sender) {
+            // 只有当前设置窗口本人且仍停留在设置路由，才能读取云部署信息和检测连接。
+            const win = settingsWarmWindow;
+            if (!win || win.isDestroyed() || win.webContents.isDestroyed()
+                || sender !== win.webContents || sender.isDestroyed()) return false;
+            return isAppSettingsWindowUrl(sender.getURL(), resolveSubWindowRouteUrl('settings'));
+        },
+    };
 }
 
 

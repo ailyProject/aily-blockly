@@ -1,8 +1,25 @@
-import { BehaviorSubject, Subject } from 'rxjs';
+import { BehaviorSubject, Subject, of } from 'rxjs';
 import { ProjectService } from '@domain/project/public-api';
 import { CodeEditorProComponent } from './code-editor-pro.component';
 import { CodeEditorFrameComponent } from './code-editor-frame.component';
 import { CodeEditorProProjectService } from './services/code-editor-pro-project.service';
+
+describe('Coder title cached library state', () => {
+  it('uses cached libraries for title polling while preserving authoritative close checks', async () => {
+    const project: any = {hasCachedLibraryChanges:jasmine.createSpy('cached').and.returnValue(false),
+      hasUnsavedLibraryChanges:jasmine.createSpy('authoritative').and.resolveTo(false)};
+    const service = new CodeEditorProProjectService({} as any,project,{} as any);
+    const bridge = {saveAll:async()=>({ok:true}),hasUnsavedChanges:jasmine.createSpy('editors').and.resolveTo(false)};
+    service.registerPersistenceBridge('/project',bridge);
+    expect(await service.hasSavedProject('/project',true)).toBeTrue();
+    expect(project.hasUnsavedLibraryChanges).not.toHaveBeenCalled();
+    project.hasCachedLibraryChanges.and.returnValue(true);
+    expect(await service.hasSavedProject('/project',true)).toBeFalse();
+    expect(bridge.hasUnsavedChanges).toHaveBeenCalledTimes(1);
+    expect(await service.hasSavedProject('/project')).toBeTrue();
+    expect(project.hasUnsavedLibraryChanges).toHaveBeenCalledOnceWith('/project');
+  });
+});
 
 describe('Coder retained project workspaces', () => {
   let service: any;
@@ -31,6 +48,7 @@ describe('Coder retained project workspaces', () => {
       coderWorkspaceSubject: new BehaviorSubject(null),
       boardConfigUpdatedSubject: new Subject(),
       configService: {
+        getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local',
         data: { recentlyProjects: [] },
         save: jasmine.createSpy('save'),
         getApplicationName: () => 'Coder',
@@ -281,12 +299,29 @@ describe('Coder retained project workspaces', () => {
     const component: any = Object.create(CodeEditorProComponent.prototype);
     component.projectService = service;
     component.closing = new Set();
-    component.persistence = { saveAll: jasmine.createSpy('save').and.resolveTo() };
+    component.persistence = { hasSavedProject: async () => false, saveAll: jasmine.createSpy('save').and.resolveTo() };
+    component.modal = { create: () => ({ afterClose: of({ result: 'save' }) }) };
     component.message = { error: jasmine.createSpy('error') };
     await component.closeCoderProject('/work/device-b', new Event('click'));
     expect(component.persistence.saveAll).toHaveBeenCalledOnceWith('/work/device-b');
     expect(service.coderProjects.length).toBe(1);
     expect(service.currentProjectPath).toBe('/work/device-a');
+  });
+
+  it('discards only the closing tab and does not save another project', async () => {
+    await service.addCoderProject('/work/device-b');
+    const component: any = Object.create(CodeEditorProComponent.prototype);
+    component.projectService = service;
+    component.closing = new Set();
+    component.persistence = { hasSavedProject: async () => false, saveAll: jasmine.createSpy('save') };
+    component.modal = { create: () => ({ afterClose: of({ result: 'continue' }) }) };
+    component.message = { error: jasmine.createSpy('error') };
+    spyOn(service, 'discardLibraryChanges').and.resolveTo();
+    await component.closeCoderProject('/work/device-b', new Event('click'));
+    expect(service.discardLibraryChanges).toHaveBeenCalledOnceWith('/work/device-b');
+    expect(component.persistence.saveAll).not.toHaveBeenCalled();
+    expect(service.currentProjectPath).toBe('/work/device-a');
+    expect(service.coderProjects.length).toBe(1);
   });
 
   it('routes simultaneous saves to their matching iframe and includes inactive dirty editors when closing', async () => {
@@ -317,7 +352,7 @@ describe('Coder retained project workspaces', () => {
     const project = {
       currentProjectPath: '/work/device-a',
       isAilyCodeProject: () => true,
-      copyPackageJsonToTemp: jasmine.createSpy('copyPackageJsonToTemp').and.resolveTo(true),
+      saveLibraryChanges: jasmine.createSpy('saveLibraryChanges').and.resolveTo(),
     };
     const persistence = new CodeEditorProProjectService(
       {
@@ -343,6 +378,5 @@ describe('Coder retained project workspaces', () => {
 
     finishHash('hash');
     expect(await save).toEqual({ success: true, path: '/work/device-a' });
-    expect(project.copyPackageJsonToTemp).toHaveBeenCalledOnceWith('/work/device-a');
   });
 });

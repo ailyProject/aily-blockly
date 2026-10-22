@@ -88,12 +88,12 @@ const lifecycle = createManagedToolLifecycle({
   isStatusStateValid: linterStateFilesExist,
 });
 
-function initialize(childPath, prerequisitePromise, options = {}) {
-  return lifecycle.initialize(childPath, prerequisitePromise, options);
+function configure(childPath, options = {}) {
+  lifecycle.configure(childPath, options);
 }
 
-function waitForReady() {
-  return lifecycle.waitForReady();
+function ensureReady() {
+  return lifecycle.ensureReady();
 }
 
 function registerHandlers(mainWindowProvider) {
@@ -106,7 +106,7 @@ function registerHandlers(mainWindowProvider) {
   ipcMain.handle('aily-linter-status', async () => lifecycle.getStatus());
   ipcMain.handle('aily-linter-check-update', async () => lifecycle.checkForUpdate());
   ipcMain.handle('aily-linter-wait-ready', async () => {
-    const result = await lifecycle.waitForReady();
+    const result = await ensureReady();
     if (!result.ok) {
       throw new Error(result.error || 'aily-linter is not installed or failed to initialize');
     }
@@ -126,7 +126,7 @@ function registerHandlers(mainWindowProvider) {
 }
 
 module.exports = {
-  initialize,
+  configure,
+  ensureReady,
   registerHandlers,
-  waitForReady,
 };

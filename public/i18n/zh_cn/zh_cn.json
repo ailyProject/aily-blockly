@@ -402,6 +402,14 @@
             "CACHE": "缓存管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "云编译",
+            "CLOUD_COMPILATION_DESC": "在云端编译，烧录仍在本机进行。开启时自动检测服务。",
+            "CLOUD_PRO_REQUIRED": "登录 Pro 账号后可用",
+            "CLOUD_ENABLE_CHECKING": "正在检测云编译服务…",
+            "CLOUD_ENABLE_SUCCESS": "开启成功",
+            "CLOUD_ENABLE_FAILED": "开启失败，请稍后重试。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "开启失败，请完整退出并重新启动软件后重试。",
+            "CLOUD_DISABLE_FAILED": "关闭失败，请重试。",
             "PROJECT_FOLDER": "项目文件夹",
             "LANGUAGE": "语言",
             "DEVELOPMENT_MODE_PREFERENCE": "默认开发模式",
@@ -1085,6 +1093,7 @@
             "BUSY_RETRY_LATER": "{{message}}，请稍后再试",
             "BUSY_WAIT": "{{message}}，请稍后",
             "PREPARING_TITLE": "编译准备中",
+            "PRECOMPILE_COMPLETE_TITLE": "预处理完成",
             "PRECOMPILE_RUNNING": "预编译正在运行",
             "PRECOMPILE_FAILED_TITLE": "预编译失败",
             "PRECOMPILE_FAILED_DETAIL": "依赖分析时发生错误，请查看日志了解详情",
@@ -1184,6 +1193,14 @@
         "NO_TUTORIAL_PROVIDED": "库作者未提供教程"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "使用 Aily Coder 打开",
+      "CONVERT_CODER_TITLE": "转换为 Coder 项目",
+      "CONVERT_CODER_CONTENT": "此文件属于 Blockly 项目。将创建 Coder 副本并安装依赖；副本可能无法再使用积木编辑。原项目保留。",
+      "CONVERT_CODER_BUTTON": "转换并打开",
+      "CONVERT_CODER_FAILED": "转换失败：{{error}}",
+      "CONVERT_CODER_INSTALLING": "正在安装 Coder 项目依赖",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "依赖准备失败，请检查安装日志后重试",
+      "CONVERT_CODER_OPEN_FAILED": "Coder 项目已保存至 {{path}}，请使用 Aily Coder 打开。",
       "MODE_UNKNOWN": "无法识别项目类型，请选择有效的 Aily Blockly 或 Aily Coder 项目。",
       "MODE_CREATE_RESTRICTED": "当前 {{application}} 模式不能创建此类项目，请使用 {{targetApplication}} 创建。",
       "MODE_MISMATCH_TITLE": "项目模式不匹配",
@@ -1199,6 +1216,11 @@
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "DEPENDENCY_TASKS_STOPPED": "项目依赖任务已停止",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "云编译组件尚未更新，请完整退出并重新启动软件后重试；仅刷新页面无效。",
+        "CLOUD_TARGET_UNAVAILABLE": "此开发板版本或内容尚未注册为可用的云编译目标。",
+        "CLOUD_BOARD_NOT_ENABLED": "此开发板版本尚未启用云编译。",
+        "CLOUD_BOARD_UNSUPPORTED": "此开发板版本暂不支持云编译。",
+        "CLOUD_BOARD_OFFLINE": "此开发板的云编译节点暂时离线，请稍后重试。",
         "SDK_CONFIG_NOT_READY": "SDK 尚未就绪，部分开发板配置暂不可用",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",
         "BOARD_SWITCH_SUCCESS": "开发板切换成功",
@@ -1403,5 +1425,29 @@
         "ERR_PATH_EXISTS": "同名目录已存在，请更换项目名",
         "ERR_PATH_INVALID": "保存路径包含非法字符",
         "ERR_CREATE_FAILED": "创建失败，请稍后重试"
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "切换本地编译",
+        "SWITCH_TO_CLOUD": "切回云编译",
+        "SWITCHING_TO_CLOUD": "正在停止本地编译，准备切回云编译…",
+        "SWITCHING_TO_LOCAL": "正在取消云编译，准备切换到本地…",
+        "PREPARING_LOCAL": "正在准备本地编译环境…",
+        "REUSED_RESULT": "已复用云编译结果 (耗时: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "云编译完成 (耗时: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "正在准备云编译文件",
+            "UPLOADING": "正在上传云编译文件",
+            "QUEUED": "正在排队等待云编译",
+            "DISPATCHING": "正在分配云编译服务器",
+            "PREPARING": "正在准备云编译环境",
+            "RESOURCES": "正在准备云编译资源",
+            "ANALYZING": "正在分析项目",
+            "COMPILING": "正在云编译",
+            "FINALIZING": "正在检查云编译产物",
+            "DOWNLOADING": "正在下载云编译产物",
+            "VERIFYING": "正在校验云编译产物",
+            "RECONNECTING": "正在重新连接网关",
+            "COMPLETE": "云编译完成"
+        }
     }
 }

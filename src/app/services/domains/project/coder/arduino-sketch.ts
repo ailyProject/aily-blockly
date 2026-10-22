@@ -6,7 +6,26 @@ export function coderSourceDirectory(manifest: { arduinoSketch?: unknown }): str
 export function normalizeProjectOpenPath(value: string): string {
   if (!value || !window['fs']?.existsSync(value)) return value;
   if (/\.(ino|aci|abi)$/i.test(value) && window['fs'].statSync(value)._isFile) {
-    return window['path'].dirname(value);
+    const directory = window['path'].dirname(value);
+    if (/\.ino$/i.test(value)) {
+      // Generated Blockly sketches live below .temp/sketch; Coder entries can
+      // also live below sketch/src. Stop at the nearest enclosing Aily project.
+      let parent = directory;
+      while (true) {
+        if (window['fs'].existsSync(window['path'].join(parent, 'project.abi'))
+          || window['fs'].existsSync(window['path'].join(parent, 'project.aci'))) return parent;
+        const manifestPath = window['path'].join(parent, 'package.json');
+        if (window['fs'].existsSync(manifestPath)) {
+          try {
+            if (JSON.parse(window['fs'].readFileSync(manifestPath, 'utf8')).type === 'coder') return parent;
+          } catch { /* The mode guard reports invalid project metadata. */ }
+        }
+        const next = window['path'].dirname(parent);
+        if (next === parent) break;
+        parent = next;
+      }
+    }
+    return directory;
   }
   return value;
 }

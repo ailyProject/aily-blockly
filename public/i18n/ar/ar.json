@@ -341,6 +341,14 @@
             "CACHE": "إدارة ذاكرة التخزين المؤقتة"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "التجميع السحابي",
+            "CLOUD_COMPILATION_DESC": "التجميع في السحابة، والرفع إلى اللوحة على هذا الكمبيوتر. يتم فحص الخدمة عند التفعيل.",
+            "CLOUD_PRO_REQUIRED": "سجّل الدخول بحساب Pro للاستخدام",
+            "CLOUD_ENABLE_CHECKING": "جارٍ فحص خدمة التجميع السحابي…",
+            "CLOUD_ENABLE_SUCCESS": "تم تفعيل التجميع السحابي.",
+            "CLOUD_ENABLE_FAILED": "تعذر التفعيل. تحقق من الخدمة وحاول مجددًا.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "تعذر التفعيل. أغلق التطبيق بالكامل ثم أعد تشغيله وحاول مجددًا.",
+            "CLOUD_DISABLE_FAILED": "تعذر إيقاف التجميع السحابي. حاول مجددًا.",
             "PROJECT_FOLDER": "مجلد المشروع",
             "LANGUAGE": "اللغة",
             "DEVELOPMENT_MODE_PREFERENCE": "وضع التطوير الافتراضي",
@@ -941,6 +949,7 @@
             "BUSY_RETRY_LATER": "{{message}}، يرجى المحاولة لاحقًا",
             "BUSY_WAIT": "{{message}}، يرجى الانتظار",
             "PREPARING_TITLE": "جاري تجهيز البناء",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "التحضير للبناء قيد التشغيل",
             "PRECOMPILE_FAILED_TITLE": "فشل التحضير للبناء",
             "PRECOMPILE_FAILED_DETAIL": "حدث خطأ أثناء تحليل التبعيات. راجع السجل للتفاصيل.",
@@ -1040,6 +1049,19 @@
         "NO_TUTORIAL_PROVIDED": "لم يقدم مؤلف المكتبة أي دليل تعليمي"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "مكوّن التجميع السحابي غير محدّث. أغلق التطبيق بالكامل وأعد تشغيله، ثم حاول مجددًا؛ تحديث الصفحة وحده لا يكفي.",
+        "CLOUD_TARGET_UNAVAILABLE": "لم يُسجل هذا الإصدار أو المحتوى للوحة كهدف سحابي متاح.",
+        "CLOUD_BOARD_NOT_ENABLED": "لم يتم تفعيل الترجمة البرمجية السحابية لهذا الإصدار من اللوحة.",
+        "CLOUD_BOARD_UNSUPPORTED": "لا يدعم هذا الإصدار من اللوحة الترجمة البرمجية السحابية.",
+        "CLOUD_BOARD_OFFLINE": "المترجم البرمجي السحابي لهذه اللوحة غير متصل. يرجى المحاولة لاحقًا.",
       "MODE_UNKNOWN": "نوع المشروع غير معروف. اختر مشروع Aily Blockly أو Aily Coder صالحًا.",
       "MODE_CREATE_RESTRICTED": "لا يمكن لوضع {{application}} الحالي إنشاء هذا النوع من المشاريع. استخدم {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "وضع المشروع غير متوافق",
@@ -1250,5 +1272,29 @@
         "ERR_PATH_EXISTS": "مجلد بنفس الاسم موجود بالفعل",
         "ERR_PATH_INVALID": "مسار الحفظ يحتوي على أحرف غير صالحة",
         "ERR_CREATE_FAILED": "فشل إنشاء المشروع. يرجى المحاولة مرة أخرى."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "التبديل إلى الترجمة المحلية",
+        "SWITCH_TO_CLOUD": "العودة إلى التجميع السحابي",
+        "SWITCHING_TO_CLOUD": "جارٍ إيقاف التجميع المحلي للعودة إلى السحابة…",
+        "SWITCHING_TO_LOCAL": "جارٍ إلغاء الترجمة السحابية للمتابعة محليًا…",
+        "PREPARING_LOCAL": "جارٍ إعداد الترجمة المحلية…",
+        "REUSED_RESULT": "تمت إعادة استخدام نتيجة البناء السحابي المتحقق منها (الوقت: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "اكتمل البناء السحابي (الوقت: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "جارٍ تجهيز ملفات البناء السحابي",
+            "UPLOADING": "جارٍ رفع ملفات البناء السحابي",
+            "QUEUED": "في انتظار دور البناء السحابي",
+            "DISPATCHING": "جارٍ تعيين خادم البناء السحابي",
+            "PREPARING": "جارٍ تجهيز بيئة البناء السحابي",
+            "RESOURCES": "جارٍ تجهيز موارد البناء السحابي",
+            "ANALYZING": "جارٍ تحليل المشروع",
+            "COMPILING": "جارٍ الترجمة البرمجية في السحابة",
+            "FINALIZING": "جارٍ فحص نتائج البناء السحابي",
+            "DOWNLOADING": "جارٍ تنزيل نتائج البناء السحابي",
+            "VERIFYING": "جارٍ التحقق من سلامة نتائج البناء السحابي",
+            "RECONNECTING": "جارٍ إعادة الاتصال بالبوابة",
+            "COMPLETE": "اكتمل البناء السحابي"
+        }
     }
 }

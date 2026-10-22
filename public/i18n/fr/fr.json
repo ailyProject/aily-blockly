@@ -341,6 +341,14 @@
             "CACHE": "Gestion du cache"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Compilation dans le cloud",
+            "CLOUD_COMPILATION_DESC": "Compilez dans le cloud et téléversez sur la carte depuis cet ordinateur. Le service est vérifié à l’activation.",
+            "CLOUD_PRO_REQUIRED": "Connectez-vous avec un compte Pro",
+            "CLOUD_ENABLE_CHECKING": "Vérification du service de compilation cloud…",
+            "CLOUD_ENABLE_SUCCESS": "Compilation cloud activée.",
+            "CLOUD_ENABLE_FAILED": "Impossible d’activer la compilation cloud. Réessayez plus tard.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Activation impossible. Quittez complètement l’application, redémarrez-la et réessayez.",
+            "CLOUD_DISABLE_FAILED": "Impossible de désactiver la compilation cloud. Réessayez.",
             "PROJECT_FOLDER": "Dossier du Projet",
             "LANGUAGE": "Langue",
             "DEVELOPMENT_MODE_PREFERENCE": "Mode de développement par défaut",
@@ -941,6 +949,7 @@
             "BUSY_RETRY_LATER": "{{message}}, veuillez réessayer plus tard",
             "BUSY_WAIT": "{{message}}, veuillez patienter",
             "PREPARING_TITLE": "Préparation de la compilation",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "La précompilation est en cours",
             "PRECOMPILE_FAILED_TITLE": "Échec de la précompilation",
             "PRECOMPILE_FAILED_DETAIL": "Une erreur est survenue pendant l’analyse des dépendances. Consultez le journal pour plus de détails.",
@@ -1040,6 +1049,19 @@
         "NO_TUTORIAL_PROVIDED": "L'auteur de la bibliothèque n'a pas fourni de tutoriel"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Le composant de compilation dans le cloud est obsolète. Quittez complètement puis redémarrez l’application avant de réessayer ; recharger la page ne suffit pas.",
+        "CLOUD_TARGET_UNAVAILABLE": "Cette version ou ce contenu de carte ne figure pas parmi les cibles cloud disponibles.",
+        "CLOUD_BOARD_NOT_ENABLED": "La compilation cloud n’est pas activée pour cette version de carte.",
+        "CLOUD_BOARD_UNSUPPORTED": "Cette version de carte ne prend pas en charge la compilation cloud.",
+        "CLOUD_BOARD_OFFLINE": "Le compilateur cloud de cette carte est hors ligne. Veuillez réessayer plus tard.",
       "MODE_UNKNOWN": "Type de projet inconnu. Sélectionnez un projet Aily Blockly ou Aily Coder valide.",
       "MODE_CREATE_RESTRICTED": "Le mode actuel de {{application}} ne peut pas créer ce type de projet. Utilisez {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Mode de projet incompatible",
@@ -1250,5 +1272,29 @@
         "ERR_PATH_EXISTS": "Un dossier du même nom existe déjà",
         "ERR_PATH_INVALID": "Le chemin d'enregistrement contient des caractères invalides",
         "ERR_CREATE_FAILED": "Échec de la création du projet. Veuillez réessayer."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Compiler en local",
+        "SWITCH_TO_CLOUD": "Revenir à la compilation cloud",
+        "SWITCHING_TO_CLOUD": "Arrêt de la compilation locale pour revenir au cloud…",
+        "SWITCHING_TO_LOCAL": "Annulation de la compilation cloud pour continuer en local…",
+        "PREPARING_LOCAL": "Préparation de la compilation locale…",
+        "REUSED_RESULT": "Résultat de compilation cloud vérifié réutilisé (durée: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Compilation cloud terminée (durée: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Préparation des données de compilation cloud",
+            "UPLOADING": "Envoi des données de compilation cloud",
+            "QUEUED": "En attente dans la file de compilation cloud",
+            "DISPATCHING": "Attribution d’un serveur de compilation cloud",
+            "PREPARING": "Préparation de l’environnement de compilation cloud",
+            "RESOURCES": "Préparation des ressources de compilation cloud",
+            "ANALYZING": "Analyse du projet",
+            "COMPILING": "Compilation dans le cloud",
+            "FINALIZING": "Contrôle des résultats de compilation cloud",
+            "DOWNLOADING": "Téléchargement des résultats de compilation cloud",
+            "VERIFYING": "Vérification des résultats de compilation cloud",
+            "RECONNECTING": "Reconnexion à la passerelle",
+            "COMPLETE": "Compilation cloud terminée"
+        }
     }
 }

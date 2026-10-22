@@ -105,7 +105,7 @@ export class BlocklyProjectCleanState {
 
   /** Visiting an untouched page may add serialization defaults, but must never
    * acknowledge edits to that page, another page, shared models, titles or tabs. */
-  acceptHydration(scope: readonly unknown[], before: BlocklyProjectDocument, after: BlocklyProjectDocument): void {
+  acceptHydration(scope: readonly unknown[], before: BlocklyProjectDocument, after: BlocklyProjectDocument): BlocklyProjectDocument | undefined {
     if (!this.accepted || !this.matches(scope)) return;
     try { assertProjectLoadPreserved(before, after, this.runtimeView); } catch { return; }
     const baseline = this.accepted.document;
@@ -123,6 +123,7 @@ export class BlocklyProjectCleanState {
       else delete original.viewState;
     }
     baseline.sharedModel = cloneProjectJson(after.sharedModel);
+    return baseline;
   }
 
   private matches(scope: readonly unknown[]): boolean {

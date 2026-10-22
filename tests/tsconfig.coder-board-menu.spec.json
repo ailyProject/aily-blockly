@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/integrations/coder/board-config/*.spec.ts",
+    "../src/app/integrations/coder/coder-board-config.service.spec.ts",
+    "../src/app/integrations/coder/coder-project-runtime.service.spec.ts",
+    "../src/app/services/domains/project/project-coder-menu.spec.ts",
+    "../src/app/services/domains/project/project-sdk-load.spec.ts",
+    "../src/app/main-window/components/header/header-partition-manager.spec.ts",
+    "../src/app/editors/code-editor-pro/code-editor-pro-workspace.spec.ts",
+    "../src/**/*.d.ts",
+    "../src/app/main-window/components/header/header-board-menu.spec.ts"
+  ]
+}

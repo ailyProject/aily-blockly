@@ -1,8 +1,10 @@
+import { resolvePartitionPaths } from '@shared/public-api';
+export { resolvePartitionPaths } from '@shared/public-api';
 import type { ProjectService } from '@domain/project/public-api';
 import type { BuilderService } from '@domain/build/public-api';
 import {
   allocatePartitions, inferDraft, parseFlashSize, parsePartitionCsv,
-  serializePartitions, validatePartitions, type PartitionDraft,
+  serializePartitions, validatePartitions, MIB, SECTOR, type PartitionDraft,
 } from './partition-layout';
 
 export interface FlashOption { value: string | null; bytes: number; }
@@ -14,14 +16,15 @@ export interface PartitionManagerContext {
   flashBytes: number;
   flashOptions: FlashOption[];
   csv: string;
-  source: 'project' | 'legacy' | 'board' | 'sdk' | 'missing';
+  source: 'project' | 'legacy' | 'board' | 'sdk' | 'cloud' | 'missing';
   customSelected: boolean;
   filePath: string;
   draft: PartitionDraft | null;
-  xiaozhiSupported: boolean;
 }
 interface Session {
   context: PartitionManagerContext;
+  // 草稿绑定读取时的编译模式，切换模式后要求重新载入，避免保存过期的开发板分区配置。
+  cloud: boolean;
   signature: string;
   watched: Array<{ path: string; content: string | null }>;
 }
@@ -29,15 +32,17 @@ const sessions = new Map<string, Session>();
 const readOptional = (fs: any, path: string): string | null => fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : null;
 const projectSignature = (pkg: any, board: any): string => JSON.stringify([pkg.entry, pkg.devmode, pkg.board, pkg.dependencies, pkg.projectConfig, board]);
 
-export function resolvePartitionPaths(projectPath: string, pkg: any, isCoder: boolean, path: any) {
-  const root = path.resolve(projectPath);
-  const source = isCoder ? path.dirname(path.join(root, pkg.arduinoSketch === true ? '.' : 'sketch', pkg.entry || 'src/main.cpp')) : path.join(root, 'src');
-  const filePath = path.join(source, 'partitions.csv');
-  const relative = path.relative(root, filePath);
-  if (!relative || relative === '..' || relative.startsWith('../') || relative.startsWith('..\\') || path.isAbsolute(relative)) {
-    throw new Error('项目入口路径超出当前项目，无法保存分区。');
-  }
-  return { filePath, legacyPath: path.join(root, 'partitions.csv') };
+/** Metadata is only a UI hint; malformed values must never become editor state. */
+function isPartitionDraft(value: unknown): value is PartitionDraft {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const draft = value as Record<string, unknown>;
+  return ['iot', 'xiaozhi', 'large'].includes(draft['preset'] as string)
+    && ['recommended', 'fixed', 'remaining'].includes(draft['appMode'] as string)
+    && ['fixed', 'remaining'].includes(draft['storageMode'] as string)
+    && ['ota', 'storage', 'coredump'].every(key => typeof draft[key] === 'boolean')
+    && Number.isSafeInteger(draft['flashBytes']) && Number(draft['flashBytes']) > 0 && Number(draft['flashBytes']) <= 256 * MIB
+    && ['appBytes', 'storageBytes', 'nvsBytes'].every(key => Number.isSafeInteger(draft[key])
+      && Number(draft[key]) >= 0 && Number(draft[key]) <= 256 * MIB && Number(draft[key]) % SECTOR === 0);
 }
 
 /** Stage all files first; roll back the whole update on a write/rename failure. */
@@ -76,6 +81,7 @@ export function writePartitionTransaction(fs: any, path: any, files: Array<{ pat
 
 async function loadContext(project: ProjectService, requestedPath: string): Promise<PartitionManagerContext> {
   if (!requestedPath || requestedPath !== project.currentProjectPath) throw new Error('请先在主窗口切换到此项目，再重新载入分区方案。');
+  const cloud = project.isCloudBuild();
   const board = project.currentBoardConfig;
   if (!String(board?.core || board?.type || '').toLowerCase().includes('esp32')) throw new Error('当前开发板不是受支持的 ESP32 开发板。');
   const pkg = await project.getPackageJson();
@@ -90,7 +96,7 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
     const current = item.children?.find(child => child.check);
     if (current && selected[item.key] === undefined) selected[item.key] = current.data;
   }
-  const flashOptions: FlashOption[] = menu.flatMap(item => item.children || [])
+  const flashOptions: FlashOption[] = menu.filter(item => !item.disabled).flatMap(item => item.children || [])
     .filter(item => item.key === 'FlashSize' && !item.disabled && !item.extra?.selectAction)
     .map(item => ({ value: String(item.data), bytes: parseFlashSize(item.data) }))
     .filter(item => item.bytes > 0);
@@ -98,12 +104,16 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
   const watched = [filePath, legacyPath].map(p => ({ path: p, content: readOptional(fs, p) }));
   let csv = watched[0].content ?? watched[1].content ?? '';
   let source: PartitionManagerContext['source'] = watched[0].content !== null ? 'project' : watched[1].content !== null ? 'legacy' : 'missing';
-  // Resolve the current Arduino board defaults without changing project options.
-  const sdkPath = await project.getSdkPath();
+  // 本地读取 SDK 默认值，云模式读取网关元数据；查看分区时不修改项目的开发板选项。
+  const sdkPath = cloud ? '' : await project.getSdkPath();
   const boardId = String(board.type || '').split(':').pop();
   const boardsTxt = sdkPath ? readOptional(fs, path.join(sdkPath, 'boards.txt')) : null;
   const properties: Record<string, string> = {};
   const raw: Record<string, string> = {};
+  if (cloud) {
+    Object.assign(properties, await project.getBoardBuildProperties());
+    flashBytes ||= parseFlashSize(properties['build.flash_size']);
+  }
   if (boardsTxt) {
     for (const line of boardsTxt.split(/\r?\n/)) {
       const equal = line.indexOf('=');
@@ -131,13 +141,23 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
       if (content !== null) { csv = content; source = 'sdk'; watched.push({ path: sdkCsv, content }); }
     }
   }
-  if (project.currentProjectPath !== requestedPath || project.currentBoardConfig !== board) throw new Error('项目或开发板已改变，请重新打开分区管理器。');
+  // 云模式不安装 SDK，从当前目标公开的模板恢复默认分区，项目自己的 CSV 始终优先。
+  if (source === 'missing' && cloud && selected['PartitionScheme'] !== 'custom') {
+    const name = properties['build.partitions'];
+    if (name && /^[\w.-]+$/.test(name)) {
+      const content = await project.getCloudPartitionTemplate(name);
+      if (content === null) throw new Error('云编译目标未提供当前分区模板。');
+      csv = content;
+      source = 'cloud';
+    }
+  }
   const latestPkg = await project.getPackageJson();
+  if (project.currentProjectPath !== requestedPath || project.currentBoardConfig !== board || project.isCloudBuild() !== cloud) throw new Error('项目、开发板或编译设置已改变，请重新打开分区管理器。');
   if (projectSignature(latestPkg, board) !== projectSignature(pkg, board)) throw new Error('项目配置已改变，请重新载入。');
   const parsed = parsePartitionCsv(csv);
   let draft = !parsed.errors.length && csv ? inferDraft(parsed.rows, flashBytes) : null;
   const metadata = pkg.ailyPartitionManager;
-  if (metadata?.version === 1 && metadata.csv === csv && metadata.draft?.flashBytes === flashBytes) {
+  if (metadata?.version === 1 && metadata.csv === csv && isPartitionDraft(metadata.draft) && metadata.draft.flashBytes === flashBytes) {
     const generated = allocatePartitions(metadata.draft);
     if (!generated.errors.length && serializePartitions(generated.rows) === csv) draft = metadata.draft;
   }
@@ -145,12 +165,9 @@ async function loadContext(project: ProjectService, requestedPath: string): Prom
     token: crypto.randomUUID(), projectPath: requestedPath, projectName: pkg.nickname || pkg.name || path.basename(requestedPath),
     boardName: board.description || board.name || board.type || 'ESP32', flashBytes, flashOptions,
     csv, source, filePath, customSelected: selected['PartitionScheme'] === 'custom', draft,
-    // A resource layout is supported only when already supplied by this project's board/CSV.
-    // Generic Arduino targets cannot silently adopt the upstream IDF app offset.
-    xiaozhiSupported: draft?.preset === 'xiaozhi',
   };
   if (sessions.size >= 32) sessions.delete(sessions.keys().next().value);
-  sessions.set(context.token, { context, signature: projectSignature(pkg, board), watched });
+  sessions.set(context.token, { context, cloud, signature: projectSignature(pkg, board), watched });
   return context;
 }
 
@@ -168,14 +185,14 @@ export async function handlePartitionManagerRequest(
     const pkg = await project.getPackageJson();
     if (isBusy()) throw new Error('项目正在安装、编译或上传，请等待完成后保存；当前草稿已保留。');
     if (sessions.get(request.token) !== session) throw new Error('此分区方案已保存，请重新载入。');
-    if (project.currentProjectPath !== context.projectPath || projectSignature(pkg, project.currentBoardConfig) !== session.signature) throw new Error('项目配置或开发板已改变，请重新载入后编辑。');
+    if (project.currentProjectPath !== context.projectPath || project.isCloudBuild() !== session.cloud
+      || projectSignature(pkg, project.currentBoardConfig) !== session.signature) throw new Error('项目配置、开发板或编译设置已改变，请重新载入后编辑。');
     const fs = window['fs'];
     const path = window['path'];
     if (session.watched.some(file => readOptional(fs, file.path) !== file.content)) throw new Error('分区文件已被外部修改，请重新载入；当前草稿尚未保存。');
     if (typeof request.csv !== 'string') throw new Error('分区 CSV 内容无效。');
     const selectedFlash = context.flashOptions.find(option => option.bytes === request.flashBytes);
     if (!selectedFlash) throw new Error('请选择当前开发板支持的 Flash 容量。');
-    if (request.draft?.preset === 'xiaozhi' && !context.xiaozhiSupported) throw new Error('此项目尚未提供匹配的小智资源布局，参考方案不能直接保存。');
     const parsed = parsePartitionCsv(request.csv);
     const validation = validatePartitions(parsed.rows, selectedFlash.bytes);
     const errors = [...parsed.errors, ...validation.errors];
@@ -183,7 +200,7 @@ export async function handlePartitionManagerRequest(
     const projectConfig = { ...pkg.projectConfig, PartitionScheme: 'custom' };
     if (selectedFlash.value !== null) projectConfig.FlashSize = selectedFlash.value;
     let draft: PartitionDraft | null = null;
-    if (request.draft && request.draft.flashBytes === selectedFlash.bytes) {
+    if (isPartitionDraft(request.draft) && request.draft.flashBytes === selectedFlash.bytes) {
       const generated = allocatePartitions(request.draft);
       if (!generated.errors.length && serializePartitions(generated.rows) === request.csv) draft = request.draft;
     }
@@ -194,7 +211,6 @@ export async function handlePartitionManagerRequest(
     ];
     const isCoder = project.isAilyCodeProject(context.projectPath);
     const coderContext = isCoder && !project.isCoderProjectContext ? project.getCoderProjectContext(context.projectPath) : null;
-    if (!isCoder) files.push({ path: path.join(context.projectPath, '.temp', 'package.json'), content: JSON.stringify(next, null, 2) });
     // No awaits after the final context check: a project activation cannot interleave this commit.
     writePartitionTransaction(fs, path, files);
     project.currentPackageData = next;

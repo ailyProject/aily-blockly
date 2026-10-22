@@ -1,3 +1,4 @@
+import { AbsPrecheckFailure } from './abs-precheck';
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
@@ -12,6 +13,11 @@ export class AbsGenerationToolsService {
   constructor(private readonly sync: AbsWorkspaceSyncService) {}
 
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
+
+  authoring(operation: 'abs_compose' | 'abs_precheck', input: Record<string, any>) {
+    try { return this.sync.authoring(operation, input); }
+    catch (error) { return { ok: false, operation, ...serializeAbsFailure(error) }; }
+  }
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void) {
     let applyStarted = false;
@@ -69,6 +75,7 @@ export class AbsGenerationToolsService {
     } catch (error) {
       const failure = serializeAbsFailure(error);
       return { ok: false, operation, ...failure,
+        ...(error instanceof AbsPrecheckFailure ? { precheck: error.precheck } : {}),
         ...(operation === 'abs_apply' ? {
           publication: { status: !applyStarted || error instanceof AbsApplicationFailure ? 'NOT_COMMITTED' : 'UNKNOWN' },
           application: { status: error instanceof AbsApplicationFailure ? error.applicationStatus : applyStarted ? 'UNKNOWN' : 'NOT_STARTED' },

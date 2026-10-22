@@ -1,6 +1,6 @@
-import { Injectable } from '@angular/core';
+import { Injectable, Injector } from '@angular/core';
 import { ActionService, UiService } from '@core/app-shell/public-api';
-import { NpmService } from '@domain/dependencies/public-api';
+import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
 import {
   BlocklyLibraryRuntimeRebuildInput,
   ProjectApplicationPort,
@@ -12,6 +12,7 @@ import { applyCdcSerialPortOverrides } from '../../editors/blockly-editor/compon
 import { BlocklyGeneratorRuntimeService } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
+import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -24,10 +25,15 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     private readonly generatorRuntime: BlocklyGeneratorRuntimeService,
     private readonly blocklyService: BlocklyService,
     private readonly blocklyEditorProjectService: BlocklyEditorProjectService,
+    private readonly injector: Injector,
   ) {}
 
   updateFooterState(state: { state: string; text: string; timeout?: number }): void {
     this.uiService.updateFooterState(state);
+  }
+
+  materializeCoderProjectLibraries(projectPath: string): Promise<void> {
+    return this.injector.get(DEPENDENCY_APPLICATION_PORT).materializeCoderProjectLibraries(projectPath);
   }
 
   closeTerminal(): void {
@@ -138,6 +144,11 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
   }
 
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean> {
+    if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) {
+      // Conversion installs into an inactive Coder context, never the active Blockly manifest.
+      return this.injector.get(CoderProjectRuntimeService).getSession(projectPath).injector
+        .get(NpmService).reinstallDepsForAilyCodeBoardSwitch(projectPath);
+    }
     return this.npmService.reinstallDepsForAilyCodeBoardSwitch(projectPath);
   }
 

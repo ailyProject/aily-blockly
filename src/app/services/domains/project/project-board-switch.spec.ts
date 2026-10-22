@@ -242,7 +242,6 @@ describe('board switch project persistence', () => {
     service.application.hasActiveProjectMutation = (path: string) => registry.hasBlocking(path);
     service.projectLifecycle = new ProjectLifecycleGate();
     service.dependencyLifecycle = new ProjectDependencyLifecycle();
-    service.copyPackageJsonToTemp = async () => true;
     service.getProjectMode = () => 'blockly';
     service.boardChangeSubject = { next: jasmine.createSpy('changed') };
     service.message.warning = jasmine.createSpy('warning');
@@ -315,6 +314,15 @@ describe('board switch project persistence', () => {
     const { service, open } = coderRouteFixture(false, false);
     expect(await open()).toBeFalse();
     expect(service.router.navigate).toHaveBeenCalledOnceWith(['/main/code-editor-pro'], { queryParams: { path: '/project' }, replaceUrl: true });
+  });
+
+  it('does not save over a Chat restore or an explicit discard reload', async () => {
+    for (const options of [{ reason: 'chat-tool-reload' }, { reason: 'reload', saveBeforeReload: false }]) {
+      const { service } = coderRouteFixture(true);
+      expect(await (ProjectService.prototype as any).projectOpenInternal.call(service, '/project', options)).toBeTrue();
+      expect(service.application.dispatchProjectSave).not.toHaveBeenCalled();
+      expect(service.projectActivationSubject.next).toHaveBeenCalled();
+    }
   });
 
   it('does not publish a reload or navigate when saving the retained Coder editor fails', async () => {

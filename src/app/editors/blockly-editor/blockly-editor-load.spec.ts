@@ -38,8 +38,8 @@ describe('legacy native-procedure library validation', () => {
 });
 
 describe('failed Blockly open recovery', () => {
-  for (const toolboxReady of [false, true]) {
-    it(`${toolboxReady ? 'preserves a loaded toolbox' : 'disposes an unprepared runtime'} after program load failure`, async () => {
+  for (const settingsChanged of [false, true]) for (const toolboxReady of [false, true]) {
+    it(`${toolboxReady ? 'preserves a loaded toolbox' : 'disposes an unprepared runtime'} after ${settingsChanged ? 'compile settings change' : 'program load failure'}`, async () => {
       const route = new Subject<any>(); const board = new Subject<any>();
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       Object.assign(component, {
@@ -55,7 +55,9 @@ describe('failed Blockly open recovery', () => {
         abortFailedProjectLoad: jasmine.createSpy('abort'),
         loadProject: async () => {
           if (toolboxReady) component.toolboxReadyProjectPath = '/failed';
-          throw new Error('Blockly changed or discarded persisted state at /attributes/extraState.');
+          throw settingsChanged
+            ? Object.assign(new Error('Compile settings changed.'), { code: 'PROJECT_DEPENDENCY_CANCELLED', reason: 'compile-settings-changed' })
+            : new Error('Blockly changed or discarded persisted state at /attributes/extraState.');
         },
       });
       spyOn(projectDataRuntime, 'configure');
@@ -66,7 +68,8 @@ describe('failed Blockly open recovery', () => {
         route.next({ path: '/failed' });
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(component.loadedProjectPath).toBeUndefined();
-        expect(component.projectService.markBlocklyProjectLoadFailed).toHaveBeenCalledWith('/failed', jasmine.stringMatching(/extraState/));
+        expect(component.projectService.markBlocklyProjectLoadFailed).toHaveBeenCalledWith('/failed',
+          jasmine.stringMatching(settingsChanged ? /Compile settings changed/ : /extraState/));
         expect(component.uiService.updateFooterState).toHaveBeenCalledWith(jasmine.objectContaining({ state: 'error' }));
         if (toolboxReady) {
           expect(component.abortFailedProjectLoad).not.toHaveBeenCalled();
@@ -78,7 +81,6 @@ describe('failed Blockly open recovery', () => {
       } finally { component.projectRouteSubscription.unsubscribe(); component.boardConfigUpdatedSubscription.unsubscribe(); }
     });
   }
-
 });
 
 describe('deep project ABI parser transport', () => {
@@ -178,6 +180,35 @@ describe('project load normalization context', () => {
 });
 
 describe('Blockly dependency preparation cancellation', () => {
+  for (const superseded of [false, true]) {
+    it(`${superseded ? 'rejects a stale route' : 'captures the dependency session'} after startup configuration is loaded`, async () => {
+      const component: any = Object.create(BlocklyEditorComponent.prototype);
+      let initialized!: () => void;
+      const session = { signal: new AbortController().signal };
+      component.configService = { init: () => new Promise<void>(resolve => { initialized = resolve; }) };
+      component.projectService = {
+        getProjectDependencySession: jasmine.createSpy('session').and.returnValue(session),
+        assertProjectDependencySession: () => {},
+        runProjectDependencyTask: async (_session, work) => work(),
+        finishProjectDependencyPreparation: jasmine.createSpy('finish'),
+      };
+      component.prepareProject = jasmine.createSpy('prepare').and.resolveTo();
+      let current = true;
+      const pending = component.loadProject('/refresh', () => { if (!current) throw new Error('stale route'); });
+      expect(component.projectService.getProjectDependencySession).not.toHaveBeenCalled();
+      current = !superseded;
+      initialized();
+      if (superseded) {
+        await expectAsync(pending).toBeRejectedWithError('stale route');
+        expect(component.prepareProject).not.toHaveBeenCalled();
+      } else {
+        await pending;
+        expect(component.prepareProject).toHaveBeenCalledTimes(1);
+        expect(component.projectService.finishProjectDependencyPreparation).toHaveBeenCalledOnceWith(session);
+      }
+    });
+  }
+
   it('restores an unchanged viewport without closing a category opened during startup', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'width:800px;height:600px'; document.body.append(host);

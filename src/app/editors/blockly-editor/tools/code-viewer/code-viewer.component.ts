@@ -6,6 +6,8 @@ import { Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { NzCodeEditorModule } from 'ng-zorro-antd/code-editor';
 import { FormsModule } from '@angular/forms';
+import { TranslateModule } from '@ngx-translate/core';
+import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { BlocklyService } from '../../services/blockly.service';
 import { Subject, combineLatest } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
@@ -28,13 +30,16 @@ import {
     ToolContainerComponent,
     SubWindowComponent,
     CommonModule,
-    FormsModule
+    FormsModule,
+    TranslateModule,
+    NzToolTipModule,
   ],
   templateUrl: './code-viewer.component.html',
   styleUrl: './code-viewer.component.scss',
 })
 export class CodeViewerComponent implements OnDestroy {
   code = '';
+  openingCoder = false;
 
   currentUrl;
 
@@ -76,6 +81,20 @@ export class CodeViewerComponent implements OnDestroy {
 
   ngOnInit() {
     this.currentUrl = this.router.url;
+  }
+
+  async openInCoder(): Promise<void> {
+    if (this.openingCoder) return;
+    this.openingCoder = true;
+    try {
+      // Detached viewers have no project context. The main window saves and
+      // converts its current workspace, including edits newer than IPC code.
+      await window['iWindow'].send({ to: 'main', timeout: 600_000,
+        data: { action: 'open-project-in-coder' } });
+    } finally {
+      this.openingCoder = false;
+      this.cdr.markForCheck();
+    }
   }
 
   ngAfterViewInit(): void {

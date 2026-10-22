@@ -369,6 +369,14 @@
             "CACHE": "緩存管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "雲端編譯",
+            "CLOUD_COMPILATION_DESC": "在雲端編譯，燒錄仍在本機進行。開啟時自動檢查服務。",
+            "CLOUD_PRO_REQUIRED": "登入 Pro 帳戶後可用",
+            "CLOUD_ENABLE_CHECKING": "正在檢查雲端編譯服務…",
+            "CLOUD_ENABLE_SUCCESS": "開啟成功",
+            "CLOUD_ENABLE_FAILED": "開啟失敗，請稍後重試。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "開啟失敗，請完全結束並重新啟動軟件後重試。",
+            "CLOUD_DISABLE_FAILED": "關閉失敗，請重試。",
             "PROJECT_FOLDER": "專案資料夾",
             "LANGUAGE": "語言",
             "DEVELOPMENT_MODE_PREFERENCE": "預設開發模式",
@@ -1018,6 +1026,7 @@
             "BUSY_RETRY_LATER": "{{message}}，請稍後再試",
             "BUSY_WAIT": "{{message}}，請稍後",
             "PREPARING_TITLE": "編譯準備中",
+            "PRECOMPILE_COMPLETE_TITLE": "預處理完成",
             "PRECOMPILE_RUNNING": "預編譯正在執行",
             "PRECOMPILE_FAILED_TITLE": "預編譯失敗",
             "PRECOMPILE_FAILED_DETAIL": "依賴分析時發生錯誤，請查看日誌了解詳情",
@@ -1117,6 +1126,19 @@
         "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "使用 Aily Coder 開啟",
+      "CONVERT_CODER_TITLE": "轉換為 Coder 專案",
+      "CONVERT_CODER_CONTENT": "此檔案屬於 Blockly 專案。將建立 Coder 副本並安裝依賴；副本可能無法再使用積木編輯。原專案保留。",
+      "CONVERT_CODER_BUTTON": "轉換並開啟",
+      "CONVERT_CODER_FAILED": "轉換失敗：{{error}}",
+      "CONVERT_CODER_INSTALLING": "正在安裝 Coder 專案依賴",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "依賴準備失敗，請檢查安裝日誌後重試",
+      "CONVERT_CODER_OPEN_FAILED": "Coder 專案已儲存至 {{path}}，請使用 Aily Coder 開啟。",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "雲編譯元件尚未更新，請完整退出並重新啟動軟件後重試；僅重新整理頁面無效。",
+        "CLOUD_TARGET_UNAVAILABLE": "此開發板版本或內容尚未註冊為可用的雲端編譯目標。",
+        "CLOUD_BOARD_NOT_ENABLED": "此開發板版本尚未啟用雲端編譯。",
+        "CLOUD_BOARD_UNSUPPORTED": "此開發板版本暫不支援雲端編譯。",
+        "CLOUD_BOARD_OFFLINE": "此開發板的雲端編譯節點暫時離線，請稍後重試。",
       "MODE_UNKNOWN": "無法識別專案類型，請選擇有效的 Aily Blockly 或 Aily Coder 專案。",
       "MODE_CREATE_RESTRICTED": "目前 {{application}} 模式無法建立此類專案，請使用 {{targetApplication}} 建立。",
       "MODE_MISMATCH_TITLE": "專案模式不符",
@@ -1354,5 +1376,29 @@
         "ERR_PATH_EXISTS": "同名目錄已存在，請更換專案名",
         "ERR_PATH_INVALID": "儲存路徑包含非法字元",
         "ERR_CREATE_FAILED": "建立失敗，請稍後重試"
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "切換本機編譯",
+        "SWITCH_TO_CLOUD": "切回雲端編譯",
+        "SWITCHING_TO_CLOUD": "正在停止本機編譯，準備切回雲端編譯…",
+        "SWITCHING_TO_LOCAL": "正在取消雲端編譯，準備切換到本機…",
+        "PREPARING_LOCAL": "正在準備本機編譯環境…",
+        "REUSED_RESULT": "已重用雲端編譯結果 (耗時: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "雲端編譯完成 (耗時: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "正在準備雲端編譯檔案",
+            "UPLOADING": "正在上傳雲端編譯檔案",
+            "QUEUED": "正在排隊等候雲端編譯",
+            "DISPATCHING": "正在分配雲端編譯伺服器",
+            "PREPARING": "正在準備雲端編譯環境",
+            "RESOURCES": "正在準備雲端編譯資源",
+            "ANALYZING": "正在分析專案",
+            "COMPILING": "正在雲端編譯",
+            "FINALIZING": "正在檢查雲端編譯產物",
+            "DOWNLOADING": "正在下載雲端編譯產物",
+            "VERIFYING": "正在驗證雲端編譯產物",
+            "RECONNECTING": "正在重新連接閘道",
+            "COMPLETE": "雲端編譯完成"
+        }
     }
 }

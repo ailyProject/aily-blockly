@@ -50,6 +50,7 @@ import './plugins/toolbox-search/src/index';
 import './blockly-native-registrations';
 import { registerProjectBlockPaster } from '../../services/blockly-copy-identities';
 import { batchBlocklyDragRenders } from '../../utils/blockly-drag-render-batch';
+import { bindBlocklyPointerBoundary } from '../../utils/blockly-pointer-boundary';
 import './plugins/stable-comment-icon';
 import { BlocklyService, WorkspaceBlockSearchState } from '../../services/blockly.service';
 import {
@@ -276,6 +277,7 @@ class ExternalToolboxDeleteArea extends Blockly.DeleteArea {
 export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   private releaseProjectBlockPaster?: () => void;
   private releaseDragRenderBatch?: () => void;
+  private releasePointerBoundary?: () => void;
   @ViewChild(BlocklyWorkspacePagesComponent, { static: true }) workspacePaneComponent!: BlocklyWorkspacePagesComponent;
   @ViewChild('workspaceSearchInput') private workspaceSearchInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('layoutElement', { static: true }) private layoutElementRef!: ElementRef<HTMLDivElement>;
@@ -554,6 +556,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.releasePointerBoundary?.();
     this.releaseDragRenderBatch?.();
     this.minimap?.dispose();
     this.minimap = null;
@@ -833,6 +836,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       applyWindowsBlocklyScrollbarThickness(this.platformService.isWindows());
       this.ngZone.runOutsideAngular(() => {
         this.workspace = Blockly.inject(this.workspacePaneComponent.blocklyHostElement, this.options);
+        this.releasePointerBoundary = bindBlocklyPointerBoundary(this.workspace);
         this.releaseDragRenderBatch = batchBlocklyDragRenders(this.workspace);
         this.workspace.setViewportRendering(this.configData.blockly.viewportRendering !== false);
         this.workspacePaneComponent.blocklyHostElement.addEventListener('pointerdown', this.onWorkspacePointerDownBound, true);
@@ -953,6 +957,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       // 设置全局工作区引用，供 editBlockTool 使用
       (window as any)['blocklyWorkspace'] = this.workspace;
       this.workspace.addChangeListener((event: any) => {
+        this.blocklyService.notifyProjectWorkspaceChange(event);
         this.handleProjectBreakpointWorkspaceEvent(event);
         this.requestCodeGeneration(event);
         // 工作区变更时同步 Minimap（含 AI 批量修改 blocks 的场景）

@@ -111,9 +111,9 @@ test('real competing processes never acquire the same workspace together', async
     await Promise.all(finished); assert.equal(fs.existsSync(f.lock), false);
 });
 
-test('an exited owner is not automatically reclaimed while untracked compiler descendants could survive', t => {
+test('an exited delegated owner is not reclaimed while compiler descendants could survive', t => {
     const f = fixture(t);
-    const result = spawnSync(process.execPath, ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');process.exit(0);`, modulePath, f.project],
+    const result = spawnSync(process.execPath, ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile').childEnvironment();process.exit(0);`, modulePath, f.project],
         { windowsHide: true, encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, result.stderr);
     const bytes = fs.readFileSync(f.lock);

@@ -32,11 +32,11 @@ import path from 'node:path';
  *   $env:AILY_E2E_BOARD_KEYWORD = 'uno r4'
  *   # 可选：指定多个开发板搜索关键字，逗号分隔；设置后优先于 AILY_E2E_BOARD_KEYWORD
  *   $env:AILY_E2E_BOARD_KEYWORDS = 'uno r4,esp32'
- *   npm run test:e2e:fast -- full-flow.spec.ts
+ *   npm --prefix e2e run test:fast -- full-flow.spec.ts
  *
  *   # 项目广场全量编译（交互终端遇错时询问继续/中止；设置 AILY_E2E_STOP_ON_ERROR=0 可自动继续）
  *   $env:AILY_E2E_MODE = 'project-plaza'
- *   npm run test:e2e:fast -- full-flow.spec.ts
+ *   npm --prefix e2e run test:fast -- full-flow.spec.ts
  *
  * 本机需具备：内置 Node 工具链（child/node）和全局安装的 aily-builder 命令、该开发板可安装
  * （网络/缓存），以及对应编译器与 SDK 已安装于应用数据目录下的 aily-project/tools 与 sdk。

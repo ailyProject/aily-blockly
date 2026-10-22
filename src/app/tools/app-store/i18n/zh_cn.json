@@ -39,6 +39,7 @@
         "CHECK_UPDATE_FAILED": "检查更新失败：{{message}}",
         "UNINSTALL": "卸载",
         "CONFIRM_UNINSTALL": "确认卸载",
+        "CODER_EDITOR_UNINSTALL_BLOCKED": "请先关闭当前项目，再卸载 Aily Coder Editor。",
         "CANCEL": "取消",
         "REFRESH": "刷新应用列表",
         "RETRY": "重试",

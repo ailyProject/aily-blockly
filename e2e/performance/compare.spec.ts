@@ -3,7 +3,7 @@ import {writeFile, cp, mkdtemp, rm} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {getMainWindow, launchAilyElectron, openBlocklyProject, ROOT} from '../fixtures/electron-app';
-const {serve} = require('../../scripts/serve-blockly-performance.cjs');
+const {serve} = require('./scripts/serve-blockly-performance.cjs');
 const artifacts = path.join(ROOT, 'e2e/.artifacts/blockly-performance-2026-09-28');
 
 const variants = (process.env.BLOCKLY_PERF_VARIANTS || 'official,aily,aily-ui,host').split(',');

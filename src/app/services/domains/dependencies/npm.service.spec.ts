@@ -341,7 +341,7 @@ describe('NpmService installBoardDeps', () => {
       })
     };
 
-    service.configService = { isCoderProduct: () => coder };
+    service.configService = { isCoderProduct: () => coder, getCompileBackend: () => 'local' };
     service.isInstalling = false;
     service.boardDepsInstallPromise = undefined;
     service.boardDependencyInstallProgress = undefined;
@@ -391,7 +391,7 @@ describe('NpmService installBoardDeps', () => {
       service.prjService.getProjectDependencySession(),
       true,
     );
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(true, undefined);
     expect(service.isInstalling).toBeFalse();
   });
 
@@ -414,7 +414,23 @@ describe('NpmService installBoardDeps', () => {
     expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
       { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(), true,
     );
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(true, undefined);
+  });
+
+  it('uses the full local platform installer when the support lookup falls back from cloud', async () => {
+    const { service } = createService(false);
+    service.configService.getCompileBackend = () => 'cloud';
+    let cloud = true;
+    service.prjService.isCloudBuild = () => cloud;
+    service.prjService.resolveCompileBackend = jasmine.createSpy('support').and.callFake(async () => { cloud = false; return 'local'; });
+    service.prjService.getCloudBoardProfile = jasmine.createSpy('cloudTarget');
+    await service.installBoardDeps();
+    expect(service.prjService.resolveCompileBackend).toHaveBeenCalled();
+    expect(service.prjService.getCloudBoardProfile).not.toHaveBeenCalled();
+    expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
+      { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(), true,
+    );
+    expect(service.configService.getCompileBackend()).toBe('cloud');
   });
 
   it('waits through platform installation and its final refresh before reporting ready', fakeAsync(() => {
@@ -481,7 +497,7 @@ describe('NpmService installBoardDeps', () => {
     lifecycle.cancel(session.projectPath);
     finish();
     flushMicrotasks();
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(false);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(false, undefined);
     expect(service.isInstalling).toBeFalse();
   }));
 });

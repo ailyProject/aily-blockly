@@ -200,14 +200,13 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     files.set(`${otherPath}/package.json`, JSON.stringify(otherData));
     component.projectService.currentProjectPath = otherPath;
     component.projectService.currentPackageData = otherData;
-    component.projectService.copyPackageJsonToTemp = jasmine.createSpy('copy');
 
     await component.setCurrentProjectCloudId('uploaded-cloud', root);
 
     expect(JSON.parse(files.get(`${root}/package.json`)!)).toEqual(jasmine.objectContaining({ cloudId: 'uploaded-cloud' }));
     expect(JSON.parse(files.get(`${otherPath}/package.json`)!)).toEqual(otherData);
     expect(component.projectService.currentPackageData).toBe(otherData);
-    expect(component.projectService.copyPackageJsonToTemp).toHaveBeenCalledOnceWith(root);
+    expect(files.has(`${root}/.temp/package.json`)).toBeFalse();
   });
 
   it('does not upload an archive when 7z reports a failure', async () => {

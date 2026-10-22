@@ -9,7 +9,7 @@ const identifier = (name: string) => /^[A-Za-z_]\w*$/.test(name) ? name : json(n
 const variable = (name: string) => '$' + (/^[\p{L}_][\p{L}\p{N}_]*$/u.test(name) ? name : json(name));
 
 /** The sole canonical renderer; identity bookkeeping consumes its paths, not a second serializer. */
-export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionContracts, symbols: AbsSymbols, projectionVersion = ABS_PROJECTION_VERSION) {
+export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionContracts, symbols: Pick<AbsSymbols, 'project'>, projectionVersion = ABS_PROJECTION_VERSION, options: { namedArguments?: boolean } = {}) {
   // Only the immutable-baseline validator uses this historical formatting policy.
   // New exports always use current syntax; there is no caller-selectable write mode.
   const previousProjectionValidation = projectionVersion === 'abs-v2.preview.3';
@@ -49,7 +49,7 @@ export function renderAbs(workspace: AbsAbiWorkspace, contracts: AbsProjectionCo
     renderedInputs.set(block, inCall);
     const order = syntax.argumentOrder?.(block.type, block.extraState, block.fields)?.filter(arg => arg.kind !== 'statementInput');
     const branch = branches(block);
-    const positional = !branch && order && order.every(arg => arg.kind === 'field'
+    const positional = !options.namedArguments && !branch && order && order.every(arg => arg.kind === 'field'
       ? Object.hasOwn(block.fields ?? {}, arg.name) : !childAt(block, arg.name) || inlineInput(block, arg.name))
       && Object.keys(block.fields ?? {}).every(name => order.some(arg => arg.kind === 'field' && arg.name === name));
     const inputArgument = (name: string) => {

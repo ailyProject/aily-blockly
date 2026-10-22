@@ -1,9 +1,11 @@
 @if (currentUrl == "/code-viewer") {
 <app-sub-window [title]="'CODE VIEWER'" [winBtns]="['go-main', 'minimize', 'maximize', 'close']">
+  <ng-container header-btns *ngTemplateOutlet="coderButtonTemplate"></ng-container>
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-sub-window>
 } @else {
 <app-tool-container [title]="'CODE VIEWER'" [path]="'/code-viewer'" (closeEvent)="close()">
+  <ng-container header-btns *ngTemplateOutlet="coderButtonTemplate"></ng-container>
   <ng-container *ngTemplateOutlet="windowBoxTemplate"></ng-container>
 </app-tool-container>
 }
@@ -11,4 +13,11 @@
   <nz-code-editor [(ngModel)]="code" [nzEditorOption]="options"
     (nzEditorInitialized)="onEditorInitialized($event)">
   </nz-code-editor>
+</ng-template>
+<ng-template #coderButtonTemplate>
+  <button class="btn ccenter coder-open-btn" type="button" data-testid="code-viewer-open-coder"
+    nz-tooltip [nzTooltipTitle]="'PROJECT.OPEN_IN_CODER' | translate"
+    [attr.aria-label]="'PROJECT.OPEN_IN_CODER' | translate" [disabled]="openingCoder" (click)="openInCoder()">
+    <i class="fa-light" [class.fa-code]="!openingCoder" [class.fa-spinner-third]="openingCoder" [class.fa-spin]="openingCoder"></i>
+  </button>
 </ng-template>

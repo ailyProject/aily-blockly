@@ -1,6 +1,8 @@
 import * as Blockly from 'blockly';
 import { createBrowserFrameBudget } from '@shared/public-api';
 import { withNativeStateLoading } from '../../../editors/blockly-editor/services/blockly-native-state-loading';
+import { primeBlocklyTextWidths } from '../../../editors/blockly-editor/utils/blockly-text-measurement';
+import { withNativeFragmentRenders } from '../../../editors/blockly-editor/utils/blockly-native-render-batch';
 
 type BlockState = Blockly.serialization.blocks.State;
 
@@ -10,7 +12,7 @@ interface PendingFragment {
 }
 
 const BLOCKS_PER_BATCH = 64;
-const BLOCKS_PER_FRAGMENT = 8;
+const BLOCKS_PER_FRAGMENT = 32;
 
 /** Cut only real connections; fields, mutators and fallback shadow trees stay intact. */
 function takeFragment(source: BlockState, budget: number): {
@@ -55,6 +57,8 @@ export async function loadAbsWorkspaceInChunks(
   workspace: Blockly.WorkspaceSvg,
   onProgress?: (blocks: number, batches: number) => void,
   assertCurrent: () => void = () => undefined,
+  fieldOrder?: (block: Blockly.Block) => readonly string[] | undefined,
+  withFragment: <T>(load: () => T) => T = load => load(),
 ): Promise<{ blockCount: number; batchCount: number }> {
   // appendInternal is exported by the bundled Blockly runtime. It preserves
   // parent-before-field loading and queues rendering instead of forcing it.
@@ -68,6 +72,7 @@ export async function loadAbsWorkspaceInChunks(
     .reverse();
   let blockCount = 0;
   let batchCount = 0;
+  let fragmentLimit = BLOCKS_PER_FRAGMENT;
   // Keep models complete while yielding input handling between fragments.
   // Geometry and the viewport index are refreshed after the graph is connected,
   // rather than repeatedly rendering a growing long stack at every browser frame.
@@ -75,7 +80,13 @@ export async function loadAbsWorkspaceInChunks(
     beginWorkspaceRenderBatch?: (workspace: Blockly.WorkspaceSvg) => () => void;
   }).beginWorkspaceRenderBatch;
   const release = beginBatch?.(workspace) ?? (() => Blockly.renderManagement.triggerQueuedRenders(workspace));
-  const budget = createBrowserFrameBudget();
+  // A yielded frame must not lay out thousands of partially connected SVGs.
+  // Restore the canvas before measuring fonts/final geometry. Only presentation
+  // is hidden: every model and native connection is still created normally.
+  const canvas = workspace.rendered ? workspace.getCanvas() : null;
+  const placeholder = canvas?.parentNode ? document.createComment('blockly-loading') : null;
+  if (placeholder) canvas!.replaceWith(placeholder);
+  const budget = createBrowserFrameBudget({ budgetMs: 16 });
   try {
     Blockly.serialization.workspaces.load({
       ...abi,
@@ -87,7 +98,7 @@ export async function loadAbsWorkspaceInChunks(
       while (pending.length > 0 && batchBlocks < BLOCKS_PER_BATCH) {
         assertCurrent();
         const item = pending.pop()!;
-        const fragment = takeFragment(item.state, Math.min(BLOCKS_PER_FRAGMENT, BLOCKS_PER_BATCH - batchBlocks));
+        const fragment = takeFragment(item.state, Math.min(fragmentLimit, BLOCKS_PER_BATCH - batchBlocks));
         const parent = item.parent ? workspace.getBlockById(item.parent.id) : undefined;
         const parentConnection = item.parent
           ? item.parent.input !== undefined
@@ -98,12 +109,25 @@ export async function loadAbsWorkspaceInChunks(
           throw new Error(`ABS 切片连接不存在: ${item.parent.id}/${item.parent.input ?? 'next'}`);
         }
 
-        withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
-          parentConnection: parentConnection || undefined,
-          recordUndo: false,
-        }));
+        const group = Blockly.Events.getGroup(), recordUndo = Blockly.Events.getRecordUndo();
+        const fragmentStarted = performance.now();
+        try {
+          withFragment(() => withNativeFragmentRenders(workspace, () => withNativeStateLoading(Blockly, workspace, fragment.state, () => Blockly.serialization.blocks.appendInternal(fragment.state, workspace, {
+            parentConnection: parentConnection || undefined,
+            recordUndo: false,
+          }), fieldOrder)));
+        } finally {
+          // Native appendInternal restores these only on success. A rejected
+          // library field/type must not change the next project's undo policy.
+          Blockly.Events.setGroup(group); Blockly.Events.setRecordUndo(recordUndo);
+        }
         pending.push(...fragment.deferred.reverse());
         batchBlocks += fragment.blockCount;
+        // Fixed 32-block fragments exceed a frame on slower machines. Adapt
+        // using actual construction time; never skip models to meet the budget.
+        const elapsed = performance.now() - fragmentStarted;
+        fragmentLimit = Math.max(1, Math.min(BLOCKS_PER_FRAGMENT,
+          Math.floor(fragment.blockCount * 16 / Math.max(1, elapsed))));
         await budget.checkpoint('abs.native-load');
         assertCurrent();
       }
@@ -111,11 +135,19 @@ export async function loadAbsWorkspaceInChunks(
       blockCount += batchBlocks;
       batchCount++;
       onProgress?.(blockCount, batchCount);
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      budget.reset();
+      await budget.checkpoint('abs.native-load');
     }
     assertCurrent();
-  } finally { release(); }
+  } finally {
+    if (placeholder) placeholder.replaceWith(canvas!);
+    Blockly.utils.dom.startTextWidthCache();
+    try {
+      // Read fonts before the final geometry pass, not between SVG writes.
+      if (workspace.rendered && workspace.getAllBlocks(false).length >= 1000) primeBlocklyTextWidths(workspace);
+    } finally {
+      try { release(); } finally { Blockly.utils.dom.stopTextWidthCache(); }
+    }
+  }
   assertCurrent();
   return { blockCount, batchCount };
 }

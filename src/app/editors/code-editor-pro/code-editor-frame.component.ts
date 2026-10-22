@@ -217,6 +217,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private readonly coderDevEmbedBase = 'http://127.0.0.1:5174/';
   private coderRuntimeHostInfo: ChildToolHostInfo | null = null;
   private coderRuntimeAcquirePromise: Promise<ChildToolHostInfo> | null = null;
+  private coderRuntimePreparationPromise: Promise<ChildToolHostInfo> | null = null;
   private coderEditorUpdateState: CoderEditorUpdateState = {
     state: 'current',
     visible: false,
@@ -258,6 +259,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   private readonly componentSubscriptions = new Subscription();
   /** 内嵌 Coder nativeFsWatchStart 注册的宿主 fs.watch 句柄 */
   private coderEmbedFsWatchers = new Map<number, () => void>();
+  private coderEmbedFsWatchRoots = new Map<number, string>();
   private coderEmbedFsWatchSeq = 0;
   /** Windows 原子 rename 的稳定态重发定时器（按 watcher + 文件合并）。 */
   private coderEmbedFsWatchSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -311,6 +313,15 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.npmService = session.injector.get(NpmService);
     this.topBuilderService = session.injector.get(TopBuilderService);
     this.proProject.registerPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
+    this.componentSubscriptions.add(this.projectService.libraryChangesChanged.subscribe(() => {
+      const manifestPath = window['path'].join(this.projectPath, 'package.json');
+      for (const [watchId, root] of this.coderEmbedFsWatchRoots) {
+        const relative = window['path'].relative(root, manifestPath);
+        if (!relative.startsWith('..') && !window['path'].isAbsolute(relative)) {
+          this.pushCoderNativeFsWatchEvent(watchId, { eventType: 'change', filename: relative || 'package.json' });
+        }
+      }
+    }));
     this.unregisterCoderEditorUpdateClient = this.coderEditorUpdates.registerClient({
       prepareForUpdate: async () => {
         await this.proProject.saveAll(this.projectPath);
@@ -325,7 +336,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     );
     this.componentSubscriptions.add(this.projectService.projectActivation$.subscribe(event => {
       if (event.path === this.projectPath && (event.reason === 'reload' || event.reason === 'chat-tool-reload')) {
-        void this.bootstrap(this.projectPath);
+        void this.bootstrap(this.projectPath, event.reason === 'chat-tool-reload');
       }
     }));
     window.addEventListener('message', this.coderNativeFsBridgeListener);
@@ -423,6 +434,20 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         if (root) void this.pushAilyCoderHostContext(root);
       }),
     );
+    // 切换编译后端时只重建依赖上下文，保留正在运行的编辑器及尚未保存的代码。
+    let compileSettingsKey = this.configService.getCompileSettingsKey();
+    this.componentSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
+      const nextKey = this.configService.getCompileSettingsKey();
+      if (nextKey === compileSettingsKey) return;
+      compileSettingsKey = nextKey;
+      const root = this.coderEmbedWorkspaceRoot;
+      if (!root || this.destroyed) return;
+      const session = this.projectService.getProjectDependencySession(root);
+      this.dependencySession = session;
+      if (this.projectService.isCloudBuild()) this.codeSuggestionHostBridge.registerDeclarationRoots([]);
+      void this.ensureNpmDepsWithRetry(root, session);
+      void this.pushAilyCoderHostContext(root, session);
+    }));
 
     void this.bootstrap(this.projectPath);
 
@@ -457,7 +482,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   /**
    * 先 loadProject 设置 currentProjectPath，再安装依赖；最后启动 iframe（避免 installBoardDeps 读错工程路径）。
    */
-  private async bootstrap(projectPath: string) {
+  private async bootstrap(projectPath: string, historyRestored = false) {
     const generation = ++this.coderBootstrapGeneration;
     let session: ProjectDependencySession;
     try {
@@ -479,11 +504,20 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(resolved);
         await this.ensureProjectPackageJsonExists(resolved);
         if (!isCurrent()) return;
+        // Package/update/runtime preparation does not read the workspace. Start
+        // it while the saved library tree is restored, but mount the iframe only
+        // after restoration so its first filesystem reads see the saved state.
+        const runtimePreparation = this.electronService.isElectron ? this.prepareCoderRuntime() : undefined;
+        void runtimePreparation?.catch(() => {}); // initCoderEmbed owns error presentation.
+        // Reopening (including a renderer refresh / Chat history restore) uses
+        // the saved manifest. Reify also repairs an unsaved uninstall on restart.
+        await this.projectService.discardLibraryChanges(resolved, true, historyRestored);
+        if (!isCurrent()) return;
         await this.loadProject(resolved, session);
         if (!isCurrent()) return;
         const dependencies = this.ensureNpmDepsWithRetry(resolved, session);
         try {
-          await this.initCoderEmbed(resolved, false, session);
+          await this.initCoderEmbed(resolved, false, session, runtimePreparation);
           if (!isCurrent()) return;
           this.setupBuildOutputsWatch(resolved);
         } finally {
@@ -673,7 +707,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     return run();
   }
 
-  private async initCoderEmbed(projectPath: string, resetLoading = true, session = this.dependencySession) {
+  private async initCoderEmbed(projectPath: string, resetLoading = true, session = this.dependencySession, runtimePreparation?: Promise<ChildToolHostInfo>) {
     try {
       if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
       if (resetLoading) {
@@ -684,12 +718,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       this.coderLoadingStage = 'dependency';
       let base: string;
       if (this.electronService.isElectron) {
-        await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
-        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
-        await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
-        if (!this.isCurrentCoderWorkspace(projectPath, session)) return;
-        this.coderLoadingStage = 'runtime';
-        base = (await this.acquireCoderRuntime()).url;
+        base = (await (runtimePreparation ?? this.prepareCoderRuntime())).url;
       } else {
         this.coderLoadingStage = 'runtime';
         base = this.coderDevEmbedBase;
@@ -731,6 +760,23 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       this.coderEmbedError = e?.message || String(e);
       this.message.error('无法启动内嵌代码编辑器：' + this.coderEmbedError);
     }
+  }
+
+  private prepareCoderRuntime(): Promise<ChildToolHostInfo> {
+    if (this.coderRuntimePreparationPromise) return this.coderRuntimePreparationPromise;
+    const pending = (async () => {
+      await this.requiredSubapps.ensureInstalled(AILY_CODER_EDITOR_SUBAPP_ID);
+      if (this.destroyed) throw new Error('Coder editor was closed during package preparation');
+      await this.coderEditorUpdates.ensureUpdatedBeforeLaunch();
+      if (this.destroyed) throw new Error('Coder editor was closed during update preparation');
+      // Keep the project stage while library restoration is still pending.
+      if (this.coderLoadingStage === 'dependency') this.coderLoadingStage = 'runtime';
+      return this.acquireCoderRuntime();
+    })().finally(() => {
+      if (this.coderRuntimePreparationPromise === pending) this.coderRuntimePreparationPromise = null;
+    });
+    this.coderRuntimePreparationPromise = pending;
+    return pending;
   }
 
   /**
@@ -1148,7 +1194,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
               ...(mainHexAbs ? { mainHexAbs, ...(mainHexRelPath ? { mainHexRelPath } : {}) } : {}),
             }
           : {}),
-        ...(platformPackages.length > 0 ? { platformPackages } : {}),
+        // 切入云模式时显式清空，防止子应用合并上下文后仍使用旧的本机 SDK 路径。
+        platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
       };
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
@@ -1219,7 +1266,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                 : {}),
             }
           : {}),
-        ...(platformPackages.length > 0 ? { platformPackages } : {}),
+        platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
         meta: { theme: this.themeService.theme(), lang: hostLanguage },
       };
@@ -1327,6 +1374,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   /** 从当前主板包的依赖声明解析全局 sdk/tools 目录。 */
   private async loadPlatformPackagesForEmbed() {
+    // 云模式使用已注册的开发板元数据，不向代码编辑器发布本机不存在的 SDK 路径。
+    if (this.projectService.isCloudBuild()) return [];
     try {
       return await resolvePlatformPackagesForCurrentProject(async () => {
         return this.projectService.getBoardDependencies();
@@ -1370,6 +1419,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const dispose = this.coderEmbedFsWatchers.get(watchId);
     if (!dispose) return;
     this.coderEmbedFsWatchers.delete(watchId);
+    this.coderEmbedFsWatchRoots.delete(watchId);
     const timerPrefix = `${watchId}\0`;
     for (const [key, timer] of this.coderEmbedFsWatchSettleTimers) {
       if (!key.startsWith(timerPrefix)) continue;
@@ -2062,6 +2112,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
+    if (ev.data?.channel === 'aily-coder-editor-project-save') {
+      if (ev.source !== this.coderEmbedFrame?.nativeElement?.contentWindow) return;
+      try { await this.proProject.saveAll(this.projectPath); }
+      catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); }
+      return;
+    }
     if (ev.data?.channel === CODER_SIDEBAR_STATE_CHANNEL) {
       const frame = this.coderEmbedFrame?.nativeElement?.contentWindow;
       if (frame && ev.source === frame && typeof ev.data.visible === 'boolean') {
@@ -2292,7 +2348,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         }
         case 'nativeFsReadBinary': {
           const abs = this.assertPathAllowedForCoderNativeFsRead(String(payload['path']));
-          const base64 = fsAny['readFileAsBase64'](abs) as string;
+          // The installed-library explorer consumes the effective dependency
+          // graph. The real file remains the saved baseline until manual save.
+          const isManifest = abs === window['path'].join(this.projectPath, 'package.json');
+          const base64 = isManifest && this.projectService.hasCachedLibraryChanges(this.projectPath)
+            ? btoa(Array.from(new TextEncoder().encode(this.projectService.getEffectivePackageText(this.projectPath)), byte => String.fromCharCode(byte)).join(''))
+            : fsAny['readFileAsBase64'](abs) as string;
           this.replyCoderNativeFs(ev.source as Window, msg.id!, { base64 });
           break;
         }
@@ -2393,6 +2454,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
               dispose();
             } else {
               this.coderEmbedFsWatchers.set(watchId, dispose);
+              this.coderEmbedFsWatchRoots.set(watchId, abs);
             }
             this.replyCoderNativeFs(ev.source as Window, msg.id!, { watchId });
           } catch (e: unknown) {

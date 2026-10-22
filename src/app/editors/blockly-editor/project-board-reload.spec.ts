@@ -19,7 +19,6 @@ describe('package watcher board reload acknowledgement', () => {
     component.watchedPackageJsonProjectPath = '/project';
     component.isBoardPackageReady = () => true;
     component.stopPackageJsonDependencyWatch = () => {};
-    component.copyProjectPackageJsonToTemp = () => {};
     component.startPackageJsonDependencyWatch = jasmine.createSpy('restart');
     component.message = { success: () => {}, error: () => {} };
     component.projectService = {

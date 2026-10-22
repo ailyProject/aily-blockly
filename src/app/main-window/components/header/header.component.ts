@@ -1,5 +1,6 @@
 import { CodeEditorProProjectService } from '../../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { CoderProjectRuntimeService } from '../../../integrations/coder/coder-project-runtime.service';
+import { CoderBoardConfigService } from '../../../integrations/coder/coder-board-config.service';
 import { CoderEditorLayoutService } from '../../../integrations/coder/coder-editor-layout.service';
 import { CommonModule } from '@angular/common';
 import { ChangeDetectorRef, Component, ElementRef, isDevMode, NgZone, OnDestroy, OnInit, ViewChild, viewChild, inject } from '@angular/core';
@@ -31,10 +32,11 @@ import { AuthService } from '@core/auth/public-api';
 import { AppItem } from '../../../configs/tool.config';
 import { AppStoreService } from '../../../tools/app-store/app-store.service';
 import { RequiredSubappService } from '@integration/subapps/public-api';
-import { Subscription } from 'rxjs';
+import { Subscription, merge } from 'rxjs';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import {
   UiAutomationRegistryService,
+  MainUiAutomationService,
   type UiAutomationCommandResult,
   type UiAutomationMenuItem,
   type UiAutomationMenuListOptions,
@@ -97,8 +99,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   private readonly coderRuntime = inject(CoderProjectRuntimeService);
+  private readonly coderBoardConfig = inject(CoderBoardConfigService);
   private readonly coderPersistence = inject(CodeEditorProProjectService);
   private readonly requiredSubapps = inject(RequiredSubappService);
+  private readonly mainUiAutomation = inject(MainUiAutomationService);
   private readonly coderHeaderButtons = new Map<string, IMenuItem[]>();
 
   headerBtns: IMenuItem[] = HEADER_BTNS;
@@ -158,6 +162,83 @@ export class HeaderComponent implements OnInit, OnDestroy {
       : applicationName;
   }
 
+  hasUnsavedProjectChanges = false;
+  private unsavedSubscriptions = new Subscription();
+  private unsavedCheckTimer?: ReturnType<typeof setTimeout>;
+  private coderUnsavedPoll?: ReturnType<typeof setInterval>;
+  private unsavedCheckRevision = 0;
+  private unsavedCheckRunning = false;
+
+  private watchProjectUnsavedState(): void {
+    this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
+      this.setProjectUnsaved(false);
+      this.scheduleUnsavedCheck();
+    }));
+    this.unsavedSubscriptions.add(this.projectService.stateSubject.subscribe(state => {
+      if (state === 'default' || state === 'loading') this.setProjectUnsaved(false);
+      this.scheduleUnsavedCheck();
+    }));
+    this.unsavedSubscriptions.add(merge(
+      this.projectService.libraryChangesChanged,
+      this.blocklyService.projectDirtyState.changed,
+      this.router.events,
+    ).subscribe(() => this.scheduleUnsavedCheck()));
+    // The embedded Coder exposes a cheap dirty-editor count through its existing
+    // bridge. Blockly is event-driven; never serialize an idle canvas on a timer.
+    this.ngZone.runOutsideAngular(() => {
+      this.coderUnsavedPoll = setInterval(() => {
+        if (this.showCoderSidebarToggle
+          && !this.unsavedCheckRunning) this.scheduleUnsavedCheck();
+      }, 1000);
+    });
+  }
+
+  private scheduleUnsavedCheck(): void {
+    this.unsavedCheckRevision++;
+    clearTimeout(this.unsavedCheckTimer);
+    this.ngZone.runOutsideAngular(() => {
+      this.unsavedCheckTimer = setTimeout(() => {
+        this.unsavedCheckTimer = undefined;
+        void this.refreshProjectUnsavedState();
+      }, 200);
+    });
+  }
+
+  private setProjectUnsaved(value: boolean): void {
+    if (this.destroyed || value === this.hasUnsavedProjectChanges) return;
+    this.ngZone.run(() => {
+      this.hasUnsavedProjectChanges = value;
+      this.cd.markForCheck();
+    });
+  }
+
+  private async refreshProjectUnsavedState(): Promise<void> {
+    if (this.destroyed || this.unsavedCheckRunning) return;
+    const path = this.projectService.currentProjectPath;
+    if (!path || ['default', 'loading'].includes(this.projectService.stateSubject.value)) {
+      this.setProjectUnsaved(false);
+      return;
+    }
+    const revision = this.unsavedCheckRevision;
+    this.unsavedCheckRunning = true;
+    try {
+      const dirty = this.showCoderSidebarToggle
+        ? !await this.coderPersistence.hasSavedProject(path, true)
+        : this.projectService.hasCachedLibraryChanges(path) || this.blocklyService.projectDirtyState.changed.value;
+      if (revision === this.unsavedCheckRevision && path === this.projectService.currentProjectPath) {
+        this.setProjectUnsaved(dirty);
+      }
+    } catch {
+      // Busy edits or a failed save are not proof of a clean project. Keep the
+      // previous marker until the next content/lifecycle event gives a valid reply.
+    } finally {
+      this.unsavedCheckRunning = false;
+      if (!this.destroyed && revision !== this.unsavedCheckRevision && !this.unsavedCheckTimer) {
+        this.scheduleUnsavedCheck();
+      }
+    }
+  }
+
   @ViewChild('projectTitleInput') projectTitleInput?: ElementRef<HTMLInputElement>;
   isEditingProjectTitle = false;
   isSavingProjectTitle = false;
@@ -213,7 +294,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     this.isSavingProjectTitle = true;
     try {
-      // 只提交昵称，让服务合并磁盘上的最新配置并同步 .temp 快照。
+      // 只提交昵称，让服务合并当前项目配置；库变更未保存时一并保留在内存。
       await this.projectService.setPackageJson({ nickname });
       if (projectPath === this.projectService.currentProjectPath) {
         this.projectService.addRecentlyProject({
@@ -344,6 +425,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.ngZone.runOutsideAngular(() => {
       document.addEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
     });
+    this.watchProjectUnsavedState();
     this.loadHeaderButtons();
     if (this.configService.isCoderProduct()) {
       this.dependencySubscription = this.projectService.projectDependencyChanges.subscribe(() => {
@@ -511,10 +593,12 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   showMenu = false;
-  openMenu() {
+  openMenu(event?: MouseEvent) {
+    event?.stopPropagation();
     this.showMenu = !this.showMenu;
     // 展开主菜单时刷新「最近的项目」二级列表（来自配置中的 recentlyProjects）
     if (this.showMenu) {
+      this.closePortList();
       this.refreshHeaderRecentProjectsMenu();
     }
   }
@@ -705,6 +789,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
   openPortList(event?: MouseEvent) {
     if (event) {
+      // A cached menu can mount before this click bubbles to document. Keep the
+      // opening click out of the menu's outside-click listener and toggle here.
+      event.stopPropagation();
+      if (this.showPortList) {
+        this.closePortList();
+        return;
+      }
       this.calculatePortListPosition(event);
     } else {
       // 快捷键触发时，查找上传按钮元素获取位置
@@ -725,6 +816,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const boardname = boardLabel.replace(' 2560', ' ').replace(' R3', '');
     this.boardKeywords = boardname ? [boardname] : [];
     // 如果已有缓存列表，先展示旧数据，再后台刷新
+    this.closeMenu();
     this.showPortList = true;
     this.getDevicePortList();
   }
@@ -804,6 +896,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   async getDevicePortList(skipDetect = false) {
     const generation = ++this.portListGeneration;
+    const projectPath = this.projectService.currentProjectPath;
     // Linux 菜单严格按 board.json.connector 组合；没有 Linux 执行路由时走后面的 Arduino 端口菜单。
     const supportsSsh = this.supportsLinuxBoardConnector('ssh');
     const supportsSerial = this.supportsLinuxBoardConnector('serial');
@@ -965,6 +1058,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
       action: 'board-select',
       // children: boardList
     })
+    if (generation !== this.portListGeneration || projectPath !== this.projectService.currentProjectPath) return;
     this.configList = portList0;
     // 使用 setTimeout 将变更检测推迟到下一个变更检测周期，避免 ExpressionChangedAfterItHasBeenCheckedError
     setTimeout(() => {
@@ -1449,6 +1543,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.destroyed = true;
+    this.unsavedSubscriptions?.unsubscribe();
+    clearTimeout(this.unsavedCheckTimer);
+    clearInterval(this.coderUnsavedPoll);
     this.clearPartitionInstallNotice();
     document.removeEventListener('pointerdown', this.onProjectTitleOutsidePointerDown, true);
     this.unregisterHeaderMenuAutomation?.();
@@ -1493,7 +1590,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private async confirmWindowClose(request: { requestId?: string }): Promise<void> {
     if (typeof request?.requestId !== 'string' || !request.requestId) return;
     let allowed = false;
-    try { allowed = await this.checkUnsavedChanges('close'); }
+    try {
+      if (await this.uiService.closePartitionManagerBeforeQuit()) {
+        allowed = await this.checkUnsavedChanges('close');
+      }
+    }
     catch (error) { this.message.error(`无法确认保存状态：${error instanceof Error ? error.message : String(error)}`); }
     finally { window['iWindow'].confirmClose(request.requestId, allowed); }
   }
@@ -1716,8 +1817,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
             }
             break;
           case 'continue':
-            // 不保存，但继续操作
-            resolve(true);
+            try {
+              await this.projectService.discardAllLibraryChanges();
+              resolve(unchanged());
+            } catch (error) {
+              this.message.error(error instanceof Error ? error.message : String(error));
+              resolve(false);
+            }
             break;
           case 'cancel':
           default:
@@ -1966,10 +2072,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
       await this.requiredSubapps.ensureInstalled('ffs-manager-child');
       // Installation can finish after the user has left the original project/window.
       if (this.destroyed || this.projectService.currentProjectPath !== projectPath) return;
-      if (!this.uiService.openToolWindow('ffs-manager-child', {
-        title: 'ESP32 分区管理器', width: 920, height: 820, minWidth: 680, minHeight: 560,
-      })) {
-        throw new Error('子应用入口不可用');
+      const opened = await this.mainUiAutomation.openChildApp({ toolId: 'ffs-manager-child', mode: 'embedded' });
+      if (opened['ok'] !== true) {
+        throw new Error(String(opened['message'] || '子应用入口不可用'));
       }
     } catch (error) {
       if (!this.destroyed && this.projectService.currentProjectPath === projectPath) {
@@ -1984,6 +2089,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   // 选择子菜单项-修改编译上传配置
   async selectSubItem(subItem: IMenuItem) {
+    if (subItem.disabled) return;
+    const projectPath = this.projectService.currentProjectPath;
+    const boardConfig = this.projectService.currentBoardConfig;
     // console.log('选择子菜单项:', subItem);
     if (this.selectDebounceTimer !== null) {
       clearTimeout(this.selectDebounceTimer);
@@ -1997,35 +2105,50 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     this.selectDebounceTimer = setTimeout(async () => {
       this.selectDebounceTimer = null;
+      if (this.destroyed || projectPath !== this.projectService.currentProjectPath
+        || boardConfig !== this.projectService.currentBoardConfig) return;
+      try {
+        const coder = this.projectService.isAilyCodeProject(projectPath);
 
-      const configChanged = await persistBoardConfigSelection(this.projectService, subItem);
-      const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
-        configChanged,
-        subItem,
-      );
-      if (!shouldRunEffects) {
-        return;
-      }
-
-      if (subItem.extra?.refreshRuntimeBoardConfig) {
-        await this.projectService.refreshRuntimeBoardConfig();
-      }
-
-      if (configChanged && subItem.extra?.syncPinConfig) {
-        await this.projectService.syncBoardPinConfig(subItem);
-      }
-
-      if (subItem.extra?.selectAction === 'flash-softdevice') {
-        if (!this.serialService.currentPort) {
-          const messageKey = subItem.extra?.selectPortMessage;
-          this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
+        const configChanged = coder
+          ? await this.coderBoardConfig.select(projectPath, subItem)
+          : await persistBoardConfigSelection(this.projectService, subItem);
+        const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
+          configChanged,
+          subItem,
+        );
+        if (!shouldRunEffects) {
           return;
         }
-        await this.uploaderService.flashSoftdevice(subItem.data, this.serialService.currentPort);
-      }
 
-      if (configChanged) {
-        this.builderService.triggerPreprocess('config-changed');
+        if (!coder && subItem.extra?.refreshRuntimeBoardConfig) {
+          await this.projectService.refreshRuntimeBoardConfig();
+        }
+
+        if (!coder && configChanged && subItem.extra?.syncPinConfig) {
+          await this.projectService.syncBoardPinConfig(subItem);
+        }
+
+        if (subItem.extra?.selectAction === 'flash-softdevice') {
+          if (projectPath !== this.projectService.currentProjectPath) return;
+          if (!this.serialService.currentPort) {
+            const messageKey = subItem.extra?.selectPortMessage;
+            this.message.warning(messageKey ? this.translate.instant(messageKey) : 'Please select a port first');
+            return;
+          }
+          await this.uploaderService.flashSoftdevice(subItem.data, this.serialService.currentPort);
+          if (coder && configChanged) await this.coderRuntime.build(projectPath, { preprocessOnly: true });
+        }
+
+        if (configChanged && !coder) {
+          this.builderService.triggerPreprocess('config-changed');
+        }
+      } catch (error) {
+        this.message.error(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!this.destroyed && this.showPortList && projectPath === this.projectService.currentProjectPath) {
+          await this.getDevicePortList(true).catch(error => console.warn('刷新主板配置菜单失败:', error));
+        }
       }
     }, 500);
   }

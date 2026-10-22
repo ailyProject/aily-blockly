@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.105",
+  "version": "0.9.106",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -46,8 +46,13 @@
         "to": "electron",
         "filter": [
           "**/*",
+          "!**/*.test.*",
+          "!test/**",
+          "!tests/**",
           "!package-lock.json",
-          "!.gitignore"
+          "!.gitignore",
+          "!dev-app-update.yml",
+          "!**/*.md"
         ]
       },
       {
@@ -66,7 +71,12 @@
       },
       {
         "from": "child/scripts",
-        "to": "child/scripts"
+        "to": "child/scripts",
+        "filter": [
+          "**/*",
+          "!**/*.test.{js,cjs,mjs}",
+          "!**/*.md"
+        ]
       },
       {
         "from": "public/icon.ico",
@@ -135,15 +145,7 @@
     "ng": "node scripts/run-angular.cjs",
     "start": "node scripts/run-angular.cjs serve",
     "watch": "node scripts/run-angular.cjs build --watch --configuration development",
-    "test": "node scripts/run-angular.cjs test",
-    "test:unit:ci": "node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless",
-    "test:abs-sync": "node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless",
     "prepare:blockly-native": "node scripts/blockly-native-bundle.cjs",
-    "guard:aily-chat-mainline": "node scripts/guard-aily-chat-mainline.js",
-    "architecture:services": "node scripts/check-angular-service-architecture.mjs",
-    "architecture:services:inventory": "node scripts/check-angular-service-architecture.mjs --inventory",
-    "smoke:simulator-gateway": "node scripts/smoke-simulator-gateway-bridge.mjs",
-    "smoke:simulator-gateway-crash": "node scripts/smoke-simulator-gateway-crash.mjs",
     "electron": "concurrently \"npm start\" \"wait-on tcp:4200 && node ./scripts/run-electron-dev.js --serve\"",
     "electron:coder": "node ./scripts/run-electron-coder-dev.js",
     "prepare:child": "node scripts/prepare-child-resources.js",
@@ -156,26 +158,9 @@
     "build:coder": "node ./scripts/build-electron.js --product coder",
     "build:mac": "npm run prepare:electron-runtime && node scripts/run-angular.cjs build --base-href ./ && electron-builder --mac --arm64 --x64",
     "build:mac:universal": "npm run prepare:electron-runtime && node scripts/run-angular.cjs build --base-href ./ && electron-builder --mac --universal",
-    "test:e2e": "node ./scripts/run-e2e.mjs test",
-    "test:e2e:ui": "node ./scripts/run-e2e.mjs ui",
-    "test:e2e:headed": "node ./scripts/run-e2e.mjs headed",
-    "test:e2e:fast": "node ./scripts/run-e2e.mjs fast",
-    "test:e2e:report": "node ./scripts/run-e2e.mjs report",
-    "prepare:e2e:simulator-debug": "node ./scripts/prepare-simulator-debug-e2e.mjs",
-    "test:e2e:simulator-debug": "node ./scripts/run-simulator-debug-e2e.mjs",
-    "test:e2e:simulator-subapp-mainline": "node ./scripts/run-simulator-subapp-mainline-e2e.mjs",
-    "test:e2e:serial-product": "node ./electron/test/subapp-product.acceptance.mjs",
-    "test:e2e:serial-owner-crash": "node ./electron/test/subapp-owner-crash.acceptance.mjs",
-    "validate:e2e:simulator-debug": "node ./scripts/validate-simulator-debug-e2e-report.mjs",
     "setup:external-tools": "node scripts/prepare-child-resources.js",
     "setup:local-builder": "node scripts/use-local-builder.mjs",
-    "setup:local-connector": "node scripts/use-local-connector.mjs",
-    "perf:blockly:prepare": "node scripts/prepare-blockly-performance.cjs",
-    "perf:blockly:serve": "node scripts/serve-blockly-performance.cjs",
-    "perf:blockly:test": "playwright test -c e2e/performance.config.ts",
-    "perf:blockly:real:fixture": "node scripts/prepare-blockly-real-fixture.cjs",
-    "perf:blockly:real:prepare": "node scripts/prepare-blockly-real-performance.cjs",
-    "perf:blockly:real:test": "playwright test -c e2e/real-performance.config.ts"
+    "setup:local-connector": "node scripts/use-local-connector.mjs"
   },
   "private": true,
   "dependencies": {
@@ -207,7 +192,7 @@
     "altcha": "^2.3.0",
     "angular2-draggable": "^16.0.0",
     "animate.css": "^4.1.1",
-    "blockly": "npm:aily-project-blockly@1.0.5",
+    "blockly": "npm:aily-project-blockly@1.0.6",
     "buffer": "^6.0.3",
     "cropperjs": "^1.6.2",
     "dragselect": "^2.7.4",
@@ -252,6 +237,7 @@
     "cross-env": "^7.0.3",
     "electron": "^35.0.2",
     "electron-builder": "^25.1.8",
+    "fs-native-extensions": "1.5.1",
     "jasmine-core": "~5.4.0",
     "karma": "~6.4.0",
     "karma-chrome-launcher": "~3.2.0",

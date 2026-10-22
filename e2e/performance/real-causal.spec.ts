@@ -12,7 +12,7 @@ import {
   openBlocklyProject,
   closeAilyElectronApp,
 } from '../fixtures/electron-app';
-const { serve } = require('../../scripts/serve-blockly-performance.cjs');
+const { serve } = require('./scripts/serve-blockly-performance.cjs');
 const fixtures = path.join(
   ROOT,
   'e2e/.artifacts/blockly-real-project-2026-09-28',

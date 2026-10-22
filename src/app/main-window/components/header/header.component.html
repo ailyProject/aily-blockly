@@ -1,5 +1,5 @@
 <div class="header-box" [class.darwin]="isMac" [class.full-screen]="isMacFullScreen">
-  <div class="menu ccenter" (click)="openMenu()">
+  <div class="menu ccenter" (click)="openMenu($event)">
     <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ 'MENU.MENU' | translate }}">
       <i class="fa-regular fa-bars"></i>
     </div>
@@ -34,7 +34,10 @@
   </button>
   }
   <div class="null-box" [class.drag]="!isEditingProjectTitle" (dblclick)="maximize()"></div>
-  <div class="project-box ccenter">
+  <div class="project-box ccenter" [attr.data-unsaved]="hasUnsavedProjectChanges">
+    @if (hasUnsavedProjectChanges) {
+    <span class="project-unsaved-marker" aria-hidden="true">*</span>
+    }
     @if (isEditingProjectTitle) {
     <input #projectTitleInput class="project-title-input" type="text" [value]="projectTitle"
       [readOnly]="isSavingProjectTitle" [attr.aria-label]="'PROJECT_SETTING_DIALOG.NAME' | translate"

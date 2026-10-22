@@ -16,7 +16,7 @@ import {
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MenuComponent } from '../../../../../../components/menu/menu.component';
 import { IMenuItem } from '../../../../../../configs/menu.config';
-import { ElectronService, CmdService } from '@core/platform/public-api';
+import { ElectronService } from '@core/platform/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { WorkflowService, UiService } from '@core/app-shell/public-api';
 import { AuthService } from '@core/auth/public-api';
@@ -139,7 +139,6 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
     private ngZone: NgZone,
     private electronService: ElectronService,
     private projectService: ProjectService,
-    private cmdService: CmdService,
     private workflowService: WorkflowService,
     private uiService: UiService,
     private librarySubmissionService: LibrarySubmissionService,
@@ -910,16 +909,15 @@ export class BlocklyToolboxPaneComponent implements OnInit, AfterViewInit, OnDes
     try {
       this.message.loading(`${this.getLibraryDisplayName(item)} ${this.translate.instant('LIB_MANAGER.UNINSTALLING')}...`);
       const projectPath = this.projectService.currentProjectPath;
-      const { code, stderr } = await this.cmdService.runAsync(`npm uninstall ${libraryName}`, projectPath);
-      if (code !== 0) {
-        throw new Error(stderr || `退出码: ${code}`);
+      await this.projectService.changeLibraries('remove', [libraryName]);
+      if (this.projectService.currentProjectPath === projectPath) {
+        await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
       }
 
       this.message.success(`${this.getLibraryDisplayName(item)} ${this.translate.instant('LIB_MANAGER.UNINSTALLED')}`);
       if (workflowStarted) {
         this.workflowService.finishInstall(true);
       }
-      await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
     } catch (error) {
       const errorMessage = this.getErrorMessage(error, 'Uninstall failed');
       this.message.error(`${this.getLibraryDisplayName(item)} ${this.translate.instant('NPM.UNINSTALL_FAILED_TITLE')}: ${errorMessage}`);

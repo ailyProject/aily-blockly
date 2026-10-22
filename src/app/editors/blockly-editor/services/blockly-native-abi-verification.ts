@@ -15,11 +15,13 @@ import { retainAbsRootLayout } from '../../../integrations/blockly/abs/abs-progr
 import type { NativeCandidateProgress } from './blockly-native-progress';
 import { layoutAbsNewRoots } from '../../../integrations/blockly/abs/abs-new-root-layout';
 import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 /** Complete merged state, including dormant shadows and metadata, not the scratch tree. */
 export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly.Workspace,
   request: NonNullable<NativeCandidateRequest['verify']>, generator: Blockly.Generator | undefined,
-  assertClean: () => void, readPrepared: PreparedDataReader, uiTasks = new NativeUiTasks(), progress: NativeCandidateProgress = () => {}): Promise<NativeCandidateResult> {
+  assertClean: () => void, readPrepared: PreparedDataReader, uiTasks = new NativeUiTasks(), progress: NativeCandidateProgress = () => {},
+  prepareComments: () => Promise<void> = async () => {}): Promise<NativeCandidateResult> {
   const expected = cloneBlocklyJson(request.state);
   const verify = createAbsReadbackVerifier(expected, { fieldDefinition: (_type, name, id) => request.contracts.fields[id]?.[name] });
   // Variable identities are explicit inputs; other serializers still need ownership.
@@ -30,8 +32,12 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
   orderAbsNativeFields(detached, request.contracts);
   withNativeFieldDependencies(native, workspace, () => withNativeStateLoading(native, workspace, detached,
     () => native.serialization.workspaces.load(detached, workspace)), uiTasks);
+  const customFunctions = captureCustomFunctionRegistration(native.Blocks);
+  customFunctions?.prepareSerialization(workspace, true);
+  await prepareComments();
   assertClean();
   const capture = () => uiTasks.withoutScheduling(() => {
+    customFunctions?.prepareSerialization(workspace);
     const state = normalizeAbsSerializedWorkspace(native.serialization.workspaces.save(workspace));
     // Candidate graphics may settle their own layout. Only program semantics
     // are validated here; the host retains the latest editor layout at apply.

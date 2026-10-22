@@ -406,6 +406,14 @@
             "CACHE": "Cache Management"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Cloud compilation",
+            "CLOUD_COMPILATION_DESC": "Compile in the cloud and upload to the board locally. The service is checked when enabling.",
+            "CLOUD_PRO_REQUIRED": "Sign in with a Pro account to use",
+            "CLOUD_ENABLE_CHECKING": "Checking the cloud compilation service…",
+            "CLOUD_ENABLE_SUCCESS": "Cloud compilation enabled.",
+            "CLOUD_ENABLE_FAILED": "Could not enable cloud compilation. Please try again later.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Could not enable cloud compilation. Fully quit and restart the application, then try again.",
+            "CLOUD_DISABLE_FAILED": "Could not disable cloud compilation. Please try again.",
             "PROJECT_FOLDER": "Project Folder",
             "LANGUAGE": "Language",
             "DEVELOPMENT_MODE_PREFERENCE": "Default Dev Mode",
@@ -1089,6 +1097,7 @@
             "BUSY_RETRY_LATER": "{{message}}, please try again later",
             "BUSY_WAIT": "{{message}}, please wait",
             "PREPARING_TITLE": "Preparing build",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "Prebuild is running",
             "PRECOMPILE_FAILED_TITLE": "Prebuild failed",
             "PRECOMPILE_FAILED_DETAIL": "An error occurred during dependency analysis. Check the log for details.",
@@ -1188,6 +1197,14 @@
         "NO_TUTORIAL_PROVIDED": "No tutorial provided by the library author"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
       "MODE_UNKNOWN": "Unknown project type. Select a valid Aily Blockly or Aily Coder project.",
       "MODE_CREATE_RESTRICTED": "The current {{application}} mode cannot create this project type. Use {{targetApplication}} instead.",
       "MODE_MISMATCH_TITLE": "Project mode mismatch",
@@ -1203,6 +1220,11 @@
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
         "DEPENDENCY_TASKS_STOPPED": "Project dependency tasks have been stopped",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "The cloud compilation component is out of date. Fully quit and restart the application, then try again; reloading the page is not enough.",
+        "CLOUD_TARGET_UNAVAILABLE": "This board version or content is not registered as an available cloud target.",
+        "CLOUD_BOARD_NOT_ENABLED": "Cloud compilation is not enabled for this board version.",
+        "CLOUD_BOARD_UNSUPPORTED": "This board version does not support cloud compilation.",
+        "CLOUD_BOARD_OFFLINE": "The cloud compiler for this board is offline. Please try again later.",
         "SDK_CONFIG_NOT_READY": "SDK is not ready. Some board settings are temporarily unavailable.",
         "BOARD_SWITCH_COMPLETE": "Board switch complete",
         "BOARD_SWITCH_SUCCESS": "Board switched successfully",
@@ -1407,5 +1429,29 @@
         "ERR_PATH_EXISTS": "A folder with the same name already exists",
         "ERR_PATH_INVALID": "Save path contains invalid characters",
         "ERR_CREATE_FAILED": "Failed to create project. Please try again."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Switch to local compilation",
+        "SWITCH_TO_CLOUD": "Switch back to cloud compilation",
+        "SWITCHING_TO_CLOUD": "Stopping local compilation to switch back to the cloud…",
+        "SWITCHING_TO_LOCAL": "Cancelling cloud compilation to continue locally…",
+        "PREPARING_LOCAL": "Preparing local compilation…",
+        "REUSED_RESULT": "Reused verified cloud build result (time: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Cloud build complete (time: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Preparing cloud build inputs",
+            "UPLOADING": "Uploading cloud build inputs",
+            "QUEUED": "Waiting in the cloud build queue",
+            "DISPATCHING": "Assigning a cloud build server",
+            "PREPARING": "Preparing the cloud build environment",
+            "RESOURCES": "Preparing cloud build resources",
+            "ANALYZING": "Analyzing the project",
+            "COMPILING": "Compiling in the cloud",
+            "FINALIZING": "Checking cloud build outputs",
+            "DOWNLOADING": "Downloading cloud build outputs",
+            "VERIFYING": "Verifying cloud build outputs",
+            "RECONNECTING": "Reconnecting to the gateway",
+            "COMPLETE": "Cloud build complete"
+        }
     }
 }

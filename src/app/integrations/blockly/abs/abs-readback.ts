@@ -28,11 +28,32 @@ function prepareReadback(expected: AbsAbiWorkspace, options: AbsReadbackOptions)
   const index = options.index ?? indexAbsAbi;
   const before = index(expected);
   const complete = options.mode !== 'requested';
-  const fail = (path: string, id?: string): never => {
-    throw new AbsSyncError('ABS_READBACK_MISMATCH', `Blockly changed or discarded persisted state at ${path}.`, undefined, id ? [id] : []);
+  const fail = (path: string, id?: string, values?: { expected: unknown; actual: unknown }): never => {
+    const preview = (value: unknown) => (value === undefined ? 'undefined' : absJson(value)).slice(0, 256);
+    throw new AbsSyncError('ABS_READBACK_MISMATCH', `Blockly changed or discarded persisted state at ${path}.`, undefined, id ? [id] : [], {
+      blockType: id ? before.get(id)?.type : undefined, field: path, reason: 'persisted-state-mismatch',
+      ...(values ? { received: preview(values.actual), hint: `Expected serialized value: ${preview(values.expected)}` } : {}),
+    });
+  };
+  const difference = (left: unknown, right: unknown, path: string, depth = 0): { path: string; expected: unknown; actual: unknown } => {
+    if (depth < 16 && left && right && typeof left === 'object' && typeof right === 'object'
+      && Array.isArray(left) === Array.isArray(right)) {
+      const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+      for (const key of keys) {
+        const a = Object.hasOwn(left, key) ? Reflect.get(left, key) : undefined;
+        const b = Object.hasOwn(right, key) ? Reflect.get(right, key) : undefined;
+        if (a === undefined || b === undefined ? a !== b : absJson(a) !== absJson(b)) {
+          return difference(a, b, `${path}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`, depth + 1);
+        }
+      }
+    }
+    return { path, expected: left, actual: right };
   };
   const equal = (left: unknown, right: unknown, path: string, id?: string) => {
-    if (left === undefined || right === undefined ? left !== right : absJson(left) !== absJson(right)) fail(path, id);
+    if (left === undefined || right === undefined ? left !== right : absJson(left) !== absJson(right)) {
+      const mismatch = difference(left, right, path);
+      fail(mismatch.path, id, mismatch);
+    }
   };
   const record = (left: Record<string, unknown>, right: Record<string, unknown>, exact: boolean, path: string, id?: string) => {
     for (const key of exact ? new Set([...Object.keys(left), ...Object.keys(right)]) : Object.keys(left)) {

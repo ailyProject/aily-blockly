@@ -20,6 +20,7 @@ describe('native dynamic field loading without declaration JSON', () => {
     mutator: 'controls_if_mutator', previousStatement: null, nextStatement: null,
   }); } };
   const load = (value: any) => BlocklyService.prototype.loadWorkspaceJson.call({
+    prepareWorkspaceLoad: (BlocklyService.prototype as any).prepareWorkspaceLoad,
     adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
     workspace, iconsMap: new Map(), cloneJson: value => structuredClone(value), assertWorkspaceEditAvailable() {},
     captureDeclarativeBlockDefinitions: () => catalog.capture(Blockly.Blocks), scheduleWorkspaceRenderAfterLoad() {},

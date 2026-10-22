@@ -341,6 +341,14 @@
             "CACHE": "Cache-Verwaltung"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Cloud-Kompilierung",
+            "CLOUD_COMPILATION_DESC": "In der Cloud kompilieren und auf diesem Computer auf das Board übertragen. Der Dienst wird beim Aktivieren geprüft.",
+            "CLOUD_PRO_REQUIRED": "Mit einem Pro-Konto anmelden",
+            "CLOUD_ENABLE_CHECKING": "Cloud-Kompilierungsdienst wird geprüft…",
+            "CLOUD_ENABLE_SUCCESS": "Cloud-Kompilierung aktiviert.",
+            "CLOUD_ENABLE_FAILED": "Aktivierung fehlgeschlagen. Bitte später erneut versuchen.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Aktivierung fehlgeschlagen. Bitte die Anwendung vollständig beenden, neu starten und erneut versuchen.",
+            "CLOUD_DISABLE_FAILED": "Deaktivierung fehlgeschlagen. Bitte erneut versuchen.",
             "PROJECT_FOLDER": "Projektordner",
             "LANGUAGE": "Sprache",
             "DEVELOPMENT_MODE_PREFERENCE": "Standard-Entwicklungsmodus",
@@ -941,6 +949,7 @@
             "BUSY_RETRY_LATER": "{{message}}, bitte später erneut versuchen",
             "BUSY_WAIT": "{{message}}, bitte warten",
             "PREPARING_TITLE": "Kompilierung wird vorbereitet",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "Vorverarbeitung läuft",
             "PRECOMPILE_FAILED_TITLE": "Vorverarbeitung fehlgeschlagen",
             "PRECOMPILE_FAILED_DETAIL": "Bei der Abhängigkeitsanalyse ist ein Fehler aufgetreten. Details finden Sie im Protokoll.",
@@ -1040,6 +1049,19 @@
         "NO_TUTORIAL_PROVIDED": "Der Bibliotheksautor hat kein Tutorial bereitgestellt"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Die Cloud-Kompilierungskomponente ist veraltet. Beenden und starten Sie die Anwendung vollständig neu und versuchen Sie es erneut; das Neuladen der Seite reicht nicht aus.",
+        "CLOUD_TARGET_UNAVAILABLE": "Diese Board-Version oder dieser Inhalt ist nicht als verfügbares Cloud-Ziel registriert.",
+        "CLOUD_BOARD_NOT_ENABLED": "Die Cloud-Kompilierung ist für diese Board-Version nicht aktiviert.",
+        "CLOUD_BOARD_UNSUPPORTED": "Diese Board-Version unterstützt keine Cloud-Kompilierung.",
+        "CLOUD_BOARD_OFFLINE": "Der Cloud-Compiler für dieses Board ist offline. Bitte versuchen Sie es später erneut.",
       "MODE_UNKNOWN": "Unbekannter Projekttyp. Wählen Sie ein gültiges Aily Blockly- oder Aily Coder-Projekt.",
       "MODE_CREATE_RESTRICTED": "Der aktuelle Modus {{application}} kann diesen Projekttyp nicht erstellen. Verwenden Sie {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Projektmodus stimmt nicht überein",
@@ -1250,5 +1272,29 @@
         "ERR_PATH_EXISTS": "Ein Ordner mit demselben Namen existiert bereits",
         "ERR_PATH_INVALID": "Speicherpfad enthält ungültige Zeichen",
         "ERR_CREATE_FAILED": "Projekt konnte nicht erstellt werden. Bitte erneut versuchen."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Lokal kompilieren",
+        "SWITCH_TO_CLOUD": "Zur Cloud-Kompilierung zurückkehren",
+        "SWITCHING_TO_CLOUD": "Lokale Kompilierung wird für den Wechsel zur Cloud beendet…",
+        "SWITCHING_TO_LOCAL": "Cloud-Kompilierung wird abgebrochen, um lokal fortzufahren…",
+        "PREPARING_LOCAL": "Lokale Kompilierung wird vorbereitet…",
+        "REUSED_RESULT": "Geprüftes Cloud-Build-Ergebnis wiederverwendet (Dauer: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Cloud-Build abgeschlossen (Dauer: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Cloud-Build-Eingaben werden vorbereitet",
+            "UPLOADING": "Cloud-Build-Eingaben werden hochgeladen",
+            "QUEUED": "Warten in der Cloud-Build-Warteschlange",
+            "DISPATCHING": "Cloud-Build-Server wird zugewiesen",
+            "PREPARING": "Cloud-Build-Umgebung wird vorbereitet",
+            "RESOURCES": "Cloud-Build-Ressourcen werden vorbereitet",
+            "ANALYZING": "Projekt wird analysiert",
+            "COMPILING": "Kompilierung in der Cloud",
+            "FINALIZING": "Cloud-Build-Ausgaben werden geprüft",
+            "DOWNLOADING": "Cloud-Build-Ausgaben werden heruntergeladen",
+            "VERIFYING": "Cloud-Build-Ausgaben werden verifiziert",
+            "RECONNECTING": "Verbindung zum Gateway wird wiederhergestellt",
+            "COMPLETE": "Cloud-Build abgeschlossen"
+        }
     }
 }

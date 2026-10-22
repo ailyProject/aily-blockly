@@ -341,6 +341,14 @@
             "CACHE": "Gestión de caché"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Compilación en la nube",
+            "CLOUD_COMPILATION_DESC": "Compila en la nube y carga a la placa desde este equipo. El servicio se comprueba al activar.",
+            "CLOUD_PRO_REQUIRED": "Inicia sesión con una cuenta Pro",
+            "CLOUD_ENABLE_CHECKING": "Comprobando el servicio de compilación en la nube…",
+            "CLOUD_ENABLE_SUCCESS": "Compilación en la nube activada.",
+            "CLOUD_ENABLE_FAILED": "No se pudo activar la compilación en la nube. Inténtalo más tarde.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "No se pudo activar. Cierra completamente la aplicación, vuelve a abrirla e inténtalo de nuevo.",
+            "CLOUD_DISABLE_FAILED": "No se pudo desactivar la compilación en la nube. Inténtalo de nuevo.",
             "PROJECT_FOLDER": "Carpeta de Proyecto",
             "LANGUAGE": "Idioma",
             "DEVELOPMENT_MODE_PREFERENCE": "Modo de desarrollo predeterminado",
@@ -941,6 +949,7 @@
             "BUSY_RETRY_LATER": "{{message}}, inténtalo de nuevo más tarde",
             "BUSY_WAIT": "{{message}}, espera un momento",
             "PREPARING_TITLE": "Preparando compilación",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "La precompilación está en curso",
             "PRECOMPILE_FAILED_TITLE": "Error de precompilación",
             "PRECOMPILE_FAILED_DETAIL": "Se produjo un error durante el análisis de dependencias. Consulta el registro para más detalles.",
@@ -1040,6 +1049,19 @@
         "NO_TUTORIAL_PROVIDED": "El autor de la biblioteca no proporcionó un tutorial"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "El componente de compilación en la nube está desactualizado. Cierra por completo y reinicia la aplicación antes de volver a intentarlo; recargar la página no es suficiente.",
+        "CLOUD_TARGET_UNAVAILABLE": "Esta versión o contenido de la placa no está registrado como destino disponible en la nube.",
+        "CLOUD_BOARD_NOT_ENABLED": "La compilación en la nube no está habilitada para esta versión de placa.",
+        "CLOUD_BOARD_UNSUPPORTED": "Esta versión de placa no admite la compilación en la nube.",
+        "CLOUD_BOARD_OFFLINE": "El compilador en la nube de esta placa está desconectado. Inténtalo de nuevo más tarde.",
       "MODE_UNKNOWN": "Tipo de proyecto desconocido. Seleccione un proyecto válido de Aily Blockly o Aily Coder.",
       "MODE_CREATE_RESTRICTED": "El modo actual de {{application}} no puede crear este tipo de proyecto. Utilice {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "El modo del proyecto no coincide",
@@ -1250,5 +1272,29 @@
         "ERR_PATH_EXISTS": "Ya existe una carpeta con el mismo nombre",
         "ERR_PATH_INVALID": "La ruta de guardado contiene caracteres no válidos",
         "ERR_CREATE_FAILED": "No se pudo crear el proyecto. Inténtalo de nuevo."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Compilar localmente",
+        "SWITCH_TO_CLOUD": "Volver a la compilación en la nube",
+        "SWITCHING_TO_CLOUD": "Deteniendo la compilación local para volver a la nube…",
+        "SWITCHING_TO_LOCAL": "Cancelando la compilación en la nube para continuar localmente…",
+        "PREPARING_LOCAL": "Preparando la compilación local…",
+        "REUSED_RESULT": "Resultado de compilación en la nube verificado reutilizado (tiempo: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Compilación en la nube completada (tiempo: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Preparando las entradas de compilación en la nube",
+            "UPLOADING": "Subiendo las entradas de compilación en la nube",
+            "QUEUED": "Esperando en la cola de compilación en la nube",
+            "DISPATCHING": "Asignando un servidor de compilación en la nube",
+            "PREPARING": "Preparando el entorno de compilación en la nube",
+            "RESOURCES": "Preparando los recursos de compilación en la nube",
+            "ANALYZING": "Analizando el proyecto",
+            "COMPILING": "Compilando en la nube",
+            "FINALIZING": "Comprobando los resultados de compilación en la nube",
+            "DOWNLOADING": "Descargando los resultados de compilación en la nube",
+            "VERIFYING": "Verificando los resultados de compilación en la nube",
+            "RECONNECTING": "Reconectando con la puerta de enlace",
+            "COMPLETE": "Compilación en la nube completada"
+        }
     }
 }

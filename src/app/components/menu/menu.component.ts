@@ -108,6 +108,7 @@ export class MenuComponent implements AfterViewChecked {
   private submenuViewChecked = false;
   private pendingMenuGeometryCorrection = false;
   private menuGeometryCorrectionTimeout: ReturnType<typeof setTimeout> | null = null;
+  private iframeFocusTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // 添加子菜单显示状态管理
   activeSubmenuItem: IMenuItem | null = null;
@@ -328,6 +329,7 @@ export class MenuComponent implements AfterViewChecked {
   ngAfterViewInit(): void {
     document.addEventListener('click', this.handleDocumentClick);
     document.addEventListener('contextmenu', this.handleDocumentClick);
+    window.addEventListener('blur', this.handleWindowBlur);
     this.pendingGlobalFilterFocus = this.focusGlobalFilterOnOpen && !!this.globalFilterPlaceholder;
 
     // Defer the first geometry correction until after the initial change-detection
@@ -355,6 +357,11 @@ export class MenuComponent implements AfterViewChecked {
   ngOnDestroy(): void {
     document.removeEventListener('click', this.handleDocumentClick);
     document.removeEventListener('contextmenu', this.handleDocumentClick);
+    window.removeEventListener('blur', this.handleWindowBlur);
+    if (this.iframeFocusTimeout !== null) {
+      clearTimeout(this.iframeFocusTimeout);
+      this.iframeFocusTimeout = null;
+    }
     if (this.menuGeometryCorrectionTimeout) {
       clearTimeout(this.menuGeometryCorrectionTimeout);
       this.menuGeometryCorrectionTimeout = null;
@@ -402,6 +409,20 @@ export class MenuComponent implements AfterViewChecked {
     if (!isClickInMainMenu && !isClickInSubmenu) {
       this.closeMenu();
     }
+  };
+
+  private handleWindowBlur = () => {
+    if (this.iframeFocusTimeout !== null) clearTimeout(this.iframeFocusTimeout);
+    // Clicks in embedded editors never bubble to the host document. Chromium
+    // updates activeElement after blur, so check the focus target next turn.
+    // Observing focus leaves the original editor click and caret action intact.
+    this.iframeFocusTimeout = setTimeout(() => {
+      this.iframeFocusTimeout = null;
+      const target = document.activeElement;
+      if (target?.tagName === 'IFRAME' && !this.hostRef.nativeElement.contains(target)) {
+        this.closeMenu();
+      }
+    });
   };
 
   closeMenu() {

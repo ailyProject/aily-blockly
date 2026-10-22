@@ -42,7 +42,7 @@ export class LocalLibrarySyncService {
   /**
    * 在项目加载后调用：先比对原库与副本指纹，不一致则覆盖副本；再轮询原库变化。不自动刷新 Blockly。
    */
-  start(projectPath: string): void {
+  start(projectPath: string, packageJson?: any): void {
     this.stop();
     if (!projectPath || !this.electronService.exists(projectPath)) {
       return;
@@ -55,7 +55,7 @@ export class LocalLibrarySyncService {
 
     let mapping: Record<string, string>;
     try {
-      const pkg = JSON.parse(this.electronService.readFile(pkgPath));
+      const pkg = packageJson || JSON.parse(this.electronService.readFile(pkgPath));
       mapping = pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY];
     } catch {
       return;

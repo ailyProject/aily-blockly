@@ -5,7 +5,8 @@ const path = require('node:path');
 function projectDirectoryForFile(filename, cwd = process.cwd()) {
   if (typeof filename !== 'string' || !/\.(abi|aci|ino)$/i.test(filename)) return null;
   const resolved = path.resolve(cwd, filename);
-  try { return fs.statSync(resolved).isFile() ? path.dirname(resolved) : null; }
+  // Keep the selected sketch until the renderer checks its enclosing project.
+  try { return fs.statSync(resolved).isFile() ? (/\.ino$/i.test(resolved) ? resolved : path.dirname(resolved)) : null; }
   catch { return null; }
 }
 

@@ -4,3 +4,5 @@ export * from './linux-board-project-route';
 export * from './abs/abs-json-tokens';
 export * from './concurrency/serial-operation-queue';
 export { createBrowserFrameBudget } from './concurrency/browser-frame-budget';
+export * from './partitions/partition-layout';
+export * from './partitions/partition-paths';

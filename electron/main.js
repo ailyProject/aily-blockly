@@ -14,6 +14,7 @@ const {
   shell,
   Menu,
   powerMonitor,
+  powerSaveBlocker,
   safeStorage,
 } = require("electron");
 
@@ -28,8 +29,8 @@ const simulatorGateway = require("./simulator-gateway");
 const simulatorSubappHost = require("./simulator-subapp-host");
 const { createPackagedRendererServer } = require("./packaged-renderer-server");
 const {
-  markInstalledForAppVersion,
-  shouldInstallForAppVersion,
+  markToolRefreshedForAppVersion,
+  shouldRefreshToolForAppVersion,
 } = require("./tools/aily-tools-install-state");
 const { mergeConfigChanges } = require("./config-persistence");
 const { resolveAilyAppDataPath } = require("./appdata-path");
@@ -104,7 +105,11 @@ function applyAppIdentity(product) {
 }
 
 registerSafeStorageIpc(ipcMain, safeStorage);
-require('./project-companion').registerProjectCompanionIpc(ipcMain, shell);
+require('./project-companion').registerProjectCompanionIpc(ipcMain, shell, {
+  development: !app.isPackaged && process.argv.includes('--serve')
+    ? { executable: process.execPath, entry: path.join(__dirname, 'main.js') }
+    : undefined,
+});
 
 // 设置应用名称，用于 Windows 系统通知显示
 applyAppIdentity(getBuildProduct());
@@ -773,6 +778,19 @@ const {
   beginWindowShutdown,
 } = require("./window");
 const { createApplicationQuitCoordinator } = require('./application-quit');
+let libraryDependenciesRegistered = false;
+const projectLibraries = new (require('./library-dependencies').LibraryDependencies)();
+const librarySessions = new (require('./library-dependency-sessions').LibraryDependencySessions)(projectLibraries);
+
+async function runProjectLibraryOperation(operation, projectPath, request, transaction) {
+  try {
+    return await librarySessions.run(operation, projectPath, request, transaction);
+  } finally {
+    if (operation !== 'status' && !librarySessions.sessions.has(projectLibraries.root(projectPath)) && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('library-dependencies:changed', { projectPath, ...projectLibraries.status(projectPath) });
+    }
+  }
+}
 const { registerNpmHandlers, killAllNpmProcesses, killOwnerProjectNpmProcesses, getActiveNpmProcesses, beginNpmShutdown } = require("./npm");
 const { cancelProjectTaskScope } = require('./project-task-scope');
 const { registerUpdaterHandlers } = require("./updater");
@@ -790,6 +808,8 @@ const { withAuthCredentialsLock, beginAuthCredentialsShutdown, releaseAllAuthCre
 const { registerAppDataResourceCleanupHandlers } = require('./appdata-resource-cleanup');
 const { createBuildDeliveryAuthority } = require('./build-delivery-authority');
 let buildDeliveryAuthority;
+let cloudBuildController;
+let windowController;
 let simulatorDebugPreviewRegistered = false;
 // debug模块
 const { initLogger, registerLoggerHandlers } = require("./logger");
@@ -1042,10 +1062,24 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
   });
 }
 
+// 本地、云端编译共用当前编辑器查询；取消任务时立即撤销等待，避免退出多等一次超时。
+function queryBuildSource(projectPath, signal) {
+  return requestMainWindow('build-source-query', 'build-source-query:response', { projectPath }, 5000, signal);
+}
+
+async function queryCloudBuildAuth(request, signal) {
+  const answer = await requestMainWindow('cloud-build-auth-query', 'cloud-build-auth-query:response', request, 15000, signal);
+  return answer.result || { ok: false, errorCode: 'HOST_AUTH_UNAVAILABLE', message: answer.message || 'The host account is unavailable.' };
+}
+
 /** 处理来自 CLI 的命令 */
 async function handleCliBridgeCommand(action, payload) {
   const requestedPath = payload && typeof payload.path === 'string' ? payload.path : '';
   switch (action) {
+    case 'library-dependencies': {
+      const result = await runProjectLibraryOperation(payload.operation, payload.projectPath, payload.request, payload.transaction);
+      return { ok: true, ...result };
+    }
     case 'open': {
       if (!requestedPath) return { ok: false, message: '缺少 path 参数' };
       if (!fs.existsSync(requestedPath)) return { ok: false, message: `项目目录不存在: ${requestedPath}` };
@@ -1292,6 +1326,8 @@ function getCliBridgeStatus() {
 
 function startCliBridgeIfPossible() {
   if (cliBridge) return;
+  // Child runtimes discover this exact authenticated host, never another instance.
+  process.env.AILY_LIBRARY_HOST_PID = String(process.pid);
   try {
     cliBridge = startCliBridge({
       handleCommand: handleCliBridgeCommand,
@@ -1440,10 +1476,21 @@ function isCurrentMainRenderer(sender) {
 function isCurrentRendererGenerationReady() {
   return rendererGeneration > 0
     && readyRendererGeneration === rendererGeneration
-    && isCurrentMainRenderer(mainWindow?.webContents);
+    && !!mainWindow && !mainWindow.isDestroyed()
+    && isCurrentMainRenderer(mainWindow.webContents);
+}
+
+// 两种编译方式使用同一页面身份，刷新前必须撤销旧代次，不能把旧产物交给新页面。
+function getCurrentRendererOwner(sender) {
+  if (!isCurrentRendererGenerationReady() || (sender && !isCurrentMainRenderer(sender))) return null;
+  return { sender: mainWindow.webContents, generation: rendererGeneration };
 }
 
 function invalidateRendererGeneration(reason) {
+  // 页面刷新或崩溃时撤销旧页面的云任务和固件权限，避免旧产物被新页面误用。
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    void cloudBuildController?.invalidateOwner(mainWindow.webContents, rendererGeneration);
+  }
   readyRendererGeneration = 0;
   console.info('[RendererLifecycle] unavailable', {
     generation: rendererGeneration,
@@ -1452,8 +1499,8 @@ function invalidateRendererGeneration(reason) {
 }
 
 function beginRendererGeneration(reason) {
-  rendererGeneration += 1;
   invalidateRendererGeneration(reason);
+  rendererGeneration += 1;
   console.info('[RendererLifecycle] loading', {
     generation: rendererGeneration,
     reason,
@@ -2356,53 +2403,31 @@ function loadEnv() {
   // child 目录只管理 Node、7z、probe-rs 等随应用分发的工具；
   // aily-builder、aily-linter 与 aily-connector 由 npm 安装到应用专用的全局 prefix。
 
-  // 必须先让 child Node 可用。首次启动和应用版本变化时安装 latest，
-  // 同一应用版本复用现有工具；三个 npm 全局安装串行执行。
+  // 先准备应用运行环境；工具路径、按需安装与重试由各自生命周期统一负责。
   runInstallEnv(childPath);
   const appVersion = app.getVersion();
   const isE2E = process.env.AILY_E2E === "1";
   const allowE2ERefresh = process.env.AILY_E2E_ALLOW_TOOL_REFRESH === "1";
-  const installLatest = shouldInstallForAppVersion(userConf, appVersion, {
-    isE2E,
-    allowE2ERefresh,
-  });
+  const refreshEnabled = !isE2E || allowE2ERefresh;
+  const localTools = [['aily-builder', builder], ['aily-linter', linter]];
+  const toolPolicy = { configPath: userConfigPath, appVersion, refreshEnabled, installIfMissing: refreshEnabled };
+  for (const [, tool] of localTools) tool.configure(childPath, toolPolicy);
   if (isE2E && !allowE2ERefresh) {
     console.log("E2E mode: skipping automatic aily-builder, aily-linter and aily-connector latest refresh");
   }
-  if (installLatest) {
-    try {
-      markInstalledForAppVersion(userConfigPath, appVersion);
-      userConf.installed = appVersion;
-      console.log(`${app.getName()} ${appVersion} will refresh aily-builder, aily-linter and aily-connector to latest`);
-    } catch (error) {
-      console.error("Failed to save aily tools refresh marker:", error);
-    }
-  }
-
-  const builderInitialization = builder.initialize(childPath, {
-    installLatest,
-  });
-  builderInitialization.then((result) => {
-    if (installLatest && !result.startupInstallSucceeded) {
-      console.error(`aily-builder@latest startup install failed: ${result.startupInstallError || result.error || "unknown error"}`);
-    }
-    if (!result.ok) {
-      console.error(`aily-builder 初始化失败: ${result.error || "未知错误"}`);
-    }
-  }).catch((error) => console.error("aily-builder 初始化失败:", error));
-  const linterInitialization = linter.initialize(childPath, builderInitialization, {
-    installLatest,
-  });
+  // 连接服务不依赖 Builder/Linter。npm 安装仍由共享 prefix 队列互斥，不阻塞已就绪的连接能力。
   const connectorInitialization = connector.initialize(
     childPath,
-    linterInitialization,
+    undefined,
     {
       // Install the latest protocol-compatible connector. Local development uses
       // setup:local-connector or an explicit AILY_CONNECTOR_PROJECT override.
-      installManaged: installLatest,
+      installManaged: shouldRefreshToolForAppVersion(userConfigPath, 'aily-connector', appVersion, { refreshEnabled }),
     },
   );
   connectorInitialization.then((result) => {
+    // 只记录确实完成的刷新；云模式跳过的本地工具不会因此失去升级机会。
+    if (result.startupInstallSucceeded) markToolRefreshedForAppVersion(userConfigPath, 'aily-connector', appVersion);
     if (result.startupInstallAttempted && !result.startupInstallSucceeded) {
       console.warn(`aily-connector@latest startup install failed: ${result.startupInstallError || result.error || "unknown error"}`);
     }
@@ -2410,14 +2435,15 @@ function loadEnv() {
       console.warn(`aily-connector is not ready: ${result.error || "unknown error"}`);
     }
   }).catch((error) => console.warn("aily-connector initialization failed:", error));
-  linterInitialization.then((result) => {
-    if (installLatest && !result.startupInstallSucceeded) {
-      console.error(`aily-linter@latest startup install failed: ${result.startupInstallError || result.error || "unknown error"}`);
+
+  // 云模式只配置本地工具，不安装；切回本地后的实际 wait-ready 请求负责按需准备。
+  if (userConf?.compile?.backend !== 'cloud') {
+    for (const [name, tool] of localTools) {
+      void tool.ensureReady().then(result => {
+        if (!result.ok || result.startupInstallError) console.warn(`${name} 初始化失败: ${result.startupInstallError || result.error}`);
+      }).catch(error => console.warn(`${name} 初始化失败:`, error));
     }
-    if (!result.ok) {
-      console.error(`aily-linter 初始化失败: ${result.error || "未知错误"}`);
-    }
-  }).catch((error) => console.error("aily-linter 初始化失败:", error));
+  }
 
   // 当前系统语言
   process.env.AILY_SYSTEM_LANG = app.getLocale();
@@ -2681,22 +2707,46 @@ function createWindow() {
   // 注册ipc handlers
   registerUpdaterHandlers(mainWindow);
   registerTerminalHandlers(mainWindow);
-  registerWindowHandlers(mainWindow, {
+  windowController = registerWindowHandlers(mainWindow, {
     resolveRendererUrl: resolveAppRendererUrl,
     getRendererGeneration: () => rendererGeneration,
     canCloseMainWindow: () => applicationQuit.canClose(),
   });
   registerNpmHandlers(mainWindow);
+  if (!libraryDependenciesRegistered) {
+    // Register once; the memory belongs to the process, not a renderer generation.
+    libraryDependenciesRegistered = true;
+    ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request }) => {
+      if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('Library operations require the current main frame.');
+      }
+      return runProjectLibraryOperation(operation, projectPath, request);
+    });
+  }
   if (!buildDeliveryAuthority) {
     const deliveryChildRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
     buildDeliveryAuthority = createBuildDeliveryAuthority({
       childRoot: deliveryChildRoot,
-      getOwner: () => isCurrentRendererGenerationReady() ? { sender: mainWindow.webContents, generation: rendererGeneration } : null,
-      querySource: projectPath => requestMainWindow('build-source-query', 'build-source-query:response', { projectPath }, 5000),
+      getOwner: getCurrentRendererOwner,
+      querySource: queryBuildSource,
     });
     ipcMain.handle('build-delivery-query', (event, request) => {
       if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Build delivery query requires the current main frame.');
       return buildDeliveryAuthority.query(event.sender, request);
+    });
+  }
+  if (!cloudBuildController) {
+    // 主入口只连接应用状态；网络任务、产物租约、烧录取消和防休眠由云编译控制器管理。
+    cloudBuildController = require('./cloud-build/ipc').registerCloudBuildHandlers({
+      ipcMain,
+      backend: userConf?.compile?.backend,
+      powerSaveBlocker,
+      getOwner: getCurrentRendererOwner,
+      // 设置窗口和主页面初始化阶段仅可读取部署信息、检查连接，不能提交编译或烧录。
+      canReadGateway: sender => isCurrentMainRenderer(sender) || windowController?.isSettingsWindowSender(sender) === true,
+      getAuth: queryCloudBuildAuth,
+      querySource: queryBuildSource,
+      getRuntimeRoot: () => process.env.AILY_TOOLS_PATH || path.join(process.env.AILY_APPDATA_PATH, 'tools'),
     });
   }
   // Debugger consumes a selected artifact, independent of build provenance.
@@ -2738,6 +2788,8 @@ function createWindow() {
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {
+    isCoderProjectOpen: () => getBuildProduct() === 'coder'
+      && !!(projectContextState.workspace || heldProjectLockNormalized || coderOpenProjects.length),
     canMutateSharedTree: () => !hasOtherRunningInstances(),
     getRunningSubappConfig,
     forceStopChildToolByCatalogId,
@@ -3167,6 +3219,8 @@ async function cleanupRegisteredChildProcesses() {
   beginAuthCredentialsShutdown();
 
   await Promise.allSettled([
+    require('./library-dependencies').stopLibraryDependencyWorkers(),
+    cloudBuildController?.shutdown(),
     killAllCmdProcesses(),
     killAllNpmProcesses(),
     killAllTerminals(),
@@ -3417,7 +3471,7 @@ let configSaveQueue = Promise.resolve();
 process.env.AILY_CONFIG_MERGED_SAVE = '1';
 
 ipcMain.handle("config-save-merged", (_event, payload = {}) => {
-  const operation = configSaveQueue.then(() => {
+  const operation = configSaveQueue.then(async () => {
     if (!process.env.AILY_APPDATA_PATH) {
       throw new Error('AILY_APPDATA_PATH is not initialized');
     }
@@ -3429,6 +3483,8 @@ ipcMain.handle("config-save-merged", (_event, payload = {}) => {
     const merged = mergeConfigChanges(payload.base || {}, payload.next || {}, latest);
     fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
     userConf = merged;
+    // 控制器同步切换后端、拒绝迟到请求，再等待旧任务及烧录释放；不在保存配置时安装工具。
+    await cloudBuildController?.setBackend(merged.compile?.backend);
     if (typeof merged.project_path === 'string' && merged.project_path.trim()) {
       process.env.AILY_PROJECT_PATH = merged.project_path.trim();
     }
@@ -3603,12 +3659,14 @@ ipcMain.on("host-auth-state-changed", (event, data = {}) => {
     return;
   }
 
+  const previousUserId = hostAuthState.authenticated ? hostAuthState.user?.id : undefined;
   hostAuthState = {
     authenticated: data.authenticated,
     ...(data.authenticated && data.user ? { user: data.user } : {}),
     ...(data.authenticated && data.quotaSnapshot ? { quotaSnapshot: data.quotaSnapshot } : {}),
     version: hostAuthState.version + 1,
   };
+  if (previousUserId && previousUserId !== hostAuthState.user?.id) void cloudBuildController?.invalidateAuthentication();
 
   BrowserWindow.getAllWindows().forEach((win) => {
     try {

@@ -4,12 +4,13 @@ import { reconcileAbsDraft } from './abs-reconciler';
 import { assertAbsRuntimeShapeSupported } from './abs-workspace-state';
 import { getAbsProcedureReferences } from './abs-procedures';
 import type { DeclarativeBlockSnapshot } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
+import { resolveBoardJsonBindings } from '../../../editors/blockly-editor/components/blockly/board-json-bindings';
 
 describe('pure typed custom-function preparation', () => {
-  const json = { type: 'custom_function_def', mutator: 'function_params_mutator', args0: [
+  const json = resolveBoardJsonBindings({ type: 'custom_function_def', mutator: 'function_params_mutator', args0: [
     { type: 'field_input', name: 'FUNC_NAME', text: 'myFunction' },
     { type: 'field_dropdown', name: 'RETURN_TYPE', options: [['void', 'void'], ['int', 'int'], ['float', 'float'], ['---', '---']] },
-    { type: 'input_statement', name: 'STACK' }] };
+    { type: 'input_statement', name: 'STACK' }] }, {});
   const kinds = { custom_function_def: 'definition', custom_function_call_advance: 'statement-call', custom_function_call_return_advance: 'value-call' } as const;
   const snapshot: DeclarativeBlockSnapshot = { types: Object.keys(kinds), registered: type => !!kinds[type], assertCurrent() {}, get: type => type === json.type ? json : undefined,
     customFunctions: { get: type => kinds[type] && { kind: kinds[type], parameterTypes: ['int', 'float'] }, assertCurrent() {}, synchronize() {}, prepareSerialization() {} } };

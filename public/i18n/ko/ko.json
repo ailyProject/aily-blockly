@@ -341,6 +341,14 @@
             "CACHE": "캐시 관리"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "클라우드 컴파일",
+            "CLOUD_COMPILATION_DESC": "클라우드에서 컴파일하고 이 컴퓨터에서 보드에 업로드합니다. 활성화할 때 서비스를 확인합니다.",
+            "CLOUD_PRO_REQUIRED": "Pro 계정으로 로그인하면 이용할 수 있습니다",
+            "CLOUD_ENABLE_CHECKING": "클라우드 컴파일 서비스 확인 중…",
+            "CLOUD_ENABLE_SUCCESS": "클라우드 컴파일이 활성화되었습니다.",
+            "CLOUD_ENABLE_FAILED": "활성화하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "활성화하지 못했습니다. 앱을 완전히 종료한 후 다시 시작하고 재시도하세요.",
+            "CLOUD_DISABLE_FAILED": "비활성화하지 못했습니다. 다시 시도하세요.",
             "PROJECT_FOLDER": "프로젝트 폴더",
             "LANGUAGE": "언어",
             "DEVELOPMENT_MODE_PREFERENCE": "기본 개발 모드",
@@ -941,6 +949,7 @@
             "BUSY_RETRY_LATER": "{{message}}, 잠시 후 다시 시도하세요",
             "BUSY_WAIT": "{{message}}, 잠시 기다려 주세요",
             "PREPARING_TITLE": "빌드 준비 중",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "사전 빌드가 실행 중입니다",
             "PRECOMPILE_FAILED_TITLE": "사전 빌드 실패",
             "PRECOMPILE_FAILED_DETAIL": "의존성 분석 중 오류가 발생했습니다. 자세한 내용은 로그를 확인하세요.",
@@ -1040,6 +1049,19 @@
         "NO_TUTORIAL_PROVIDED": "라이브러리 작성자가 튜토리얼을 제공하지 않았습니다"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "클라우드 컴파일 구성 요소가 최신 버전이 아닙니다. 앱을 완전히 종료한 후 다시 시작하고 재시도하세요. 페이지 새로고침만으로는 업데이트되지 않습니다.",
+        "CLOUD_TARGET_UNAVAILABLE": "이 보드 버전 또는 내용은 사용 가능한 클라우드 대상으로 등록되지 않았습니다.",
+        "CLOUD_BOARD_NOT_ENABLED": "이 보드 버전의 클라우드 컴파일이 활성화되지 않았습니다.",
+        "CLOUD_BOARD_UNSUPPORTED": "이 보드 버전은 클라우드 컴파일을 지원하지 않습니다.",
+        "CLOUD_BOARD_OFFLINE": "이 보드의 클라우드 컴파일러가 오프라인입니다. 나중에 다시 시도하세요.",
       "MODE_UNKNOWN": "프로젝트 유형을 확인할 수 없습니다. 유효한 Aily Blockly 또는 Aily Coder 프로젝트를 선택하세요.",
       "MODE_CREATE_RESTRICTED": "현재 {{application}} 모드에서는 이 유형의 프로젝트를 만들 수 없습니다. {{targetApplication}}을 사용하세요.",
       "MODE_MISMATCH_TITLE": "프로젝트 모드 불일치",
@@ -1250,5 +1272,29 @@
         "ERR_PATH_EXISTS": "같은 이름의 폴더가 이미 있습니다",
         "ERR_PATH_INVALID": "저장 경로에 잘못된 문자가 포함되어 있습니다",
         "ERR_CREATE_FAILED": "프로젝트 생성에 실패했습니다. 다시 시도해 주세요."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "로컬 컴파일로 전환",
+        "SWITCH_TO_CLOUD": "클라우드 컴파일로 돌아가기",
+        "SWITCHING_TO_CLOUD": "클라우드로 돌아가기 위해 로컬 컴파일을 중지하는 중…",
+        "SWITCHING_TO_LOCAL": "로컬에서 계속하기 위해 클라우드 컴파일을 취소하는 중…",
+        "PREPARING_LOCAL": "로컬 컴파일 준비 중…",
+        "REUSED_RESULT": "검증된 클라우드 빌드 결과를 재사용했습니다 (소요 시간: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "클라우드 빌드 완료 (소요 시간: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "클라우드 빌드 파일 준비 중",
+            "UPLOADING": "클라우드 빌드 파일 업로드 중",
+            "QUEUED": "클라우드 빌드 대기열에서 대기 중",
+            "DISPATCHING": "클라우드 빌드 서버 할당 중",
+            "PREPARING": "클라우드 빌드 환경 준비 중",
+            "RESOURCES": "클라우드 빌드 리소스 준비 중",
+            "ANALYZING": "프로젝트 분석 중",
+            "COMPILING": "클라우드에서 컴파일 중",
+            "FINALIZING": "클라우드 빌드 결과 확인 중",
+            "DOWNLOADING": "클라우드 빌드 결과 다운로드 중",
+            "VERIFYING": "클라우드 빌드 결과 검증 중",
+            "RECONNECTING": "게이트웨이에 다시 연결 중",
+            "COMPLETE": "클라우드 빌드 완료"
+        }
     }
 }

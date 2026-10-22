@@ -52,6 +52,7 @@ interface CacheStats {
 
 interface HostAuthState {
   authenticated: boolean;
+  canUseCloudCompilation: boolean;
   openProtectedToolIds: string[];
 }
 
@@ -100,10 +101,10 @@ export class SettingsComponent implements OnDestroy {
       name: 'SETTINGS.SECTIONS.THEME',
       icon: 'fa-light fa-gift'
     },
-    // {
-    //   name: 'SETTINGS.SECTIONS.COMPILATION',
-    //   icon: 'fa-light fa-screwdriver-wrench'
-    // },
+    {
+      name: 'SETTINGS.SECTIONS.COMPILATION',
+      icon: 'fa-light fa-screwdriver-wrench'
+    },
     {
       name: 'SETTINGS.SECTIONS.BLOCKLY',
       icon: 'fa-light fa-puzzle-piece'
@@ -136,9 +137,9 @@ export class SettingsComponent implements OnDestroy {
 
   get items() {
     // 独立 Coder 的启动/构建身份决定可用设置，不改写共享 Blockly 配置。
-    return this.coderProduct
-      ? this.sectionItems.filter(item => item.name !== 'SETTINGS.SECTIONS.BLOCKLY')
-      : this.sectionItems;
+    return this.sectionItems.filter(item =>
+      (item.name !== 'SETTINGS.SECTIONS.BLOCKLY' || !this.coderProduct)
+      && (item.name !== 'SETTINGS.SECTIONS.COMPILATION' || this.showCloudCompilation));
   }
 
   // 缓存管理
@@ -320,6 +321,7 @@ export class SettingsComponent implements OnDestroy {
         : [];
       return {
         authenticated: response.authenticated === true,
+        canUseCloudCompilation: response.canUseCloudCompilation === true,
         openProtectedToolIds: [...new Set(openProtectedToolIds)],
       };
     }
@@ -329,6 +331,7 @@ export class SettingsComponent implements OnDestroy {
     }
     return {
       authenticated: this.authService.isAuthenticated,
+      canUseCloudCompilation: this.authService.canUseCloudCompilation,
       openProtectedToolIds: this.uiService.getOpenAuthRequiredToolIds(),
     };
   }
@@ -387,6 +390,102 @@ export class SettingsComponent implements OnDestroy {
 
   get configData() {
     return this.configService.data;
+  }
+
+  // 开启前完成健康检测，保存期间锁定开关；请求代号阻止关闭窗口后的迟到响应修改配置。
+  cloudConnectionChecking = false;
+  cloudConnectionSaving = false;
+  cloudConnectionStatus = '';
+  private cloudConnectionRequestId = 0;
+  private hostCloudCompilationAllowed: boolean | null = null;
+  private cloudAccessRequestId = 0;
+  private cloudAuthListenerCleanup?: () => void;
+
+  get showCloudCompilation(): boolean {
+    return window['platform']?.type === 'win32' && this.selectedRegion !== 'eu';
+  }
+  get canUseCloudCompilation(): boolean {
+    return this.hostCloudCompilationAllowed ?? this.configService.canUseCloudCompilation;
+  }
+  get cloudCompilationEnabled(): boolean {
+    return this.canUseCloudCompilation && this.configData?.compile?.backend === 'cloud';
+  }
+
+  private async refreshCloudCompilationAccess(): Promise<void> {
+    const requestId = ++this.cloudAccessRequestId;
+    let allowed = false;
+    try {
+      allowed = (await this.getHostAuthState()).canUseCloudCompilation;
+    } catch { /* 主窗口状态不可用时保持禁用，不沿用旧权益。 */ }
+    if (this.destroyed || requestId !== this.cloudAccessRequestId) return;
+    this.hostCloudCompilationAllowed = allowed;
+    if (!allowed) this.invalidateCloudConnectionCheck();
+    this.cdr.markForCheck();
+  }
+
+  private invalidateCloudConnectionCheck(): void {
+    this.cloudConnectionRequestId++;
+    this.cloudConnectionChecking = false;
+    this.cloudConnectionStatus = '';
+  }
+
+  /** 开启必须检测网关成功后才生效；关闭可直接保存，以便服务故障时恢复本地编译。 */
+  async onCloudCompilationChange(enabled: boolean): Promise<void> {
+    if (this.destroyed || this.applying || this.cloudConnectionSaving || !this.canUseCloudCompilation) return;
+    if (!enabled && !this.cloudCompilationEnabled) {
+      this.invalidateCloudConnectionCheck();
+      this.configData.compile = { ...(this.configData.compile || {}), backend: 'local' };
+      this.cdr.markForCheck();
+      return;
+    }
+    if (enabled && (this.cloudConnectionChecking || this.cloudCompilationEnabled)) return;
+    const requestId = ++this.cloudConnectionRequestId;
+    const previousCompile = this.configData.compile;
+    const previousCloud = this.configData.cloud;
+    let startedSaving = false;
+    this.cloudConnectionChecking = true;
+    this.cloudConnectionStatus = enabled ? this.translateService.instant('SETTINGS.FIELDS.CLOUD_ENABLE_CHECKING') : '';
+    try {
+      if (enabled) {
+        const bridge = window['cloudBuild'];
+        if (!bridge?.health) throw Object.assign(new Error('Cloud gateway bridge is unavailable; restart the desktop host.'), { code: 'CLOUD_BRIDGE_UNAVAILABLE' });
+        const health = await bridge.health();
+        if (this.electronService.isElectron) await this.refreshCloudCompilationAccess();
+        if (requestId !== this.cloudConnectionRequestId || this.destroyed || !this.canUseCloudCompilation) return;
+        if (health?.healthy !== true) throw new Error('Invalid gateway health response.');
+        if (health.settings) {
+          this.configData.cloud = { ...(this.configData.cloud || {}), ...health.settings };
+        }
+      }
+      this.configData.compile = { ...(this.configData.compile || {}), backend: enabled ? 'cloud' : 'local' };
+      // 开关独立即时保存；一旦开始落盘，关闭窗口也不能留下磁盘与界面不一致的状态。
+      startedSaving = true;
+      this.cloudConnectionSaving = true;
+      await this.configService.saveCompileSettings();
+      if (requestId === this.cloudConnectionRequestId && !this.destroyed) {
+        this.cloudConnectionStatus = enabled && this.canUseCloudCompilation
+          ? this.translateService.instant('SETTINGS.FIELDS.CLOUD_ENABLE_SUCCESS') : '';
+      }
+    } catch (error: any) {
+      if (startedSaving) {
+        this.configData.compile = previousCompile;
+        this.configData.cloud = previousCloud;
+      }
+      if (requestId === this.cloudConnectionRequestId && !this.destroyed) {
+        console.warn('[CloudBuild] Compilation setting change failed.', { code: error?.code || 'CLOUD_CONNECTION_FAILED' });
+        let statusKey = enabled ? 'CLOUD_ENABLE_FAILED' : 'CLOUD_DISABLE_FAILED';
+        if (enabled && error?.code === 'CLOUD_BRIDGE_UNAVAILABLE') {
+          statusKey = 'CLOUD_ENABLE_RESTART_REQUIRED';
+        }
+        this.cloudConnectionStatus = this.translateService.instant(`SETTINGS.FIELDS.${statusKey}`);
+      }
+    } finally {
+      if (requestId === this.cloudConnectionRequestId || startedSaving) {
+        this.cloudConnectionChecking = false;
+        this.cloudConnectionSaving = false;
+      }
+      if (!this.destroyed) this.cdr.markForCheck();
+    }
   }
 
   get developmentModePreference() {
@@ -461,12 +560,15 @@ export class SettingsComponent implements OnDestroy {
         this.cdr.markForCheck();
       });
     this.configReloadSubscription = this.configService.configReloaded$.subscribe(() => {
+      if (!this.cloudConnectionSaving || !this.canUseCloudCompilation) this.invalidateCloudConnectionCheck();
       this.cdr.markForCheck();
     });
   }
 
   ngOnDestroy() {
     this.destroyed = true;
+    this.cloudAuthListenerCleanup?.();
+    this.invalidateCloudConnectionCheck();
     this.cleanupDestroyed$.next();
     this.cleanupDestroyed$.complete();
     this.stopCacheProgress();
@@ -485,7 +587,21 @@ export class SettingsComponent implements OnDestroy {
   }
 
   async ngOnInit() {
-    // await this.configService.init();
+    // 设置是独立渲染窗口，直接读取主窗口权益，不建立第二份登录会话。
+    if (this.electronService.isElectron) {
+      this.hostCloudCompilationAllowed = false;
+      this.cloudAuthListenerCleanup = window['ipcRenderer']?.on?.('host-auth-state-changed', (_event: unknown, state: { authenticated?: boolean }) => {
+        if (state?.authenticated === false) {
+          this.cloudAccessRequestId++;
+          this.hostCloudCompilationAllowed = false;
+          this.invalidateCloudConnectionCheck();
+          this.cdr.markForCheck();
+          return;
+        }
+        void this.refreshCloudCompilationAccess();
+      });
+      await this.refreshCloudCompilationAccess();
+    }
   }
 
   ngAfterViewInit() {
@@ -843,11 +959,12 @@ export class SettingsComponent implements OnDestroy {
   }
 
   cancel() {
+    this.invalidateCloudConnectionCheck();
     this.uiService.closeWindow();
   }
 
   async apply() {
-    if (this.applying) {
+    if (this.applying || this.cloudConnectionChecking || this.cloudConnectionSaving || this.destroyed) {
       return;
     }
 

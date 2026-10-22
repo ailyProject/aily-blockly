@@ -530,7 +530,6 @@ export class CloudSpaceComponent {
     if (this.projectService.currentProjectPath === projectPath) {
       this.projectService.currentPackageData = packageData;
     }
-    await this.projectService.copyPackageJsonToTemp(projectPath);
   }
 
   async syncToCloud(studentProject?) {

@@ -2227,6 +2227,14 @@ function removeOwnedBinLinks(rootDir, packagePath, packageName, binNames) {
   }
 }
 
+function assertSubappCanBeUninstalled(id, options) {
+  if (id === BUNDLED_CODER_ID && options.isCoderProjectOpen?.()) {
+    const error = new Error('Close the current project before uninstalling Aily Coder Editor.');
+    error.code = 'SUBAPP_REQUIRED_BY_PROJECT';
+    throw error;
+  }
+}
+
 async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = {}) {
   const legacyPath = packagePathFor(rootDir, entry.package);
   const storeKey = versions.storeKeyForPackage(entry.package);
@@ -2238,6 +2246,7 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
   const lockDirectory = path.join(storeRoot, '.locks');
   try {
     preparationLocks.push(await waitForUpdateLock(path.join(lockDirectory, storeKey)));
+    assertSubappCanBeUninstalled(entry.id, options);
     if (typeof options.forceStopChildToolByCatalogId === 'function') {
       const stopped = await options.forceStopChildToolByCatalogId(entry.id);
       if (stopped?.success === false && stopped.reason !== 'not-found') {
@@ -2249,6 +2258,7 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
     for (const target of targets) {
       const holders = await collectBusyHolders(target, entry, options);
       if (holders.length) {
+        assertSubappCanBeUninstalled(entry.id, options);
         if (options.forceClose !== true) throw formatBusyNeedsForceError(target, holders);
         await forceCloseBusyHolders(target, entry, holders, options);
       }
@@ -2260,6 +2270,7 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
 
     // The marker is written only when destructive cleanup is about to start. A busy
     // preflight must leave the existing installation visible and retryable.
+    assertSubappCanBeUninstalled(entry.id, options);
     versions.beginUninstall(rootDir, entry);
     removeOwnedBinLinks(rootDir, legacyPath, entry.package, binNames);
     for (const target of targets) await rmWithBusyRetry(target, options);
@@ -2682,6 +2693,7 @@ function createSubappManager(options = {}) {
 
   async function mutate(action, payload = {}) {
     const requestedId = validateId(payload.id);
+    if (action === 'uninstall') assertSubappCanBeUninstalled(requestedId, options);
     if (action !== 'uninstall') assertNotUninstalling(requestedId);
     const tracksUninstall = action === 'uninstall';
     if (tracksUninstall) {
@@ -2887,6 +2899,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     listChildToolHoldersForCatalogId,
     getIndexUrl,
     getRunningSubappConfig,
+    isCoderProjectOpen,
   } = handlerOptions;
 
   const sendProgress = (progress) => {
@@ -2910,6 +2923,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     getMainWindow,
     getIndexUrl,
     getRunningSubappConfig,
+    isCoderProjectOpen,
     getBusyDialogStrings: () => readSubappBusyDialogStringsFromI18n(),
     forceStopChildToolByCatalogId,
     listChildToolHolders: listChildToolHoldersForCatalogId,

@@ -9,7 +9,6 @@ const APPLICATIONS = {
   blockly: { name: 'Aily Blockly', bundleId: 'blockly.aily.pro', names: ['aily blockly', 'aily-blockly'] },
   coder: { name: 'Aily Coder', bundleId: 'coder.aily.pro', names: ['Aily Coder', 'aily-coder'] },
 };
-const DOWNLOAD_URL = 'https://aily.pro';
 
 function applicationForMode(mode) {
   if (!Object.hasOwn(APPLICATIONS, mode)) throw new Error('Invalid project mode');
@@ -131,13 +130,18 @@ function companionLaunch(applicationPath, projectPath, platform = process.platfo
 async function openCompanionProject(mode, projectPath, options = {}) {
   applicationForMode(mode);
   if (readProjectMode(projectPath) !== mode) throw new Error('Project type does not match the target application');
-  const applicationPath = await (options.find || findCompanionApplication)(mode);
-  if (!applicationPath) return { ok: false, reason: 'not_installed', error: 'Application is not installed' };
-  const launch = companionLaunch(applicationPath, projectPath, options.platform, process.env, mode);
+  let launch;
+  if (options.development) {
+    launch = developmentCompanionLaunch(mode, projectPath, options.development, options.env || process.env);
+  } else {
+    const applicationPath = await (options.find || findCompanionApplication)(mode);
+    if (!applicationPath) return { ok: false, reason: 'not_installed', error: 'Application is not installed' };
+    launch = companionLaunch(applicationPath, projectPath, options.platform, options.env || process.env, mode);
+  }
   await new Promise((resolve, reject) => {
     const child = (options.spawn || spawn)(launch.command, launch.args, launch.options);
     child.once('error', reject);
-    if ((options.platform || process.platform) === 'darwin') {
+    if (!options.development && (options.platform || process.platform) === 'darwin') {
       child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Application launch failed (${code})`)));
     } else {
       child.once('spawn', () => { child.unref(); resolve(); });
@@ -146,19 +150,33 @@ async function openCompanionProject(mode, projectPath, options = {}) {
   return { ok: true };
 }
 
-function registerProjectCompanionIpc(ipcMain, shell) {
+function developmentCompanionLaunch(mode, projectPath, development, env = process.env) {
+  applicationForMode(mode);
+  const launchEnv = { ...env, AILY_BUILD_PRODUCT: mode,
+    AILY_APP_VERSION: mode === 'coder' ? require('../build/products/coder.json').version : require('../package.json').version };
+  for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete launchEnv[key];
+  return {
+    command: development.executable,
+    args: [development.entry, '--serve', `--open-project=${projectPath}`],
+    options: { cwd: path.resolve(path.dirname(development.entry), '..'), shell: false, detached: true, stdio: 'ignore', env: launchEnv },
+  };
+}
+
+function registerProjectCompanionIpc(ipcMain, shell, options = {}) {
   ipcMain.handle('project-companion-status', async (_event, { mode } = {}) => {
     const application = applicationForMode(mode);
-    return { installed: Boolean(await findCompanionApplication(mode)), application: application.name };
+    return { installed: Boolean(options.development || await findCompanionApplication(mode)), application: application.name };
   });
   ipcMain.handle('project-companion-open', async (_event, { mode, projectPath } = {}) => {
-    try { return await openCompanionProject(mode, projectPath); }
+    try { return await openCompanionProject(mode, projectPath, options); }
     catch (error) { return { ok: false, error: error.message }; }
   });
-  ipcMain.handle('project-companion-download', async () => {
-    await shell.openExternal(DOWNLOAD_URL);
+  ipcMain.handle('project-companion-download', async (_event, { webUrl } = {}) => {
+    const url = new URL(webUrl);
+    if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Invalid application download URL');
+    await shell.openExternal(url.href);
     return { ok: true };
   });
 }
 
-module.exports = { findCompanionApplication, companionLaunch, openCompanionProject, readProjectMode, windowsInstallDirectories, registerProjectCompanionIpc };
+module.exports = { findCompanionApplication, companionLaunch, developmentCompanionLaunch, openCompanionProject, readProjectMode, windowsInstallDirectories, registerProjectCompanionIpc };

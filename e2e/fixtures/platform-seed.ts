@@ -20,7 +20,9 @@ export async function seedPlatform(project: string, target: string, seed = proce
     const short = name.replace(/^@aily-project\/(sdk|compiler|tool)-/, '');
     const assetName = short === 'idf_esp32s3' ? 'esp32-arduino-libs' : short;
     const expected = `${assetName}${kind === 'sdk' ? '_' : '@'}${version}`;
-    const directory = (await readdir(path.join(seed, kind))).find(entry => entry === expected || entry.startsWith(`${expected.replace(/\.0$/, '')}-arduino`));
+    const directory = (await readdir(path.join(seed, kind))).find(entry => entry === expected
+      || entry.startsWith(`${expected}-arduino`)
+      || entry.startsWith(`${expected.replace(/\.0$/, '')}-arduino`));
     expect(directory, `Installed platform directory: ${name}`).toBeTruthy();
     await cp(path.join(seed, kind, directory!), path.join(target, kind, directory!), { recursive: true, mode: constants.COPYFILE_FICLONE });
   }

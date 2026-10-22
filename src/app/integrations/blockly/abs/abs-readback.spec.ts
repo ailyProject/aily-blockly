@@ -9,6 +9,23 @@ describe('ABS complete readback and explicit defaults', () => {
       INPUT: { block: { type: 'child', id: 'c', fields: { TEXT: 'same' } }, shadow: { type: 'child', id: 's', fields: { TEXT: 'shadow' } } },
     }, next: { block: { type: 'tail', id: 't' } } }] }, customSerializer: { data: [1, false] } });
   const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+  it('identifies the missing nested serialized value without weakening the complete comparison', () => {
+    const expected = graph();
+    expected.blocks.blocks[0].extraState = { params: [{ name: 'n', type: 'int' }] };
+    const actual = clone(expected); actual.blocks.blocks[0].extraState = {};
+    expect(() => assertAbsReadback(expected, actual)).toThrowMatching(error =>
+      error.code === 'ABS_READBACK_MISMATCH' && error.diagnostic.blockType === 'root'
+      && error.diagnostic.field === '/attributes/extraState/params'
+      && error.diagnostic.received === 'undefined' && error.diagnostic.hint.includes('"name":"n"'));
+    expect(() => assertAbsReadback(expected, clone(expected))).not.toThrow();
+  });
+  it('escapes diagnostic paths and bounds previews for mismatching persisted metadata', () => {
+    const expected = graph(); expected.blocks.blocks[0].extraState = { 'a/b~': 'x'.repeat(1000) };
+    const actual = clone(expected); actual.blocks.blocks[0].extraState = { 'a/b~': 'y'.repeat(1000) };
+    expect(() => assertAbsReadback(expected, actual)).toThrowMatching(error =>
+      error.diagnostic.field === '/attributes/extraState/a~1b~0'
+      && error.diagnostic.received.length === 256 && error.diagnostic.hint.length < 300);
+  });
   it('owns the expected graph and options independently of callers and previously verified readbacks', () => {
     const expected = graph(), actual = graph();
     const options = { mode: 'complete' as const };

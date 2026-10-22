@@ -137,6 +137,7 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
   }
 
   private async run(path: string, kind: 'build' | 'upload', execute: (session: CoderProjectSession) => Promise<any>): Promise<any> {
+    if (this.projects.isProjectTransitionInProgress(path)) throw new Error('工程配置正在更新，请完成后再编译或上传。');
     const dependencyBlock = this.projects.getProjectDependencyBlockMessage(path);
     if (dependencyBlock) throw Object.assign(new Error(dependencyBlock), { state: 'warn' });
     const session = this.getSession(path);

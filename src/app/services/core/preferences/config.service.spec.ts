@@ -1,3 +1,4 @@
+import { EMPTY } from 'rxjs';
 import {
   ConfigService,
   PROJECT_CONNECTOR_SETTINGS_KEY,
@@ -8,7 +9,7 @@ describe('ConfigService project SSH connector settings', () => {
   let service: ConfigService;
 
   beforeEach(() => {
-    service = new ConfigService({} as any, {} as any);
+    service = new ConfigService({} as any, {} as any, { isLoggedIn$: EMPTY, authSnapshot$: EMPTY, canUseCloudCompilation: false } as any);
   });
 
   it('reads normalized SSH settings from a project manifest', () => {
@@ -138,7 +139,7 @@ describe('ConfigService Aily Coder product mode', () => {
   let service: ConfigService;
 
   beforeEach(() => {
-    service = new ConfigService({} as any, {} as any);
+    service = new ConfigService({} as any, {} as any, { isLoggedIn$: EMPTY, authSnapshot$: EMPTY, canUseCloudCompilation: false } as any);
   });
 
   it('locks the application to Coder without overwriting the shared preference', async () => {

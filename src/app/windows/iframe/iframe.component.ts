@@ -22,7 +22,7 @@ import { Subscription } from 'rxjs';
 import { ToolI18nService } from '@core/preferences/public-api';
 import { AilyChatDemandSessionService, SimulatorIframeBridgeService } from '@integration/simulator/public-api';
 
-/** iframe IPC 统一载荷（规范：docs/iframe-ipc-spec.md） */
+/** iframe IPC 统一载荷（维护说明：aily-blockly-docs/docs/2026-10-15/界面与日志.md） */
 export interface IframeIpcPayload<T = unknown> {
   type: string;
   data?: T;
@@ -656,7 +656,7 @@ export class IframeComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * 开始监听 connection-graph IPC（统一按 type 分发，规范：docs/iframe-ipc-spec.md）
+   * 开始监听 connection-graph IPC（统一按 type 分发，维护说明：aily-blockly-docs/docs/2026-10-15/界面与日志.md）
    */
   private startConnectionGraphIpcListener(): void {
     if (

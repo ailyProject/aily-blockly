@@ -7,7 +7,6 @@
 /bazel-out
 /out
 /build/simulator-runtime
-/electron/chat-runtime-lex-execution-runtime.bundle.mjs
 
 # Node
 /node_modules
@@ -40,7 +39,8 @@ yarn.lock
 /.angular/cache
 .sass-cache/
 /connect.lock
-/coverage
+# TypeScript 诊断日志可重新生成，不纳入源码和发布版本。
+/tsc_output.txt
 /libpeerconnection.log
 testem.log
 /typings
@@ -72,31 +72,31 @@ child/aily-builder*
 /child/aily-coder-editor.tgz
 /child/aily-coder-editor.json
 
+# Unit tests
+/tests/coverage/
+/tests/.artifacts/
+/tests/out-tsc/
+/tests/test-results/
+
 # Playwright E2E
 /renderer
-/test-results
-/playwright-report
+/e2e/test-results/
+/e2e/performance/test-results/
+/e2e/playwright-report/
 /e2e/logs
-/out-tsc/e2e
+/e2e/out-tsc/
 /e2e/.artifacts
 
 **/*.spec.ts
 !/src/**/*.spec.ts
+!/tests/**/*.spec.ts
 !/e2e/tests/**/*.spec.ts
 !/e2e/performance/**/*.spec.ts
 **/__tests__/**/*
 .tmp
 .temp
-src/app/tools/aily-chat/logs
-src/app/components/float-sider/new_idea
-src/app/tools/aily-chat/docs
-src/app/tools/aily-chat/tools/kode
-src/app/tools/aily-chat/tools/info
-src/app/tools/aily-chat/tools/docs
-src/app/tools/aily-chat/tools/libraries
-src/app/tools/aily-chat/tools/new_idea
-src/app/tools/aily-chat/tools/tests
-src/app/tools/aily-chat/tools/自定义库-函数
 todo.md
 plans/
 /.generated/blockly-runtime/
+# 本机临时草稿不属于应用源码。
+.draft/

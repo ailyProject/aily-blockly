@@ -411,8 +411,6 @@ jobs:
           files: |
             release/aily-coder-*.exe
             release/aily-coder-*.dmg
-            release/aily-coder-*.zip
-            release/latest-coder*.yml
             release/CHANGELOG_CODER.md
             release/CHANGELOG_CODER_ZH.md
           fail_on_unmatched_files: true
@@ -434,11 +432,13 @@ jobs:
           const { releaseFiles } = require('./scripts/coder-release-manifest.cjs');
           (async () => {
             const url = `repos/${process.env.CODER_RELEASE_REPOSITORY}/releases/${process.env.RELEASE_ID}`;
-            const assets = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp', `${url}/assets?per_page=100`], { encoding: 'utf8' })).flat();
+            // Ignore legacy update-only assets when retrying a release from an older workflow.
+            const assets = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp', `${url}/assets?per_page=100`], { encoding: 'utf8' })).flat()
+              .filter(asset => !/\.(zip|yml)$/.test(asset.name));
             const names = ['CHANGELOG_CODER.md', 'CHANGELOG_CODER_ZH.md'];
             for (const platform of ['windows', 'macos']) for (const flavor of ['cn', 'global']) {
-              const { manifest, packages } = releaseFiles(platform, flavor, process.env.RELEASE_VERSION);
-              names.push(manifest, ...packages);
+              const { packages } = releaseFiles(platform, flavor, process.env.RELEASE_VERSION);
+              names.push(...packages.filter(name => !name.endsWith('.zip')));
             }
             if (assets.length !== names.length) throw new Error('Release asset set is incomplete or unexpected');
             for (const name of names) {

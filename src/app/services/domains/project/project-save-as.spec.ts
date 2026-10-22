@@ -189,7 +189,6 @@ describe('ProjectService save as mode isolation', () => {
     files.set(`${source}/project.abi`, '{}');
     service.save = ProjectService.prototype.save;
     service.injector = { get: () => ({ dispatchProjectSave: async () => ({ success: true }) }) };
-    service.copyPackageJsonToTemp = jasmine.createSpy('snapshot').and.resolveTo(true);
     service.getPackageJson = async () => JSON.parse(files.get(`${source}/package.json`)!);
     service.getBlocklyProjectLoadStatus = jasmine.createSpy('blocklyLoad').and.returnValue({ ready: false });
     expect((await service.save(source)).success).toBeTrue();

@@ -6,6 +6,7 @@ import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@
 describe('dirty checks after a rejected Blockly open', () => {
   function fixture(mode: string | null, status: { ready: boolean; error?: string }) {
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/failed');
     service.stateSubject = new BehaviorSubject('error');
     service.getProjectMode = () => mode;
@@ -182,6 +183,41 @@ describe('project lifecycle admission across sessions', () => {
     await expectAsync(service.projectOpen('/b')).toBeRejectedWithError('load failed');
     expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
     expect(service.isProjectTransitionInProgress('/b')).toBeFalse();
+  });
+
+  it('ends loading if editor teardown rejects before the new editor can report failure, and permits retry', async () => {
+    const { service } = fixture();
+    service.stateSubject = new BehaviorSubject('loaded');
+    const failure = new Error('FocusManager teardown failed');
+    service.projectOpenInternal.and.callFake(async (path: string) => {
+      service.beginBlocklyProjectLoad(path);
+      throw failure;
+    });
+    await expectAsync(service.projectOpen('/a', { reason: 'reload' })).toBeRejectedWith(failure);
+    expect(service.stateSubject.value).toBe('error');
+    expect(service.isProjectOpening).toBeFalse();
+    expect(service.getBlocklyProjectLoadStatus('/a').error).toBe(failure.message);
+    expect(service.isProjectTransitionInProgress('/a')).toBeFalse();
+    service.projectOpenInternal.and.callFake(async (path: string) => {
+      service.beginBlocklyProjectLoad(path);
+      service.markBlocklyProjectLoaded(path);
+      return true;
+    });
+    expect(await service.projectOpen('/a', { reason: 'reload' })).toBeTrue();
+    expect(service.stateSubject.value).toBe('loaded');
+    expect(service.blocklyProjectLoadFailure).toBeNull();
+  });
+
+  it('does not overwrite another load or Coder state when opening fails before Blockly preparation', async () => {
+    const { service } = fixture();
+    service.stateSubject = new BehaviorSubject('loaded');
+    service.projectOpenInternal.and.rejectWith(new Error('preparation failed'));
+    await expectAsync(service.projectOpen('/b')).toBeRejected();
+    expect(service.stateSubject.value).toBe('loaded');
+    service.beginBlocklyProjectLoad('/other');
+    await expectAsync(service.projectOpen('/b')).toBeRejected();
+    expect(service.stateSubject.value).toBe('loading');
+    expect(service.loadingBlocklyProjectPath).toBe('/other');
   });
 
   it('protects the entire host mutation including its asynchronous tail and always releases it', async () => {

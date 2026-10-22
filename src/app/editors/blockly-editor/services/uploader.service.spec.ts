@@ -1,4 +1,5 @@
-import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
+import { fakeAsync, flushMicrotasks, TestBed } from '@angular/core/testing';
+import { TranslateService } from '@ngx-translate/core';
 import { Subject } from 'rxjs';
 import { _UploaderService } from './uploader.service';
 
@@ -20,8 +21,13 @@ describe('Uploader command lifecycle during project close', () => {
       statSync: () => ({ size: 123 }),
     };
     output = new Subject();
-    service = Object.create(_UploaderService.prototype);
+    TestBed.configureTestingModule({ providers: [
+      { provide: TranslateService, useValue: { instant: (key: string) => key } },
+    ] });
+    service = TestBed.runInInjectionContext(() => Reflect.construct(_UploaderService, []));
     service.projectService = {
+      beginBuildBackendOperation: () => ({ local: false, release() {} }),
+      isCloudBuild: () => false, captureCurrentProjectGuard: () => () => true,
       currentProjectPath: '/project', isProjectTransitionInProgress: () => false,
       isAilyCodeProject: () => false, getBuildPath: async () => '/project/build',
       getBoardJson: async () => ({ name: 'board', uploadParam: 'flash' }),
@@ -35,18 +41,276 @@ describe('Uploader command lifecycle during project close', () => {
     service.blocklyService = { runWithPreparedProjectCode: async () => 'code' };
     service.workflowService = { startUpload: () => true, finishUpload: jasmine.createSpy('finishUpload') };
     service.noticeService = { update: jasmine.createSpy('notice') };
+    service.logService = { update() {} };
     service.cmdService = {
       spawn: jasmine.createSpy('spawn').and.returnValue(output),
       run: jasmine.createSpy('run').and.returnValue(output),
       kill: jasmine.createSpy('kill').and.resolveTo(true),
     };
-    service.uploaderBleService = { findFirmwareFile: () => '/project/build/firmware.bin' };
+    service.uploaderBleService = { cancel() {}, findFirmwareFile: () => '/project/build/firmware.bin' };
     service.getNetworkOtaTarget = () => ({ host: '127.0.0.1', port: 80, username: '', password: '', uploadPath: '/' });
     service.appendUploadLog = () => {};
     service.logNetworkOtaUpload = () => {};
   });
 
   afterEach(() => Object.assign(window, original));
+
+  function startProgressUpload() {
+    const outcome = { result: null as any, rejected: false };
+    service.upload().then(value => { outcome.result = value; }, error => {
+      outcome.result = error;
+      outcome.rejected = true;
+    });
+    flushMicrotasks();
+    return {
+      outcome,
+      emit: (...lines: string[]) => output.next({ type: 'stdout', data: lines.join('\r\n') + '\r\n', streamId: 'local-upload' }),
+      progress: () => service.noticeService.update.calls.allArgs()
+        .map(args => args[0].progress).filter(value => value !== undefined).pop(),
+    };
+  }
+
+  for (const [format, line, expected] of [
+    ['avrdude hash bar', 'Writing | ################################################## | 78% 0.12s', 78],
+    ['Unicode bar', 'Writing | ████████████████████████████████████████████████▉  | 98%', 98],
+    ['page bar', '[==============================] 84% (11/13 pages)', 84],
+    ['legacy esptool', 'Writing at 0x0005446e... (18 %)', 18],
+    ['esptool bytes bar', 'Writing at 0x00a2b8d7 [============================> ] 97.1% 196608/202563 bytes...', 97],
+    ['esptool bar without bytes', 'Writing at 0x00010000 [==============> ] 49.5%', 49],
+    ['STM32 address verification', 'Wrote and verified address 0x08001700 (79.31%)', 79],
+    ['STC32 byte count', 'Writing... 50.5% (93440/186880 bytes)', 50],
+    ['percentage token', 'Transfer 70%done', 70],
+    ['page count', '70% 13/18', 70],
+    ['Progress label', 'Progress: 71%', 71],
+    ['spaced Progress label', 'Progress: 71 %', 71],
+    ['Chinese progress label', '进度：62%', 62],
+  ] as const) {
+    it(`preserves ${format} extraction`, fakeAsync(() => {
+      const f = startProgressUpload();
+      f.emit(line);
+      expect(f.progress()).toBe(expected);
+      expect(service.uploadCompleted).toBeFalse();
+      output.complete(); flushMicrotasks();
+      expect(f.outcome.result.state).toBe('done');
+    }));
+  }
+
+  it('keeps ordinary percentages and incomplete STC32 output out of upload progress', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('CPU utilization: 50%', 'Writing... 50%', 'Writing... 50% (50/100 pages)');
+    expect(f.progress()).toBe(0);
+    expect(service.uploadCompleted).toBeFalse();
+    output.complete(); flushMicrotasks();
+  }));
+
+  it('preserves direct and relayed probe-rs phase progress and completion', fakeAsync(() => {
+    const f = startProgressUpload();
+    for (const [line, expected] of [
+      ['Erasing sectors 50%', 7],
+      ['[probe-rs:phase] Programming 50%', 50],
+      ['Verifying checksum 50%', 92],
+      ['[probe-rs:phase] Finished', 100],
+    ] as const) {
+      f.emit(line);
+      expect(f.progress()).toBe(expected);
+    }
+    expect(service.uploadCompleted).toBeTrue();
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('preserves split progress lines and mixed carriage-return/newline delimiters', fakeAsync(() => {
+    const f = startProgressUpload();
+    const emit = (data: string) => output.next({ type: 'stdout', data, streamId: 'local-upload' });
+    emit('Writing at 0x0005446e... (1');
+    expect(f.progress()).toBe(0);
+    emit('8 %)\rProgress: 40%\nWriting... 50% (50/100 bytes)\r\nProgress: 6');
+    expect(f.progress()).toBe(50);
+    emit('0%\r');
+    emit('\n');
+    expect(service.noticeService.update.calls.allArgs().map(args => args[0].progress))
+      .toEqual([0, 18, 40, 50, 60]);
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('tracks interleaved esptool v5 files without completing on the small boot files', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('Executing: esptool write-flash -z 0x0 "sketch.bootloader.bin" 0x8000 "sketch.partitions.bin" 0xe000 "boot_app0.bin" 0x10000 "sketch.bin"',
+      "Writing 'sketch.bootloader.bin' at 0x00000000...",
+      'Flash will be erased from 0x00000000 to 0x00004fff...',
+      'Compressed 19984 bytes to 13015...',
+      'Writing at 0x00004e10 [==============================] 100.0% 13015/13015 bytes...',
+      'Hash of data verified.');
+    expect(f.progress()).toBeLessThan(100);
+    expect(service.uploadCompleted).toBeFalse();
+
+    f.emit("Writing 'sketch.partitions.bin' at 0x00008000...",
+      'Flash will be erased from 0x00008000 to 0x00008fff...',
+      'Compressed 3072 bytes to 129...',
+      'Writing at 0x00008c00 [==============================] 100.0% 129/129 bytes...',
+      'Hash of data verified.',
+      "Writing 'boot_app0.bin' at 0x0000e000...",
+      'Flash will be erased from 0x0000e000 to 0x0000ffff...',
+      'Compressed 8192 bytes to 47...',
+      'Writing at 0x00010000 [==============================] 100.0% 47/47 bytes...',
+      'Hash of data verified.',
+      "Writing 'sketch.bin' at 0x00010000...",
+      'Flash will be erased from 0x00010000 to 0x0044cfff...',
+      'Compressed 4440768 bytes to 2927671...');
+    let previous = f.progress();
+    for (const percent of [25, 50, 99]) {
+      f.emit(`Writing at 0x00200000 [==============>               ] ${percent}.0% ${Math.floor(2927671 * percent / 100)}/2927671 bytes...`);
+      expect(f.progress()).toBeGreaterThan(previous);
+      expect(f.progress()).toBeLessThan(100);
+      previous = f.progress();
+    }
+    f.emit('Writing at 0x0044c2c0 [==============================] 100.0% 2927671/2927671 bytes...');
+    expect(f.progress()).toBeLessThan(100);
+    f.emit('Hash of data verified.', 'Hard resetting via RTS pin...');
+    expect(f.progress()).toBe(100);
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.rejected).toBeFalse();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('tracks multiple changed-sector blocks within one file after skipping unchanged boot files', fakeAsync(() => {
+    window['fs'].statSync = () => ({ size: 0x10000 });
+    const f = startProgressUpload();
+    f.emit('Executing: flasher --esptool esptool write-flash -z 0x0 "bootloader.bin" 0x8000 "partitions.bin" 0xe000 "boot_app0.bin" 0x10000 "sketch.bin"',
+      "Writing 'bootloader.bin' at 0x00000000...",
+      'No changed sectors found, verifying if data is in flash...',
+      "'bootloader.bin' at 0x00000000 verified.",
+      "Writing 'partitions.bin' at 0x00008000...",
+      'No changed sectors found, verifying if data is in flash...',
+      "'partitions.bin' at 0x00008000 verified.",
+      "Writing 'boot_app0.bin' at 0x0000e000...",
+      'Compressed 8192 bytes to 47...',
+      'Writing at 0x00010000 [==============================] 100.0% 47/47 bytes...',
+      'Hash of data verified.',
+      "Writing 'sketch.bin' at 0x00010000...",
+      'Changed data sectors found, fast reflashing...',
+      'Reflashing 1 changed sector at 0x00010000...',
+      'Flash will be erased from 0x00010000 to 0x00010fff...',
+      'Compressed 4096 bytes to 2048...',
+      'Writing at 0x00011000 [==============================] 100.0% 2048/2048 bytes...',
+      'Wrote 4096 bytes (2048 compressed) at 0x00010000 in 0.1 seconds (327.7 kbit/s).');
+    expect(f.progress()).toBeGreaterThanOrEqual(75);
+    expect(f.progress()).toBeLessThan(80);
+    expect(service.uploadCompleted).toBeFalse();
+
+    let previous = f.progress();
+    f.emit('Reflashing 11 changed sectors at 0x00014000...',
+      'Flash will be erased from 0x00014000 to 0x0001efff...',
+      'Compressed 45056 bytes to 20000...');
+    for (const [address, percent] of [['00014000', 0], ['00018000', 50], ['0001f000', 100]]) {
+      f.emit(`Writing at 0x${address} [==============>               ] ${percent}.0% ${Number(percent) * 200}/20000 bytes...`);
+      expect(f.progress()).toBeGreaterThan(previous);
+      expect(f.progress()).toBeLessThan(100);
+      previous = f.progress();
+    }
+    expect(service.uploadCompleted).toBeFalse();
+    f.emit('Verifying written data...', 'Hash of data verified.', 'Hard resetting via RTS pin...');
+    expect(f.progress()).toBe(100);
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.rejected).toBeFalse();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('completes unchanged files from their filename verification without write percentages', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('Executing: esptool write-flash -z 0x0 "bootloader.bin" 0x10000 "sketch.bin"',
+      "Writing 'bootloader.bin' at 0x00000000...",
+      'No changed sectors found, verifying if data is in flash...',
+      "'bootloader.bin' at 0x00000000 verified.");
+    expect(f.progress()).toBe(50);
+    expect(service.uploadCompleted).toBeFalse();
+    f.emit("Writing 'sketch.bin' at 0x00010000...",
+      'No changed sectors found, verifying if data is in flash...');
+    expect(f.progress()).toBe(50);
+    f.emit("'sketch.bin' at 0x00010000 verified.", 'Hard resetting via RTS pin...');
+    expect(f.progress()).toBe(100);
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.rejected).toBeFalse();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('keeps byte weighting for legacy esptool ranges announced before compression', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('Executing: esptool write_flash -z 0x0 "bootloader.bin" 0x1000 "sketch.bin"',
+      'Flash will be erased from 0x00000000 to 0x00000fff...',
+      'Flash will be erased from 0x00001000 to 0x00009fff...',
+      'Compressed 4096 bytes to 1024...',
+      'Writing at 0x00001000 [==============================] 100.0% 1024/1024 bytes...',
+      'Hash of data verified.');
+    expect(f.progress()).toBe(10);
+    f.emit('Compressed 36864 bytes to 18432...',
+      'Writing at 0x00005000 [==============>               ] 50.0% 9216/18432 bytes...');
+    expect(f.progress()).toBe(55);
+    f.emit('Writing at 0x0000a000 [==============================] 100.0% 18432/18432 bytes...',
+      'Hash of data verified.');
+    expect(f.progress()).toBe(100);
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('tracks uncompressed esptool files started by filename headers', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('Executing: esptool write-flash 0x0 "bootloader.bin" 0x1000 "sketch.bin"',
+      "Writing 'bootloader.bin' at 0x00000000...",
+      'Flash will be erased from 0x00000000 to 0x00000fff...',
+      'Writing at 0x00001000 [==============================] 100.0% 4096/4096 bytes...',
+      "'bootloader.bin' at 0x00000000 verified.");
+    const firstFileProgress = f.progress();
+    expect(firstFileProgress).toBeLessThan(100);
+    f.emit("Writing 'sketch.bin' at 0x00001000...",
+      'Flash will be erased from 0x00001000 to 0x00009fff...',
+      'Writing at 0x00005000 [==============>               ] 50.0% 18432/36864 bytes...');
+    expect(f.progress()).toBeGreaterThan(firstFileProgress);
+    f.emit("'sketch.bin' at 0x00001000 verified.");
+    output.next({ type: 'close', code: 0, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('rejects a failed process even after esptool reports 100 percent written', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('Executing: esptool write-flash -z 0x10000 "sketch.bin"',
+      'Flash will be erased from 0x00010000 to 0x00019fff...',
+      'Compressed 40960 bytes to 20480...',
+      'Writing at 0x0001a000 [==============================] 100.0% 20480/20480 bytes...');
+    output.next({ type: 'close', code: 2, streamId: 'local-upload' });
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.rejected).toBeTrue();
+    expect(f.outcome.result.state).toBe('error');
+    expect(service.workflowService.finishUpload).toHaveBeenCalledWith(false, jasmine.any(String));
+  }));
+
+  it('stops the local upload process after its cloud prerequisite was switched to local', fakeAsync(() => {
+    const operation = { local: false, release: jasmine.createSpy('release') };
+    Object.assign(service.projectService, {
+      beginBuildBackendOperation: () => operation, isCloudBuild: () => !operation.local,
+      getProjectDependencySession: () => ({}), assertProjectDependencySession() {},
+    });
+    service._builderService.canReuseBuildForUpload = async () => operation.local;
+    service._builderService.build = async () => { operation.local = true; return { state: 'done' }; };
+    service._builderService.cancel = jasmine.createSpy('cancelBuild');
+    let result: any;
+    service.upload().then(value => { result = value; }, error => { result = error; });
+    flushMicrotasks();
+    expect(service.cmdService.spawn).toHaveBeenCalledTimes(1);
+    expect(service.cloudUploadInProgress).toBeFalse();
+    output.next({ type: 'stdout', data: 'writing firmware', streamId: 'local-upload' });
+    service.cancel(); flushMicrotasks();
+    expect(service.cmdService.kill).toHaveBeenCalledWith('local-upload');
+    expect(result.state).toBe('warn');
+    expect(operation.release).toHaveBeenCalledTimes(1);
+    expect(service.uploadInProgress).toBeFalse();
+  }));
 
   for (const mode of ['serial', 'network-ota', 'softdevice']) {
     function start(): Promise<any> {

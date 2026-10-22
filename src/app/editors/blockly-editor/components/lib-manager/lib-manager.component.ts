@@ -10,12 +10,12 @@ import { NzTagModule } from 'ng-zorro-antd/tag';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Subject } from 'rxjs';
 import { debounceTime, takeUntil } from 'rxjs/operators';
-import { NpmService, AILY_LOCAL_LIBRARY_SOURCES_KEY, LocalLibrarySyncService } from '@domain/dependencies/public-api';
+import { NpmService, LocalLibrarySyncService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { CompatibleDialogComponent } from '../compatible-dialog/compatible-dialog.component';
-import { CmdOutput, CmdService, ElectronService, CrossPlatformCmdService } from '@core/platform/public-api';
+import { ElectronService, CrossPlatformCmdService } from '@core/platform/public-api';
 import { BlocklyService } from '../../services/blockly.service';
 import { WorkflowService } from '@core/app-shell/public-api';
 import { LibManagerService, type PackageInfo } from './lib-manager.service';
@@ -67,7 +67,6 @@ export class LibManagerComponent implements OnDestroy {
     private cd: ChangeDetectorRef,
     private translate: TranslateService,
     private modal: NzModalService,
-    private cmdService: CmdService,
     private crossPlatformCmdService: CrossPlatformCmdService,
     private electronService: ElectronService,
     private workflowService: WorkflowService,
@@ -369,11 +368,12 @@ export class LibManagerComponent implements OnDestroy {
     }
 
     this.isProcessingLibraryOperationQueue = true;
+    const projectPath = this.projectService.currentProjectPath;
     const workflowStarted = this.workflowService.startInstall();
     const errors: string[] = [];
 
     try {
-      while (this.libraryOperationQueue.length > 0) {
+      while (this.libraryOperationQueue.length > 0 && this.projectService.currentProjectPath === projectPath) {
         const operation = this.libraryOperationQueue.shift();
         if (!operation) {
           continue;
@@ -389,14 +389,18 @@ export class LibManagerComponent implements OnDestroy {
         }
       }
     } finally {
-      this.isProcessingLibraryOperationQueue = false;
-      if (workflowStarted) {
-        this.workflowService.finishInstall(errors.length === 0, errors.join('\n'));
-      }
-      if (this.libraryOperationRequiresRuntimeRebuild) {
-        this.libraryOperationRequiresRuntimeRebuild = false;
-        const projectPath = this.projectService.currentProjectPath;
-        await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+      try {
+        if (this.libraryOperationRequiresRuntimeRebuild && this.projectService.currentProjectPath === projectPath) {
+          this.libraryOperationRequiresRuntimeRebuild = false;
+          await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+        }
+      } catch (error) {
+        errors.push(this.getErrorMessage(error, 'Library runtime refresh failed'));
+        this.message.error(errors[errors.length - 1]);
+      } finally {
+        this.isProcessingLibraryOperationQueue = false;
+        if (workflowStarted) this.workflowService.finishInstall(errors.length === 0, errors.join('\n'));
+        if (this.libraryOperationQueue.length && this.projectService.currentProjectPath === projectPath) void this.processLibraryOperationQueue();
       }
     }
   }
@@ -409,16 +413,8 @@ export class LibManagerComponent implements OnDestroy {
     this.output = '';
     try {
       const packageSpec = lib.version ? `${lib.name}@${lib.version}` : lib.name;
-      // 安装来源跟随项目 devmode，和当前展示的 libraries.json 保持一致。
-      const command = this.configService.withProjectNpmRegistry(
-        `npm install ${packageSpec}`,
-        this.projectService.currentPackageData,
-      );
-      const { code, stderr } = await this.cmdService.runAsync(command, this.projectService.currentProjectPath);
-
-      if (code !== 0) {
-        throw new Error(stderr || `退出码: ${code}`);
-      }
+      await this.projectService.changeLibraries('install', [packageSpec]);
+      this.libraryOperationRequiresRuntimeRebuild = true;
 
       this.clearLibraryOperationState(lib.name);
       await this.refreshCurrentLibraryList();
@@ -448,10 +444,7 @@ export class LibManagerComponent implements OnDestroy {
         throw new Error(message);
       }
 
-      const { code, stderr } = await this.cmdService.runAsync(`npm uninstall ${lib.name}`, this.projectService.currentProjectPath);
-      if (code !== 0) {
-        throw new Error(stderr || `退出码: ${code}`);
-      }
+      await this.projectService.changeLibraries('remove', [lib.name]);
 
       this.clearLibraryOperationState(lib.name);
       await this.refreshCurrentLibraryList();
@@ -624,22 +617,6 @@ export class LibManagerComponent implements OnDestroy {
     return { importedLibraryPath, packageName };
   }
 
-  /** 记录包名 → 本机原库目录，供打开项目时监听原库变更并同步到 local-libraries */
-  private mergeAilyLocalLibrarySource(packageName: string, sourceFolderPath: string): void {
-    const projectPath = this.projectService.currentProjectPath;
-    const pkgPath = this.electronService.pathJoin(projectPath, 'package.json');
-    const pkg = JSON.parse(this.electronService.readFile(pkgPath));
-    if (!pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY] || typeof pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY] !== 'object') {
-      pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY] = {};
-    }
-    pkg[AILY_LOCAL_LIBRARY_SOURCES_KEY][packageName] = sourceFolderPath;
-    this.electronService.writeFile(pkgPath, JSON.stringify(pkg, null, 2));
-    window['packageJson'] = pkg;
-    if (this.projectService.currentPackageData) {
-      Object.assign(this.projectService.currentPackageData, pkg);
-    }
-  }
-
   /** 将绝对路径转为 npm file: 用的 POSIX 相对路径（相对项目根） */
   private fileDependencyFromProject(importedLibraryPath: string): string {
     const projectPath = this.projectService.currentProjectPath;
@@ -676,25 +653,14 @@ export class LibManagerComponent implements OnDestroy {
 
       // 先复制库到当前项目目录下，再从项目内的副本执行安装（file: 相对路径，便于整项目拷贝/压缩）
       const { importedLibraryPath, packageName } = await this.copyLibraryToProject(folderPath);
-      this.mergeAilyLocalLibrarySource(packageName, folderPath);
 
       const fileDep = this.fileDependencyFromProject(importedLibraryPath);
       const installSpec = `${packageName}@file:${fileDep}`;
-      // 本地包仍通过统一命令构造器执行；只有 Python 项目会附加 Linux 作用域仓库。
-      const { code, stderr } = await this.cmdService.runAsync(
-        this.configService.withProjectNpmRegistry(
-          `npm install "${installSpec}"`,
-          this.projectService.currentPackageData,
-        ),
-        this.projectService.currentProjectPath,
-      );
-
-      if (code !== 0) {
-        throw new Error(stderr || '安装导入库失败');
-      }
+      await this.projectService.changeLibraries('install', [installSpec], { [packageName]: folderPath });
+      await this.projectService.rebuildBlocklyRuntimeAfterLibraryChange();
 
       this.localLibrarySyncService.stop();
-      this.localLibrarySyncService.start(this.projectService.currentProjectPath);
+      this.localLibrarySyncService.start(this.projectService.currentProjectPath, await this.projectService.getPackageJson());
 
       // 重新检查已安装的库
       this.libraryList = this.libManagerService.applyLocalization(

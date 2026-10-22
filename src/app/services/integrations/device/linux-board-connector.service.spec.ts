@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer';
-import { BehaviorSubject, Subject } from 'rxjs';
+import { BehaviorSubject, EMPTY, Subject } from 'rxjs';
 
 import { ConfigService, PROJECT_CONNECTOR_SETTINGS_KEY } from '@core/preferences/public-api';
 import { LinuxBoardConnectorService, LinuxBoardSshSettings } from './linux-board-connector.service';
@@ -152,7 +152,7 @@ describe('LinuxBoardConnectorService SSH credential persistence', () => {
         sessions.delete(sessionId);
       }),
     };
-    const configService = new ConfigService({} as any, {} as any);
+    const configService = new ConfigService({} as any, {} as any, { isLoggedIn$: EMPTY, authSnapshot$: EMPTY, canUseCloudCompilation: false } as any);
     const service = new LinuxBoardConnectorService(
       connector as any,
       { currentPort: '', currentPortInfo: null } as any,

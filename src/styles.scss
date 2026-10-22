@@ -74,7 +74,8 @@ img {
 }
 
 .subapp-service-confirm-modal,
-.project-mode-mismatch-modal {
+.project-mode-mismatch-modal,
+.project-coder-conversion-modal {
   .ant-modal-content {
     overflow: hidden;
     border: 1px solid var(--aily-border-input);
@@ -391,8 +392,16 @@ nz-sider {
     color: inherit !important;
   }
 
+  .blocklyMenuItemCheckbox,
   .goog-menuitem-checkbox {
-    display: none;
+    display: none !important;
+  }
+
+  .blocklyMenuSeparator {
+    height: 1px;
+    margin: 5px 13px;
+    border: 0;
+    background-color: var(--aily-border-subtle);
   }
 
   // 底部/顶部小箭头与容器同色
@@ -400,4 +409,10 @@ nz-sider {
     background-color: var(--aily-bg-primary) !important;
     border-color: var(--aily-border-subtle) !important;
   }
+}
+
+// Blockly mouse gestures belong to the host until release/cancel. Electron's
+// iframe routing can bypass pointer capture; restore child hit testing at end.
+html.aily-blockly-mouse-drag iframe {
+  pointer-events: none !important;
 }

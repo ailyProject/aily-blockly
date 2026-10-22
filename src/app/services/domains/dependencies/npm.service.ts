@@ -1,5 +1,6 @@
 import { HttpClient } from '@angular/common/http';
 import { Inject, Injectable } from '@angular/core';
+import { lastValueFrom, reduce } from 'rxjs';
 
 import {
   CmdService,
@@ -20,6 +21,8 @@ import {
 
 import { BlocklyLibraryPackageService } from './blockly-library-package.service';
 import { ConfigService } from '@core/preferences/public-api';
+import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
+import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
 
 import {
   appendScopedNpmRegistry,
@@ -48,6 +51,8 @@ interface ProjectDependencyInstallOptions {
   /** The complete project workflow prepares sources after the SDK and tools. */
   deferCoderSources?: boolean;
   deferSuccessNotice?: boolean;
+  /** 只在本次统一准备流程内传递扫描结果，独立检查和下次编译仍重新读取磁盘。 */
+  cloudInventory?: { value?: CloudDependencyInventory };
 }
 
 export interface GlobalDependencyRemovalResult {
@@ -81,9 +86,53 @@ export class NpmService {
 
   isInstalling = false;
   private boardDependencyInstallProgress?: BoardDependencyInstallProgress;
+  private localCompilePreparation?: { session: ProjectDependencySession; isCancelled: () => boolean; stop: () => void };
+  // 只有启动安装状态的工程会话才能结束该状态，防止旧任务覆盖新工程的进度。
+  private boardInstallOwnerSession?: ProjectDependencySession;
   private boardDepsInstallPromise?: { session: ProjectDependencySession; promise: Promise<void> };
   private projectDepsInstallPromises?: Map<ProjectDependencySession, Promise<boolean>>;
   private projectNpmFailures?: WeakSet<ProjectDependencySession>;
+  // 仅合并同一会话中正在执行的扫描/解压；完成后移除，后续编译仍会检查磁盘上的修改。
+  private cloudDependencyWork?: WeakMap<ProjectDependencySession, {
+    inventories: Map<string, Promise<CloudDependencyInventory>>;
+    sources: Map<string, Promise<void>>;
+  }>;
+  private cloudInventoryGenerations?: WeakMap<CloudDependencyInventory, object>;
+
+  private getCloudDependencyWork(session: ProjectDependencySession) {
+    const work = this.cloudDependencyWork ??= new WeakMap();
+    let generation = work.get(session);
+    if (!generation) work.set(session, generation = { inventories: new Map(), sources: new Map() });
+    return generation;
+  }
+
+  private invalidateCloudDependencyInventory(session: ProjectDependencySession): void {
+    // npm 修复可能替换依赖目录，旧扫描及解压结果必须失效。
+    this.cloudDependencyWork?.delete(session);
+  }
+
+  private async getCloudDependencyInventory(projectPath: string, session: ProjectDependencySession): Promise<CloudDependencyInventory> {
+    this.assertDependencySession(session);
+    const generation = this.getCloudDependencyWork(session);
+    const root = window['path'].resolve(projectPath);
+    const existing = generation.inventories.get(root);
+    if (existing) return existing;
+    const promise = scanCloudDependencyInventory(projectPath, {
+      path: window['path'], fs: window['fs'], assertCurrent: () => {
+        this.assertDependencySession(session);
+        if (this.getCloudDependencyWork(session) !== generation) {
+          throw Object.assign(new Error('Cloud dependency installation changed.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+        }
+      },
+    });
+    generation.inventories.set(root, promise);
+    try {
+      const inventory = await promise;
+      (this.cloudInventoryGenerations ??= new WeakMap()).set(inventory, generation);
+      return inventory;
+    }
+    finally { if (generation.inventories.get(root) === promise) generation.inventories.delete(root); }
+  }
 
   private isDependencySessionCurrent(session?: ProjectDependencySession): boolean {
     if (!session) return true;
@@ -121,6 +170,8 @@ export class NpmService {
 
   private updateBoardDependencyNotice(progress: BoardDependencyInstallProgress, value: number) {
     if (!this.isDependencySessionCurrent(progress.session)) return;
+    const preparation = this.localCompilePreparation?.session === progress.session ? this.localCompilePreparation : undefined;
+    if (preparation?.isCancelled()) return;
     const nextProgress = Math.max(progress.lastProgress, this.clampProgress(value));
 
     progress.lastProgress = nextProgress;
@@ -129,7 +180,8 @@ export class NpmService {
       title: this.translate.instant('NPM.DEPENDENCY_INSTALLING_TITLE'),
       text: this.translate.instant('NPM.INSTALLING_DEPENDENCY', { name: progress.name }),
       state: 'doing',
-      progress: nextProgress
+      progress: nextProgress,
+      ...(preparation ? { stop: preparation.stop, setTimeout: 0 } : {}),
     });
   }
 
@@ -354,12 +406,14 @@ export class NpmService {
   /**
    * 若 Coder 工程 node_modules 尚未安装，则按 package.json 声明安装主板包。
    */
-  private async ensureAilyCodeBoardPackageInProjectNodeModules(projectPath: string): Promise<void> {
+  private async ensureAilyCodeBoardPackageInProjectNodeModules(projectPath: string, session?: ProjectDependencySession): Promise<void> {
+    this.assertDependencySession(session);
     if (!this.isAilyCodeProjectRoot(projectPath)) {
       return;
     }
 
-    const boardModule = await this.prjService.getBoardModule();
+    const boardModule = await (session ? this.getDependencyProject(session) : this.prjService).getBoardModule();
+    this.assertDependencySession(session);
 
     if (!boardModule) {
       return;
@@ -384,10 +438,12 @@ export class NpmService {
     }
 
     // Aily Code 项目补装板包时使用项目 devmode 对应的仓库。
+    if (session) this.invalidateCloudDependencyInventory(session);
     await this.cmdService.runAsyncChecked(
       this.configService.withProjectNpmRegistry(`npm install ${boardModule}@${boardRange}`, pkg),
-      projectPath,
+      projectPath, true, false, session,
     );
+    this.assertDependencySession(session);
   }
 
   /**
@@ -397,6 +453,53 @@ export class NpmService {
   async reinstallDepsForAilyCodeBoardSwitch(projectPath: string): Promise<boolean> {
     if (!this.isAilyCodeProjectRoot(projectPath)) {
       return true;
+    }
+
+    if (this.isCloudBuild()) {
+      // 云端换板复用普通工程准备，不启动 Coder Runtime；所有命令和迟到通知归属当前会话。
+      const session = this.prjService.getProjectDependencySession(projectPath);
+      return this.prjService.runProjectDependencyTask(session, async () => {
+        const installStateStarted = this.application.startInstall();
+        if (installStateStarted) {
+          this.boardInstallOwnerSession = session;
+          this.isInstalling = true;
+        }
+        let ready = false;
+        try {
+          this.application.updateNotice({
+            title: this.translate.instant('NPM.INSTALLING_TITLE'),
+            text: this.translate.instant('BLOCKLY_EDITOR.INSTALLING_DEPS'),
+            state: 'doing', icon: 'fa-light fa-cubes', showProgress: false,
+          });
+          const projectPackageJson = await this.getDependencyProject(session).getPackageJson() || {};
+          this.assertDependencySession(session);
+          this.invalidateCloudDependencyInventory(session);
+          await this.cmdService.runAsyncChecked(
+            this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
+            projectPath, true, false, session,
+          );
+          this.assertDependencySession(session);
+          await this.ensureAilyCodeBoardPackageInProjectNodeModules(projectPath, session);
+          this.projectNpmFailures?.delete(session);
+          ready = await this.ensureProjectAndBoardDeps(projectPath, undefined, session);
+          return ready;
+        } catch (error) {
+          this.assertDependencySession(session);
+          this.prjService.setProjectDependencyResult(session, false);
+          this.application.updateNotice({
+            title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+            text: this.translate.instant('NPM.BOARD_DEPS_INSTALL_FAILED'),
+            detail: this.getNpmErrorMessage(error), state: 'error', sendToLog: true,
+          });
+          return false;
+        } finally {
+          // 取消也结束自己启动的安装提示，不清除后续工程已经接管的状态。
+          if (installStateStarted && this.boardInstallOwnerSession === session) {
+            this.finishBoardInstallOwner(session, ready);
+            this.isInstalling = false;
+          }
+        }
+      });
     }
 
     const installStateStarted = this.application.startInstall();
@@ -511,6 +614,77 @@ export class NpmService {
       : this.prjService;
   }
 
+  private isCloudBuild(projectPath?: string): boolean {
+    return this.configService?.getCompileBackend?.() === 'cloud' && this.prjService.isCloudBuild(projectPath);
+  }
+
+  /** 编译入口刷新支持状态；运行中由云切到本地时补齐正常本地依赖链。 */
+  async prepareCompileBackend(projectPath: string, isCancelled: () => boolean = () => false): Promise<void> {
+    if (this.configService.getCompileBackend() !== 'cloud') return;
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const project = this.getDependencyProject(session);
+    const boardModule = await project.getBoardModule();
+    this.assertDependencySession(session);
+    if (!boardModule) return;
+    const wasCloud = project.isCloudBuild();
+    const backend = await project.resolveCompileBackend(session, true);
+    this.assertDependencySession(session);
+    if (isCancelled()) throw Object.assign(new Error('Build cancelled during board support lookup.'), { code: 'CANCELLED' });
+    if (wasCloud && backend === 'local') {
+      await this.installBoardDeps(session);
+      if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
+        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      }
+      await project.syncCurrentBoardConfig(session);
+      this.assertDependencySession(session);
+    }
+  }
+
+  /** 云任务已撤销后，在原任务内补齐本地编译依赖，保留取消和项目身份检查。 */
+  async prepareLocalCompileBackend(projectPath: string, isCancelled: () => boolean, stop: () => void): Promise<void> {
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const project = this.getDependencyProject(session);
+    const guard = () => {
+      this.assertDependencySession(session);
+      if (isCancelled()) throw Object.assign(new Error('Build cancelled during local preparation.'), { code: 'CANCELLED' });
+      if (project.isCloudBuild()) throw new Error('Local build operation is no longer active.');
+    };
+    const preparation = { session, isCancelled, stop };
+    this.localCompilePreparation = preparation;
+    try {
+      guard();
+      await window['cloudBuild']?.invalidate?.({ projectPath });
+      guard();
+      await this.installBoardDeps(session, { showSuccessNotice: false });
+      guard();
+      if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
+        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      }
+      guard();
+      // 只补齐执行依赖；重发板配置会重建 Blockly 运行时，使原任务的源码快照失效。
+      // 板包、用户配置没有变化，本地编译器与上传器会按本次后端重新读取 SDK。
+    } finally {
+      if (this.localCompilePreparation === preparation) this.localCompilePreparation = undefined;
+    }
+  }
+
+  /** 本地进程已停止后刷新主板支持状态，不改变用户偏好或编辑器运行时。 */
+  async prepareCloudCompileBackend(projectPath: string, isCancelled: () => boolean): Promise<boolean> {
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    const project = this.getDependencyProject(session);
+    const guard = () => {
+      this.assertDependencySession(session);
+      if (isCancelled()) throw Object.assign(new Error('Build cancelled during cloud preparation.'), { code: 'CANCELLED' });
+    };
+    guard();
+    const backend = await project.resolveCompileBackend(session, true);
+    guard();
+    if (backend !== 'cloud') return false;
+    await this.ensureCloudLibrarySources(projectPath, session);
+    guard();
+    return true;
+  }
+
   /** Coder execution preflight: completed preparation plus the current files on disk. */
   async assertCoderDependenciesReady(projectPath: string): Promise<void> {
     if (!this.configService.isCoderProduct() || !this.prjService.isAilyCodeProject(projectPath)) return;
@@ -533,9 +707,14 @@ export class NpmService {
       if (boardModule) {
         const boardPackage = await project.getBoardPackageJson();
         this.assertDependencySession(session);
+        if (this.isCloudBuild(projectPath)) {
+          await project.getCloudBoardProfile({}, session);
+          this.assertDependencySession(session);
+        }
         // Use the same version check as Blockly's build preflight, plus extracted SDK/tools.
-        const missing = this.getMissingBoardDependencies(boardPackage);
-        if (missing.length || !await this.areBoardPlatformDepsReady(boardPackage?.boardDependencies || {})) {
+        const missing = this.getMissingBoardDependencies(boardPackage, projectPath);
+        const localDependencies = this.isCloudBuild(projectPath) ? getCloudEditorDependencies(boardPackage) : boardPackage?.boardDependencies || {};
+        if (missing.length || !await this.areBoardPlatformDepsReady(localDependencies)) {
           throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', {
             name: missing.length ? missing.join(', ') : boardModule,
           }));
@@ -574,13 +753,16 @@ export class NpmService {
     options?: { onRetryInstall?: () => void; onBoardDepsSettled?: () => void | Promise<void> },
     session = this.prjService.getProjectDependencySession(projectPath),
   ): Promise<boolean> {
+    const cloudInventory: { value?: CloudDependencyInventory } = {};
     // Software identity is intentional: Blockly can also open Coder projects.
     if (!this.configService.isCoderProduct()) {
       return this.prjService.runProjectDependencyTask(session, async () => {
         if (!(await this.ensureProjectDependenciesInstalled(projectPath, options, session))) return false;
         this.assertDependencySession(session);
         if (this.prjService.isAilyCodeProject(projectPath) && !await this.prjService.getBoardModule()) return true;
-        await this.installBoardDeps(session);
+        // 上一步已经展开库源码；统一链不再重复扫描。单独调用 installBoardDeps 仍完整准备。
+        if (this.isCloudBuild(projectPath)) await this.installBoardDeps(session, { prepareCloudSources: false });
+        else await this.installBoardDeps(session);
         this.assertDependencySession(session);
         await options?.onBoardDepsSettled?.();
         return true;
@@ -601,14 +783,28 @@ export class NpmService {
       try {
         // One owner reports completion; npm success alone does not unlock builds.
         if (!await this.ensureProjectDependenciesInstalled(projectPath, {
-          onRetryInstall, deferCoderSources: true, deferSuccessNotice: true,
+          onRetryInstall, deferCoderSources: true, deferSuccessNotice: true, cloudInventory,
         }, session)) return false;
+        this.assertDependencySession(session);
+        const project = this.getDependencyProject(session);
+        if (this.configService.getCompileBackend() === 'cloud' && await project.getBoardModule()) {
+          await project.resolveCompileBackend(session);
+          this.assertDependencySession(session);
+        }
+        const cloudSources = this.isCloudBuild(projectPath);
+        // 云端源码在扫描之后立即准备，不跨越后续 editor 资源安装复用旧目录清单。
+        if (cloudSources && !await this.ensureCoderDependencyLibrarySources(
+          projectPath, { onRetryInstall }, session, cloudInventory.value,
+        )) return false;
         this.assertDependencySession(session);
         const hasBoard = !this.prjService.isAilyCodeProject(projectPath) || await this.getDependencyProject(session).getBoardModule();
         this.assertDependencySession(session);
-        if (hasBoard) await this.installBoardDeps(session, false);
+        if (hasBoard) {
+          if (cloudSources) await this.installBoardDeps(session, { showSuccessNotice: false, prepareCloudSources: false });
+          else await this.installBoardDeps(session, { showSuccessNotice: false });
+        }
         this.assertDependencySession(session);
-        if (!await this.ensureCoderDependencyLibrarySources(projectPath, { onRetryInstall }, session)) return false;
+        if (!cloudSources && !await this.ensureCoderDependencyLibrarySources(projectPath, { onRetryInstall }, session)) return false;
         await options?.onBoardDepsSettled?.();
         this.assertDependencySession(session);
         ready = true;
@@ -639,7 +835,10 @@ export class NpmService {
     }
   }
 
-  async installBoardDeps(session = this.prjService.getProjectDependencySession(), showSuccessNotice = true) {
+  async installBoardDeps(
+    session = this.prjService.getProjectDependencySession(),
+    options: { showSuccessNotice?: boolean; prepareCloudSources?: boolean } = {},
+  ) {
     this.assertDependencySession(session);
     if (this.boardDepsInstallPromise?.session === session) {
       return this.boardDepsInstallPromise.promise;
@@ -652,6 +851,22 @@ export class NpmService {
         const project = this.getDependencyProject(session);
         const boardPackageJson = await project.getBoardPackageJson() || {};
         this.assertDependencySession(session);
+        if (this.configService.getCompileBackend() === 'cloud') {
+          await project.resolveCompileBackend(session);
+          this.assertDependencySession(session);
+        }
+        if (this.isCloudBuild(session.projectPath)) {
+          await project.getCloudBoardProfile({}, session);
+          this.assertDependencySession(session);
+          // 云编译仅保留编辑器资源和库源码，SDK/编译器由云端提供；烧录工具仍按需在本地准备。
+          await this.installBoardDependencies(boardPackageJson, false, false, session, false);
+          this.assertDependencySession(session);
+          if (options.prepareCloudSources !== false) {
+            await this.ensureCloudLibrarySources(session.projectPath, session);
+          }
+          this.assertDependencySession(session);
+          return;
+        }
         const projectPackageJson = await project.getPackageJson() || {};
         this.assertDependencySession(session);
         const boardDependencies: Record<string, string> = boardPackageJson.boardDependencies || {};
@@ -661,6 +876,7 @@ export class NpmService {
         if (!boardPlatformDepsReady) {
           this.isInstalling = true;
           installStateStarted = this.application.startInstall();
+          if (installStateStarted) this.boardInstallOwnerSession = session;
         }
 
         try {
@@ -673,7 +889,7 @@ export class NpmService {
 
         // console.log("boardPackageJson: ", boardPackageJson);
         if (!boardPlatformDepsReady) {
-          await this.installBoardDependencies(boardPackageJson, false, true, session, showSuccessNotice);
+          await this.installBoardDependencies(boardPackageJson, false, true, session, options.showSuccessNotice !== false);
         } else {
           console.log('[installBoardDeps] 平台依赖已就绪，跳过安装状态');
         }
@@ -689,23 +905,18 @@ export class NpmService {
         }
         this.assertDependencySession(session);
 
-        if (installStateStarted && this.application.currentProcessState === "INSTALLING") {
-          this.application.finishInstall(true);
-        }
+        if (installStateStarted) this.finishBoardInstallOwner(session, true);
       } catch (error) {
         this.assertDependencySession(session);
         const errorMessage = this.getNpmErrorMessage(error);
 
-        if (installStateStarted && this.application.currentProcessState === "INSTALLING") {
-          this.application.finishInstall(false, errorMessage);
-        }
+        if (installStateStarted) this.finishBoardInstallOwner(session, false, errorMessage);
 
         throw error;
       } finally {
+        // 后端切换会使会话断言失败，但信号不一定已 abort；结束自己拥有的安装状态，避免界面一直忙碌。
+        if (installStateStarted) this.finishBoardInstallOwner(session, false);
         if (this.boardDepsInstallPromise?.promise === promise) {
-          if (session.signal.aborted && installStateStarted && this.application.currentProcessState === "INSTALLING") {
-            this.application.finishInstall(false);
-          }
           this.isInstalling = false;
           this.boardDependencyInstallProgress = undefined;
           this.boardDepsInstallPromise = undefined;
@@ -715,6 +926,14 @@ export class NpmService {
     this.boardDepsInstallPromise = { session, promise };
 
     return promise;
+  }
+
+  private finishBoardInstallOwner(session: ProjectDependencySession, success: boolean, message?: string): void {
+    if (this.boardInstallOwnerSession !== session) return;
+    this.boardInstallOwnerSession = undefined;
+    if (this.application.currentProcessState === 'INSTALLING') {
+      this.application.finishInstall(success, message);
+    }
   }
 
   private isAilyCodeProjectRoot(projectPath: string): boolean {
@@ -1021,7 +1240,6 @@ export class NpmService {
     await this.cmdService.runAsyncChecked('npm run uninstall', packagePath, true, false);
   }
 
-  boardDependenciesChanged = false;
 
   /** 已安装版本是否满足 boardDependencies 中的声明（支持 ^ / ~ 等，与 npm 行为一致） */
   private depVersionSatisfiesDecl(installedVersion: string, declared: string): boolean {
@@ -1177,9 +1395,10 @@ export class NpmService {
     return true;
   }
 
-  getMissingBoardDependencies(packageJson: any): string[] {
+  getMissingBoardDependencies(packageJson: any, projectPath?: string): string[] {
     const appDataPath = window['path'].getAppDataPath();
-    const boardDependencies = packageJson?.boardDependencies || {};
+    // 云端模式不因本地缺少大型 SDK/编译器而触发下载，仍校验显式声明的编辑器依赖。
+    const boardDependencies = this.isCloudBuild(projectPath) ? getCloudEditorDependencies(packageJson) : packageJson?.boardDependencies || {};
     const missingDependencies: string[] = [];
 
     for (const [key, version] of Object.entries(boardDependencies)) {
@@ -1208,7 +1427,8 @@ export class NpmService {
   // 安装开发板依赖
   async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession, showSuccessNotice = true) {
     this.assertDependencySession(session);
-    const boardDependencies: Record<string, string> = packageJson.boardDependencies || {};
+    const boardDependencies: Record<string, string> = this.isCloudBuild(session?.projectPath) ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
+    if (Object.keys(boardDependencies).length === 0) return;
 
     if (!force && await this.areBoardPlatformDepsReady(boardDependencies)) {
       this.assertDependencySession(session);
@@ -1225,7 +1445,6 @@ export class NpmService {
         this.application.startInstall();
       }
 
-      this.boardDependenciesChanged = false;
       this.boardDependencyInstallProgress = undefined;
 
       console.log('开始安装开发板依赖...');
@@ -1275,7 +1494,6 @@ export class NpmService {
 
             console.log(`依赖 ${key} npm 已满足但平台目录缺失，尝试 postinstall: ${platformPath}`);
 
-            this.boardDependenciesChanged = true;
 
             this.application.updateNotice({
               title: this.translate.instant('NPM.INSTALLING_TITLE'),
@@ -1315,7 +1533,6 @@ export class NpmService {
         };
 
         this.traceToAppLog('DEP_PLAN', { name: key, declaredVersion, installedVersionWhenMismatch, needUninstallForDowngrade });
-        this.boardDependenciesChanged = true;
 
         const progress: BoardDependencyInstallProgress = {
           session,
@@ -1725,7 +1942,20 @@ export class NpmService {
   /**
    * 检查顶层依赖，并递归检查积木库声明的其他积木库依赖。
    */
-  async installedOk(path: string): Promise<boolean> {
+  async installedOk(path: string, session?: ProjectDependencySession, inventory?: { value?: CloudDependencyInventory }): Promise<boolean> {
+    if (this.isCloudBuild(path)) {
+      // 将同一次扫描结果交给源码准备步骤，避免依赖检查通过后立即重复扫描。
+      const ownerSession = session ?? this.prjService.getProjectDependencySession(path);
+      try {
+        const value = await this.getCloudDependencyInventory(path, ownerSession);
+        if (inventory) inventory.value = value;
+        return true;
+      } catch (error) {
+        // 未显式传会话的调用也要传播取消，不能把旧工程被关闭误判为依赖缺失并重新安装。
+        this.assertDependencySession(ownerSession);
+        return false;
+      }
+    }
     const startTime = performance.now();
 
     console.log('[installedOk] 开始检查依赖状态...');
@@ -1807,7 +2037,7 @@ export class NpmService {
 
   private async installProjectDependencies(
     projectPath: string,
-    options: { onRetryInstall?: () => void } | undefined,
+    options: ProjectDependencyInstallOptions | undefined,
     session: ProjectDependencySession,
   ): Promise<boolean> {
     if (this.configService.isCoderProduct()) {
@@ -1815,10 +2045,11 @@ export class NpmService {
     }
 
     // 已完整安装则不再跑 npm install，缩短冷启动
-    const installed = await this.installedOk(projectPath);
+    const inventory: { value?: CloudDependencyInventory } = {};
+    const installed = await this.installedOk(projectPath, session, inventory);
     this.assertDependencySession(session);
     if (installed) {
-      return this.ensureCoderDependencyLibrarySources(projectPath, options, session);
+      return this.ensureCoderDependencyLibrarySources(projectPath, options, session, inventory.value);
     }
 
     // 与 Blockly 一致：下一帧再挂通知，避免变更检测/弹层偶发不同步
@@ -1844,6 +2075,7 @@ export class NpmService {
     }
 
     // 修复项目依赖时仍按当前项目 devmode 选择仓库，避免混装两类板包。
+    this.invalidateCloudDependencyInventory(session);
     const npmResult = await this.cmdService.runAsync(
       this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
       projectPath,
@@ -1853,7 +2085,7 @@ export class NpmService {
     );
     this.assertDependencySession(session);
 
-    const installedAfterAttempt = await this.installedOk(projectPath);
+    const installedAfterAttempt = await this.installedOk(projectPath, session, inventory);
     this.assertDependencySession(session);
     if (!installedAfterAttempt) {
       setTimeout(() => {
@@ -1871,7 +2103,7 @@ export class NpmService {
       return false;
     }
 
-    if (!(await this.ensureCoderDependencyLibrarySources(projectPath, options, session))) {
+    if (!(await this.ensureCoderDependencyLibrarySources(projectPath, options, session, inventory.value))) {
       return false;
     }
     this.assertDependencySession(session);
@@ -1896,10 +2128,11 @@ export class NpmService {
     session: ProjectDependencySession,
   ): Promise<boolean> {
     // 已完整安装则不再跑 npm install，缩短冷启动
-    const installed = await this.installedOk(projectPath);
+    const inventory = options?.cloudInventory ?? {};
+    const installed = await this.installedOk(projectPath, session, inventory);
     this.assertDependencySession(session);
     if (installed && !this.projectNpmFailures?.has(session)) {
-      return options?.deferCoderSources || this.ensureCoderDependencyLibrarySources(projectPath, options, session);
+      return options?.deferCoderSources || this.ensureCoderDependencyLibrarySources(projectPath, options, session, inventory.value);
     }
 
     this.application.updateNotice({
@@ -1922,12 +2155,13 @@ export class NpmService {
 
     // 修复项目依赖时仍按当前项目 devmode 选择仓库，避免混装两类板包。
     try {
+      this.invalidateCloudDependencyInventory(session);
       const npmResult = await this.cmdService.runAsync(
         this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
         projectPath, true, false, session,
       );
       this.assertDependencySession(session);
-      if (npmResult?.type === 'error' || (npmResult?.code ?? 0) !== 0 || !await this.installedOk(projectPath)) {
+      if (npmResult?.type === 'error' || (npmResult?.code ?? 0) !== 0 || !await this.installedOk(projectPath, session, inventory)) {
         throw new Error(npmResult?.error || npmResult?.stderr || 'npm install 执行完成但依赖检查未通过');
       }
       this.assertDependencySession(session);
@@ -1946,7 +2180,7 @@ export class NpmService {
       return false;
     }
 
-    if (!options?.deferCoderSources && !(await this.ensureCoderDependencyLibrarySources(projectPath, options, session))) {
+    if (!options?.deferCoderSources && !(await this.ensureCoderDependencyLibrarySources(projectPath, options, session, inventory.value))) {
       return false;
     }
     this.assertDependencySession(session);
@@ -1966,8 +2200,9 @@ export class NpmService {
     projectPath: string,
     options?: { onRetryInstall?: () => void },
     session?: ProjectDependencySession,
+    inventory?: CloudDependencyInventory,
   ): Promise<boolean> {
-    if (!this.isAilyCodeProjectRoot(projectPath)) return true;
+    if (!this.isCloudBuild(projectPath) && !this.isAilyCodeProjectRoot(projectPath)) return true;
 
     try {
       if (this.configService.isCoderProduct()) {
@@ -1976,9 +2211,12 @@ export class NpmService {
           title: this.translate.instant('NPM.INSTALLING_TITLE'),
           text: this.translate.instant('NPM.PREPARING_LIBRARY_SOURCES'),
           state: 'doing', showProgress: false,
+          ...(this.localCompilePreparation && this.localCompilePreparation.session === session
+            ? { stop: this.localCompilePreparation.stop, setTimeout: 0 } : {}),
         });
       }
-      await this.application.materializeCoderProjectLibraries(projectPath);
+      if (this.isCloudBuild(projectPath)) await this.ensureCloudLibrarySources(projectPath, session, inventory);
+      else await this.application.materializeCoderProjectLibraries(projectPath);
       this.assertDependencySession(session);
 
       return true;
@@ -1996,6 +2234,150 @@ export class NpmService {
 
       return false;
     }
+  }
+
+  /** 云编译前只准备可编辑的 npm 库源码，不启动本地编译器或 Coder 运行环境。 */
+  async ensureCloudLibrarySources(
+    projectPath: string, session = this.prjService.getProjectDependencySession(projectPath),
+    inventory?: CloudDependencyInventory,
+  ): Promise<void> {
+    const generation = this.getCloudDependencyWork(session);
+    try {
+      await this.materializeCloudLibrarySources(projectPath, session, inventory);
+    } catch (error) {
+      if (this.isDependencySessionCurrent(session) && this.getCloudDependencyWork(session) === generation) {
+        this.prjService.setProjectDependencyResult(session, false);
+      }
+      throw error;
+    }
+  }
+
+  private async materializeCloudLibrarySources(
+    projectPath: string, session: ProjectDependencySession, inventory?: CloudDependencyInventory,
+  ): Promise<void> {
+    this.assertDependencySession(session);
+    const generation = this.getCloudDependencyWork(session);
+    const assertCurrent = () => {
+      this.assertDependencySession(session);
+      if (this.getCloudDependencyWork(session) !== generation) {
+        throw Object.assign(new Error('Cloud dependency installation changed.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+      }
+    };
+    const packages = inventory && this.cloudInventoryGenerations?.get(inventory) === generation
+      ? inventory : await this.getCloudDependencyInventory(projectPath, session);
+    assertCurrent();
+    if (packages.root !== window['path'].resolve(projectPath)) throw new Error('Cloud source inventory belongs to another project.');
+    for (const item of packages.libraries) {
+      assertCurrent();
+      let promise = generation.sources.get(item.packageRoot);
+      if (!promise) {
+        promise = this.materializeCloudLibrarySource(item, packages.root, session, assertCurrent);
+        generation.sources.set(item.packageRoot, promise);
+      }
+      try { await promise; }
+      finally {
+        if (generation.sources.get(item.packageRoot) === promise) generation.sources.delete(item.packageRoot);
+      }
+    }
+    assertCurrent();
+  }
+
+  private async materializeCloudLibrarySource(
+    { name, packageRoot }: CloudDependencyPackage, root: string,
+    session: ProjectDependencySession, assertCurrent: () => void,
+  ): Promise<void> {
+    const path = window['path'];
+    const fs = window['fs'];
+    assertCurrent();
+    const source = path.join(packageRoot, 'src');
+    const archive = path.join(packageRoot, 'src.7z');
+    if (fs.existsSync(source)) {
+      const entry = fs.lstatSync(source);
+      if (entry._isSymbolicLink || !entry._isDirectory || !fs.readDirSync(source).length) throw new Error(`Cloud library source is incomplete: ${name}`);
+      return; // 已有源码可能包含用户修改，始终优先使用，不用压缩包覆盖。
+    }
+    if (!fs.existsSync(archive)) return;
+    const archiveEntry = fs.lstatSync(archive);
+    if (archiveEntry._isSymbolicLink || !archiveEntry._isFile) throw new Error(`Cloud library source archive is unsafe: ${name}`);
+    const [rootReal, packageReal] = await Promise.all([fs.realpathAsync(root), fs.realpathAsync(packageRoot)]);
+    assertCurrent();
+    const relative = path.relative(rootReal, packageReal);
+    if (relative === '..' || relative.startsWith('../') || relative.startsWith('..\\') || path.isAbsolute(relative)) {
+      throw new Error(`Cloud library package escapes the project: ${name}`);
+    }
+    const extractor = await window['env'].get('AILY_7ZA_PATH');
+    assertCurrent();
+    if (!extractor) throw new Error('Library source archive extractor is unavailable.');
+    const staging = path.join(packageRoot, `.cloud-source-${crypto.randomUUID()}`);
+    if (!/^\.cloud-source-[\w-]+$/.test(path.relative(packageRoot, staging))) throw new Error('Unsafe library source staging directory.');
+    fs.mkdirSync(staging);
+    let cleanupSafe = true;
+    try {
+      // 先检查压缩包路径、链接与展开规模，再在临时目录解压，成功后一次性发布为 src。
+      const listing = await this.runCloudSourceArchive(extractor, ['l', '-slt', '-ba', archive], root, session);
+      assertCurrent();
+      this.validateCloudSourceArchiveListing(listing);
+      await this.runCloudSourceArchive(extractor, ['x', archive, `-o${staging}`, '-y'], root, session);
+      assertCurrent();
+      const names = fs.readDirSync(staging).map((entry: any) => typeof entry === 'string' ? entry : entry.name);
+      const nested = path.join(staging, 'src');
+      const prepared = names.length === 1 && names[0] === 'src' && fs.isDirectory(nested) ? nested : staging;
+      if (!fs.readDirSync(prepared).length) throw new Error(`Cloud library source archive is empty: ${name}`);
+      if (fs.existsSync(source)) throw new Error(`Library source changed during extraction: ${name}`);
+      fs.renameSync(prepared, source);
+    } catch (error) {
+      cleanupSafe = !(error as any)?.nativeCleanupPending;
+      throw error;
+    } finally {
+      if (cleanupSafe && fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+    }
+  }
+
+  private async runCloudSourceArchive(executable: string, args: string[], projectPath: string, session: ProjectDependencySession): Promise<string> {
+    let closed = false;
+    const streamId = `cloud-source-${crypto.randomUUID()}`;
+    let output: string;
+    try {
+      output = await lastValueFrom(this.cmdService.spawn(executable, args, {
+        cwd: projectPath, projectPath, projectSessionId: session.projectSessionId, signal: session.signal, streamId,
+      }, true).pipe(reduce((text, event) => {
+        if (event.type === 'close') closed = true;
+        if (event.type === 'error' || event.type === 'close' && event.code !== 0) throw new Error(event.error || event.stderr || 'Library source archive failed.');
+        const next = event.type === 'stdout' ? text + (event.data || '') : text;
+        if (next.length > 1024 * 1024) throw new Error('Library source archive inventory exceeds its limit.');
+        return next;
+      }, '')));
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error('Library source archive failed.');
+      if (!closed) {
+        let stopped = false;
+        try { stopped = await this.cmdService.kill(streamId); } catch { /* 未确认原生进程停止时保留临时目录，避免与解压并发删除。 */ }
+        if (!stopped) Object.assign(failure, { nativeCleanupPending: true });
+      }
+      throw failure;
+    }
+    this.assertDependencySession(session);
+    if (!closed) throw new Error('Library source archive did not finish.');
+    return output;
+  }
+
+  private validateCloudSourceArchiveListing(listing: string): void {
+    let count = 0;
+    let total = 0;
+    for (const record of listing.split(/\r?\n\r?\n/)) {
+      const fields = Object.fromEntries(record.split(/\r?\n/).filter(line => line.includes(' = ')).map(line => {
+        const at = line.indexOf(' = '); return [line.slice(0, at), line.slice(at + 3)];
+      }));
+      const name = fields['Path'];
+      if (!name) continue;
+      const normalized = name.replace(/\\/g, '/');
+      if (normalized.startsWith('/') || /[:\x00-\x1f]/.test(normalized)
+        || normalized.split('/').some(part => !part || part === '.' || part === '..')
+        || fields['Symbolic Link'] || fields['Hard Link'] || /L|l[rwx-]{9}/.test(fields['Attributes'] || '')) throw new Error('Unsafe library source archive entry.');
+      const size = Number(fields['Size'] || '0');
+      if (!Number.isSafeInteger(size) || size < 0 || ++count > 4096 || (total += size) > 128 * 1024 * 1024) throw new Error('Library source archive exceeds its limit.');
+    }
+    if (!count) throw new Error('Library source archive inventory is empty.');
   }
 
   /**

@@ -41,7 +41,9 @@ describe('BuilderService background preprocess ownership', () => {
 
   function queuedBuilder() {
     const service = Object.create(_BuilderService.prototype) as any;
-    service.projectService = { currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
+    service.metrics = { record: () => {} };
+    service.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} };
+    service.projectService = { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
     service.workflowService = { currentState: ProcessState.IDLE,
       startBuild: () => { service.workflowService.currentState = ProcessState.BUILDING; return true; },
       finishBuild: jasmine.createSpy('finishBuild').and.callFake(() => { service.workflowService.currentState = ProcessState.IDLE; }) };
@@ -70,7 +72,7 @@ describe('BuilderService background preprocess ownership', () => {
       service.projectService.stateSubject = { value: 'loaded' };
       service.projectService.getBoardModule = async () => 'board';
       service.platformService = { za7: '7za' };
-      service.configService = { data: {} };
+      service.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} };
       service.isInstallInProgress = () => false;
       service.getPendingChatBlockingOperationCount = () => 0;
       service.getMissingBoardDependencies = async () => [];
@@ -162,6 +164,7 @@ describe('BuilderService background preprocess ownership', () => {
   it('retains pending preprocessing when installation interrupts preparation, but not after destruction', () => {
     const service = Object.create(_BuilderService.prototype) as any;
     Object.assign(service, { initialized: true, preprocessRunGeneration: 1, pendingPrecompile: false,
+      configService: { getCompileBackend: () => 'local' },
       projectService: { currentProjectPath: '/project', isProjectTransitionInProgress: () => false },
       blocklyService: { aiWaiting: false }, getPendingChatBlockingOperationCount: () => 0,
       isInstallInProgress: () => true, workflowService: { currentState: ProcessState.INSTALLING } });

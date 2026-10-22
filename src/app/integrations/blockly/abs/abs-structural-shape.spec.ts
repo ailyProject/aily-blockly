@@ -7,6 +7,8 @@ import { absJson, createAbsProjection } from './abs-identity-map';
 import { reconcileAbsDraft } from './abs-reconciler';
 import { assertAbsReadback } from './abs-readback';
 import { describeAbsBlockCapability } from './abs-block-capabilities';
+import { precheckAbs } from './abs-precheck';
+import { composeAbs } from './abs-compose';
 
 describe('shared structural mutator preparation', () => {
   let workspace: Blockly.Workspace, catalog: BlocklyDeclarativeBlockCatalog, oldBlockly: unknown;
@@ -91,6 +93,21 @@ describe('shared structural mutator preparation', () => {
     const exported = await projection();
     await edit(exported.abs + '\n# canonical readback', exported);
     expect(workspace.getBlockById(block.id)?.saveExtraState?.()).toEqual(state);
+  });
+
+  it('prechecks and composes inferred branch and list shapes using the same recipes as native reconciliation', async () => {
+    const shapes = captureAbsDeclarativeContracts(catalog.capture(Blockly.Blocks));
+    const contracts = { blockContract: shapes.get,
+      argumentOrder: (type: string, state?: unknown) => shapes.get(type, state)?.argumentOrder };
+    const source = '# ABS Schema: 2\nabs_s_if(abs_s_number(1))\n    @IF1: abs_s_number(0)\n    @DO1:\n    @ELSE:\n        abs_s_join(abs_s_number(1), abs_s_number(2))';
+    expect(precheckAbs(source, contracts).diagnostics).toEqual([]);
+    const composed = composeAbs({ blocks: [{ type: 'abs_s_if', values: { IF0: { type: 'abs_s_number', fields: { NUM: 1 } }, IF1: { type: 'abs_s_number', fields: { NUM: 0 } } },
+      statements: { DO1: [], ELSE: [] } }] }, contracts);
+    expect(composed.precheck.diagnostics).toEqual([]);
+    await edit(composed.abs);
+    expect(workspace.getBlocksByType('abs_s_if', false)[0].saveExtraState?.()).toEqual({ elseIfCount: 1, hasElse: true });
+    expect(precheckAbs(source.replace('@IF1', '@IF2').replace('@DO1', '@DO2'), contracts).ok).toBeFalse();
+    expect(precheckAbs(source.replace('abs_s_if(abs_s_number(1))', 'abs_s_if(abs_s_number(1)) @extra:{"elseIfCount":0,"hasElse":false}'), contracts).ok).toBeFalse();
   });
 
   it('shrinks a previously expanded shape when the shorthand omits its extra state', async () => {

@@ -95,20 +95,20 @@ test('refuses hardlinked generated headers before invalidating the previous succ
     assert.equal(f.read('other.h'), 'keep'); assert.equal(f.read('.build/aily-artifact-manifest.json'), 'success');
 });
 
-test('metadata patches preserve each latest manifest, mirror configuration and success ticket', t => {
-    const f = fixture(t); f.write('.temp/package.json', '{"dependencies":{"board":"2"},"custom":true}');
+test('metadata patches preserve the root manifest and success ticket, ignoring a damaged legacy backup', t => {
+    const f = fixture(t), legacy = '{ invalid old backup'; f.write('.temp/package.json', legacy);
     f.write('.build/aily-artifact-manifest.json', 'success');
     const info = { lastBuildTime: new Date().toISOString(), lastBuildCode: 'b'.repeat(64), lastBuildStatus: 'success', lastBuildDuration: 1 };
     const result = patch(f.root, { codeHash: 'a'.repeat(64), buildInfo: info });
     assert.equal(result.unrelated, 'keep'); assert.deepEqual(result.dependencies, { board: '1' });
-    const mirror = JSON.parse(f.read('.temp/package.json')); assert.deepEqual(mirror.dependencies, { board: '2' });
-    assert.equal(mirror.custom, true); assert.deepEqual(mirror.buildInfo, info);
+    assert.equal(f.read('.temp/package.json'), legacy);
+    assert.deepEqual(JSON.parse(f.read('package.json')).buildInfo, info);
     assert.equal(f.read('.build/aily-artifact-manifest.json'), 'success');
     assert.equal(f.exists('.build/aily-workspace.lock'), false);
 });
 
-test('Coder metadata does not create a Blockly package mirror; unrelated fields are not patchable', t => {
-    const f = fixture(t, 'coder'); patch(f.root, { codeHash: 'a'.repeat(64) });
+for (const type of ['blockly', 'coder']) test(`${type} metadata does not create a package backup; unrelated fields are not patchable`, t => {
+    const f = fixture(t, type); patch(f.root, { codeHash: 'a'.repeat(64) });
     assert.equal(f.exists('.temp'), false);
     const original = f.read('package.json');
     for (const change of [{ dependencies: {} }, { codeHash: 'bad' }, { buildInfo: {} }]) assert.throws(() => patch(f.root, change), /BUILD_PUBLICATION_INVALID/);

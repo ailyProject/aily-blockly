@@ -341,6 +341,14 @@
             "CACHE": "キャッシュ管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "クラウドコンパイル",
+            "CLOUD_COMPILATION_DESC": "クラウドでコンパイルし、このコンピューターからボードに書き込みます。有効化時にサービスを確認します。",
+            "CLOUD_PRO_REQUIRED": "Pro アカウントでログインすると利用できます",
+            "CLOUD_ENABLE_CHECKING": "クラウドコンパイルサービスを確認中…",
+            "CLOUD_ENABLE_SUCCESS": "クラウドコンパイルを有効にしました。",
+            "CLOUD_ENABLE_FAILED": "有効化に失敗しました。しばらくしてから再試行してください。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "有効化に失敗しました。アプリを完全に終了して再起動し、もう一度お試しください。",
+            "CLOUD_DISABLE_FAILED": "無効化に失敗しました。再試行してください。",
             "PROJECT_FOLDER": "プロジェクトフォルダ",
             "LANGUAGE": "言語",
             "DEVELOPMENT_MODE_PREFERENCE": "既定の開発モード",
@@ -941,6 +949,7 @@
             "BUSY_RETRY_LATER": "{{message}}。しばらくしてから再試行してください",
             "BUSY_WAIT": "{{message}}。しばらくお待ちください",
             "PREPARING_TITLE": "ビルドを準備中",
+            "PRECOMPILE_COMPLETE_TITLE": "Preprocessing complete",
             "PRECOMPILE_RUNNING": "プリビルドを実行中",
             "PRECOMPILE_FAILED_TITLE": "プリビルドに失敗しました",
             "PRECOMPILE_FAILED_DETAIL": "依存関係の解析中にエラーが発生しました。詳細はログを確認してください。",
@@ -1040,6 +1049,19 @@
         "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
     },
     "PROJECT": {
+      "OPEN_IN_CODER": "Open in Aily Coder",
+      "CONVERT_CODER_TITLE": "Convert to a Coder project",
+      "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
+      "CONVERT_CODER_BUTTON": "Convert and open",
+      "CONVERT_CODER_FAILED": "Conversion failed: {{error}}",
+      "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
+      "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
+      "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "クラウドコンパイルのコンポーネントが更新されていません。アプリを完全に終了して再起動してから、もう一度お試しください。ページの再読み込みだけでは更新されません。",
+        "CLOUD_TARGET_UNAVAILABLE": "このボードのバージョンまたは内容は利用可能なクラウドターゲットとして登録されていません。",
+        "CLOUD_BOARD_NOT_ENABLED": "このボードのバージョンではクラウドコンパイルが有効になっていません。",
+        "CLOUD_BOARD_UNSUPPORTED": "このボードのバージョンはクラウドコンパイルに対応していません。",
+        "CLOUD_BOARD_OFFLINE": "このボードのクラウドコンパイラはオフラインです。しばらくしてから再試行してください。",
       "MODE_UNKNOWN": "プロジェクトの種類を識別できません。有効な Aily Blockly または Aily Coder プロジェクトを選択してください。",
       "MODE_CREATE_RESTRICTED": "現在の {{application}} モードではこの種類のプロジェクトを作成できません。{{targetApplication}} を使用してください。",
       "MODE_MISMATCH_TITLE": "プロジェクトモードが一致しません",
@@ -1250,5 +1272,29 @@
         "ERR_PATH_EXISTS": "同名のフォルダが既に存在します",
         "ERR_PATH_INVALID": "保存パスに無効な文字が含まれています",
         "ERR_CREATE_FAILED": "プロジェクトの作成に失敗しました。もう一度お試しください。"
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "ローカルコンパイルに切り替え",
+        "SWITCH_TO_CLOUD": "クラウドコンパイルに戻す",
+        "SWITCHING_TO_CLOUD": "ローカルコンパイルを停止し、クラウドに戻しています…",
+        "SWITCHING_TO_LOCAL": "クラウドコンパイルをキャンセルしてローカルに切り替えています…",
+        "PREPARING_LOCAL": "ローカルコンパイルの準備中…",
+        "REUSED_RESULT": "検証済みのクラウドビルド結果を再利用しました (所要時間: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "クラウドビルドが完了しました (所要時間: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "クラウドビルド用ファイルを準備中",
+            "UPLOADING": "クラウドビルド用ファイルをアップロード中",
+            "QUEUED": "クラウドビルドの順番待ち",
+            "DISPATCHING": "クラウドビルドサーバーを割り当て中",
+            "PREPARING": "クラウドビルド環境を準備中",
+            "RESOURCES": "クラウドビルドリソースを準備中",
+            "ANALYZING": "プロジェクトを解析中",
+            "COMPILING": "クラウドでコンパイル中",
+            "FINALIZING": "クラウドビルド成果物を確認中",
+            "DOWNLOADING": "クラウドビルド成果物をダウンロード中",
+            "VERIFYING": "クラウドビルド成果物を検証中",
+            "RECONNECTING": "ゲートウェイに再接続中",
+            "COMPLETE": "クラウドビルドが完了しました"
+        }
     }
 }

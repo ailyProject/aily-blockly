@@ -212,10 +212,20 @@ export class ChildAppHostRegistryService {
     }
   }
 
+  async closeAll(toolId: string): Promise<Record<string, unknown>> {
+    for (const { instanceId } of this.list(toolId)) {
+      if (!this.has(toolId, instanceId)) continue;
+      const result = await this.control(toolId, 'close', { instanceId });
+      if (result['ok'] !== true) return result;
+    }
+    return { ok: true, toolId };
+  }
+
   private async executeCommand(command: unknown): Promise<Record<string, unknown>> {
     const payload = this.asRecord(command);
     const toolId = typeof payload['toolId'] === 'string' ? payload['toolId'] : '';
     const action = typeof payload['action'] === 'string' ? payload['action'] as ChildAppHostAction : 'status';
+    if (payload['action'] === 'closeAll') return this.closeAll(toolId);
     return this.control(toolId, action, payload as ChildAppHostControlOptions);
   }
 

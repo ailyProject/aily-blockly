@@ -1,4 +1,5 @@
 import { captureCustomFunctionRegistration, clearCustomFunctionRegistration, registerCustomFunctionContract } from '../../../editors/blockly-editor/services/blockly-custom-function-contract';
+import { nativeUiSemanticSnapshot, NativeUiTasks } from '../../../editors/blockly-editor/services/blockly-native-ui-tasks';
 
 describe('custom function runtime registration lifecycle', () => {
   const auditedHash = '4d3a8f44d8fbeffc76bdfe6648fa076e2474505ab359a81cd64bfa98aaef592b';
@@ -84,5 +85,26 @@ describe('custom function runtime registration lifecycle', () => {
     expect(definition._funcLastName).toBe('work'); expect(f.realm.customFunctionRegistry.pending_edit).toBeUndefined();
     snapshot.prepareSerialization(workspace, true);
     expect(definition._funcLastName).toBe('pending_edit');
+  });
+  it('settles a derived lookup reset while still rejecting a callback that changes function parameters', async () => {
+    acceptDigest(); const f = setup(); f.define();
+    f.realm.functionParamsMutator.saveExtraState = function() { return this.extra; };
+    await registerCustomFunctionContract(source, f.realm, f.registry, f.owner, f.current);
+    const definition: any = { type: 'custom_function_def', id: 'def', inputList: [],
+      outputConnection: null, previousConnection: null, nextConnection: null,
+      getFieldValue: name => name === 'FUNC_NAME' ? 'work' : 'int',
+      extra: { params: [{ name: 'amount', type: 'int' }], funcVarId: 'func', paramVarIds: ['param'] } };
+    const workspace: any = { getAllBlocks: () => [definition], getBlockById: () => definition };
+    const native: any = { Blocks: f.registry, serialization: { workspaces: { save: () => ({ blocks: { blocks: [
+      { id: 'call', type: 'custom_function_call_advance', extraState: { params: f.realm.customFunctionRegistry?.work?.params } },
+    ] } }) } } };
+    const snapshot = () => nativeUiSemanticSnapshot(native, workspace);
+    const tasks = new NativeUiTasks();
+    const before = snapshot();
+    tasks.set(() => { f.realm.customFunctionRegistry = {}; });
+    expect(() => tasks.drain(snapshot)).not.toThrow();
+    expect(snapshot()).toBe(before);
+    tasks.set(() => { definition.extra.params[0].type = 'float'; });
+    expect(() => tasks.drain(snapshot)).toThrowError(/changed persisted state/);
   });
 });
