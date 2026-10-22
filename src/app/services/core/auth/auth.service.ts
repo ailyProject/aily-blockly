@@ -1247,15 +1247,14 @@ export class AuthService {
     }
 
     return this.http.post<CommonResponse>(API.githubBrowserAuthorize, requestData).pipe(
-      map(response => {
+      switchMap(async response => {
         if (response.status === 200 && response.data?.authorization_url) {
-          // 注册当前实例为OAuth发起者
-          if (this.electronService.isElectron && (window as any).electronAPI?.oauth) {
-            (window as any).electronAPI.oauth.registerState(state).then((result: any) => {
-              // console.log('已注册OAuth状态到实例管理:', result);
-            }).catch((error: any) => {
-              console.error('注册OAuth状态失败:', error);
-            });
+          // 浏览器回调前，必须完成协议接收准备与当前实例登记。
+          if (this.electronService.isElectron) {
+            const instance = await (window as any).electronAPI?.oauth?.registerState(state);
+            if (!instance) {
+              throw new Error('Unable to register the OAuth callback instance.');
+            }
           }
 
           return {

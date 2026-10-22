@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "Échec du traitement de la connexion. Veuillez réessayer"
     },
     "COMMON": {
+    "RESTART": "Redémarrer",
+    "LOADING_WITH_NAME": "Chargement de {{name}}…",
         "FEATURE_COMING_SOON": "Fonctionnalité bientôt disponible",
         "AUTH_SESSION_REPLACED_NOTICE": "Ce compte s’est connecté sur un autre appareil. Vous avez été déconnecté de cet appareil. Veuillez vous reconnecter.",
         "SAFE_LOGOUT_TITLE": "Se déconnecter ?",

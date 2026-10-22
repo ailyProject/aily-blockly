@@ -1001,6 +1001,8 @@
         "AUTH_SELF_INVITATION_NOT_ALLOWED": "You cannot use your own invitation code"
     },
     "COMMON": {
+    "RESTART": "Restart",
+    "LOADING_WITH_NAME": "Loading {{name}}…",
         "FEATURE_COMING_SOON": "Feature coming soon",
         "AUTH_SESSION_REPLACED_NOTICE": "This account was signed in on another device. You have been logged out on this device. Please sign in again.",
         "SAFE_LOGOUT_TITLE": "Log out?",

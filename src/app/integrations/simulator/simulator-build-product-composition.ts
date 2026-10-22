@@ -108,6 +108,15 @@ export class SimulatorBuildProductComposition {
       activeProject: options.activeProject,
       mainAgent: options.mainAgent,
       builder,
+      readCompileScene: async (revision, signal) => {
+        const scene = await this.projectAuthority.callbacks.readScene({
+          projectIdentity: options.projectIdentity, sceneId: options.sceneId ?? 'main',
+        }, signal);
+        if (scene.kind !== 'aily-project-scene-network-descriptor' || scene.document.graphSemanticRevision !== revision) {
+          throw new Error('Simulator Scene changed before compilation.');
+        }
+        return scene.document;
+      },
       artifacts: {
         readLatest: async (
           projectIdentity: string,

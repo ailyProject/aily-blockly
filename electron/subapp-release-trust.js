@@ -69,7 +69,7 @@ function normalizeSubappReleaseTrustPolicies(value) {
         'trusted Subapp index origin',
       );
       const releasePublicKeys = validateEd25519PublicKeys(item.releasePublicKeys);
-      const identity = `${subappIndexOrigin}\0${item.subappId}\0${item.packageName}`;
+      const identity = `${subappIndexOrigin}\0${item.subappId}\0${item.packageName}\0${item.platform}`;
       if (identities.has(identity)) throw new Error('Duplicate trust policy');
       identities.add(identity);
       return deepFreeze({
@@ -89,8 +89,8 @@ function normalizeSubappReleaseTrustPolicies(value) {
   return Object.freeze(policies);
 }
 
-function requiresTrustedSubappDistribution(entry, indexUrl, policies) {
-  return Boolean(findTrustPolicy(entry, indexUrl, policies));
+function requiresTrustedSubappDistribution(entry, indexUrl, policies, options = {}) {
+  return Boolean(findTrustPolicy(entry, indexUrl, policies, options));
 }
 
 async function verifyDownloadedSubappDistribution({
@@ -98,10 +98,12 @@ async function verifyDownloadedSubappDistribution({
   indexUrl,
   policies,
   tarballPath,
+  platform = process.platform,
+  arch = process.arch,
 }) {
   try {
     const normalizedPolicies = normalizeSubappReleaseTrustPolicies(policies);
-    const policy = findTrustPolicy(entry, indexUrl, normalizedPolicies);
+    const policy = findTrustPolicy(entry, indexUrl, normalizedPolicies, { platform, arch });
     if (!entry.distribution) {
       if (policy) {
         throw new Error('The required signed distribution declaration is missing');
@@ -110,7 +112,7 @@ async function verifyDownloadedSubappDistribution({
     }
     if (!policy) throw new Error('No trusted release policy matches this distribution');
     const distribution = validateSubappDistribution(entry.distribution);
-    if (distribution.platform !== policy.platform) {
+    if (distribution.platform !== `${platform}-${arch}` || distribution.platform !== policy.platform) {
       throw new Error('The distribution platform is not trusted');
     }
     const tarballUrl = requireHttpsUrl(distribution.tarballUrl, 'Subapp tarball URL');
@@ -158,7 +160,7 @@ async function verifyDownloadedSubappDistribution({
   }
 }
 
-function findTrustPolicy(entry, indexUrl, policies) {
+function findTrustPolicy(entry, indexUrl, policies, { platform = process.platform, arch = process.arch } = {}) {
   const normalizedPolicies = Array.isArray(policies)
     && Object.isFrozen(policies)
     ? policies
@@ -169,6 +171,7 @@ function findTrustPolicy(entry, indexUrl, policies) {
     policy.subappId === entry.id
     && policy.packageName === entry.package
     && policy.subappIndexOrigin === indexOrigin
+    && policy.platform === `${platform}-${arch}`
   ));
   if (matches.length > 1) throw trustError('Multiple Subapp release trust policies match.');
   return matches[0] || null;

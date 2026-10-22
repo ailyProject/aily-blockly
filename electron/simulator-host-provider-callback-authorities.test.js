@@ -203,6 +203,8 @@ test('normal Host product source callback fences generation, async hash races, p
     currentProjectPath: currentRoot, isProjectOpening: false,
     isAilyCodeProject: () => false,
     projectActivation$: { subscribe: () => ({ unsubscribe() {} }) },
+    captureCurrentProjectActivation: () => ({ path: currentRoot, projectSessionId: 'source-test-generation',
+      signal: new AbortController().signal, requireCurrent() {} }),
   };
   const Service = await loadHostProductService({
     digest: async (_algorithm, bytes) => {
@@ -349,7 +351,7 @@ test('Project callbacks keep the frozen real head bytes and storage revision thr
   const goldenBytes = await fs.readFile(path.resolve(__dirname,
     '../../aily-simulator/packages/simulator-protocol/test/fixtures/project-scene-head-v1-real.json'));
   assert.equal(goldenBytes.length, 64912);
-  assert.equal(sha256(goldenBytes), '64c675abc4090bd9493470e715f0f7b1d75c476f268fd68a146b96a02a3d5158');
+  assert.equal(sha256(goldenBytes), 'f97214a72a2ed43a854a88dd9f930341c5d8e7d45db9b7a18898a647404650fb');
   const golden = JSON.parse(goldenBytes.toString('utf8'));
   const scope = { projectIdentity: golden.descriptor.projectIdentity, sceneId: golden.descriptor.sceneId };
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-head-golden-'));
@@ -720,6 +722,7 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
   const builderCalls = [];
   let completeMainAgent;
   const execution = new BlocklySimulatorBuildExecutionPort({
+    readCompileScene: async () => document,
     projectRoot: 'D:\\projects\\active',
     projectIdentity,
     sceneId,
@@ -782,6 +785,7 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     projectRoot: 'D:\\projects\\active',
     projectIdentity,
     graphSemanticRevision: document.graphSemanticRevision,
+    sceneDocument: document,
   });
   assert.deepEqual(
     stages.map(([stage]) => stage),
@@ -798,6 +802,7 @@ for (const reason of [undefined, null, 'unknown']) test(`Blockly Build rejects $
   const { BlocklySimulatorBuildExecutionPort, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
   const document = await createEmptySceneEditorDocumentV2(sceneId);
   const execution = new BlocklySimulatorBuildExecutionPort({
+    readCompileScene: async () => document,
     projectRoot: 'D:\\projects\\active', projectIdentity, sceneId,
     activeProject: activeBlocklyProject('D:\\projects\\active'),
     mainAgent: { async execute() { assert.fail('Invalid reason must not enter the main Agent.'); } },
@@ -927,6 +932,7 @@ test('a main-Agent user-edit conflict fails generation before Builder starts', a
   const rebuild = rebuildRequest(document);
   let builderCalled = false;
   const execution = new BlocklySimulatorBuildExecutionPort({
+    readCompileScene: async () => document,
     projectRoot: 'D:\\projects\\active',
     projectIdentity,
     sceneId,
@@ -1056,6 +1062,12 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     createArtifactReference: () => `host-artifact-v1-${'e'.repeat(64)}`,
     createSceneCommitId: () => `scene-commit-v1-${'f'.repeat(64)}`,
   });
+  await composition.projectCallbacks.writeScene({
+    projectIdentity, sceneId, expectedStorageRevision: emptyRevision,
+    descriptor: { schemaVersion: 1, kind: 'aily-project-scene-network-descriptor',
+      projectIdentity, sceneId, storageRevision: emptyRevision, document,
+      runtimeAttachment: null, artifactAlignment: 'detached' },
+  }, new AbortController().signal);
   const projectAdapter = new SimulatorProjectHostProviderAdapter({
     ...composition.projectCallbacks,
     now: () => now,
@@ -1190,6 +1202,12 @@ test('a failed normal Builder keeps the previous Artifact and the same immutable
     now: () => now,
     createArtifactReference: () => `host-artifact-v1-${'8'.repeat(64)}`,
   });
+  await composition.projectCallbacks.writeScene({
+    projectIdentity, sceneId, expectedStorageRevision: emptyRevision,
+    descriptor: { schemaVersion: 1, kind: 'aily-project-scene-network-descriptor',
+      projectIdentity, sceneId, storageRevision: emptyRevision, document,
+      runtimeAttachment: null, artifactAlignment: 'detached' },
+  }, new AbortController().signal);
   const projectAdapter = new SimulatorProjectHostProviderAdapter({
     ...composition.projectCallbacks,
     now: () => now,
@@ -1296,6 +1314,7 @@ for (const firstFailure of [
   let hostSignal;
   const descriptor = artifactDescriptorFixture(Buffer.from('retry-after-builder-outcome'), document.graphSemanticRevision);
   const execution = new BlocklySimulatorBuildExecutionPort({
+    readCompileScene: async () => document,
     projectRoot: 'project', projectIdentity, sceneId, activeProject: activeBlocklyProject('project'),
     mainAgent: { async execute(request, signal) {
       hostSignal = signal;
@@ -1417,8 +1436,9 @@ test('closing product composition cancels the pending main Agent before Builder 
 
 test('Blockly Builder adapter sends only request-scoped cancellation', async () => {
   const {
-    createSimulatorBlocklyBuilderPort,
+    createSimulatorBlocklyBuilderPort, createEmptySceneEditorDocumentV2,
   } = await integrationModulePromise;
+  const sceneDocument = await createEmptySceneEditorDocumentV2(sceneId);
   const calls = [];
   let rejectBuild;
   const port = createSimulatorBlocklyBuilderPort({
@@ -1438,14 +1458,16 @@ test('Blockly Builder adapter sends only request-scoped cancellation', async () 
     requestId: 'rebuild-main',
     projectRoot: 'project',
     projectIdentity,
-    graphSemanticRevision: 'd'.repeat(64),
+    graphSemanticRevision: sceneDocument.graphSemanticRevision,
+    sceneDocument,
   }, controller.signal);
   controller.abort(new Error('superseded'));
   await assert.rejects(completion, /cancelled/);
   assert.deepEqual(calls, [
     ['build', {
       projectPath: 'project',
-      graphSemanticRevision: 'd'.repeat(64),
+      graphSemanticRevision: sceneDocument.graphSemanticRevision,
+    sceneDocument,
       requestId: 'rebuild-main',
     }],
     ['cancel', 'rebuild-main'],
@@ -2068,7 +2090,8 @@ async function loadIntegrationModule() {
     os.tmpdir(),
     `aily-simulator-product-callbacks-${process.pid}-${Date.now()}.cjs`,
   );
-  const simulatorRoot = path.resolve(__dirname, '../../aily-simulator');
+  const simulatorRoot = process.env.AILY_SIMULATOR_SOURCE_ROOT
+    || path.resolve(__dirname, '../../aily-simulator');
   const sdkEntry = path.join(
     simulatorRoot,
     'packages',
@@ -2210,7 +2233,7 @@ async function loadHostProductService({ digest, onComposition }) {
   };
   const module = { exports: {} };
   vm.runInNewContext(transformed.code, {
-    module, exports: module.exports, TextEncoder, Uint8Array,
+    module, exports: module.exports, TextEncoder, Uint8Array, AbortController, AbortSignal, DOMException,
     crypto: { subtle: { digest } },
     window: { path: path.win32 },
     require(specifier) {

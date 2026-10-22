@@ -12,14 +12,14 @@ export interface SimulatorSceneGpioBuildMetadata {
  * Simulator runtime or Scene mutation authority.
  */
 export function createSimulatorSceneGpioBuildMetadata(
-  sceneHead: unknown,
+  sceneDocumentValue: unknown,
   sourceText: string,
   graphSemanticRevision: string,
 ): SimulatorSceneGpioBuildMetadata {
   if (!/^[a-f0-9]{64}$/u.test(graphSemanticRevision)) {
     throw new Error('Simulator Scene graph revision is invalid.');
   }
-  const document = sceneDocument(sceneHead);
+  const document = sceneDocument(sceneDocumentValue);
   if (document['graphSemanticRevision'] !== graphSemanticRevision) {
     throw new Error(
       'Simulator Scene changed before GPIO build metadata was generated.',
@@ -186,17 +186,9 @@ function normalizePinAlias(value: string): string {
 }
 
 function sceneDocument(value: unknown): Record<string, unknown> {
-  const head = record(value);
-  const descriptor = record(head['descriptor']);
-  const document = record(descriptor['document']);
-  if (
-    head['schemaVersion'] !== 1
-    || head['kind'] !== 'aily-blockly-simulator-project-scene-head'
-    || descriptor['kind'] !== 'aily-project-scene-network-descriptor'
-    || document['schemaVersion'] !== 2
-    || document['kind'] !== 'aily-scene-editor-document'
-  ) {
-    throw new Error('Active Simulator Scene head is invalid.');
+  const document = record(value);
+  if (document['schemaVersion'] !== 2 || document['kind'] !== 'aily-scene-editor-document') {
+    throw new Error('Active Simulator Scene document is invalid.');
   }
   return document;
 }

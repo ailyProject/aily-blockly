@@ -997,6 +997,8 @@
         "AUTH_SELF_INVITATION_NOT_ALLOWED": "不能填写自己的邀请码"
     },
     "COMMON": {
+    "RESTART": "重启",
+    "LOADING_WITH_NAME": "正在加载 {{name}}…",
         "FEATURE_COMING_SOON": "功能即将上线",
         "AUTH_SESSION_REPLACED_NOTICE": "该账号已在其他设备登录，本机登录已失效，请重新登录。",
         "SAFE_LOGOUT_TITLE": "确认退出登录？",

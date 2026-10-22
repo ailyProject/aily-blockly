@@ -1,3 +1,4 @@
+import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import type { SceneArtifactRebuildRequest } from '@aily-project/simulator-protocol/scene';
 import type { SimulatorSubappHostArtifactDescriptorV1 } from '@aily-project/simulator-protocol/host';
 
@@ -30,6 +31,7 @@ export interface SimulatorBlocklyBuildRequest {
   readonly projectRoot: string;
   readonly projectIdentity: string;
   readonly graphSemanticRevision: string;
+  readonly sceneDocument: SceneEditorDocumentV2;
 }
 
 export interface SimulatorBlocklyBuilderPort {
@@ -54,6 +56,7 @@ export interface BlocklySimulatorBuildExecutionPortOptions {
   mainAgent: SimulatorMainAgentSceneChangePort;
   builder: SimulatorBlocklyBuilderPort;
   artifacts: SimulatorLatestArtifactDescriptorPort;
+  readCompileScene(revision: string, signal: AbortSignal): Promise<SceneEditorDocumentV2>;
 }
 
 type SimulatorBuildErrorCode =
@@ -78,6 +81,7 @@ implements SimulatorBuildExecutionPort {
   private readonly mainAgent: SimulatorMainAgentSceneChangePort;
   private readonly builder: SimulatorBlocklyBuilderPort;
   private readonly artifacts: SimulatorLatestArtifactDescriptorPort;
+  private readonly readCompileScene: BlocklySimulatorBuildExecutionPortOptions['readCompileScene'];
 
   constructor(options: BlocklySimulatorBuildExecutionPortOptions) {
     this.projectRoot = requireNonEmpty(options.projectRoot, 'projectRoot');
@@ -111,10 +115,14 @@ implements SimulatorBuildExecutionPort {
     ) {
       throw new TypeError('Latest Artifact descriptor port is invalid.');
     }
+    if (typeof options.readCompileScene !== 'function') {
+      throw new TypeError('Current compile Scene reader is invalid.');
+    }
     this.activeProject = options.activeProject;
     this.mainAgent = options.mainAgent;
     this.builder = options.builder;
     this.artifacts = options.artifacts;
+    this.readCompileScene = options.readCompileScene;
   }
 
   async reconcileAndBuild(
@@ -165,11 +173,18 @@ implements SimulatorBuildExecutionPort {
 
     observer.report('compiling', 500);
     try {
+      const sceneDocument = await this.readCompileScene(request.sceneRevision, signal);
+      throwIfAborted(signal);
+      this.requireActiveBlocklyProject();
+      if (sceneDocument.graphSemanticRevision !== request.sceneRevision || sceneDocument.sceneId !== request.sceneId) {
+        throw new Error('Simulator Scene changed before compilation.');
+      }
       await this.builder.build({
         requestId: request.requestId,
         projectRoot: this.projectRoot,
         projectIdentity: this.projectIdentity,
         graphSemanticRevision: request.sceneRevision,
+        sceneDocument,
       }, signal);
     } catch (error) {
       throw mappedError(error, signal, 'compile-failed');

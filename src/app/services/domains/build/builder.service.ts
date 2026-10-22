@@ -1,3 +1,4 @@
+import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import { Inject, Injectable, Optional } from '@angular/core';
 import { firstValueFrom, Subject } from 'rxjs';
 import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
@@ -21,6 +22,7 @@ export interface ActiveBlocklyProjectBuildInput {
   projectPath: string;
   graphSemanticRevision: string;
   requestId: string;
+  sceneDocument: SceneEditorDocumentV2;
 }
 
 @Injectable({
@@ -92,6 +94,9 @@ export class BuilderService {
       !projectPath
       || !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
       || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+      || input.sceneDocument?.schemaVersion !== 2
+      || input.sceneDocument.kind !== 'aily-scene-editor-document'
+      || input.sceneDocument.graphSemanticRevision !== graphSemanticRevision
     ) {
       throw new Error('Active Blockly Project Build input is invalid.');
     }
@@ -109,6 +114,7 @@ export class BuilderService {
     return this.buildCurrentBlocklyProject({
       source: 'ai',
       graphSemanticRevision,
+      sceneDocument: structuredClone(input.sceneDocument),
       sourceDocumentSchemaVersion: 2,
       requestId,
     });
@@ -118,6 +124,7 @@ export class BuilderService {
     payload: {
       source?: BuildResultSnapshot['source'];
       graphSemanticRevision?: string;
+      sceneDocument?: SceneEditorDocumentV2;
       sourceDocumentSchemaVersion?: 1 | 2;
       requestId?: string;
     },

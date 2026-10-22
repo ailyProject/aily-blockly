@@ -22,6 +22,10 @@ export interface SimulatorEntitlementAccountSnapshot {
 
 export interface SimulatorEntitlementAccountPort {
   readSnapshot(): SimulatorEntitlementAccountSnapshot;
+  requestLease?(
+    request: SimulatorSubappHostEntitlementLeaseRequestV1,
+    signal: AbortSignal,
+  ): Promise<SimulatorEntitlementHostLeaseDecision>;
   subscribe(
     listener: (snapshot: SimulatorEntitlementAccountSnapshot) => void,
   ): Readonly<{ close(): void }>;
@@ -40,11 +44,9 @@ type EntitlementCallbacks = Pick<
 /**
  * Product-account boundary for the Simulator Host Provider.
  *
- * Blockly currently has no trusted signed Simulator lease endpoint. This
- * authority therefore never derives runtime authorization from UI plan names,
- * groups or ordinary entitlement summaries. It exposes redacted account state
- * and fails closed until a future trusted source can supply signed lease and
- * revocation artifacts.
+ * The account service transports server-signed public artifacts only. Runtime
+ * authorization remains with Simulator signature verification; UI plan names
+ * and ordinary entitlement summaries never create a local grant.
  */
 export class SimulatorEntitlementCallbackAuthority {
   readonly callbacks: EntitlementCallbacks;
@@ -80,11 +82,20 @@ export class SimulatorEntitlementCallbackAuthority {
   }
 
   private requestLease(
-    _request: SimulatorSubappHostEntitlementLeaseRequestV1,
+    request: SimulatorSubappHostEntitlementLeaseRequestV1,
     signal: AbortSignal,
-  ): SimulatorEntitlementHostLeaseDecision {
+  ): SimulatorEntitlementHostLeaseDecision | Promise<SimulatorEntitlementHostLeaseDecision> {
     this.requireOpen(signal);
     const account = this.readAccountSnapshot();
+
+    if (account.state === 'authenticated' && this.account.requestLease) {
+      return this.account.requestLease(request, signal).then(decision => {
+        this.requireOpen(signal);
+
+        return decision;
+      });
+    }
+
     return Object.freeze({
       disposition: 'unavailable',
       unavailableReason: account.state === 'signed-out'
@@ -144,7 +155,8 @@ export class SimulatorEntitlementCallbackAuthority {
         ? 'sign-in-required'
         : account.state === 'checking'
           ? 'refreshing'
-          : 'temporarily-unavailable',
+          : account.state === 'authenticated' && this.account.requestLease
+            ? 'ready' : 'temporarily-unavailable',
       connectivity: account.connectivity,
       leaseExpiresAtUnixMs: null,
       observedAtUnixMs,

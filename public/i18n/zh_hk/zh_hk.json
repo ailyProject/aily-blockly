@@ -950,6 +950,8 @@
         "AUTH_SELF_INVITATION_NOT_ALLOWED": "不能填寫自己的邀請碼"
     },
     "COMMON": {
+    "RESTART": "重新啟動",
+    "LOADING_WITH_NAME": "正在載入 {{name}}…",
         "FEATURE_COMING_SOON": "功能即將上線",
         "AUTH_SESSION_REPLACED_NOTICE": "該帳號已在其他裝置登入，本機登入已失效，請重新登入。",
         "SAFE_LOGOUT_TITLE": "確認登出？",

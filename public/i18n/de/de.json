@@ -863,6 +863,8 @@
         "LOGIN_PROCESSING_FAILED": "Die Anmeldung konnte nicht verarbeitet werden. Bitte versuchen Sie es erneut"
     },
     "COMMON": {
+    "RESTART": "Neu starten",
+    "LOADING_WITH_NAME": "{{name}} wird geladen…",
         "FEATURE_COMING_SOON": "Funktion demnächst verfügbar",
         "AUTH_SESSION_REPLACED_NOTICE": "Dieses Konto wurde auf einem anderen Gerät angemeldet. Sie wurden auf diesem Gerät abgemeldet. Bitte melden Sie sich erneut an.",
         "SAFE_LOGOUT_TITLE": "Abmelden?",
