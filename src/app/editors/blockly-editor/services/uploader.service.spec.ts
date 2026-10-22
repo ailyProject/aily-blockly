@@ -70,6 +70,70 @@ describe('Uploader command lifecycle during project close', () => {
     };
   }
 
+  for (const [format, line, expected] of [
+    ['avrdude hash bar', 'Writing | ################################################## | 78% 0.12s', 78],
+    ['Unicode bar', 'Writing | ████████████████████████████████████████████████▉  | 98%', 98],
+    ['page bar', '[==============================] 84% (11/13 pages)', 84],
+    ['legacy esptool', 'Writing at 0x0005446e... (18 %)', 18],
+    ['esptool bytes bar', 'Writing at 0x00a2b8d7 [============================> ] 97.1% 196608/202563 bytes...', 97],
+    ['esptool bar without bytes', 'Writing at 0x00010000 [==============> ] 49.5%', 49],
+    ['STM32 address verification', 'Wrote and verified address 0x08001700 (79.31%)', 79],
+    ['STC32 byte count', 'Writing... 50.5% (93440/186880 bytes)', 50],
+    ['percentage token', 'Transfer 70%done', 70],
+    ['page count', '70% 13/18', 70],
+    ['Progress label', 'Progress: 71%', 71],
+    ['spaced Progress label', 'Progress: 71 %', 71],
+    ['Chinese progress label', '进度：62%', 62],
+  ] as const) {
+    it(`preserves ${format} extraction`, fakeAsync(() => {
+      const f = startProgressUpload();
+      f.emit(line);
+      expect(f.progress()).toBe(expected);
+      expect(service.uploadCompleted).toBeFalse();
+      output.complete(); flushMicrotasks();
+      expect(f.outcome.result.state).toBe('done');
+    }));
+  }
+
+  it('keeps ordinary percentages and incomplete STC32 output out of upload progress', fakeAsync(() => {
+    const f = startProgressUpload();
+    f.emit('CPU utilization: 50%', 'Writing... 50%', 'Writing... 50% (50/100 pages)');
+    expect(f.progress()).toBe(0);
+    expect(service.uploadCompleted).toBeFalse();
+    output.complete(); flushMicrotasks();
+  }));
+
+  it('preserves direct and relayed probe-rs phase progress and completion', fakeAsync(() => {
+    const f = startProgressUpload();
+    for (const [line, expected] of [
+      ['Erasing sectors 50%', 7],
+      ['[probe-rs:phase] Programming 50%', 50],
+      ['Verifying checksum 50%', 92],
+      ['[probe-rs:phase] Finished', 100],
+    ] as const) {
+      f.emit(line);
+      expect(f.progress()).toBe(expected);
+    }
+    expect(service.uploadCompleted).toBeTrue();
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
+  it('preserves split progress lines and mixed carriage-return/newline delimiters', fakeAsync(() => {
+    const f = startProgressUpload();
+    const emit = (data: string) => output.next({ type: 'stdout', data, streamId: 'local-upload' });
+    emit('Writing at 0x0005446e... (1');
+    expect(f.progress()).toBe(0);
+    emit('8 %)\rProgress: 40%\nWriting... 50% (50/100 bytes)\r\nProgress: 6');
+    expect(f.progress()).toBe(50);
+    emit('0%\r');
+    emit('\n');
+    expect(service.noticeService.update.calls.allArgs().map(args => args[0].progress))
+      .toEqual([0, 18, 40, 50, 60]);
+    output.complete(); flushMicrotasks();
+    expect(f.outcome.result.state).toBe('done');
+  }));
+
   it('tracks interleaved esptool v5 files without completing on the small boot files', fakeAsync(() => {
     const f = startProgressUpload();
     f.emit('Executing: esptool write-flash -z 0x0 "sketch.bootloader.bin" 0x8000 "sketch.partitions.bin" 0xe000 "boot_app0.bin" 0x10000 "sketch.bin"',
