@@ -22,11 +22,11 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
     path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project], {encoding: 'utf8'});
   expect(crashed.signal).toBe('SIGKILL');
   if (process.env['AILY_ISSUE745_BASELINE'] !== '1') {
-    // Kill the next process DURING recovery, after it durably joins the election.
+    // Kill the next process immediately after installing its recovered owner.
     const interruptedRecovery = spawnSync(process.execPath, ['-e',
-      `const fs=require('node:fs'),write=fs.writeSync;
-       fs.writeSync=(...args)=>{const result=write(...args);
-         if(String(args[1]).includes('"kind":"claim"'))process.kill(process.pid,'SIGKILL');return result};
+      `const fs=require('node:fs'),rename=fs.renameSync;
+       fs.renameSync=(...args)=>{const result=rename(...args);
+         if(String(args[1]).endsWith('aily-workspace.lock'))process.kill(process.pid,'SIGKILL');return result};
        require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'publish');`,
       path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project], {encoding: 'utf8'});
     expect(interruptedRecovery.signal).toBe('SIGKILL');
@@ -65,7 +65,7 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
         await expect(win.locator('app-blockly-editor')).toHaveCount(0);
       }
     }
-    await writeFile(info.outputPath('reopen-evidence.json'), JSON.stringify({abandoned: JSON.parse(abandoned.split('\n')[0]), recoveryJournal: abandoned.split('\n').slice(1), attempts, errors}, null, 2));
+    await writeFile(info.outputPath('reopen-evidence.json'), JSON.stringify({abandoned: JSON.parse(abandoned.split('\n')[0]), attempts, errors}, null, 2));
     await win.screenshot({path: info.outputPath('reopened.png')});
     if (process.env['AILY_ISSUE745_BASELINE'] === '1') {
       expect(errors.filter(error => error.includes('BUILD_WORKSPACE_RECOVERY_REQUIRED')).length).toBeGreaterThanOrEqual(2);
@@ -74,6 +74,7 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
     }
     for (const attempt of attempts) { expect(attempt.error).toBe(''); expect(attempt.code).toContain('void setup()'); }
     expect(existsSync(marker)).toBe(false);
+    expect(await readFile(path.join(project, '.aily/build-workspace.guard'), 'utf8')).toBe('');
     expect(existsSync(path.join(project, '.build/aily-workspace-recovery.lock'))).toBe(false);
     // A native pointer gesture and save exercise the normal editor change chain.
     await expect(win.locator('.blockly-spin')).toHaveCount(0);

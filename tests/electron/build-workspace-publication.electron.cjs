@@ -6,13 +6,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { acquireBuildWorkspace } = require('../../child/scripts/build-workspace-lease');
+const childRoot = process.env.AILY_TEST_CHILD_PATH || path.resolve(__dirname, '../../child');
+const { acquireBuildWorkspace } = require(path.join(childRoot, 'scripts/build-workspace-lease'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-publication-electron-'));
 const project = path.join(root, 'project');
 fs.mkdirSync(project); fs.writeFileSync(path.join(project, 'package.json'), '{"type":"blockly","keep":true}');
 app.setPath('userData', path.join(root, 'profile'));
 app.disableHardwareAcceleration();
-process.env.AILY_CHILD_PATH = path.resolve(__dirname, '../../child');
+process.env.AILY_CHILD_PATH = childRoot;
 
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: false, webPreferences: {
@@ -54,7 +55,7 @@ app.whenReady().then(async () => {
     assert.equal(source.scope, 'captured-build-source'); assert.equal(source.workspace.revision, 7);
     assert.equal(source.generatedHeaderCount, 1);
     assert.equal(source.sourceSha256, require('node:crypto').createHash('sha256').update(request.sketchCode).digest('hex'));
-    console.log(JSON.stringify({ outcome: 'passed', project, checks: 8, hiddenElectron: true }));
+    console.log(JSON.stringify({ outcome: 'passed', project, childRoot, checks: 8, hiddenElectron: true }));
     window.destroy(); app.exit(0);
   } catch (error) {
     console.error(error); window.destroy(); app.exit(1);

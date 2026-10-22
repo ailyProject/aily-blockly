@@ -1,211 +1,255 @@
 'use strict';
-
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {spawn, spawnSync} = require('node:child_process');
-const {once} = require('node:events');
-const {randomUUID} = require('node:crypto');
-const {createRequire} = require('node:module');
+const { spawn, spawnSync } = require('node:child_process');
+const { once } = require('node:events');
+const { randomUUID } = require('node:crypto');
+const { createRequire } = require('node:module');
 const vm = require('node:vm');
 const test = require('node:test');
 const modulePath = require.resolve('../child/scripts/build-workspace-lease');
-const {acquireBuildWorkspace} = require(modulePath);
+const nativePath = require.resolve('../child/scripts/native-file-lock');
+const { acquireBuildWorkspace } = require(modulePath);
 
-function fixture(t, operation = 'publish') {
-  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-recover-publication-'));
-  t.after(() => fs.rmSync(project, {recursive: true, force: true}));
-  const child = spawnSync(process.execPath, ['-e',
-    `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], process.argv[3]);`, modulePath, project, operation],
-    {encoding: 'utf8', timeout: 10000});
-  assert.equal(child.status, 0, child.stderr);
-  const marker = path.join(project, '.build/aily-workspace.lock');
-  return {project, marker, bytes: fs.readFileSync(marker, 'utf8')};
+function project(t) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-native-recovery-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return { root, marker: path.join(root, '.build/aily-workspace.lock'), anchor: path.join(root, '.aily/build-workspace.guard') };
 }
-
-for (const operation of ['publish', 'clean']) test(`an exited ${operation} owner is recovered without deleting project data or artifacts`, t => {
-  const f = fixture(t, operation);
-  for (const file of ['project.abi', '.build/firmware.elf', '.build/aily-artifact-manifest.json']) {
-    fs.writeFileSync(path.join(f.project, file), 'preserve');
-  }
-  const lease = acquireBuildWorkspace(f.project, 'compile');
-  assert.notEqual(lease.buildId, JSON.parse(f.bytes).token);
-  assert.throws(() => acquireBuildWorkspace(f.project, 'publish'), {code: 'BUILD_WORKSPACE_BUSY'});
-  lease.release();
-  assert.equal(fs.existsSync(f.marker), false);
-  for (const file of ['project.abi', '.build/firmware.elf', '.build/aily-artifact-manifest.json']) {
-    assert.equal(fs.readFileSync(path.join(f.project, file), 'utf8'), 'preserve');
-  }
-});
-
-for (const operation of ['compile', 'preprocess', 'verify']) test(`an exited ${operation} owner still needs verified descendant termination`, t => {
-  const f = fixture(t, operation);
-  assert.throws(() => acquireBuildWorkspace(f.project, 'publish'), {code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED'});
-  assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes);
-});
-
-test('publication and cleanup leases cannot delegate subprocess work', t => {
-  const f = fixture(t);
-  for (const operation of ['publish', 'clean']) {
-    const lease = acquireBuildWorkspace(f.project, operation);
-    assert.throws(() => lease.childEnvironment(), {code: 'BUILD_WORKSPACE_OWNER_MISMATCH'});
-    assert.throws(() => lease.builderEnvironment('verify'), {code: 'BUILD_WORKSPACE_OWNER_MISMATCH'});
-    lease.release();
-  }
-});
-
-test('any Builder phase blocks automatic recovery, even if its record is incomplete', t => {
-  const f = fixture(t);
-  const builder = path.join(f.project, '.build/aily-builder.lock');
-  fs.writeFileSync(builder, 'incomplete');
-  assert.throws(() => acquireBuildWorkspace(f.project, 'publish'), {code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED'});
-  assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes);
-  assert.equal(fs.readFileSync(builder, 'utf8'), 'incomplete');
-});
-
-test('an interrupted or unsafe recovery guard is retained rather than bypassed', t => {
-  const f = fixture(t), guard = path.join(f.project, '.build/aily-workspace-recovery.lock');
-  fs.writeFileSync(guard, 'incomplete');
-  assert.throws(() => acquireBuildWorkspace(f.project, 'publish'), {code: 'BUILD_WORKSPACE_BUSY'});
-  assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes);
-  assert.equal(fs.readFileSync(guard, 'utf8'), 'incomplete');
-});
-
-test('a live publication is never reclaimed', t => {
-  const f = fixture(t), lease = acquireBuildWorkspace(f.project, 'publish');
-  const bytes = fs.readFileSync(f.marker, 'utf8');
-  assert.throws(() => acquireBuildWorkspace(f.project, 'compile'), {code: 'BUILD_WORKSPACE_BUSY'});
-  assert.equal(fs.readFileSync(f.marker, 'utf8'), bytes);
-  lease.assertOwned(); lease.release();
-});
-
+function fixture(t, operation = 'publish', delegated = false) {
+  const f = project(t);
+  const child = spawnSync(process.execPath, ['-e',
+    `const lease=require(process.argv[1]).acquireBuildWorkspace(process.argv[2],process.argv[3]);
+     if(process.argv[4]==='true')lease.builderEnvironment(process.argv[3]);`, modulePath, f.root, operation, String(delegated)],
+    { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
+  return { ...f, bytes: fs.readFileSync(f.marker, 'utf8') };
+}
 function patchedModule(patch) {
-  const sourceRequire = createRequire(modulePath);
-  const context = {module: {exports: {}}, process, Buffer, require: name => name === 'node:fs' ? {...fs, ...patch} : sourceRequire(name)};
-  vm.runInNewContext(fs.readFileSync(modulePath, 'utf8'), context, {filename: modulePath});
-  return context.module.exports;
+  const proxy = { ...fs, ...patch }, cache = new Map();
+  function load(filename) {
+    if (cache.has(filename)) return cache.get(filename);
+    const local = createRequire(filename), context = { module: { exports: {} }, process, Buffer,
+      require: name => name === 'node:fs' ? proxy : name === './native-file-lock' ? load(nativePath) : local(name) };
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+    cache.set(filename, context.module.exports); return context.module.exports;
+  }
+  return load(modulePath);
+}
+function tracked(patch = {}) {
+  const descriptors = new Set();
+  const api = patchedModule({ ...patch,
+    openSync: (...args) => { const fd = fs.openSync(...args); descriptors.add(fd); return fd; },
+    closeSync: fd => { fs.closeSync(fd); descriptors.delete(fd); },
+  });
+  return { api, descriptors };
 }
 
-test('a delayed recovery cannot replace a new live owner', t => {
-  const f = fixture(t);
-  const replacement = JSON.stringify({...JSON.parse(f.bytes), pid: process.pid, token: randomUUID()});
-  const module = patchedModule({writeSync: (...args) => {
-    const written = fs.writeSync(...args);
-    if (String(args[1]).includes('"kind":"claim"')) {
-      fs.unlinkSync(f.marker); fs.writeFileSync(f.marker, replacement);
-    }
-    return written;
-  }});
-  assert.throws(() => module.acquireBuildWorkspace(f.project, 'compile'), {code: 'BUILD_WORKSPACE_BUSY'});
-  assert.equal(fs.readFileSync(f.marker, 'utf8'), replacement);
-});
-
-for (const stage of ['prepared', 'claimed', 'replaced']) test(`SIGKILL after ${stage} recovery is recoverable again`, t => {
-  const f = fixture(t);
-  const script = `const fs=require('node:fs');const stage=process.argv[3];
-    const writeFile=fs.writeFileSync,write=fs.writeSync,rename=fs.renameSync;
-    fs.writeFileSync=(...args)=>{const r=writeFile(...args);if(stage==='prepared'&&String(args[0]).endsWith('.tmp'))process.kill(process.pid,'SIGKILL');return r};
-    fs.writeSync=(...args)=>{const r=write(...args);if(stage==='claimed'&&String(args[1]).includes('"kind":"claim"'))process.kill(process.pid,'SIGKILL');return r};
-    fs.renameSync=(...args)=>{const r=rename(...args);if(stage==='replaced')process.kill(process.pid,'SIGKILL');return r};
-    require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'publish');`;
-  const child = spawnSync(process.execPath, ['-e', script, modulePath, f.project, stage], {encoding: 'utf8', timeout: 10000});
-  assert.equal(child.signal, 'SIGKILL', child.stderr);
-  const owner = acquireBuildWorkspace(f.project, 'publish'); owner.assertOwned(); owner.release();
-  assert.equal(fs.existsSync(f.marker), false);
-  assert.equal(fs.existsSync(path.join(f.project, '.build/aily-workspace-recovery.lock')), false);
-});
-
-test('EPERM replacing the record retires the claim and closes every descriptor', t => {
-  const f = fixture(t), descriptors = new Set();
-  const module = patchedModule({
-    openSync: (...args) => {const fd=fs.openSync(...args);descriptors.add(fd);return fd},
-    closeSync: fd => {fs.closeSync(fd);descriptors.delete(fd)},
-    renameSync: () => {throw Object.assign(new Error('injected rename failure'), {code: 'EPERM'})},
+for (const operation of ['compile', 'preprocess', 'verify', 'publish', 'clean']) {
+  test(`exited ${operation} without a child grant recovers and preserves project data`, t => {
+    const f = fixture(t, operation);
+    for (const file of ['project.abi', '.build/firmware.elf', '.build/aily-artifact-manifest.json']) fs.writeFileSync(path.join(f.root, file), 'preserve');
+    const lease = acquireBuildWorkspace(f.root, 'compile');
+    assert.notEqual(lease.buildId, JSON.parse(f.bytes).token);
+    assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_BUSY' });
+    lease.release();
+    assert.equal(fs.existsSync(f.marker), false);
+    for (const file of ['project.abi', '.build/firmware.elf', '.build/aily-artifact-manifest.json']) assert.equal(fs.readFileSync(path.join(f.root, file), 'utf8'), 'preserve');
   });
-  assert.throws(() => module.acquireBuildWorkspace(f.project, 'publish'), {code: 'EPERM'});
-  assert.equal(descriptors.size, 0);
-  assert.equal(JSON.parse(fs.readFileSync(f.marker,'utf8').split('\n')[0]).token, JSON.parse(f.bytes).token);
-  // A separate module/process can see the relinquished claim even though its PID is alive.
-  const child = spawnSync(process.execPath, ['-e',
-    `const l=require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'publish');l.release();`, modulePath, f.project], {encoding:'utf8'});
-  assert.equal(child.status, 0, child.stderr);
-});
-
-test('staging cleanup failure cannot hide a successfully initialized lease', t => {
-  const f=fixture(t), descriptors=new Set();
-  const module=patchedModule({
-    openSync: (...args)=>{const fd=fs.openSync(...args);descriptors.add(fd);return fd},
-    closeSync: fd=>{fs.closeSync(fd);descriptors.delete(fd)},
-    unlinkSync: filename=>{if(String(filename).endsWith('.tmp'))throw Object.assign(new Error('injected cleanup failure'),{code:'EPERM'});return fs.unlinkSync(filename)},
+}
+for (const operation of ['compile', 'preprocess', 'verify']) {
+  test(`exited delegated ${operation} requires verified process-tree termination`, t => {
+    const f = fixture(t, operation, true);
+    assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+    assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes);
   });
-  const owner=module.acquireBuildWorkspace(f.project,'publish');
-  assert.equal(descriptors.size,0); owner.assertOwned();
-  assert.equal(JSON.parse(fs.readFileSync(f.marker,'utf8')).token,owner.buildId);
-  owner.release(); acquireBuildWorkspace(f.project,'publish').release();
-});
-
-test('a partial append grants no ownership and does not block the next attempt', t => {
-  const f=fixture(t);let short=true;
-  const module=patchedModule({writeSync:(fd,buffer)=>{
-    if(short){short=false;return fs.writeSync(fd,buffer.subarray(0,30))}return fs.writeSync(fd,buffer);
-  }});
-  assert.throws(()=>module.acquireBuildWorkspace(f.project,'publish'),{code:'BUILD_WORKSPACE_INVALID'});
-  acquireBuildWorkspace(f.project,'publish').release();
-});
-
-test('a failed retirement append permits a same-process retry after filesystem recovery', t => {
-  const f=fixture(t);let failing=true;
-  const module=patchedModule({
-    renameSync:(...args)=>{if(failing)throw Object.assign(new Error('injected rename error'),{code:'EPERM'});return fs.renameSync(...args)},
-    writeSync:(fd,buffer)=>{if(failing&&String(buffer).includes('"kind":"retire"'))throw Object.assign(new Error('injected disk error'),{code:'ENOSPC'});return fs.writeSync(fd,buffer)},
+  test(`legacy exited ${operation} remains conservative without delegation metadata`, t => {
+    const f = fixture(t, operation), record = JSON.parse(f.bytes);
+    delete record.nativeLeaseVersion; delete record.delegated;
+    fs.writeFileSync(f.marker, JSON.stringify(record));
+    assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
   });
-  assert.throws(()=>module.acquireBuildWorkspace(f.project,'publish'),{code:'EPERM'});
-  failing=false;
-  const owner=module.acquireBuildWorkspace(f.project,'publish');owner.assertOwned();owner.release();
+}
+
+test('publication and cleanup cannot grant a subprocess', t => {
+  const f = project(t);
+  for (const operation of ['publish', 'clean']) {
+    const owner = acquireBuildWorkspace(f.root, operation);
+    assert.throws(owner.childEnvironment, { code: 'BUILD_WORKSPACE_OWNER_MISMATCH' });
+    assert.throws(() => owner.builderEnvironment('verify'), { code: 'BUILD_WORKSPACE_OWNER_MISMATCH' });
+    owner.release();
+  }
 });
 
-test('an older host acquiring its recovery guard during our claim is still excluded', t => {
-  const f=fixture(t),guard=path.join(f.project,'.build/aily-workspace-recovery.lock');
-  const module=patchedModule({writeSync:(...args)=>{
-    const count=fs.writeSync(...args);
-    if(String(args[1]).includes('"kind":"claim"')) fs.writeFileSync(guard,JSON.stringify({pid:process.pid,ownerToken:JSON.parse(f.bytes).token}));
-    return count;
-  }});
-  assert.throws(()=>module.acquireBuildWorkspace(f.project,'publish'),{code:'BUILD_WORKSPACE_BUSY'});
-  assert.equal(JSON.parse(fs.readFileSync(f.marker,'utf8').split('\n')[0]).token,JSON.parse(f.bytes).token);
-  fs.unlinkSync(guard);acquireBuildWorkspace(f.project,'publish').release();
+test('an orphan or incomplete Builder phase always excludes new writers', t => {
+  const f = fixture(t), builder = path.join(f.root, '.build/aily-builder.lock');
+  fs.writeFileSync(builder, 'incomplete');
+  assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+  assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes);
 });
 
-test('a valid dead legacy recovery guard is inert, while a live guard still excludes', t => {
-  const f=fixture(t),guard=path.join(f.project,'.build/aily-workspace-recovery.lock');
-  fs.writeFileSync(guard,JSON.stringify({pid:process.pid,ownerToken:JSON.parse(f.bytes).token}));
-  assert.throws(()=>acquireBuildWorkspace(f.project,'publish'),{code:'BUILD_WORKSPACE_BUSY'});
-  fs.writeFileSync(guard,JSON.stringify({pid:JSON.parse(f.bytes).pid,ownerToken:JSON.parse(f.bytes).token}));
-  const bytes=fs.readFileSync(guard,'utf8');
-  acquireBuildWorkspace(f.project,'publish').release();
-  assert.equal(fs.readFileSync(guard,'utf8'),bytes);
+for (const stage of ['anchor-open', 'kernel-acquired', 'prepared', 'installed']) {
+  test(`SIGKILL at ${stage} cannot strand native ownership`, t => {
+    const f = project(t);
+    const script = `const fs=require('node:fs'),path=require('node:path'),stage=process.argv[3];
+      const open=fs.openSync,write=fs.writeFileSync,rename=fs.renameSync;
+      fs.openSync=(...args)=>{const fd=open(...args);if(stage==='anchor-open'&&String(args[0]).endsWith('.guard'))process.kill(process.pid,'SIGKILL');return fd};
+      fs.writeFileSync=(...args)=>{const result=write(...args);if(stage==='prepared'&&String(args[0]).endsWith('.tmp'))process.kill(process.pid,'SIGKILL');return result};
+      fs.renameSync=(...args)=>{const result=rename(...args);if(stage==='installed')process.kill(process.pid,'SIGKILL');return result};
+      const native=require(require.resolve('fs-native-extensions',{paths:[path.dirname(process.argv[1])]})),lock=native.tryLock;
+      native.tryLock=(...args)=>{const result=lock(...args);if(result&&stage==='kernel-acquired')process.kill(process.pid,'SIGKILL');return result};
+      require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'publish');`;
+    const result = spawnSync(process.execPath, ['-e', script, modulePath, f.root, stage], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.signal, 'SIGKILL', result.stderr);
+    acquireBuildWorkspace(f.root, 'publish').release();
+    assert.equal(fs.statSync(f.anchor).size, 0); // Presence is harmless, not a held lock.
+    assert.equal(fs.existsSync(f.marker), false);
+    assert.equal(fs.existsSync(path.join(f.root, '.build/aily-workspace-recovery.lock')), false);
+  });
+}
+
+test('failed preparation closes the native descriptor and never exposes an empty owner record', t => {
+  const f = project(t), { api, descriptors } = tracked({ writeFileSync: () => { throw Object.assign(new Error('full'), { code: 'ENOSPC' }); } });
+  assert.throws(() => api.acquireBuildWorkspace(f.root, 'publish'), { code: 'ENOSPC' });
+  assert.equal(descriptors.size, 0); assert.equal(fs.existsSync(f.marker), false);
+  acquireBuildWorkspace(f.root, 'publish').release();
 });
 
-test('simultaneous recovery contenders cannot delete the new live owner', async t => {
+test('repeated replacement failures cannot grow a journal or strand an owner', t => {
+  const f = fixture(t), { api, descriptors } = tracked({ renameSync: () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); } });
+  for (let i = 0; i < 1500; i++) assert.throws(() => api.acquireBuildWorkspace(f.root, 'publish'), { code: 'EPERM' });
+  assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes); assert.equal(descriptors.size, 0);
+  acquireBuildWorkspace(f.root, 'publish').release();
+});
+
+test('installation returns the lease without a fallible post-rename read', t => {
+  const f = fixture(t); let installed = false;
+  const { api, descriptors } = tracked({
+    renameSync: (...args) => { fs.renameSync(...args); installed = true; },
+    readFileSync: (filename, ...args) => { if (installed && filename === f.marker) { installed = false; throw Object.assign(new Error('read failure'), { code: 'EIO' }); } return fs.readFileSync(filename, ...args); },
+  });
+  const owner = api.acquireBuildWorkspace(f.root, 'publish');
+  assert.throws(owner.assertOwned, { code: 'EIO' });
+  owner.release(); assert.equal(descriptors.size, 0);
+  acquireBuildWorkspace(f.root, 'publish').release();
+});
+
+test('a release read failure still closes the handle and allows a fresh same-process publication', t => {
+  const f = project(t); let reject = false;
+  const { api, descriptors } = tracked({ readFileSync: (filename, ...args) => {
+    if (reject && filename === f.marker) { reject = false; throw Object.assign(new Error('read failure'), { code: 'EIO' }); }
+    return fs.readFileSync(filename, ...args);
+  } });
+  const owner = api.acquireBuildWorkspace(f.root, 'publish'); reject = true;
+  assert.throws(owner.release, { code: 'EIO' }); assert.equal(descriptors.size, 0);
+  const next = acquireBuildWorkspace(f.root, 'publish');
+  assert.throws(owner.release, { code: 'BUILD_WORKSPACE_BUSY' }); next.assertOwned(); next.release();
+});
+
+test('EPERM deleting a completed delegated record leaves a replaceable receipt, not a held lock', t => {
+  const f = project(t), { api, descriptors } = tracked({ unlinkSync: filename => {
+    if (filename === f.marker) throw Object.assign(new Error('denied'), { code: 'EPERM' }); return fs.unlinkSync(filename);
+  } });
+  const owner = api.acquireBuildWorkspace(f.root, 'compile'); owner.childEnvironment(); owner.release();
+  assert.equal(descriptors.size, 0); assert.equal(JSON.parse(fs.readFileSync(f.marker, 'utf8')).released, true);
+  acquireBuildWorkspace(f.root, 'publish').release();
+});
+
+test('failed grant persistence cannot expose an environment for spawning compiler descendants', t => {
+  const f = project(t); let reject = false;
+  const { api, descriptors } = tracked({ renameSync: (...args) => {
+    if (reject) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return fs.renameSync(...args);
+  } });
+  const owner = api.acquireBuildWorkspace(f.root, 'compile'); reject = true;
+  assert.throws(owner.childEnvironment, { code: 'EPERM' });
+  assert.throws(() => owner.builderEnvironment('compile'), { code: 'EPERM' });
+  assert.equal(JSON.parse(fs.readFileSync(f.marker, 'utf8')).delegated, false);
+  owner.release(); assert.equal(descriptors.size, 0);
+});
+
+test('supervisor accepts a completed receipt when owner unlink was denied', t => {
+  const f = project(t), { api } = tracked({ unlinkSync: filename => {
+    if (filename === f.marker) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return fs.unlinkSync(filename);
+  } });
+  const supervisor = api.createBuildWorkspaceSupervisor(f.root);
+  const key = 'AILY_BUILD_WORKSPACE_SUPERVISOR', previous = process.env[key];
+  process.env[key] = supervisor.environment[key];
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  const owner = api.acquireBuildWorkspace(f.root, 'compile'); owner.childEnvironment();
+  assert.equal(supervisor.canReleaseResources(), false);
+  owner.release(); assert.equal(supervisor.canReleaseResources(), true);
+});
+
+test('a granted compiler surviving its parent remains protected before writing a Builder marker', t => {
+  const f = project(t);
+  const result = spawnSync(process.execPath, ['-e', `
+    const owner=require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');
+    const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],
+      {env:owner.childEnvironment(),detached:true,stdio:'ignore',windowsHide:true});
+    child.unref();require('node:fs').writeFileSync(process.argv[3],String(child.pid));
+    process.kill(process.pid,'SIGKILL');`, modulePath, f.root, path.join(f.root, 'descendant.pid')],
+    { encoding: 'utf8', timeout: 10000 });
+  const pid = Number(fs.readFileSync(path.join(f.root, 'descendant.pid'), 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } });
+  assert.equal(result.signal, 'SIGKILL', result.stderr); process.kill(pid, 0);
+  assert.equal(fs.existsSync(path.join(f.root, '.build/aily-builder.lock')), false);
+  assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+});
+
+test('old oversized recovery journals migrate without keeping the old size limit', t => {
+  const f = fixture(t), original = JSON.parse(f.bytes); delete original.nativeLeaseVersion; delete original.delegated;
+  const lines = [JSON.stringify(original)];
+  for (let i = 0; i < 1500; i++) {
+    const token = randomUUID();
+    lines.push(JSON.stringify({ kind: 'claim', token, parent: original.token, pid: process.pid }), JSON.stringify({ kind: 'retire', token, pid: process.pid }));
+  }
+  fs.writeFileSync(f.marker, lines.join('\n') + '\n'); assert.ok(fs.statSync(f.marker).size > 256 * 1024);
+  const owner = acquireBuildWorkspace(f.root, 'publish'); assert.ok(fs.statSync(f.marker).size < 1024); owner.release();
+});
+
+test('live old recovery claims and malformed old markers remain protected', t => {
+  const f = fixture(t), original = JSON.parse(f.bytes); delete original.nativeLeaseVersion; delete original.delegated;
+  fs.writeFileSync(f.marker, JSON.stringify(original) + '\n' + JSON.stringify({ kind: 'claim', token: randomUUID(), parent: original.token, pid: process.pid }) + '\n');
+  assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_BUSY' });
+  fs.writeFileSync(f.marker, '');
+  assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_BUSY' });
+});
+
+test('dead legacy recovery guard is inert, while active or incomplete guards remain protected', t => {
+  const f = fixture(t), guard = path.join(f.root, '.build/aily-workspace-recovery.lock');
+  for (const bytes of ['incomplete', JSON.stringify({ pid: process.pid, ownerToken: JSON.parse(f.bytes).token })]) {
+    fs.writeFileSync(guard, bytes); assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_BUSY' });
+  }
+  fs.writeFileSync(guard, JSON.stringify({ pid: JSON.parse(f.bytes).pid, ownerToken: JSON.parse(f.bytes).token }));
+  acquireBuildWorkspace(f.root, 'publish').release();
+});
+
+test('clearing .build cannot remove kernel exclusion stored outside that cache', t => {
+  const f = project(t), owner = acquireBuildWorkspace(f.root, 'publish'), anchor = fs.statSync(f.anchor);
+  fs.rmSync(path.join(f.root, '.build'), { recursive: true });
+  assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_BUSY' });
+  assert.equal(fs.statSync(f.anchor).ino, anchor.ino);
+  assert.throws(owner.release, { code: 'ENOENT' }); // Closes even when cache was removed externally.
+  acquireBuildWorkspace(f.root, 'publish').release();
+});
+
+test('12 competing processes share kernel exclusion and cannot steal an active lease', async t => {
   const f = fixture(t);
-  const code = `const {acquireBuildWorkspace}=require(process.argv[1]);
-    process.send('ready'); process.once('message',()=>{
-      try {const lease=acquireBuildWorkspace(process.argv[2],'publish'); process.send('acquired');
-        process.once('message',()=>{lease.assertOwned();lease.release();process.exit(0)});
-      } catch(e) {process.send(e.code);process.exit(0);}
-    });`;
-  const children = Array.from({length: 12}, () => spawn(process.execPath, ['-e', code, modulePath, f.project],
-    {stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true}));
+  const code = `const {acquireBuildWorkspace}=require(process.argv[1]);process.send('ready');process.once('message',()=>{
+    try{const lease=acquireBuildWorkspace(process.argv[2],'publish');process.send('acquired');process.once('message',()=>{lease.assertOwned();lease.release();process.exit(0)})}
+    catch(e){process.send(e.code);process.exit(0)}});`;
+  const children = Array.from({ length: 12 }, () => spawn(process.execPath, ['-e', code, modulePath, f.root], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true }));
   t.after(() => children.forEach(child => { if (child.exitCode === null) child.kill(); }));
   const finished = children.map(child => once(child, 'close'));
   await Promise.all(children.map(child => once(child, 'message')));
-  const outcomes = children.map(child => once(child, 'message').then(([value]) => value));
-  children.forEach(child => child.send('acquire'));
+  const outcomes = children.map(child => once(child, 'message').then(([value]) => value)); children.forEach(child => child.send('acquire'));
   const results = await Promise.all(outcomes);
   assert.equal(results.filter(value => value === 'acquired').length, 1, JSON.stringify(results));
   assert.equal(results.filter(value => value === 'BUILD_WORKSPACE_BUSY').length, 11, JSON.stringify(results));
   children[results.indexOf('acquired')].send('release');
   for (const [code] of await Promise.all(finished)) assert.equal(code, 0);
-  assert.equal(fs.existsSync(f.marker), false);
 });
