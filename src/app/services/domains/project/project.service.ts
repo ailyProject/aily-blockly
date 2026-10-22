@@ -3,6 +3,7 @@ import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
 import { BehaviorSubject, Subject, firstValueFrom } from 'rxjs';
+import { MetricsService } from '@core/metrics/public-api';
 import {
   CmdService,
   ElectronService,
@@ -833,6 +834,7 @@ export class ProjectService {
     private translate: TranslateService,
     private injector: Injector,
     private logService: LogService,
+    private metrics: MetricsService,
   ) {
     this.disposeLibraryChanges = window['libraryDependencies']?.onChanged?.(status => {
       this.acceptLibraryStatus(status.projectPath, status);
@@ -1290,9 +1292,12 @@ export class ProjectService {
       });
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
+        this.metrics.record('project_created');
         return true;
       }
-      return await this.finishProjectCreation(projectPath, options);
+      const created = await this.finishProjectCreation(projectPath, options);
+      if (created) this.metrics.record('project_created');
+      return created;
 
       // if (closeWindow) {
       //   this.uiService.closeWindow();
@@ -1316,7 +1321,9 @@ export class ProjectService {
 
       await this.initializeProjectDataSchema(projectPath);
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
-      return await this.finishProjectCreation(projectPath, options);
+      const created = await this.finishProjectCreation(projectPath, options);
+      if (created) this.metrics.record('project_created');
+      return created;
     } catch (error) {
       this.message.error(this.translate.instant('PROJECT.CREATE_FAILED') + ": " + error.message);
       this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });

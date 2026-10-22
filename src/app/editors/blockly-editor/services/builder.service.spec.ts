@@ -41,6 +41,7 @@ describe('BuilderService background preprocess ownership', () => {
 
   function queuedBuilder() {
     const service = Object.create(_BuilderService.prototype) as any;
+    service.metrics = { record: () => {} };
     service.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} };
     service.projectService = { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: 'D:/owned', currentPackageData: {}, getBuildPath: async () => '' };
     service.workflowService = { currentState: ProcessState.IDLE,

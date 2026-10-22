@@ -13,6 +13,7 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { ProjectService, ProjectDebugConfigurationService, projectDataRuntime } from '@domain/project/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { type BlockCodeMapping } from '../components/blockly/generators/arduino/arduino';
 
 import { BlocklyService } from './blockly.service';
@@ -75,6 +76,7 @@ export class _BuilderService {
     private ngZone: NgZone,
     private projectDebugConfigurationService:
       ProjectDebugConfigurationService,
+    private metrics: MetricsService,
   ) { }
 
   // buildInProgress = false;
@@ -1202,6 +1204,7 @@ export class _BuilderService {
       }
     }
 
+    this.metrics.record('compile_attempted');
     this.activeBuildRequestId = requestId ?? null;
     this.localSwitchAction = undefined;
     this.localStopPending = Promise.resolve();

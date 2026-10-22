@@ -114,6 +114,7 @@ describe('cloud compilation account access', () => {
     account(false, null);
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
     const compile = Object.assign(Object.create(CompileService.prototype), {
+      metrics: { record: () => {} },
       configService: config,
       projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', getProjectDependencyBlockMessage: () => undefined },
       application: { startBuild: () => true, updateNotice: () => {} },
@@ -130,6 +131,7 @@ describe('cloud compilation account access', () => {
     const invalidate = jasmine.createSpy('invalidate').and.rejectWith(new Error('local-boundary'));
     window['cloudBuild'] = { invalidate };
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
+      metrics: { record: () => {} },
       configService: config,
       projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {} },
       workflowService: { startBuild: () => true, finishBuild: () => {} },

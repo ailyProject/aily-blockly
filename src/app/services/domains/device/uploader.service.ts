@@ -4,6 +4,7 @@ import { ElectronService } from '@core/platform/public-api';
 import { BuilderService } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { SerialService } from './serial.service';
 import type { UploadRecoveryPolicy } from './policies/upload-recovery-policy';
 import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
@@ -39,6 +40,7 @@ export class UploaderService {
     @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution: CoderExecutionPort | null,
     private npmService: NpmService,
     private configService: ConfigService,
+    private metrics: MetricsService,
   ) { }
 
   requiresLocalPort(): boolean {
@@ -195,7 +197,9 @@ export class UploaderService {
       if (!pythonRoute) {
         throw new Error(this.t('INVALID_BOARD_CONFIG'));
       }
-      return this.uploadPythonProject(pythonRoute);
+      const result = await this.uploadPythonProject(pythonRoute);
+      if (result?.state === 'done') this.metrics.record('upload_succeeded');
+      return result;
     }
     const uploadPort = this.serialService.currentPort;
     const uploadPortType = this.serialService.currentPortInfo?.type;
@@ -248,6 +252,8 @@ export class UploaderService {
         error.result = uploadResult;
         throw error;
       }
+
+      if (uploadResult?.state === 'done') this.metrics.record('upload_succeeded');
 
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('上传', uploadResult?.text || '');

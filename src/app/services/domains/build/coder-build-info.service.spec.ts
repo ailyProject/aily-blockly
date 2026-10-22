@@ -156,6 +156,7 @@ describe('Coder build metadata', () => {
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
       { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() } as any,
+      { record: () => {} } as any,
     );
     let calls = 0;
     spyOn<any>(service, 'runOneShotCommand').and.callFake(async () => ({

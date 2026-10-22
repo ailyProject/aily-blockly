@@ -2035,6 +2035,7 @@ interface ResourceSourceConfig {
 }
 
 interface AppConfig {
+  metricsEnabled?: boolean;
   /** App version for which the managed aily tools were last refreshed. */
   installed?: string;
 

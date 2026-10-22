@@ -7,6 +7,7 @@ import { TranslateService } from '@ngx-translate/core';
 import { NoticeService } from '@core/app-shell/public-api';
 import { CmdService, CrossPlatformCmdService, ElectronService, LogService, PlatformService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { ProjectService, CODER_EXECUTION_PORT } from '@domain/project/public-api';
 import {
   BUILD_ACTION_PORT,
@@ -77,6 +78,7 @@ describe('Coder concurrent process integration', () => {
       { provide: ElectronService, useValue: { pathJoin: (...parts: string[]) => parts.join('/'), isWindowFocused: () => true } },
       { provide: PlatformService, useValue: { za7: '/7z' } },
       { provide: ConfigService, useValue: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {}, isCoderProduct: () => true } },
+      { provide: MetricsService, useValue: { record: () => {} } },
       { provide: HttpClient, useValue: {} },
       { provide: NzMessageService, useValue: { warning: () => {}, error: () => {} } },
       { provide: TranslateService, useValue: { instant: (key: string) => key } },

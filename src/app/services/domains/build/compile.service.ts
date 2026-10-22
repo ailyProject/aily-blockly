@@ -13,6 +13,7 @@ import {
 import { ProjectService, coderSourceDirectory } from '@domain/project/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
@@ -94,6 +95,7 @@ export class CompileService {
     private translate: TranslateService,
     private coderBuildInfo: CoderBuildInfoService,
     private npmService: NpmService,
+    private metrics: MetricsService,
   ) { }
 
   cancel(): void {
@@ -180,6 +182,7 @@ export class CompileService {
       return { success: false, result: { state: 'warn', text: msg } };
     }
 
+    if (!options.preprocessOnly) this.metrics.record('compile_attempted');
     this.cancelled = false;
     this.stopPending = Promise.resolve();
     this.localSwitchAction = undefined;

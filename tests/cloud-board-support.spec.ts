@@ -115,6 +115,7 @@ describe('board cloud support and local fallback', () => {
   it('enters the normal disk compiler branch after fallback', async () => {
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
     const compile = Object.assign(Object.create(CompileService.prototype), {
+      metrics: { record: () => {} },
       configService: config, projectService: project, npmService: npm,
       application: { startBuild: () => true, updateNotice: () => {} }, runCompile, t: (key: string) => key,
     });
@@ -169,6 +170,7 @@ describe('board cloud support and local fallback', () => {
     const invalidate = jasmine.createSpy('invalidate').and.rejectWith(new Error('local-boundary'));
     window['cloudBuild'].invalidate = invalidate;
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
+      metrics: { record: () => {} },
       configService: config, projectService: project, npmService: npm,
       workflowService: { startBuild: () => true, finishBuild: () => {} },
       clearProgressTimer: () => {}, handleCompileError: () => {},
