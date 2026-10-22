@@ -14,6 +14,7 @@ import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-d
 import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
+import { NativeCommentPreparation } from './blockly-native-comment-preparation';
 import { createNativeCandidateGraphics } from './blockly-native-graphics';
 import type { NativeCandidateProgress } from './blockly-native-progress';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
@@ -45,6 +46,7 @@ export function installNativeCandidateRealm(): void {
     const observeReplay = (replay: NativeReplayEvent) => send({ phase: 'replay', replay });
     const tasks = new NativeRegistrationTasks(realm.setTimeout.bind(realm), realm.clearTimeout.bind(realm));
     const uiTasks = new NativeUiTasks();
+    const comments = new NativeCommentPreparation(native, uiTasks);
     const deny = (name: string) => () => {
       const message = `Native candidate does not support ${name}. Phase: ${phase}`;
       const error = Object.assign(new Error(message), { code: 'ABS_NATIVE_EFFECT_UNSUPPORTED', diagnostic: {
@@ -72,12 +74,15 @@ export function installNativeCandidateRealm(): void {
       'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Worker', 'SharedWorker', 'BroadcastChannel', 'open']) {
       Object.defineProperty(realm, name, { value: deny(name), configurable: false, writable: false });
     }
-    Object.defineProperty(Promise.prototype, 'then', { value: deny('Promise continuations'), configurable: false, writable: false });
+    const denyContinuation = deny('Promise continuations');
+    Object.defineProperty(Promise.prototype, 'then', { value: function(fulfilled, rejected) {
+      return comments.ownsContinuation ? comments.continue(this, fulfilled, rejected) : denyContinuation();
+    }, configurable: false, writable: false });
     realm.projectService = new Proxy(Object.create(null), { get: (_target, name) => deny(`projectService.${String(name)}`)() });
     const onError = (event: ErrorEvent) => { const error = event.error instanceof Error ? event.error : new Error(event.message); errors.push(error); tasks.fail(error); event.preventDefault(); };
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', event => { tasks.fail(event.reason); event.preventDefault(); });
-    const assertClean = () => { if (errors.length) throw errors[0]; tasks.assertClean(); uiTasks.assertClean(); };
+    const assertClean = () => { if (errors.length) throw errors[0]; tasks.assertClean(); uiTasks.assertClean(); comments.assertClean(); };
     // Registration is replay input. A configuration/generator callback cannot add
     // another registry effect and silently promote it to transaction-owned state.
     const assertRegistration = () => { if (!registering) deny('block registration after replay')(); };
@@ -190,11 +195,12 @@ export function installNativeCandidateRealm(): void {
         captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);
         progress('views');
         execution.initializeViews();
+        await comments.drain();
         progress('ui');
         uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
       }
       progress('readback');
-      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress)
+      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress, () => comments.drain())
         : uiTasks.withoutScheduling(() => binding ? binding() : execution.result());
       assertClean();
       values.assertReferences(result.state);

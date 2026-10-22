@@ -537,7 +537,8 @@ class CommandManager {
       entry.closed = true;
       // During cancellation, wait for the tree result before forgetting the
       // command. Interrupted build markers still require confirmed cleanup.
-      const safeExit = !child.pid || (Number.isInteger(code) && !signal);
+      const recoveredBeforeDelegation = entry.buildWorkspace?.releaseAfterOwnerExit?.() === true;
+      const safeExit = !child.pid || (Number.isInteger(code) && !signal) || recoveredBeforeDelegation;
       entry.completedNormally = safeExit;
       if (entry.terminationConfirmed || (!entry.stopRequested && !entry.terminationUnconfirmed
           && (!entry.projectSessionId || safeExit) && (!entry.buildWorkspace

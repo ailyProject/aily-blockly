@@ -836,6 +836,8 @@ class CloudBuildBroker {
     try {
       releaseArtifact = this.protectArtifact(record);
       if (!await this.reusable(sender, record.config)) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+      // consume launches the native uploader; a verify lease is not read-only here.
+      workspaceLease.markDelegated();
       return await consume(record, () => this.assertCurrent(record));
     } finally {
       try { workspaceLease.release(); } finally { releaseArtifact?.(); }
