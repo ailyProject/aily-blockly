@@ -22,6 +22,7 @@ import { combineLatest, distinctUntilChanged, filter, merge, Subscription, take 
 import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
+import { CloudProjectOpenService } from '../tools/cloud-space/services/cloud-project-open.service';
 import { UserCenterComponent } from '../tools/user-center/user-center.component';
 import { OnboardingComponent } from '../components/onboarding/onboarding.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -124,6 +125,7 @@ export class MainWindowComponent implements OnDestroy {
   onboardingConfig = null;
   private oauthResultListener: (() => void) | null = null;
   private exampleListListener: (() => void) | null = null;
+  private cloudProjectListener: (() => void) | null = null;
   private configNoticeSubscription: Subscription | null = null;
   private projectContextSubscription: Subscription | null = null;
   private projectStateSubscription: Subscription | null = null;
@@ -158,6 +160,7 @@ export class MainWindowComponent implements OnDestroy {
     private coderEditorUpdates: CoderEditorUpdateService,
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
+    private cloudProjectOpen: CloudProjectOpenService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -197,6 +200,11 @@ export class MainWindowComponent implements OnDestroy {
     this.npmService.init();
     this.setupGlobalOAuthListener();
     this.setupExampleListListener();
+    this.cloudProjectListener = window['ipcRenderer']?.on?.('open-cloud-project', (_event, request) => {
+      if (typeof request?.cloudProject !== 'string') return;
+      void this.cloudProjectOpen.open(request.cloudProject, true, request.apiOrigin)
+        .catch(error => this.message.error(error.message || '打开云工程失败'));
+    });
     void this.electronService.sendRendererReady();
     void this.initializeAuthAndPromptIfNeeded();
     void this.ensureDefaultSubapps();
@@ -462,6 +470,8 @@ export class MainWindowComponent implements OnDestroy {
     this.oauthResultListener = null;
     this.exampleListListener?.();
     this.exampleListListener = null;
+    this.cloudProjectListener?.();
+    this.cloudProjectListener = null;
   }
 
   private watchConfigNotices() {

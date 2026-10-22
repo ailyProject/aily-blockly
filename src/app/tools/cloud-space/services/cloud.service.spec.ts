@@ -1,4 +1,5 @@
-import { of } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
+import { HttpHeaders, HttpResponse } from '@angular/common/http';
 import { CloudService } from './cloud.service';
 
 describe('CloudService Coder category isolation', () => {
@@ -77,11 +78,12 @@ describe('CloudService Coder category isolation', () => {
 
   it('sends the Coder upload category as a multipart field alongside projectData and pid', () => {
     const projectData = { name: 'demo', type: 'coder', entry: 'src/main.cpp' };
-    service.syncProject({ pid: 'cloud-id', projectData, category: 'coder' });
+    service.syncProject({ pid: 'cloud-id', projectData, category: 'coder', expectedArchiveSha256: 'a'.repeat(64) });
     const [url, body] = http.post.calls.mostRecent().args;
     expect(url).toMatch(/\/cloud\/sync$/);
     expect(body.get('category')).toBe('coder');
     expect(body.get('pid')).toBe('cloud-id');
+    expect(body.get('expectedArchiveSha256')).toBe('a'.repeat(64));
     expect(JSON.parse(body.get('projectData'))).toEqual(projectData);
     expect(Object.keys(projectData)).toEqual(['name', 'type', 'entry']);
   });
@@ -107,5 +109,30 @@ describe('CloudService Coder category isolation', () => {
     } finally {
       Object.assign(window, previous);
     }
+  });
+
+  it('reads the owner archive by UUID and binds the verified byte hash to its extracted contents', async () => {
+    const blob = new Blob([new Uint8Array([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x01])]);
+    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())), value => value.toString(16).padStart(2, '0')).join('');
+    http.get.and.returnValue(of(new HttpResponse({ body: blob, headers: new HttpHeaders({ 'X-Archive-Sha256': sha256, 'X-Archive-Size': String(blob.size) }) })));
+    const extract = spyOn<any>(service, 'downloadAndExtractArchive').and.resolveTo('/extracted');
+    expect(await firstValueFrom(service.openVerifiedProjectArchive({ id: 42, uuid: 'project-uuid', archive_sha256: sha256 }, true)))
+      .toEqual({ path: '/extracted', sha256 });
+    expect(http.get.calls.mostRecent().args).toEqual([
+      jasmine.stringMatching(/\/projects\/project-uuid\/archive$/),
+      { responseType: 'blob', observe: 'response', params: { expectedArchiveSha256: sha256 } },
+    ]);
+    http.get.and.returnValue(of(new HttpResponse({ body: blob, headers: new HttpHeaders({ 'X-Archive-Sha256': '0'.repeat(64), 'X-Archive-Size': String(blob.size) }) })));
+    await expectAsync(firstValueFrom(service.openVerifiedProjectArchive({ uuid: 'project-uuid' }, true))).toBeRejectedWithError('云工程归档校验失败，请重新打开');
+    expect(extract).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps teacher reads on the existing download endpoint and computes a baseline from actual bytes', async () => {
+    const blob = new Blob([new Uint8Array([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])]);
+    http.get.and.returnValue(of(new HttpResponse({ body: blob })));
+    spyOn<any>(service, 'downloadAndExtractArchive').and.resolveTo('/student-archive');
+    const result = await firstValueFrom(service.openVerifiedProjectArchive({ id: 7, uuid: 'student-uuid' }, false));
+    expect(http.get.calls.mostRecent().args[0]).toMatch(/\/projects\/7\/download$/);
+    expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 });

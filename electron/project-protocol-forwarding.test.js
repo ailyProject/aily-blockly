@@ -7,6 +7,7 @@ const test = require('node:test');
 const { parse } = require('acorn');
 const { isProductProtocolUrl } = require('./build-product');
 const projectImport = require('./project-url-import');
+const { createCloudProjectOpenQueue, parseCloudProjectOpen } = require('./cloud-project-protocol');
 
 // Execute the real lifecycle handlers without starting Electron or its services.
 const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
@@ -37,7 +38,7 @@ async function runReady(product, locked, url) {
     app: { quit: () => calls.quit++ }, gotTheLock: locked,
     isSupportedProtocolUrl: value => isProductProtocolUrl(product, value), getBuildProduct: () => product,
     require: name => { assert.equal(name, './project-url-import'); return projectImport; },
-    console: quiet, URL, protocolLogValue, isDarwin: false, isWin32: false, Menu: {},
+    console: quiet, URL, protocolLogValue, parseCloudProjectOpen, isDarwin: false, isWin32: false, Menu: {},
     ensureRosettaIfNeededOnDarwin: noop, loadEnv: () => calls.env++, applyAppIdentity: noop,
     setImmediate: callback => callback(), refreshApplicationMenu: noop,
     setTimeout: callback => callback(), handleProtocol: value => calls.handled.push(value),
@@ -54,6 +55,7 @@ function runProtocol(product, importUrl) {
   let ready;
   const context = {
     console: quiet, URL, URLSearchParams, path, os,
+    cloudProjectOpenQueue: createCloudProjectOpenQueue(() => false, noop),
     process: { env: { AILY_7ZA_PATH: path.join(__dirname, '7za.exe') } },
     app: { getPath: name => { assert.equal(name, 'documents'); return path.join(os.tmpdir(), 'documents'); }, isReady: () => true },
     mainWindow: { webContents, isMinimized: () => false, focus: () => calls.focused++ },
@@ -87,6 +89,7 @@ test('a project forwarding process exits before environment, renderer and import
   for (const [product, protocol] of products) {
     const calls = await runReady(product, false, `${protocol}://project/import?url=${encodeURIComponent(packageUrl)}`);
     assert.deepEqual(calls, { quit: 1, env: 0, window: 0, handled: [] });
+    assert.deepEqual(await runReady(product, false, `${protocol}://project/open?cloudProject=42`), { quit: 1, env: 0, window: 0, handled: [] });
   }
 });
 
@@ -94,6 +97,8 @@ test('the first project process opens normally and examples retain their own-win
   for (const [product, protocol] of products) {
     const projectUrl = `${protocol}://project/import?url=${encodeURIComponent(packageUrl)}`;
     assert.deepEqual(await runReady(product, true, projectUrl), { quit: 0, env: 1, window: 1, handled: [projectUrl] });
+    const cloudUrl = `${protocol}://project/open?cloudProject=42`;
+    assert.deepEqual(await runReady(product, true, cloudUrl), { quit: 0, env: 1, window: 1, handled: [cloudUrl] });
     const example = `${protocol}://examples`;
     assert.deepEqual(await runReady(product, false, example), { quit: 0, env: 1, window: 1, handled: [example] });
   }

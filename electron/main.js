@@ -19,6 +19,7 @@ const {
 } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
+const { createCloudProjectOpenQueue, parseCloudProjectOpen } = require('./cloud-project-protocol');
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { startCliBridge } = require("./cli-bridge");
@@ -623,12 +624,25 @@ function protocolLogValue(value) {
     ? '[project import]' : value;
 }
 
+const cloudProjectOpenQueue = createCloudProjectOpenQueue(
+  () => isCurrentRendererGenerationReady(),
+  request => mainWindow.webContents.send('open-cloud-project', request),
+);
+
 function handleProtocol(url) {
   console.log('收到协议链接:', protocolLogValue(url));
 
   try {
     const urlObj = new URL(url);
     if (!isSupportedProtocolUrl(url)) return;
+    if (cloudProjectOpenQueue.receive(url, getBuildProduct())) {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+      return;
+    }
 
     // 自定义协议URL中，hostname 可能包含路径的第一部分
     // 例如 abis://auth/callback 或 acis://auth/callback 中，hostname='auth', pathname='/callback'
@@ -1602,6 +1616,7 @@ ipcMain.on('renderer-ready', (event, payload = {}) => {
   }
 
   // 检查是否有待处理的示例列表打开请求
+  cloudProjectOpenQueue.flush();
   if (global.pendingExampleListOpen) {
     console.log('发送待处理的示例列表请求');
     mainWindow.webContents.send('open-example-list', global.pendingExampleListOpen);
@@ -3105,6 +3120,10 @@ app.on("ready", async () => {
       }
 
       // The existing instance handles project imports; forwarding must not create another copy/window.
+      if (fullPath === '/project/open' && !gotTheLock && parseCloudProjectOpen(protocolUrl, getBuildProduct())) {
+        app.quit();
+        return;
+      }
       if (fullPath === '/project/import' && !gotTheLock) {
         require('./project-url-import').parseProjectImportUrl(protocolUrl, getBuildProduct());
         app.quit();

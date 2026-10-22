@@ -6,6 +6,8 @@ import { UiService } from '@core/app-shell/public-api';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { EditorComponent } from './editor/editor.component';
 import { CloudService } from './services/cloud.service';
+import { CloudProjectOpenService } from './services/cloud-project-open.service';
+import { readCloudSyncBaseline, writeCloudSyncBaseline } from './services/cloud-sync-baseline';
 import {
   ProjectService,
   projectDataRuntime,
@@ -13,7 +15,7 @@ import {
   extractStructuredAbsValues,
   detectProjectMode,
 } from '@domain/project/public-api';
-import { CmdService, ElectronService, PlatformService, CrossPlatformCmdService } from '@core/platform/public-api';
+import { CmdService, ElectronService, PlatformService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AuthService } from '@core/auth/public-api';
 import { LoginDialogComponent } from '../../main-window/components/login-dialog/login-dialog.component';
@@ -48,7 +50,6 @@ export class CloudSpaceComponent {
   searchKeyword = ''; // 搜索关键词
   isLoginDialogOpen = false; // 标记登录对话框是否已打开
 
-  openingProjectIds = new Set<string>();
   projectView: 'mine' | 'students' = 'mine';
   isStudent = false;
   isTeacher = false;
@@ -57,6 +58,7 @@ export class CloudSpaceComponent {
   private listSubscription = new Subscription();
   private editorSubscription = new Subscription();
   private imageObjectUrls: string[] = [];
+  private accountEpoch = 0;
 
   constructor(
     private uiService: UiService,
@@ -68,7 +70,7 @@ export class CloudSpaceComponent {
     private modal: NzModalService,
     private electronService: ElectronService,
     private platformService: PlatformService,
-    private crossPlatformCmdService: CrossPlatformCmdService,
+    private cloudProjectOpen: CloudProjectOpenService,
     private translate: TranslateService,
     private configService: ConfigService,
   ) { }
@@ -96,6 +98,7 @@ export class CloudSpaceComponent {
         && previous?.education_student === current?.education_student
         && previous?.education_teacher === current?.education_teacher))
       .subscribe(user => {
+        ++this.accountEpoch;
         this.clearProjects();
         this.isStudent = user?.education_student === true;
         this.isTeacher = user?.education_teacher === true;
@@ -211,46 +214,9 @@ export class CloudSpaceComponent {
 
   // 打开项目
   openInNewTab(item) {
-    if (!item || !item.id) return;
-    if (this.openingProjectIds.has(item.id)) return;
-
-    this.openingProjectIds.add(item.id);
-    // console.log('打开云上项目:', item);
-    this.cloudService.openProjectArchive(item.id).subscribe({
-      next: async res => {
-        try {
-          // 直接添加随机数避免重名
-          const randomNum = Math.floor(100000 + Math.random() * 900000);
-          const uniqueName = `${item.name || 'cloud_project'}_${randomNum}`;
-          const targetPath = this.projectService.projectRootPath + this.platformService.getPlatformSeparator() + uniqueName;
-
-          // 使用 Move-Item 将下载/临时文件移动到目标项目目录
-          // -Force 用于覆盖同名目标（如果存在）
-          await this.crossPlatformCmdService.copyItem(res, targetPath, true, true);
-
-          // 更新 package.json 中的项目信息
-          const packageJson = JSON.parse(this.electronService.readFile(`${targetPath}/package.json`));
-          packageJson.nickname = item.nickname
-          packageJson.description = item.description || ''
-          packageJson.doc_url = item.doc_url || ''
-          packageJson.keywords = item?.tags ? JSON.parse(item.tags) : []
-          packageJson.cloudId = item.id;
-
-          this.electronService.writeFile(`${targetPath}/package.json`, JSON.stringify(packageJson, null, 2));
-          this.projectService.projectOpen(targetPath);
-        } catch (e) {
-          console.error('打开项目失败', e);
-          this.message.error('打开项目失败');
-        } finally {
-          this.openingProjectIds.delete(item.id);
-        }
-      },
-      error: err => {
-        console.error('下载项目失败', err);
-        this.message.error('下载项目失败');
-        this.openingProjectIds.delete(item.id);
-      }
-    });
+    if (!item?.id) return;
+    void this.cloudProjectOpen.open(String(item.id))
+      .catch(error => this.message.error(error.message || '打开云工程失败'));
   }
 
   // 获取云上项目列表
@@ -536,8 +502,24 @@ export class CloudSpaceComponent {
     if (this.isSyncing) return;
     this.isSyncing = true;
     const projectPath = this.projectService.currentProjectPath;
+    const accountId = this.authService.userInfo?.id;
+    let archivePath: string | undefined;
+    const apiBase = this.cloudService.baseUrl, epoch = this.accountEpoch;
+    const assertCurrent = () => {
+      if (!accountId || this.authService.userInfo?.id !== accountId || this.accountEpoch !== epoch
+        || this.cloudService.baseUrl !== apiBase || this.authService.isSessionInvalidating) {
+        throw new Error('账号或服务区域已切换，请保留本地工程并重新同步');
+      }
+    };
 
     try {
+      assertCurrent();
+      const originalManifest = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+      const expectedArchiveSha256 = originalManifest.cloudId
+        ? readCloudSyncBaseline(projectPath, originalManifest.cloudId, accountId, apiBase) : undefined;
+      if (originalManifest.cloudId && !expectedArchiveSha256) {
+        throw new Error('此本地工程缺少可靠的云端同步基线，请保留本地修改，从云端重新打开或另存为新工程');
+      }
       if (studentProject) {
         const manifest = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
         if (manifest.cloudId !== studentProject.id || !this.canEditProject(studentProject)) {
@@ -546,6 +528,7 @@ export class CloudSpaceComponent {
       }
       // 等待保存完成
       const result = await this.projectService.save(projectPath);
+      assertCurrent();
       if (result.success) {
         console.log('项目保存成功，开始同步到云端');
       } else {
@@ -557,7 +540,7 @@ export class CloudSpaceComponent {
       if (this.projectService.currentProjectPath !== projectPath) {
         throw new Error('当前项目已切换，请重新同步');
       }
-      const archivePath = await this.packageProject(projectPath);
+      archivePath = await this.packageProject(projectPath);
       if (!archivePath) {
         this.isSyncing = false;
         return;
@@ -569,6 +552,11 @@ export class CloudSpaceComponent {
       }
       // 使用已打包项目的元数据，避免上传期间切换项目导致分类或云 ID 错配。
       const currentProjectData = JSON.parse(this.electronService.readFile(`${projectPath}/package.json`));
+      assertCurrent();
+      if (currentProjectData.cloudId !== originalManifest.cloudId) {
+        await this.delete7zFile(archivePath);
+        throw new Error('本地云工程关联已变化，请重新同步');
+      }
       if (studentProject && currentProjectData.cloudId !== studentProject.id) {
         await this.delete7zFile(archivePath);
         throw new Error('当前本地项目与学生项目不一致，请重新打开学生项目');
@@ -587,10 +575,17 @@ export class CloudSpaceComponent {
       archive: archivePath,
       category: this.projectService.getProjectMode(projectPath) === 'coder'
         ? 'coder' : 'blockly',
+      expectedArchiveSha256,
     }).subscribe(async res => {
         try {
           if (res && res.status === 200) {
+            assertCurrent();
+            if (JSON.parse(this.electronService.readFile(`${projectPath}/package.json`)).cloudId !== originalManifest.cloudId) {
+              throw new Error('本地云工程关联已变化，请保留本地内容并重新打开云工程');
+            }
             await this.setCurrentProjectCloudId(res.data.id, projectPath);
+            assertCurrent();
+            writeCloudSyncBaseline(projectPath, { cloudId: String(res.data.id), accountId, apiBase, archiveSha256: res.data.archive_sha256 });
             this.message.success('同步成功');
             // 更新项目列表
             await this.getCloudProjects();
@@ -614,6 +609,7 @@ export class CloudSpaceComponent {
       });
     } catch (error) {
       this.isSyncing = false;
+      if (archivePath) await this.delete7zFile(archivePath);
       console.error('同步流程出错:', error);
       this.message.error('同步失败: ' + error);
     }

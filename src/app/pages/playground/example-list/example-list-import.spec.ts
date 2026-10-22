@@ -60,4 +60,12 @@ describe('cloud example import coordination', () => {
     expect(target).toMatch(/^\/projects\/[a-zA-Z0-9_-]+$/);
     expect(target).not.toContain('..');
   });
+  it('opens a public example as a new local project without the source cloud identity', async () => {
+    component.electronService.readFile = () => '{"name":"example","cloudId":42}';
+    component.exampleList[0].id = 42;
+    component.loadExample(0); downloads[0].next('/archive'); await settle();
+    const manifest = JSON.parse(component.electronService.writeFile.calls.mostRecent().args[1]);
+    expect(manifest.cloudId).toBeUndefined();
+    expect(component.projectService.projectOpen).toHaveBeenCalledTimes(1);
+  });
 });
