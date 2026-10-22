@@ -230,7 +230,7 @@ export class _UploaderService {
       state.expectedFiles,
       Math.max(state.completedFiles, state.currentFileIndex + 1)
     );
-    if (state.eraseRegionSizes.length > 0) {
+    if (state.eraseRegionSizes.length === state.expectedFiles) {
       const totalBytes = state.eraseRegionSizes.reduce((sum, size) => sum + size, 0);
       const completedBytes = state.eraseRegionSizes
         .slice(0, Math.min(state.completedFiles, state.eraseRegionSizes.length))
@@ -258,7 +258,7 @@ export class _UploaderService {
       return regionProgress;
     }
 
-    if (state.eraseRegionSizes.length > 0) {
+    if (state.eraseRegionSizes.length === state.expectedFiles) {
       const fallbackBytes = state.currentFileBytes || state.eraseRegionSizes[state.currentFileIndex] || 1;
       const totalBytes = state.eraseRegionSizes.reduce((sum, size) => sum + size, 0);
       const completedBytes = state.eraseRegionSizes
@@ -850,14 +850,21 @@ export class _UploaderService {
                     }
 
                     const esp32EraseRegionSize = this.parseEsp32EraseRegionSize(trimmedLine);
-                    if (esp32EraseRegionSize !== null) {
+                    // 新版 esptool 逐文件输出擦除范围；只使用写入前已知的完整范围计算字节权重。
+                    if (esp32EraseRegionSize !== null && esp32UploadState.currentFileIndex < 0) {
                       esp32UploadState.eraseRegionSizes.push(esp32EraseRegionSize);
                       esp32UploadState.expectedFiles = Math.max(esp32UploadState.expectedFiles, esp32UploadState.eraseRegionSizes.length);
                     }
 
                     const esp32CompressedSize = this.parseEsp32CompressedSize(trimmedLine);
                     if (esp32CompressedSize) {
-                      this.startEsp32FlashFile(esp32UploadState, esp32CompressedSize.originalBytes);
+                      // Writing '文件名' 已开启当前文件时，Compressed 只补充大小，避免重复计数。
+                      if (esp32UploadState.currentFileIndex < 0 || esp32UploadState.currentFileBytes > 0
+                          || esp32UploadState.completedFiles > esp32UploadState.currentFileIndex) {
+                        this.startEsp32FlashFile(esp32UploadState, esp32CompressedSize.originalBytes);
+                      } else {
+                        esp32UploadState.currentFileBytes = esp32CompressedSize.originalBytes;
+                      }
                     } else if (/^Writing\s+['"].+?['"]\s+at\s+0x[0-9a-f]+/i.test(trimmedLine)) {
                       this.startEsp32FlashFile(esp32UploadState);
                     }
