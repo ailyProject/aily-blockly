@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { subappRegisteredAgentError, type SubappRegisteredAgentRequest } from './models/subapp-registered-agent';
 
 export type ChildAppHostAction = 'status' | 'prepareUpdate' | 'restart' | 'close' | 'detach' | 'embed';
 
@@ -29,6 +30,7 @@ export interface ChildAppLifecycleOptions {
 }
 
 export interface ChildAppHostController {
+  readonly agentRequest?: SubappRegisteredAgentRequest;
   status(): Record<string, unknown>;
   prepareUpdate(options?: ChildAppLifecycleOptions): Promise<Record<string, unknown>>;
   restart(): Promise<Record<string, unknown>>;
@@ -42,6 +44,7 @@ interface ChildAppHostRegistration {
   surface: string;
   primary: boolean;
   controller: ChildAppHostController;
+  agentLifetime: AbortController;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -90,18 +93,46 @@ export class ChildAppHostRegistryService {
       surface: String(options.surface || 'default').trim() || 'default',
       primary: options.primary ?? instanceId === 'default',
       controller,
+      agentLifetime: new AbortController(),
     };
+    registrations.get(instanceId)?.agentLifetime.abort(subappRegisteredAgentError(
+      'SUBAPP_WEB_REVOKED', 'The original Web Agent presentation instance was replaced.'));
     registrations.set(instanceId, registration);
     this.controllers.set(id, registrations);
 
     return () => {
       const currentRegistrations = this.controllers.get(id);
       if (currentRegistrations?.get(instanceId) === registration) {
+        registration.agentLifetime.abort(subappRegisteredAgentError(
+          'SUBAPP_WEB_REVOKED', 'The original Web Agent presentation instance was removed.'));
         currentRegistrations.delete(instanceId);
         if (currentRegistrations.size === 0) {
           this.controllers.delete(id);
         }
       }
+    };
+  }
+
+  /** Capture once before waiting. A replacement is never a retry target for
+   * an already admitted request, even if it reuses the same instance id. */
+  captureAgentRequest(toolId: string, instanceId?: string): SubappRegisteredAgentRequest {
+    const id = this.normalizeToolId(toolId), registration = this.resolveRegistration(id, instanceId);
+    if (!registration?.controller.agentRequest || registration.agentLifetime.signal.aborted) {
+      throw subappRegisteredAgentError('SUBAPP_WEB_NOT_READY', 'The selected Web Agent presentation is not mounted and ready.');
+    }
+    const invoke = registration.controller.agentRequest.bind(registration.controller);
+    const requireCurrent = (signal: AbortSignal) => {
+      if (registration.agentLifetime.signal.aborted || this.controllers.get(id)?.get(registration.instanceId) !== registration) {
+        throw subappRegisteredAgentError('SUBAPP_WEB_REVOKED', 'The original Web Agent presentation instance was revoked.');
+      }
+      if (signal.aborted) throw subappRegisteredAgentError('SUBAPP_RPC_CANCELLED', 'The Web Agent request was cancelled.');
+    };
+    return async (method, params, signal, timeoutMs, context) => {
+      const current = AbortSignal.any([signal, registration.agentLifetime.signal]);
+      requireCurrent(current);
+      const value = await invoke(method, params, current, timeoutMs, context);
+      requireCurrent(current);
+      return value;
     };
   }
 
@@ -187,6 +218,10 @@ export class ChildAppHostRegistryService {
       return { ok: false, message: `子应用宿主未打开或尚未就绪: ${id || toolId}` };
     }
     const controller = registration.controller;
+    if (action === 'close') {
+      registration.agentLifetime.abort(subappRegisteredAgentError(
+        'SUBAPP_WEB_REVOKED', 'The original Web Agent presentation is closing.'));
+    }
 
     switch (action) {
       case 'status':

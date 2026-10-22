@@ -2395,11 +2395,20 @@ async function activatePreparedSubapp(rootDir, entry, prepared, options) {
   return versions.activate(rootDir, entry, prepared);
 }
 
+function resolveSubappHealthNodeExecutable(childPath = process.env.AILY_CHILD_PATH) {
+  const candidate = require('./tools/managed-npm-cli').getChildNodeExecutable(childPath);
+  if (!path.isAbsolute(candidate)) throw new Error('Bundled Node is required for Subapp startup health checks.');
+  const executable = fs.realpathSync(candidate);
+  if (!fs.statSync(executable).isFile()) throw new Error('Bundled Node health executable is not a regular file.');
+  return executable;
+}
+
 async function verifyInstalledSubappStartup({
   packagePath,
   entry,
   phase,
   env = process.env,
+  execPath = process.execPath,
   startupTimeoutMs = SUBAPP_HEALTH_STARTUP_TIMEOUT_MS,
   shutdownTimeoutMs = SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS,
 }) {
@@ -2413,7 +2422,7 @@ async function verifyInstalledSubappStartup({
     throw new Error(`Subapp ${phase} health check main entry is missing.`);
   }
   const stderr = [];
-  const child = spawn(process.execPath, [
+  const child = spawn(execPath, [
     mainEntry,
     'serve',
     '--host', '127.0.0.1',
@@ -3154,7 +3163,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     listChildToolHolders: listChildToolHoldersForCatalogId,
     killProcessTree: killRegisteredProcessTree,
     verifyInstalledPackage: handlerOptions.verifyInstalledPackage
-      || verifyInstalledSubappStartup,
+      || (input => verifyInstalledSubappStartup({ ...input, execPath: resolveSubappHealthNodeExecutable() })),
   });
 
   if (handlerOptions.browserExecutionRegistry) {
@@ -3242,6 +3251,7 @@ module.exports = {
   resolveInstalledPackagePath,
   readInstalledState,
   resolveSubappRoot,
+  resolveSubappHealthNodeExecutable,
   safeSubappShutdownUrl,
   resolveSubappUpdateRoot,
   resolveUiIndex,

@@ -1,7 +1,7 @@
 // 管理主窗口和子窗口的创建、状态同步及窗口控制操作。
 const { ipcMain, BrowserWindow, MessageChannelMain, app, screen, webContents } = require("electron");
-const { SubappBrowserExecutionHost } = require('./subapp-browser-execution-host');
-const browserExecutionHost = new SubappBrowserExecutionHost({ BrowserWindow, MessageChannelMain });
+const { createConfiguredBrowserExecutionHost } = require('./subapp-browser-resource-config');
+const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain });
 const { requestWindowAttention } = require('./window-attention');
 const {
     getActiveCmdProcesses,
@@ -426,6 +426,7 @@ function handleChildToolProcessExit(event) {
             code: event.code,
             signal: event.signal,
             expected: event.expected || session.stopping === true || applicationIsQuitting,
+            ...(event.terminal ? { terminal: { ...event.terminal } } : {}),
         };
         clearChildToolMessageControllerBinding(session);
         delete session.lastProviderNegotiationRequest;

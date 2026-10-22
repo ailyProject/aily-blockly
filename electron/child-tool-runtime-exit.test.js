@@ -19,12 +19,34 @@ test('main broadcasts an exact-stream exit to every window even after its spawni
     assert.equal(message.channel, 'child-tool-session-state-changed');
     assert.equal(message.payload[0].running, false);
     assert.equal(message.payload[0].exit.expected, false);
+    assert.equal(Object.hasOwn(message.payload[0].exit, 'terminal'), false);
   }
   assert.equal(harness.api.isChildToolSessionAlive(session), false);
   harness.register('stream-2');
   harness.exit({ streamId: 'stream-1', code: 1, signal: null, expected: false });
   assert.equal(harness.messages.length, 2);
   assert.equal(harness.api.listChildToolSessions()[0].running, true);
+});
+
+test('registered state broadcasts preserve physical terminal facts without inventing close or cleanup ACK', () => {
+  for (const terminal of [
+    { kind: 'close', code: 0, signal: null, closeObserved: true },
+    { kind: 'exit-and-stdio-closed', code: 1, signal: null, closeObserved: false },
+  ]) {
+    const harness = createHarness();
+    harness.register('stream-1');
+    harness.exit({ streamId: 'stream-1', code: terminal.code, signal: terminal.signal, expected: false, terminal });
+    assert.equal(harness.messages.length, 2);
+    for (const message of harness.messages) {
+      const exit = message.payload[0].exit;
+      assert.deepEqual(JSON.parse(JSON.stringify(exit.terminal)), terminal);
+      assert.notEqual(exit.terminal, terminal, 'Published metadata must be a snapshot');
+      assert.equal(Object.hasOwn(exit, 'businessCleanupAcknowledged'), false);
+    }
+    harness.exit({ streamId: 'stream-1', code: 1, signal: null, expected: false,
+      terminal: { kind: 'close', code: 1, signal: null, closeObserved: true } });
+    assert.equal(harness.messages.length, 2, 'Late close must not rebroadcast an already published registered terminal');
+  }
 });
 
 test('graceful shutdown is marked expected before the process exits', async () => {
@@ -207,8 +229,8 @@ function createHarness(options = {}) {
     module,
     require: id => {
       if (id === 'electron') return electron;
-      if (id === './subapp-browser-execution-host' && options.browserHost) return {
-        SubappBrowserExecutionHost: class { constructor() { return options.browserHost; } },
+      if (id === './subapp-browser-resource-config' && options.browserHost) return {
+        createConfiguredBrowserExecutionHost: () => options.browserHost,
       };
       if (id === './cmd') return {
         getActiveCmdProcesses: () => harness.active,

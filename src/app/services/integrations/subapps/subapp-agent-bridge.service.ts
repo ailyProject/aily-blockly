@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnDestroy } from '@angular/core';
+import { Inject, Injectable, OnDestroy, Optional } from '@angular/core';
 
 import {
   ChildToolAgentDefinition,
@@ -23,6 +23,10 @@ import { SubappAgentOwnerLeases } from './models/subapp-agent-owner-leases';
 import { sendSubappLifecycleRequest } from './models/subapp-lifecycle-request';
 import { SubappOwnerGuard } from './models/subapp-owner-guard';
 import { invokeNativeSubappAgent } from './models/subapp-native-agent';
+import { ChildAppHostRegistryService } from './child-app-host-registry.service';
+import { getChildToolPresentationPlatform, type SubappRegisteredAgentContext } from './models/subapp-registered-agent';
+import { CHILD_TOOL_PRESENTATION_PLATFORM, CHILD_TOOL_PRESENTATION_OVERRIDES, CHILD_TOOL_WEB_PRESENTATIONS,
+  type ChildToolWebPresentation } from '../../../tools/child-tool-presentation/child-tool-presentation.providers';
 
 interface SubappRpcResponse {
   id?: string | number;
@@ -95,7 +99,49 @@ export class SubappAgentBridgeService implements OnDestroy {
     @Inject(SUBAPP_AUTOMATION_PORT)
     private readonly automation: SubappAutomationPort,
     private readonly subappActivityService: SubappActivityService,
+    @Optional() @Inject(ChildAppHostRegistryService)
+    private readonly childHostRegistry: ChildAppHostRegistryService | null = null,
+    @Inject(CHILD_TOOL_PRESENTATION_PLATFORM)
+    private readonly presentationPlatform: 'native' | 'web' = 'native',
+    @Inject(CHILD_TOOL_PRESENTATION_OVERRIDES)
+    private readonly presentationOverrides: Readonly<Record<string, 'native' | 'web'>> = Object.freeze({}),
+    @Inject(CHILD_TOOL_WEB_PRESENTATIONS)
+    private readonly webPresentations: Readonly<Record<string, ChildToolWebPresentation>> = Object.freeze({}),
   ) {}
+
+  private resolveAgentPlatform(toolId: string): 'native' | 'web' {
+    const platform = getChildToolPresentationPlatform(toolId, this.presentationPlatform, this.presentationOverrides);
+    return platform === 'web' && (Object.hasOwn(this.webPresentations, toolId)
+      || Object.hasOwn(this.presentationOverrides, toolId)) ? 'web' : 'native';
+  }
+
+  /** Installed declarations only. Discovery does not start or probe a Runtime
+   * and does not imply that every declared method is currently available. */
+  listTools(input: Record<string, unknown> = {}): Record<string, unknown> {
+    try {
+      if (input['toolId'] !== undefined && typeof input['toolId'] !== 'string') {
+        throw new SubappRpcError('Subapp tool discovery requires a string tool id.', 'SUBAPP_TOOL_INVALID');
+      }
+      const toolId = String(input['toolId'] || '').trim();
+      const selected = toolId ? getChildToolConfig(toolId) : null;
+      if (toolId && !selected) throw new SubappRpcError('Unknown installed subapp.', 'SUBAPP_TOOL_NOT_FOUND');
+      const configs = selected ? [selected] : Object.values(getChildToolConfigs());
+      const tools = configs.flatMap(config => (config.agent?.tools || []).map(definition => ({
+        toolId: config.id,
+        platform: this.resolveAgentPlatform(config.id),
+        definition: structuredClone(definition),
+      })));
+      const response = { ok: true, tools };
+      if (this.byteLength(response) > 1024 * 1024) {
+        throw new SubappRpcError('Installed subapp tool declarations exceed the one-MiB discovery response budget.', 'SUBAPP_TOOLS_TOO_LARGE');
+      }
+      return response;
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      return { ok: false, error: error instanceof Error ? error.message : String(error),
+        errorCode: typeof code === 'string' && code.trim() ? code : 'SUBAPP_TOOL_DISCOVERY_FAILED' };
+    }
+  }
 
   async execute(
     input: Record<string, unknown> = {},
@@ -109,25 +155,30 @@ export class SubappAgentBridgeService implements OnDestroy {
     const invocation = this.ownerRequests.start(ownerSessionId, signal, String(context.toolCallId || ''));
     signal = invocation.signal;
     let resolved: ResolvedAgentTool | null = null;
-    let nativeCleanupError: string | undefined;
+    let joinedCleanupError: string | undefined;
+    let webSelected = false;
 
     try {
       if (context.ownerLeaseId) this.ownerLeases.require(ownerSessionId, activitySessionId, context.toolCallId);
       this.throwIfCancelled(signal);
       resolved = this.resolveAgentTool(requestedToolId, tool);
-      const nativeBatch = resolved.config.runtime?.headless === true;
+      // A trusted descriptor or explicit per-tool Web choice declares this
+      // path. Unrelated installed/native tools retain their original route.
+      webSelected = this.resolveAgentPlatform(resolved.config.id) === 'web';
+      const nativeBatch = !webSelected && resolved.config.runtime?.headless === true;
+      if (webSelected && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for Web tools.', 'SUBAPP_SESSION_REQUIRED');
       if (nativeBatch && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for native batch tools.', 'SUBAPP_SESSION_REQUIRED');
-      if (nativeBatch) invocation.waitForCleanup();
+      if (nativeBatch || webSelected) invocation.waitForCleanup();
       const params = this.record(input['params']);
       const hasExplicitPresentation = Object.prototype.hasOwnProperty.call(params, 'presentUi');
-      const activeMode = (!nativeBatch || resolved.config.runtime?.observer) && !hasExplicitPresentation
+      const activeMode = !webSelected && (!nativeBatch || resolved.config.runtime?.observer) && !hasExplicitPresentation
         && resolved.config.app?.extension !== true
         && resolved.definition.presentation
         && await this.automation.isChildAppWindowOpen(resolved.config.id)
         ? 'window' as const
         : undefined;
       this.throwIfCancelled(signal);
-      const presentationPolicy = (nativeBatch && !resolved.config.runtime?.observer) || resolved.config.app?.extension === true
+      const presentationPolicy = webSelected || (nativeBatch && !resolved.config.runtime?.observer) || resolved.config.app?.extension === true
         ? { uiMode: 'none' as const, activityPresentation: undefined }
         : resolveSubappAgentPresentation(params, resolved.definition, activeMode);
       this.subappActivityService.recordInvocationStarted({
@@ -143,6 +194,13 @@ export class SubappAgentBridgeService implements OnDestroy {
       const rpcParams = { ...params };
       delete rpcParams['presentUi'];
       const mapped = this.mapRpc(resolved.definition, rpcParams);
+      const webAgent = webSelected ? (() => {
+        const descriptor = this.webPresentations[resolved!.config.id];
+        if (!descriptor || typeof descriptor.load !== 'function' || !this.childHostRegistry) {
+          throw new SubappRpcError('The selected Web Agent presentation is unavailable.', 'SUBAPP_WEB_NOT_READY');
+        }
+        return this.childHostRegistry.captureAgentRequest(resolved!.config.id);
+      })() : null;
       let presentation: Record<string, unknown> | undefined;
 
       if (presentationPolicy.uiMode === 'window') {
@@ -181,7 +239,9 @@ export class SubappAgentBridgeService implements OnDestroy {
         }
       }
 
-      const result = nativeBatch
+      const webContext: SubappRegisteredAgentContext = Object.freeze({ ...context, ownerSessionId,
+        sessionId: activitySessionId, ownerLeaseId: context.ownerLeaseId, toolCallId: String(context.toolCallId || '').trim() });
+      const result = webAgent ? await webAgent(mapped.method, mapped.params, signal, mapped.timeoutMs, webContext) : nativeBatch
         ? await invokeNativeSubappAgent(resolved.config.id, mapped.method, mapped.params, mapped.timeoutMs, this.ownerGuard, ownerSessionId, signal,
           resolved.config.runtime?.observer ? { sessionId: activitySessionId } : undefined)
         : await this.request(
@@ -194,6 +254,10 @@ export class SubappAgentBridgeService implements OnDestroy {
         ownerSessionId,
         context,
       );
+      if (webSelected) {
+        this.throwIfCancelled(signal);
+        this.ownerLeases.require(ownerSessionId, activitySessionId, context.toolCallId);
+      }
       const response = this.enforceResponseBudget({
         ok: true,
         toolId: resolved.config.id,
@@ -215,11 +279,16 @@ export class SubappAgentBridgeService implements OnDestroy {
       });
       return response;
     } catch (error) {
-      const rpcError = error instanceof SubappRpcError
+      const originalCode = (error as { code?: unknown })?.code;
+      const declaredCode = typeof originalCode === 'string' && originalCode.trim() ? originalCode : 'SUBAPP_RPC_FAILED';
+      // AbortSignal.throwIfAborted can throw a DOMException with numeric code.
+      // Preserve unconfirmed cleanup even if cancellation is also requested.
+      const code = /CLEANUP|STOP_UNCONFIRMED/i.test(declaredCode) ? declaredCode
+        : signal?.aborted ? 'SUBAPP_RPC_CANCELLED' : declaredCode;
+      const rpcError = error instanceof SubappRpcError && error.code === code
         ? error
-        : new SubappRpcError(error instanceof Error ? error.message : String(error),
-          (error as { code?: string })?.code || 'SUBAPP_RPC_FAILED', (error as { details?: unknown })?.details);
-      if (resolved?.config.runtime?.headless && /CLEANUP|STOP_UNCONFIRMED/.test(rpcError.code)) nativeCleanupError = rpcError.message;
+        : new SubappRpcError(error instanceof Error ? error.message : String(error), code, (error as { details?: unknown })?.details);
+      if ((webSelected || resolved?.config.runtime?.headless) && /CLEANUP|STOP_UNCONFIRMED/i.test(rpcError.code)) joinedCleanupError = rpcError.message;
       const toolId = resolved?.config.id || requestedToolId;
       const response = {
         ok: false,
@@ -244,7 +313,7 @@ export class SubappAgentBridgeService implements OnDestroy {
         ? this.enforceResponseBudget(response, resolved.config.id, tool, resolved.definition)
         : response;
     } finally {
-      invocation.finish(nativeCleanupError);
+      invocation.finish(joinedCleanupError);
     }
   }
 

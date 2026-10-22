@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Inject, Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import {
   APP_LIST,
@@ -17,6 +17,10 @@ import {
 import { isAppAvailableForApplication } from '../../configs/tool.config';
 import { ConfigService } from '@core/preferences/public-api';
 import { SubappManagerService } from '@integration/subapps/public-api';
+import {
+  CHILD_TOOL_PRESENTATION_PLATFORM, CHILD_TOOL_WEB_PRESENTATIONS, type ChildToolWebPresentation,
+} from '../child-tool-presentation/child-tool-presentation.providers';
+import { hasWebToolApp, projectWebToolApps } from '../child-tool-presentation/child-tool-web-apps';
 
 export interface AppVisibilityContext {
   routeUrl?: string;
@@ -46,6 +50,8 @@ export class AppStoreService {
   constructor(
     private configService: ConfigService,
     private subappManager: SubappManagerService,
+    @Inject(CHILD_TOOL_PRESENTATION_PLATFORM) private readonly presentationPlatform: 'native' | 'web' = 'native',
+    @Inject(CHILD_TOOL_WEB_PRESENTATIONS) private readonly webPresentations: Readonly<Record<string, ChildToolWebPresentation>> = {},
   ) {
     this.refreshAppRegistry();
     this.layoutSubject.next(this.loadLayout());
@@ -82,6 +88,10 @@ export class AppStoreService {
   getApp(appId: string): AppItem | undefined {
     const app = this.appMap.get(appId);
     return app ? { ...app } : undefined;
+  }
+
+  isWebTool(toolId: string): boolean {
+    return hasWebToolApp(this.presentationPlatform, this.webPresentations, toolId);
   }
 
   getAppsForZone(zone: AppPlacementZone): AppItem[] {
@@ -276,13 +286,16 @@ export class AppStoreService {
 
   private refreshAppRegistry(): void {
     this.appMap.clear();
+    const catalogApps = this.subappManager.getCatalogApps();
+    const webApps = projectWebToolApps(this.presentationPlatform, this.webPresentations);
 
     const availableAppIds = new Set([
       ...AVAILABLE_APP_IDS,
-      ...this.subappManager.getCatalogApps().map(app => app.id)
+      ...catalogApps.map(app => app.id),
+      ...webApps.map(app => app.id),
     ]);
 
-    for (const app of [...APP_LIST, ...this.subappManager.getCatalogApps()]) {
+    for (const app of [...APP_LIST, ...catalogApps, ...webApps]) {
       if (availableAppIds.has(app.id)) {
         this.appMap.set(app.id, { ...app });
       }
@@ -290,10 +303,14 @@ export class AppStoreService {
   }
 
   private createDefaultLayout(): AppStoreLayout {
+    const webDefaults = projectWebToolApps(this.presentationPlatform, this.webPresentations)
+      .filter(app => app.defaultToolbar && app.enabled
+        && isAppAvailableForApplication(app.only, this.configService.getApplicationName()))
+      .map(app => app.id);
     return {
       version: 2,
       zones: {
-        header: [...DEFAULT_TOOLBAR_APP_IDS]
+        header: [...new Set([...DEFAULT_TOOLBAR_APP_IDS, ...webDefaults])]
       }
     };
   }

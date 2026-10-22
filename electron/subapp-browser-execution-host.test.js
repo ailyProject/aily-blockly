@@ -42,7 +42,7 @@ class Channel { constructor() { this.port1 = new Port(); this.port2 = new Port()
 let nextContents = 10;
 class Contents extends EventEmitter {
     constructor() { super(); this.id = ++nextContents; this.url = ''; this.received = []; this.dead = false;
-        this.session = { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, webRequest: { onBeforeRequest() {} } }; }
+        this.session = { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, webRequest: { onBeforeRequest: handler => { this.requestHandler = handler; } } }; }
     isDestroyed() { return this.dead; } getURL() { return this.url; } setWindowOpenHandler(handler) { this.popup = handler; }
     postMessage(channel, data, ports) { this.received.push({ channel, data, ports }); this.emit('delivered', { data, ports }); }
 }
@@ -77,8 +77,11 @@ function harness(t, options = {}) {
             this.webContents.emit('destroyed'); this.emit('closed'); }
     }
     const host = new SubappBrowserExecutionHost({ BrowserWindow: Window, MessageChannelMain: Channel, timeoutMs: options.timeoutMs || 100,
-        createServer: () => ({ async start() { servers++; await options.serverStart?.(); return { origin: 'http://127.0.0.1:49152' }; },
-            async close() { serverCloses++; if (options.serverCloseFailure?.()) throw new Error('Static listener close unconfirmed'); } }) });
+        createServer: (entry, source) => {
+            options.onCreateServer?.(entry, source);
+            return { async start() { servers++; return await options.serverStart?.() ?? options.resourceLocation ?? { origin: 'http://127.0.0.1:49152' }; },
+                async close() { serverCloses++; if (options.serverCloseFailure?.()) throw new Error('Static listener close unconfirmed'); } };
+        } });
     const runtimeId = 'registered-fixture-stream', source = f.source();
     function owner(id = 1, leaseId = randomUUID()) {
         let valid = true; const cleanups = new Set();
@@ -105,6 +108,144 @@ test('only a selected package version, bounded local entry and matching HTML has
     f.declaration.entry = 'execution.html'; f.declaration.sha256 = '0'.repeat(64); f.save(); assert.throws(f.source, /integrity/);
     f.declaration.sha256 = createHash('sha256').update(fs.readFileSync(path.join(f.dir, 'public/execution.html'))).digest('hex');
     f.manifest.ailySubapp.runtime.headless = true; f.save(); assert.throws(f.source, /supported/);
+});
+
+const hostedResources = () => ({ origin: 'https://resources.example', resourceBaseUrl: 'https://resources.example/releases/r1/',
+    resourceIdentity: 'r1', resourcePaths: ['execution.html', 'view.html', 'core.wasm'] });
+
+test('Main-only resource location pins entry, surfaces and release for all current owners; provider updates wait for a new runtime', async t => {
+    let selected = hostedResources(); const creations = [];
+    const h = harness(t, { serverStart: async () => selected, onCreateServer: (entry, source) => creations.push({ entry, source }) });
+    const a = h.owner(), b = h.owner(2), first = await h.host.acquire(a), state = h.host.runtimes.get(a.runtimeId);
+    const resolvedIdentity = state.resolvedIdentity;
+    assert.equal(creations[0].entry, h.source.entry); assert.equal(creations[0].source, h.source);
+    assert.equal(h.windows[0].webContents.getURL(), selected.resourceBaseUrl + 'execution.html');
+    assert.equal(first.surfaces.full, selected.resourceBaseUrl + 'view.html');
+    assert.equal(state.resourceIdentity, 'r1'); assert.ok(Object.isFrozen(state.resourcePaths));
+    assert.equal(Object.hasOwn(first, 'resourceIdentity'), false); assert.equal(Object.hasOwn(first, 'resolvedIdentity'), false);
+    selected.resourcePaths.pop();
+    assert.deepEqual(state.resourcePaths, ['execution.html', 'view.html', 'core.wasm']);
+    selected = { ...hostedResources(), resourceBaseUrl: 'https://resources.example/releases/r2/', resourceIdentity: 'r2' };
+    const joined = await h.host.acquire(b);
+    assert.equal(joined.executionId, first.executionId); assert.equal(state.resolvedIdentity, resolvedIdentity);
+    assert.equal(joined.surfaces.full, 'https://resources.example/releases/r1/view.html'); assert.equal(creations.length, 1);
+    const view = await h.host.openView({ ...a, executionId: first.executionId, surface: 'full' }, { show: false });
+    assert.equal(h.windows[1].webContents.getURL(), first.surfaces.full);
+    await h.host.closeView({ ...a, ...view }); await h.host.release(a); await h.host.release(b);
+    const next = await h.host.acquire(h.owner(3));
+    assert.notEqual(next.executionId, first.executionId); assert.equal(next.surfaces.full, 'https://resources.example/releases/r2/view.html');
+    assert.notEqual(h.host.runtimes.get(a.runtimeId).resolvedIdentity, resolvedIdentity); assert.equal(creations.length, 2);
+});
+
+test('resource provider geometry and explicit entry/surface inventory are checked before any document receives a port', async t => {
+    const invalid = [
+        { origin: 'http://remote.example', resourceBaseUrl: 'http://remote.example/releases/r1/' },
+        { origin: 'https://resources.example/other' },
+        { resourceBaseUrl: 'https://elsewhere.example/releases/r1/' },
+        { resourceBaseUrl: 'https://user:password@resources.example/releases/r1/' },
+        { resourceBaseUrl: 'https://resources.example/releases/r1' },
+        { resourceBaseUrl: 'https://resources.example/releases/r1/?query=1' },
+        { resourceBaseUrl: 'https://resources.example/releases/r1/#fragment' },
+        { resourceBaseUrl: '/releases/r1/' },
+        { resourceIdentity: undefined }, { resourceIdentity: '' }, { resourceIdentity: 'r1\n' }, { resourceIdentity: 'r'.repeat(257) },
+        { resourcePaths: undefined }, { resourcePaths: [] }, { resourcePaths: Array(4097).fill('execution.html') },
+        { resourcePaths: ['execution.html', 'view.html', 'view.html'] },
+        { resourcePaths: ['view.html'] }, { resourcePaths: ['execution.html'] },
+        { resourcePaths: ['execution.html', 'view.html', '../secret.json'] },
+        { resourcePaths: ['execution.html', 'view.html', '/root.wasm'] },
+        { resourcePaths: ['execution.html', 'view.html', 'other%2fcore.wasm'] },
+    ];
+    for (const fields of invalid) {
+        const h = harness(t, { resourceLocation: { ...hostedResources(), ...fields } });
+        await assert.rejects(h.host.acquire(h.owner()));
+        assert.equal(h.windows.length, 0); assert.equal(h.host.runtimes.size, 0); assert.equal(h.serverCloses, 1);
+    }
+    const incomplete = harness(t, { resourceLocation: { origin: 'http://127.0.0.1:49152', resourceIdentity: 'unbound' } });
+    await assert.rejects(incomplete.host.acquire(incomplete.owner()), /requires a base URL/);
+    const loopback = harness(t, { resourceLocation: { ...hostedResources(), origin: 'http://127.0.0.1:49152', resourceBaseUrl: 'http://127.0.0.1:49152/releases/r1/' } });
+    assert.equal((await loopback.host.acquire(loopback.owner())).surfaces.full, 'http://127.0.0.1:49152/releases/r1/view.html');
+});
+
+test('version resource requests allow only exact manifest URLs and owned blobs while legacy origin hosting remains compatible', async t => {
+    const h = harness(t, { resourceLocation: hostedResources() }); await h.host.acquire(h.owner());
+    const request = (url, method = 'GET') => {
+        let outcome; h.windows[0].webContents.requestHandler({ url, method }, value => { outcome = value; }); return outcome.cancel;
+    };
+    assert.equal(request('https://resources.example/releases/r1/core.wasm'), false);
+    assert.equal(request('https://resources.example/releases/r1/execution.html', 'HEAD'), false);
+    assert.equal(request('blob:https://resources.example/01234567-89ab-4cde-8fab-0123456789ab'), false);
+    for (const url of ['https://resources.example/core.wasm', 'https://resources.example/releases/r2/core.wasm',
+        'https://resources.example/releases/r1/unknown.js', 'https://resources.example/releases/r1/core.wasm?q=1',
+        'https://resources.example/releases/r1/core.wasm#x', 'https://resources.example/releases/r1/core%2Ewasm',
+        'https://resources.example/releases/r1//core.wasm', 'https://resources.example/releases/r1/../r2/core.wasm',
+        'https://resources.example.evil/releases/r1/core.wasm', 'http://127.0.0.1:12345/core.wasm',
+        'blob:https://elsewhere.example/01234567-89ab-4cde-8fab-0123456789ab', 'blob:null/01234567-89ab-4cde-8fab-0123456789ab',
+        'data:text/javascript,alert(1)', 'file:///private.js']) assert.equal(request(url), true, url);
+    assert.equal(request('https://resources.example/releases/r1/core.wasm', 'POST'), true);
+    let prevented = 0;
+    for (const event of ['will-navigate', 'will-redirect']) {
+        h.windows[0].webContents.emit(event, { preventDefault() { prevented++; } }, 'https://resources.example/releases/r2/execution.html');
+    }
+    assert.equal(prevented, 2); assert.equal(h.windows[0].webContents.getURL(), 'https://resources.example/releases/r1/execution.html');
+    const legacy = harness(t); await legacy.host.acquire(legacy.owner());
+    let result;
+    legacy.windows[0].webContents.requestHandler({ url: 'http://127.0.0.1:49152/previous-unlisted.js', method: 'GET' }, value => { result = value; });
+    assert.equal(result.cancel, false);
+    assert.equal(legacy.windows[0].webContents.getURL(), 'http://127.0.0.1:49152/execution.html');
+});
+
+test('same-origin foreign release, surface query and stale instance do not receive View ports', async t => {
+    const h = harness(t, { resourceLocation: hostedResources() }), a = h.owner(), acquired = await h.host.acquire(a), target = new Contents();
+    for (const url of ['https://resources.example/releases/r2/view.html', 'https://resources.example/releases/r1/execution.html',
+        'https://resources.example/releases/r1/view.html?instance=forged', 'https://resources.example/releases/r1/view.html#other']) {
+        target.url = url;
+        await assert.rejects(h.host.connect({ ...a, executionId: acquired.executionId, target, purpose: 'view', surface: 'full' }), /trusted/);
+    }
+    target.url = acquired.surfaces.full;
+    await assert.rejects(h.host.connect({ ...a, executionId: randomUUID(), target, purpose: 'view', surface: 'full' }), /unavailable/);
+    assert.equal(target.received.length, 0);
+});
+
+test('View cross-document navigation during held attach rejects late port handoff and preserves existing owners', async t => {
+    let hold = true;
+    const h = harness(t, { resourceLocation: hostedResources(), ignore: message => hold && message.type === 'attach' });
+    const a = h.owner(), b = h.owner(2), acquired = await h.host.acquire(a); await h.host.acquire(b);
+    const opening = h.host.openView({ ...a, executionId: acquired.executionId, surface: 'full' }, { show: false });
+    const rejected = assert.rejects(opening, /Connection ended during attachment/);
+    await tick(); const view = h.windows[1], attach = h.lifecycle.find(message => message.type === 'attach');
+    view.webContents.emit('did-start-navigation', {}, 'https://resources.example/releases/r2/view.html', false, true);
+    hold = false; h.windows[0].hostPort.postMessage({ id: attach.id, ok: true }); await rejected; await tick();
+    assert.equal(view.webContents.received.length, 0); assert.equal(view.isDestroyed(), true);
+    assert.equal(h.host.isCurrent({ ...a, executionId: acquired.executionId }), true);
+    assert.equal(h.host.isCurrent({ ...b, executionId: acquired.executionId }), true);
+    assert.equal(h.windows[0].isDestroyed(), false); assert.equal(h.host.runtimes.get(a.runtimeId).connections.size, 0);
+});
+
+test('View same-document/subframe navigation keeps its port; a real reload detaches only that View', async t => {
+    const h = harness(t, { resourceLocation: hostedResources() }), a = h.owner(), acquired = await h.host.acquire(a);
+    const opened = await h.host.openView({ ...a, executionId: acquired.executionId, surface: 'full' }, { show: false }), view = h.windows[1];
+    const connection = h.host.viewConnection({ ...a, ...opened });
+    view.webContents.url = acquired.surfaces.full + '#fragment';
+    view.webContents.emit('did-start-navigation', {}, view.webContents.url, true, true);
+    view.webContents.emit('did-start-navigation', {}, 'https://elsewhere.example/', false, false); await tick();
+    assert.equal(view.isDestroyed(), false); assert.equal(h.host.runtimes.get(a.runtimeId).connections.has(opened.connectionId), true);
+    // Same-document navigation preserves the physical attachment. The existing
+    // Node View guard still requires its exact declared URL; do not claim more.
+    view.webContents.url = acquired.surfaces.full;
+    view.webContents.emit('did-start-navigation', {}, acquired.surfaces.full, false, true); await tick(); await tick();
+    assert.equal(view.isDestroyed(), true); assert.throws(connection.assertCurrent);
+    assert.equal(h.windows[0].isDestroyed(), false); assert.equal(h.host.isCurrent({ ...a, executionId: acquired.executionId }), true);
+    assert.equal(h.lifecycle.filter(message => message.type === 'owner-release').length, 0);
+});
+
+test('execution document reload revokes its old instance and source before reacquisition without claiming Node owner evidence', async t => {
+    const h = harness(t, { resourceLocation: hostedResources() }), a = h.owner(), acquired = await h.host.acquire(a);
+    const execution = h.windows[0];
+    execution.webContents.emit('did-start-navigation', {}, execution.webContents.getURL(), false, true); await tick(); await tick();
+    assert.equal(h.host.isCurrent({ ...a, executionId: acquired.executionId }), false);
+    assert.equal(execution.isDestroyed(), true); assert.equal(h.serverCloses, 1); assert.equal(h.host.runtimes.size, 0);
+    const next = await h.host.acquire(h.owner()); assert.notEqual(next.executionId, acquired.executionId);
+    assert.equal(h.lifecycle.filter(message => message.type === 'owner-release').length, 0);
 });
 
 async function supervisedBrowserOwner(t, options = {}) {

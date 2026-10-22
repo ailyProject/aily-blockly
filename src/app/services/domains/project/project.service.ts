@@ -771,6 +771,27 @@ export class ProjectService {
       && session?.signal.aborted === aborted;
   }
 
+  /** Read an activation created by the normal project opening flow. Reading
+   * this boundary must never create a dependency session for an arbitrary path. */
+  captureCurrentProjectActivation(): Readonly<{
+    path: string; projectSessionId: string; signal: AbortSignal; requireCurrent(): void;
+  }> | null {
+    const path = this.currentProjectPath;
+    const session = path ? this.dependencyLifecycleState?.get(path) : undefined;
+    if (!path || !session || session.signal.aborted || this.isProjectOpening) return null;
+    const current = this.captureCurrentProjectGuard();
+    return Object.freeze({ path, projectSessionId: session.projectSessionId, signal: session.signal,
+      requireCurrent: () => {
+        session.signal.throwIfAborted();
+        if (!current() || this.isProjectOpening || this.currentProjectPath !== path
+          || this.dependencyLifecycleState?.get(path) !== session) {
+          throw Object.assign(new Error('Selected project activation was cancelled or replaced.'),
+            { code: 'PROJECT_DEPENDENCY_CANCELLED' });
+        }
+      },
+    });
+  }
+
   assertProjectDependencySession(session: ProjectDependencySession): void {
     this.dependencyLifecycle.assertCurrent(session);
   }
@@ -1967,6 +1988,12 @@ export class ProjectService {
     if (this.currentProjectPath && !(await this.application.closeConnectionGraphWindows())) {
       this.warnConnectionGraphWindowCloseFailure();
       return false;
+    }
+
+    if (!this.electronService.isElectron) {
+      // Revoke the original Browser source before clearing project/UI state.
+      // A failed original close keeps the application owner available for retry.
+      await this.application.closeBrowserProjectDocument?.();
     }
 
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {

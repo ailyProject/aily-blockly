@@ -25,7 +25,7 @@ import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Router } from '@angular/router';
-import { ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
+import { isCmdTerminalOutput, ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { AppItem } from '../../../configs/tool.config';
@@ -1866,7 +1866,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
               return;
             }
 
-            if (output.type === 'close') {
+            if (isCmdTerminalOutput(output)) {
               exitCode = output.code ?? (output.signal ? 1 : 0);
               if (exitCode !== 0 && !errorText) {
                 errorText = output.stderr || output.stdout || this.translate.instant('NETWORK_OTA.SEARCH_FAILED');

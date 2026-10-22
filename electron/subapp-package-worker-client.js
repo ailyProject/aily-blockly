@@ -16,19 +16,17 @@ function extractNpmTarballInBackground(tarballPath, destination, options = {}) {
         maxEntries: options.maxEntries,
       },
     });
-    let settled = false;
-    const finish = (operation, value) => {
-      if (settled) return;
-      settled = true;
-      operation(value);
-    };
+    let completed = false;
+    let result;
+    let failure;
     worker.on('message', message => {
       if (message?.type === 'progress') {
         options.onProgress?.(message.progress);
         return;
       }
       if (message?.type === 'complete') {
-        finish(resolve, message.result);
+        completed = true;
+        result = message.result;
         return;
       }
       if (message?.type === 'error') {
@@ -36,12 +34,17 @@ function extractNpmTarballInBackground(tarballPath, destination, options = {}) {
         error.name = message.error?.name || 'Error';
         if (message.error?.code) error.code = message.error.code;
         if (message.error?.stack) error.stack = message.error.stack;
-        finish(reject, error);
+        failure ||= error;
       }
     });
-    worker.once('error', error => finish(reject, error));
+    worker.once('error', error => { failure ||= error; });
     worker.once('exit', code => {
-      if (!settled) finish(reject, new Error(`Subapp package worker exited before completion (${code})`));
+      // The caller may publish or remove the extraction directory immediately.
+      // A message acknowledges the work; only exit returns its ownership.
+      if (failure) reject(failure);
+      else if (code !== 0 || !completed) {
+        reject(new Error(`Subapp package worker exited before successful completion (${code})`));
+      } else resolve(result);
     });
   });
 }

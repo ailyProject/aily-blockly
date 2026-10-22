@@ -75,7 +75,7 @@
 
 <ng-template #headerTpl>
   <div class="child-host-header-actions">
-    @if (!isNativeObserver) {
+    @if (!isNativeObserver && !isBrowserExecution) {
     <button class="child-host-header-btn ccenter" type="button" [disabled]="hostStatus === 'starting'"
       (click)="restart()" nz-tooltip nzTooltipPlacement="bottom" nzTooltipTitle="Restart" aria-label="Restart">
       <i class="fa-light fa-rotate-right"></i>
@@ -92,6 +92,10 @@
     <div class="iframe-shell">
       @if (isNativeObserver) {
         <app-child-tool-native-observer [toolId]="resolvedToolId" (ready)="frameLoaded = true" (failed)="onNativeObserverError($event)" />
+      }
+      @if (isBrowserExecution && browserSurfaceVisible) {
+        <app-child-tool-browser-surface [toolId]="resolvedToolId" [active]="active"
+          (ready)="onBrowserSurfaceReady($event)" (failed)="onBrowserSurfaceFailed($event)" />
       }
       @if (iframeSrc) {
       <iframe [src]="iframeSrc" (load)="onFrameLoad($event)"></iframe>

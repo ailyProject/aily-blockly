@@ -1,6 +1,6 @@
 import { Injectable, NgZone } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
-import {
+import { isCmdTerminalOutput,
   CmdOutput,
   CmdService,
   CrossPlatformCmdService,
@@ -826,7 +826,7 @@ export class _BuilderService {
               }
             }
             // 检查进程退出码
-            if (output.type === 'close' && ((output.code ?? 0) !== 0 || output.signal)) {
+            if (isCmdTerminalOutput(output) && ((output.code ?? 0) !== 0 || output.signal)) {
               if (!this.preprocessError) {
                 this.preprocessError = output.signal
                   ? `预编译进程被信号终止: ${output.signal}`
@@ -1489,7 +1489,7 @@ export class _BuilderService {
 
               let outputLines: Array<{ line: string; type: 'stdout' | 'stderr' }> = [];
 
-              if (output.type === 'close') {
+              if (isCmdTerminalOutput(output)) {
                 processExitCode = output.code ?? (output.signal ? 1 : 0);
                 processSignal = output.signal || null;
 
@@ -1626,7 +1626,7 @@ export class _BuilderService {
                     }
               });
 
-              if (output.type === 'close' && (processExitCode !== 0 || processSignal)) {
+              if (isCmdTerminalOutput(output) && (processExitCode !== 0 || processSignal)) {
                 this.isErrored = true;
                 const processErrorMessage = processSignal
                   ? this.t('PROCESS_SIGNAL_TERMINATED', { signal: processSignal })

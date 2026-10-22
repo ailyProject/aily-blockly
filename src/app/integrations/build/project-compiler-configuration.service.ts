@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { CmdService } from '@core/platform/public-api';
+import { isCmdTerminalOutput, CmdService } from '@core/platform/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { validateProjectHardwareIntentCompileContextV1,
   type ProjectHardwareIntentCompileContextV1 } from '@aily-project/simulator-protocol/scene';
@@ -106,7 +106,7 @@ export class ProjectCompilerConfigurationService {
             if (new TextEncoder().encode(output).length > MAX_OUTPUT_BYTES) {
               void finish(new Error('configuration-query-output-budget'));
             }
-          } else if (event.type === 'close') {
+          } else if (isCmdTerminalOutput(event)) {
             closed = true;
             void finish(event.code === 0 && !event.signal ? undefined : new Error('configuration-query-failed'));
           } else if (event.type === 'error') void finish(new Error('configuration-query-failed'));

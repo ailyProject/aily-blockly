@@ -3,17 +3,51 @@
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { acquireOwner, releaseOwner, ownerCount, hasOwner, ownerKey } = require('./child-tool-session-leases');
-const { PROTOCOL } = require('./subapp-browser-execution-source');
+const { PROTOCOL, relativeEntry } = require('./subapp-browser-execution-source');
 const { createPackagedRendererServer } = require('./packaged-renderer-server');
+const { createEmbeddedViewDocument } = require('./subapp-browser-view-document');
 
 const CSP = "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' blob:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
 const fault = message => new Error(message);
 
+/** Location metadata is supplied by a Main-only resource provider after its
+ * integrity checks. This validates its geometry, not a renderer declaration. */
+function resourceLocation(location, source) {
+    const origin = new URL(location?.origin);
+    const loopback = origin.hostname === 'localhost' || origin.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
+    if (location.origin !== origin.origin || origin.protocol !== 'https:' && !(origin.protocol === 'http:' && loopback)) {
+        throw fault('Browser execution resource origin must be HTTPS or loopback HTTP');
+    }
+    if (location.resourceBaseUrl === undefined) {
+        if (location.resourceIdentity !== undefined || location.resourcePaths !== undefined) throw fault('Browser execution resource metadata requires a base URL');
+        return { origin: origin.origin, resourceBaseUrl: `${origin.origin}/` };
+    }
+    const base = new URL(location.resourceBaseUrl);
+    if (typeof location.resourceBaseUrl !== 'string' || location.resourceBaseUrl.length > 4096
+        || location.resourceBaseUrl !== base.href || base.origin !== origin.origin
+        || base.username || base.password || base.search || base.hash || !base.pathname.endsWith('/')) {
+        throw fault('Browser execution resource base URL is invalid');
+    }
+    const identity = location.resourceIdentity;
+    if (typeof identity !== 'string' || !identity || identity.length > 256 || identity.trim() !== identity
+        || /[\u0000-\u001f\u007f]/.test(identity)) throw fault('Browser execution resource identity is invalid');
+    if (!Array.isArray(location.resourcePaths) || !location.resourcePaths.length || location.resourcePaths.length > 4096) {
+        throw fault('Browser execution requires an explicit bounded resource list');
+    }
+    const paths = location.resourcePaths.map(relativeEntry);
+    if (new Set(paths).size !== paths.length || ![source.entry, ...Object.values(source.surfaces)].every(entry => paths.includes(entry))) {
+        throw fault('Browser execution entry and surfaces must belong to its unique resource list');
+    }
+    return { origin: origin.origin, resourceBaseUrl: base.href, resourceIdentity: identity,
+        resourcePaths: Object.freeze(paths), resourceUrls: Object.freeze(paths.map(entry => new URL(entry, base).href)) };
+}
+
 /** Hosts documents/leases/ports, never domain sessions or MCU state. The package
  * execution entry owns its existing Runtime and decides its own RPC schema. */
 class SubappBrowserExecutionHost {
-    constructor({ BrowserWindow, MessageChannelMain, timeoutMs = 10000, createServer } = {}) {
+    constructor({ BrowserWindow, MessageChannelMain, timeoutMs = 10000, createServer, createViewDocument } = {}) {
         this.BrowserWindow = BrowserWindow; this.MessageChannelMain = MessageChannelMain;
+        this.createViewDocument = createViewDocument || (input => createEmbeddedViewDocument({ BrowserWindow, ...input }));
         if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 30000) throw fault('Invalid execution deadline');
         this.timeoutMs = timeoutMs;
         this.createServer = createServer || (entry => createPackagedRendererServer({ indexFile: entry,
@@ -62,7 +96,7 @@ class SubappBrowserExecutionHost {
     describe(state) {
         return { executionId: state.executionId, runtimeId: state.runtimeId, version: state.source.version,
             protocol: PROTOCOL, refCount: ownerCount(state),
-            surfaces: Object.fromEntries(Object.entries(state.source.surfaces).map(([name, entry]) => [name, `${state.origin}/${entry}`])) };
+            surfaces: Object.fromEntries(Object.entries(state.source.surfaces).map(([name, entry]) => [name, new URL(entry, state.resourceBaseUrl).href])) };
     }
 
     isCurrent({ runtimeId, executionId, ownerId, leaseId }) {
@@ -71,13 +105,21 @@ class SubappBrowserExecutionHost {
             && !state.retiring.has(ownerKey(ownerId, leaseId)) && hasOwner(state, ownerId, leaseId));
     }
 
-    createDocument(state) {
-        const win = new this.BrowserWindow({ show: false, webPreferences: {
+    documentPreferences(state) {
+        return {
             preload: path.join(__dirname, 'subapp-browser-execution-preload.js'),
             partition: `subapp-execution-${state.executionId}`, nodeIntegration: false,
             nodeIntegrationInWorker: false, nodeIntegrationInSubFrames: false,
             sandbox: true, contextIsolation: true, webSecurity: true, backgroundThrottling: false,
-        } });
+        };
+    }
+
+    createDocument(state) {
+        const win = new this.BrowserWindow({ show: false, webPreferences: this.documentPreferences(state) });
+        return this.protectDocument(state, win);
+    }
+
+    protectDocument(state, win) {
         const contents = win.webContents;
         contents.setWindowOpenHandler(() => ({ action: 'deny' }));
         contents.on('will-navigate', event => event.preventDefault());
@@ -88,7 +130,9 @@ class SubappBrowserExecutionHost {
             let permitted = false;
             try {
                 const url = new URL(details.url);
-                permitted = url.origin === state.origin || url.protocol === 'blob:' && url.pathname.startsWith(state.origin + '/');
+                permitted = url.protocol === 'blob:' ? url.origin === state.origin
+                    : url.origin === state.origin && url.pathname.startsWith(new URL(state.resourceBaseUrl).pathname)
+                        && (!state.resourceUrls || ['GET', 'HEAD'].includes(details.method) && !url.search && !url.hash && state.resourceUrls.includes(url.href));
             } catch { /* Deny malformed and non-owned sources. */ }
             callback({ cancel: !permitted });
         });
@@ -97,9 +141,9 @@ class SubappBrowserExecutionHost {
 
     async start(state) {
         try {
-            state.server = this.createServer(state.source.entry);
-            const { origin } = await state.server.start({ rootDirectory: state.source.rootDirectory });
-            state.origin = origin;
+            state.server = this.createServer(state.source.entry, state.source);
+            const location = resourceLocation(await state.server.start({ rootDirectory: state.source.rootDirectory }), state.source);
+            Object.assign(state, location, { resolvedIdentity: JSON.stringify([state.source.identity, location.resourceBaseUrl, location.resourceIdentity ?? null]) });
             if (state.cancelled) throw fault('Browser execution startup cancelled');
             const win = state.window = this.createDocument(state);
             const contents = win.webContents;
@@ -110,7 +154,7 @@ class SubappBrowserExecutionHost {
                 void this.close(state).catch(() => {});
             };
             contents.once('destroyed', abort); contents.once('render-process-gone', abort);
-            await this.bounded(win.loadURL(`${origin}/${state.source.entry}`), 'Browser execution load');
+            await this.bounded(win.loadURL(new URL(state.source.entry, state.resourceBaseUrl).href), 'Browser execution load');
             if (state.cancelled || win.isDestroyed()) throw fault('Browser execution startup cancelled');
             contents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) abort(); });
             const { port1, port2 } = new this.MessageChannelMain(); state.port = port1;
@@ -187,7 +231,7 @@ class SubappBrowserExecutionHost {
         if (state.connections.size >= 32) throw fault('Browser execution connection limit reached');
         if (purpose === 'view') {
             const entry = state.source.surfaces[surface];
-            if (!entry || target.getURL() !== `${state.origin}/${entry}`) throw fault('View source or version is not trusted');
+            if (!entry || target.getURL() !== new URL(entry, state.resourceBaseUrl).href) throw fault('View source or version is not trusted');
         } else if (!internal && target.id !== ownerId) throw fault('Agent port must return to its owning renderer');
         const { port1, port2 } = new this.MessageChannelMain(), connectionId = randomUUID();
         const binding = { key, connectionId, target };
@@ -213,17 +257,20 @@ class SubappBrowserExecutionHost {
         }
     }
 
-    async openView(input, { show = true } = {}) {
+    async openView(input, { show = true, presentation = 'window', parent, bounds, visible = true } = {}) {
         input.guard();
         const state = this.runtimes.get(input.runtimeId);
         if (!state || state.executionId !== input.executionId || !state.source.surfaces[input.surface]
             || !hasOwner(state, input.ownerId, input.leaseId) || state.closing || state.failed || state.cancelled
             || state.retiring.has(ownerKey(input.ownerId, input.leaseId))) throw fault('Browser View owner or surface is unavailable');
-        const win = this.createDocument(state);
+        if (!['window', 'embedded'].includes(presentation)) throw fault('Unknown Browser View presentation');
+        const win = presentation === 'embedded'
+            ? this.protectDocument(state, this.createViewDocument({ parent, bounds, visible, webPreferences: this.documentPreferences(state) }))
+            : this.createDocument(state);
         (state.views ||= new Set()).add(win);
         win.once('closed', () => state.views.delete(win));
         try {
-            await this.bounded(win.loadURL(`${state.origin}/${state.source.surfaces[input.surface]}`), 'Browser View load');
+            await this.bounded(win.loadURL(new URL(state.source.surfaces[input.surface], state.resourceBaseUrl).href), 'Browser View load');
             const connected = await this.connect({ ...input, target: win.webContents, purpose: 'view' });
             const binding = state.connections.get(connected.connectionId); binding.window = win;
             win.on('close', event => {
@@ -231,8 +278,16 @@ class SubappBrowserExecutionHost {
                 void this.disconnect(state, connected.connectionId).finally(() => { if (!win.isDestroyed()) win.destroy(); }).catch(() => {});
             });
             if (show) win.show();
-            return connected;
-        } catch (error) { if (!win.isDestroyed()) win.destroy(); throw error; }
+            return presentation === 'embedded' ? { ...connected, presentation } : connected;
+        } catch (error) { if (!win.isDestroyed()) await this.bounded(Promise.resolve(win.destroy()), 'Browser View close'); throw error; }
+    }
+
+    updateView({ runtimeId, executionId, ownerId, leaseId, guard, connectionId }, { bounds, visible }) {
+        this.viewConnection({ runtimeId, executionId, ownerId, leaseId, guard, connectionId });
+        const binding = this.runtimes.get(runtimeId).connections.get(connectionId);
+        if (binding.window.presentation !== 'embedded') throw fault('Only an embedded View supports viewport updates');
+        binding.window.update({ bounds, visible });
+        return { updated: true };
     }
 
     async closeView({ runtimeId, executionId, ownerId, leaseId, guard, connectionId }) {
@@ -253,7 +308,7 @@ class SubappBrowserExecutionHost {
             if (!this.isCurrent({ runtimeId, executionId, ownerId, leaseId }) || !binding?.window
                 || binding.key !== ownerKey(ownerId, leaseId) || state.connections.get(connectionId) !== binding
                 || binding.disconnecting || binding.target.isDestroyed()
-                || !Object.values(state.source.surfaces).some(entry => binding.target.getURL() === `${state.origin}/${entry}`)) {
+                || !Object.values(state.source.surfaces).some(entry => binding.target.getURL() === new URL(entry, state.resourceBaseUrl).href)) {
                 throw fault('Installed View connection is no longer current');
             }
         };
@@ -285,8 +340,8 @@ class SubappBrowserExecutionHost {
                 ]);
                 const failures = results.filter(result => result.status === 'rejected');
                 if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'View connection cleanup was not acknowledged');
+                if (binding.window && !binding.window.isDestroyed()) await this.bounded(Promise.resolve(binding.window.destroy()), 'Browser View close');
                 binding.remove(); state.connections.delete(connectionId);
-                if (binding.window && !binding.window.isDestroyed()) binding.window.destroy();
             } finally { binding.disconnecting = null; }
         })();
         return binding.disconnecting;
@@ -369,11 +424,13 @@ class SubappBrowserExecutionHost {
             for (const pending of state.pending.values()) pending.reject(fault('Browser execution closed'));
             state.pending.clear();
             state.port?.close();
-            for (const win of state.views || []) if (!win.isDestroyed()) win.destroy();
+            const viewCleanup = await Promise.allSettled([...(state.views || [])].map(async win => {
+                if (!win.isDestroyed()) await this.bounded(Promise.resolve(win.destroy()), 'Browser View close');
+            }));
             if (state.window && !state.window.isDestroyed()) state.window.destroy();
             if (state.window && !state.window.isDestroyed()) throw fault('Browser execution physical teardown unconfirmed');
             await state.server?.close();
-            const failures = [...ownerCleanup, ...connectionCleanup].filter(result => result.status === 'rejected');
+            const failures = [...ownerCleanup, ...connectionCleanup, ...viewCleanup].filter(result => result.status === 'rejected');
             if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'View Node control cleanup remains owned');
             for (const binding of state.connections.values()) binding.remove();
             state.connections.clear();

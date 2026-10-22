@@ -1,0 +1,87 @@
+:host {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: block;
+}
+
+.startup-status {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  height: 100%;
+  padding: 24px 16px;
+  overflow: auto;
+  background: var(--aily-bg-primary, #101418);
+  color: var(--aily-text-primary, #e9edf0);
+  text-align: center;
+}
+
+.startup-waveform {
+  flex: 0 0 auto;
+  width: min(100%, 340px);
+  max-height: 44%;
+}
+
+.waveform-frame {
+  fill: var(--aily-bg-secondary, #171c21);
+  stroke: var(--aily-border-primary, #303a42);
+  stroke-width: 1;
+}
+
+.waveform-heading {
+  fill: var(--aily-text-secondary, #adb6bd);
+  font: 500 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 2px;
+}
+
+.waveform-header-mark {
+  fill: none;
+  stroke: var(--aily-text-tertiary, #78838b);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.waveform-screen { overflow: hidden; }
+.waveform-background { fill: var(--aily-bg-primary, #101418); }
+
+.waveform-grid,
+.waveform-divider {
+  fill: none;
+  stroke: var(--aily-text-tertiary, #78838b);
+  stroke-width: 0.75;
+  opacity: 0.12;
+}
+
+.waveform-divider { opacity: 0.3; }
+.waveform-analog { color: #48d4bc; }
+.waveform-digital { color: #e9b366; }
+.waveform-channel-dot { fill: currentColor; }
+
+.waveform-trace {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.waveform-flow { animation: startup-waveform-scroll 4s linear infinite; }
+.waveform-flow-digital { animation-duration: 3.2s; }
+
+.startup-copy { max-width: 34ch; }
+h2 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+p { margin: 8px 0 0; color: var(--aily-text-secondary, #adb6bd); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.has-error h2 { color: var(--aily-color-error, #e34d59); }
+
+@keyframes startup-waveform-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-160px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waveform-flow { animation: none; }
+}

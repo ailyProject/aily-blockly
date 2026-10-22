@@ -114,7 +114,8 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
                 browserExecution = await bindProcess(lease, guard, runtime, input.toolId);
                 guard();
             }
-            const view = await host.openView({ ...lease, guard, surface: input.surface });
+            const view = await host.openView({ ...lease, guard, surface: input.surface }, input.presentation === undefined
+                ? undefined : { presentation: input.presentation, parent: event.sender, bounds: input.bounds, visible: input.visible });
             if (!lease.nodeControlSource) return view;
             const connection = host.viewConnection({ ...lease, guard, connectionId: view.connectionId });
             let node;
@@ -130,6 +131,8 @@ function registerBrowserExecutionHandlers({ ipcMain, host, supervisor, prepareLa
                 throw error;
             }
         }
+        if (input.action === 'updateView') return host.updateView({ ...lease, guard, connectionId: input.connectionId },
+            { bounds: input.bounds, visible: input.visible });
         if (input.action === 'closeView') return host.closeView({ ...lease, guard, connectionId: input.connectionId });
         throw new Error('Unknown Browser execution action');
     });

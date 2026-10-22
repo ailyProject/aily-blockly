@@ -136,11 +136,14 @@ export class BlocklyLiveOperationBridgeService {
   }
 
   private async executeOperation(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
-    // Owner control does not access the workspace. Keep heartbeats and cleanup
+    // Discovery and owner control do not access the workspace. Keep these
     // reachable while a project operation holds its gate; the subapp bridge
     // still validates lease ownership. Tool execution remains behind the gate.
     if (payload.operation === 'subapp_agent_owner') {
       return this.subappAgentBridgeService.manageOwnerLease(payload.params || {});
+    }
+    if (payload.operation === 'subapp_agent_tools') {
+      return this.subappAgentBridgeService.listTools(payload.params || {});
     }
     if (payload.operation === 'subapp_agent_release') {
       return this.subappAgentBridgeService.releaseSession(String(payload.params?.['sessionId'] || '').trim());

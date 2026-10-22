@@ -1,4 +1,9 @@
 import { CoderProjectRuntimeService } from '../../integrations/coder/coder-project-runtime.service';
+import {
+  CODER_BROWSER_EMBED_CONFIGURATION, type CoderBrowserEmbedConfiguration,
+} from '../../integrations/coder/coder-browser-embed.providers';
+import { openCoderBrowserDocument } from '../../integrations/coder/coder-browser-document';
+import { BrowserProjectDocumentService } from '../../integrations/project/browser-project-document.service';
 import { Component, ElementRef, OnInit, OnDestroy, AfterViewInit, ViewChild, Input, OnChanges, SimpleChanges, inject, isDevMode } from '@angular/core';
 import { CoderEditorLayoutService, CODER_SIDEBAR_STATE_CHANNEL } from '../../integrations/coder/coder-editor-layout.service';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
@@ -13,7 +18,7 @@ import { ProjectService } from '@domain/project/public-api';
 import { BuilderService } from '../code-editor/services/builder.service';
 import { BuilderService as TopBuilderService } from '@domain/build/public-api';
 import { UploaderService } from '@domain/device/public-api';
-import {
+import { isCmdTerminalOutput,
   ElectronService,
   CmdService,
   type CmdOutput,
@@ -174,13 +179,24 @@ function boundedCoderNativeSearchInteger(
 })
 export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
   private readonly coderLayout = inject(CoderEditorLayoutService);
+  private readonly browserConfiguration = inject(CODER_BROWSER_EMBED_CONFIGURATION);
+  private readonly browserProjectDocument = inject(BrowserProjectDocumentService);
+  private browserDeployment: Readonly<CoderBrowserEmbedConfiguration> | null = null;
+  private browserDocument: ReturnType<BrowserProjectDocumentService['openDocument']> | null = null;
+  private browserView: { setVisible(visible: boolean): void; detach(): void } | null = null;
+  @ViewChild('browserProjectView') browserProjectView?: ElementRef<HTMLElement>;
   @ViewChild('coderEmbedFrame') coderEmbedFrame?: ElementRef<HTMLIFrameElement>;
+  get browserMode(): boolean { return !this.electronService.isElectron; }
 
   @Input({ required: true }) projectPath = '';
   @Input() active = false;
   coderFrameProjectPath = '';
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (!this.electronService.isElectron) {
+      if (changes['active']) this.browserView?.setVisible(this.active);
+      return;
+    }
     if (changes['active'] && this.active) {
       this.aiCoderDiffBridge.setWorkspaceRoot(this.projectPath);
       this.aiCoderDiffBridge.registerEmbed(this.coderEmbedFrame?.nativeElement?.contentWindow ?? null);
@@ -306,6 +322,12 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   ngOnInit() {
+    if (!this.electronService.isElectron) {
+      window.addEventListener('message', this.coderNativeFsBridgeListener);
+      document.addEventListener('visibilitychange', this.onDocumentVisibilityChange);
+      this.startBrowserEmbed();
+      return;
+    }
     const session = this.coderRuntime.getSession(this.projectPath);
     this.projectService = session.project;
     this.npmService = session.injector.get(NpmService);
@@ -437,6 +459,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   ngAfterViewInit(): void {
+    if (this.browserMode) this.attachBrowserProjectView();
     window.addEventListener('resize', this.onEmbedLayoutResize);
     const host = this.elementRef.nativeElement.querySelector<HTMLElement>('.code-editor-pro');
     if (host) {
@@ -447,11 +470,47 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   /** 通知 iframe 内 workbench 按当前 iframe 宽度重排 */
   private requestCoderEmbedLayoutRefresh(): void {
-    const win = this.coderEmbedFrame?.nativeElement?.contentWindow;
+    const win = this.browserMode ? this.browserDocument?.frame.contentWindow : this.coderEmbedFrame?.nativeElement?.contentWindow;
     if (!win) {
       return;
     }
-    win.postMessage({ channel: CODER_HOST_LAYOUT_REFRESH_CHANNEL }, '*');
+    win.postMessage({ channel: CODER_HOST_LAYOUT_REFRESH_CHANNEL }, this.browserDeployment?.editorURL
+      ? new URL(this.browserDeployment.editorURL).origin : '*');
+  }
+
+  private startBrowserEmbed(): void {
+    this.beginCoderEmbedLoading();
+    try {
+      if (!this.browserConfiguration) throw new Error('Trusted Browser editor deployment is not configured.');
+      const opened = openCoderBrowserDocument({ documents: this.browserProjectDocument, configuration: this.browserConfiguration });
+      this.browserDeployment = opened.deployment;
+      this.coderFrameProjectPath = 'browser-editor'; // Presentation key, never a project identity.
+      this.coderLoadingStage = 'workbench';
+      this.browserDocument = opened.host;
+      const originalDocument = this.browserDocument;
+      originalDocument.frame.title = 'Aily Coder';
+      this.attachBrowserProjectView();
+      void originalDocument.ready.then(() => {
+        if (!this.destroyed && this.browserDocument === originalDocument) this.completeCoderEmbedLoading();
+      }, error => {
+        if (!this.destroyed && this.browserDocument === originalDocument) {
+          this.coderEmbedLoading = false;
+          this.coderEmbedError = error instanceof Error ? error.message : String(error);
+        }
+      });
+    } catch (error) {
+      this.coderEmbedSrc = null;
+      this.coderEmbedLoading = false;
+      this.coderEmbedLoaderVisible = true;
+      this.coderEmbedError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  private attachBrowserProjectView(): void {
+    const anchor = this.browserProjectView?.nativeElement;
+    if (this.destroyed || !anchor || !this.browserDocument) return;
+    this.browserView?.detach();
+    this.browserView = this.browserDocument.attachView(anchor, this.active);
   }
 
   /**
@@ -510,7 +569,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   ngOnDestroy(): void {
     this.destroyed = true;
     this.clearCoderEmbedLoadingTimers();
-    this.proProject.unregisterPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
+    if (this.electronService.isElectron) this.proProject.unregisterPersistenceBridge(this.projectPath, this.coderPersistenceBridge);
     this.unregisterCoderEditorUpdateClient?.();
     this.unregisterCoderEditorUpdateClient = null;
     this.coderWorkbenchReady = false;
@@ -531,7 +590,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.detachCoderEmbedFrame();
     this.stopBuildOutputsWatch();
     this.codeSuggestionHostBridge.dispose();
-    if (this.active) this.aiCoderDiffBridge.setWorkspaceRoot(null);
+    if (this.electronService.isElectron && this.active) this.aiCoderDiffBridge.setWorkspaceRoot(null);
     this.coderEmbedWorkspaceRoot = null;
     if (this.coderRuntimeHostInfo) {
       this.coderRuntimeHostInfo = null;
@@ -803,6 +862,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
    * iframe 每次加载完成后向 aily-coder-editor 同步宿主上下文（构建目录等），避免依赖 ProjectService 竞态。
    */
   onCoderEmbedFrameLoad(): void {
+    if (!this.electronService.isElectron) return;
     this.coderLayout.reset(this.projectPath);
     this.coderInitialContextFrame = null;
     this.coderInitialContextRoot = '';
@@ -840,7 +900,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private beginCoderEmbedLoading(): void {
-    if (this.coderRuntime && this.projectPath) this.coderRuntime.getSession(this.projectPath).editorReady = false;
+    if (this.electronService.isElectron && this.coderRuntime && this.projectPath) this.coderRuntime.getSession(this.projectPath).editorReady = false;
     this.clearCoderEmbedLoadingTimers();
     this.detachCoderEmbedFrame();
     this.coderEmbedLoading = true;
@@ -860,9 +920,23 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   retryCoderEmbed(): void {
+    if (!this.electronService.isElectron) { void this.retryBrowserEmbed(); return; }
     const root = this.coderEmbedWorkspaceRoot;
     if (root) {
       void this.initCoderEmbed(root);
+    }
+  }
+
+  private async retryBrowserEmbed(): Promise<void> {
+    try {
+      // Explicit retry may replace the original document only after its real
+      // cleanup succeeds. Visibility/detach never invokes this operation.
+      await this.browserProjectDocument.closeDocument();
+      if (this.destroyed) return;
+      this.browserDocument = null;
+      this.startBrowserEmbed();
+    } catch (error) {
+      if (!this.destroyed) this.coderEmbedError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -1385,6 +1459,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   /** iframe 重载或销毁前统一断开消息桥和其注册的宿主 watcher。 */
   private detachCoderEmbedFrame(): void {
+    if (!this.electronService.isElectron) {
+      this.browserView?.detach(); this.browserView = null;
+      return;
+    }
     this.coderLayout.reset(this.projectPath);
     this.stopAllCoderEmbedFsWatchers();
     this.stopAllCoderNativeSearches();
@@ -1616,7 +1694,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
             finish(new Error(event.error || stderrChunks.join('') || 'Git 命令执行失败'));
             return;
           }
-          if (event.type === 'close') {
+          if (isCmdTerminalOutput(event)) {
             if (stdoutSize === 0 && typeof event.stdout === 'string') {
               stdoutChunks.push(event.stdout);
             }
@@ -2062,6 +2140,18 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private async onCoderNativeFsMessage(ev: MessageEvent): Promise<void> {
+    if (!this.electronService.isElectron) {
+      if (!this.browserDeployment || ev.source !== this.browserDocument?.frame.contentWindow
+        || ev.origin !== new URL(this.browserDeployment.editorURL).origin) return;
+      if (ev.data?.channel === AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL
+        && ev.data.version === AILY_CODER_EDITOR_READY_PROTOCOL_VERSION) this.armCoderReadyTimeout();
+      if (ev.data?.channel === AILY_CODER_EDITOR_READY_CHANNEL
+        && ev.data.version === AILY_CODER_EDITOR_READY_PROTOCOL_VERSION) {
+        this.coderWorkbenchReady = true;
+        this.completeCoderEmbedLoading();
+      }
+      return;
+    }
     if (ev.data?.channel === CODER_SIDEBAR_STATE_CHANNEL) {
       const frame = this.coderEmbedFrame?.nativeElement?.contentWindow;
       if (frame && ev.source === frame && typeof ev.data.visible === 'boolean') {

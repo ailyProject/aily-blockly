@@ -8,7 +8,7 @@ import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { TerminalComponent } from '../tools/terminal/terminal.component';
 import { LogComponent } from '../tools/log/log.component';
 import { UiService, UpdateService, OnboardingService } from '@core/app-shell/public-api';
-import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
+import { ChildToolPresentationComponent } from '../tools/child-tool-presentation/child-tool-presentation.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '@domain/project/public-api';
 import { SimplebarAngularModule } from 'simplebar-angular';
@@ -66,7 +66,7 @@ const RIGHT_SIDER_MAX_WIDTH = 800;
     NzTabsModule,
     TerminalComponent,
     LogComponent,
-    ChildToolHostComponent,
+    ChildToolPresentationComponent,
     CodeViewerComponent,
     SimplebarAngularModule,
     AppStoreComponent,
@@ -104,7 +104,7 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   isChildTool(toolId: string): boolean {
-    return toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID || isChildTool(toolId);
+    return toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID || isChildTool(toolId) || this.appStoreService.isWebTool(toolId);
   }
 
   options = {

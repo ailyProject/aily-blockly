@@ -1,21 +1,11 @@
 import { Injectable } from '@angular/core';
 import { lastValueFrom, Observable, Subject } from 'rxjs';
 import { LogService } from './log.service';
+import { isCmdTerminalOutput, type CmdOutput } from './cmd-output';
+export type { CmdOutput, CmdPhysicalTerminal } from './cmd-output';
+export { isCmdTerminalOutput } from './cmd-output';
 
 declare const electronAPI: any;
-
-export interface CmdOutput {
-  type: 'stdout' | 'stderr' | 'close' | 'error';
-  data?: string;
-  code?: number;
-  signal?: string;
-  error?: string;
-  streamId: string;
-  /** close 事件时附带的累积 stderr 输出 */
-  stderr?: string;
-  /** close 事件时附带的累积 stdout 输出 */
-  stdout?: string;
-}
 
 export interface CmdOptions {
   command?: string;
@@ -75,7 +65,7 @@ export class CmdService {
       ...processOptions,
       streamId
     };
-    // 累积 stderr/stdout 输出，在 close 事件时附加到返回数据中
+    // 累积 stderr/stdout 输出，在物理终态时附加到返回数据中
     const MAX_COLLECTED_SIZE = 2000;
     let collectedStderr = '';
     let collectedStdout = '';
@@ -107,8 +97,8 @@ export class CmdService {
         }
       }
 
-      // close 事件时，将累积的 stderr/stdout 附加到事件对象上
-      if (data.type === 'close') {
+      // 物理终态时，将累积的 stderr/stdout 附加到事件对象上
+      if (isCmdTerminalOutput(data)) {
         data.stderr = collectedStderr;
         data.stdout = collectedStdout;
 
@@ -129,7 +119,7 @@ export class CmdService {
       subject.next(data);
 
       // 如果是关闭或错误事件，完成Observable
-      if (data.type === 'close' || data.type === 'error') {
+      if (isCmdTerminalOutput(data) || data.type === 'error') {
         subject.complete();
       }
     });
@@ -181,7 +171,7 @@ export class CmdService {
         removeAbortListener: () => signal?.removeEventListener('abort', onAbort),
         resolve: (value: CmdOutput) => {
           observer.next(value);
-          if (value.type === 'close' || value.type === 'error') {
+          if (isCmdTerminalOutput(value) || value.type === 'error') {
             observer.complete();
           }
         },
@@ -284,7 +274,7 @@ export class CmdService {
 
   async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, options?: Partial<CmdOptions>): Promise<CmdOutput> {
     const result = await this.runAsync(command, cwd, useQueue, silent, options);
-    if (result.type === 'error' || (result.code ?? 0) !== 0) {
+    if (result.type === 'error' || (result.code ?? 0) !== 0 || result.signal) {
       throw new Error(result.error || result.stderr || result.stdout || `Command failed with exit code ${result.code ?? 'unknown'}: ${command}`);
     }
     return result;

@@ -506,7 +506,7 @@ export class UiService {
       return true;
     }
 
-    const childHostRegistered = !!getChildToolConfig(name) && this.childHostRegistry.has(name);
+    const childHostRegistered = this.childHostRegistry.has(name);
     try {
       return await closeToolThroughLifecycle({
         childHostRegistered,
@@ -521,6 +521,7 @@ export class UiService {
 
   /** Complete a close after the child lifecycle guard has already settled. */
   completeToolClose(name: string): void {
+    if (!this.openToolList.includes(name)) return;
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.actionSubject.next({ action: 'close', type: 'tool', data: name });
   }

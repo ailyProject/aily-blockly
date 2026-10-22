@@ -1,0 +1,32 @@
+<section class="startup-status" [class.has-error]="phase === 'error'" [attr.data-phase]="phase"
+  [attr.role]="phase === 'error' ? 'alert' : 'status'"
+  [attr.aria-live]="phase === 'error' ? 'assertive' : 'polite'"
+  [attr.aria-busy]="phase === 'error' ? 'false' : 'true'">
+  @if (phase !== 'error') {
+  <svg class="startup-waveform" data-startup-visual="waveform" viewBox="0 0 360 216"
+    aria-hidden="true" focusable="false">
+    <rect class="waveform-frame" x="8" y="8" width="344" height="200" rx="14" />
+    <text class="waveform-heading" x="26" y="33">SIMULATOR</text>
+    <circle class="waveform-channel-dot waveform-analog" cx="288" cy="29" r="3" />
+    <circle class="waveform-channel-dot waveform-digital" cx="304" cy="29" r="3" />
+    <path class="waveform-header-mark" d="M322 25h12m-12 8h8" />
+    <svg class="waveform-screen" x="24" y="50" width="312" height="140" viewBox="0 0 312 140">
+      <rect class="waveform-background" width="312" height="140" rx="5" />
+      <path class="waveform-grid" d="M26 0v140m26-140v140m26-140v140m26-140v140m26-140v140m26-140v140m26-140v140m26-140v140m26-140v140m26-140v140m26-140v140M0 28h312M0 56h312M0 84h312M0 112h312" />
+      <path class="waveform-divider" d="M0 74h312" />
+      <g class="waveform-flow waveform-flow-analog">
+        <path class="waveform-trace waveform-analog"
+          d="M0 42c13-22 27-22 40 0s27 22 40 0 27-22 40 0 27 22 40 0c13-22 27-22 40 0s27 22 40 0 27-22 40 0 27 22 40 0c13-22 27-22 40 0s27 22 40 0 27-22 40 0 27 22 40 0c13-22 27-22 40 0s27 22 40 0 27-22 40 0 27 22 40 0" />
+      </g>
+      <g class="waveform-flow waveform-flow-digital">
+        <path class="waveform-trace waveform-digital"
+          d="M0 116h20V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h40V92h40v24h20" />
+      </g>
+    </svg>
+  </svg>
+  }
+  <div class="startup-copy">
+    <h2>{{ title }}</h2>
+    <p>{{ detail }}</p>
+  </div>
+</section>

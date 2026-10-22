@@ -12,6 +12,7 @@ import { applyCdcSerialPortOverrides } from '../../editors/blockly-editor/compon
 import { BlocklyGeneratorRuntimeService } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
+import { BrowserProjectDocumentService } from './browser-project-document.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -24,6 +25,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     private readonly generatorRuntime: BlocklyGeneratorRuntimeService,
     private readonly blocklyService: BlocklyService,
     private readonly blocklyEditorProjectService: BlocklyEditorProjectService,
+    private readonly browserProjectDocument: BrowserProjectDocumentService,
   ) {}
 
   updateFooterState(state: { state: string; text: string; timeout?: number }): void {
@@ -36,6 +38,10 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
 
   closeConnectionGraphWindows(): Promise<boolean> {
     return this.uiService.closeConnectionGraphWindows();
+  }
+
+  closeBrowserProjectDocument(): Promise<void> {
+    return this.browserProjectDocument.closeDocument();
   }
 
   hasActiveProjectMutation(projectPath: string): boolean {

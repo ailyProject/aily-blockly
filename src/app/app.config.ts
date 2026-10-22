@@ -31,9 +31,30 @@ import { SUBAPP_AUTOMATION_PORT } from '@integration/subapps/public-api';
 import { SubappAutomationAdapter } from './integrations/subapps/subapp-automation.adapter';
 import { SimulatorHostProviderProductService } from './integrations/simulator/simulator-host-provider-product.service';
 import { ElectronService } from '@core/platform/public-api';
+import { provideSimulatorWebApplication } from './integrations/simulator/simulator-web-app.providers';
+import { BLOCKLY_SIMULATOR_WEB_DEPLOYMENT, provideBlocklySimulatorWebProject } from './integrations/simulator/blockly-simulator-web.providers';
+import { provideBrowserProjectInput } from './integrations/project/browser-project-input.providers';
+import {
+  CHILD_TOOL_NATIVE_PRESENTATION, CHILD_TOOL_PRESENTATION_PLATFORM, CHILD_TOOL_PRESENTATION_OVERRIDES, CHILD_TOOL_WEB_PRESENTATIONS,
+} from './tools/child-tool-presentation/child-tool-presentation.providers';
 
 export const appConfig: ApplicationConfig = {
   providers: [
+    provideSimulatorWebApplication(),
+    provideBlocklySimulatorWebProject(),
+    provideBrowserProjectInput(),
+    { provide: CHILD_TOOL_PRESENTATION_PLATFORM,
+      useFactory: (electron: ElectronService) => electron.isElectron ? 'native' : 'web', deps: [ElectronService] },
+    { provide: CHILD_TOOL_PRESENTATION_OVERRIDES,
+      useFactory: (deployment: unknown) => Object.freeze(deployment ? { simulator: 'web' } : {}),
+      deps: [BLOCKLY_SIMULATOR_WEB_DEPLOYMENT] },
+    { provide: CHILD_TOOL_NATIVE_PRESENTATION,
+      useValue: () => import('./tools/child-tool-host/child-tool-host.component').then(module => module.ChildToolHostComponent) },
+    { provide: CHILD_TOOL_WEB_PRESENTATIONS, useValue: Object.freeze({ simulator: Object.freeze({
+      app: Object.freeze({ name: 'Aily Simulator', icon: 'fa-light fa-wave-pulse', defaultToolbar: true }),
+      load: () => import('./tools/simulator-web/simulator-web.component').then(module => module.SimulatorWebComponent),
+      inputs: (context: { toolId: string }) => ({ toolId: context.toolId }),
+    }) }) },
     { provide: CODER_EXECUTION_PORT, useExisting: CoderProjectRuntimeService },
     provideZoneChangeDetection({ 
       eventCoalescing: true,

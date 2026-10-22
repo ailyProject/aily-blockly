@@ -61,6 +61,21 @@ export class SubappOwnerGuard {
     return { browserExecution: { endpoint: { kind: 'browser-message-port', runtimeId: result.endpoint.runtimeId }, connectionId: result.connectionId } };
   }
 
+  /** View operations retain this exact owner; closing a View never disposes the
+   * renderer generation shared with Agent owners. */
+  async browserView(
+    action: 'openView' | 'updateView' | 'closeView' | 'release',
+    toolId: string,
+    ownerSessionId: string,
+    input: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!ownerSessionId || !this.api() || this.closed) throw new Error('Browser View requires a live Subapp owner');
+    const generation = await this.generation();
+    const session = (window as any).electronAPI?.childToolSession || window['childToolSession'];
+    if (this.closed || typeof session?.browserExecution !== 'function') throw new Error('Browser execution is unavailable');
+    return session.browserExecution({ ...input, action, generation, toolId, ownerSessionId });
+  }
+
   close(): Promise<void> {
     this.closed = true;
     return this.closing ??= (async () => {

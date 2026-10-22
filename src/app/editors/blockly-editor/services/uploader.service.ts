@@ -14,7 +14,7 @@ import { _BuilderService } from "./builder.service";
 import { BuilderService as HostBuilderService } from "@domain/build/public-api";
 import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { NzModalService } from "ng-zorro-antd/modal";
-import { CmdOutput, CmdService, LogService } from '@core/platform/public-api';
+import { isCmdTerminalOutput, CmdOutput, CmdService, LogService } from '@core/platform/public-api';
 import { NpmService } from "@domain/dependencies/public-api";
 import { BlocklyService } from "./blockly.service";
 import { appendProjectLog, type ProjectLogLevel } from '../../../utils/project-log.utils';
@@ -692,7 +692,7 @@ export class _UploaderService {
           next: async (output: CmdOutput) => {
             this.streamId = output.streamId;
 
-            if (output.type === 'close') {
+            if (isCmdTerminalOutput(output)) {
               const trailingLine = bufferData.trim();
               if (trailingLine) {
                 errorText = trailingLine;
@@ -1273,7 +1273,7 @@ export class _UploaderService {
           next: (output: CmdOutput) => {
             this.streamId = output.streamId;
 
-            if (output.type === 'close') {
+            if (isCmdTerminalOutput(output)) {
               processExitCode = output.code ?? (output.signal ? 1 : 0);
               if (!this.cancelled && processExitCode !== 0) {
                 errorText = output.signal
@@ -1754,7 +1754,7 @@ export class _UploaderService {
         }
         this.cmdService.run(uploadCmd, currentProjectPath, false, false).subscribe({
           next: (output: CmdOutput) => {
-            if (output.type === 'close') {
+            if (isCmdTerminalOutput(output)) {
               if ((output.code ?? 0) !== 0 || output.signal) {
                 hasError = true;
                 errorMessage = output.signal
