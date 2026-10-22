@@ -8,14 +8,17 @@ const OWNER_ENV = 'AILY_BUILD_WORKSPACE_OWNER';
 const SUPERVISOR_ENV = 'AILY_BUILD_WORKSPACE_SUPERVISOR';
 const BUILDER_ENV = 'AILY_BUILDER_WORKSPACE';
 const BUILDER_MARKER = 'aily-builder.lock';
+const RECOVERY_MARKER = 'aily-workspace-recovery.lock';
 const fault = (code, message) => Object.assign(new Error(`${code}: ${message}`), { code });
 const canonical = value => process.platform === 'win32' ? value.toLowerCase() : value;
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const OPERATIONS = new Set(['compile', 'preprocess', 'publish', 'clean', 'verify']);
+const NON_DELEGATING_OPERATIONS = new Set(['publish', 'clean']);
 
 /** Cooperative host build lease, not a file-editor lock or a security boundary.
  * A dead parent does NOT prove that its compiler descendants stopped. Therefore
- * no time-based/PID-only takeover is allowed; interruption retains the marker.
+ * compile/preprocess/verify interruptions retain the marker. Publication and
+ * cleanup never delegate work: their exited owner can be recovered separately.
  */
 function openWorkspace(projectPath) {
     const root = fs.realpathSync(projectPath), identity = fs.lstatSync(root);
@@ -52,6 +55,51 @@ function processAlive(pid) {
     catch (error) { return error.code !== 'ESRCH'; }
 }
 
+function markerExists(workspace, filename) {
+    workspace.check();
+    try { fs.lstatSync(filename); return true; }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+function recoverPublication(workspace, previous) {
+    // An operation name is a contract, not evidence that a compiler stopped.
+    // Only operations which cannot delegate are eligible, with no Builder phase.
+    if (!NON_DELEGATING_OPERATIONS.has(previous.record.operation)
+        || markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) return undefined;
+    const recoveryPath = path.join(workspace.directory, RECOVERY_MARKER);
+    let guard;
+    try { guard = fs.openSync(recoveryPath, 'wx', 0o600); }
+    catch (error) {
+        if (error.code === 'EEXIST') throw fault('BUILD_WORKSPACE_BUSY', 'Build workspace recovery is already in progress.');
+        throw error;
+    }
+    const identity = fs.fstatSync(guard);
+    try {
+        fs.writeFileSync(guard, JSON.stringify({ pid: process.pid, ownerToken: previous.record.token }));
+        // Re-read under the exclusive recovery guard. Two windows may have read
+        // the same dead owner; a delayed contender must never unlink its successor.
+        let current;
+        try { current = readOwner(workspace); }
+        catch { throw fault('BUILD_WORKSPACE_BUSY', 'Build ownership changed during recovery; retry the current operation.'); }
+        if (!sameFile(previous.stat, current.stat) || previous.bytes !== current.bytes || processAlive(current.record.pid)) {
+            throw fault('BUILD_WORKSPACE_BUSY', 'Build ownership changed during recovery; retry the current operation.');
+        }
+        if (markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) return undefined;
+        fs.unlinkSync(workspace.filename);
+        // Reserve the replacement before dropping the guard. Normal acquisition
+        // still uses wx, so a contender can never share ownership with us.
+        try { return fs.openSync(workspace.filename, 'wx', 0o600); }
+        catch (error) {
+            if (error.code === 'EEXIST') throw fault('BUILD_WORKSPACE_BUSY', 'Another build acquired the recovered workspace.');
+            throw error;
+        }
+    } finally {
+        fs.closeSync(guard);
+        workspace.check();
+        if (sameFile(identity, fs.lstatSync(recoveryPath))) fs.unlinkSync(recoveryPath);
+    }
+}
+
 function acquireBuildWorkspace(projectPath, operation, { inherited = undefined } = {}) {
     if (!OPERATIONS.has(operation)) throw fault('BUILD_WORKSPACE_INVALID', 'Invalid operation.');
     const workspace = openWorkspace(projectPath);
@@ -65,16 +113,23 @@ function acquireBuildWorkspace(projectPath, operation, { inherited = undefined }
         }
         return lease(workspace, owner, false);
     }
+    if (markerExists(workspace, path.join(workspace.directory, RECOVERY_MARKER))) {
+        throw fault('BUILD_WORKSPACE_BUSY', 'Build workspace recovery is in progress. An interrupted recovery requires verified cleanup.');
+    }
     let descriptor;
     try { descriptor = fs.openSync(workspace.filename, 'wx', 0o600); }
     catch (error) {
         if (error.code !== 'EEXIST') throw error;
         let previous;
-        try { previous = readOwner(workspace).record; } catch { /* A partial/unsafe marker is still exclusive. */ }
-        if (previous && !processAlive(previous.pid)) {
-            throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Host owner PID ${previous.pid} exited. Do not retry or remove its marker until all compiler descendants are confirmed stopped; then explicitly clean only .build/aily-workspace.lock.`);
+        try { previous = readOwner(workspace); } catch { /* A partial/unsafe marker is still exclusive. */ }
+        if (previous && !processAlive(previous.record.pid)) {
+            descriptor = recoverPublication(workspace, previous);
+            if (descriptor === undefined) {
+                throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Host owner PID ${previous.record.pid} exited. Do not retry or remove its marker until all compiler descendants are confirmed stopped; then explicitly clean only .build/aily-workspace.lock.`);
+            }
+        } else {
+            throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project. Retry after it finishes. An interrupted owner requires verified cleanup; do not delete its marker while compiler descendants may be running.');
         }
-        throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project. Retry after it finishes. An interrupted owner requires verified cleanup; do not delete its marker while compiler descendants may be running.');
     }
     const supervisor = process.env[SUPERVISOR_ENV];
     const record = { schemaVersion: 1, pid: process.pid, token: randomUUID(), operation, startedAt: new Date().toISOString(),
@@ -112,7 +167,11 @@ function lease(workspace, owner, owns) {
         buildId: owner.record.token,
         assertOwned,
         assertBuilderIdle,
-        childEnvironment: () => { assertOwned(); return { ...process.env, [OWNER_ENV]: owner.record.token }; },
+        childEnvironment: () => {
+            assertOwned();
+            if (owner.record.operation !== 'compile') throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Only compile may delegate a preprocess child.');
+            return { ...process.env, [OWNER_ENV]: owner.record.token };
+        },
         builderEnvironment: operation => {
             assertBuilderIdle();
             if (!['compile', 'preprocess', 'verify'].includes(operation)
