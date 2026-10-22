@@ -47,7 +47,7 @@ function tracked(patch = {}) {
   return { api, descriptors };
 }
 
-for (const operation of ['compile', 'preprocess', 'verify', 'publish', 'clean']) {
+for (const operation of ['publish', 'clean']) {
   test(`exited ${operation} without a child grant recovers and preserves project data`, t => {
     const f = fixture(t, operation);
     for (const file of ['project.abi', '.build/firmware.elf', '.build/aily-artifact-manifest.json']) fs.writeFileSync(path.join(f.root, file), 'preserve');
@@ -60,6 +60,11 @@ for (const operation of ['compile', 'preprocess', 'verify', 'publish', 'clean'])
   });
 }
 for (const operation of ['compile', 'preprocess', 'verify']) {
+  test(`exited ${operation} remains conservative even without a Builder grant`, t => {
+    const f = fixture(t, operation);
+    assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+    assert.equal(fs.readFileSync(f.marker, 'utf8'), f.bytes);
+  });
   test(`exited delegated ${operation} requires verified process-tree termination`, t => {
     const f = fixture(t, operation, true);
     assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
@@ -155,19 +160,6 @@ test('EPERM deleting a completed delegated record leaves a replaceable receipt, 
   const owner = api.acquireBuildWorkspace(f.root, 'compile'); owner.childEnvironment(); owner.release();
   assert.equal(descriptors.size, 0); assert.equal(JSON.parse(fs.readFileSync(f.marker, 'utf8')).released, true);
   acquireBuildWorkspace(f.root, 'publish').release();
-});
-
-test('failed grant persistence cannot expose an environment for spawning compiler descendants', t => {
-  const f = project(t); let reject = false;
-  const { api, descriptors } = tracked({ renameSync: (...args) => {
-    if (reject) throw Object.assign(new Error('denied'), { code: 'EPERM' });
-    return fs.renameSync(...args);
-  } });
-  const owner = api.acquireBuildWorkspace(f.root, 'compile'); reject = true;
-  assert.throws(owner.childEnvironment, { code: 'EPERM' });
-  assert.throws(() => owner.builderEnvironment('compile'), { code: 'EPERM' });
-  assert.equal(JSON.parse(fs.readFileSync(f.marker, 'utf8')).delegated, false);
-  owner.release(); assert.equal(descriptors.size, 0);
 });
 
 test('supervisor accepts a completed receipt when owner unlink was denied', t => {
