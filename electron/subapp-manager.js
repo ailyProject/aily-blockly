@@ -76,8 +76,13 @@ function resolveSubappRoot(options = {}) {
   const platform = options.platform || process.platform;
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
   if (options.rootDir) return path.resolve(options.rootDir);
+  const env = options.env || process.env;
+  // Main and its child runtimes must discover the same trusted installation.
+  // An explicit process configuration also lets isolated candidates reuse the
+  // installed SDK prefix without replacing another active Subapp generation.
+  if (env.AILY_SUBAPP_INSTALL_ROOT) return platformPath.resolve(env.AILY_SUBAPP_INSTALL_ROOT);
   return platformPath.join(resolveAilyNpmPrefix({
-    env: options.env || process.env,
+    env,
     platform,
     appDataPath: resolveAppDataPath(options.env, platform, options.home),
   }), 'app');
