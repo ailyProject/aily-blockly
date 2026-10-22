@@ -1328,6 +1328,12 @@ export class _BuilderService {
           }
           if (!cloudBuild) await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
+          await this.projectService.ensureCustomPartitionFile(projectPath, () => {
+            assertPackage(); assertBoard();
+            if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()) {
+              throw new Error('BUILD_SOURCE_STALE: Build configuration changed or was cancelled.');
+            }
+          });
           // 获取最新代码，并在同一次同步 generator 调用内冻结其块映射。
           const {
             code,

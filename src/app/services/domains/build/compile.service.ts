@@ -234,9 +234,6 @@ export class CompileService {
         const { codeHash: _hash, buildInfo: _info, ...manifest } = JSON.parse(window['fs'].readFileSync(packagePath, 'utf8'));
         return manifest;
       });
-      if (isAilyCodeProject) {
-        compiledHash = await this.coderBuildInfo.updateCodeHash(root);
-      }
       const boardModule = await this.resolveBoardModule(root);
       assertManifest();
       assertCloudContext();
@@ -284,6 +281,13 @@ export class CompileService {
         stop: () => this.cancel(),
       });
       this.publishBuildLog(root, preparingText, 'stdout', 'doing', buildTitle);
+
+      await this.projectService.ensureCustomPartitionFile(root, () => {
+        assertManifest(); assertCloudContext();
+        if (this.cancelled) throw new Error('Build cancelled before partition preparation.');
+      });
+      if (isAilyCodeProject) compiledHash = await this.coderBuildInfo.updateCodeHash(root);
+      assertManifest(); assertCloudContext();
 
       const buildConfig = this.createBuildConfig(root, boardModule, source.code, isAilyCodeProject, context, options);
       const sourceCapture = captureBuildSource(buildConfig);
