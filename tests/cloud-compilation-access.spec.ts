@@ -12,6 +12,7 @@ describe('cloud compilation account access', () => {
   let config: ConfigService;
   let originalCloud: any;
   let originalPath: any;
+  let originalPlatform: any;
 
   function account(loggedIn: boolean, plan: string | null, creditPlan?: string) {
     auth.authSnapshotSubject.next(plan === null ? null : {
@@ -24,18 +25,21 @@ describe('cloud compilation account access', () => {
   beforeEach(() => {
     originalCloud = window['cloudBuild'];
     originalPath = window['path'];
+    originalPlatform = window['platform'];
+    window['platform'] = { type: 'win32' };
     auth = Object.create(AuthService.prototype);
     auth.isLoggedInSubject = new BehaviorSubject(false);
     auth.authSnapshotSubject = new BehaviorSubject(null);
     auth.isLoggedIn$ = auth.isLoggedInSubject.asObservable();
     auth.authSnapshot$ = auth.authSnapshotSubject.asObservable();
     config = new ConfigService({} as any, { isElectron: false } as any, auth);
-    config.data = { compile: { backend: 'cloud' } };
+    config.data = { region: 'cn', compile: { backend: 'cloud' } };
   });
 
   afterEach(() => {
     window['cloudBuild'] = originalCloud;
     window['path'] = originalPath;
+    window['platform'] = originalPlatform;
     auth.isLoggedInSubject.complete();
     auth.authSnapshotSubject.complete();
   });
@@ -148,6 +152,54 @@ describe('cloud compilation account access', () => {
       cdr: { markForCheck: () => {} }, translateService: { instant: (key: string) => key },
     });
   }
+
+  for (const platform of ['win32', 'darwin', 'linux', undefined]) {
+    for (const region of ['cn', 'eu', 'localhost', undefined]) {
+      it(`limits saved cloud preference and settings to Windows cn: ${platform}/${region}`, async () => {
+        window['platform'] = { type: platform };
+        config.data.region = region;
+        account(true, 'pro');
+        const allowed = platform === 'win32' && region === 'cn';
+        const component = settings();
+        // A stale Pro response must not bypass the local platform/region guard.
+        component.hostCloudCompilationAllowed = true;
+        expect(config.getCompileBackend()).toBe(allowed ? 'cloud' : 'local');
+        expect(component.showCloudCompilation).toBe(allowed);
+        expect(component.cloudCompilationEnabled).toBe(allowed);
+        const project = Object.assign(Object.create(ProjectService.prototype), {
+          configService: config, currentProjectPathSubject: { value: '/project' },
+        });
+        const operation = project.beginBuildBackendOperation();
+        operation.useLocal();
+        if (!allowed) {
+          expect(() => operation.useCloud()).toThrow();
+          const health = jasmine.createSpy('health');
+          window['cloudBuild'] = { health };
+          spyOn(config, 'saveCompileSettings').and.resolveTo();
+          await component.onCloudCompilationChange(true);
+          expect(health).not.toHaveBeenCalled();
+          expect(config.saveCompileSettings).not.toHaveBeenCalled();
+        }
+        operation.release();
+        expect(config.data.compile.backend).toBe('cloud');
+      });
+    }
+  }
+
+  it('does not enable cloud when the region changes during the gateway check', async () => {
+    account(true, 'pro');
+    config.data.compile.backend = 'local';
+    let resolveHealth!: (value: any) => void;
+    window['cloudBuild'] = { health: () => new Promise(resolve => { resolveHealth = resolve; }) };
+    spyOn(config, 'saveCompileSettings').and.resolveTo();
+    const component = settings();
+    const pending = component.onCloudCompilationChange(true);
+    config.data.region = 'eu';
+    resolveHealth({ healthy: true });
+    await pending;
+    expect(config.saveCompileSettings).not.toHaveBeenCalled();
+    expect(config.data.compile.backend).toBe('local');
+  });
 
   it('rejects click and keyboard handlers without Pro, even when previously enabled', async () => {
     const health = jasmine.createSpy('health').and.resolveTo({ healthy: true });

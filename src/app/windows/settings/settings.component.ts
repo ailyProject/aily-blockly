@@ -28,6 +28,7 @@ import { CmdService, ElectronService } from '@core/platform/public-api';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
 import { NpmService } from '@domain/dependencies/public-api';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
+import { isCloudCompilationSupported } from '../../utils/cloud-build-settings.utils';
 import { RequiredSubappService, RequiredSubappState, ChildAppSafetyService } from '@integration/subapps/public-api';
 import {
   PROJECT_ROOT_PATH_SETTING_CHANGED_ACTION,
@@ -402,10 +403,11 @@ export class SettingsComponent implements OnDestroy {
   private cloudAuthListenerCleanup?: () => void;
 
   get showCloudCompilation(): boolean {
-    return window['platform']?.type === 'win32' && this.selectedRegion !== 'eu';
+    return isCloudCompilationSupported(window['platform']?.type, this.configData?.region);
   }
   get canUseCloudCompilation(): boolean {
-    return this.hostCloudCompilationAllowed ?? this.configService.canUseCloudCompilation;
+    return this.showCloudCompilation
+      && (this.hostCloudCompilationAllowed ?? this.configService.canUseCloudCompilation);
   }
   get cloudCompilationEnabled(): boolean {
     return this.canUseCloudCompilation && this.configData?.compile?.backend === 'cloud';
