@@ -22,6 +22,7 @@ import { prepareAbsProjectData } from './abs-project-data';
 import { prepareAbsReconciledResources } from './abs-prepared-reconciliation';
 import { assertAbsResourceContracts } from './abs-resource-contracts';
 import { AbsWorkspaceLoadOptions, assertAbsProjectEnvelope, assertAbsRuntimeShapeSupported, assertAbsWorkspaceReadback, captureAbsWorkspaceState, loadAbsWorkspaceState } from './abs-workspace-state';
+import { BlocklyCommentLoading } from '../../../editors/blockly-editor/services/blockly-comment-loading';
 import { captureAbsDeclarativeContracts } from './abs-declarative-contracts';
 import { layoutAbsNewRoots } from './abs-new-root-layout';
 import { fenceBlocklyWorkspaceBumps } from '../../../editors/blockly-editor/services/blockly-workspace-layout-fence';
@@ -482,10 +483,15 @@ export class AbsWorkspaceSyncService {
       let publication: AbsPublishResult | undefined;
       const runtime = window['Blockly'];
       const group = runtime.Events.getGroup(), recordUndo = runtime.Events.getRecordUndo();
-      const restore = () => {
+      const restore = async () => {
         mutated = false; // Never retry a failed rollback.
         context.assertCurrent(); lease.assertCurrent();
-        this.editor.restoreProjectWorkspaceSnapshot(before.document, lease, rollback.state.blocks.blocks.map(block => block.id));
+        const comments = new BlocklyCommentLoading(runtime, context.workspace);
+        runtime.Events.disable();
+        try {
+          comments.run(() => this.editor.restoreProjectWorkspaceSnapshot(before.document, lease, rollback.state.blocks.blocks.map(block => block.id)));
+          await comments.finish(() => { context.assertCurrent(); lease.assertCurrent(); });
+        } finally { runtime.Events.enable(); }
         context.definitions.customFunctions?.synchronize(context.workspace, rollback.state);
         const restored = captureAbsWorkspaceState(context.workspace, context.assertCurrent, context.definitions);
         assertAbsWorkspaceReadback(rollback.state, restored.state, rollback, context.definitions);
@@ -530,7 +536,7 @@ export class AbsWorkspaceSyncService {
           }
         });
         if (!publication.abiSaved) {
-          restore();
+          await restore();
           return { publication, requiresReload: false, warnings: [] };
         }
         if (publication.status !== 'COMMITTED') {
@@ -550,7 +556,7 @@ export class AbsWorkspaceSyncService {
             // An interrupted host acknowledgement or saved ABI is not safe to undo in memory.
             lease.quarantine(`Generation commit needs explicit inspection: ${String(error)}`);
           } else {
-            try { restore(); }
+            try { await restore(); }
             catch (rollbackError) {
               const reason = `Rollback failed; reopen the project: ${String(rollbackError)}. Original failure: ${String(error)}`;
               lease.quarantine(reason);
