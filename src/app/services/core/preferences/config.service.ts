@@ -8,7 +8,7 @@ import { calculateSimilarity, extractKeywords } from '../../../utils/fuzzy-searc
 import { normalizeLanguageCode } from '../../../utils/language-code';
 import {
   COMPILE_SETTINGS_CHANGED_ACTION, DEFAULT_CLOUD_GATEWAY_URL, getCloudBuildSettings,
-  getCompileBackend, getCompileSettingsKey, type CloudBuildSettings, type CompileBackend,
+  getCompileBackend, getCompileSettingsKey, isCloudCompilationSupported, type CloudBuildSettings, type CompileBackend,
 } from '../../../utils/cloud-build-settings.utils';
 import {
   appendScopedNpmRegistry,
@@ -121,7 +121,10 @@ export class ConfigService {
     });
   }
 
-  get canUseCloudCompilation(): boolean { return this.authService.canUseCloudCompilation; }
+  get canUseCloudCompilation(): boolean {
+    return isCloudCompilationSupported(window['platform']?.type, this.data?.region)
+      && this.authService.canUseCloudCompilation;
+  }
   getCompileBackend(): CompileBackend {
     return this.canUseCloudCompilation ? getCompileBackend(this.data) : 'local';
   }
