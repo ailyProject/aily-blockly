@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { tryAcquireFileLock } = require('./native-file-lock');
+const { getSystemBootId, isSystemBootId } = require('./system-boot-id');
 
 const OWNER_ENV = 'AILY_BUILD_WORKSPACE_OWNER';
 const SUPERVISOR_ENV = 'AILY_BUILD_WORKSPACE_SUPERVISOR';
@@ -18,9 +19,10 @@ const OPERATIONS = new Set(['compile', 'preprocess', 'publish', 'clean', 'verify
 const NON_DELEGATING_OPERATIONS = new Set(['publish', 'clean']);
 
 /** Cooperative host build lease, not a file-editor lock or a security boundary.
- * A dead parent does NOT prove that its compiler descendants stopped. Therefore
- * compile/preprocess/verify interruptions retain the marker. Publication and
- * cleanup never delegate work: their exited owner can be recovered separately.
+ * A dead parent does NOT prove that its compiler descendants stopped.
+ * A persisted grant is written BEFORE any subprocess can start. An interrupted
+ * owner with no grant is recoverable; granted/legacy owners need a confirmed
+ * process-tree stop or a different kernel boot identity, never a PID timeout.
  */
 function openWorkspace(projectPath) {
     const root = fs.realpathSync(projectPath), identity = fs.lstatSync(root);
@@ -102,30 +104,13 @@ function writeOwner(workspace, record) {
     }
 }
 
-function assertBuilderAbsent(workspace) {
+function assertBuilderAbsent(workspace, recovery = 'Confirm the complete process tree stopped before cleanup.') {
     if (markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) {
-        throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', 'Builder has not released its delegated phase. Confirm the complete process tree stopped before cleanup.');
+        throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Builder has not released its delegated phase. ${recovery}`);
     }
 }
 
-function assertPreviousRecoverable(workspace) {
-    let previous;
-    try { previous = readOwner(workspace); }
-    catch (error) {
-        if (error.code === 'ENOENT') return;
-        throw fault('BUILD_WORKSPACE_BUSY', 'Unreadable legacy build record requires verified cleanup.');
-    }
-    const record = previous.record;
-    // The kernel proves that no native host lease remains. Only operations that
-    // never spawn descendants can be recovered without a completed receipt.
-    // In particular, cloud verify leases also cover native uploader processes.
-    if (record.nativeLeaseVersion === 1 && (record.released === true || NON_DELEGATING_OPERATIONS.has(record.operation))) return;
-    if (processAlive(record.pid)) throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project.');
-    if (!NON_DELEGATING_OPERATIONS.has(record.operation)) {
-        throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Host owner PID ${record.pid} exited. Confirm all compiler descendants stopped before cleanup.`);
-    }
-    // Read-only migration of the old journal, including records above its former
-    // 256 KiB cap. Never append another election or grow the legacy file.
+function assertLegacyClaimsStopped(previous) {
     const claims = new Map();
     for (const line of previous.bytes.split('\n').slice(1)) {
         let item; try { item = JSON.parse(line); } catch { continue; }
@@ -134,6 +119,56 @@ function assertPreviousRecoverable(workspace) {
         if (item.kind === 'retire') claims.delete(item.token);
     }
     if ([...claims.values()].some(processAlive)) throw fault('BUILD_WORKSPACE_BUSY', 'An older host is still recovering this project. Restart that host before retrying.');
+}
+
+function assertPreviousRecoverable(workspace) {
+    let previous;
+    try { previous = readOwner(workspace); }
+    catch (error) {
+        if (error.code === 'ENOENT') { assertBuilderAbsent(workspace); checkLegacyRecovery(workspace); return; }
+        throw fault('BUILD_WORKSPACE_BUSY', 'Unreadable legacy build record requires verified cleanup.');
+    }
+    const record = previous.record;
+    const bootId = getSystemBootId();
+    const storedBoot = record.bootId || record.recoveryObservedBootId;
+    const previousBoot = isSystemBootId(storedBoot) ? storedBoot.toLowerCase() : storedBoot;
+    // An OS restart ends the entire old tree, even when its PID has been reused.
+    // Keep unknown/foreign Builder records; only this owner's phase may be removed.
+    if (bootId && isSystemBootId(previousBoot) && previousBoot !== bootId
+        && previousBoot.split(':')[0] === bootId.split(':')[0]) {
+        const builderPath = path.join(workspace.directory, BUILDER_MARKER);
+        if (markerExists(workspace, builderPath)) {
+            const builder = readOwner(workspace, builderPath);
+            if (builder.record.ownerToken !== record.token || builder.record.supervisor !== record.supervisor) {
+                throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', 'Build phase ownership is inconsistent; preserve it for verified cleanup.');
+            }
+            fs.unlinkSync(builderPath);
+        }
+        return;
+    }
+    checkLegacyRecovery(workspace);
+    const alive = processAlive(record.pid);
+    // Remember observing a legacy record in THIS boot. Its startedAt/mtime cannot
+    // prove a reboot (wall clocks can change). Retire journals only after checking claims.
+    if (!alive && bootId && !previousBoot) {
+        assertLegacyClaimsStopped(previous);
+        writeOwner(workspace, { ...record, recoveryObservedBootId: bootId });
+    }
+    const restartRecovery = bootId && (!previousBoot || (isSystemBootId(previousBoot)
+        && previousBoot.split(':')[0] === bootId.split(':')[0]));
+    const recovery = restartRecovery
+        ? 'Restart the computer, then reopen this project to recover safely; restarting only Aily is insufficient.'
+        : 'Cannot verify the system boot identity. Confirm all compiler descendants stopped before cleanup.';
+    assertBuilderAbsent(workspace, alive ? undefined : recovery);
+    if (record.nativeLeaseVersion === 1 && (record.released === true || NON_DELEGATING_OPERATIONS.has(record.operation))) return;
+    if (alive) throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project.');
+    if (record.nativeLeaseVersion === 1 && record.delegationVersion === 1 && record.delegated === false) return;
+    if (!NON_DELEGATING_OPERATIONS.has(record.operation)) {
+        throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Host owner PID ${record.pid} exited. ${recovery}`);
+    }
+    // Old publication journals may be replaced only after their claims stop.
+    // Never append another election or grow the legacy file.
+    assertLegacyClaimsStopped(previous);
 }
 
 function checkLegacyRecovery(workspace) {
@@ -160,6 +195,7 @@ function acquireBuildWorkspace(projectPath, operation, { inherited = undefined }
         // command launched elsewhere cannot silently turn into a nested build.
         const owner = readOwner(workspace);
         if (operation !== 'preprocess' || owner.record.operation !== 'compile' || owner.record.token !== inherited
+            || owner.record.delegationVersion !== 1 || owner.record.delegated !== true
             || owner.record.pid !== process.ppid || !processAlive(owner.record.pid)) {
             throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Preprocess does not belong to this live compile owner.');
         }
@@ -168,12 +204,11 @@ function acquireBuildWorkspace(projectPath, operation, { inherited = undefined }
     }
     const guard = acquireNative(workspace);
     try {
-        checkLegacyRecovery(workspace);
-        assertBuilderAbsent(workspace);
         assertPreviousRecoverable(workspace);
         const supervisor = process.env[SUPERVISOR_ENV];
-        const record = { schemaVersion: 1, nativeLeaseVersion: 1,
+        const record = { schemaVersion: 1, nativeLeaseVersion: 1, delegationVersion: 1, delegated: false,
             pid: process.pid, token: randomUUID(), operation, startedAt: new Date().toISOString(),
+            ...(getSystemBootId() ? { bootId: getSystemBootId() } : {}),
             ...(typeof supervisor === 'string' && UUID.test(supervisor) ? { supervisor } : {}) };
         return lease(workspace, writeOwner(workspace, record), true, guard);
     } catch (error) { guard.close(); throw error; }
@@ -193,14 +228,26 @@ function lease(workspace, owner, owns, guard) {
         assertOwned();
         assertBuilderAbsent(workspace);
     };
+    const markDelegated = () => {
+        assertBuilderIdle();
+        if (NON_DELEGATING_OPERATIONS.has(owner.record.operation)) {
+            throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Publication and cleanup cannot delegate work.');
+        }
+        if (owner.record.delegated === true) return;
+        // A borrowed preprocess lease must already have a persisted parent grant.
+        if (!owns) throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Parent did not record its subprocess grant.');
+        owner = writeOwner(workspace, { ...owner.record, delegated: true });
+    };
     return {
         projectRoot: workspace.root,
         buildId: owner.record.token,
         assertOwned,
         assertBuilderIdle,
+        markDelegated,
         childEnvironment: () => {
             assertOwned();
             if (owner.record.operation !== 'compile') throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Only compile may delegate a preprocess child.');
+            markDelegated();
             return { ...process.env, [OWNER_ENV]: owner.record.token };
         },
         builderEnvironment: operation => {
@@ -209,6 +256,7 @@ function lease(workspace, owner, owns, guard) {
                 || !(owner.record.operation === operation || (owner.record.operation === 'compile' && operation === 'preprocess'))) {
                 throw fault('BUILD_WORKSPACE_OWNER_MISMATCH', 'Invalid Builder delegation operation.');
             }
+            markDelegated();
             return { ...process.env, [BUILDER_ENV]: JSON.stringify({ schemaVersion: 1, directory: workspace.directory,
                 token: owner.record.token, operation, issuerPid: process.pid }) };
         },
@@ -242,6 +290,22 @@ function createBuildWorkspaceSupervisor(projectPath) {
     const workspace = openWorkspace(projectPath), token = randomUUID();
     return {
         environment: { [SUPERVISOR_ENV]: token },
+        releaseAfterOwnerExit: () => {
+            // No process-tree kill is needed when this supervisor's owner never
+            // granted a child. Never signal a PID after its close event.
+            let guard;
+            try {
+                guard = acquireNative(workspace);
+                const owner = readOwner(workspace);
+                if (owner.record.supervisor !== token || processAlive(owner.record.pid)
+                    || owner.record.nativeLeaseVersion !== 1 || owner.record.delegationVersion !== 1
+                    || owner.record.delegated !== false) return false;
+                assertBuilderAbsent(workspace);
+                fs.unlinkSync(workspace.filename);
+                return true;
+            } catch { return false; }
+            finally { guard?.close(); }
+        },
         canReleaseResources: () => {
             // A normally finished child removed its own records. Another build's
             // record is not ours to release; unreadable records remain unsafe.

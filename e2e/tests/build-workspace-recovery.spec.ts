@@ -2,9 +2,10 @@ import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {cp, mkdir, readFile, writeFile} from 'node:fs/promises';
 import path from 'node:path';
-import {expect, getMainWindow, launchAilyElectron, navigate, openBlocklyProject, readAilyHostOperation, ROOT, test} from '../fixtures/electron-app';
+import type {TestInfo} from '@playwright/test';
+import {expect, getMainWindow, launchAilyElectron, openBlocklyProject, readAilyHostOperation, ROOT, test} from '../fixtures/electron-app';
 
-test('issue 745: interrupted publication and recovery survive editor reopen and compile', async ({}, info) => {
+async function seedProject(info: TestInfo): Promise<{project: string; seed: string}> {
   const seed = process.env['AILY_E2E_PLATFORM_SEED'];
   test.skip(!seed, 'Set AILY_E2E_PLATFORM_SEED to installed platform assets.');
   const project = info.outputPath('project');
@@ -17,9 +18,14 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
     const source = path.join(name === board ? seed! : process.env['AILY_E2E_LIBRARY_SEED'] || seed!, 'node_modules', name);
     await cp(source, target, {recursive: true, dereference: true});
   }
+  return {project, seed: seed!};
+}
+
+for (const operation of ['publish', 'compile']) test(`issue 745: interrupted ${operation} and recovery survive editor reopen and compile`, async ({}, info) => {
+  const {project, seed} = await seedProject(info);
   const crashed = spawnSync(process.execPath, ['-e',
-    `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'publish'); process.kill(process.pid, 'SIGKILL');`,
-    path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project], {encoding: 'utf8'});
+    `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], process.argv[3]); process.kill(process.pid, 'SIGKILL');`,
+    path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project, operation], {encoding: 'utf8'});
   expect(crashed.signal).toBe('SIGKILL');
   if (process.env['AILY_ISSUE745_BASELINE'] !== '1') {
     // Kill the next process immediately after installing its recovered owner.
@@ -27,8 +33,8 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
       `const fs=require('node:fs'),rename=fs.renameSync;
        fs.renameSync=(...args)=>{const result=rename(...args);
          if(String(args[1]).endsWith('aily-workspace.lock'))process.kill(process.pid,'SIGKILL');return result};
-       require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'publish');`,
-      path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project], {encoding: 'utf8'});
+       require(process.argv[1]).acquireBuildWorkspace(process.argv[2], process.argv[3]);`,
+      path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project, operation], {encoding: 'utf8'});
     expect(interruptedRecovery.signal).toBe('SIGKILL');
   }
   const marker = path.join(project, '.build/aily-workspace.lock');
@@ -61,7 +67,11 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
         await expect.poll(() => errors.filter(error => error.includes('BUILD_WORKSPACE_RECOVERY_REQUIRED')).length).toBeGreaterThan(index);
       }
       if (index === 0) {
-        await navigate(win, '/main/guide');
+        const closed = await win.evaluate(async () => {
+          const realm = (document.querySelector('iframe[data-blockly-generator-runtime]') as HTMLIFrameElement).contentWindow as any;
+          return realm.projectService.close();
+        });
+        expect(closed).toBe(true);
         await expect(win.locator('app-blockly-editor')).toHaveCount(0);
       }
     }
@@ -104,5 +114,65 @@ test('issue 745: interrupted publication and recovery survive editor reopen and 
   } finally {
     await writeFile(info.outputPath('renderer-errors.json'), JSON.stringify(errors, null, 2));
     await launch.close();
+  }
+});
+
+test('issue 745: a surviving delegated process stays protected and save reports the incomplete code update', async ({}, info) => {
+  test.skip(process.env['AILY_ISSUE745_BASELINE'] === '1', 'New recovery diagnostics are not part of the old baseline.');
+  const {project, seed} = await seedProject(info);
+  const pidFile = path.join(project, 'descendant.pid');
+  const crashed = spawnSync(process.execPath, ['-e', `
+    const owner=require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');
+    const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],
+      {env:owner.childEnvironment(),detached:true,stdio:'ignore',windowsHide:true});
+    child.unref();require('node:fs').writeFileSync(process.argv[3],String(child.pid));
+    process.kill(process.pid,'SIGKILL');`, path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project, pidFile],
+  {encoding: 'utf8', timeout: 10000});
+  const descendant = Number(await readFile(pidFile, 'utf8'));
+  let launch: Awaited<ReturnType<typeof launchAilyElectron>> | undefined;
+  const attempts: unknown[] = [];
+  const marker = path.join(project, '.build/aily-workspace.lock');
+  let abandoned = '';
+  try {
+    expect(crashed.signal).toBe('SIGKILL');
+    abandoned = await readFile(marker, 'utf8');
+    launch = await launchAilyElectron({
+      environment: {AILY_E2E_TOOLCHAIN_SEED: seed, AILY_E2E_TOOLCHAIN_PROJECT: project},
+      config: {selectedLanguage: 'zh_cn', blocklyOnboardingCompleted: true, compile: {backend: 'local'}},
+    });
+    const win = await getMainWindow(launch.app);
+    for (let index = 0; index < 2; index++) {
+      await openBlocklyProject(win, project);
+      await expect(win.locator('iframe[data-runtime-ready="true"]')).toHaveCount(1, {timeout: 90_000});
+      await expect.poll(async () => (await readAilyHostOperation(launch!.app, 'project_load_status', project)).ready, {timeout: 90_000}).toBe(true);
+      const saved = await win.evaluate(async project => {
+        const realm = (document.querySelector('iframe[data-blockly-generator-runtime]') as HTMLIFrameElement).contentWindow as any;
+        return realm.projectService.save(project, 30_000);
+      }, project);
+      attempts.push(saved);
+      expect(saved.success).toBe(false);
+      expect(saved.error).toContain('Project file saved, but generated code could not be updated.');
+      expect(saved.error).toContain('Restart the computer');
+      expect(await readFile(marker, 'utf8')).toBe(abandoned);
+      expect(() => process.kill(descendant, 0)).not.toThrow();
+      expect(JSON.parse(await readFile(path.join(project, 'project.abi'), 'utf8'))).toBeTruthy();
+      if (index === 0) {
+        expect(await win.evaluate(async () => {
+          const realm = (document.querySelector('iframe[data-blockly-generator-runtime]') as HTMLIFrameElement).contentWindow as any;
+          return realm.projectService.close();
+        })).toBe(true);
+        await expect(win.locator('app-blockly-editor')).toHaveCount(0);
+      }
+    }
+    await win.screenshot({path: info.outputPath('protected.png')});
+  } finally {
+    try {
+      await writeFile(info.outputPath('protected-evidence.json'), JSON.stringify({abandoned: abandoned ? JSON.parse(abandoned) : null, descendant, attempts}, null, 2));
+    } finally {
+      try { await launch?.close(); }
+      finally {
+        try { process.kill(descendant, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      }
+    }
   }
 });

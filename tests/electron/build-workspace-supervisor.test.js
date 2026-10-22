@@ -266,7 +266,7 @@ test('registered cancellation stops the owner and descendant before releasing it
     assert.ok(path.basename(root).startsWith('aily-supervised-build-'));
     fs.rmSync(root, { recursive: true, force: true });
   });
-  const script = `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'compile');
+  const script = `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], 'compile').markDelegated();
     const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true,stdio:'ignore'});
     console.log(JSON.stringify({owner:process.pid,descendant:child.pid}));setInterval(()=>{},1000);`;
   const started = manager.executeCommand({ command: process.execPath,
@@ -283,11 +283,11 @@ test('registered cancellation stops the owner and descendant before releasing it
   acquireBuildWorkspace(root, 'compile').release();
 });
 
-test('a parent exiting with its build marker remains unresolved and cannot retarget its closed PID', async t => {
+test('a delegated parent exiting with its build marker remains unresolved and cannot retarget its closed PID', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
   const manager = new CommandManager(), streamId = 'abandoned-owner';
   const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
-    args: ['-e', 'require(process.argv[1]).acquireBuildWorkspace(process.argv[2], "compile");process.exit(1)',
+    args: ['-e', 'require(process.argv[1]).acquireBuildWorkspace(process.argv[2], "compile").markDelegated();process.exit(1)',
       path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] }).process;
   await once(child, 'close');
   assert.equal(manager.getProcess(streamId), child);
@@ -300,6 +300,22 @@ test('a parent exiting with its build marker remains unresolved and cannot retar
   assert.ok(path.basename(root).startsWith('aily-supervised-build-'));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+for (const exit of ['process.exit(1)', "process.kill(process.pid,'SIGKILL')"]) {
+  test(`supervisor recovers a pre-delegation interruption (${exit}) without a second close`, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-supervised-build-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const manager = new CommandManager(), streamId = 'early-exit';
+    const child = manager.executeCommand({ command: process.execPath, streamId, shellProfile: false, buildWorkspace: root,
+      args: ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');${exit}`,
+        path.resolve(__dirname, '../../child/scripts/build-workspace-lease.js'), root] }).process;
+    await once(child, 'close');
+    assert.equal(manager.getProcess(streamId), undefined);
+    assert.equal(fs.existsSync(path.join(root, '.build/aily-workspace.lock')), false);
+    assert.equal(await manager.killProcess(streamId), true);
+    acquireBuildWorkspace(root, 'publish').release();
+  });
+}
 
 for (const code of [0, 7]) test(`registered installer is removed on a completed exit (${code})`, async () => {
   const manager = new CommandManager();

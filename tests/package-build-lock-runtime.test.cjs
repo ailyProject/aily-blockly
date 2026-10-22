@@ -28,7 +28,7 @@ for (const [platform, arch] of [['darwin', 'arm64'], ['darwin', 'x64'], ['darwin
     if (platform === process.platform && (arch === process.arch || arch === 'universal')) {
       const scripts = path.join(destination, 'scripts');
       await fs.mkdir(scripts);
-      for (const name of ['native-file-lock.js', 'build-workspace-lease.js']) {
+      for (const name of ['native-file-lock.js', 'system-boot-id.js', 'build-workspace-lease.js']) {
         await fs.copyFile(path.join(__dirname, '../child/scripts', name), path.join(scripts, name));
       }
       const project = path.join(root, 'project'); await fs.mkdir(project);
