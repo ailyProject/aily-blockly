@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
+const { selectFirmwareFile } = require('./firmware-selection');
 
 // 简单的日志工具
 const logger = {
@@ -661,13 +662,13 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
     // 替换 ${bootloader}
     if (paramString.includes('${bootloader}')) {
-        const bootLoaderFile = await findFile(buildPath, '*.bootloader.bin');
+        const bootLoaderFile = findFirmwareFile(buildPath, '*.bootloader.bin');
         paramString = paramString.replace(/\$\{bootloader\}/g, `"${bootLoaderFile}"`);
     }
 
     // 替换 ${partitions}
     if (paramString.includes('${partitions}')) {
-        const partitionsFile = await findFile(buildPath, '*.partitions.bin');
+        const partitionsFile = findFirmwareFile(buildPath, '*.partitions.bin');
         paramString = paramString.replace(/\$\{partitions\}/g, `"${partitionsFile}"`);
     }
 
@@ -731,8 +732,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
                     findRes = await findFile(path.join(sdkPath, 'tools'), fileName);
                 }
             } else {
-                // console.log('Searching build path for file:', buildPath, fileName);
-                findRes = await findFile(buildPath, fileName);
+                findRes = findFirmwareFile(buildPath, fileName);
             }
 
             if (findRes) {
@@ -780,6 +780,24 @@ function wrapInQuotesIfNeeded(value) {
     }
 
     return `"${value}"`;
+}
+
+function findFirmwareFile(buildPath, pattern) {
+    const files = [];
+    const visit = (directory) => {
+        // Firmware discovery must not follow backup links outside this build or
+        // symlink loops. Tool discovery below retains its separate legacy rules.
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const filename = path.join(directory, entry.name);
+            if (entry.isDirectory()) visit(filename);
+            else if (entry.isFile()) files.push(filename);
+        }
+    };
+    if (fs.existsSync(buildPath)) visit(buildPath);
+    const selected = selectFirmwareFile(files, pattern);
+    if (!selected) throw new Error(`FIRMWARE_NOT_FOUND: 未找到可用于上传的固件 ${pattern}，请重新编译。构建目录：${buildPath}`);
+    if (!fs.statSync(selected).size) throw new Error(`FIRMWARE_EMPTY: 固件为空，已停止上传：${selected}`);
+    return selected;
 }
 
 // 递归查找文件

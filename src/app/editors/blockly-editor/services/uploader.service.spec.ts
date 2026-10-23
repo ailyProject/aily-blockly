@@ -55,6 +55,21 @@ describe('Uploader command lifecycle during project close', () => {
 
   afterEach(() => Object.assign(window, original));
 
+  for (const mode of ['ble', 'network-ota']) {
+    it(`stops ${mode} and clears upload state when firmware selection is ambiguous`, async () => {
+      service.uploadInProgress = true;
+      service._builderService.isUploading = true;
+      service.handleUploadError = jasmine.createSpy('handleUploadError');
+      service.uploaderBleService.findFirmwareFile = () => { throw new Error('FIRMWARE_AMBIGUOUS: sketch.bin, old.bin'); };
+      const result = mode === 'ble' ? service.uploadByBle('/build', {}) : service.uploadByNetworkOta('/build', {});
+      await expectAsync(result).toBeRejectedWith(jasmine.objectContaining({state: 'error', text: jasmine.stringMatching('FIRMWARE_AMBIGUOUS')}));
+      expect(service.uploadInProgress).toBeFalse();
+      expect(service._builderService.isUploading).toBeFalse();
+      expect(service.workflowService.finishUpload).toHaveBeenCalledWith(false, jasmine.stringMatching('FIRMWARE_AMBIGUOUS'));
+      expect(service.cmdService.spawn).not.toHaveBeenCalled();
+    });
+  }
+
   function startProgressUpload() {
     const outcome = { result: null as any, rejected: false };
     service.upload().then(value => { outcome.result = value; }, error => {

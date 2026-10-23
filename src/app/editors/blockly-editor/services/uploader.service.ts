@@ -1294,7 +1294,7 @@ export class _UploaderService {
       throw { state: 'error', text: message };
     }
 
-    const firmwarePath = this.uploaderBleService.findFirmwareFile(buildPath);
+    const firmwarePath = this.resolveOtaFirmwareFile(buildPath, 'network-ota');
     if (!firmwarePath) {
       const message = this.networkT('NO_FIRMWARE');
       this.logNetworkOtaUpload(this.networkT('LOG_ERROR', { message }), 'error');
@@ -1543,8 +1543,21 @@ export class _UploaderService {
     });
   }
 
+  private resolveOtaFirmwareFile(buildPath: string, mode: 'ble' | 'network-ota'): string {
+    try {
+      return this.uploaderBleService.findFirmwareFile(buildPath);
+    } catch (error) {
+      const message = error?.message || String(error);
+      this.uploadInProgress = false;
+      this._builderService.isUploading = false;
+      this.handleUploadError(message, mode === 'ble' ? this.t('UPLOAD_FAILED_TITLE') : this.networkT('UPLOAD_FAILED_TITLE'), message);
+      this.workflowService.finishUpload(false, message);
+      throw { state: 'error', text: message };
+    }
+  }
+
   private async uploadByBle(buildPath: string, portInfo: any, boardName = ''): Promise<ActionState> {
-    const firmwarePath = this.uploaderBleService.findFirmwareFile(buildPath);
+    const firmwarePath = this.resolveOtaFirmwareFile(buildPath, 'ble');
     if (!firmwarePath) {
       const message = this.t('NO_FIRMWARE');
       this.logBleUpload(this.t('LOG_ERROR', { message }), 'error');
