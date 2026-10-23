@@ -168,7 +168,7 @@ export class SubappAgentBridgeService implements OnDestroy {
       const nativeBatch = !webSelected && resolved.config.runtime?.headless === true;
       if (webSelected && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for Web tools.', 'SUBAPP_SESSION_REQUIRED');
       if (nativeBatch && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for native batch tools.', 'SUBAPP_SESSION_REQUIRED');
-      if (nativeBatch || webSelected) invocation.waitForCleanup();
+      if (nativeBatch || webSelected) invocation.waitForCleanup(webSelected ? 'web-semantic' : 'native-batch');
       const params = this.record(input['params']);
       const hasExplicitPresentation = Object.prototype.hasOwnProperty.call(params, 'presentUi');
       const activeMode = !webSelected && (!nativeBatch || resolved.config.runtime?.observer) && !hasExplicitPresentation
@@ -442,7 +442,7 @@ export class SubappAgentBridgeService implements OnDestroy {
       }));
     }
     await Promise.all([...cleanups, pendingInvocations.then(errors => {
-      cleanupErrors.push(...errors.map(error => ({ toolId: 'native-batch', error })));
+      cleanupErrors.push(...errors.map(({ source, error }) => ({ toolId: source, error })));
     })]);
 
     if (!this.ownerLeases.hasSession(activitySessionId)) {

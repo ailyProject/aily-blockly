@@ -7,7 +7,7 @@ export interface SubappAgentOwnerLease {
 /** Host-side authority for one live Agent session incarnation, not a device lease. */
 export class SubappAgentOwnerLeases {
   private readonly leases = new Map<string, SubappAgentOwnerLease>();
-  private readonly releasing = new Map<string, Promise<Record<string, unknown>>>();
+  private readonly releasing = new Map<string, { sessionId: string; cleanup: Promise<Record<string, unknown>> }>();
   private readonly cancellations = new Map<string, Map<string, number>>();
   private timer: ReturnType<typeof setInterval> | undefined;
   readonly ttlMs = 45_000;
@@ -20,7 +20,7 @@ export class SubappAgentOwnerLeases {
 
   acquire(sessionId: string): SubappAgentOwnerLease {
     if (!sessionId || sessionId.length > 256) throw this.error('SUBAPP_SESSION_REQUIRED', 'A valid session id is required');
-    if (this.leases.size >= 256) throw this.error('SUBAPP_OWNER_LIMIT', 'Too many active Subapp owners');
+    if (this.leases.size + this.releasing.size >= 256) throw this.error('SUBAPP_OWNER_LIMIT', 'Too many active or unconfirmed Subapp owners');
     const lease = { ownerLeaseId: `owner-${crypto.randomUUID()}`, sessionId, expiresAt: this.now() + this.ttlMs };
     this.leases.set(lease.ownerLeaseId, lease);
     if (!this.timer) {
@@ -67,7 +67,12 @@ export class SubappAgentOwnerLeases {
 
   release(ownerLeaseId: string, sessionId?: string): Promise<Record<string, unknown>> {
     const pending = this.releasing.get(ownerLeaseId);
-    if (pending) return pending;
+    if (pending) {
+      if (sessionId && sessionId !== pending.sessionId) {
+        return Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'));
+      }
+      return pending.cleanup;
+    }
     const lease = this.leases.get(ownerLeaseId);
     if (!lease) return Promise.resolve({ ok: true, released: false });
     if (sessionId && sessionId !== lease.sessionId) {
@@ -77,8 +82,13 @@ export class SubappAgentOwnerLeases {
     this.leases.delete(ownerLeaseId);
     this.cancellations.delete(ownerLeaseId);
     if (!this.leases.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
-    const cleanup = Promise.resolve().then(() => this.onRelease(lease)).finally(() => this.releasing.delete(ownerLeaseId));
-    this.releasing.set(ownerLeaseId, cleanup);
+    const cleanup = Promise.resolve().then(() => this.onRelease(lease)).then(result => {
+      // Admission is already revoked. Keep a failed release as the original
+      // responsibility: a repeated release must not turn it into "not found".
+      if (result['ok'] === true) this.releasing.delete(ownerLeaseId);
+      return result;
+    });
+    this.releasing.set(ownerLeaseId, { sessionId: lease.sessionId, cleanup });
     return cleanup;
   }
 
@@ -94,7 +104,11 @@ export class SubappAgentOwnerLeases {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    this.leases.clear();
+    // Revoke through the same release path so a pending or failed cleanup
+    // stays owned even when its presentation/bridge is being destroyed.
+    for (const lease of [...this.leases.values()]) {
+      void this.release(lease.ownerLeaseId).catch(error => console.warn('[subapp-owner] Stop cleanup failed', lease.sessionId, error));
+    }
     this.cancellations.clear();
   }
 
