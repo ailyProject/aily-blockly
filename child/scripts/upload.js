@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
 const { selectFirmwareFile } = require('./firmware-selection');
+const { readBlocklyUploadArtifacts } = require('./blockly-upload-state');
 
 // 简单的日志工具
 const logger = {
@@ -794,7 +795,7 @@ function findFirmwareFile(buildPath, pattern) {
         }
     };
     if (fs.existsSync(buildPath)) visit(buildPath);
-    const selected = selectFirmwareFile(files, pattern);
+    const selected = selectFirmwareFile(files, pattern, readBlocklyUploadArtifacts(buildPath));
     if (!selected) throw new Error(`FIRMWARE_NOT_FOUND: 未找到可用于上传的固件 ${pattern}，请重新编译。构建目录：${buildPath}`);
     if (!fs.statSync(selected).size) throw new Error(`FIRMWARE_EMPTY: 固件为空，已停止上传：${selected}`);
     return selected;

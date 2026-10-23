@@ -57,6 +57,49 @@ function invalidateBlocklyUploadState(root) {
     fs.rmSync(receiptPath(root), { force: true });
 }
 
+function captureGeneratedUploadFiles(root) {
+    const directory = path.join(root, '.build');
+    const filename = path.join(root, '.temp', 'preprocess.json');
+    if (!fs.existsSync(filename)) return [];
+    const prepared = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    const preparedDirectory = path.resolve(prepared.envVars?.BUILD_PATH || '');
+    if (prepared.success !== true || typeof prepared.upload?.command !== 'string'
+        || !fs.existsSync(preparedDirectory) || fs.realpathSync(preparedDirectory) !== directory) return [];
+    const prefix = `${preparedDirectory.replace(/\\/g, '/')}/`;
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`${escaped}[^"\\r\\n]*?\\.(?:bin|hex|elf|eep|img|uf2)(?=["\\s:]|$)`, 'gi');
+    const files = [...prepared.upload.command.replace(/\\/g, '/').matchAll(pattern)].map(match => {
+        const file = path.resolve(match[0]);
+        if (!fs.existsSync(file)
+            || !fs.lstatSync(file).isFile() || !fs.statSync(file).size) {
+            throw new Error('BUILD_ARTIFACT_INVALID: Generated upload output is missing or invalid; build again.');
+        }
+        const relative = path.relative(directory, fs.realpathSync(file));
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
+            throw new Error('BUILD_ARTIFACT_INVALID: Generated upload output escapes the build directory.');
+        }
+        return relative;
+    });
+    return [...new Set(files)].sort();
+}
+
+function readBlocklyUploadArtifacts(buildPath) {
+    const directory = path.resolve(buildPath), root = path.dirname(directory);
+    if (path.basename(directory) !== '.build') return [];
+    const filename = receiptPath(root);
+    if (!fs.existsSync(filename)) return [];
+    const stat = fs.lstatSync(filename);
+    if (!stat.isFile() || stat.size > 65536) throw new Error('BUILD_ARTIFACT_INVALID: Invalid upload receipt; build again.');
+    const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    if (saved.schemaVersion !== 2) return []; // Older/custom builds retain safe discovery.
+    if (saved.firmware !== captureFirmware(root) || !Array.isArray(saved.uploadFiles)
+        || saved.uploadFiles.some(file => typeof file !== 'string' || path.isAbsolute(file)
+            || path.relative(directory, path.resolve(directory, file)).startsWith('..'))) {
+        throw new Error('BUILD_ARTIFACT_STALE: Firmware changed after compilation; build again.');
+    }
+    return saved.uploadFiles.map(file => path.resolve(directory, file));
+}
+
 // Called by compile.js after preprocessing has materialized archive sources, and
 // again after the compiler closes. Edits during compilation cannot authorize reuse.
 function publishBlocklyUploadState(config, inputs) {
@@ -66,7 +109,8 @@ function publishBlocklyUploadState(config, inputs) {
     if (!firmware) return; // Legacy/custom toolchains still compile, but cannot use the fast path.
     const target = receiptPath(root), temporary = `${target}.${randomUUID()}.tmp`;
     try {
-        fs.writeFileSync(temporary, JSON.stringify({ schemaVersion: 1, inputs, firmware }), { flag: 'wx' });
+        const uploadFiles = captureGeneratedUploadFiles(root);
+        fs.writeFileSync(temporary, JSON.stringify({ schemaVersion: 2, inputs, firmware, uploadFiles }), { flag: 'wx' });
         fs.renameSync(temporary, target);
     } finally { fs.rmSync(temporary, { force: true }); }
 }
@@ -74,11 +118,11 @@ function publishBlocklyUploadState(config, inputs) {
 function canReuseBlocklyUpload(config) {
     try {
         const root = fs.realpathSync(config.currentProjectPath), filename = receiptPath(root);
-        if (!fs.existsSync(filename) || fs.statSync(filename).size > 4096) return false;
+        if (!fs.existsSync(filename) || fs.statSync(filename).size > 65536) return false;
         const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
-        return saved.schemaVersion === 1 && typeof saved.firmware === 'string'
+        return saved.schemaVersion === 2 && typeof saved.firmware === 'string'
             && saved.inputs === captureBlocklyUploadInputs(config) && saved.firmware === captureFirmware(root);
     } catch { return false; } // Missing/changed/unreadable inputs require compilation.
 }
 
-module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload };
+module.exports = { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState, canReuseBlocklyUpload, readBlocklyUploadArtifacts };
