@@ -105,7 +105,7 @@ describe('ABS actionable diagnostic contract', () => {
   it('preserves the same diagnostic in the pure existing-block reconciliation path', async () => {
     const baseline = await createAbsProjection({ blocks: { blocks: [{ type: 'device', id: 'b', fields: { PIN: 'D0' } }] } }, {
       contracts: { fields: { b: { PIN: { type: 'field_dropdown', options: [['D0', 'D0'], ['D3', 'D3']] } } } },
-      document: null, generation: 'g1', baselineRef: 'base', savedAbiHash: null, scope: { projectKey: 'test', pageId: 'main' },
+      document: { blocks: { blocks: [{ type: 'device', id: 'b', fields: { PIN: 'D0' } }] } }, generation: 'g1', baselineRef: 'base', savedAbiHash: null, scope: { projectKey: 'test', pageId: 'main' },
     });
     const source = baseline.abs.replace('PIN=D0', 'PIN=3');
     expect(source).not.toBe(baseline.abs);

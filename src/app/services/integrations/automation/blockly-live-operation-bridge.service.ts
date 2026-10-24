@@ -27,6 +27,7 @@ import { checkAbsDocumentation } from '../../../integrations/blockly/abs/abs-doc
 import { ABS_LIVE_PROTOCOL, absPrecommitFailure, rejectAbsLiveRequest, rejectAbsRuntime } from '../../../integrations/blockly/abs/abs-live-protocol';
 import { searchBoardsLibrariesTool } from '../../../integrations/blockly/board-library-search';
 import { runProjectBuild } from '../../../integrations/blockly/project-build-operation';
+import { importProjectMedia } from '../../../integrations/blockly/project-media-import';
 import { getBoardConfig, setBoardConfig } from '../../../integrations/blockly/board-config-operation';
 import { switchProjectBoard } from '../../../integrations/blockly/board-switch-operation';
 import type { EditorOperationEvent } from '../../../integrations/blockly/editor-operation-event';
@@ -48,6 +49,7 @@ const PROJECT_MUTATIONS = new Set([
   'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery',
   'library_runtime_sync', 'set_board_config', 'project_save', 'blocks_tidy',
   'project_build', 'project_upload',
+  'project_media_import',
 ]);
 
 @Injectable({ providedIn: 'root' })
@@ -243,6 +245,10 @@ export class BlocklyLiveOperationBridgeService {
       return this.executeCoderProjectOperation(coderPath, payload.operation, payload.params || {});
     }
 
+    // Cleanup is token-scoped and remains available after a failed reload.
+    if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'history_release') {
+      return this.absGenerationTools.execute('abs_recovery', payload.params);
+    }
     const requestedProject = payload.path;
     const currentProject = this.projectService.currentProjectPath;
     if (!currentProject) {
@@ -295,6 +301,8 @@ export class BlocklyLiveOperationBridgeService {
     }
 
     switch (payload.operation) {
+      case 'project_media_import':
+        return importProjectMedia(currentProject, payload.params as any);
       case 'abs_apply':
         return this.runAbsOperation(() => this.executeAbsApply(payload.params || {}));
       case 'abs_projection':
@@ -385,6 +393,7 @@ export class BlocklyLiveOperationBridgeService {
       'library_runtime_sync',
       'blocks_tidy',
       'project_save',
+      'project_media_import',
     ]).has(String(operation || ''));
   }
 

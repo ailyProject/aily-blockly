@@ -1,3 +1,4 @@
+import { splitAbsState } from './abs-full-state';
 import * as Blockly from 'blockly';
 import { blocks as builtinBlocks } from 'blockly/blocks';
 import { getAbsProcedureReferences, AbsProcedureStateContract } from './abs-procedures';
@@ -41,7 +42,7 @@ describe('ABS explicit procedure serialization contracts', () => {
   });
   it('permits an explicitly consistent rename, preserving IDs and unknown extraState members', async () => {
     const baseline = await project();
-    const result = await reconcileAbs(baseline, baseline.abs.replaceAll('"work"', '"renamed"'));
+    const result = await reconcileAbs(baseline, splitAbsState(baseline.abs).program.replaceAll('"work"', '"renamed"'));
     expect(result.workspace.blocks.blocks.map(block => block.id)).toEqual(['d', 'c']);
     expect((result.workspace.blocks.blocks[0].extraState as any).arguments[0].argId).toBe('opaque');
   });

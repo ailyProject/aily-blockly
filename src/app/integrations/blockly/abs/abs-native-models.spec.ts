@@ -229,6 +229,10 @@ describe('native initializer model preparation', () => {
         modelDeclarations: [{ ...effect, ownerId: 'owned-' + effect.start }] } });
     });
   }
+  it('keeps an enabled next statement active after a disabled sibling', async () => {
+    const result = await run(request('test_object_init("ignored", Sensor) @disabled\n    @next:\n        test_object_init("active", Sensor)\ntest_object_read($active)'));
+    expect(result.binding!.modelDeclarations!.map(item => item.name)).toEqual(['active']);
+  });
   it('does not guess models from missing references or disabled initializers', async () => {
     for (const abs of ['test_object_read($missing)', 'test_object_read($sensor)\ntest_object_init("sensor", Sensor) @disabled']) {
       await expectAsync(run(request(abs))).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SYMBOL_MISSING' }));

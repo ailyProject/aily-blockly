@@ -32,11 +32,20 @@ export class AbsGenerationToolsService {
         return { ...result, ok, operation, project: result.evidence?.binding.scope.projectKey,
           ...(ok ? { receipt: { version: 2, requestId: params.requestId, base: result.evidence!.binding,
             output: result.evidence, persisted: params['publish'] !== false, ...(params['rebind'] ? { rebind: params['rebind'] } : {}),
-            ...(params['synchronize'] ? { synchronized: true, inputAbiHash: params['expectedAbiHash'] } : {}),
+            // Canonical export can also save a user-edited canvas. Bind its
+            // input independently from the newly committed output ABI.
+            inputAbiHash: params['expectedAbiHash'],
+            ...(params['synchronize'] ? { synchronized: true } : {}),
             validation: { ok: true, scope: 'generation-projection' } } } : {}) };
       }
       if (operation === 'abs_recovery') {
         const reply = { operation, receipt: { version: 2, requestId: params.requestId, action: params['action'] } };
+        if (params['action'] === 'history_begin') return { ...reply, ok: true, ...await this.sync.beginHistoryNavigation() };
+        if (['history_seal', 'history_release'].includes(params['action']) && typeof params['token'] === 'string') {
+          if (params['action'] === 'history_seal') await this.sync.sealHistoryNavigation(params['token']);
+          else this.sync.releaseHistoryNavigation(params['token']);
+          return { ...reply, ok: true };
+        }
         if (params['action'] === 'inspect') return { ...reply, ok: true, ...await this.sync.inspectGeneration(), requiresReload: false };
         if (params['action'] === 'refresh' && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
           const result = await this.sync.exportGeneration({ preserveDraft: params['token'] });

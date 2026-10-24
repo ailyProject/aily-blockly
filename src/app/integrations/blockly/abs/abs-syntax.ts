@@ -149,6 +149,38 @@ class AbsSyntaxReader {
       if (annotation === 'disabled') {
         if (node.disabled) this.fail('Duplicate @disabled.');
         node.disabled = true;
+      } else if (annotation === 'protect') {
+        if (node.protection) this.fail('Duplicate @protect.');
+        this.expect(':'); this.space();
+        const start = this.offset;
+        this.literalEnd();
+        let protection: unknown;
+        try { protection = JSON.parse(this.source.slice(start, this.offset)); }
+        catch { this.fail('Invalid @protect JSON.'); }
+        if (!protection || typeof protection !== 'object' || Array.isArray(protection)
+          || !Object.keys(protection).length
+          || Object.entries(protection).some(([key, value]) => !['deletable', 'movable', 'editable'].includes(key) || value !== false)) {
+          this.fail('@protect accepts only deletable, movable and editable with the value false. Unlocking requires an explicit host operation.');
+        }
+        node.protection = protection;
+      } else if (annotation === 'comment' || annotation === 'shadow_fields') {
+        const key = annotation === 'comment' ? 'comment' : 'shadowFields';
+        if (Object.hasOwn(node, key)) this.fail(`Duplicate @${annotation}.`);
+        this.expect(':'); this.space();
+        const start = this.offset; this.literalEnd();
+        let value: any;
+        try { value = JSON.parse(this.source.slice(start, this.offset)); }
+        catch { this.fail(`Invalid @${annotation} JSON.`); }
+        if (annotation === 'comment') {
+          if (value !== null && typeof value !== 'string') this.fail('@comment accepts text or null.');
+          node.comment = value;
+        } else {
+          if (!value || typeof value !== 'object' || Array.isArray(value)
+            || Object.values(value).some(fields => !fields || typeof fields !== 'object' || Array.isArray(fields))) {
+            this.fail('@shadow_fields accepts input names mapped to field values.');
+          }
+          node.shadowFields = value;
+        }
       } else if (annotation === 'extra') {
         if (Object.hasOwn(node, 'extraState')) this.fail('Duplicate @extra.');
         this.expect(':');

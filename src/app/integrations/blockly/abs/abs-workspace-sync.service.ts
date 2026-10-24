@@ -66,7 +66,16 @@ export class AbsWorkspaceSyncService {
     prepared: Awaited<ReturnType<AbsWorkspaceSyncService['prepareGeneration']>>;
   };
   constructor(private readonly editor: BlocklyService, private readonly project: _ProjectService,
-    @Optional() private readonly zone?: NgZone) {}
+    @Optional() private readonly zone?: NgZone) {
+    this.project.setAbsSaveHandler?.(async path => {
+      if (path !== this.project.currentProjectPath) throw new AbsSyncError('ABS_CONTEXT_STALE', 'Save belongs to another project.');
+      const result = await this.exportGeneration({ save: true });
+      if (result.publication.status !== 'COMMITTED' || result.requiresReload) {
+        throw new AbsSyncError('ABS_SAVE_INCOMPLETE', result.publication.error ?? 'Complete ABS save did not commit.');
+      }
+      await window['libraryDependencies']?.save(path);
+    });
+  }
 
   /** Blockly updates its own SVG. Angular only needs published state/progress,
    * not a whole-editor view check for every internal frame or load fragment. */
@@ -132,12 +141,12 @@ export class AbsWorkspaceSyncService {
   }
 
   /** initialize must be explicit when replacing an existing unversioned ABS mirror. */
-  exportGeneration(options: { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string; reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean } = {}): Promise<AbsWorkspaceSyncOutcome> {
+  exportGeneration(options: { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string; reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean; save?: boolean } = {}): Promise<AbsWorkspaceSyncOutcome> {
     options = { ...options };
     if (options.synchronize && (options.initialize || options.publish === false || options.rebind || options.preserveDraft)) {
       return Promise.reject(new AbsSyncError('ABS_REQUEST_INVALID', 'Turn synchronization cannot initialize, rebind or replace a draft.'));
     }
-    const initialize = options.initialize === true;
+    const initialize = options.initialize === true || options.save === true;
     return this.run(async (context, lease, store) => {
       const inspection = options.rebind !== undefined || options.preserveDraft !== undefined ? await inspectAbsGeneration(store, context.scope) : undefined;
       if (options.rebind !== undefined && (options.preserveDraft !== undefined || initialize || options.publish === false || !inspection.diagnostics.rebind
@@ -149,7 +158,7 @@ export class AbsWorkspaceSyncService {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Saved ABI changed before export.');
       }
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
-      const committed = inspection ? inspection.committed?.projection : await store.loadCommitted();
+      const committed = inspection ? inspection.committed?.projection : options.save ? (await store.inspectCommitted())?.projection : await store.loadCommitted();
       if (committed && !inspection) this.assertMirrors(committed, expected, true);
       else if (!committed && (expected.map !== null || expected.abs !== null && !initialize)) {
         throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.', undefined, [], {
@@ -167,17 +176,17 @@ export class AbsWorkspaceSyncService {
       if (committed) {
         const diskHash = expected.abi === null ? null : await hashAbsText(absJson(JSON.parse(expected.abi)));
         if (diskHash !== committed.map.savedAbiHash) {
-          // A normal save may advance disk; an independent external edit must not
-          // become the baseline for a different in-memory document.
+          // Match inspection's program comparison: view/layout changes are not
+          // competing edits. Full disk hashes still guard publication below.
           prepared = await this.project.prepareSave(snapshot.document, assertCurrent);
-          if (await hashAbsText(absJson(JSON.parse(prepared.abiText))) !== diskHash) {
+          if (expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
             throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'Saved ABI and workspace diverged; reconcile the external edit before exporting a new generation.', undefined, undefined,
               { hint: 'Call project_recover action=inspect once for disk/canvas comparison. Do not retry save/export/apply or refresh without a token; preserve both versions until the intended source is established.' });
           }
         }
         assertCurrent();
       }
-      if (options.synchronize) {
+      if (options.publish !== false) {
         // A stale candidate cannot be applied, but a clean mirror can be replaced
         // from the current canvas. Save + projection share one lease and journal;
         // no inspection of the OLD runtime contract grants or denies this operation.
@@ -192,7 +201,7 @@ export class AbsWorkspaceSyncService {
           }
           assertCurrent = this.atRevision(context.assertCurrent, lease, snapshot);
           prepared = await this.project.prepareSave(snapshot.document, assertCurrent);
-        } else prepared = undefined;
+        }
       } else prepared = undefined;
       const runtime = captureAbsWorkspaceState(context.workspace, assertCurrent, context.definitions,
           () => { context.assertCurrent(); lease.assertCurrent(); });
@@ -204,7 +213,7 @@ export class AbsWorkspaceSyncService {
         }
       }
       const compact = await this.compactDocument(snapshot.document, runtime.contracts, assertCurrent);
-      if (options.reuseCurrent && !prepared && options.publish !== false && !inspection && committed
+      if (options.reuseCurrent && options.publish !== false && !inspection && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)
@@ -233,7 +242,7 @@ export class AbsWorkspaceSyncService {
       try {
         publication = await store.commit(projection.map.generation, assertCurrent, async (text, expectedHash, storage) => {
           assertCurrent();
-          if (!prepared) throw new AbsSyncError('ABS_EXPORT_SAVE_FORBIDDEN', 'Export must not save ABI.');
+          if (!prepared) throw new AbsSyncError('ABS_EXPORT_SAVE_FORBIDDEN', 'This publication has no prepared derived ABI.');
           if (text !== prepared.abiText || !await storage.replace('project.abi', expectedHash, text)) {
             throw new AbsSyncError('ABS_ABI_COMMIT_CONFLICT', 'Prepared ABI changed before commit.');
           }
@@ -626,6 +635,66 @@ export class AbsWorkspaceSyncService {
     const context = this.context();
     const store = await this.store(context);
     await store.abandon(generation); context.assertCurrent();
+  }
+
+  private historyNavigation?: {
+    token: string; lease: BlocklyWorkspaceEditLease; assertCurrent: () => void;
+    store: AbsBaselineStore; expected: AbsDiskSnapshot; pointerHash: string;
+    sealed: boolean; timeout: ReturnType<typeof setTimeout>;
+  };
+
+  /** Hold the same native input fence from the preflight through file history publication. */
+  beginHistoryNavigation(): Promise<{ token: string }> {
+    const context = this.context();
+    return this.editor.runProjectOperation(async () => {
+      context.assertCurrent();
+      const lease = this.editor.acquireWorkspaceEditLease();
+      try {
+        await projectDataRuntime.flushPending();
+        const snapshot = this.editor.captureProjectSnapshot(lease);
+        const guard = this.atRevision(context.assertCurrent, lease, snapshot);
+        const store = await this.store(context), inspection = await store.inspectCommitted();
+        if (!inspection || await store.inspectPending()) throw new AbsSyncError('ABS_HISTORY_NOT_READY', 'History requires a complete committed ABS snapshot.');
+        const baseline = await store.loadCommitted();
+        const expected = await store.captureDisk();
+        this.assertMirrors(baseline!, expected, true);
+        const prepared = await this.project.prepareSave(snapshot.document, guard);
+        const committedAbi = await store.readDerivedAbi(baseline!.map.generation);
+        guard();
+        if (expected.abi === null || committedAbi === null
+          || !sameAbsProgram(JSON.parse(expected.abi), JSON.parse(committedAbi))
+          || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
+          throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'Unsaved canvas or external ABI changes must be resolved before history restoration.');
+        }
+        const token = crypto.randomUUID();
+        const timeout = setTimeout(() => this.releaseHistoryNavigation(token), 120_000);
+        this.historyNavigation = { token, lease, assertCurrent: () => { guard(); }, store, expected,
+          pointerHash: inspection.pointerHash, sealed: false, timeout };
+        return { token };
+      } catch (error) { lease.release(); throw error; }
+    });
+  }
+
+  /** Quarantine keeps the old canvas fenced until project reload activates a new workspace. */
+  async sealHistoryNavigation(token: string): Promise<void> {
+    const transaction = this.historyNavigation;
+    if (!transaction || transaction.token !== token) throw new AbsSyncError('ABS_HISTORY_STALE', 'History lease is missing or expired.');
+    if (transaction.sealed) return;
+    transaction.assertCurrent();
+    const disk = await transaction.store.captureDisk(), committed = await transaction.store.inspectCommitted();
+    transaction.assertCurrent();
+    if (disk.abi !== transaction.expected.abi || disk.map !== transaction.expected.map || committed?.pointerHash !== transaction.pointerHash) {
+      throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'Derived cache or committed snapshot changed during history restoration.');
+    }
+    transaction.lease.quarantine('正在从完整 ABS 恢复项目；重新加载完成前保持旧画布锁定。');
+    transaction.lease.release(); transaction.sealed = true;
+  }
+
+  releaseHistoryNavigation(token: string): void {
+    const transaction = this.historyNavigation;
+    if (!transaction || transaction.token !== token) return;
+    clearTimeout(transaction.timeout);
+    transaction.lease.release(); this.historyNavigation = undefined;
   }
 
   private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore) => Promise<T>, flush = true): Promise<T> {

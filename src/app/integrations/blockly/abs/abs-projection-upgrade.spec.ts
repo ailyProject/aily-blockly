@@ -1,3 +1,4 @@
+import { splitAbsState } from './abs-full-state';
 import { AbsBaselineStore, absBaselineKey, AbsSyncStoragePort } from './abs-baseline-store';
 import { absJson, createAbsProjection, fingerprintAbsNodes, hashAbsText, indexAbsSyntax, validateAbsProjection } from './abs-identity-map';
 import { inspectAbsGeneration } from './abs-generation-inspection';
@@ -68,7 +69,7 @@ describe('previous ABS projection inspection and explicit upgrade', () => {
     expect(save).not.toHaveBeenCalled();
     expect(files.get('project.abi')).toBe(originalAbi);
     expect(files.get(absBaselineKey('previous'))).toBe(originalRecord);
-    expect((await store.loadCommitted())!.map.projectionVersion).toBe('abs-v2.preview.5');
+    expect((await store.loadCommitted())!.map.projectionVersion).toBe('abs-v2.preview.7');
   });
 
   it('does not offer upgrade when ABS has unapplied edits or a pending journal exists', async () => {
@@ -86,10 +87,17 @@ describe('previous ABS projection inspection and explicit upgrade', () => {
     await expectAsync(validateAbsProjection(baseline, true)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_PROJECTION_UNSUPPORTED' }));
   });
 
-  it('recognizes the previous positional projection for recovery without applying stale offsets', async () => {
+  for (const version of ['abs-v2.preview.4', 'abs-v2.preview.5', 'abs-v2.preview.6'])
+  it('recognizes ' + version + ' for recovery without applying stale offsets', async () => {
     const positional = await createAbsProjection(baseline.workspace, { ...baseline.map, document: baseline.document, contracts: baseline.contracts });
-    // Non-branch formatting is unchanged between .4 and .5.
-    positional.map.projectionVersion = 'abs-v2.preview.4';
+    positional.abs = splitAbsState(positional.abs).program;
+    if (version !== 'abs-v2.preview.6') positional.abs = positional.abs.replace(/ @protect:\{[^}]*\}/g, '');
+    positional.map.baseAbsHash = await hashAbsText(positional.abs);
+    const entries = indexAbsSyntax(parseAbsSyntax(positional.abs));
+    positional.map.nodes.forEach((binding, index) => {
+      binding.start = entries[index].node.start; binding.end = entries[index].node.end;
+    });
+    positional.map.projectionVersion = version;
     await validateAbsProjection(positional, true);
     await expectAsync(validateAbsProjection(positional)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_PROJECTION_UPGRADE_REQUIRED' }));
     positional.map.nodes[0].start++;

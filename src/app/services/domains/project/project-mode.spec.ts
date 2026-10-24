@@ -41,6 +41,8 @@ describe('project mode boundaries', () => {
     expect(detectProjectMode({ manifest: { type: 'coder', entry: 'src/main.cpp' }, hasAbi: false, hasAci: false })).toBe('coder');
     expect(detectProjectMode({ manifest: { type: 'coder' }, hasAbi: true, hasAci: false })).toBe('coder');
     expect(detectProjectMode({ hasAbi: true, hasAci: false })).toBe('blockly');
+    expect(detectProjectMode({ hasAbi: false, hasAci: false, hasCompleteAbs: true })).toBe('blockly');
+    expect(detectProjectMode({ manifest: { type: 'coder' }, hasAbi: false, hasAci: false, hasCompleteAbs: true })).toBe('coder');
     expect(detectProjectMode({ hasAbi: false, hasAci: true })).toBe('coder');
     expect(detectProjectMode({ manifest: { type: 'module' }, hasAbi: false, hasAci: false })).toBeNull();
   });

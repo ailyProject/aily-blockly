@@ -1,4 +1,6 @@
-import { absJson, assertCurrentAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
+import { captureAbsAbiRecipe, deriveAbsAbi } from './abs-abi-derivation';
+import { decodeAbsState } from './abs-full-state';
+import { absJson, assertCurrentAbsProjection, createAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 
 /**
@@ -93,7 +95,11 @@ export class AbsBaselineStore {
       }
       const record: GenerationRecord = { ...input, schemaVersion: 1, expected,
         previousCommitted };
-      const content = absJson(record);
+      const { projection, abi, ...journal } = record;
+      const { generation, baselineRef, scope, savedAbiHash } = projection.map;
+      const content = absJson({ ...journal, schemaVersion: 2, snapshot: projection.abs,
+        context: { generation, baselineRef, scope, savedAbiHash },
+        abiRecipe: abi === null ? null : captureAbsAbiRecipe(projection, abi) });
       const existing = await storage.read(key);
       if (existing === content) return;
       if (existing !== null || !await storage.replace(key, null, content)) {
@@ -109,6 +115,10 @@ export class AbsBaselineStore {
     return projection;
   }
 
+  async readDerivedAbi(generation: string): Promise<string | null> {
+    return (await this.readGeneration(this.port, generation, true)).record.abi;
+  }
+
   async readArchivedDraft(generation: string) {
     const { record } = await this.readGeneration(this.port, generation);
     if (!record.draftBaseGeneration) throw new AbsSyncError('ABS_DRAFT_ARCHIVE_MISSING', 'This generation is not an archived draft.');
@@ -119,7 +129,7 @@ export class AbsBaselineStore {
   private async assertDraftArchive(record: Pick<AbsGenerationInput, 'mode' | 'inputAbs' | 'inputMap' | 'draftBaseGeneration' | 'expected'>) {
     if (record.draftBaseGeneration === undefined) return;
     absBaselineKey(record.draftBaseGeneration);
-    if (record.mode !== 'export' || typeof record.inputAbs !== 'string' || typeof record.inputMap !== 'string'
+    if (!['export', 'import'].includes(record.mode) || typeof record.inputAbs !== 'string' || typeof record.inputMap !== 'string'
       || await hashAbsText(record.inputAbs) !== record.expected.abs
       || JSON.parse(record.inputMap).generation !== record.draftBaseGeneration) {
       throw new AbsSyncError('ABS_GENERATION_INVALID', 'Draft archive must retain the exact source bytes and original generation map.');
@@ -290,12 +300,21 @@ export class AbsBaselineStore {
     if (text === null) throw new AbsSyncError('ABS_BASELINE_MISSING', 'Immutable ABS/ABI baseline is missing.');
     let record: GenerationRecord;
     try {
-      record = JSON.parse(text);
+      const stored = JSON.parse(text);
+      if (stored.schemaVersion === 2) {
+        const decoded = await decodeAbsState(stored.snapshot);
+        const projection = await createAbsProjection(decoded.workspace, { ...stored.context,
+          document: decoded.document, contracts: decoded.contracts });
+        if (projection.abs !== stored.snapshot) throw new Error('Complete snapshot is not canonical.');
+        const { snapshot, context, abiRecipe, ...journal } = stored;
+        record = { ...journal, schemaVersion: 1, projection,
+          abi: abiRecipe === null ? null : deriveAbsAbi(projection, abiRecipe) };
+      } else record = stored;
       if (record.schemaVersion !== 1 || record.projection.map.generation !== generation
         || record.projection.map.baselineRef !== absBaselineKey(generation)) throw new Error('Invalid generation record.');
       // Previous snapshots may be inspected/recovered byte-for-byte, but load,
       // stage and new commit entrypoints cannot apply or republish them as new work.
-      await validateAbsProjection(record.projection, true);
+      if (stored.schemaVersion === 1) await validateAbsProjection(record.projection, true);
       if (!['import', 'export'].includes(record.mode)
         || (record.mode === 'import' && (typeof record.abi !== 'string' || typeof record.inputAbs !== 'string'))
         || (record.mode === 'export' && record.abi !== null)

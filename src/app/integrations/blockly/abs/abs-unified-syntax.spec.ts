@@ -88,9 +88,9 @@ describe('ABS unified definition-order syntax', () => {
       const captured = captureAbsRuntimeContracts(workspace, state, () => {}, catalog.capture(Blockly.Blocks));
       expect(captured.contracts.syntax!['decl'].map(arg => arg.name)).toEqual(['VAR', 'VALUE', 'TYPE']);
       const baseline = await project(state, captured.contracts);
-      expect(baseline.abs).toContain('abs_order_root()\n    abs_order_decl("counter", abs_order_number(7), int)');
+      expect(baseline.abs).toContain('abs_order_root() @protect:{"deletable":false}\n    abs_order_decl("counter", abs_order_number(7), int)');
       expect(baseline.abs).not.toContain('@BODY:');
-      expect(baseline.abs).not.toContain('deletable');
+      expect(baseline.abs).toContain('@protect:{"deletable":false}');
       expect(baseline.map.nodes.find(node => node.blockId === 'num')?.astPath).toBe('/blocks/0/inputs/BODY/inputs/VALUE');
       const edit = await reconcileAbsDraft(baseline, baseline.abs.replace('abs_order_number(7)', 'abs_order_number(9)'), options);
       Blockly.serialization.workspaces.load(edit.workspace, restored);

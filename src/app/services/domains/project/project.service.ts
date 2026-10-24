@@ -2218,6 +2218,8 @@ export class ProjectService {
       return detectProjectMode({
         manifest,
         hasAbi: window['fs'].existsSync(window['path'].join(projectPath, 'project.abi')),
+        hasCompleteAbs: window['fs'].existsSync(window['path'].join(projectPath, 'project.abs'))
+          && window['fs'].readFileSync(window['path'].join(projectPath, 'project.abs'), 'utf8').includes('\n# @project-state:'),
         hasAci: window['fs'].existsSync(window['path'].join(projectPath, 'project.aci')),
         hasArduinoSketch: !!findArduinoSketchEntry(projectPath),
       });

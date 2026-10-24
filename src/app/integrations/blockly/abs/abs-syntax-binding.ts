@@ -1,5 +1,5 @@
 import { expandAbsValueInput } from './abs-value-inputs';
-import { AbsSyncError, type AbsSyntaxNode } from './abs-state';
+import { AbsSyncError, type AbsSyntaxNode, type AbsBlockProtection } from './abs-state';
 import type { AbsFieldDefinition, AbsFieldToken } from './abs-field-values';
 import type { BlockMeta } from './block-definition.model';
 import { hasUniqueAbsArguments } from './abs-argument-identity';
@@ -18,6 +18,9 @@ export interface AbsRawNode {
   parameters: Array<AbsRawValue & { name?: string }>;
   sections: Array<{ name?: string; inline?: AbsRawValue; children: AbsRawNode[] }>;
   disabled: boolean;
+  protection?: AbsBlockProtection;
+  comment?: string | null;
+  shadowFields?: Record<string, Record<string, unknown>>;
   omittedParentheses?: true;
   extraState?: unknown;
   extraRange?: { start: number; end: number };
@@ -81,6 +84,9 @@ export function bindAbsSyntax(raw: readonly AbsRawNode[], options: AbsSyntaxOpti
       type: raw.type, fields: Object.create(null), fieldRanges: Object.create(null), inputs: Object.create(null),
       disabled: raw.disabled, start: raw.start, end: raw.end,
     };
+    if (Object.hasOwn(raw, 'comment')) node.comment = raw.comment;
+    if (raw.shadowFields) node.shadowFields = raw.shadowFields;
+    if (raw.protection) node.protection = { ...raw.protection };
     if (Object.hasOwn(raw, 'extraState')) { node.extraState = raw.extraState; node.extraRange = raw.extraRange; }
     else {
       const prepared = options.prepareExtraState?.(raw);

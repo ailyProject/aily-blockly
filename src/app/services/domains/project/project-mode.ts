@@ -1,9 +1,10 @@
 export type ProjectMode = 'blockly' | 'coder';
 
-/** package.json is authoritative for Coder; old Blockly projects need only project.abi. */
+/** package.json is authoritative for Coder; Blockly opens from complete ABS or a legacy ABI. */
 export function detectProjectMode(input: {
   manifest?: unknown;
   hasAbi: boolean;
+  hasCompleteAbs?: boolean;
   hasAci: boolean;
   hasArduinoSketch?: boolean;
 }): ProjectMode | null {
@@ -11,7 +12,7 @@ export function detectProjectMode(input: {
     && (input.manifest as { type?: unknown }).type === 'coder') {
     return 'coder';
   }
-  if (input.hasAbi) return 'blockly';
+  if (input.hasAbi || input.hasCompleteAbs) return 'blockly';
   if (input.hasAci) return 'coder';
   if (!input.manifest && input.hasArduinoSketch) return 'coder';
   return null;

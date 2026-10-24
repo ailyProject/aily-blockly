@@ -218,7 +218,12 @@ export class _ProjectService {
     };
   }
 
+  private absSaveHandler?: (path: string) => Promise<void>;
+
+  setAbsSaveHandler(handler: (path: string) => Promise<void>): void { this.absSaveHandler = handler; }
+
   save(path: string): Promise<void> {
+    if (this.absSaveHandler) return this.absSaveHandler(path);
     const context = this.captureSaveContext(path);
     return this.blocklyService.runProjectOperation(async () => {
       context.assertCurrent();

@@ -1,3 +1,5 @@
+import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
@@ -453,7 +455,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
-      diskText,
+      diskText, completeAbs,
     } = await this.loadProjectAbiDocument(projectPath, assertCurrent, session.signal);
     assertCurrent();
 
@@ -493,7 +495,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     } finally {
       loadLease.release();
     }
-    if (!usedBoardTemplateAbi) {
+    // Complete ABS history can still reference resources absent from the current canvas.
+    // Keep content-addressed data until GC can mark every retained history root.
+    if (!usedBoardTemplateAbi && !completeAbs) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -581,11 +585,14 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
+    completeAbs: boolean;
     diskText: string;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
-    let abiContent = await this.electronService.readFileAsync(abiPath);
+    const absPort = await openAbsHostStorage(projectPath, assertCurrent);
+    const derivedAbi = await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
+    let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
@@ -621,7 +628,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     return {
       document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
       usedBoardTemplate,
-      diskText,
+      diskText, completeAbs: derivedAbi !== null,
     };
   }
 

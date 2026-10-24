@@ -15,7 +15,7 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
   retained: { retainedCalls?: number[]; retainedIds?: string[] } = {}): AbsNativeModelDeclaration[] {
   const nodes = new Map([...blocks].map(([node, block]) => [block, node]));
   const disabled = (block: Blockly.Block): boolean => {
-    for (let current: Blockly.Block | null = block; current; current = current.getParent()) if (nodes.get(current)?.disabled) return true;
+    for (let current: Blockly.Block | null = block; current; current = current.getSurroundParent()) if (nodes.get(current)?.disabled) return true;
     return false;
   };
   const declarations = new Map<string, AbsNativeModelDeclaration>();
@@ -53,7 +53,7 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     && block.inputList.every(input => !input.connection?.targetBlock()?.getDescendants(false).some(child => unresolved.has(child)));
   withNativeModelRegistrations(window, generator, (block, name, type) => {
     const node = nodes.get(block);
-    if (!node || disabled(block)) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', 'Only an active ABS initializer may prepare a model.');
+    if (!node || disabled(block)) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', `Only an active ABS initializer may prepare a model (${block.type}: ${!node ? 'missing-abs-owner' : 'disabled-initializer'}).`, node, [], { blockType: block.type, reason: !node ? 'missing-abs-owner' : 'disabled-initializer' });
     const effect = execution.models.declare(node.start, block.type, name, type, requestId);
     const key = effect.name.toLowerCase(), previous = declarations.get(key);
     const initializer = initializers.get(key);
