@@ -1,29 +1,33 @@
 :host {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
+  position: relative;
   display: block;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  max-height: min(40vh, 12rem);
 }
 
+// Reserve one real flex row, including before presentation and after errors.
+// No overlay mode can cover the iframe's menu, tools or keyboard focus.
 .startup-status {
   box-sizing: border-box;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 18px;
-  height: 100%;
-  padding: 24px 16px;
+  gap: 8px;
+  min-height: 40px;
+  max-height: inherit;
+  padding: 6px 10px;
   overflow: auto;
+  border-bottom: 1px solid var(--aily-border-primary, #303a42);
   background: var(--aily-bg-primary, #101418);
   color: var(--aily-text-primary, #e9edf0);
-  text-align: center;
+  text-align: left;
 }
 
 .startup-waveform {
   flex: 0 0 auto;
-  width: min(100%, 340px);
-  max-height: 44%;
+  width: 48px;
+  max-height: 30px;
 }
 
 .waveform-frame {
@@ -72,9 +76,11 @@
 .waveform-flow { animation: startup-waveform-scroll 4s linear infinite; }
 .waveform-flow-digital { animation-duration: 3.2s; }
 
-.startup-copy { max-width: 34ch; }
+.startup-copy { min-width: 0; }
 h2 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
-p { margin: 8px 0 0; color: var(--aily-text-secondary, #adb6bd); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+p { margin: 2px 0 0; color: var(--aily-text-secondary, #adb6bd); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.startup-status:not(.has-error) p { display: none; }
+.has-error { align-items: flex-start; }
 .has-error h2 { color: var(--aily-color-error, #e34d59); }
 
 @keyframes startup-waveform-scroll {

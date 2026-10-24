@@ -56,7 +56,7 @@ function fixture() {
     '@angular/core': { ...angular, inject(token) {
       if (token === sourceToken) return {};
       if (token === registryToken) return registry;
-      if (token === angular.ChangeDetectorRef) return { markForCheck() { calls.changes++; } };
+      if (token === angular.ChangeDetectorRef) return { markForCheck() { calls.changes++; }, detectChanges() { calls.changes++; } };
       throw Error('Unknown injection');
     } },
     '../../integrations/simulator/simulator-web-product.service': { SimulatorWebProductService: class {

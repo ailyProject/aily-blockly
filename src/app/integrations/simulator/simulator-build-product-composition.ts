@@ -76,6 +76,10 @@ export class SimulatorBuildProductComposition {
   private readonly buildAuthority: SimulatorBuildCallbackAuthority;
   private closed = false;
 
+  captureArtifactReadValidity(descriptor: SimulatorSubappHostArtifactDescriptorV1): Readonly<{ requireCurrent(): void }> {
+    return this.projectAuthority.captureArtifactReadValidity(descriptor);
+  }
+
   constructor(options: SimulatorBuildProductCompositionOptions) {
     this.projectAuthority = new SimulatorProjectArtifactCallbackAuthority({
       projectRoot: options.projectRoot,

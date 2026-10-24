@@ -10,8 +10,8 @@ import { SimulatorStartupStatusComponent, type SimulatorStartupPhase } from './s
   standalone: true,
   imports: [SimulatorStartupStatusComponent],
   template: `
+    @if (phase) { <app-simulator-startup-status [phase]="phase" [message]="status" [inline]="true" /> }
     <div #controls></div><div #surface class="simulator-surface"></div>
-    @if (phase) { <app-simulator-startup-status [phase]="phase" [message]="status" /> }
   `,
   host: { '[attr.aria-busy]': "phase === 'project' || phase === 'view' ? 'true' : 'false'" },
   styles: [':host { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; } .simulator-surface { flex: 1; min-height: 0; }'],
@@ -26,6 +26,7 @@ export class SimulatorWebComponent implements AfterViewInit, OnDestroy {
   private lifecycle: ReturnType<typeof registerWebToolLifecycle> | null = null;
   phase: SimulatorStartupPhase | null = 'project';
   status = '';
+  shellVisible = false;
   private destroyed = false;
   private closing = false;
 
@@ -39,7 +40,15 @@ export class SimulatorWebComponent implements AfterViewInit, OnDestroy {
       snapshot: () => this.product.snapshot(),
       agentRequest: this.product.agentRequest.bind(this.product),
     });
-    void this.product.mount({ window, document, controls: this.controls.nativeElement, container: this.surface.nativeElement })
+    void this.product.mount({ window, document, controls: this.controls.nativeElement, container: this.surface.nativeElement }, () => {
+      if (!this.destroyed && !this.closing && !this.shellVisible) {
+        this.shellVisible = true;
+        // The original asynchronous document callback can arrive outside the
+        // next application check. Flush only this live view; admission and its
+        // busy phase continue to follow their original promises.
+        this.changeDetector.detectChanges();
+      }
+    })
       .then(() => {
         if (this.destroyed || this.closing) return;
         this.phase = 'view'; this.changeDetector.markForCheck();

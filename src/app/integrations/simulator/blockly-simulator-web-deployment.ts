@@ -92,6 +92,17 @@ export function createBlocklyProjectScopedWebDeployment(
   const readInputs = options.readInputs.bind(options);
 
   return Object.freeze<BlocklySimulatorWebDeployment>({
+    ...(deferPresentation === true ? {} : { async readPresentation(signal: AbortSignal) {
+      // The trusted deployment already selected this public release/instance.
+      // This path neither captures a project nor calls readInputs/provider auth.
+      const originalDocument = globalThis.document;
+      const requireCurrent = () => { signal.throwIfAborted();
+        if (globalThis.location.origin !== trustedOrigin || globalThis.document !== originalDocument) fail(); };
+      requireCurrent();
+      return Object.freeze({ activation: signal,
+        identity: Object.freeze({ runtimeId: frozenInstance.runtimeId, version: frozenInstance.version }),
+        resources: Object.freeze({ trustedOrigin, releaseBaseURL }), requireCurrent });
+    } }),
     async readStartup({ activation, context, signal }) {
       const path = activation.path, projectSessionId = activation.projectSessionId, activationSignal = activation.signal;
       if (typeof path !== 'string' || !path || !identifier(projectSessionId)

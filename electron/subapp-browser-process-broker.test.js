@@ -73,6 +73,23 @@ test('request timeout sends bounded cancel and waits for the actual terminal rep
     assert.equal(h.sent[0].message.errorCode, 'BROWSER_EXECUTION_TIMEOUT'); assert.equal(h.broker.pendingCount, 0);
 });
 
+for (const code of ['cleanup-unconfirmed', 'BROWSER_EXECUTION_CANCEL_UNCONFIRMED']) {
+    for (const cancellation of ['abort', 'timeout']) test(`original ${code} survives local ${cancellation} projection`, async t => {
+        const h = harness(t, { budgets: { cancelGraceMs: 1000 } }), a = h.owner(), bound = await h.broker.bind(a);
+        const frame = h.request(bound, randomUUID(), {}, { timeoutMs: cancellation === 'timeout' ? 100 : 10000 });
+        h.broker.handle('node-a', frame);
+        if (cancellation === 'abort') h.broker.handle('node-a', { ...frame, type: CANCEL });
+        await until(() => h.browser.some(item => item.data.type === CANCEL));
+        assert.equal(h.sent.length, 0); assert.equal(h.broker.pendingCount, 1);
+        h.answer(h.endpoints[0], frame, { ok: false, errorCode: code, error: 'Original cleanup remains unconfirmed' });
+        await tick();
+        assert.equal(h.sent[0].message.errorCode, code);
+        assert.equal(h.sent[0].message.requestId, frame.requestId);
+        assert.equal(h.sent[0].message.connectionId, frame.connectionId);
+        assert.equal(h.broker.pendingCount, 0); assert.equal(h.closes, 0);
+    });
+}
+
 test('unconfirmed cancellation retains cleanup and budget until a retry obtains detach ACK', async t => {
     let fail = true; const h = harness(t, { failClose: () => fail }), a = h.owner(), bound = await h.broker.bind(a), frame = h.request(bound);
     h.broker.handle('node-a', frame); h.broker.handle('node-a', { ...frame, type: CANCEL });

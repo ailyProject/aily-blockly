@@ -34,7 +34,8 @@ import type {
 } from './simulator-build-execution-port';
 import { createSimulatorElectronProjectArtifactFilePort } from './simulator-electron-project-artifact-file-port';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
-import type { SimulatorCurrentProjectScope } from './simulator-current-project-scope';
+import { captureSimulatorProjectReadAuthority,
+  type SimulatorCurrentProjectScope, type SimulatorProjectReadAuthorityCapture } from './simulator-current-project-scope';
 
 const SIMULATOR_TOOL_ID = 'simulator';
 const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
@@ -273,6 +274,14 @@ export class SimulatorHostProviderProductService {
           request, signal: bound, projectRoot, projectIdentity, composition, activeProject,
         })),
       });
+      const captureArtifactReadAuthority = (input: SimulatorProjectReadAuthorityCapture) => {
+        return captureSimulatorProjectReadAuthority(input, {
+          activation: activationSignal, projectIdentity, workspaceIdentity, requireCurrent,
+          captureValidity: descriptor => composition.captureArtifactReadValidity(descriptor),
+          readWorkspaceState: () => ({ revision: this.blockly.getWorkspaceContentRevision(), code: this.blockly.getReusableGeneratedCode() }),
+          readContext: async signal => callbacks.readContext({ projectIdentity }, signal),
+        });
+      };
       const bundle = createSimulatorHostProviderDispatcherAdapterBundle({
         project: callbacks,
         build: composition.buildCallbacks,
@@ -292,7 +301,7 @@ export class SimulatorHostProviderProductService {
         get project() { requireCurrent(); return projectAdapter ??= new SimulatorProjectHostProviderAdapter(callbacks); },
         callbacks, buildCallbacks: composition.buildCallbacks, editorCallbacks: editor.callbacks,
         entitlementCallbacks: entitlement.callbacks, adapters: bundle.adapters,
-        requireCurrent, close,
+        requireCurrent, captureArtifactReadAuthority, close,
         snapshot: () => ({ closeRequested, closed, pendingOperations: pending.size, retainedCleanupSteps: cleanup.size,
           cleanupPending: closing !== null, WorkerPhysicalExitConfirmed: false as const,
           NodeBusinessACK: false as const, MainBusinessACK: false as const }),

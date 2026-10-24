@@ -597,6 +597,126 @@ test('FN a foreign session cannot join pending or retained failed owner cleanup'
   assert.equal(owners.release(lease.ownerLeaseId, 'chat-a'), cleanup); assert.equal(calls, 1); owners.stop();
 });
 
+test('GB01 single request cancellation waits for its joined original terminal', async () => {
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests(), call = requests.start('owner-a', undefined, 'call-a');
+  call.waitForCleanup('web-semantic');
+  let settled = false;
+  const cancelling = requests.cancel('owner-a', 'call-a').then(value => { settled = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(call.signal.aborted, true); assert.equal(settled, false);
+  call.finish();
+  assert.deepEqual(await cancelling, { schemaVersion: 1, requestId: 'call-a', terminalReceived: true,
+    cleanupConfirmed: true, source: 'web-semantic', reason: 'cleanup-acknowledged' });
+  assert.deepEqual(await requests.release('owner-a'), []);
+});
+
+test('GB01 failed request cleanup is a negative receipt and retains release responsibility', async () => {
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests(), call = requests.start('owner-a', undefined, 'call-a');
+  call.waitForCleanup('native-batch');
+  const cancelling = requests.cancel('owner-a', 'call-a');
+  call.finish('original cleanup remains unconfirmed');
+  assert.deepEqual(await cancelling, { schemaVersion: 1, requestId: 'call-a', terminalReceived: true,
+    cleanupConfirmed: false, source: 'native-batch', reason: 'cleanup-failed' });
+  const failures = [{ source: 'native-batch', error: 'original cleanup remains unconfirmed' }];
+  assert.deepEqual(await requests.release('owner-a'), failures);
+  assert.deepEqual(await requests.release('owner-a'), failures);
+});
+
+test('GB01 cancellation observer timeout does not retire the original task', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests(), call = requests.start('owner-a', undefined, 'call-a');
+  call.waitForCleanup('web-semantic');
+  let cancelled = false, released = false;
+  const cancelling = requests.cancel('owner-a', 'call-a').then(value => { cancelled = true; return value; });
+  t.mock.timers.tick(2999); await Promise.resolve(); assert.equal(cancelled, false);
+  t.mock.timers.tick(1);
+  assert.deepEqual(await cancelling, { schemaVersion: 1, requestId: 'call-a', terminalReceived: false,
+    cleanupConfirmed: false, source: 'web-semantic', reason: 'cleanup-timeout' });
+  const releasing = requests.release('owner-a').then(value => { released = true; return value; });
+  await Promise.resolve(); assert.equal(released, false);
+  call.finish(); assert.deepEqual(await releasing, []); assert.equal(released, true);
+});
+
+test('GB01 request cleanup receipt cannot cancel or join another owner or request', async () => {
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests();
+  const a = requests.start('owner-a', undefined, 'call-a'), otherCall = requests.start('owner-a', undefined, 'call-b');
+  const otherOwner = requests.start('owner-b', undefined, 'call-a');
+  a.waitForCleanup('web-semantic'); otherCall.waitForCleanup('web-semantic'); otherOwner.waitForCleanup('web-semantic');
+  const cancelling = requests.cancel('owner-a', 'call-a');
+  assert.equal(a.signal.aborted, true); assert.equal(otherCall.signal.aborted, false); assert.equal(otherOwner.signal.aborted, false);
+  a.finish(); assert.equal((await cancelling).cleanupConfirmed, true);
+  assert.equal(otherCall.signal.aborted, false); assert.equal(otherOwner.signal.aborted, false);
+  otherCall.finish(); otherOwner.finish();
+  assert.deepEqual(await requests.release('owner-a'), []); assert.deepEqual(await requests.release('owner-b'), []);
+});
+
+test('GB01 unknown and already-retired requests never become cleanup ACKs', async () => {
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests();
+  const expected = { schemaVersion: 1, requestId: 'call-a', terminalReceived: false,
+    cleanupConfirmed: false, source: null, reason: 'request-not-observed' };
+  assert.deepEqual(await requests.cancel('owner-a', 'call-a'), expected);
+  const call = requests.start('owner-a', undefined, 'call-a'); call.waitForCleanup('web-semantic'); call.finish();
+  assert.deepEqual(await requests.cancel('owner-a', 'call-a'), expected);
+});
+
+test('GB01 ambiguous request IDs are cancelled without assigning a false terminal ACK', async () => {
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests(), a = requests.start('owner-a', undefined, 'same');
+  const b = requests.start('owner-a', undefined, 'same');
+  a.waitForCleanup('web-semantic'); b.waitForCleanup('web-semantic');
+  assert.deepEqual(await requests.cancel('owner-a', 'same'), { schemaVersion: 1, requestId: 'same', terminalReceived: false,
+    cleanupConfirmed: false, source: null, reason: 'request-ambiguous' });
+  assert.equal(a.signal.aborted, true); assert.equal(b.signal.aborted, true); a.finish(); b.finish();
+});
+
+test('GB01 an ordinary nonjoined invocation terminal cannot acknowledge resource cleanup', async () => {
+  const { SubappOwnerRequests } = await bridgeModule;
+  const requests = new SubappOwnerRequests(), call = requests.start('owner-a', undefined, 'call-a');
+  const cancelling = requests.cancel('owner-a', 'call-a'); call.finish();
+  assert.deepEqual(await cancelling, { schemaVersion: 1, requestId: 'call-a', terminalReceived: true,
+    cleanupConfirmed: false, source: 'none', reason: 'cleanup-not-joined' });
+});
+
+test('GB01 public owner cancellation separates acceptance from exact joined Web cleanup', async t => {
+  const entered = deferred(), cancelled = deferred(), terminal = deferred();
+  const h = await harness(t, { webAgent: async (_method, _params, signal) => {
+    entered.resolve(); signal.addEventListener('abort', () => cancelled.resolve(), { once: true });
+    await cancelled.promise; await terminal.promise; signal.throwIfAborted();
+  } });
+  const owner = await h.acquire('chat-a'), running = h.execute(owner, 'exact-call'); await entered.promise;
+  let cleanupAcknowledged = false;
+  const cancelling = h.service.manageOwnerLease({ action: 'cancel', ...owner, requestId: 'exact-call' })
+    .then(value => { cleanupAcknowledged = true; return value; });
+  await cancelled.promise; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cleanupAcknowledged, false); assert.equal(h.released, 0);
+  terminal.resolve(); assert.equal((await running).errorCode, 'SUBAPP_RPC_CANCELLED');
+  assert.deepEqual(await cancelling, { ok: true, cancelled: true, cleanup: { schemaVersion: 1,
+    requestId: 'exact-call', terminalReceived: true, cleanupConfirmed: true, source: 'web-semantic', reason: 'cleanup-acknowledged' } });
+  assert.equal((await h.service.manageOwnerLease({ action: 'renew', ...owner })).ok, true);
+  assert.equal(h.released, 0); assert.equal((await h.release(owner)).ok, true);
+});
+
+test('GB01 public owner cancellation never hides joined Web cleanup failure', async t => {
+  const entered = deferred(), cancelled = deferred(), terminal = deferred();
+  const h = await harness(t, { webAgent: async (_method, _params, signal) => {
+    entered.resolve(); signal.addEventListener('abort', () => cancelled.resolve(), { once: true });
+    await cancelled.promise; await terminal.promise;
+    throw Object.assign(new Error('original cleanup is unconfirmed'), { code: 'cleanup-unconfirmed' });
+  } });
+  const owner = await h.acquire('chat-a'), running = h.execute(owner, 'exact-call'); await entered.promise;
+  const cancelling = h.service.manageOwnerLease({ action: 'cancel', ...owner, requestId: 'exact-call' });
+  await cancelled.promise; terminal.resolve(); assert.equal((await running).errorCode, 'cleanup-unconfirmed');
+  assert.deepEqual(await cancelling, { ok: true, cancelled: true, cleanup: { schemaVersion: 1,
+    requestId: 'exact-call', terminalReceived: true, cleanupConfirmed: false, source: 'web-semantic', reason: 'cleanup-failed' } });
+  const release = await h.release(owner); assert.equal(release.ok, false);
+  assert.deepEqual(await h.release(owner), release);
+});
+
 async function loadBridge() {
   const result = await esbuild.build({
     stdin: {

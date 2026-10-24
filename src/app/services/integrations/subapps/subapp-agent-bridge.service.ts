@@ -365,8 +365,8 @@ export class SubappAgentBridgeService implements OnDestroy {
       if (action === 'cancel') {
         const requestId = String(input['requestId'] || '');
         this.ownerLeases.cancel(ownerLeaseId, sessionId, requestId);
-        this.ownerRequests.cancel(ownerLeaseId, requestId);
-        return { ok: true, cancelled: true };
+        const cleanup = await this.ownerRequests.cancel(ownerLeaseId, requestId);
+        return { ok: true, cancelled: true, cleanup };
       }
       if (action !== 'acquire' && action !== 'renew') throw new SubappRpcError('Unknown owner lease action', 'SUBAPP_OWNER_ACTION_INVALID');
       const lease = action === 'acquire' ? this.ownerLeases.acquire(sessionId) : this.ownerLeases.renew(ownerLeaseId, sessionId);

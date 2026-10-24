@@ -111,7 +111,11 @@ class SubappBrowserProcessBroker {
                 || message.connectionId !== record.connection.connectionId || typeof message.ok !== 'boolean' || !validId(message.requestId)) throw new Error('Invalid browser result');
             const pending = record.pending.get(message.requestId);
             if (!pending) return; // A terminal late reply is never replayed into another operation.
-            this.finish(record, pending, pending.cancelCode ? errorFrame(pending.cancelCode) : message);
+            // The original handler's unconfirmed cleanup outranks a local
+            // cancel/timeout projection; receipt of a failure is not cleanup ACK.
+            const cleanupUnconfirmed = message.ok === false && (message.errorCode === 'cleanup-unconfirmed'
+                || message.errorCode === 'BROWSER_EXECUTION_CANCEL_UNCONFIRMED');
+            this.finish(record, pending, pending.cancelCode && !cleanupUnconfirmed ? errorFrame(pending.cancelCode) : message);
         } catch { void this.revoke(record).catch(() => {}); }
     }
 

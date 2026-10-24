@@ -9,10 +9,12 @@ export type SimulatorStartupPhase = 'project' | 'view' | 'error';
   templateUrl: './simulator-startup-status.component.html',
   styleUrl: './simulator-startup-status.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '[class.inline]': 'inline' },
 })
 export class SimulatorStartupStatusComponent {
   @Input() phase: SimulatorStartupPhase = 'project';
   @Input() message = '';
+  @Input() inline = false;
 
   get title(): string {
     return this.phase === 'project' ? '正在准备仿真环境'

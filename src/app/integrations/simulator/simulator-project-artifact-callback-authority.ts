@@ -17,6 +17,7 @@ import {
   validateSimulationArtifact,
   type SimulationArtifact,
 } from '@aily-project/simulator-protocol/artifact';
+import { validateSimulatorSubappHostArtifactDescriptorV1 } from '@aily-project/simulator-protocol/host';
 import type {
   SimulatorSubappHostArtifactChunkRequestV1,
   SimulatorSubappHostArtifactDescriptorV1,
@@ -219,6 +220,30 @@ export class SimulatorProjectArtifactCallbackAuthority {
     if (this.closed) return;
     this.closed = true;
     this.artifactReferences.clear();
+  }
+
+  /** Local capability over this exact issued reference, never a wire claim or
+   * a renewed lease. Cached verified bytes still require its original TTL. */
+  captureArtifactReadValidity(descriptor: SimulatorSubappHostArtifactDescriptorV1): Readonly<{ requireCurrent(): void }> {
+    const value = validateSimulatorSubappHostArtifactDescriptorV1(descriptor);
+    const reference = this.artifactReferences.get(value.artifactReference);
+    if (!reference || value.projectIdentity !== this.projectIdentity
+      || value.artifactRevision !== reference.artifactRevision
+      || value.expiresAtUnixMs !== reference.expiresAtUnixMs
+      || value.fileCount !== reference.artifact.files.length
+      || value.totalSizeBytes !== reference.artifact.files.reduce((total, file) => total + file.sizeBytes, 0)
+      || JSON.stringify(value.artifact) !== JSON.stringify(reference.artifact)) {
+      throw new SimulatorHostArtifactChunkError('reference-not-found');
+    }
+    const requireCurrent = () => {
+      if (this.closed) throw new SimulatorHostProviderOperationError('cancelled');
+      if (reference.expiresAtUnixMs <= this.requireNow()) throw new SimulatorHostArtifactChunkError('reference-expired');
+      if (this.artifactReferences.get(reference.artifactReference) !== reference) {
+        throw new SimulatorHostArtifactChunkError('reference-not-found');
+      }
+    };
+    requireCurrent();
+    return Object.freeze({ requireCurrent });
   }
 
   private async readContext(

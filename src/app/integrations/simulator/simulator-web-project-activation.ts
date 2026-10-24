@@ -1,4 +1,5 @@
 import type { SimulatorWebProductActivation } from './simulator-web-product.source';
+import type { SimulatorWebProductPresentation } from './simulator-web-product.service';
 
 export interface SimulatorCapturedProjectActivation {
   readonly path: string;
@@ -14,12 +15,20 @@ export interface SimulatorProjectActivationPort {
 }
 
 export interface SimulatorWebProjectPublicationPort {
+  /** Public original tool/document input; never captures a project activation. */
+  readPresentation?(signal: AbortSignal): Promise<SimulatorWebProductPresentation>;
   /** A trusted application implementation supplies publication and account
    * settings for this already selected path. This is not a Shell/Agent API. */
   readPublication(projectPath: string, signal: AbortSignal): Promise<{
     readonly projectPath: string;
     readonly activation: SimulatorWebProductActivation;
   }>;
+  /** Trusted local handoff of one original prewarmed caller, never a lookup by
+   * a page-selected path. null alone chooses the ordinary new-caller path. */
+  readPreparedPublication?(captured: SimulatorCapturedProjectActivation, signal: AbortSignal): Promise<{
+    readonly projectPath: string;
+    readonly activation: SimulatorWebProductActivation;
+  } | null>;
 }
 
 export interface SimulatorWebProjectActivationReaderOptions {
@@ -30,6 +39,8 @@ export interface SimulatorWebProjectActivationReaderOptions {
 interface ActivationBinding {
   readonly revoke: AbortController;
   readonly cleanup: Set<() => void>;
+  closePublication?: () => Promise<void>;
+  publicationClosing?: Promise<void>;
 }
 
 /** Translate the application's original selected generation into the existing
@@ -38,6 +49,7 @@ interface ActivationBinding {
 export function createSimulatorWebProjectActivationReader(options: SimulatorWebProjectActivationReaderOptions) {
   const capture = options.project.captureCurrentProjectActivation.bind(options.project);
   const readPublication = options.publication.readPublication.bind(options.publication);
+  const readPrepared = options.publication.readPreparedPublication?.bind(options.publication);
   const lifetime = new AbortController();
   const bindings = new Set<ActivationBinding>();
   const pending = new Set<Promise<SimulatorWebProductActivation>>();
@@ -48,8 +60,19 @@ export function createSimulatorWebProjectActivationReader(options: SimulatorWebP
     for (const cleanup of binding.cleanup) {
       try { cleanup(); binding.cleanup.delete(cleanup); } catch (error) { failures.push(error); }
     }
-    if (binding.cleanup.size === 0) bindings.delete(binding);
+    if (binding.cleanup.size === 0 && !binding.closePublication) bindings.delete(binding);
     if (failures.length) throw new AggregateError(failures, 'Project activation subscription cleanup remains unconfirmed.');
+  }
+
+  function closeOriginalPublication(binding: ActivationBinding): Promise<void> {
+    if (binding.publicationClosing) return binding.publicationClosing;
+    if (!binding.closePublication) return Promise.resolve();
+    const close = binding.closePublication;
+    const actual = Promise.resolve().then(close).then(() => {
+      if (binding.closePublication === close) binding.closePublication = undefined;
+    }).finally(() => { if (binding.publicationClosing === actual) binding.publicationClosing = undefined; });
+    binding.publicationClosing = actual; void actual.catch(() => { /* Keep the same original owner for retry. */ });
+    return actual;
   }
 
   function readActivation(signal: AbortSignal): Promise<SimulatorWebProductActivation> {
@@ -78,7 +101,15 @@ export function createSimulatorWebProjectActivationReader(options: SimulatorWebP
         const activationSubscription = options.project.projectActivation$.subscribe(revoke);
         binding.cleanup.add(() => activationSubscription.unsubscribe());
         requireCurrent();
-        const publication = await readPublication(captured.path, current);
+        let publication = readPrepared ? await readPrepared(captured, current) : null;
+        if (publication === null) publication = await readPublication(captured.path, current);
+        // Adopt a returned owner before the first post-await cancellation fence.
+        // A transferred prewarm may no longer be controlled by its old trigger.
+        const returnedStore = publication?.activation?.project?.ownedStore;
+        if (returnedStore && typeof returnedStore.close === 'function') {
+          binding.closePublication = returnedStore.close.bind(returnedStore);
+          bindings.add(binding);
+        }
         requireCurrent();
         if (!publication || publication.projectPath !== captured.path
           || !publication.activation?.activation || typeof publication.activation.activation.throwIfAborted !== 'function') {
@@ -91,13 +122,16 @@ export function createSimulatorWebProjectActivationReader(options: SimulatorWebP
         activation.addEventListener('abort', release, { once: true });
         binding.cleanup.add(() => activation.removeEventListener('abort', release));
         requireSelected();
+        binding.closePublication = undefined; // The returned activation now owns this Store.
         return { ...selected, activation,
           startupOptions: { ...selected.startupOptions, owner: { requireCurrent: requireSelected } },
           agentWorkspaceRoot: captured.path };
       } catch (error) {
         binding.revoke.abort(error);
-        try { dispose(binding); }
-        catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Project publication failed and subscriptions remain unconfirmed.'); }
+        const failures: unknown[] = [];
+        try { await closeOriginalPublication(binding); } catch (cleanupError) { failures.push(cleanupError); }
+        try { dispose(binding); } catch (cleanupError) { failures.push(cleanupError); }
+        if (failures.length) throw new AggregateError([error, ...failures], 'Project publication or original owner cleanup remains unconfirmed.');
         throw error;
       }
     }).finally(() => { pending.delete(task); });
@@ -113,8 +147,9 @@ export function createSimulatorWebProjectActivationReader(options: SimulatorWebP
     const task = Promise.resolve().then(async () => {
       await Promise.allSettled([...pending]);
       const failures: unknown[] = [];
-      for (const binding of bindings) {
+      for (const binding of [...bindings]) {
         binding.revoke.abort(lifetime.signal.reason);
+        try { await closeOriginalPublication(binding); } catch (error) { failures.push(error); }
         try { dispose(binding); } catch (error) { failures.push(error); }
       }
       if (failures.length) throw new AggregateError(failures, 'Project activation cleanup remains unconfirmed.');
@@ -127,6 +162,7 @@ export function createSimulatorWebProjectActivationReader(options: SimulatorWebP
   return Object.freeze({ readActivation, close,
     snapshot() {
       return { closed, pendingReads: pending.size, activeBindings: bindings.size,
+        retainedPublicationOwners: [...bindings].filter(binding => binding.closePublication !== undefined).length,
         subscriptions: [...bindings].reduce((total, binding) => total + binding.cleanup.size, 0),
         retainedCleanupResponsibility: pending.size !== 0 || bindings.size !== 0,
         WorkerPhysicalExitConfirmed: false, NodeBusinessACK: false, MainBusinessACK: false };

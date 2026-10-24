@@ -1,5 +1,5 @@
 import type {
-  SimulatorWebProductComposition, SimulatorWebProductSource, SimulatorWebStartupInput,
+  SimulatorWebProductComposition, SimulatorWebProductPresentation, SimulatorWebProductSource, SimulatorWebStartupInput,
 } from './simulator-web-product.service';
 
 /** Structural host boundary: the independently delivered provider retains the
@@ -22,6 +22,8 @@ export interface SimulatorWebProductActivation {
   readonly project: {
     readonly context: SimulatorWebSelectedProjectContext;
     readonly artifact: object | null;
+    /** Borrowed only in this document; never serialized into project state. */
+    readonly preparedArtifact?: object;
   } & ({ readonly storage: SimulatorWebProjectStorage; readonly store?: never; readonly ownedStore?: never }
     | { readonly store: object; readonly storage?: never; readonly ownedStore?: { close(): Promise<void> } });
 }
@@ -43,6 +45,7 @@ export interface SimulatorWebProjectProvidersModule {
   createWebProjectProviders?(options: {
     selection: { context: SimulatorWebSelectedProjectContext; store: object };
     artifact: object | null;
+    preparedArtifact?: object;
     owner: { requireCurrent(): void };
     ownedStore?: { close(): Promise<void> };
   }): SimulatorWebOwnedProjectProviders;
@@ -55,6 +58,8 @@ export interface SimulatorWebProjectProvidersModule {
 }
 
 export interface SimulatorWebProductSourceOptions {
+  /** Optional original tool/document release input, independent of project readiness. */
+  readPresentation?(signal: AbortSignal): Promise<SimulatorWebProductPresentation>;
   /** Reads the application's actual selected generation, not a page request. */
   readActivation(signal: AbortSignal): Promise<SimulatorWebProductActivation>;
   loadProviders?(moduleURL: string): Promise<SimulatorWebProjectProvidersModule>;
@@ -98,6 +103,7 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
   const lifetime = new AbortController();
   let activeRead: Promise<SimulatorWebProductComposition> | null = null;
   let retainedProviders: SimulatorWebOwnedProjectProviders | null = null;
+  let retainedSelectedStore: { close(): Promise<void> } | null = null;
   let providerCleanup: Promise<void> | null = null;
   let closing: Promise<void> | null = null;
   let cleanupFailed = false;
@@ -105,10 +111,11 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
 
   function closeRetainedProviders(): Promise<void> {
     if (providerCleanup) return providerCleanup;
-    const providers = retainedProviders;
-    if (!providers) return Promise.resolve();
-    const task = Promise.resolve().then(() => providers.close()).then(() => {
-      if (retainedProviders === providers) retainedProviders = null;
+    const owner = retainedProviders ?? retainedSelectedStore;
+    if (!owner) return Promise.resolve();
+    const task = Promise.resolve().then(() => owner.close()).then(() => {
+      if (retainedProviders === owner) retainedProviders = null;
+      if (retainedSelectedStore === owner) retainedSelectedStore = null;
       cleanupFailed = false;
     }, error => { cleanupFailed = true; throw error; }).finally(() => {
       if (providerCleanup === task) providerCleanup = null;
@@ -120,11 +127,15 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
 
   function readComposition(signal: AbortSignal): Promise<SimulatorWebProductComposition> {
     if (closed || lifetime.signal.aborted) return Promise.reject(new Error('Web product source is closed.'));
-    if (activeRead || retainedProviders) return Promise.reject(new Error('Web product source still owns a pending read or cleanup.'));
+    if (activeRead || retainedProviders || retainedSelectedStore) return Promise.reject(new Error('Web product source still owns a pending read or cleanup.'));
     const requested = AbortSignal.any([signal, lifetime.signal]);
     const task = Promise.resolve().then(async () => {
       requested.throwIfAborted();
       const selected = await readActivation(requested);
+      const returnedStore = selected?.project?.ownedStore;
+      if (returnedStore && typeof returnedStore.close === 'function') {
+        retainedSelectedStore = { close: returnedStore.close.bind(returnedStore) };
+      }
       requested.throwIfAborted();
       if (!selected?.activation || typeof selected.activation.throwIfAborted !== 'function') {
         throw new TypeError('The Web product requires its original project activation.');
@@ -142,7 +153,18 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
         owner: { requireCurrent },
       };
       const context = structuredClone(selected.project.context);
-      const artifact = captureSimulatorWebArtifactInput(selected.project.artifact);
+      const validatedArtifact = captureSimulatorWebArtifactInput(selected.project.artifact);
+      const preparedArtifact = selected.project.preparedArtifact;
+      if (preparedArtifact !== undefined) {
+        const capability = preparedArtifact as { binding?: { artifact?: object; authority?: unknown }; authority?: unknown };
+        if (!capability || typeof capability !== 'object' || selected.project.store === undefined
+          || capability.binding?.artifact !== selected.project.artifact
+          || !capability.authority || capability.binding.authority !== capability.authority
+          || !selected.project.artifact || !Object.isFrozen(selected.project.artifact)) {
+          throw new TypeError('Prepared content requires its exact original read authority and frozen source.');
+        }
+      }
+      const artifact = preparedArtifact === undefined ? validatedArtifact : selected.project.artifact;
       const originalStore = selected.project.store;
       const ownedStore = selected.project.ownedStore;
       const usesOriginalStore = originalStore !== undefined;
@@ -180,16 +202,19 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
       }
       const providers = usesOriginalStore
         ? module.createWebProjectProviders!({ selection: { context, store: originalStore }, artifact,
+          ...(preparedArtifact === undefined ? {} : { preparedArtifact }),
           owner: startupOptions.owner,
           ...(capturedOwnedStore ? { ownedStore: capturedOwnedStore } : {}) })
         : module.createIndexedDbWebProjectProviders({ context, artifact,
           storage: storage!, owner: startupOptions.owner });
       // Capture before the final owner/cancellation check. A late factory result
       // must never disappear merely because its activation was revoked.
-      retainedProviders = providers;
-      if (!providers || typeof providers.close !== 'function' || !providers.project || !providers.artifact) {
+      if (!providers || typeof providers.close !== 'function') {
         throw new TypeError('The Browser project factory did not return its original owned providers.');
       }
+      retainedProviders = providers;
+      retainedSelectedStore = null; // Its accepted provider now owns the exact Store close.
+      if (!providers.project || !providers.artifact) throw new TypeError('The Browser project provider result is incomplete.');
       requireCurrent();
       const composition: SimulatorWebProductComposition = {
         activation,
@@ -212,6 +237,15 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
   }
 
   const source: SimulatorWebProductSource & { close(): Promise<void>; snapshot(): object } = Object.freeze({
+    ...(options.readPresentation ? { async readPresentation(signal: AbortSignal) {
+      if (closed) throw new Error('Web product source is closed.');
+      const requested = AbortSignal.any([signal, lifetime.signal]); requested.throwIfAborted();
+      const selected = await options.readPresentation!(requested); requested.throwIfAborted();
+      const requireOriginal = selected.requireCurrent.bind(selected);
+      return Object.freeze({ activation: AbortSignal.any([requested, selected.activation]),
+        identity: Object.freeze(structuredClone(selected.identity)), resources: Object.freeze(structuredClone(selected.resources)),
+        requireCurrent() { requested.throwIfAborted(); selected.activation.throwIfAborted(); requireOriginal(); } });
+    } } : {}),
     readComposition,
     close(): Promise<void> {
       if (closing) return closing;
@@ -227,7 +261,8 @@ export function createSimulatorWebProductSource(options: SimulatorWebProductSour
     },
     snapshot() {
       return { closed, pendingRead: activeRead !== null, providerCleanupPending: providerCleanup !== null,
-        cleanupFailed, retainedCleanupResponsibility: activeRead !== null || retainedProviders !== null,
+        cleanupFailed, retainedSelectedStore: retainedSelectedStore !== null,
+        retainedCleanupResponsibility: activeRead !== null || retainedProviders !== null || retainedSelectedStore !== null,
         WorkerPhysicalExitConfirmed: false, NodeBusinessACK: false, MainBusinessACK: false };
     },
   });

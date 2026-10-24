@@ -38,6 +38,7 @@ yarn.lock
 
 # Miscellaneous
 /.angular/cache
+/.runtime/
 .sass-cache/
 /connect.lock
 /coverage

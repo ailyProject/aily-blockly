@@ -32,7 +32,7 @@ import { SubappAutomationAdapter } from './integrations/subapps/subapp-automatio
 import { SimulatorHostProviderProductService } from './integrations/simulator/simulator-host-provider-product.service';
 import { ElectronService } from '@core/platform/public-api';
 import { provideSimulatorWebApplication } from './integrations/simulator/simulator-web-app.providers';
-import { BLOCKLY_SIMULATOR_WEB_DEPLOYMENT, provideBlocklySimulatorWebProject } from './integrations/simulator/blockly-simulator-web.providers';
+import { BLOCKLY_SIMULATOR_WEB_DEPLOYMENT, BLOCKLY_SIMULATOR_WEB_PREWARM, provideBlocklySimulatorWebProject } from './integrations/simulator/blockly-simulator-web.providers';
 import { provideBrowserProjectInput } from './integrations/project/browser-project-input.providers';
 import {
   CHILD_TOOL_NATIVE_PRESENTATION, CHILD_TOOL_PRESENTATION_PLATFORM, CHILD_TOOL_PRESENTATION_OVERRIDES, CHILD_TOOL_WEB_PRESENTATIONS,
@@ -111,6 +111,7 @@ export const appConfig: ApplicationConfig = {
       return inject(ElectronService).init().then(() => {
         injector.get(BlocklyLiveOperationBridgeService).ensureInitialized();
         injector.get(SimulatorHostProviderProductService).ensureRegistered();
+        injector.get(BLOCKLY_SIMULATOR_WEB_PREWARM);
       });
     }),
   ]

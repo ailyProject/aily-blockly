@@ -276,6 +276,8 @@ export class BlocklyService {
   codeSubject = new BehaviorSubject<string>('');
   dependencySubject = new BehaviorSubject<string>('');
   private workspaceCodeRevision = 0;
+  private readonly workspaceContentRevisionChanged = new Subject<number>();
+  readonly workspaceContentRevisionChanged$ = this.workspaceContentRevisionChanged.asObservable();
   private workspaceUserEditRevision = 0;
   private generatedCodeRevision = -1;
   private latestGeneratedCode = '';
@@ -433,6 +435,7 @@ export class BlocklyService {
 
   markWorkspaceCodeDirty(): void {
     this.workspaceCodeRevision++;
+    this.workspaceContentRevisionChanged.next(this.workspaceCodeRevision);
   }
 
   /**
