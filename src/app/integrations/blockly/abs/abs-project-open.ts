@@ -12,21 +12,15 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
   const expected = await lookup.captureDisk();
   const committed = await lookup.inspectCommitted();
   const baseline = committed?.projection;
-  const publicState = expected.abs === null ? null : splitAbsState(expected.abs).state;
   const baselineState = baseline ? splitAbsState(baseline.abs).state : null;
+  let publicState: string | null = null;
+  try { publicState = expected.abs === null ? null : splitAbsState(expected.abs).state; }
+  catch (error) { if (!baselineState) throw error; }
   if (!publicState && !baselineState) return null;
   if (await port.read('prepared.json') !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending ABS transaction before opening.');
   if (expected.abs === null) throw new AbsSyncError('ABS_SOURCE_MISSING', 'Complete ABS is missing; retain the committed recovery snapshot.');
   let source = expected.abs;
   if (!publicState) source = baseline!.abs;
-  else {
-    const state = JSON.parse(publicState);
-    if (state.version !== 1) throw new AbsSyncError('ABS_STATE_INVALID', 'Unsupported complete state version.');
-    if (state.programHash !== await hashAbsText(splitAbsState(source).program)) {
-      if (!baselineState) throw new AbsSyncError('ABS_STATE_INVALID', 'An edited draft has no complete committed snapshot.');
-      source = baseline!.abs;
-    }
-  }
   // A copied private generation is still foreign. Load its committed content so
   // the workspace can offer explicit rebind, without publishing a new identity
   // or consuming the public draft before that decision.
@@ -34,7 +28,16 @@ export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectP
     if (!baselineState) throw new AbsSyncError('ABS_SCOPE_INVALID', 'Copied private state requires explicit project rebind.');
     source = baseline.abs;
   }
-  const decoded = await decodeAbsState(source);
+  let decoded: Awaited<ReturnType<typeof decodeAbsState>>;
+  try { decoded = await decodeAbsState(source); }
+  catch (error) {
+    // An interrupted text edit can damage the state line as well as the body.
+    // Keep those exact bytes as a draft, just as for an ordinary body edit.
+    // Only an independently verified committed snapshot may supply the canvas.
+    if (!baselineState || !(error instanceof AbsSyncError) || error.code !== 'ABS_STATE_INVALID') throw error;
+    source = baseline!.abs;
+    decoded = await decodeAbsState(source);
+  }
   const document: any = decoded.document;
   if (!document || typeof document.activePageId !== 'string') throw new AbsSyncError('ABS_STATE_INVALID', 'A complete project requires an active page.');
   if (expected.abi !== null) {

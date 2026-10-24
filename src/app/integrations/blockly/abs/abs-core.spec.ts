@@ -251,6 +251,16 @@ describe('ABS identity projection and baseline merge', () => {
     expect(() => assertAbsBaselineContext(baseline.map, { ...context, generation: 'old' })).toThrowError(AbsSyncError);
     expect(() => assertAbsBaselineContext(baseline.map, { ...context, savedAbiHash: 'external-save' })).toThrowError(AbsSyncError);
     expect(() => assertAbsBaselineContext(baseline.map, { ...context, scope: { projectKey: 'other', pageId: 'main' } })).toThrowError(AbsSyncError);
+    try {
+      assertAbsBaselineContext(baseline.map, { ...context, currentAbiHash: 'user-edit' });
+      fail('Concurrent edits must reject the old baseline');
+    } catch (error) {
+      const stale = error as AbsSyncError;
+      expect(stale.code).toBe('ABS_BASELINE_STALE');
+      expect(stale.diagnostic?.reason).toBe('workspace');
+      expect(stale.diagnostic?.hint).toContain('new user input');
+      expect(stale.diagnostic?.hint).toContain('outFile');
+    }
   });
 });
 

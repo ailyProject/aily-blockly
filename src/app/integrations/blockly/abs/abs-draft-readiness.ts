@@ -11,7 +11,7 @@ export interface AbsDraftReadiness {
   draft?: { hash: string; bytes: number; canValidate: boolean };
   baseline?: AbsGenerationEvidence;
   runtime?: ReturnType<typeof compareAbsContracts>;
-  refresh?: { token: string };
+  refresh?: { token: string; savesCanvas?: true };
   /** Canvas uses its live baseline; savedChangedFromBaseline uses the saved ABI
    * hash, not the normalized live document. Neither grants overwrite authority. */
   workspace?: { changedFromBaseline: boolean; savedChangedFromBaseline: boolean; matchesSaved: boolean };
@@ -27,7 +27,8 @@ export function canInspectAbsDraft(inspection: Inspection): boolean {
 }
 
 /** Read-only readiness, not candidate validation. Resolve resources without creating
- * assets or changing mirrors. Only a workspace proven to match the saved project can refresh a draft. */
+ * assets or changing mirrors. An explicit canvas refresh also requires an unchanged
+ * saved baseline in the same scope. Its token binds the inspected live document. */
 export async function inspectAbsDraft(inspection: Inspection, document: unknown,
   runtime: { state: AbsAbiWorkspace; contracts: AbsProjectionContracts }) {
   const diagnostics: Inspection['diagnostics'] & AbsDraftReadiness = { ...inspection.diagnostics };
@@ -56,11 +57,12 @@ export async function inspectAbsDraft(inspection: Inspection, document: unknown,
     ...(diagnostics.workspace?.savedChangedFromBaseline && !diagnostics.workspace.matchesSaved ? ['ABS_DUAL_EDIT_CONFLICT'] : []),
     ...(runtimeStatus.status === 'incompatible' ? ['ABS_RUNTIME_CONTRACT_STALE'] : [])];
   diagnostics.status = diagnostics.issues.length ? 'blocked' : 'ready';
-  if (draft && (sameDocument && sameSaved || diagnostics.workspace?.matchesSaved)) {
+  const savesCanvas = !sameDocument && sameSaved && !diagnostics.issues.includes('ABS_SCOPE_INVALID');
+  if (draft && (sameDocument && sameSaved || diagnostics.workspace?.matchesSaved || savesCanvas)) {
     if (sameDocument && sameSaved && !diagnostics.issues.includes('ABS_SCOPE_INVALID')) diagnostics.baseline = await generationEvidence(baseline, inspection.disk.abi);
     diagnostics.draft.canValidate = sameDocument && sameSaved && runtimeStatus.status !== 'incompatible'
       && !diagnostics.issues.includes('ABS_SCOPE_INVALID');
-    diagnostics.refresh = { token: await hashAbsText(absJson({
+    diagnostics.refresh = { ...(savesCanvas ? { savesCanvas: true as const } : {}), token: await hashAbsText(absJson({
       scope: diagnostics.scope, hashes: diagnostics.hashes, committed: inspection.committed!.pointerHash,
       contracts: runtime.contracts, document: absProgramDocument(document),
     })) };

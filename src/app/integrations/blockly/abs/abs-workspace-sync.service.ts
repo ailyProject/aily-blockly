@@ -50,6 +50,7 @@ export interface AbsWorkspaceSyncOutcome {
   evidence?: AbsGenerationEvidence;
   abs?: string;
   reused?: boolean;
+  inputAbiHash?: string | null;
   draftArchive?: { generation: string; baseGeneration: string; hash: string; bytes: number };
 }
 
@@ -209,7 +210,7 @@ export class AbsWorkspaceSyncService {
         const readiness = await inspectAbsDraft(inspection!, snapshot.document, runtime);
         assertCurrent();
         if (initialize || options.publish === false || !readiness.refresh || readiness.refresh.token !== options.preserveDraft) {
-          throw new AbsSyncError('ABS_REFRESH_STALE', 'Draft refresh requires the current inspection token and an unchanged saved workspace. Inspect again; no draft was overwritten.');
+          throw new AbsSyncError('ABS_REFRESH_STALE', 'Draft refresh requires the current inspection token and unchanged inspected canvas/files. Inspect again; no draft was overwritten.');
         }
       }
       const compact = await this.compactDocument(snapshot.document, runtime.contracts, assertCurrent);
@@ -262,7 +263,8 @@ export class AbsWorkspaceSyncService {
         }
         this.editor.publishAbsContext(projection, assertCurrent().revision, context.assertCurrent);
       }
-      return { publication, requiresReload, warnings, ...(draftArchive ? { draftArchive } : {}),
+      return { publication, requiresReload, warnings, ...(draftArchive ? { draftArchive,
+          inputAbiHash: expected.abi === null ? null : await hashAbsText(expected.abi) } : {}),
         ...(publication.status === 'COMMITTED' ? { evidence, abs: projection.abs } : {}) };
     });
   }
@@ -428,7 +430,7 @@ export class AbsWorkspaceSyncService {
       retainAbsRootLayout(materialized, currentWorkspace);
       retainAbsRootLayout(rollback.state, currentWorkspace);
       this.editor.assertWorkspaceSharedChange(current.document, materialized, lease);
-      return { expected, before: current, rollback, candidate, materialized, preparedModels, assertRuntimeCurrent };
+      return { expected, baselineSource: baseline.abs, before: current, rollback, candidate, materialized, preparedModels, assertRuntimeCurrent };
   }
 
   private validationKey(value: AbsGenerationValidation): string {
@@ -484,8 +486,16 @@ export class AbsWorkspaceSyncService {
     if (validation) validation = JSON.parse(absJson(validation));
     return this.run(async (context, lease, store) => {
       const { expected, before, rollback, candidate, materialized } = await this.withoutViewChecks(async () => {
-        try { return await this.prepareApplication(context, lease, store, source, generation, validation); }
-        catch (error) { throw new AbsApplicationFailure(error, 'NOT_STARTED'); }
+        try {
+          const prepared = await this.prepareApplication(context, lease, store, source, generation, validation);
+          // Validation is read-only and may inspect any candidate. Application
+          // must never adopt another writer's draft, even if it was already
+          // present at validation or the prepared handoff has since expired.
+          if (prepared.expected.abs !== prepared.baselineSource && prepared.expected.abs !== source) {
+            throw new AbsSyncError('ABS_SOURCE_CONFLICT', 'ABS contains another unapplied edit. Preserve both candidates and read the current draft before preparing a new edit; do not overwrite it or rebind the old candidate.');
+          }
+          return prepared;
+        } catch (error) { throw new AbsApplicationFailure(error, 'NOT_STARTED'); }
       });
 
       let mutated = false, commitStarted = false;

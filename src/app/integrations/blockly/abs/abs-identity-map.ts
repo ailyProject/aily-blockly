@@ -42,7 +42,9 @@ export function assertAbsBaselineContext(map: AbsIdentityMap, current: AbsBaseli
     const changed = [map.generation !== current.generation && 'generation', map.baseAbiHash !== current.currentAbiHash && 'workspace',
       map.pageAbiHash !== current.currentPageAbiHash && 'page', map.savedAbiHash !== current.savedAbiHash && 'saved-abi'].filter(Boolean);
     throw new AbsSyncError('ABS_BASELINE_STALE', 'Project state changed since this ABS projection was prepared.', undefined, [], {
-      reason: changed.join(','), hint: 'Use the generation returned by the latest library/board operation. Otherwise refresh the current projection once and preserve any draft; do not reinstall libraries or infer that the user changed blocks.' });
+      reason: changed.join(','), hint: changed.some(part => part !== 'generation')
+        ? 'Preserve the canvas, disk ABS and AI candidate. Call project_recover(action="inspect") once, then report the conflict and wait for new user input. Do not restore/overwrite project.abs, export (including outFile), refresh/rebind, reload or reapply to bypass concurrent edits.'
+        : 'Use the generation returned by the latest library/board operation. Preserve the draft and compare the current projection before preparing it again; do not reinstall libraries.' });
   }
 }
 

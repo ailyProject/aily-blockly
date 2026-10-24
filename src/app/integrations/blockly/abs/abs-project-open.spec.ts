@@ -43,6 +43,22 @@ describe('complete ABS cache restoration',()=>{
  const base=await save('one');const draft=base.projection.abs.replace('TEXT="one"','TEXT="draft"');files.set('project.abs',draft);files.delete('project.abi');
  expect(await restoreAbsProjectCaches(port,'project',()=>{})).toBe(base.abi);expect(files.get('project.abs')).toBe(draft);
  });
+ for (const damage of ['truncated', 'duplicate', 'invalid-state']) it(`opens the committed canvas while retaining a ${damage} ABS draft`, async () => {
+ const base = await save('one');
+ const draft = damage === 'truncated' ? base.projection.abs.slice(0, -10)
+   : damage === 'duplicate' ? base.projection.abs + '\n# @project-state:{}'
+   : base.projection.abs.replace('"version":1', '"version":99');
+ files.set('project.abs', draft); files.delete('project.abi');
+ const pointer = files.get('committed.json');
+ expect(await restoreAbsProjectCaches(port, 'project', () => {})).toBe(base.abi);
+ expect(files.get('project.abs')).toBe(draft); expect(files.get('committed.json')).toBe(pointer);
+ });
+ it('rejects a damaged state without a committed snapshot and preserves all files', async () => {
+ const base = await save('one'); files.set('project.abs', base.projection.abs.slice(0, -10));
+ files.delete('committed.json'); const before = [...files];
+ await expectAsync(restoreAbsProjectCaches(port, 'project', () => {})).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_INVALID' }));
+ expect([...files]).toEqual(before);
+ });
  it('restores an earlier complete ABS with a new derived generation',async()=>{
  const first=await save('one');await save('two');files.set('project.abs',first.projection.abs);
  const abi=await restoreAbsProjectCaches(port,'project',()=>{});

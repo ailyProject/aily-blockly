@@ -2058,6 +2058,38 @@ describe('v2 actual workspace generation coordinator', () => {
     expect([...disk]).toEqual(original); expect(roots().getFieldValue('TEXT')).toBe('before');
   });
 
+  for (const timing of ['before-validation', 'after-validation', 'after-eviction']) {
+    it(`preserves a concurrent ABS draft ${timing}`, async () => {
+      const { tools, request, source, exported } = await wireBase();
+      let validation: any;
+      if (timing !== 'before-validation') {
+        validation = await tools.execute('abs_validate', request, source);
+        expect(validation.ok).toBeTrue();
+        if (timing === 'after-eviction') {
+          const another = source.replace('wire edit', 'another candidate');
+          const other: any = await tools.execute('abs_validate', { ...request, requestId: crypto.randomUUID(),
+            candidate: { hash: await hashAbsText(another), bytes: new TextEncoder().encode(another).byteLength } }, another);
+          expect(other.ok).toBeTrue();
+        }
+      }
+      const draft = exported.abs.replace('TEXT="before"', 'TEXT="user draft"');
+      disk.set('project.abs', draft);
+      const files = [...disk], canvas = nativeState();
+      if (timing === 'before-validation') {
+        validation = await tools.execute('abs_validate', request, source);
+        expect(validation.ok).toBeTrue(); // Read-only diagnostics remain available.
+        expect([...disk]).toEqual(files);
+      }
+      const result: any = await tools.execute('abs_apply', {
+        version: 2, requestId: request.requestId, validation: validation.receipt,
+      }, source);
+      expect(result.ok).withContext(JSON.stringify(result)).toBeFalse();
+      expect(['ABS_SOURCE_CONFLICT', 'ABS_DISK_CONFLICT']).toContain(result.code);
+      expect([...disk]).toEqual(files); expect(nativeState()).toEqual(canvas);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+  }
+
   it('an edit after validation cannot be saved away by apply', async () => {
     const { tools, request, source } = await wireBase();
     const validated: any = await tools.execute('abs_validate', request, source);
@@ -2303,6 +2335,27 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(editor.workspace.getBlockById('port').getFieldValue('PORT')).toBe('A');
   });
 
+  it('explicitly archives the draft and commits the inspected live canvas after a user merge decision', async () => {
+    const { tools, source } = await wireBase(); disk.set('project.abs', source);
+    roots().setFieldValue('user 1337', 'TEXT');
+    const draft = disk.get('project.abs'), inputAbi = disk.get('project.abi')!, state = absJson(nativeState());
+    const before = [...disk], diagnosis = await inspect(tools);
+    expect([...disk]).toEqual(before);
+    expect(diagnosis.diagnostics.draft.canValidate).toBeFalse();
+    expect(diagnosis.diagnostics.refresh?.savesCanvas).toBeTrue();
+    const result = await refreshDraft(tools, diagnosis.diagnostics.refresh?.token);
+    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+    if (!result.ok) return;
+    expect(result.receipt.inputAbiHash).toBe(await hashAbsText(inputAbi));
+    expect(result.publication.abiSaved).toBeTrue();
+    expect(result.abs).toContain('TEXT="user 1337"');
+    expect(absJson(nativeState())).toBe(state);
+    const read: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'read_draft', generation: result.draftArchive.generation });
+    expect(read.draft.abs).toBe(draft);
+    expect((await inspect(tools)).diagnostics.status).toBe('ready');
+  });
+
   it('inspects and explicitly refreshes a draft with a durable readable archive and unchanged ABI/blocks', async () => {
     const { tools, source, exported } = await wireBase(); disk.set('project.abs', source + '\n# 中文😀\r\n');
     const draft = disk.get('project.abs')!, abi = disk.get('project.abi'), state = absJson(nativeState()), before = [...disk];
@@ -2471,7 +2524,9 @@ describe('v2 actual workspace generation coordinator', () => {
     expect((await refreshDraft(tools, token)).code).toBe('ABS_REFRESH_STALE'); expect([...disk]).toEqual(before);
     disk.set('project.abs', source); roots().setFieldValue('canvas edit', 'TEXT'); before = [...disk];
     const changed = await inspect(tools);
-    expect(changed.diagnostics.draft.canValidate).toBeFalse(); expect(changed.diagnostics.refresh).toBeUndefined();
+    expect(changed.diagnostics.draft.canValidate).toBeFalse();
+    expect(changed.diagnostics.refresh.savesCanvas).toBeTrue();
+    expect(changed.diagnostics.refresh.token).not.toBe(token);
     expect((await refreshDraft(tools, token)).code).toBe('ABS_REFRESH_STALE'); expect([...disk]).toEqual(before);
   });
 

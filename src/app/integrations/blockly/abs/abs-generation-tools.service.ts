@@ -50,7 +50,8 @@ export class AbsGenerationToolsService {
         if (params['action'] === 'refresh' && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
           const result = await this.sync.exportGeneration({ preserveDraft: params['token'] });
           const ok = result.publication.status === 'COMMITTED' && !!result.evidence && !!result.draftArchive;
-          return { ...reply, ...result, ok, receipt: { ...reply.receipt, token: params['token'], output: result.evidence } };
+          return { ...reply, ...result, ok, receipt: { ...reply.receipt, token: params['token'],
+            inputAbiHash: result.inputAbiHash, output: result.evidence } };
         }
         if (params['action'] === 'read_draft' && typeof params['generation'] === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation'])) {
           return { ...reply, ok: true, draft: await this.sync.readArchivedDraft(params['generation']), requiresReload: false };
