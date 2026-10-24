@@ -1,3 +1,5 @@
+import { splitAbsState } from './abs-full-state';
+import { mergeAbsRequestWorkspace } from './abs-request-merge';
 import { composeAbs } from './abs-compose';
 import { precheckAbs, AbsPrecheckFailure } from './abs-precheck';
 import { Injectable, NgZone, Optional } from '@angular/core';
@@ -308,12 +310,14 @@ export class AbsWorkspaceSyncService {
       const blockContract = (type: string, extra?: unknown, fields?: Readonly<Record<string, unknown>>) => custom.get(type, extra) ?? procedures.get(type, extra) ?? shapes.get(type, extra, fields);
       const expected = await store.captureDisk();
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover or explicitly abandon the pending generation first.');
-      const baseline = await store.loadCommitted();
-      if (!baseline) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
-      if (generation !== baseline.map.generation) throw new AbsSyncError('ABS_BASELINE_STALE', 'The candidate belongs to another generation.');
-      this.assertMirrors(baseline, expected, false);
+      const committed = await store.loadCommitted();
+      if (!committed) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
+      if (generation !== committed.map.generation) throw new AbsSyncError('ABS_BASELINE_STALE', 'The candidate belongs to another generation.');
+      const requestPriority = binding?.concurrentEdits === 'request-priority';
+      const baseline = requestPriority ? await store.load(binding!.intentGeneration!) : committed;
+      this.assertMirrors(committed, expected, false);
       if (binding) {
-        const evidence = await generationEvidence(baseline, expected.abi);
+        const evidence = await generationEvidence(committed, expected.abi);
         if (absJson(binding.base) !== absJson(evidence.binding) || binding.candidate.hash !== await hashAbsText(source)
           || binding.candidate.bytes !== new TextEncoder().encode(source).byteLength) {
           throw new AbsSyncError('ABS_BASELINE_STALE', 'Candidate bytes or generation binding changed; no automatic rebase is allowed.');
@@ -326,16 +330,27 @@ export class AbsWorkspaceSyncService {
       assertPreparing();
       const compact = await this.compactDocument(before.document, rollback.contracts, assertPreparing);
       const unchanged = sameAbsProgram(compact, baseline.document);
-      if (binding && 'workspaceRevision' in binding && binding.workspaceRevision !== before.revision && !unchanged) {
+      if (!requestPriority && binding && 'workspaceRevision' in binding && binding.workspaceRevision !== before.revision && !unchanged) {
         throw new AbsSyncError('ABS_REVISION_STALE', 'Program changed after candidate validation.');
       }
-      assertAbsBaselineContext(baseline.map, {
+      assertAbsBaselineContext(committed.map, {
         generation, scope: context.scope,
-        currentAbiHash: unchanged ? baseline.map.baseAbiHash : await hashAbsText(absJson(compact)),
-        currentPageAbiHash: unchanged ? baseline.map.pageAbiHash : await hashAbsText(absJson(composeBlocklyPage(compact, context.scope.pageId))),
+        currentAbiHash: requestPriority || unchanged ? committed.map.baseAbiHash : await hashAbsText(absJson(compact)),
+        currentPageAbiHash: requestPriority || unchanged ? committed.map.pageAbiHash : await hashAbsText(absJson(composeBlocklyPage(compact, context.scope.pageId))),
         savedAbiHash: expected.abi === null ? null : await hashAbsText(absJson(JSON.parse(expected.abi))),
       });
-      assertAbsContractsCompatible(baseline.contracts, rollback.contracts, rollback.state);
+      if (requestPriority) {
+        // Added/removed user blocks change the instance catalogue, not the
+        // library protocol. Compare surviving identities; merged nodes still
+        // require declared shape checks and complete native readback below.
+        const ids = new Set(Object.keys(baseline.contracts.fields).filter(id => Object.hasOwn(rollback.contracts.fields, id)));
+        const retained = (contracts: AbsProjectionContracts): AbsProjectionContracts => {
+          const pick = (record: Record<string, any> | undefined) => Object.fromEntries(Object.entries(record ?? {}).filter(([id]) => ids.has(id)));
+          return { ...contracts, fields: pick(contracts.fields), syntax: pick(contracts.syntax),
+            selectors: pick(contracts.selectors), procedures: pick(contracts.procedures) };
+        };
+        assertAbsContractsCompatible(retained(baseline.contracts), retained(rollback.contracts), rollback.state);
+      } else assertAbsContractsCompatible(baseline.contracts, rollback.contracts, rollback.state);
       assertPreparing();
       const readDefinitions = context.definitions.withSynchronousRead ?? (<T>(read: () => T) => read());
       const functionSyntax = readDefinitions(() => custom.syntax(source, baseline.workspace));
@@ -346,7 +361,10 @@ export class AbsWorkspaceSyncService {
         declaration: captureAbsVariableDeclarations(context.definitions, shapes.get),
         argumentOrder: (type, extra, fields) => functionSyntax.argumentOrder?.(type, extra, fields) ?? shapes.get(type, extra, fields)?.argumentOrder,
         fieldSelectors: type => shapes.get(type)?.fieldShape?.map(rule => rule.field),
-        fieldDefinition: (type, name, id) => custom.field(type, name) ?? rollback.fieldDefinition(type, name, id) ?? shapes.get(type)?.fields[name],
+        fieldDefinition: (type, name, id) => custom.field(type, name)
+          ?? (requestPriority && id && !Object.hasOwn(rollback.contracts.fields, id)
+            ? baseline.contracts.fields[id]?.[name] : rollback.fieldDefinition(type, name, id))
+          ?? shapes.get(type)?.fields[name],
         blockContract: shapes.get, prepareBlock: (block, previous, workspace, contracts) => {
           procedures.prepare(block, previous, workspace, contracts); custom.prepare(block, previous, workspace, contracts);
         },
@@ -417,6 +435,27 @@ export class AbsWorkspaceSyncService {
         throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Retired model evidence changed after validation. Validate the same candidate again.');
       }
       assertPreparing();
+      if (requestPriority) {
+        let currentWorkspace = composeBlocklyPage(compact, context.scope.pageId);
+        // An inline caller can coexist with a separately edited public draft.
+        // Resolve its public syntax against the committed generation, never by
+        // adopting a public state section as authority.
+        if (expected.abs !== null && expected.abs !== committed.abs && expected.abs !== source) {
+          const draftBase = splitAbsState(expected.abs).state === splitAbsState(baseline.abs).state ? baseline : committed;
+          const draft = await this.reconcile(draftBase, expected.abs, absJson({ runtimeRevision: context.runtimeRevision, session: context.session }))
+            .draft({ ...reconcileOptions, sourceEdits: undefined });
+          const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
+          currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
+          candidate.contracts = { ...candidate.contracts, fields: { ...user.contracts.fields, ...candidate.contracts.fields } };
+        }
+        const merged = mergeAbsRequestWorkspace(baseline.workspace, currentWorkspace, candidate.workspace);
+        const resources = await prepareAbsProjectData(merged, assertPreparing);
+        materialized = await resources.materialize();
+        candidate.contracts = { ...candidate.contracts,
+          fields: { ...rollback.contracts.fields, ...candidate.contracts.fields },
+          procedures: { ...rollback.contracts.procedures, ...candidate.contracts.procedures } };
+        assertPreparing();
+      }
       // Persistence composes shared definitions before page-local roots. Apply the
       // same stable partition before loading, so save/page switch/reopen cannot
       // change the live root order. Only captured/prepared ownership is authority.
@@ -435,7 +474,7 @@ export class AbsWorkspaceSyncService {
 
   private validationKey(value: AbsGenerationValidation): string {
     const keys = ['version', 'requestId', 'base', 'candidate', 'workspaceRevision', 'sourceEdits',
-      'createVariables', 'preparedVariables', 'preparedModels', 'retiredModels'];
+      'createVariables', 'preparedVariables', 'preparedModels', 'retiredModels', 'concurrentEdits', 'intentGeneration'];
     return absJson(Object.fromEntries(keys.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]])));
   }
 
@@ -451,6 +490,7 @@ export class AbsWorkspaceSyncService {
     prepared.assertRuntimeCurrent(); context.assertCurrent(); lease.assertCurrent();
     const before = this.editor.captureProjectSnapshot(lease);
     if (!sameAbsProgram(prepared.before.document, before.document)) {
+      if (validation.concurrentEdits === 'request-priority') return this.prepareGeneration(context, lease, store, source, generation, validation);
       throw new AbsSyncError('ABS_REVISION_STALE', 'Program changed after candidate validation.');
     }
     const assertCurrent = this.atRevision(() => { prepared.assertRuntimeCurrent(); context.assertCurrent(); }, lease, before);
@@ -464,6 +504,8 @@ export class AbsWorkspaceSyncService {
     // unrelated draft, ABI edit or map/generation change may reuse preparation.
     if (expected.abi !== prepared.expected.abi || expected.map !== prepared.expected.map
       || expected.abs !== prepared.expected.abs && expected.abs !== source) {
+      if (validation.concurrentEdits === 'request-priority' && expected.abi === prepared.expected.abi && expected.map === prepared.expected.map)
+        return this.prepareGeneration(context, lease, store, source, generation, validation);
       throw new AbsSyncError('ABS_DISK_CONFLICT', 'Project files changed after candidate validation.');
     }
     this.assertMirrors(baseline, expected, false);
@@ -491,7 +533,7 @@ export class AbsWorkspaceSyncService {
           // Validation is read-only and may inspect any candidate. Application
           // must never adopt another writer's draft, even if it was already
           // present at validation or the prepared handoff has since expired.
-          if (prepared.expected.abs !== prepared.baselineSource && prepared.expected.abs !== source) {
+          if (validation?.concurrentEdits !== 'request-priority' && prepared.expected.abs !== prepared.baselineSource && prepared.expected.abs !== source) {
             throw new AbsSyncError('ABS_SOURCE_CONFLICT', 'ABS contains another unapplied edit. Preserve both candidates and read the current draft before preparing a new edit; do not overwrite it or rebind the old candidate.');
           }
           return prepared;

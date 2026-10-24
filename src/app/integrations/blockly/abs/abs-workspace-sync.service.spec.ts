@@ -43,6 +43,7 @@ describe('v2 actual workspace generation coordinator', () => {
   let port: AbsSyncStoragePort, gate: BlocklyWorkspaceEditGate;
   let catalog: BlocklyDeclarativeBlockCatalog;
   let failWrite: string | undefined, loseCommitReply: boolean, held: boolean;
+  let originalMathNumber: any;
   let oldBlockly: unknown, oldFs: unknown, container: HTMLDivElement | undefined;
   const registeredTypes: string[] = [];
   const declare = (definition: any) => {
@@ -172,9 +173,106 @@ describe('v2 actual workspace generation coordinator', () => {
   });
   afterEach(() => {
     editor.workspace.dispose(); container?.remove(); container = undefined;
+    if (originalMathNumber) { Blockly.Blocks['math_number'] = originalMathNumber; originalMathNumber = undefined; }
     delete Blockly.Blocks['abs_sync_root']; window['Blockly'] = oldBlockly; window['fs'] = oldFs;
     for (const type of registeredTypes.splice(0)) delete Blockly.Blocks[type];
     if (Blockly.Extensions.isRegistered('native_commit_extension')) Blockly.Extensions.unregister('native_commit_extension');
+  });
+
+  const priorityApply = async (base: Awaited<ReturnType<typeof baseline>>, source: string) => {
+    const store = new AbsBaselineStore(port, scope), committed = (await store.loadCommitted())!;
+    const { generationEvidence } = await import('./abs-generation-protocol');
+    const request = { version: 2 as const, requestId: crypto.randomUUID(),
+      base: (await generationEvidence(committed, disk.get('project.abi')!)).binding,
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength },
+      concurrentEdits: 'request-priority' as const, intentGeneration: base.generation };
+    const validation = await service.validateGeneration(source, request);
+    return service.applyGeneration(source, request.base.generation, {}, validation);
+  };
+
+  it('automatically prefers the AI field while retaining unrelated live fields and comments', async () => {
+    renderWorkspace();
+    const base = await baseline();
+    roots().setFieldValue('user overlaps', 'TEXT');
+    editor.workspace.getBlockById('child').setFieldValue('1337', 'NUM');
+    roots().setCommentText('user unrelated comment');
+    const result = await priorityApply(base, base.source.replace('TEXT="before"', 'TEXT="AI result"'));
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(roots().getFieldValue('TEXT')).toBe('AI result');
+    expect(editor.workspace.getBlockById('child').getFieldValue('NUM')).toBe(1337);
+    expect(roots().getCommentText()).toBe('user unrelated comment');
+    expect(await decodeAbsState(disk.get('project.abs')!)).toBeTruthy();
+  });
+
+  it('keeps an unrelated user root when applying the request delta', async () => {
+    const base = await baseline();
+    editor.workspace.newBlock('math_number', 'user-added').setFieldValue('99', 'NUM');
+    const result = await priorityApply(base, base.source.replace('TEXT="before"', 'TEXT="AI result"'));
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(editor.workspace.getBlockById('user-added').getFieldValue('NUM')).toBe(99);
+    expect(roots().getFieldValue('TEXT')).toBe('AI result');
+  });
+
+  it('restores the request dependency connection when the user disconnects the AI-edited input', async () => {
+    const base = await baseline();
+    editor.workspace.getBlockById('child').outputConnection.disconnect();
+    const source = base.source.replace(/math_number\((?:NUM=)?1\)/, 'math_number(NUM=7)');
+    expect(source).not.toBe(base.source);
+    const result = await priorityApply(base, source);
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(roots().getInputTargetBlock('VALUE').id).toBe('child');
+    expect(roots().getInputTargetBlock('VALUE').getFieldValue('NUM')).toBe(7);
+  });
+
+  it('restores a deleted AI-edited stack without removing unrelated user roots', async () => {
+    originalMathNumber = Blockly.Blocks['math_number'];
+    Blockly.Blocks['math_number'] = { ...originalMathNumber };
+    catalog.record({ type: 'math_number', message0: '%1', args0: [{ type: 'field_number', name: 'NUM', value: 0 }], output: 'Number' }, Blockly.Blocks['math_number']);
+    declare({ type: 'abs_sync_root', message0: '%1 %2', args0: [
+      { type: 'field_input', name: 'TEXT', text: '' }, { type: 'input_value', name: 'VALUE', check: 'Number' } ] });
+    const base = await baseline();
+    roots().dispose(false);
+    editor.workspace.newBlock('math_number', 'user-added').setFieldValue('99', 'NUM');
+    const result = await priorityApply(base, base.source.replace('"before"', '"AI result"'));
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(roots().getFieldValue('TEXT')).toBe('AI result');
+    expect(roots().getInputTargetBlock('VALUE').id).toBe('child');
+    expect(editor.workspace.getBlockById('user-added').getFieldValue('NUM')).toBe(99);
+  });
+
+  it('retains a displaced user block as a loose root when restoring an AI input', async () => {
+    const base = await baseline();
+    editor.workspace.getBlockById('child').outputConnection.disconnect();
+    const added = editor.workspace.newBlock('math_number', 'user-replacement');
+    added.setFieldValue('99', 'NUM');
+    roots().getInput('VALUE').connection.connect(added.outputConnection);
+    const source = base.source.replace(/math_number\((?:NUM=)?1\)/, 'math_number(NUM=7)');
+    const result = await priorityApply(base, source);
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(roots().getInputTargetBlock('VALUE').id).toBe('child');
+    const retained = editor.workspace.getBlockById('user-replacement');
+    expect(retained.getFieldValue('NUM')).toBe(99);
+    expect(retained.getParent()).toBeNull();
+  });
+
+  it('merges a concurrent disk draft and live fields without treating either whole file as the request', async () => {
+    const base = await baseline();
+    disk.set('project.abs', base.source.replace('TEXT="before"', 'TEXT="user disk"'));
+    editor.workspace.getBlockById('child').setFieldValue('2337', 'NUM');
+    const result = await priorityApply(base, base.source.replace('TEXT="before"', 'TEXT="AI result"'));
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(roots().getFieldValue('TEXT')).toBe('AI result');
+    expect(editor.workspace.getBlockById('child').getFieldValue('NUM')).toBe(2337);
+  });
+
+  it('retains unrelated saved edits when the original intent generation is older than the current commit', async () => {
+    const base = await baseline();
+    editor.workspace.getBlockById('child').setFieldValue('7337', 'NUM');
+    await service.exportGeneration({ save: true });
+    const result = await priorityApply(base, base.source.replace('TEXT="before"', 'TEXT="AI result"'));
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(editor.workspace.getBlockById('child').getFieldValue('NUM')).toBe(7337);
+    expect(roots().getFieldValue('TEXT')).toBe('AI result');
   });
 
   const enableNative = () => {
