@@ -11,6 +11,7 @@ describe('project mode boundaries', () => {
   function createService(mode: ProjectMode): any {
     const service = Object.create(ProjectService.prototype);
     service.configService = {
+      getCompileSettingsKey: () => 'local',
       data: { recentlyProjects: [coder, blockly] },
       init: jasmine.createSpy('init').and.resolveTo(),
       getPreferredChatAgentRuntimeMode: () => mode,

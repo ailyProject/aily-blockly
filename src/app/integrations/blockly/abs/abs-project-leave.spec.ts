@@ -4,7 +4,7 @@ import { HeaderComponent } from '../../../main-window/components/header/header.c
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
 
 function projectFixture(overrides: Record<string, unknown>) {
-  const project: any = Object.assign(Object.create(ProjectService.prototype), overrides);
+  const project: any = Object.assign(Object.create(ProjectService.prototype), { configService: { getCompileSettingsKey: () => 'local' } }, overrides);
   Object.defineProperty(project, 'currentProjectPath', { value: '/original', writable: true });
   project.getProjectDependencySession();
   return project;
@@ -89,6 +89,7 @@ describe('save-before-leaving confirmation', () => {
 describe('domain save completion and project ownership', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/original');
     service.stateSubject = new BehaviorSubject('loaded');
     service.getProjectMode = () => 'coder';

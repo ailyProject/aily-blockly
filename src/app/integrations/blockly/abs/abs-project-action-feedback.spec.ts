@@ -10,12 +10,15 @@ describe('real unsaved-state Action feedback boundary', () => {
     const actions = new ActionService();
     const project: any = Object.create(ProjectService.prototype);
     Object.defineProperty(project, 'currentProjectPath', { value: '/project', writable: true });
+    project.configService = { getCompileSettingsKey: () => 'local' };
+    project.discardAllLibraryChanges = jasmine.createSpy('discard').and.resolveTo();
     project.getProjectMode = () => 'blockly'; project.getProjectDependencySession();
     const adapter: any = Object.assign(Object.create(ProjectApplicationAdapter.prototype), { actionService: actions, projectService: project });
     project.hasUnsavedChanges = () => adapter.hasUnsavedBlocklyChanges();
     const dialog = new Subject<any>();
     const view: any = Object.assign(Object.create(HeaderComponent.prototype), {
       projectService: project, message: { error: jasmine.createSpy('error') },
+      uiService: { closePartitionManagerBeforeQuit: jasmine.createSpy('partitionClose').and.resolveTo(true) },
       modal: { create: jasmine.createSpy('dialog').and.returnValue({ afterClose: dialog }) },
     });
     return { actions, view, project, dialog, confirm: () => view.checkUnsavedChanges('close') as Promise<boolean> };
