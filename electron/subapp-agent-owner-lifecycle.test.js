@@ -443,6 +443,114 @@ test('cancellation during main-process binding never sends a late domain RPC', a
   assert.equal(h.messages.length, 0);
 });
 
+test('acquire timeout returns before setup settles without cancelling a shared owner', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 100;
+  t.mock.method(performance, 'now', () => now);
+  const acquireBarrier = deferred();
+  const h = await harness(t, { acquireBarrier });
+  const expired = assert.rejects(
+    h.service.request('fixture', 'fixture.expired', {}, 40, true, undefined, 'expired'),
+    { code: 'SUBAPP_RPC_TIMEOUT' },
+  );
+  const retained = h.call('retained', 'fixture.retained');
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.acquired, 1);
+    now += 40;
+    t.mock.timers.tick(40);
+    await expired;
+    assert.equal(h.sockets.length, 0);
+    assert.equal(h.messages.length, 0);
+    assert.equal(h.released, 0);
+    acquireBarrier.resolve();
+    await retained;
+    assert.deepEqual(h.messages.map(message => message.method), ['fixture.retained']);
+    assert.equal(h.acquired, 1);
+    await h.service.releaseSession('expired');
+    assert.equal(h.released, 0);
+    await h.service.releaseSession('retained');
+    assert.equal(h.released, 1);
+  } finally {
+    acquireBarrier.resolve();
+  }
+});
+
+test('owner registration timeout returns before the late registration and sends no domain RPC', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 100;
+  t.mock.method(performance, 'now', () => now);
+  const tracking = deferred();
+  const h = await harness(t);
+  const track = t.mock.method(h.service.ownerGuard, 'track', () => tracking.promise);
+  const expired = assert.rejects(
+    h.service.request('fixture', 'fixture.expired', {}, 40, true, undefined, 'owner-a'),
+    { code: 'SUBAPP_RPC_TIMEOUT' },
+  );
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(track.mock.callCount(), 1);
+    now += 40;
+    t.mock.timers.tick(40);
+    await expired;
+    assert.equal(h.messages.length, 0);
+  } finally {
+    tracking.resolve({ leaseFile: 'late-registration.json' });
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.messages.length, 0);
+});
+
+test('wire timeout budget excludes elapsed shared setup time', async t => {
+  let now = 100;
+  t.mock.method(performance, 'now', () => now);
+  const acquireBarrier = deferred();
+  const h = await harness(t, { acquireBarrier });
+  const running = h.call('owner-a');
+  await new Promise(resolve => setImmediate(resolve));
+  now += 1200;
+  acquireBarrier.resolve();
+  await running;
+  assert.equal(h.messages[0].timeoutMs, 3800);
+});
+
+test('cancellation preserves the original domain owner and execution context', async t => {
+  const h = await harness(t, {
+    hold: message => message.method === 'fixture.wait',
+    supervise: async () => ({ ok: true, generation: 'generation-a', context: { leaseFile: 'owned-lease.json' } }),
+  });
+  const controller = new AbortController();
+  const cancelled = assert.rejects(h.service.request(
+    'fixture', 'fixture.wait', {}, 5000, true, controller.signal, 'owner-a',
+    { toolCallId: 'call-a', workspaceRoot: 'D:/projects/fixture', developmentMode: 'coder' },
+  ), { code: 'SUBAPP_RPC_CANCELLED' });
+  await new Promise(resolve => setImmediate(resolve));
+  const original = h.messages.find(message => message.method === 'fixture.wait');
+  assert.ok(original);
+  controller.abort();
+  await cancelled;
+  const cancellation = h.messages.find(message => message.method === 'runtime.request.cancel');
+  assert.ok(cancellation);
+  assert.equal(cancellation.params.requestId, original.id);
+  assert.deepEqual(cancellation.context, original.context);
+  assert.equal(cancellation.context.leaseFile, 'owned-lease.json');
+  assert.equal(cancellation.context.sessionId, 'owner-a');
+  assert.equal(cancellation.context.toolCallId, 'call-a');
+  assert.equal(Object.hasOwn(cancellation.context, 'cancelledMethod'), false);
+});
+
+test('synchronous setup cancellation still handles the setup rejection', async t => {
+  const h = await harness(t);
+  const controller = new AbortController();
+  t.mock.method(h.service.ownerGuard, 'track', () => {
+    controller.abort();
+    return Promise.reject(new Error('late setup failure'));
+  });
+  await assert.rejects(h.call('owner-a', 'fixture.read', controller.signal), { code: 'SUBAPP_RPC_CANCELLED' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.messages.length, 0);
+});
+
 async function loadBridge() {
   const result = await esbuild.build({
     stdin: {

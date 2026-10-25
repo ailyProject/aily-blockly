@@ -508,87 +508,107 @@ export class SubappAgentBridgeService implements OnDestroy {
     executionContext: SubappAgentExecutionContext = {},
     trackLease = true,
   ): Promise<unknown> {
+    const deadline = performance.now() + timeoutMs;
     const requestScope = trackLease ? this.ownerRequests.start(ownerSessionId, signal) : null;
     signal = requestScope?.signal || signal;
+    const timeoutError = () => new SubappRpcError(
+      `Subapp Runtime request timed out after ${timeoutMs} ms`,
+      'SUBAPP_RPC_TIMEOUT', { toolId, method, timeoutMs },
+    );
+    const cancelledError = () => new SubappRpcError('Subapp Agent request was cancelled', 'SUBAPP_RPC_CANCELLED', { toolId, method });
+    const remainingMs = () => Math.floor(deadline - performance.now());
+    const checkCurrent = () => {
+      if (signal?.aborted) throw cancelledError();
+      if (remainingMs() < 1) throw timeoutError();
+    };
+    // Shared connection/owner setup may settle after this caller leaves. Bound
+    // this wait without cancelling another owner's setup or sending a late RPC.
+    const waitForSetup = <T>(task: Promise<T>): Promise<T> => {
+      return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: unknown, value?: T) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', abort);
+          if (error) reject(error); else resolve(value as T);
+        };
+        const abort = () => finish(cancelledError());
+        const timer = setTimeout(() => finish(timeoutError()), remainingMs());
+        signal?.addEventListener('abort', abort, { once: true });
+        task.then(value => { try { checkCurrent(); finish(undefined, value); } catch (error) { finish(error); } }, error => finish(error));
+        // Always observe the already-started shared task before checking this
+        // caller's deadline; a late rejection must not become unhandled.
+        try { checkCurrent(); } catch (error) { finish(error); }
+      });
+    };
     try {
-      if (signal?.aborted) {
-        throw new SubappRpcError('Subapp Agent request was cancelled', 'SUBAPP_RPC_CANCELLED', { method });
-      }
+      checkCurrent();
       const channel = this.ensureChannel(toolId);
       if (trackLease) {
         this.trackOwner(channel, ownerSessionId);
-        await channel.lifecycleTail;
+        await waitForSetup(channel.lifecycleTail);
       }
-      if (signal?.aborted) throw new SubappRpcError('Subapp Agent request was cancelled', 'SUBAPP_RPC_CANCELLED');
+      checkCurrent();
       // Lifecycle callbacks must never restart a dead Runtime merely to clean it.
-      const socket = trackLease ? await this.ensureSocket(channel) : channel.socket;
-      const ownerContext = trackLease && !signal?.aborted ? await this.ownerGuard.track(toolId, ownerSessionId) : {};
-      if (signal?.aborted) throw new SubappRpcError('Subapp Agent request was cancelled', 'SUBAPP_RPC_CANCELLED');
+      const socket = trackLease ? await waitForSetup(this.ensureSocket(channel)) : channel.socket;
+      checkCurrent();
+      const ownerContext = trackLease ? await waitForSetup(this.ownerGuard.track(toolId, ownerSessionId)) : {};
+      checkCurrent();
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         throw new SubappRpcError('Subapp Runtime connection is not open', 'SUBAPP_RUNTIME_CLOSED');
       }
+      const context: Record<string, unknown> = {
+        actor: 'agent', actorId: 'subapp-agent-host', ...ownerContext,
+        ...(ownerSessionId ? { sessionId: ownerSessionId } : {}),
+        ...(String(executionContext.toolCallId || '').trim() ? { toolCallId: String(executionContext.toolCallId).trim() } : {}),
+        ...(String(executionContext.workspaceRoot || '').trim() ? { workspaceRoot: String(executionContext.workspaceRoot).trim() } : {}),
+        ...(executionContext.developmentMode === 'coder' || executionContext.developmentMode === 'blockly'
+          ? { developmentMode: executionContext.developmentMode } : {}),
+      };
       const id = `agent-${Date.now()}-${++channel.requestSeq}`;
+      const wireTimeoutMs = remainingMs();
+      let submitted = false;
       const response = new Promise<unknown>((resolve, reject) => {
         const timer = setTimeout(() => {
           const pending = channel.pending.get(id);
-          pending?.removeAbortListener?.();
+          if (!pending) return;
+          pending.removeAbortListener?.();
           channel.pending.delete(id);
-          if (supportsCancellation) this.sendCancellation(channel, socket, id, method);
-          reject(new SubappRpcError(
-            `Subapp Runtime request timed out after ${timeoutMs} ms`,
-            'SUBAPP_RPC_TIMEOUT',
-            { toolId, method, timeoutMs },
-          ));
-        }, timeoutMs);
+          if (supportsCancellation && submitted) this.sendCancellation(socket, id, context);
+          reject(timeoutError());
+        }, wireTimeoutMs);
         const pending: PendingRequest = { resolve, reject, timer };
+        channel.pending.set(id, pending);
         if (signal) {
           const onAbort = () => {
+            if (!channel.pending.delete(id)) return;
             clearTimeout(timer);
-            channel.pending.delete(id);
-            if (supportsCancellation) this.sendCancellation(channel, socket, id, method);
-            reject(new SubappRpcError(
-              'Subapp Agent request was cancelled',
-              'SUBAPP_RPC_CANCELLED',
-              { toolId, method },
-            ));
+            pending.removeAbortListener?.();
+            if (supportsCancellation && submitted) this.sendCancellation(socket, id, context);
+            reject(cancelledError());
           };
           signal.addEventListener('abort', onAbort, { once: true });
           pending.removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+          if (signal.aborted) onAbort();
         }
-        channel.pending.set(id, pending);
       });
-
       try {
-        socket.send(JSON.stringify({
-          id,
-          method,
-          params,
-          context: {
-            actor: 'agent',
-            actorId: 'subapp-agent-host',
-            ...ownerContext,
-            ...(ownerSessionId ? { sessionId: ownerSessionId } : {}),
-            ...(String(executionContext.toolCallId || '').trim()
-              ? { toolCallId: String(executionContext.toolCallId).trim() }
-              : {}),
-            ...(String(executionContext.workspaceRoot || '').trim()
-              ? { workspaceRoot: String(executionContext.workspaceRoot).trim() }
-              : {}),
-            ...(executionContext.developmentMode === 'coder' || executionContext.developmentMode === 'blockly'
-              ? { developmentMode: executionContext.developmentMode }
-              : {}),
-          },
-        }));
+        if (channel.pending.has(id)) {
+          checkCurrent();
+          const message = JSON.stringify({ id, method, params, context, timeoutMs: wireTimeoutMs });
+          checkCurrent();
+          submitted = true;
+          socket.send(message);
+        }
       } catch (error) {
         const pending = channel.pending.get(id);
         if (pending) {
           clearTimeout(pending.timer);
           pending.removeAbortListener?.();
           channel.pending.delete(id);
-          pending.reject(new SubappRpcError(
-            error instanceof Error ? error.message : String(error),
-            'SUBAPP_RPC_SEND_FAILED',
-            { toolId, method },
+          pending.reject(error instanceof SubappRpcError ? error : new SubappRpcError(
+            error instanceof Error ? error.message : String(error), 'SUBAPP_RPC_SEND_FAILED', { toolId, method },
           ));
         }
       }
@@ -764,10 +784,9 @@ export class SubappAgentBridgeService implements OnDestroy {
   }
 
   private sendCancellation(
-    channel: SubappRpcChannel,
     socket: WebSocket,
     requestId: string,
-    method: string,
+    context: Record<string, unknown>,
   ): void {
     if (socket.readyState !== WebSocket.OPEN) return;
     try {
@@ -775,11 +794,8 @@ export class SubappAgentBridgeService implements OnDestroy {
         id: `cancel-${requestId}`,
         method: 'runtime.request.cancel',
         params: { requestId },
-        context: {
-          actor: 'agent',
-          actorId: 'subapp-agent-host',
-          cancelledMethod: method,
-        },
+        context,
+        timeoutMs: 5000,
       }));
     } catch {
       // The local request is already settled; the close handler will recover the channel.
