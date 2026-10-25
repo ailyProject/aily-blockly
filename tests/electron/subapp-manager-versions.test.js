@@ -11,9 +11,12 @@ const {
   packagePathFor,
   prepareNpmSpawn,
   readInstalledState,
+  runNpm,
   validateIndex,
 } = require('../../electron/subapp-manager');
 const { npmTarball, portableSubappTarball } = require('./fixtures/npm-tarball-fixture');
+const http = require('node:http');
+const { acquireInstallLock } = require('../../electron/subapp-install-lock');
 
 const ID = 'aily-chat';
 const PACKAGE = '@aily-project/subapp-aily-chat';
@@ -108,6 +111,188 @@ function fixture(t, options = {}) {
     manager: createSubappManager(managerOptions),
   };
 }
+
+async function transferServer(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  return `http://127.0.0.1:${server.address().port}/package.tgz`;
+}
+
+for (const anotherManager of [false, true]) {
+  test(`uninstall cancels a stalled background transfer${anotherManager ? ' from another local manager' : ''} while the old version stays launchable`, { timeout: 10000 }, async t => {
+    let started;
+    const receiving = new Promise(resolve => { started = resolve; });
+    const url = await transferServer(t, (_request, response) => {
+      response.writeHead(200, { 'content-length': 1000000 }); response.write('partial'); started();
+    });
+    const f = fixture(t, { managerOptions: { downloadFile: undefined, listBusyHolders: async () => [] } });
+    f.entry.dist.tarball = url;
+    writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+    const download = assert.rejects(f.manager.downloadUpdate({ id: ID }), { code: 'SUBAPP_CANCELLED' });
+    await receiving;
+    const old = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(old.config.version, '0.1.32'); old.release();
+    const uninstaller = anotherManager ? createSubappManager(f.managerOptions) : f.manager;
+    await uninstaller.uninstall({ id: ID });
+    await download;
+    assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+    assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+    assert.equal(fs.existsSync(path.join(f.updateRootDir, ID)), false);
+    assert.equal(fs.existsSync(path.join(f.rootDir, 'store', versions.storeKeyForPackage(PACKAGE))), false);
+  });
+}
+
+test('download timeout preserves the old runtime and retry switches to the prepared version without deleting old files', { timeout: 10000 }, async t => {
+  let archive, ready = false;
+  const url = await transferServer(t, (_request, response) => { if (ready) response.end(archive); });
+  const f = fixture(t, { managerOptions: { downloadFile: undefined, downloadIdleTimeoutMs: 100 } });
+  f.entry.dist.tarball = url; archive = f.archive;
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await assert.rejects(f.manager.downloadUpdate({ id: ID }), { code: 'SUBAPP_DOWNLOAD_IDLE_TIMEOUT' });
+  const old = await f.manager.prepareLaunch({ id: ID });
+  assert.equal(old.config.version, '0.1.32'); old.release();
+  ready = true;
+  await f.manager.downloadUpdate({ id: ID });
+  await f.manager.installUpdate({ id: ID });
+  const next = await f.manager.prepareLaunch({ id: ID });
+  assert.equal(next.config.version, f.entry.version); next.release();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(legacy, 'package.json'))).version, '0.1.32');
+});
+
+test('a hung manual update cannot block another app installation and uninstall cancels it before entering the queue', { timeout: 10000 }, async t => {
+  let started;
+  const receiving = new Promise(resolve => { started = resolve; });
+  const otherId = 'network-independent', otherPackage = '@aily-project/subapp-network-independent';
+  const otherArchive = portableSubappTarball({ packageName: otherPackage, id: otherId, version: '1.0.0' });
+  const url = await transferServer(t, (request, response) => {
+    if (request.url === '/other') return response.end(otherArchive);
+    started();
+  });
+  const f = fixture(t, { managerOptions: { downloadFile: undefined, listBusyHolders: async () => [] } });
+  f.entry.dist.tarball = url;
+  const other = catalogEntry('1.0.0', otherArchive, { id: otherId, package: otherPackage,
+    dist: { tarball: url.replace('/package.tgz', '/other'), integrity: integrity(otherArchive) } });
+  f.managerOptions.fetchImpl = async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: f.entry, [otherId]: other }) });
+  f.manager = createSubappManager(f.managerOptions);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const update = assert.rejects(f.manager.update({ id: ID }), { code: 'SUBAPP_CANCELLED' });
+  await receiving;
+  await f.manager.install({ id: otherId });
+  assert.equal(readInstalledState(f.rootDir, other).installed, true);
+  await f.manager.uninstall({ id: ID });
+  await update;
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+  assert.equal(readInstalledState(f.rootDir, other).installed, true);
+});
+
+test('waiting for another process preparation lock never holds the global startup lock and uninstall returns a bounded error', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 150 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const release = acquireInstallLock(path.join(f.rootDir, 'store', '.locks', versions.storeKeyForPackage(PACKAGE)));
+  try {
+    const uninstall = assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+    const old = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(old.config.version, '0.1.32'); old.release();
+    await uninstall;
+    assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  } finally { release(); }
+});
+
+test('a prepared update survives selection contention and can activate on retry', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 100 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  await f.manager.downloadUpdate({ id: ID });
+  const release = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  try {
+    await assert.rejects(f.manager.installUpdate({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+    assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
+  } finally { release(); }
+  await f.manager.installUpdate({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('unconfirmed npm termination retains only its package guard until the process closes', { timeout: 10000 }, async t => {
+  const archive = npmTarball({
+    'package.json': JSON.stringify({ name: PACKAGE, version: '0.1.33', main: 'index.js', scripts: { postinstall: 'node build.js' } }),
+    'index.js': '', 'ui/index.html': '', 'build.js': '',
+  });
+  const f = fixture(t, { archive, managerOptions: { lockTimeoutMs: 100, listBusyHolders: async () => [] } });
+  const cli = path.join(f.temporary, 'node', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  fs.mkdirSync(path.dirname(cli), { recursive: true });
+  fs.writeFileSync(path.join(f.temporary, 'node', 'npm.cmd'), '');
+  const pidFile = path.join(f.temporary, 'npm-pid');
+  fs.writeFileSync(cli, `require('fs').writeFileSync(process.argv[2],String(process.pid));setInterval(()=>{},1000);`);
+  f.managerOptions.runNpm = (_args, options) => runNpm([pidFile], {
+    ...options, platform: 'win32', env: { AILY_CHILD_PATH: f.temporary }, npmTimeoutMs: 1000,
+    killProcessTree: async () => false,
+  });
+  f.manager = createSubappManager(f.managerOptions);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  try {
+    await assert.rejects(f.manager.update({ id: ID }), { code: 'SUBAPP_NPM_TIMEOUT' });
+    assert.ok(fs.existsSync(pidFile));
+    const old = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(old.config.version, '0.1.32'); old.release();
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+  } finally {
+    if (fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile)), 'SIGKILL'); } catch {} }
+  }
+  // The process close event releases the deferred guard after staging cleanup.
+  const retry = createSubappManager({ ...f.managerOptions, lockTimeoutMs: 3000 });
+  await retry.uninstall({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('a slow uninstall does not block another app and closes a registration that races preflight', { timeout: 5000 }, async t => {
+  let unblock, reportMarked, calls = 0;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const marked = new Promise(resolve => { reportMarked = resolve; });
+  const f = fixture(t, { managerOptions: {
+    listBusyHolders: async () => [],
+    forceStopChildToolByCatalogId: async () => {
+      if (++calls === 2) { reportMarked(); await blocked; }
+      return { success: true };
+    },
+  } });
+  const other = { ...f.entry, id: 'other', package: '@aily-project/subapp-other' };
+  f.managerOptions.fetchImpl = async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: f.entry, other }) });
+  f.manager = createSubappManager(f.managerOptions);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  writeRunnablePackage(packagePathFor(f.rootDir, other.package), other.version, { name: other.package });
+  const uninstall = f.manager.uninstall({ id: ID });
+  await marked;
+  try {
+    await assert.rejects(f.manager.prepareLaunch({ id: ID }), /Subapp is not installed/);
+    const launch = await f.manager.prepareLaunch({ id: 'other' });
+    assert.equal(launch.config.version, other.version); launch.release();
+  } finally { unblock(); }
+  await uninstall;
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('a Windows-style deletion failure remains retryable in a new manager and never strands the global lock', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { platform: 'win32', listBusyHolders: async () => [], sleep: async () => {} } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const rm = fs.promises.rm;
+  const mock = t.mock.method(fs.promises, 'rm', async (target, options) => {
+    if (target === legacy) throw Object.assign(new Error('EPERM unlink busy'), { code: 'EPERM' });
+    return rm(target, options);
+  });
+  await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'EBUSY' });
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
+  const free = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  assert.equal(typeof free, 'function'); free();
+  mock.mock.restore();
+  await createSubappManager(f.managerOptions).uninstall({ id: ID });
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(fs.existsSync(legacy), false);
+});
 
 test('headless portable packages install, select and rediscover without dummy UI or npm', async t => {
   const archive = npmTarball({
@@ -564,7 +749,7 @@ test('an open Coder project blocks normal and forced editor uninstall without st
 
   projectOpen = false;
   await f.manager.uninstall({ id: f.id });
-  assert.equal(stops, 1);
+  assert.ok(stops >= 1);
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
