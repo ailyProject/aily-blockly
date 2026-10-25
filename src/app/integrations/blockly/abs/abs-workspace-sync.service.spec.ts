@@ -263,6 +263,12 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(result.publication.status).toBe('COMMITTED');
     expect(roots().getFieldValue('TEXT')).toBe('AI result');
     expect(editor.workspace.getBlockById('child').getFieldValue('NUM')).toBe(2337);
+    expect(result.historyBase!.snapshot).toContain('TEXT="user disk"');
+    expect(result.historyBase!.snapshot).toContain('2337');
+    expect(result.historyBase!.snapshot).not.toContain('AI result');
+    expect(await decodeAbsState(result.historyBase!.snapshot)).toBeTruthy();
+    expect(result.historyBase!.hash).toBe(await hashAbsText(result.historyBase!.snapshot));
+    expect(result.historyBase!.inputAbsHash).toBe(await hashAbsText(base.source.replace('TEXT="before"', 'TEXT="user disk"')));
   });
 
   it('retains unrelated saved edits when the original intent generation is older than the current commit', async () => {

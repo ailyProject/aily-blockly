@@ -9,7 +9,7 @@ import { assertAbsProcedureModelIntents } from './abs-procedure-model-intents';
 import { BlocklyService, BlocklyProjectDocument } from '../../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService } from '../../../editors/blockly-editor/services/project.service';
 import { BlocklyWorkspaceEditLease } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
-import { composeBlocklyPage } from '../../../editors/blockly-editor/services/blockly-project-model';
+import { composeBlocklyPage, replaceBlocklyPageWorkspace } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { projectDataRuntime, cloneBlocklyJson } from '@domain/project/public-api';
 import { assertAbsContractsCompatible } from './abs-contract-compatibility';
@@ -54,6 +54,8 @@ export interface AbsWorkspaceSyncOutcome {
   reused?: boolean;
   inputAbiHash?: string | null;
   draftArchive?: { generation: string; baseGeneration: string; hash: string; bytes: number };
+  /** Read-only pre-AI user state for history; never a published generation. */
+  historyBase?: { snapshot: string; hash: string; inputAbsHash: string | null };
 }
 
 /** Explicit v2 coordinator. Not an automatic legacy-format switch.
@@ -435,8 +437,10 @@ export class AbsWorkspaceSyncService {
         throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Retired model evidence changed after validation. Validate the same candidate again.');
       }
       assertPreparing();
+      let historyBase: AbsWorkspaceSyncOutcome['historyBase'];
       if (requestPriority) {
         let currentWorkspace = composeBlocklyPage(compact, context.scope.pageId);
+        let historyContracts = rollback.contracts;
         // An inline caller can coexist with a separately edited public draft.
         // Resolve its public syntax against the committed generation, never by
         // adopting a public state section as authority.
@@ -446,8 +450,18 @@ export class AbsWorkspaceSyncService {
             .draft({ ...reconcileOptions, sourceEdits: undefined });
           const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
           currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
+          historyContracts = { ...rollback.contracts,
+            fields: { ...rollback.contracts.fields, ...user.contracts.fields },
+            procedures: { ...rollback.contracts.procedures, ...user.contracts.procedures } };
           candidate.contracts = { ...candidate.contracts, fields: { ...user.contracts.fields, ...candidate.contracts.fields } };
         }
+        const userResources = await prepareAbsProjectData(currentWorkspace, assertPreparing);
+        this.assertRuntimeShape(context.definitions, rollback.state, await userResources.materialize(), historyContracts, blockContract);
+        const userDocument = replaceBlocklyPageWorkspace(compact, context.scope.pageId, currentWorkspace,
+          block => historyContracts.procedures?.[block.id]?.role);
+        const userProjection = await this.projection(userDocument, historyContracts, expected.abi, context.scope, assertPreparing);
+        historyBase = { snapshot: userProjection.abs, hash: await hashAbsText(userProjection.abs),
+          inputAbsHash: expected.abs === null ? null : await hashAbsText(expected.abs) };
         const merged = mergeAbsRequestWorkspace(baseline.workspace, currentWorkspace, candidate.workspace);
         const resources = await prepareAbsProjectData(merged, assertPreparing);
         materialized = await resources.materialize();
@@ -469,7 +483,7 @@ export class AbsWorkspaceSyncService {
       retainAbsRootLayout(materialized, currentWorkspace);
       retainAbsRootLayout(rollback.state, currentWorkspace);
       this.editor.assertWorkspaceSharedChange(current.document, materialized, lease);
-      return { expected, baselineSource: baseline.abs, before: current, rollback, candidate, materialized, preparedModels, assertRuntimeCurrent };
+      return { expected, baselineSource: baseline.abs, before: current, rollback, candidate, materialized, preparedModels, assertRuntimeCurrent, historyBase };
   }
 
   private validationKey(value: AbsGenerationValidation): string {
@@ -527,7 +541,7 @@ export class AbsWorkspaceSyncService {
     options = { ...options };
     if (validation) validation = JSON.parse(absJson(validation));
     return this.run(async (context, lease, store) => {
-      const { expected, before, rollback, candidate, materialized } = await this.withoutViewChecks(async () => {
+      const { expected, before, rollback, candidate, materialized, historyBase } = await this.withoutViewChecks(async () => {
         try {
           const prepared = await this.prepareApplication(context, lease, store, source, generation, validation);
           // Validation is read-only and may inspect any candidate. Application
@@ -610,7 +624,8 @@ export class AbsWorkspaceSyncService {
         catch (error) { warnings.push(`Generation committed; derived outputs were not fully published: ${String(error)}`); }
         const published = assertApplied();
         this.editor.publishAbsContext(projection, published.revision, context.assertCurrent);
-        return { publication, appliedRevision: published.revision, requiresReload: false, warnings, evidence };
+        return { publication, appliedRevision: published.revision, requiresReload: false, warnings, evidence,
+          ...(historyBase ? { historyBase } : {}) };
       } catch (error) {
         if (mutated && context.isCurrent()) {
           if (commitStarted) {

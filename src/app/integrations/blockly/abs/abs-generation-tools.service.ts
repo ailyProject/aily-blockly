@@ -81,6 +81,7 @@ export class AbsGenerationToolsService {
       const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && result.appliedRevision !== undefined && !!result.evidence;
       return { ...result, ok, operation, project: validation.base.scope.projectKey,
         ...(ok ? { receipt: { ...validation, output: result.evidence,
+          ...(result.historyBase ? { historyBase: { hash: result.historyBase.hash, inputAbsHash: result.historyBase.inputAbsHash } } : {}),
           appliedRevision: result.appliedRevision, validation: { ok: true, scope: 'complete-generation' } } } : {}) };
     } catch (error) {
       const failure = serializeAbsFailure(error);
