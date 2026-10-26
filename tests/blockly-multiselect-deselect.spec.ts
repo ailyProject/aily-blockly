@@ -87,6 +87,90 @@ for (const virtual of [false, true]) describe(`Multiselect cancellation (virtual
     await settle();
   });
 
+  it('publishes a Shift rectangle selection and deletes it as one undoable operation', async () => {
+    Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Shift', keyCode: 16, shiftKey: true, bubbles: true,
+    }));
+    const rects = blocks.map(block => block.getSvgRoot().getBoundingClientRect());
+    const start = {x: Math.min(...rects.map(rect => rect.left)) - 20,
+      y: Math.min(...rects.map(rect => rect.top)) - 20};
+    const end = {x: Math.max(...rects.map(rect => rect.right)) + 20,
+      y: Math.max(...rects.map(rect => rect.bottom)) + 20};
+    const send = (target: EventTarget, type: string, point: {x: number; y: number}) =>
+      target.dispatchEvent(new PointerEvent(type, {bubbles: true, cancelable: true,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0,
+        buttons: type === 'pointerup' ? 0 : 1, shiftKey: true,
+        clientX: point.x, clientY: point.y}));
+    send(host.querySelector('.blocklyMainBackground')!, 'pointerdown', start);
+    send(document, 'pointermove', end);
+    send(document, 'pointerup', end);
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'Shift', keyCode: 16, bubbles: true,
+    }));
+    await settle();
+    const ids = blocks.map(block => block.id);
+    expect([...selectedIds()]).toEqual(ids);
+    expect(context.selectedBlockIdsSubject.value).toEqual(ids);
+    expect(Blockly.getSelected()).toBe(group());
+    workspace.clearUndo();
+    shortcut(shortcutNames.MULTIDELETE);
+    await settle();
+    expect(workspace.getAllBlocks(false).length).toBe(0);
+    expect(context.selectedBlockIdsSubject.value).toEqual([]);
+    workspace.undo(false);
+    await settle();
+    expect(ids.every(id => workspace.getBlockById(id))).toBeTrue();
+  });
+
+  it('adds and removes Shift-clicked members without losing Chat context', async () => {
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!);
+    await settle();
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Shift', keyCode: 16, shiftKey: true, bubbles: true,
+    }));
+    click(blocks[1].getSvgRoot().querySelector('.blocklyPath')!, true);
+    await settle();
+    expect(new Set(context.selectedBlockIdsSubject.value)).toEqual(new Set(blocks.map(block => block.id)));
+    expect(Blockly.getSelected()).toBe(group());
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!, true);
+    await settle();
+    expect(context.selectedBlockIdsSubject.value).toEqual([blocks[1].id]);
+    const input = document.createElement('textarea'); host.append(input); input.focus();
+    await settle();
+    expect(document.activeElement).toBe(input);
+    expect(context.selectedBlockIdsSubject.value).toEqual([blocks[1].id]);
+    input.remove();
+  });
+
+  it('recognizes Shift already held before the pointer enters the workspace', async () => {
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!); await settle();
+    // No keydown in the injection div: the modifier predates workspace focus.
+    click(blocks[1].getSvgRoot().querySelector('.blocklyPath')!, true); await settle();
+    expect(new Set(context.selectedBlockIdsSubject.value)).toEqual(new Set(blocks.map(block => block.id)));
+    expect(Blockly.getSelected()).toBe(group());
+  });
+
+  for (const command of [shortcutNames.MULTIDELETE, shortcutNames.MULTICUT]) {
+    it(`keeps copy and ${command} usable after returning from Chat to the canvas`, async () => {
+      await selectAll();
+      const input = document.createElement('textarea'); host.append(input); input.focus();
+      await settle();
+      Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+      await settle();
+      shortcut(shortcutNames.MULTICOPY);
+      expect(copyData.size).toBe(2);
+      workspace.clearUndo();
+      shortcut(command);
+      await settle();
+      expect(workspace.getAllBlocks(false).length).toBe(0);
+      expect(context.selectedBlockIdsSubject.value).toEqual([]);
+      workspace.undo(false); await settle();
+      expect(workspace.getAllBlocks(false).length).toBe(2);
+      input.remove();
+    });
+  }
+
   for (const menu of [false, true]) it(`clears ${menu ? 'menu' : 'keyboard'} select-all on a blank canvas click`, async () => {
     await selectAll(menu);
     click(host.querySelector('.blocklyMainBackground')!);

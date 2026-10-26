@@ -8,11 +8,15 @@ import * as Blockly from 'blockly/core';
 import { create, insert, search, type AnyOrama } from '@orama/orama';
 import { createTokenizer as createMandarinTokenizer } from '@orama/tokenizers/mandarin';
 
+/** Search entries are toolbox previews, never live project declarations. */
+class IndexWorkspace extends Blockly.Workspace {
+  override get isFlyout(): boolean { return true; }
+}
+
 /**
  * A class that provides methods for indexing and searching blocks using Orama.
  */
 export class BlockSearcher {
-  private blockCreationWorkspace = new Blockly.Workspace();
   private db: AnyOrama;
   private blockTextMap = new Map<string, Set<string>>();
 
@@ -37,7 +41,7 @@ export class BlockSearcher {
    * @param blockTypes A list of block types to index.
    */
   indexBlocks(blockTypes: string[]) {
-    let blockCreationWorkspace = new Blockly.Workspace();
+    let blockCreationWorkspace = new IndexWorkspace();
 
     try {
       blockTypes.forEach((blockType) => {
@@ -89,7 +93,7 @@ export class BlockSearcher {
           } catch {
             // The workspace is already unusable; replace it below.
           }
-          blockCreationWorkspace = new Blockly.Workspace();
+          blockCreationWorkspace = new IndexWorkspace();
         }
       });
     } finally {

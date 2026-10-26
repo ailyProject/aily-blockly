@@ -5,6 +5,7 @@
     "./blockly-pointer-boundary.spec.ts",
     "./blockly-viewport-focus.spec.ts",
     "./blockly-multiselect-deselect.spec.ts",
+    "./blockly-copy-search.spec.ts",
     "../src/app/editors/blockly-editor/utils/blockly-drag-layer.spec.ts",
     "../src/app/editors/blockly-editor/utils/blockly-multiselect-v13.spec.ts",
     "../src/app/editors/blockly-editor/components/dev-tool/dev-tool-coder.spec.ts",

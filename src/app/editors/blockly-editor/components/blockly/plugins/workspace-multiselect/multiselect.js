@@ -21,6 +21,7 @@ import {
 import {MultiselectControls} from './multiselect_controls';
 import {MultiselectDraggable} from './multiselect_draggable';
 import {shouldAutoFocusWorkspace} from './workspace-auto-focus';
+import {fireBlocklySelectionChange} from '../../../../utils/blockly-selection-focus';
 
 // Install the host-owned policy before generator sessions snapshot Blockly.
 // A per-workspace flag survives library realm rebuilds without globally
@@ -80,6 +81,14 @@ export class Multiselect {
     };
     injectionDiv.addEventListener('pointerdown', this.onContextPointerDown_, true);
     this.onCanvasPointerDown_ = (e) => {
+      // Shift may already be held when focus enters the workspace, so its
+      // keydown was delivered elsewhere. Start selection before the pointer
+      // reaches DragSelect's area listener in that case as well.
+      if (e.shiftKey && e.button === 0 && this.multiSelectKeys_.includes('shift') &&
+          this.workspace_.getParentSvg().contains(e.target) &&
+          !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
+        this.controls_.enableMultiselect();
+      }
       if (e.target === this.workspace_.svgBackground_ &&
           (e.button === 0 || Blockly.browserEvents.isRightButton(e)) && !e.shiftKey &&
           !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
@@ -451,12 +460,7 @@ export class Multiselect {
   /** Publish an intentional cancellation independently of keyboard focus. */
   clearSelection_() {
     this.controls_.clearSelection();
-    const event = new Blockly.Events.Selected(null, null, this.workspace_.id);
-    // Blockly merges adjacent deselection events. Keep this explicit intent
-    // separate from ordinary focus events, which must preserve the context.
-    event.group = Blockly.utils.idGenerator.genUid();
-    event.ailySelectionClear = true;
-    Blockly.Events.fire(event);
+    fireBlocklySelectionChange(this.workspace_, null);
   }
 
   /**
@@ -511,17 +515,7 @@ export class Multiselect {
       return;
     }
     if (inMultipleSelectionModeWeakMap.get(this.workspace_)) {
-      // Revert last unselected block if the related target
-      // is a field related element, for accomodating field update
-      // directly while the multi-selection mode is on.
-      if (e.relatedTarget && (e.relatedTarget.tagName === 'INPUT' ||
-          e.relatedTarget.tagName === 'TEXTAREA' ||
-          e.relatedTarget.tagName === 'DIV' &&
-          e.relatedTarget.classList.value.indexOf(
-              'blocklyDropdownMenu') > -1)) {
-        this.controls_.revertLastUnselectedBlock();
-      }
-      this.controls_.disableMultiselect();
+      this.controls_.disableMultiselect(false, false);
     }
   }
 }

@@ -20,7 +20,7 @@ import {
   multiDraggableWeakMap,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
-import {shouldRetainBlocklySelection} from '../../../../utils/blockly-selection-focus';
+import {fireBlocklySelectionChange, shouldRetainBlocklySelection} from '../../../../utils/blockly-selection-focus';
 
 /**
  * Width of the multi select controls.
@@ -132,20 +132,6 @@ export class MultiselectControls {
      * @private
      */
     this.hasDisableWorkspaceDrag_ = false;
-
-    /**
-     * Store the block that just got unselected.
-     * @type {!Blockly.BlockSvg}
-     * @private
-     */
-    this.justUnselectedBlock_ = null;
-
-    /**
-     * Store the block that was last selected.
-     * @type {!Blockly.BlockSvg}
-     * @private
-     */
-    this.lastSelectedElement_ = null;
 
     if (options && options.enabledIcon) {
       this.enabled_img = options.enabledIcon;
@@ -261,13 +247,6 @@ export class MultiselectControls {
   }
 
   /**
-   * Revert the last unselected block.
-   */
-  revertLastUnselectedBlock() {
-    this.updateDraggables_(this.justUnselectedBlock_);
-  }
-
-  /**
    * Create the multi-select icon and its event handler.
    * @private
    */
@@ -332,12 +311,10 @@ export class MultiselectControls {
       }
       if (this.dragSelection.has(draggable.id)) {
         this.dragSelection.delete(draggable.id);
-        this.justUnselectedBlock_ = draggable;
         this.multiDraggable.removeSubDraggable_(draggable);
         draggable.pathObject.updateSelected(false);
       } else {
         this.dragSelection.add(draggable.id);
-        this.justUnselectedBlock_ = null;
         this.multiDraggable.addSubDraggable_(draggable);
         draggable.pathObject.updateSelected(true);
         draggable.bringToFront();
@@ -357,6 +334,23 @@ export class MultiselectControls {
         draggable.select();
       }
     }
+    this.selectionChanged_ = true;
+  }
+
+  /** Commit DragSelect membership independently of Blockly's focus events. */
+  commitSelection_(restoreFocus = true) {
+    // Only a completed canvas interaction may restore the keyboard target.
+    // focusout/Shift release in Chat must leave its input focused.
+    if (restoreFocus && this.workspace_.getParentSvg().contains(document.activeElement)) {
+      if (this.dragSelection.size) Blockly.common.setSelected(this.multiDraggable);
+      else if (Blockly.getSelected() === this.multiDraggable) {
+        Blockly.getFocusManager().focusNode(this.workspace_.getRootFocusableNode());
+      }
+    }
+    if (this.selectionChanged_) {
+      this.selectionChanged_ = false;
+      fireBlocklySelectionChange(this.workspace_, this.dragSelection.size ? this.multiDraggable.id : null);
+    }
   }
 
 
@@ -364,76 +358,20 @@ export class MultiselectControls {
    * Update the multiple selection blocks status.
    */
   updateMultiselect() {
+    // DragSelect owns membership while Shift is held. Native focus changes
+    // between the canvas and a clicked child must not toggle that membership.
+    if (inMultipleSelectionModeWeakMap.get(this.workspace_)) return;
     // Losing keyboard focus to Chat, a field editor or another window does
     // not cancel the editor selection used by context consumers.
     if (shouldRetainBlocklySelection()) return;
-    // Not in multiselect mode
-    if (!inMultipleSelectionModeWeakMap.get(this.workspace_)) {
-      // If clicking on different workspace, clear selected set
-      if (this.workspace_.id !== Blockly.getMainWorkspace().id) {
-        this.multiDraggable.clearAll_();
-        this.dragSelection.clear();
-      }
-
-      // If unselecting/clicking on workspace,
-      // clear selected set
-      if (!Blockly.getSelected()) {
-        this.lastSelectedElement_ = null;
-        // This is a workaround for a bug where holding shift
-        // selecting and going to another workspace without letting go of
-        // shift and selecting new blocks will still leave the original
-        // blocks highlighted. This can be removed if we figure out how
-        // to solve the real-time highlighting issue in the updateDraggables_
-        // function. However, a frame-delay related to events may be causing
-        // this issue (Blockly-side).
-        for (const draggable of this.multiDraggable.subDraggables) {
-          draggable[0].unselect();
-        }
-        this.multiDraggable.clearAll_();
-        this.dragSelection.clear();
-      } else if (Blockly.getSelected() &&
-          !(Blockly.getSelected() instanceof MultiselectDraggable)) {
-        // Blockly.getSelected() is not a multiselectDraggable
-        // and selected block is not in dragSelection
-        for (const draggable of this.multiDraggable.subDraggables) {
-          draggable[0].unselect();
-        }
-        this.multiDraggable.clearAll_();
-        this.dragSelection.clear();
-        this.lastSelectedElement_ = Blockly.getSelected();
-        inPasteShortcut.set(this.workspace_, false);
-      }
-    } else {
-      // In multiselect mode
-      // Set selected to multiDraggable if dragSelection not empty
-      if (this.dragSelection.size && !(Blockly.getSelected() instanceof
-          MultiselectDraggable)) {
-        Blockly.common.setSelected(this.multiDraggable);
-      } else if (this.lastSelectedElement_ &&
-          !inPasteShortcut.get(this.workspace_)) {
-        this.updateDraggables_(this.lastSelectedElement_);
-        this.lastSelectedElement_ = null;
-        inPasteShortcut.set(this.workspace_, false);
-      } else if (!this.dragSelection.size && !(Blockly.getSelected() instanceof
-          MultiselectDraggable)) {
-        if (Blockly.getSelected() instanceof Blockly.BlockSvg &&
-            !Blockly.getSelected().isShadow()) {
-          Blockly.getFocusManager().focusNode(this.workspace_.getRootFocusableNode());
-        }
-        // TODO: Look into this after gesture has been updated at Blockly
-        // Currently, the setSelected is called twice even with selection of
-        // one block. This is most likely because of the handleBlockStart
-        // gesture. That is why it is separated from the if statement above.
-        if (Blockly.getSelected() instanceof Blockly.BlockSvg) {
-          this.justUnselectedBlock_ = Blockly.getSelected();
-        }
-      }
+    if (this.workspace_.id !== Blockly.getMainWorkspace().id ||
+        !(Blockly.getSelected() instanceof MultiselectDraggable)) {
+      this.clearSelection();
     }
   }
 
-  /** Clear the group only for an explicit canvas/keyboard cancellation. */
+  /** Clear the group for explicit cancellation or a replacement selection. */
   clearSelection() {
-    this.lastSelectedElement_ = null;
     this.multiDraggable.clearAll_();
     this.dragSelection.clear();
     inPasteShortcut.set(this.workspace_, false);
@@ -465,6 +403,13 @@ export class MultiselectControls {
       usePointerEvents: true,
       multiSelectKeys: this.multiSelectKeys_,
     });
+    const selected = Blockly.getSelected();
+    if (selected instanceof Blockly.BlockSvg && selected.workspace === this.workspace_ &&
+        !this.dragSelection.has(selected.id)) this.updateDraggables_(selected);
+    // Seed DragSelect so Shift-clicking an existing member removes it rather
+    // than toggling two independent selection sets in opposite directions.
+    this.dragSelect_.addSelection([...this.multiDraggable.subDraggables.keys()]
+        .map(block => block.pathObject?.svgPath || block.getSvgRoot().querySelector('rect.blocklyCommentHighlight')).filter(Boolean));
     const viewport = this.workspace_.getViewportRenderer();
     if (viewport) {
       this.refreshViewportSelectables_ = () => {
@@ -531,6 +476,7 @@ export class MultiselectControls {
             getByID(this.workspace_, element.dataset.id));
       }
     });
+    this.dragSelect_.subscribe('callback', () => this.commitSelection_());
     if (byIcon) {
       document.dispatchEvent(
           new KeyboardEvent('keydown', {'key': this.multiSelectKeys_[0]}));
@@ -543,7 +489,7 @@ export class MultiselectControls {
    * Disable the multiple select mode.
    * @param {!boolean} byIcon Whether to simulate a keyboard event.
    */
-  disableMultiselect(byIcon = false) {
+  disableMultiselect(byIcon = false, restoreFocus = true) {
     if (this.refreshViewportSelectables_) {
       this.workspace_.getViewportRenderer()?.removeViewChangeListener(this.refreshViewportSelectables_);
       this.refreshViewportSelectables_ = null;
@@ -559,10 +505,7 @@ export class MultiselectControls {
     }
     // Ensure that Blockly selects multidraggable if
     // our set is not empty.
-    if (this.dragSelection.size && !Blockly.getSelected() &&
-        !shouldRetainBlocklySelection()) {
-      Blockly.common.setSelected(this.multiDraggable);
-    }
+    this.commitSelection_(restoreFocus);
     if (this.hasDisableWorkspaceDrag_) {
       this.workspace_.options.moveOptions.drag = true;
       this.hasDisableWorkspaceDrag_ = false;
