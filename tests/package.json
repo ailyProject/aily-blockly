@@ -2,6 +2,7 @@
   "name": "aily-blockly-tests",
   "private": true,
   "scripts": {
+    "test:subapp-owner-ble": "cd .. && node tests/electron/subapp-owner-supervisor.ble.electron.cjs",
     "test:subapp-dock-i18n": "cd .. && node --test tests/subapp-dock-i18n.test.cjs tests/subapp-activity-titles.test.cjs tests/tool-i18n-generations.test.cjs",
     "test:tool-i18n": "cd .. && node --test tests/tool-i18n-generations.test.cjs",
     "test:subapp-recovery": "cd .. && node --test tests/electron/subapp-install-lock.test.js tests/electron/subapp-network.test.js tests/electron/subapp-package-extractor.test.js tests/electron/subapp-version-store.test.js tests/electron/subapp-manager-versions.test.js tests/electron/subapp-version-runtime.test.js tests/package-build-lock-runtime.test.cjs",
