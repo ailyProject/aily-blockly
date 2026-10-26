@@ -79,6 +79,7 @@ for (const virtual of [false, true]) describe(`Multiselect cancellation (virtual
     await settle();
   });
   afterEach(async () => {
+    Blockly.WidgetDiv.hide();
     Blockly.ContextMenu.hide();
     plugin.dispose();
     workspace.dispose(); host.remove();
@@ -149,6 +150,74 @@ for (const virtual of [false, true]) describe(`Multiselect cancellation (virtual
     click(blocks[1].getSvgRoot().querySelector('.blocklyPath')!, true); await settle();
     expect(new Set(context.selectedBlockIdsSubject.value)).toEqual(new Set(blocks.map(block => block.id)));
     expect(Blockly.getSelected()).toBe(group());
+  });
+
+  it('keeps previous members when Shift-clicking an editable field', async () => {
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!); await settle();
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Shift', keyCode: 16, shiftKey: true, bubbles: true,
+    }));
+    click(blocks[1].getField('TEXT')!.getSvgRoot()!, true);
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'Shift', keyCode: 16, bubbles: true,
+    }));
+    await settle();
+    expect(new Set(selectedIds())).toEqual(new Set(blocks.map(block => block.id)));
+    expect(new Set(context.selectedBlockIdsSubject.value)).toEqual(new Set(blocks.map(block => block.id)));
+    expect(Blockly.getSelected()).toBe(group());
+    expect(Blockly.WidgetDiv.isVisible()).toBeFalse();
+  });
+
+  it('adds to the retained single selection after returning from Chat', async () => {
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!); await settle();
+    const input = document.createElement('textarea'); host.append(input); input.focus(); await settle();
+    click(blocks[1].getSvgRoot().querySelector('.blocklyPath')!, true); await settle();
+    expect(new Set(selectedIds())).toEqual(new Set(blocks.map(block => block.id)));
+    expect(new Set(context.selectedBlockIdsSubject.value)).toEqual(new Set(blocks.map(block => block.id)));
+    expect(Blockly.getSelected()).toBe(group());
+    input.remove();
+  });
+
+  it('does not resurrect a single block explicitly cleared before returning from Chat', async () => {
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!);
+    click(host.querySelector('.blocklyMainBackground')!); await settle();
+    const input = document.createElement('textarea'); host.append(input); input.focus(); await settle();
+    click(blocks[1].getSvgRoot().querySelector('.blocklyPath')!, true); await settle();
+    expect([...selectedIds()]).toEqual([blocks[1].id]);
+    input.remove();
+  });
+
+  it('continues a Shift gesture beginning on a field into rectangle selection', async () => {
+    const startRect = blocks[0].getField('TEXT')!.getSvgRoot()!.getBoundingClientRect();
+    const endRect = blocks[1].getSvgRoot().getBoundingClientRect();
+    const send = (target: EventTarget, type: string, x: number, y: number) =>
+      target.dispatchEvent(new PointerEvent(type, {bubbles: true, cancelable: true,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0,
+        buttons: type === 'pointerup' ? 0 : 1, shiftKey: true, clientX: x, clientY: y}));
+    send(blocks[0].getField('TEXT')!.getSvgRoot()!, 'pointerdown', startRect.left + 2, startRect.top + 2);
+    send(document, 'pointermove', endRect.right + 20, endRect.bottom + 20);
+    send(document, 'pointerup', endRect.right + 20, endRect.bottom + 20);
+    await settle();
+    expect(new Set(selectedIds())).toEqual(new Set(blocks.map(block => block.id)));
+    expect(Blockly.WidgetDiv.isVisible()).toBeFalse();
+  });
+
+  it('keeps the existing set across repeated Shift presses and quick three-block clicks', async () => {
+    const third = workspace.newBlock('deselect_probe');
+    third.initSvg(); third.render(); third.moveBy(100, 260);
+    blocks.push(third); await Blockly.renderManagement.finishQueuedRenders(); await settle();
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!); await settle();
+    for (const block of blocks.slice(1)) {
+      click(block.getField('TEXT')!.getSvgRoot()!, true);
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'Shift', keyCode: 16, bubbles: true,
+      }));
+    }
+    await settle();
+    expect(new Set(selectedIds())).toEqual(new Set(blocks.map(block => block.id)));
+    expect(new Set(context.selectedBlockIdsSubject.value)).toEqual(new Set(blocks.map(block => block.id)));
+    click(blocks[1].getField('TEXT')!.getSvgRoot()!, true); await settle();
+    expect(new Set(selectedIds())).toEqual(new Set([blocks[0].id, third.id]));
   });
 
   for (const command of [shortcutNames.MULTIDELETE, shortcutNames.MULTICUT]) {

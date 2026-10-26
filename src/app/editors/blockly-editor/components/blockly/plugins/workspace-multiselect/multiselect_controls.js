@@ -299,17 +299,18 @@ export class MultiselectControls {
    * @param {!Blockly.IDraggable} draggable The draggable to update.
    * @private
    */
-  updateDraggables_(draggable) {
+  updateDraggables_(draggable, selected = !this.dragSelection.has(draggable?.id)) {
     if (!draggable) {
       return;
     }
+    if (this.dragSelection.has(draggable.id) === selected) return;
     if (draggable instanceof Blockly.BlockSvg) {
       // The case where the draggable is a block
       if (!((draggable.isDeletable() || draggable.isMovable()) &&
           !draggable.isShadow()) || draggable.type === 'drag_to_dupe') {
         return;
       }
-      if (this.dragSelection.has(draggable.id)) {
+      if (!selected) {
         this.dragSelection.delete(draggable.id);
         this.multiDraggable.removeSubDraggable_(draggable);
         draggable.pathObject.updateSelected(false);
@@ -324,7 +325,7 @@ export class MultiselectControls {
       if (!(draggable.isMovable() || draggable.isDeletable())) {
         return;
       }
-      if (this.dragSelection.has(draggable.id)) {
+      if (!selected) {
         this.dragSelection.delete(draggable.id);
         this.multiDraggable.removeSubDraggable_(draggable);
         draggable.unselect();
@@ -334,7 +335,16 @@ export class MultiselectControls {
         draggable.select();
       }
     }
+    this.retainedSingle_ = null;
     this.selectionChanged_ = true;
+  }
+
+  /** Route Shift gestures past native field editors. Start the same DragSelect
+   * interaction so movement can still turn a block click into a marquee. */
+  startBlockSelection_(block, event) {
+    this.pointSelectionBlock_ = block;
+    Blockly.getFocusManager().focusNode(this.workspace_.getRootFocusableNode());
+    this.dragSelect_.Interaction.start(event);
   }
 
   /** Commit DragSelect membership independently of Blockly's focus events. */
@@ -357,21 +367,33 @@ export class MultiselectControls {
   /**
    * Update the multiple selection blocks status.
    */
-  updateMultiselect() {
+  updateMultiselect(event) {
     // DragSelect owns membership while Shift is held. Native focus changes
     // between the canvas and a clicked child must not toggle that membership.
     if (inMultipleSelectionModeWeakMap.get(this.workspace_)) return;
+    if (event?.workspaceId === this.workspace_.id) {
+      if (event.ailySelectionClear) this.retainedSingle_ = null;
+      else if (!this.dragSelection.size) {
+        const block = this.workspace_.getBlockById(event.newElementId);
+        if (block && !block.isInFlyout) this.retainedSingle_ = block;
+      }
+    }
     // Losing keyboard focus to Chat, a field editor or another window does
     // not cancel the editor selection used by context consumers.
     if (shouldRetainBlocklySelection()) return;
     if (this.workspace_.id !== Blockly.getMainWorkspace().id ||
         !(Blockly.getSelected() instanceof MultiselectDraggable)) {
       this.clearSelection();
+      const selected = Blockly.getSelected();
+      if (selected instanceof Blockly.BlockSvg && selected.workspace === this.workspace_) {
+        this.retainedSingle_ = selected;
+      }
     }
   }
 
   /** Clear the group for explicit cancellation or a replacement selection. */
   clearSelection() {
+    this.retainedSingle_ = null;
     this.multiDraggable.clearAll_();
     this.dragSelection.clear();
     inPasteShortcut.set(this.workspace_, false);
@@ -398,14 +420,14 @@ export class MultiselectControls {
               '> rect.blocklyCommentHighlight'
           ),
       area: this.workspace_.svgGroup_,
-      multiselectMode: true,
+      multiSelectMode: true,
       draggability: false,
       usePointerEvents: true,
       multiSelectKeys: this.multiSelectKeys_,
     });
-    const selected = Blockly.getSelected();
+    const selected = Blockly.getSelected() || (!this.dragSelection.size && this.retainedSingle_);
     if (selected instanceof Blockly.BlockSvg && selected.workspace === this.workspace_ &&
-        !this.dragSelection.has(selected.id)) this.updateDraggables_(selected);
+        !selected.isDeadOrDying() && !this.dragSelection.has(selected.id)) this.updateDraggables_(selected, true);
     // Seed DragSelect so Shift-clicking an existing member removes it rather
     // than toggling two independent selection sets in opposite directions.
     this.dragSelect_.addSelection([...this.multiDraggable.subDraggables.keys()]
@@ -450,6 +472,20 @@ export class MultiselectControls {
     this.dragSelect_.Selection.filterSelected = (
         {selectorRect, select: _select, unselect: _unselect}) => {
       const select = _select; const unselect = _unselect;
+      const pointer = this.dragSelect_.stores.PointerStore;
+      if (this.pointSelectionBlock_ && Math.hypot(
+          pointer.currentVal.x - pointer.initialVal.x,
+          pointer.currentVal.y - pointer.initialVal.y) < Blockly.config.dragRadius) {
+        // A point click has an exact DOM target. Bounding rectangles of nested
+        // blocks (and cached viewport geometry) must not toggle other members.
+        const target = this.pointSelectionBlock_.pathObject.svgPath;
+        for (const [element, rect] of select) {
+          if (element !== target) { select.delete(element); unselect.set(element, rect); }
+        }
+        select.set(target, target.getBoundingClientRect());
+        unselect.delete(target);
+        return {select, unselect};
+      }
       const toRemove = [...filterParent(select, selectorRect),
         ...[...select.keys()].filter(el => el.closest('[data-aily-function-hidden="true"]'))];
       toRemove.forEach((el) => {
@@ -465,7 +501,7 @@ export class MultiselectControls {
       if (inMultipleSelectionModeWeakMap.get(this.workspace_) &&
           element && element.dataset && element.dataset.id) {
         this.updateDraggables_(
-            getByID(this.workspace_, element.dataset.id));
+            getByID(this.workspace_, element.dataset.id), true);
       }
     });
     this.dragSelect_.subscribe('elementunselect', (info) => {
@@ -473,10 +509,13 @@ export class MultiselectControls {
       if (inMultipleSelectionModeWeakMap.get(this.workspace_) &&
           element && element.dataset && element.dataset.id) {
         this.updateDraggables_(
-            getByID(this.workspace_, element.dataset.id));
+            getByID(this.workspace_, element.dataset.id), false);
       }
     });
-    this.dragSelect_.subscribe('callback', () => this.commitSelection_());
+    this.dragSelect_.subscribe('callback', () => {
+      this.pointSelectionBlock_ = null;
+      this.commitSelection_();
+    });
     if (byIcon) {
       document.dispatchEvent(
           new KeyboardEvent('keydown', {'key': this.multiSelectKeys_[0]}));
@@ -490,6 +529,7 @@ export class MultiselectControls {
    * @param {!boolean} byIcon Whether to simulate a keyboard event.
    */
   disableMultiselect(byIcon = false, restoreFocus = true) {
+    this.pointSelectionBlock_ = null;
     if (this.refreshViewportSelectables_) {
       this.workspace_.getViewportRenderer()?.removeViewChangeListener(this.refreshViewportSelectables_);
       this.refreshViewportSelectables_ = null;

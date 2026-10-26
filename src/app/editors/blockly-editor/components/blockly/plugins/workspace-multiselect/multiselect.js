@@ -81,6 +81,7 @@ export class Multiselect {
     };
     injectionDiv.addEventListener('pointerdown', this.onContextPointerDown_, true);
     this.onCanvasPointerDown_ = (e) => {
+      if (this.workspace_.isReadOnly()) return;
       // Shift may already be held when focus enters the workspace, so its
       // keydown was delivered elsewhere. Start selection before the pointer
       // reaches DragSelect's area listener in that case as well.
@@ -88,6 +89,15 @@ export class Multiselect {
           this.workspace_.getParentSvg().contains(e.target) &&
           !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
         this.controls_.enableMultiselect();
+      }
+      if (e.button === 0 && inMultipleSelectionModeWeakMap.get(this.workspace_)) {
+        let block = this.workspace_.getBlockById(e.target.closest?.('[data-id]')?.getAttribute('data-id'));
+        while (block?.isShadow()) block = block.getParent();
+        if (block && !block.isInFlyout && (block.isDeletable() || block.isMovable()) && block.type !== 'drag_to_dupe') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.controls_.startBlockSelection_(block, e);
+        }
       }
       if (e.target === this.workspace_.svgBackground_ &&
           (e.button === 0 || Blockly.browserEvents.isRightButton(e)) && !e.shiftKey &&
@@ -426,7 +436,7 @@ export class Multiselect {
     // to cover all possible selection changes)
     if (e.type === Blockly.Events.SELECTED) {
       multiselectControlsList.forEach((controls) => {
-        controls.updateMultiselect();
+        controls.updateMultiselect(e);
       });
     }
   }
