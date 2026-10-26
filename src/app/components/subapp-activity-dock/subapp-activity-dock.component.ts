@@ -16,6 +16,7 @@ import { NzResizableModule, type NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { BehaviorSubject, switchMap } from 'rxjs';
 
 import { MainUiAutomationService } from '@integration/automation/public-api';
+import { ToolI18nService } from '@core/preferences/public-api';
 import {
   SubappActivityService,
   type SubappActivity,
@@ -41,6 +42,7 @@ export class SubappActivityDockComponent {
 
   private readonly activityService = inject(SubappActivityService);
   private readonly mainUiAutomation = inject(MainUiAutomationService);
+  private readonly toolI18n = inject(ToolI18nService);
   private readonly sessionIdSubject = new BehaviorSubject<string>('');
   private lastReportedExpanded: boolean | null = null;
 
@@ -57,13 +59,19 @@ export class SubappActivityDockComponent {
 
   constructor() {
     effect(() => {
-      const expanded = this.expandedActivities().length > 0;
+      const activities = this.expandedActivities();
+      for (const activity of activities) void this.toolI18n.load(activity.toolId);
+      const expanded = activities.length > 0;
       if (expanded === this.lastReportedExpanded) {
         return;
       }
       this.lastReportedExpanded = expanded;
       this.expandedChange.emit(expanded);
     });
+  }
+
+  activityTitle(activity: SubappActivity): string {
+    return getChildToolConfig(activity.toolId)?.titleKey || activity.title;
   }
 
   @HostBinding('class.is-open')

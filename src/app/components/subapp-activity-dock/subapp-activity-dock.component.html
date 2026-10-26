@@ -28,7 +28,7 @@
                   [class.is-error]="activity.runtimeState === 'error'"
                   aria-hidden="true"></span>
               </span>
-              <span class="subapp-card-title">{{ activity.title | translate }}</span>
+              <span class="subapp-card-title">{{ activityTitle(activity) | translate }}</span>
               <button
                 type="button"
                 class="subapp-card-action"
