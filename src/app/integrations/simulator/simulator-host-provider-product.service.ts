@@ -1,8 +1,12 @@
 import { Injectable, NgZone } from '@angular/core';
+import { lastValueFrom } from 'rxjs';
+import { CmdService } from '@core/platform/public-api';
+
 import {
   SimulatorHostProviderOperationError,
   createSimulatorHostProviderDispatcherAdapterBundle,
 } from '@aily-project/simulator-host-sdk';
+
 import type {
   SimulatorSubappHostProjectDebugConfigurationReadV1,
   SimulatorSubappHostProjectDebugConfigurationSnapshotV1,
@@ -10,8 +14,10 @@ import type {
 
 import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';
+import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 import { ProjectHardwareIntentProviderService } from './project-hardware-intent-provider.service';
 import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-scene-change.service';
+
 import {
   SubappHostProviderDispatcher,
   SubappHostProviderProductRegistryService,
@@ -19,15 +25,20 @@ import {
   type SubappHostProviderProductOpenContext,
   type SubappHostProviderProductSession,
 } from '@integration/subapps/public-api';
+
 import { SimulatorBuildProductComposition } from './simulator-build-product-composition';
+
 import {
   SimulatorBlocklyEditorCallbackAuthority,
 } from './simulator-blockly-editor-callback-authority';
+
 import type {
   SimulatorActiveProjectBindingPort,
 } from './simulator-build-execution-port';
+
 import { createSimulatorElectronProjectArtifactFilePort } from './simulator-electron-project-artifact-file-port';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
+import { SimulatorBoardDemonstrationProvider } from './simulator-board-demonstration-provider';
 
 const SIMULATOR_TOOL_ID = 'simulator';
 const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
@@ -38,6 +49,7 @@ const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
  * process; the generic Child Tool Host supplies and owns that lifecycle.
  */
 @Injectable({ providedIn: 'root' })
+
 export class SimulatorHostProviderProductService {
   private unregister: (() => void) | null = null;
 
@@ -46,14 +58,17 @@ export class SimulatorHostProviderProductService {
     private readonly project: ProjectService,
     private readonly builder: BuilderService,
     private readonly simulatorMainAgent: SimulatorMainAgentSceneChangeService,
+    private readonly demandSessions: AilyChatDemandSessionService,
     private readonly hardwareIntent: ProjectHardwareIntentProviderService,
     private readonly blockly: BlocklyService,
     private readonly projectDebug: ProjectDebugConfigurationService,
     private readonly ngZone: NgZone,
+    private readonly commands: CmdService,
   ) {}
 
   ensureRegistered(): void {
     if (this.unregister) return;
+
     this.unregister = this.registry.register(SIMULATOR_TOOL_ID, {
       open: (context) => this.open(context),
     });
@@ -63,20 +78,26 @@ export class SimulatorHostProviderProductService {
     context: SubappHostProviderProductOpenContext,
   ): Promise<SubappHostProviderProductSession> {
     const projectRoot = this.readActiveBlocklyProjectRoot();
+
     if (!projectRoot) {
       return bindProviderSession(context, [], () => undefined);
     }
+
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     const rootDigest = await sha256Text(normalizedRoot);
     const activeAfterDigest = this.readActiveBlocklyProjectRoot();
+
     if (!activeAfterDigest || !sameProjectRoot(activeAfterDigest, projectRoot)) {
       return bindProviderSession(context, [], () => undefined);
     }
+
     const projectIdentity = `project-v1-${rootDigest}`;
     const workspaceIdentity = `workspace-v1-${rootDigest}`;
+
     const activeProject: SimulatorActiveProjectBindingPort = {
       readActiveBinding: () => {
         const activeRoot = this.project.currentProjectPath;
+
         if (
           !activeRoot
           || this.project.isProjectOpening
@@ -85,6 +106,7 @@ export class SimulatorHostProviderProductService {
         ) {
           return null;
         }
+
         return {
           projectRoot,
           projectIdentity,
@@ -94,6 +116,7 @@ export class SimulatorHostProviderProductService {
       },
       isSameProjectRoot: sameProjectRoot,
     };
+
     const files = createSimulatorElectronProjectArtifactFilePort({
       path: {
         join: (...segments) => window['path'].join(...segments),
@@ -112,6 +135,7 @@ export class SimulatorHostProviderProductService {
         realpathAsync: (filePath) => window['fs'].realpathAsync(filePath),
       },
     });
+
     const composition = new SimulatorBuildProductComposition({
       projectRoot,
       projectIdentity,
@@ -125,14 +149,20 @@ export class SimulatorHostProviderProductService {
         if (signal.aborted) {
           throw new SimulatorHostProviderOperationError('cancelled');
         }
+
         if (!activeProject.readActiveBinding()) return null;
+
         const revision = this.blockly.getWorkspaceContentRevision();
         const code = this.blockly.getReusableGeneratedCode();
+
         if (code === null) return null;
+
         const sourceSha256 = await sha256Text(code);
+
         if (signal.aborted) {
           throw new SimulatorHostProviderOperationError('cancelled');
         }
+
         // Hashing is asynchronous: never pair an old source with a changed
         // project, generation revision, or active workspace edit lease.
         const isCurrent = () => (
@@ -140,9 +170,53 @@ export class SimulatorHostProviderProductService {
           && revision === this.blockly.getWorkspaceContentRevision()
           && code === this.blockly.getReusableGeneratedCode()
         );
+
         return isCurrent() ? { sha256: sourceSha256, isCurrent } : null;
       },
     });
+
+    const demonstrations = new SimulatorBoardDemonstrationProvider({ projectIdentity, workspaceIdentity, files,
+      compile: async (board, graph, signal) => {
+        const streamId = `board-demo-${crypto.randomUUID()}`;
+        const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'compile-board-demonstration.js');
+        const cancel = () => { void this.commands.kill(streamId); };
+
+        signal.addEventListener('abort', cancel, { once: true });
+
+        try {
+          const result = await lastValueFrom(this.commands.spawn('node', [script, board.path, window['path'].getAppDataPath(), graph],
+            { streamId, signal }, true));
+
+          signal.throwIfAborted();
+
+          if (result.type !== 'close' || result.code !== 0) throw new Error(result.stderr || 'Board demonstration compilation failed.');
+
+          const line = result.stdout?.split(/\r?\n/).findLast(line => line.startsWith('AILY_DEMO_BUILD '));
+          const built = line && JSON.parse(line.slice('AILY_DEMO_BUILD '.length));
+
+          if (typeof built?.root !== 'string') throw new Error('Board demonstration compilation returned no Artifact directory.');
+
+          return built.root;
+        } finally {
+          signal.removeEventListener('abort', cancel);
+
+          if (signal.aborted) await this.commands.kill(streamId);
+        }
+      },
+      assertCurrent: () => {
+        if (!activeProject.readActiveBinding()) throw new SimulatorHostProviderOperationError('conflict');
+      },
+      readBoard: async () => {
+        const path = await this.project.getBoardPackagePath();
+        const manifest = await this.project.getBoardPackageJson();
+
+        if (!activeProject.readActiveBinding() || (this.project.getRuntimeBoardModule()
+          && this.project.getRuntimeBoardModule() !== manifest.name)) throw new SimulatorHostProviderOperationError('conflict');
+
+        return { path, name: manifest.name, version: manifest.version };
+      },
+    });
+
     const editor = new SimulatorBlocklyEditorCallbackAuthority({
       projectRoot,
       projectIdentity,
@@ -151,6 +225,7 @@ export class SimulatorHostProviderProductService {
       source: {
         readState: (boundProjectRoot) => {
           const state = this.projectDebug.refresh(boundProjectRoot);
+
           return {
             sourceMapRevision: state.sourceMapRevision,
             sourcePath: state.artifactSourcePath,
@@ -179,21 +254,47 @@ export class SimulatorHostProviderProductService {
         },
       },
     });
+
     const projectActivationSubscription =
       this.project.projectActivation$.subscribe(() => {
         const activeRoot = this.project.currentProjectPath;
+
         if (!activeRoot || !sameProjectRoot(activeRoot, projectRoot)) {
           editor.clearDebugMarker();
         }
       });
+
     let bundle: ReturnType<
       typeof createSimulatorHostProviderDispatcherAdapterBundle
     >;
+
     try {
       bundle =
         createSimulatorHostProviderDispatcherAdapterBundle({
           project: {
             ...composition.projectCallbacks,
+            requestBoardDemonstrationCode: async (request, signal) => {
+              const source = await demonstrations.read({ projectIdentity: request.projectIdentity }, signal);
+              const lesson = source.script.lessons.find(item => item.id === request.lessonId);
+
+              if (!lesson || source.boardPackageName !== request.boardPackageName || source.revision !== request.expectedRevision
+                || source.sourceCode !== request.sourceCode || !activeProject.readActiveBinding()) {
+                throw new SimulatorHostProviderOperationError('conflict');
+              }
+
+              const result = await this.demandSessions.sendLessonCode(projectRoot,
+                `请根据「${source.script.title} / ${lesson.title}」的示例，把对应功能添加到当前项目代码中。先读取当前代码，保留已有功能，按当前开发板的引脚和库配置合并初始化与循环逻辑。不要整段覆盖项目代码，也不要修改课程示例文件。\n\n课程说明：${lesson.explanation}\n\n参考程序已作为资源附在本条消息中。`,
+                `添加课程功能：${lesson.title}`, [{ type: 'file', name: 'demo.ino', content: source.sourceCode }], signal);
+
+              if (!result.sessionId) throw new SimulatorHostProviderOperationError('operation-failed');
+
+              return { projectIdentity: request.projectIdentity, lessonId: lesson.id, sessionId: result.sessionId };
+            },
+            compileBoardDemonstration: (request, signal) => demonstrations.compile(request, signal),
+            readBoardDemonstration: (request, signal) => demonstrations.read(request, signal),
+            writeBoardDemonstration: (request, signal) => demonstrations.write(request, signal),
+            readArtifactChunk: (request, signal) => demonstrations.hasArtifactReference(request.artifactReference)
+              ? demonstrations.readArtifactChunk(request, signal) : composition.projectCallbacks.readArtifactChunk(request, signal),
             readHardwareIntent: (request, signal) => (
               this.hardwareIntent.resolve(request, signal)
             ),
@@ -212,16 +313,21 @@ export class SimulatorHostProviderProductService {
           editor: editor.callbacks,
         });
     } catch (error) {
+      demonstrations.close();
       projectActivationSubscription.unsubscribe();
       editor.close();
       composition.close();
+
       throw error;
     }
+
     return bindProviderSession(
       context,
       bundle.adapters as readonly SubappHostProviderAdapter[],
       () => {
+        demonstrations.close();
         projectActivationSubscription.unsubscribe();
+
         bundle.close();
           editor.close();
         composition.close();
@@ -231,6 +337,7 @@ export class SimulatorHostProviderProductService {
 
   private readActiveBlocklyProjectRoot(): string | null {
     const projectRoot = this.project.currentProjectPath;
+
     if (
       !projectRoot
       || this.project.isProjectOpening
@@ -238,6 +345,7 @@ export class SimulatorHostProviderProductService {
     ) {
       return null;
     }
+
     return projectRoot;
   }
 
@@ -252,7 +360,9 @@ export class SimulatorHostProviderProductService {
     if (input.signal.aborted) {
       throw new SimulatorHostProviderOperationError('cancelled');
     }
+
     const binding = input.activeProject.readActiveBinding();
+
     if (
       !binding
       || binding.projectIdentity !== input.projectIdentity
@@ -261,28 +371,35 @@ export class SimulatorHostProviderProductService {
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     const context = await input.composition.projectCallbacks.readContext(
       { projectIdentity: input.projectIdentity },
       input.signal,
     );
+
     if (
       context.activeArtifactRevision !== input.request.artifactRevision
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     const state = this.projectDebug.refresh(input.projectRoot);
+
     if (input.signal.aborted) {
       throw new SimulatorHostProviderOperationError('cancelled');
     }
+
     if (state.configurationError || state.sourceMapError) {
       throw new SimulatorHostProviderOperationError('operation-failed');
     }
+
     if (
       state.sourceMapRevision !== input.request.sourceMapRevision
       || state.buildConsistency === 'dirty'
     ) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
+
     return {
       schemaVersion: 1,
       kind: 'aily-simulator-host-project-debug-configuration-snapshot',
@@ -311,19 +428,26 @@ async function bindProviderSession(
     adapters,
     maxMessageBytes: SIMULATOR_PROVIDER_MESSAGE_BUDGET,
   });
+
   let unbind: (() => void) | null = null;
+
   try {
     unbind = dispatcher.bindTransport(context.transport);
   } catch (error) {
     await dispatcher.close();
     await closeProduct();
+
     throw error;
   }
+
   let closed = false;
+
   return Object.freeze({
     async close() {
       if (closed) return;
+
       closed = true;
+
       try {
         await dispatcher.close();
       } finally {
@@ -331,6 +455,7 @@ async function bindProviderSession(
           unbind?.();
         } finally {
           unbind = null;
+
           await closeProduct();
         }
       }
@@ -342,6 +467,7 @@ function normalizeProjectRoot(projectRoot: string): string {
   const normalized = window['path'].resolve(projectRoot)
     .replaceAll('\\', '/')
     .replace(/\/+$/u, '');
+
   return isWindowsPath(normalized) ? normalized.toLowerCase() : normalized;
 }
 
@@ -358,6 +484,7 @@ async function sha256Text(value: string): Promise<string> {
     'SHA-256',
     new TextEncoder().encode(value),
   );
+
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');

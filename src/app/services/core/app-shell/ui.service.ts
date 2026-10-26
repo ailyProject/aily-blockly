@@ -668,6 +668,12 @@ export class UiService {
   }
 
   /** 打开或聚焦 Aily Chat，并在子应用宿主就绪后切换到指定后台 session。 */
+  getActiveAilyChatSessionId(): string | undefined {
+    const sessionId = this.childHostRegistry.getStatus(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID)?.['activeChatSessionId'];
+
+    return typeof sessionId === 'string' && sessionId ? sessionId : undefined;
+  }
+
   async openAilyChatSession(sessionId: string): Promise<boolean> {
     const targetSessionId = String(sessionId || '').trim();
     if (!targetSessionId) {

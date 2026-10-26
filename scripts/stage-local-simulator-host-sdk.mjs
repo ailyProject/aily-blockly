@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+
 import {
   access,
   mkdir,
@@ -10,6 +11,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
+
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,17 +20,21 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const blocklyRoot = path.resolve(scriptDirectory, '..');
+
 const simulatorRoot = path.resolve(
   process.env.AILY_SIMULATOR_SOURCE_ROOT
     || path.join(blocklyRoot, '..', 'aily-simulator'),
 );
+
 const stageRoot = path.join(blocklyRoot, 'node_modules', '@aily-project');
 const angularCacheRoot = path.join(blocklyRoot, '.angular', 'cache');
+
 const reportPath = path.join(
   blocklyRoot,
   '.temp',
   'local-simulator-host-sdk-stage.json',
 );
+
 const packages = Object.freeze([
   {
     name: '@aily-project/scene-model',
@@ -60,21 +66,27 @@ try {
   await mkdir(stageRoot, { recursive: true });
 
   const staged = [];
+
   for (const descriptor of packages) {
     const packageRoot = path.join(simulatorRoot, descriptor.source);
+
     const packResult = await runNpm(
       ['pack', packageRoot, '--pack-destination', temporaryRoot, '--json'],
       simulatorRoot,
     );
+
     const packed = parsePackResult(packResult.stdout, descriptor.name);
     const tarballPath = path.join(temporaryRoot, packed.filename);
     const bytes = await readFile(tarballPath);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const target = packageTarget(descriptor.name);
+
     await replacePackage(target, tarballPath);
+
     const manifest = JSON.parse(
       await readFile(path.join(target, 'package.json'), 'utf8'),
     );
+
     if (
       manifest.name !== descriptor.name
       || manifest.version !== descriptor.version
@@ -83,8 +95,10 @@ try {
         `Staged package identity mismatch: ${descriptor.name}@${descriptor.version}`,
       );
     }
+
     await access(path.join(target, 'dist', 'index.js'));
     await access(path.join(target, 'dist', 'index.d.ts'));
+
     staged.push(Object.freeze({
       name: descriptor.name,
       version: descriptor.version,
@@ -97,9 +111,11 @@ try {
   await rm(angularCacheRoot, { recursive: true, force: true });
 
   const sdkTarget = packageTarget('@aily-project/simulator-host-sdk');
+
   const imported = await import(
     `${pathToFileURL(path.join(sdkTarget, 'dist', 'index.js')).href}?stage=${Date.now()}`
   );
+
   const report = Object.freeze({
     schemaVersion: 1,
     kind: 'aily-blockly-local-simulator-host-sdk-stage',
@@ -112,6 +128,7 @@ try {
       exports: Object.keys(imported).length,
     },
   });
+
   await mkdir(path.dirname(reportPath), { recursive: true });
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -123,20 +140,25 @@ function packageTarget(packageName) {
   const unscopedName = packageName.replace(/^@aily-project\//u, '');
   const target = path.resolve(stageRoot, unscopedName);
   const expectedPrefix = `${path.resolve(stageRoot)}${path.sep}`;
+
   if (!target.startsWith(expectedPrefix)) {
     throw new Error(`Refusing to stage outside ${stageRoot}.`);
   }
+
   return target;
 }
 
 async function replacePackage(target, tarballPath) {
   const expectedPrefix = `${path.resolve(stageRoot)}${path.sep}`;
   const resolvedTarget = path.resolve(target);
+
   if (!resolvedTarget.startsWith(expectedPrefix)) {
     throw new Error(`Refusing to replace package outside ${stageRoot}.`);
   }
+
   await rm(resolvedTarget, { recursive: true, force: true });
   await mkdir(resolvedTarget, { recursive: true });
+
   await run(
     'tar',
     ['-xzf', tarballPath, '-C', resolvedTarget, '--strip-components=1'],
@@ -162,6 +184,7 @@ async function run(command, args, cwd) {
     });
   } catch (error) {
     const stderr = typeof error?.stderr === 'string' ? error.stderr.trim() : '';
+
     throw new Error(
       `${command} ${args.join(' ')} failed${stderr ? `: ${stderr}` : '.'}`,
       { cause: error },
@@ -171,12 +194,15 @@ async function run(command, args, cwd) {
 
 function parsePackResult(stdout, expectedName) {
   let value;
+
   try {
     value = JSON.parse(stdout);
   } catch {
     throw new Error(`npm pack did not return JSON for ${expectedName}.`);
   }
+
   const record = Array.isArray(value) ? value[0] : null;
+
   if (
     !record
     || record.name !== expectedName
@@ -185,6 +211,7 @@ function parsePackResult(stdout, expectedName) {
   ) {
     throw new Error(`npm pack returned an invalid result for ${expectedName}.`);
   }
+
   return record;
 }
 
@@ -192,7 +219,10 @@ async function runNpm(args, cwd) {
   const npmCli = [
     process.env.npm_execpath,
     path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
   ].find(candidate => candidate && /\.[cm]?js$/iu.test(candidate) && existsSync(candidate));
+
   if (!npmCli) throw new Error('Unable to locate npm-cli.js.');
+
   return run(process.execPath, [npmCli, ...args], cwd);
 }

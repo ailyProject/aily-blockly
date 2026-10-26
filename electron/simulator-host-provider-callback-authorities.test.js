@@ -215,7 +215,7 @@ test('normal Host product source callback fences generation, async hash races, p
     getWorkspaceContentRevision: () => revision,
     getReusableGeneratedCode: () => reusable ? code : null,
   };
-  const service = new Service({}, project, {}, {}, {}, {}, blockly, {}, {});
+  const service = new Service({}, project, {}, {}, {}, blockly, {}, {});
   const session = await service.open({ hostInstanceId: 'source-test', transport: {} });
   try {
     const read = async signal => {
@@ -316,7 +316,7 @@ test('Project context refuses during-source-await same-source manifest replaceme
 
 test('Project context runs final source/project guard after the second manifest await', async t => {
   const { SimulatorProjectArtifactCallbackAuthority } = await integrationModulePromise;
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-source-final-guard-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aily-source-final-guard-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, '.build'));
   const artifact = artifactFixture(Buffer.from('final-guard'), 'a'.repeat(64));
@@ -2207,6 +2207,8 @@ async function loadHostProductService({ digest, onComposition }) {
   class CallbackAuthority { callbacks = {}; close() {} clearDebugMarker() {} }
   const imports = {
     '@angular/core': { Injectable: () => value => value },
+    'rxjs': { lastValueFrom: async value => value },
+    '@core/platform/public-api': {},
     '@aily-project/simulator-host-sdk': {
       SimulatorHostProviderOperationError: ProviderError,
       createSimulatorHostProviderDispatcherAdapterBundle: () => ({ adapters: [], close() {} }),
@@ -2224,6 +2226,7 @@ async function loadHostProductService({ digest, onComposition }) {
         close() {}
       },
     },
+    './simulator-board-demonstration-provider': { SimulatorBoardDemonstrationProvider: CallbackAuthority },
     './simulator-blockly-editor-callback-authority': { SimulatorBlocklyEditorCallbackAuthority: CallbackAuthority },
     './simulator-entitlement-callback-authority': { SimulatorEntitlementCallbackAuthority: CallbackAuthority },
     './simulator-electron-project-artifact-file-port': { createSimulatorElectronProjectArtifactFilePort: () => ({}) },

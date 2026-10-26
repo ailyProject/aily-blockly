@@ -236,7 +236,9 @@ async function main() {
         const builderCommand = 'aily-builder';
         const simulatorArtifactRequested = config.graphSemanticRevision !== undefined;
         const capabilities = readBuilderCapabilities(builderCommand);
-        if (projectSnapshot && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
+        const recordBuildInputs = projectSnapshot !== null || config.recordBuildInputs === true;
+
+        if (recordBuildInputs && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
             throw new Error('Current Builder cannot record build-graph facts with workspace ownership; upgrade it before requesting project delivery.');
         }
         if (simulatorArtifactRequested && (!capabilities.artifact || !capabilities.graph || !capabilities.debug)) {
@@ -295,7 +297,8 @@ async function main() {
                 }
             }
         }
-        if (projectSnapshot) args.push('--record-build-inputs', '--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
+        if (recordBuildInputs) args.push('--record-build-inputs');
+        if (projectSnapshot) args.push('--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
 
         if (!projectSnapshot && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
             args.push('--generate-archive-cloud-cache');
