@@ -20,6 +20,7 @@ import {
   multiDraggableWeakMap,
 } from './global';
 import {MultiselectDraggable} from './multiselect_draggable';
+import {shouldRetainBlocklySelection} from '../../../../utils/blockly-selection-focus';
 
 /**
  * Width of the multi select controls.
@@ -363,6 +364,9 @@ export class MultiselectControls {
    * Update the multiple selection blocks status.
    */
   updateMultiselect() {
+    // Losing keyboard focus to Chat, a field editor or another window does
+    // not cancel the editor selection used by context consumers.
+    if (shouldRetainBlocklySelection(this.workspace_)) return;
     // Not in multiselect mode
     if (!inMultipleSelectionModeWeakMap.get(this.workspace_)) {
       // If clicking on different workspace, clear selected set
@@ -547,7 +551,8 @@ export class MultiselectControls {
     }
     // Ensure that Blockly selects multidraggable if
     // our set is not empty.
-    if (this.dragSelection.size && !Blockly.getSelected()) {
+    if (this.dragSelection.size && !Blockly.getSelected() &&
+        !shouldRetainBlocklySelection(this.workspace_)) {
       Blockly.common.setSelected(this.multiDraggable);
     }
     if (this.hasDisableWorkspaceDrag_) {

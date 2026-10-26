@@ -69,6 +69,25 @@ export class Multiselect {
       });
     }
     const injectionDiv = this.workspace_.getInjectionDiv();
+    this.onContextPointerDown_ = (e) => {
+      if (!Blockly.browserEvents.isRightButton(e) || this.workspace_.isReadOnly()) return;
+      let block = this.workspace_.getBlockById(e.target.closest?.('[data-id]')?.getAttribute('data-id'));
+      while (block?.isShadow()) block = block.getParent();
+      if (!block || block.isInFlyout) return;
+      const group = multiDraggableWeakMap.get(this.workspace_);
+      // v13 opens the focused node's menu before pointer default focus runs.
+      Blockly.common.setSelected(group.subDraggables.has(block) ? group : block);
+    };
+    injectionDiv.addEventListener('pointerdown', this.onContextPointerDown_, true);
+    this.onCanvasFocus_ = (e) => {
+      if (e.target === this.workspace_.getRootFocusableNode().getFocusableElement() &&
+          !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
+        // Returning from Chat to the canvas has no active selectable to blur.
+        // Publish the explicit deselection with this workspace's identity.
+        Blockly.Events.fire(new Blockly.Events.Selected(null, null, this.workspace_.id));
+      }
+    };
+    injectionDiv.addEventListener('focusin', this.onCanvasFocus_);
     this.onKeyDownWrapper_ = Blockly.browserEvents.conditionalBind(
         injectionDiv, 'keydown', this, this.onKeyDown_);
     this.onKeyUpWrapper_ = Blockly.browserEvents.conditionalBind(
@@ -190,6 +209,8 @@ export class Multiselect {
    * @param {boolean} keepRegistry Keep the context menu and shortcut registry.
    */
   dispose(keepRegistry = false) {
+    this.workspace_.getInjectionDiv().removeEventListener('pointerdown', this.onContextPointerDown_, true);
+    this.workspace_.getInjectionDiv().removeEventListener('focusin', this.onCanvasFocus_);
     if (this.onMouseEnter_) {
       this.workspace_.getInjectionDiv().removeEventListener('mouseenter', this.onMouseEnter_);
       this.onMouseEnter_ = null;

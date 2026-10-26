@@ -5,6 +5,7 @@ import * as Blockly from 'blockly';
 import { loadBlocklyWorkspace, isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { BlocklyFunctionView, emptyBlocklyFunctionView, isBlocklyFunctionViewBlockVisible } from '../utils/blockly-function-view';
 import { installBlocklyVariableComparator } from '../utils/blockly-variable-order';
+import { shouldRetainBlocklySelection } from '../utils/blockly-selection-focus';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService, LogService } from '@core/platform/public-api';
@@ -3306,12 +3307,17 @@ export class BlocklyService {
     return Math.min(...result.matchedBy.map((source) => order.indexOf(source)));
   }
 
-  /**
-   * 从工作区同步当前选中的 block 列表（含多选模式）
-   */
+  /** Focus moving to another pane is not an explicit editor deselection. */
+  updateSelectedBlockFromEvent(event: {newElementId?: string}): void {
+    if (!event.newElementId && this.workspace && shouldRetainBlocklySelection(this.workspace)) return;
+    this.selectedBlockSubject.next(event.newElementId || null);
+  }
+
+  /** 从工作区同步当前选中的 block 列表（含多选模式）。 */
   syncSelectedBlocksFromWorkspace(): void {
     if (!this.workspace) {
       this.selectedBlockIdsSubject.next([]);
+      this.selectedBlockSubject.next(null);
       return;
     }
 
@@ -3339,6 +3345,7 @@ export class BlocklyService {
     if (
       selected &&
       selected instanceof Blockly.BlockSvg &&
+      selected.workspace === this.workspace &&
       !selected.isInFlyout &&
       !selected.isInsertionMarker()
     ) {

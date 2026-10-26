@@ -984,7 +984,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
               selectedBlockId,
             );
           }
-          this.blocklyService.selectedBlockSubject.next(selectedBlockId);
+          this.blocklyService.updateSelectedBlockFromEvent(event);
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
             this.codeViewerIpcService.publishSelection(

@@ -347,6 +347,14 @@ export class MultiselectDraggable {
     Blockly.common.fireSelectedEvent(null);
   }
 
+  /** Open the clicked member's menu without replacing the selected group. */
+  showContextMenu(event) {
+    let block = this.workspace.getBlockById(event.target?.closest?.('[data-id]')?.getAttribute('data-id'));
+    while (block?.isShadow()) block = block.getParent();
+    if (!this.subDraggables.has(block)) block = this.subDraggables.keys().next().value;
+    block?.showContextMenu?.(event);
+  }
+
 
   // IDeletable methods
   /**
