@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Subapp activity dock",
+    "TITLE": "Subapps",
+    "OPEN_FULL": "Open full subapp",
+    "COLLAPSE": "Collapse",
+    "CALL_COUNT": "Calls: {{count}}",
+    "RUNTIME_READY": "Runtime ready",
+    "RUNTIME_STARTING": "Runtime starting",
+    "RUNTIME_ERROR": "Runtime error",
+    "RUNTIME_STOPPED": "Runtime stopped",
+    "RUNTIME_UNKNOWN": "Runtime status unknown",
+    "INVOCATION_RUNNING": "Agent running",
+    "INVOCATION_SUCCEEDED": "Last call succeeded",
+    "INVOCATION_FAILED": "Last call failed",
+    "INVOCATION_CANCELLED": "Last call cancelled",
+    "INVOCATION_IDLE": "No active call",
+    "WAITING_RUNTIME": "Waiting for runtime",
+    "LOADING_SURFACE": "Loading compact view",
+    "RUNTIME_NOT_RETAINED": "The Dock does not start or retain the subapp runtime.",
+    "SURFACE_ERROR": "Compact view unavailable",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} view"
+  },
   "BLOCKLY_FUNCTION_VIEW": {
     "LABEL": "View a function or the whole file",
     "ALL": "Whole file",

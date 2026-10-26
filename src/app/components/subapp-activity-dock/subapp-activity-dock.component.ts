@@ -113,30 +113,30 @@ export class SubappActivityDockComponent {
   runtimeLabel(activity: SubappActivity): string {
     switch (activity.runtimeState) {
       case 'ready':
-        return 'Runtime ready';
+        return 'SUBAPP_DOCK.RUNTIME_READY';
       case 'starting':
-        return 'Runtime starting';
+        return 'SUBAPP_DOCK.RUNTIME_STARTING';
       case 'error':
-        return 'Runtime error';
+        return 'SUBAPP_DOCK.RUNTIME_ERROR';
       case 'stopped':
-        return 'Runtime stopped';
+        return 'SUBAPP_DOCK.RUNTIME_STOPPED';
       default:
-        return 'Runtime status unknown';
+        return 'SUBAPP_DOCK.RUNTIME_UNKNOWN';
     }
   }
 
   invocationLabel(activity: SubappActivity): string {
     switch (activity.invocationState) {
       case 'running':
-        return 'Agent running';
+        return 'SUBAPP_DOCK.INVOCATION_RUNNING';
       case 'succeeded':
-        return 'Last call succeeded';
+        return 'SUBAPP_DOCK.INVOCATION_SUCCEEDED';
       case 'failed':
-        return 'Last call failed';
+        return 'SUBAPP_DOCK.INVOCATION_FAILED';
       case 'cancelled':
-        return 'Last call cancelled';
+        return 'SUBAPP_DOCK.INVOCATION_CANCELLED';
       default:
-        return 'No active call';
+        return 'SUBAPP_DOCK.INVOCATION_IDLE';
     }
   }
 }

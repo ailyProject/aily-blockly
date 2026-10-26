@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "لوحة نشاط التطبيقات الفرعية",
+    "TITLE": "التطبيقات الفرعية",
+    "OPEN_FULL": "فتح التطبيق الفرعي الكامل",
+    "COLLAPSE": "طي",
+    "CALL_COUNT": "عدد الاستدعاءات: {{count}}",
+    "RUNTIME_READY": "بيئة التشغيل جاهزة",
+    "RUNTIME_STARTING": "جارٍ بدء بيئة التشغيل",
+    "RUNTIME_ERROR": "خطأ في بيئة التشغيل",
+    "RUNTIME_STOPPED": "بيئة التشغيل متوقفة",
+    "RUNTIME_UNKNOWN": "حالة بيئة التشغيل غير معروفة",
+    "INVOCATION_RUNNING": "الوكيل قيد التشغيل",
+    "INVOCATION_SUCCEEDED": "نجح الاستدعاء الأخير",
+    "INVOCATION_FAILED": "فشل الاستدعاء الأخير",
+    "INVOCATION_CANCELLED": "أُلغي الاستدعاء الأخير",
+    "INVOCATION_IDLE": "لا يوجد استدعاء نشط",
+    "WAITING_RUNTIME": "في انتظار بيئة التشغيل",
+    "LOADING_SURFACE": "جارٍ تحميل العرض المصغّر",
+    "RUNTIME_NOT_RETAINED": "لا تبدأ اللوحة بيئة تشغيل التطبيق الفرعي ولا تُبقيها قيد التشغيل.",
+    "SURFACE_ERROR": "العرض المصغّر غير متاح",
+    "SURFACE_TITLE": "عرض {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "تعذر نشر المشروع",
         "WORKSPACE_PROJECT_NOT_FOUND": "المشروع غير موجود",
