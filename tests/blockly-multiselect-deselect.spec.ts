@@ -180,6 +180,9 @@ for (const virtual of [false, true]) describe(`Multiselect cancellation (virtual
         expect(document.activeElement).toBe(pane);
         expect(context.selectedBlockIdsSubject.value).toEqual(expected);
         if (multiple) expect([...selectedIds()]).toEqual(expected);
+        for (const id of expected) {
+          expect(workspace.getBlockById(id)!.getSvgRoot().classList.contains('blocklySelected')).toBeTrue();
+        }
         // Typing/Delete in Chat must never run the canvas delete shortcut.
         document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Delete', keyCode: 46, bubbles: true, cancelable: true,
@@ -193,6 +196,60 @@ for (const virtual of [false, true]) describe(`Multiselect cancellation (virtual
       });
     }
   }
+
+  for (const multiple of [false, true]) {
+    for (const surface of ['root-focus', 'hover', 'host-background', 'injection-padding', 'svg-control']) {
+      it(`keeps ${multiple ? 'multiple' : 'single'} selection on ${surface} until a real canvas click`, async () => {
+        if (multiple) await selectAll();
+        else {
+          click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!);
+          await settle();
+        }
+        const expected = multiple ? blocks.map(block => block.id) : [blocks[0].id];
+        const pane = document.createElement('div');
+        host.append(pane);
+        if (surface === 'root-focus') {
+          Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+        } else if (surface === 'hover') {
+          const button = document.createElement('button');
+          pane.append(button); button.focus();
+          workspace.getInjectionDiv().dispatchEvent(new MouseEvent('mouseenter'));
+        } else if (surface === 'host-background') {
+          click(pane);
+          Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+        } else if (surface === 'injection-padding') {
+          workspace.getInjectionDiv().append(pane);
+          click(pane);
+          Blockly.getFocusManager().focusNode(workspace.getRootFocusableNode());
+        } else {
+          const control = Blockly.utils.dom.createSvgElement('rect', {
+            class: 'test-workspace-control', width: 20, height: 20,
+          }, workspace.getParentSvg());
+          click(control);
+          control.remove();
+        }
+        await settle();
+        expect(context.selectedBlockIdsSubject.value).toEqual(expected);
+        if (multiple) expect([...selectedIds()]).toEqual(expected);
+        for (const id of expected) {
+          expect(workspace.getBlockById(id)!.getSvgRoot().classList.contains('blocklySelected')).toBeTrue();
+        }
+        pane.remove();
+        click(host.querySelector('.blocklyMainBackground')!);
+        await settle();
+        expect(context.selectedBlockIdsSubject.value).toEqual([]);
+        expectCleared();
+      });
+    }
+  }
+
+  it('does not restore a stale selection when a blank click follows selection in the same event batch', async () => {
+    click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!);
+    click(host.querySelector('.blocklyMainBackground')!);
+    await settle();
+    expect(context.selectedBlockIdsSubject.value).toEqual([]);
+    expectCleared();
+  });
 
   it('right-clicks the target block and retains its context through the menu and Chat focus', async () => {
     click(blocks[0].getSvgRoot().querySelector('.blocklyPath')!);

@@ -366,7 +366,7 @@ export class MultiselectControls {
   updateMultiselect() {
     // Losing keyboard focus to Chat, a field editor or another window does
     // not cancel the editor selection used by context consumers.
-    if (shouldRetainBlocklySelection(this.workspace_)) return;
+    if (shouldRetainBlocklySelection()) return;
     // Not in multiselect mode
     if (!inMultipleSelectionModeWeakMap.get(this.workspace_)) {
       // If clicking on different workspace, clear selected set
@@ -429,6 +429,14 @@ export class MultiselectControls {
         }
       }
     }
+  }
+
+  /** Clear the group only for an explicit canvas/keyboard cancellation. */
+  clearSelection() {
+    this.lastSelectedElement_ = null;
+    this.multiDraggable.clearAll_();
+    this.dragSelection.clear();
+    inPasteShortcut.set(this.workspace_, false);
   }
 
   /**
@@ -552,7 +560,7 @@ export class MultiselectControls {
     // Ensure that Blockly selects multidraggable if
     // our set is not empty.
     if (this.dragSelection.size && !Blockly.getSelected() &&
-        !shouldRetainBlocklySelection(this.workspace_)) {
+        !shouldRetainBlocklySelection()) {
       Blockly.common.setSelected(this.multiDraggable);
     }
     if (this.hasDisableWorkspaceDrag_) {

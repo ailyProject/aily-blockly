@@ -5,7 +5,7 @@ import * as Blockly from 'blockly';
 import { loadBlocklyWorkspace, isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { BlocklyFunctionView, emptyBlocklyFunctionView, isBlocklyFunctionViewBlockVisible } from '../utils/blockly-function-view';
 import { installBlocklyVariableComparator } from '../utils/blockly-variable-order';
-import { shouldRetainBlocklySelection } from '../utils/blockly-selection-focus';
+import { shouldRetainBlocklySelection, type BlocklySelectionChange } from '../utils/blockly-selection-focus';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService, LogService } from '@core/platform/public-api';
@@ -3308,15 +3308,26 @@ export class BlocklyService {
   }
 
   /** Focus moving to another pane is not an explicit editor deselection. */
-  updateSelectedBlockFromEvent(event: {newElementId?: string}): void {
-    if (!event.newElementId && this.workspace && shouldRetainBlocklySelection(this.workspace)) return;
+  updateSelectedBlockFromEvent(event: BlocklySelectionChange): void {
+    if (!event.ailySelectionClear && !event.newElementId && shouldRetainBlocklySelection()) return;
     this.selectedBlockSubject.next(event.newElementId || null);
+  }
+
+  private publishSelectedBlockIds(blockIds: string[]): void {
+    const selected = new Set(blockIds);
+    // Blockly removes single-block styling on blur. Keep its editor highlight
+    // until the selection changes, without changing focus or emitting events.
+    for (const id of new Set([...(this.selectedBlockIdsSubject.value ?? []), ...blockIds])) {
+      const block = this.workspace?.getBlockById(id);
+      if (block instanceof Blockly.BlockSvg) block.pathObject.updateSelected(selected.has(id));
+    }
+    this.selectedBlockIdsSubject.next(blockIds);
   }
 
   /** 从工作区同步当前选中的 block 列表（含多选模式）。 */
   syncSelectedBlocksFromWorkspace(): void {
     if (!this.workspace) {
-      this.selectedBlockIdsSubject.next([]);
+      this.publishSelectedBlockIds([]);
       this.selectedBlockSubject.next(null);
       return;
     }
@@ -3327,7 +3338,7 @@ export class BlocklyService {
         const block = this.workspace!.getBlockById(id);
         return block && !block.isInFlyout && !block.isInsertionMarker();
       });
-      this.selectedBlockIdsSubject.next(blockIds);
+      this.publishSelectedBlockIds(blockIds);
       this.selectedBlockSubject.next(blockIds[0] ?? null);
       return;
     }
@@ -3336,7 +3347,7 @@ export class BlocklyService {
     if (candidateId) {
       const block = this.workspace.getBlockById(candidateId);
       if (block && !block.isInFlyout && !block.isInsertionMarker()) {
-        this.selectedBlockIdsSubject.next([candidateId]);
+        this.publishSelectedBlockIds([candidateId]);
         return;
       }
     }
@@ -3349,12 +3360,12 @@ export class BlocklyService {
       !selected.isInFlyout &&
       !selected.isInsertionMarker()
     ) {
-      this.selectedBlockIdsSubject.next([selected.id]);
+      this.publishSelectedBlockIds([selected.id]);
       this.selectedBlockSubject.next(selected.id);
       return;
     }
 
-    this.selectedBlockIdsSubject.next([]);
+    this.publishSelectedBlockIds([]);
     this.selectedBlockSubject.next(null);
   }
 

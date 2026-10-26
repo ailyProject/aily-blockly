@@ -79,15 +79,14 @@ export class Multiselect {
       Blockly.common.setSelected(group.subDraggables.has(block) ? group : block);
     };
     injectionDiv.addEventListener('pointerdown', this.onContextPointerDown_, true);
-    this.onCanvasFocus_ = (e) => {
-      if (e.target === this.workspace_.getRootFocusableNode().getFocusableElement() &&
+    this.onCanvasPointerDown_ = (e) => {
+      if (e.target === this.workspace_.svgBackground_ &&
+          (e.button === 0 || Blockly.browserEvents.isRightButton(e)) && !e.shiftKey &&
           !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
-        // Returning from Chat to the canvas has no active selectable to blur.
-        // Publish the explicit deselection with this workspace's identity.
-        Blockly.Events.fire(new Blockly.Events.Selected(null, null, this.workspace_.id));
+        this.clearSelection_();
       }
     };
-    injectionDiv.addEventListener('focusin', this.onCanvasFocus_);
+    injectionDiv.addEventListener('pointerdown', this.onCanvasPointerDown_, true);
     this.onKeyDownWrapper_ = Blockly.browserEvents.conditionalBind(
         injectionDiv, 'keydown', this, this.onKeyDown_);
     this.onKeyUpWrapper_ = Blockly.browserEvents.conditionalBind(
@@ -210,7 +209,7 @@ export class Multiselect {
    */
   dispose(keepRegistry = false) {
     this.workspace_.getInjectionDiv().removeEventListener('pointerdown', this.onContextPointerDown_, true);
-    this.workspace_.getInjectionDiv().removeEventListener('focusin', this.onCanvasFocus_);
+    this.workspace_.getInjectionDiv().removeEventListener('pointerdown', this.onCanvasPointerDown_, true);
     if (this.onMouseEnter_) {
       this.workspace_.getInjectionDiv().removeEventListener('mouseenter', this.onMouseEnter_);
       this.onMouseEnter_ = null;
@@ -438,7 +437,7 @@ export class Multiselect {
       // handlers. On the canvas, cancel both the group and additive mode.
       this.controls_.disableMultiselect();
       Blockly.getFocusManager().focusNode(this.workspace_.getRootFocusableNode());
-      this.controls_.updateMultiselect();
+      this.clearSelection_();
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -447,6 +446,17 @@ export class Multiselect {
         !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
       this.controls_.enableMultiselect();
     }
+  }
+
+  /** Publish an intentional cancellation independently of keyboard focus. */
+  clearSelection_() {
+    this.controls_.clearSelection();
+    const event = new Blockly.Events.Selected(null, null, this.workspace_.id);
+    // Blockly merges adjacent deselection events. Keep this explicit intent
+    // separate from ordinary focus events, which must preserve the context.
+    event.group = Blockly.utils.idGenerator.genUid();
+    event.ailySelectionClear = true;
+    Blockly.Events.fire(event);
   }
 
   /**
