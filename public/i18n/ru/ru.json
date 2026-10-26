@@ -1049,6 +1049,7 @@
         "NO_TUTORIAL_PROVIDED": "Автор библиотеки не предоставил руководство"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "Выполняется задача ИИ. Дождитесь её завершения, прежде чем сохранять проект под другим именем.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",

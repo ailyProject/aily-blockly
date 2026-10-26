@@ -25,7 +25,6 @@ import {
   type ProjectApplicationPort,
 } from './ports/project-application.port';
 import { projectDataRuntime } from './project-data/project-data-runtime';
-import { assertNoOversizedInlineValues } from './project-data/project-data-policy';
 import { ProjectDataStore } from './project-data/project-data-store';
 import {
   ExternalProjectDataImportResult,
@@ -1910,67 +1909,88 @@ export class ProjectService {
   }
 
 
+  getSaveAsBlockMessage(): string | undefined {
+    return this.application.hasRunningAi() ? this.translate.instant('PROJECT.SAVE_AS_AI_BUSY') : undefined;
+  }
+
   async saveAs(path: string): Promise<void> {
-    const sourceProjectPath = this.currentProjectPath;
-    if (this.getProjectMode(sourceProjectPath) === 'coder') {
-      await this.saveCoderAs(sourceProjectPath, path);
-      return;
-    }
-    const session = projectDataRuntime.getSessionToken();
-    const assertCurrent = () => {
-      if (this.currentProjectPath !== sourceProjectPath || projectDataRuntime.getSessionToken() !== session) {
-        throw new Error('当前项目会话已切换，请重新执行另存为');
-      }
+    const assertAvailable = () => {
+      const blocked = this.getSaveAsBlockMessage();
+      if (blocked) throw new Error(blocked);
     };
-    path = await this.resolveSaveAsTarget(sourceProjectPath, path);
-    assertCurrent();
-    const saveResult = await this.save(sourceProjectPath, 15_000);
-    assertCurrent();
-    if (!saveResult.success) {
-      throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
-    }
-    await projectDataRuntime.flushPending();
-    assertCurrent();
-    const store = projectDataRuntime.getStore();
-    const sourceContent = window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8');
-    const sourceAbi = JSON.parse(sourceContent);
-    assertNoOversizedInlineValues(sourceAbi);
-    const validation = await store.validateReferences(store.collectReferences(sourceAbi));
-    assertCurrent();
-    if (!validation.valid) {
-      throw new Error(`项目数据资源不完整，无法另存为: ${validation.issues.map((issue) => issue.error).join('; ')}`);
-    }
-    if (window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8') !== sourceContent) {
-      throw new Error('资源校验期间 project.abi 已被修改，请重新执行另存为');
-    }
-    // Reserve a new directory; never merge into a concurrently created target.
-    await window['fsp'].mkdir(path);
+    assertAvailable();
+    const source = this.currentProjectPath;
+    const unchanged = this.captureCurrentProjectGuard();
+    const assertSource = () => {
+      if (!unchanged()) throw new Error('当前项目会话已切换，请重新执行另存为');
+      assertAvailable();
+    };
+    path = await this.resolveSaveAsTarget(source, path);
+    assertSource();
+    const lease = this.acquireProjectLifecycle([source, path]);
+    let snapshot: Awaited<ReturnType<ProjectApplicationPort['prepareProjectCopy']>> | undefined;
     try {
-      assertCurrent();
-      window['fs'].copyProjectDirectory(sourceProjectPath, path);
-      const packageJson = JSON.parse(window['fs'].readFileSync(`${path}/package.json`));
-      delete packageJson.cloudId;
-      const name = window['path'].basename(path);
-      packageJson.name = deriveProjectPackageName(name);
-      packageJson.nickname = name;
-      if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
-      window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
-    } catch (error) {
-      try { await window['fsp'].rm(path, { recursive: true, force: true }); }
-      catch (cleanupError) { console.warn('清理未完成的 Blockly 另存为目录失败:', path, cleanupError); }
-      throw error;
-    }
-    // A complete copy survives activation failure. Reopen through the normal
-    // lifecycle so route, locks, editor path, runtime and clean state agree.
-    assertCurrent();
-    const edited = await this.hasUnsavedChanges();
-    assertCurrent();
-    if (edited || window['fs'].readFileSync(`${sourceProjectPath}/project.abi`, 'utf8') !== sourceContent) {
-      throw new Error(`项目已复制至 ${path}，但原项目在复制期间有新修改，已保留当前工作区；请保存后重试或手动打开副本`);
-    }
-    if (!(await this.projectOpen(path))) {
-      throw new Error(`项目已另存至 ${path}，但未能切换，请手动打开该项目`);
-    }
+      if (window['libraryDependencies']) {
+        const status = await window['libraryDependencies'].status(source);
+        if (status.busy) throw new Error('项目依赖正在更新，请等待完成后再另存为。');
+        this.acceptLibraryStatus(source, status);
+      }
+      assertSource();
+      const manifest = this.getEffectivePackageText(source);
+      const pendingLibraries = this.hasCachedLibraryChanges(source) ? JSON.parse(manifest) : null;
+      const diskManifest = window['fs'].readFileSync(window['path'].join(source, 'package.json'), 'utf8');
+      snapshot = await this.application.prepareProjectCopy(source);
+      const assertSnapshot = async () => {
+        assertSource();
+        await snapshot!.assertCurrent();
+        assertSource();
+        if (this.getEffectivePackageText(source) !== manifest
+          || window['fs'].readFileSync(window['path'].join(source, 'package.json'), 'utf8') !== diskManifest) {
+          throw new Error('项目配置在另存为期间发生变化，请重试。');
+        }
+      };
+      await assertSnapshot();
+      // A failed mkdir never grants ownership of an existing destination.
+      await window['fsp'].mkdir(path);
+      try {
+        await assertSnapshot();
+        window['fs'].copyProjectDirectory(source, path);
+        // Apply dirty editor contents only to B; never save A as an intermediate step.
+        const packageJson = JSON.parse(manifest);
+        delete packageJson.cloudId;
+        const name = window['path'].basename(path);
+        packageJson.name = deriveProjectPackageName(name);
+        packageJson.nickname = name;
+        if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
+        window['fs'].writeFileSync(window['path'].join(path, 'package.json'), JSON.stringify(packageJson, null, 2));
+        await snapshot.write(path);
+        // A dirty package.json buffer also belongs in B; identity always belongs to B.
+        const copiedManifest = JSON.parse(window['fs'].readFileSync(window['path'].join(path, 'package.json'), 'utf8'));
+        // Match explicit Save: pending library selections overlay a dirty manifest editor.
+        if (pendingLibraries) for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'ailyLocalLibrarySources']) {
+          if (pendingLibraries[field] === undefined) delete copiedManifest[field];
+          else copiedManifest[field] = pendingLibraries[field];
+        }
+        delete copiedManifest.cloudId;
+        copiedManifest.name = deriveProjectPackageName(name);
+        copiedManifest.nickname = name;
+        if (Object.hasOwn(copiedManifest, 'path')) copiedManifest.path = path;
+        window['fs'].writeFileSync(window['path'].join(path, 'package.json'), JSON.stringify(copiedManifest, null, 2));
+        await assertSnapshot();
+      } catch (error) {
+        try { await window['fsp'].rm(path, { recursive: true, force: true }); }
+        catch (cleanupError) { console.warn('清理未完成的另存为目录失败:', path, cleanupError); }
+        throw error;
+      }
+      // Release the editor lease synchronously before normal activation takes over.
+      // The path-scoped lifecycle owner still prevents conflicting host transitions.
+      snapshot.release();
+      if (!(await this.projectOpen(path, { lifecycleOwner: lease.token }))) {
+        throw new Error(`项目已另存至 ${path}，但未能切换，请手动打开该项目`);
+      }
+      // Retained Coder tabs must not later Save All the transferred edits back into A.
+      await snapshot.complete?.();
+    } finally { snapshot?.release(); lease.release(); }
   }
 
   private async resolveSaveAsTarget(sourceProjectPath: string, targetPath: string): Promise<string> {
@@ -1999,56 +2019,6 @@ export class ProjectService {
       throw new Error('另存为位置不能位于当前项目内部，请选择其他目录');
     }
     return targetProjectPath;
-  }
-
-  private async saveCoderAs(sourceProjectPath: string, targetPath: string): Promise<void> {
-    const pathApi = window['path'];
-    const fs = window['fs'];
-    const targetProjectPath = await this.resolveSaveAsTarget(sourceProjectPath, targetPath);
-    if (!this.isSameProjectPath(sourceProjectPath, this.currentProjectPath)) {
-      throw new Error('当前项目已切换，请重新执行另存为');
-    }
-
-    // The embedded Workbench has a 10s save handshake; wait for disk persistence
-    // before copying any source files, including dirty tabs and local libraries.
-    const saveResult = await this.save(sourceProjectPath, 15_000);
-    if (!saveResult.success) {
-      throw new Error(saveResult.error || '保存当前项目失败，无法另存为');
-    }
-    if (!this.isSameProjectPath(sourceProjectPath, this.currentProjectPath)) {
-      throw new Error('当前项目已切换，请重新执行另存为');
-    }
-
-    // Non-recursive mkdir reserves a new destination without merging into an
-    // existing folder, even if another operation created it while saving.
-    await window['fsp'].mkdir(targetProjectPath);
-    try {
-      fs.copyProjectDirectory(sourceProjectPath, targetProjectPath);
-      const packagePath = pathApi.join(targetProjectPath, 'package.json');
-      const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-      const name = pathApi.basename(targetProjectPath);
-      delete packageJson.cloudId;
-      packageJson.name = deriveProjectPackageName(name);
-      packageJson.nickname = name;
-      packageJson.type = 'coder';
-      if (Object.prototype.hasOwnProperty.call(packageJson, 'path')) {
-        packageJson.path = targetProjectPath;
-      }
-      fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2));
-    } catch (error) {
-      try {
-        await window['fsp'].rm(targetProjectPath, { recursive: true, force: true });
-      } catch (cleanupError) {
-        console.warn('清理未完成的 Coder 另存为目录失败:', targetProjectPath, cleanupError);
-      }
-      throw error;
-    }
-
-    // Normal activation updates locks, route params, recent projects and the
-    // iframe's native-FS workspace root together. Do not configure Blockly data.
-    if (!(await this.projectOpen(targetProjectPath))) {
-      throw new Error(`项目已另存至 ${targetProjectPath}，但未能切换，请手动打开该项目`);
-    }
   }
 
   async close(options: { save?: boolean } = {}) {

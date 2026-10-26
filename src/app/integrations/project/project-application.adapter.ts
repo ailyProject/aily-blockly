@@ -13,6 +13,8 @@ import { BlocklyGeneratorRuntimeService } from '../../editors/blockly-editor/ser
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
+import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -48,6 +50,17 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return this.aiOperationRegistry.hasBlocking(projectPath)
       || this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)
         && this.generatorRuntime.isActive() && this.blocklyService.isWorkspaceEditInProgress();
+  }
+
+  hasRunningAi(): boolean {
+    return this.aiOperationRegistry.readActive().some(operation => operation.source.startsWith('child-chat-run:')
+      || operation.source.startsWith('child-tool:'));
+  }
+
+  prepareProjectCopy(projectPath: string) {
+    return this.projectService.getProjectMode(projectPath) === 'coder'
+      ? this.injector.get(CodeEditorProProjectService).prepareCopy(projectPath)
+      : this.injector.get(AbsWorkspaceSyncService).prepareCopy();
   }
 
   dispatchProjectSave(path: string, timeoutMs: number): Promise<{ success: boolean; error?: string }> {

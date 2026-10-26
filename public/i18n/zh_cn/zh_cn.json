@@ -1193,6 +1193,7 @@
         "NO_TUTORIAL_PROVIDED": "库作者未提供教程"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 任务正在运行，请等待完成后再另存为。",
       "OPEN_IN_CODER": "使用 Aily Coder 打开",
       "CONVERT_CODER_TITLE": "转换为 Coder 项目",
       "CONVERT_CODER_CONTENT": "此文件属于 Blockly 项目。将创建 Coder 副本并安装依赖；副本可能无法再使用积木编辑。原项目保留。",

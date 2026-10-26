@@ -11,7 +11,7 @@ import { _ProjectService } from '../../../editors/blockly-editor/services/projec
 import { BlocklyWorkspaceEditLease } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { composeBlocklyPage, replaceBlocklyPageWorkspace } from '../../../editors/blockly-editor/services/blockly-project-model';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../../editors/blockly-editor/services/blockly-generator-runtime.service';
-import { projectDataRuntime, cloneBlocklyJson } from '@domain/project/public-api';
+import { projectDataRuntime, ProjectDataRuntime, cloneBlocklyJson, type ProjectCopySnapshot } from '@domain/project/public-api';
 import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
@@ -86,6 +86,60 @@ export class AbsWorkspaceSyncService {
    * not a whole-editor view check for every internal frame or load fragment. */
   private withoutViewChecks<T>(action: () => T): T {
     return this.zone ? this.zone.runOutsideAngular(action) : action();
+  }
+
+  /** Retain the live revision while publishing an independent generation only in the copy. */
+  prepareCopy(): Promise<ProjectCopySnapshot> {
+    const context = this.context();
+    return this.editor.runProjectOperation(async () => {
+      context.assertCurrent();
+      const lease = this.editor.acquireWorkspaceEditLease();
+      try {
+        await projectDataRuntime.flushPending();
+        const sourceStore = await this.store(context);
+        if (await sourceStore.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', '请先恢复未完成的项目保存，再另存为。');
+        const expected = await sourceStore.captureDisk();
+        const committed = await sourceStore.inspectCommitted();
+        if (committed) this.assertMirrors(committed.projection, expected, true);
+        const generated = await this.editor.prepareProjectCode(context.assertCurrent, lease);
+        const snapshot = this.editor.captureProjectSnapshot(lease);
+        if (generated && generated.revision !== snapshot.revision) throw new AbsSyncError('ABS_REVISION_STALE', '项目在准备另存为时发生变化，请重试。');
+        const checkRevision = this.atRevision(context.assertCurrent, lease, snapshot);
+        const guard = () => { checkRevision(); };
+        const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions,
+          () => { context.assertCurrent(); lease.assertCurrent(); });
+        const assertCurrent = async () => { guard(); await this.assertDisk(sourceStore, expected, guard); };
+        return {
+          assertCurrent,
+          release: () => lease.release(),
+          write: async target => {
+            await assertCurrent();
+            // The destination runtime externalizes new values into the copy, never into A.
+            const data = new ProjectDataRuntime();
+            data.configure(target);
+            const prepared = await this.project.prepareSave(snapshot.document, guard, data);
+            const compact = await prepareAbsProjectData(snapshot.document, guard, data);
+            assertAbsResourceContracts(composeBlocklyPage(snapshot.document, snapshot.document.activePageId),
+              composeBlocklyPage(compact.document, snapshot.document.activePageId), runtime.contracts);
+            const scope = { ...context.scope, projectKey: target };
+            const projection = await this.projection(compact.document, runtime.contracts, prepared.abiText, scope, guard);
+            const targetStore = new AbsBaselineStore(await openAbsHostStorage(target, guard), scope);
+            const disk = await targetStore.captureDisk();
+            await targetStore.stage({ projection, mode: 'import', inputAbs: disk.abs ?? projection.abs,
+              abi: prepared.abiText, expected: disk });
+            const publication = await targetStore.commit(projection.map.generation, guard, async (text, hash, storage) => {
+              guard();
+              if (text !== prepared.abiText || !await storage.replace('project.abi', hash, text)) {
+                throw new AbsSyncError('ABS_ABI_COMMIT_CONFLICT', '另存为项目写入冲突。');
+              }
+            });
+            if (publication.status !== 'COMMITTED') throw new AbsSyncError('ABS_SAVE_INCOMPLETE', publication.error ?? '另存为项目未完整保存。');
+            await this.project.publishCopyOutputs(target, snapshot.document, generated, guard);
+            await assertCurrent();
+          },
+        };
+      } catch (error) { lease.release(); throw error; }
+    });
   }
 
   /** Synchronous runtime-scoped advice. No lease, persistence, generation or callback probing. */

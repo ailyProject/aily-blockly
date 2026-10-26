@@ -1261,11 +1261,15 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   private async saveProjectAs(): Promise<void> {
     if (this.projectSavingAs) return;
+    const blocked = this.projectService.getSaveAsBlockMessage();
+    if (blocked) { this.message.warning(blocked); return; }
     this.projectSavingAs = true;
     try {
       const unchanged = this.projectService.captureCurrentProjectGuard();
       const path = await this.selectSaveAsFolder();
       if (!path) return;
+      const blocked = this.projectService.getSaveAsBlockMessage();
+      if (blocked) { this.message.warning(blocked); return; }
       if (!unchanged()) {
         throw new Error('当前项目已切换，请重新执行另存为');
       }

@@ -1,306 +1,138 @@
 import { BehaviorSubject } from 'rxjs';
 import { ProjectService } from './project.service';
-import { projectDataRuntime } from './project-data/project-data-runtime';
+import { ProjectLifecycleGate } from './project-lifecycle-gate';
 
-describe('ProjectService save as mode isolation', () => {
-  const source = '/Aily Projects/source';
-  const target = '/Aily Projects/My Copy';
-  let service: any;
-  let files: Map<string, string>;
-  let directories: Set<string>;
-  let previousApis: any;
-  let fs: any;
-  let fsp: any;
-  let flush: jasmine.Spy;
-  let configure: jasmine.Spy;
-  let getStore: jasmine.Spy;
-
+describe('project Save As preserves the saved source', () => {
+  const source = '/projects/A', target = '/projects/B';
+  let service: any, files: Map<string, string>, directories: Set<string>, original: any;
+  let app: any, snapshot: any, fs: any, fsp: any;
   beforeEach(() => {
-    previousApis = { fs: window['fs'], fsp: window['fsp'], path: window['path'] };
-    files = new Map([
-      [`${source}/package.json`, JSON.stringify({
-        name: 'source', nickname: 'Source', type: 'coder', cloudId: 'original-cloud',
-        dependencies: { '@aily-project/board-test': '1.0.0' }, path: source,
-      })],
-      [`${source}/sketch/src/main.cpp`, 'old code'],
-      [`${source}/sketch/libraries/Local/Local.h`, 'local library'],
-    ]);
-    directories = new Set(['/Aily Projects', source]);
+    original = { fs: window['fs'], fsp: window['fsp'], path: window['path'], libraryDependencies: window['libraryDependencies'] };
+    window['libraryDependencies'] = undefined;
+    files = new Map([[`${source}/package.json`, '{"name":"A","type":"coder","cloudId":"original","path":"/projects/A"}'],
+      [`${source}/main.cpp`, 'saved'], [`${source}/assets/data.bin`, 'resource']]);
+    directories = new Set([source, '/projects']);
     fs = {
-      existsSync: (path: string) => files.has(path) || directories.has(path),
-      realpathAsync: jasmine.createSpy('realpath').and.callFake(async (path: string) => path),
-      readFileSync: jasmine.createSpy('read').and.callFake((path: string) => {
-        if (!files.has(path)) throw new Error(`ENOENT: ${path}`);
-        return files.get(path);
-      }),
-      writeFileSync: jasmine.createSpy('write').and.callFake((path: string, content: string) => files.set(path, content)),
-      mkdirSync: jasmine.createSpy('mkdirSync').and.callFake((path: string) => directories.add(path)),
-      copyProjectDirectory: jasmine.createSpy('copy').and.callFake((from: string, to: string) => {
-        for (const [path, content] of [...files]) {
-          if (path.startsWith(`${from}/`)) files.set(to + path.slice(from.length), content);
-        }
+      existsSync: path => files.has(path) || directories.has(path), realpathAsync: async path => path,
+      readFileSync: path => { if (!files.has(path)) throw new Error('ENOENT'); return files.get(path); },
+      writeFileSync: jasmine.createSpy('write').and.callFake((path, text) => files.set(path, text)),
+      copyProjectDirectory: jasmine.createSpy('copy').and.callFake((from, to) => {
+        for (const [path, text] of [...files]) if (path.startsWith(from + '/')) files.set(to + path.slice(from.length), text);
       }),
     };
     fsp = {
-      mkdir: jasmine.createSpy('mkdir').and.callFake(async (path: string) => {
-        if (fs.existsSync(path)) throw new Error('EEXIST');
-        directories.add(path);
-      }),
-      rm: jasmine.createSpy('rm').and.callFake(async (path: string) => {
-        directories.delete(path);
-        for (const file of [...files.keys()]) if (file.startsWith(`${path}/`)) files.delete(file);
+      mkdir: jasmine.createSpy('mkdir').and.callFake(async path => { if (fs.existsSync(path)) throw new Error('EEXIST'); directories.add(path); }),
+      rm: jasmine.createSpy('rm').and.callFake(async path => {
+        directories.delete(path); for (const file of [...files.keys()]) if (file.startsWith(path + '/')) files.delete(file);
       }),
     };
-    window['fs'] = fs;
-    window['fsp'] = fsp;
-    window['path'] = {
-      join: (...parts: string[]) => parts.join('/'),
-      basename: (path: string) => path.slice(path.lastIndexOf('/') + 1),
-      dirname: (path: string) => path.slice(0, path.lastIndexOf('/')),
-      isAbsolute: (path: string) => path.startsWith('/'),
-      resolve: (path: string) => path,
-      normalize: (path: string) => path,
-      isExists: fs.existsSync,
-      relative: (from: string, to: string) => to.startsWith(`${from}/`)
-        ? to.slice(from.length + 1) : '../' + to.slice(to.lastIndexOf('/') + 1),
-    };
+    Object.assign(window, { fs, fsp, path: {
+      join: (...parts) => parts.join('/'), resolve: path => path, normalize: path => path,
+      basename: path => path.slice(path.lastIndexOf('/') + 1), dirname: path => path.slice(0, path.lastIndexOf('/')),
+      isAbsolute: path => path.startsWith('/'), isExists: fs.existsSync,
+      relative: (from, to) => to.startsWith(from + '/') ? to.slice(from.length + 1) : '../' + to.split('/').pop(),
+    } });
     service = Object.create(ProjectService.prototype);
-    service.coderOperations = new Map();
-    service.coderOperationsSubject = new BehaviorSubject(new Map());
-    service.coderOperationSubject = new BehaviorSubject(null);
-    service.coderProjectsSubject = new BehaviorSubject([]);
-    service.coderWorkspaceSubject = new BehaviorSubject(null);
-    service.configService = {
-      data: { coderWorkspaceGroups: [], recentlyProjects: [] },
-      save: jasmine.createSpy('configSave'),
-    };
     service.currentProjectPathSubject = new BehaviorSubject(source);
-    service.stateSubject = new BehaviorSubject('loaded');
-    service.electronService = { isElectron: true };
-    service.save = jasmine.createSpy('save').and.callFake(async () => {
-      files.set(`${source}/sketch/src/main.cpp`, 'saved dirty editor');
-      return { success: true };
-    });
-    service.projectOpen = jasmine.createSpy('projectOpen').and.callFake(async (path: string) => {
-      expect(service.currentProjectPath).toBe(source);
-      expect(files.has(`${path}/package.json`)).toBeTrue();
-      service.currentProjectPath = path;
-      return true;
-    });
-    service.addRecentlyProject = jasmine.createSpy('recent');
-    service.hasUnsavedChanges = jasmine.createSpy('dirty').and.resolveTo(false);
-    flush = spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
-    configure = spyOn(projectDataRuntime, 'configure');
-    getStore = spyOn(projectDataRuntime, 'getStore').and.throwError('Blockly runtime is not configured');
+    service.libraryChanges = new Map(); service.projectLifecycle = new ProjectLifecycleGate();
+    service.dependencyLifecycleState = { isStopping: () => false, get: () => undefined };
+    service.translate = { instant: () => 'AI 任务正在运行，请等待完成后再另存为。' };
+    snapshot = { assertCurrent: jasmine.createSpy('assert').and.resolveTo(), release: jasmine.createSpy('release'),
+      write: jasmine.createSpy('snapshotWrite').and.callFake(async path => files.set(`${path}/main.cpp`, 'unsaved')),
+      complete: jasmine.createSpy('complete').and.resolveTo() };
+    app = { hasRunningAi: () => false, hasActiveProjectMutation: () => false,
+      prepareProjectCopy: jasmine.createSpy('prepare').and.resolveTo(snapshot) };
+    service.injector = { get: () => app };
+    service.save = jasmine.createSpy('save').and.throwError('Must not save A');
+    service.projectOpen = jasmine.createSpy('open').and.callFake(async path => { service.currentProjectPathSubject.next(path); return true; });
   });
+  afterEach(() => Object.assign(window, original));
 
-  afterEach(() => Object.assign(window, previousApis));
-
-  it('copies persisted Coder source and local libraries without requiring project.abi', async () => {
+  for (const mode of ['blockly', 'coder']) {
+    it(`writes the dirty ${mode} snapshot to B and preserves every source file`, async () => {
+      if (mode === 'blockly') { files.set(`${source}/project.abi`, '{"saved":true}'); files.set(`${source}/package.json`, '{"name":"A","type":"blockly","path":"/projects/A"}'); }
+      const before = [...files];
+      await service.saveAs(target);
+      for (const [path, text] of before) expect(files.get(path)).withContext(path).toBe(text);
+      expect(files.get(`${target}/main.cpp`)).toBe('unsaved');
+      expect(files.get(`${target}/assets/data.bin`)).toBe('resource');
+      expect(JSON.parse(files.get(`${target}/package.json`)!)).toEqual({ name: 'b', nickname: 'B', type: mode, path: target });
+      expect(service.save).not.toHaveBeenCalled(); expect(snapshot.complete).toHaveBeenCalled();
+      expect(service.currentProjectPath).toBe(target); expect(service.projectLifecycle.hasActive(source)).toBeFalse();
+    });
+    it(`rejects active AI before preparing a ${mode} copy`, async () => {
+      app.hasRunningAi = () => true;
+      await expectAsync(service.saveAs(target)).toBeRejectedWithError(/AI 任务正在运行/);
+      expect(app.prepareProjectCopy).not.toHaveBeenCalled(); expect(fsp.mkdir).not.toHaveBeenCalled();
+    });
+  }
+  it('preserves B identity even when its package.json had an unsaved buffer', async () => {
+    snapshot.write.and.callFake(async path => files.set(`${path}/package.json`, '{"name":"A","cloudId":"old","description":"dirty","path":"/projects/A"}'));
     await service.saveAs(target);
-
-    expect(service.save).toHaveBeenCalledOnceWith(source, 15_000);
-    expect(files.get(`${target}/sketch/src/main.cpp`)).toBe('saved dirty editor');
-    expect(files.get(`${target}/sketch/libraries/Local/Local.h`)).toBe('local library');
-    expect(JSON.parse(files.get(`${target}/package.json`)!)).toEqual({
-      name: 'my_copy', nickname: 'My Copy', type: 'coder', path: target,
-      dependencies: { '@aily-project/board-test': '1.0.0' },
-    });
-    expect(JSON.parse(files.get(`${source}/package.json`)!)).toEqual(jasmine.objectContaining({ cloudId: 'original-cloud', name: 'source' }));
-    expect(service.projectOpen).toHaveBeenCalledOnceWith(target);
-    expect(flush).not.toHaveBeenCalled();
-    expect(getStore).not.toHaveBeenCalled();
-    expect(configure).not.toHaveBeenCalled();
+    expect(JSON.parse(files.get(`${target}/package.json`)!)).toEqual({ name: 'b', nickname: 'B', description: 'dirty', path: target });
   });
-
-  it('retains legacy project.aci while activating the copy as Coder', async () => {
-    files.set(`${source}/package.json`, '{"name":"legacy"}');
-    files.set(`${source}/project.aci`, 'legacy source');
+  it('includes pending dependency edits without saving the original manifest', async () => {
+    service.libraryChanges.set(source.toLowerCase(), { name: 'A', type: 'coder', dependencies: { local: '2' } });
+    const before = files.get(`${source}/package.json`);
     await service.saveAs(target);
-    expect(files.get(`${target}/project.aci`)).toBe('legacy source');
-    expect(service.getProjectMode(target)).toBe('coder');
+    expect(JSON.parse(files.get(`${target}/package.json`)!).dependencies).toEqual({ local: '2' });
+    expect(files.get(`${source}/package.json`)).toBe(before);
   });
-
-  it('keeps the source active and creates no destination when editor persistence fails', async () => {
-    service.save.and.resolveTo({ success: false, error: 'dirty editor failed to save' });
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError('dirty editor failed to save');
-    expect(fsp.mkdir).not.toHaveBeenCalled();
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
-    expect(service.projectOpen).not.toHaveBeenCalled();
-    expect(service.currentProjectPath).toBe(source);
+  it('keeps editors untouched and creates no directory when snapshot capture fails', async () => {
+    app.prepareProjectCopy.and.rejectWith(new Error('editor not ready'));
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError('editor not ready');
+    expect(fsp.mkdir).not.toHaveBeenCalled(); expect(service.currentProjectPath).toBe(source);
+    expect(service.projectLifecycle.hasActive(source)).toBeFalse();
   });
-
-  it('rejects existing destinations without overwriting their contents', async () => {
-    directories.add(target);
-    files.set(`${target}/keep.txt`, 'existing data');
+  it('preserves pending libraries and dirty manifest editor content together', async () => {
+    service.libraryChanges.set(source.toLowerCase(), { name: 'A', dependencies: { local: '2' } });
+    snapshot.write.and.callFake(async path => files.set(`${path}/package.json`, '{"name":"A","description":"unsaved","dependencies":{"local":"1"}}'));
+    await service.saveAs(target);
+    const copy = JSON.parse(files.get(`${target}/package.json`)!);
+    expect(copy.description).toBe('unsaved'); expect(copy.dependencies).toEqual({ local: '2' });
+    expect(JSON.parse(files.get(`${source}/package.json`)!).cloudId).toBe('original');
+  });
+  it('rejects existing and nested destinations without deleting their data', async () => {
+    directories.add(target); files.set(`${target}/keep`, 'keep');
     await expectAsync(service.saveAs(target)).toBeRejectedWithError(/已存在/);
-    expect(service.save).not.toHaveBeenCalled();
-    expect(files.get(`${target}/keep.txt`)).toBe('existing data');
-    expect(fsp.rm).not.toHaveBeenCalled();
+    await expectAsync(service.saveAs(source + '/copy')).toBeRejectedWithError(/当前项目内部/);
+    expect(fsp.rm).not.toHaveBeenCalled(); expect(app.prepareProjectCopy).not.toHaveBeenCalled();
   });
-
-  it('rejects destinations inside the source, including symlinked parents', async () => {
-    await expectAsync(service.saveAs(`${source}/copy`)).toBeRejectedWithError(/当前项目内部/);
-    fs.realpathAsync.and.callFake(async (path: string) => path === '/alias' ? source : path);
-    await expectAsync(service.saveAs('/alias/copy')).toBeRejectedWithError(/当前项目内部/);
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
-  });
-
-  it('does not overwrite a destination created while waiting for the editor', async () => {
-    service.save.and.callFake(async () => {
-      directories.add(target);
-      files.set(`${target}/keep.txt`, 'created during save');
-      return { success: true };
-    });
+  it('does not delete a destination created concurrently while capturing editors', async () => {
+    app.prepareProjectCopy.and.callFake(async () => { directories.add(target); files.set(`${target}/keep`, 'keep'); return snapshot; });
     await expectAsync(service.saveAs(target)).toBeRejectedWithError('EEXIST');
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
-    expect(fsp.rm).not.toHaveBeenCalled();
-    expect(files.get(`${target}/keep.txt`)).toBe('created during save');
+    expect(fsp.rm).not.toHaveBeenCalled(); expect(files.get(`${target}/keep`)).toBe('keep');
   });
-
-  it('cleans up an incomplete copy and leaves the original active after a write failure', async () => {
-    fs.writeFileSync.and.throwError('disk full');
+  it('removes only the incomplete copy on disk failure and keeps unsaved source buffers', async () => {
+    snapshot.write.and.rejectWith(new Error('disk full'));
+    const before = [...files];
     await expectAsync(service.saveAs(target)).toBeRejectedWithError('disk full');
-    expect(fs.existsSync(target)).toBeFalse();
-    expect(files.has(`${target}/sketch/src/main.cpp`)).toBeFalse();
-    expect(files.has(`${source}/sketch/src/main.cpp`)).toBeTrue();
-    expect(service.projectOpen).not.toHaveBeenCalled();
-    expect(service.currentProjectPath).toBe(source);
+    expect([...files]).toEqual(before); expect(fsp.rm).toHaveBeenCalledOnceWith(target, { recursive: true, force: true });
+    expect(snapshot.complete).not.toHaveBeenCalled(); expect(service.projectOpen).not.toHaveBeenCalled();
+    expect(snapshot.release).toHaveBeenCalled();
   });
-
-  it('keeps the completed copy and reports its location when project activation is refused', async () => {
-    service.projectOpen.and.resolveTo(false);
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/项目已另存至.*My Copy/);
-    expect(files.get(`${target}/sketch/src/main.cpp`)).toBe('saved dirty editor');
-    expect(fsp.rm).not.toHaveBeenCalled();
-    expect(service.currentProjectPath).toBe(source);
+  it('rejects an AI task that starts during snapshot capture', async () => {
+    app.prepareProjectCopy.and.callFake(async () => { app.hasRunningAi = () => true; return snapshot; });
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/AI 任务正在运行/);
+    expect(fsp.mkdir).not.toHaveBeenCalled(); expect(snapshot.release).toHaveBeenCalled();
   });
-
-  it('aborts if the active project changes while saving', async () => {
-    service.save.and.callFake(async () => {
-      service.currentProjectPath = '/another/project';
-      return { success: true };
-    });
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/当前项目已切换/);
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
+  it('rejects changed editor contents before activation', async () => {
+    snapshot.write.and.callFake(async path => { files.set(`${path}/main.cpp`, 'snapshot'); snapshot.assertCurrent.and.rejectWith(new Error('editor changed')); });
+    await expectAsync(service.saveAs(target)).toBeRejectedWithError('editor changed');
+    expect(service.projectOpen).not.toHaveBeenCalled(); expect(files.get(`${source}/main.cpp`)).toBe('saved');
+    expect(directories.has(target)).toBeFalse(); expect(snapshot.complete).not.toHaveBeenCalled();
   });
-
-  it('saves manifest-declared Coder projects even when a leftover project.abi exists', async () => {
-    files.set(`${source}/project.abi`, '{}');
-    service.save = ProjectService.prototype.save;
-    service.injector = { get: () => ({ dispatchProjectSave: async () => ({ success: true }) }) };
-    service.getPackageJson = async () => JSON.parse(files.get(`${source}/package.json`)!);
-    service.getBlocklyProjectLoadStatus = jasmine.createSpy('blocklyLoad').and.returnValue({ ready: false });
-    expect((await service.save(source)).success).toBeTrue();
-    expect(service.getBlocklyProjectLoadStatus).not.toHaveBeenCalled();
-  });
-
-  it('activates a Blockly copy through normal loading instead of rebinding only the resource store', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}');
-    files.set(`${source}/project.abi`, '{"blocks":{}}');
-    const validate = jasmine.createSpy('validate').and.resolveTo({ valid: true });
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: validate } as any);
-    await service.saveAs('/blockly-copy');
-    expect(service.save).toHaveBeenCalledOnceWith(source, 15_000);
-    expect(flush).toHaveBeenCalledTimes(1);
-    expect(validate).toHaveBeenCalledTimes(1);
-    expect(configure).not.toHaveBeenCalled();
-    expect(files.get('/blockly-copy/project.abi')).toBe('{"blocks":{}}');
-    expect(service.projectOpen).toHaveBeenCalledOnceWith('/blockly-copy');
-    expect(service.currentProjectPath).toBe('/blockly-copy');
-  });
-
-  it('still rejects Blockly copies with missing external resources', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}');
-    files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({
-      collectReferences: () => [],
-      validateReferences: async () => ({ valid: false, issues: [{ error: 'missing resource' }] }),
-    } as any);
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/missing resource/);
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
-    expect(service.currentProjectPath).toBe(source);
-  });
-
-  it('keeps a complete Blockly copy and the original context if activation is refused', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
+  it('keeps a complete copy and original buffers when activation is refused', async () => {
     service.projectOpen.and.resolveTo(false);
     await expectAsync(service.saveAs(target)).toBeRejectedWithError(/项目已另存至/);
-    expect(files.get(`${target}/project.abi`)).toBe('{}');
-    expect(service.currentProjectPath).toBe(source); expect(configure).not.toHaveBeenCalled();
-    expect(fsp.rm).not.toHaveBeenCalledWith(target, jasmine.anything());
+    expect(files.get(`${target}/main.cpp`)).toBe('unsaved'); expect(snapshot.complete).not.toHaveBeenCalled();
+    expect(fsp.rm).not.toHaveBeenCalled(); expect(service.currentProjectPath).toBe(source);
   });
-
-  it('does not merge a Blockly copy into a concurrently created directory', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => {
-      directories.add(target); files.set(`${target}/keep`, 'external'); return { valid: true };
-    } } as any);
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError('EEXIST');
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled(); expect(fsp.rm).not.toHaveBeenCalled();
-    expect(files.get(`${target}/keep`)).toBe('external');
-  });
-
-  it('cleans up only the reserved incomplete Blockly copy on publication failure', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
-    fs.writeFileSync.and.throwError('disk full');
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError('disk full');
-    expect(fsp.rm).toHaveBeenCalledOnceWith(target, { recursive: true, force: true });
-    expect(files.get(`${source}/project.abi`)).toBe('{}'); expect(service.projectOpen).not.toHaveBeenCalled();
-  });
-
-  for (const change of ['workspace', 'disk', 'failed-check']) it(`retains the original and completed copy after a late ${change} change`, async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
-    service.hasUnsavedChanges.and.callFake(async () => {
-      if (change === 'failed-check') throw new Error('comparison unavailable');
-      if (change === 'disk') files.set(`${source}/project.abi`, '{"external":true}');
-      return change === 'workspace';
-    });
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(change === 'failed-check' ? /comparison unavailable/ : /复制期间有新修改/);
-    expect(service.projectOpen).not.toHaveBeenCalled(); expect(service.currentProjectPath).toBe(source);
-    expect(files.get(`${target}/project.abi`)).toBe('{}');
-    expect(fsp.rm).not.toHaveBeenCalledWith(target, jasmine.anything());
-  });
-
-  it('preserves spaces for Blockly destinations and uses the filtered project copy bridge', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true }) } as any);
-    await service.saveAs(target);
-    expect(fs.copyProjectDirectory).toHaveBeenCalledOnceWith(source, target);
-    expect(service.currentProjectPath).toBe(target);
-  });
-
-  it('stops a Blockly copy when the runtime is replaced at the same path during resource validation', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    let session = 'a'; spyOn(projectDataRuntime, 'getSessionToken').and.callFake(() => session);
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => { session = 'b'; return { valid: true }; } } as any);
+  it('refuses a stale same-path editor session', async () => {
+    const active = { signal: { aborted: false } };
+    service.dependencyLifecycleState = { get: () => active, isStopping: () => false };
+    app.prepareProjectCopy.and.callFake(async () => { active.signal.aborted = true; return snapshot; });
     await expectAsync(service.saveAs(target)).toBeRejectedWithError(/会话已切换/);
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled(); expect(fs.mkdirSync).not.toHaveBeenCalled();
-  });
-
-  it('stops a Blockly copy when saving switches the active project', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}');
-    service.save.and.callFake(async () => { service.currentProjectPath = '/new-project'; return { success: true }; });
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/会话已切换/);
-    expect(flush).not.toHaveBeenCalled(); expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
-  });
-
-  it('rejects an old copy host before saving or reserving a destination', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); delete fs.copyProjectDirectory;
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/完整重启/);
-    expect(service.save).not.toHaveBeenCalled(); expect(fs.mkdirSync).not.toHaveBeenCalled();
-  });
-
-  it('does not copy an ABI changed externally during resource validation', async () => {
-    files.set(`${source}/package.json`, '{"name":"source"}'); files.set(`${source}/project.abi`, '{}');
-    getStore.and.returnValue({ collectReferences: () => [], validateReferences: async () => {
-      files.set(`${source}/project.abi`, '{"external":true}'); return { valid: true };
-    } } as any);
-    await expectAsync(service.saveAs(target)).toBeRejectedWithError(/project.abi 已被修改/);
-    expect(fs.copyProjectDirectory).not.toHaveBeenCalled(); expect(fs.mkdirSync).not.toHaveBeenCalled();
-    expect(files.get(`${source}/project.abi`)).toBe('{"external":true}');
+    expect(fs.copyProjectDirectory).not.toHaveBeenCalled();
   });
 });

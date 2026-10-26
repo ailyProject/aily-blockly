@@ -1049,6 +1049,7 @@
         "NO_TUTORIAL_PROVIDED": "라이브러리 작성자가 튜토리얼을 제공하지 않았습니다"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 작업이 실행 중입니다. 완료된 후 다른 이름으로 저장해 주세요.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",

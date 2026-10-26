@@ -20,9 +20,10 @@ describe('Header project save as', () => {
         const original = this.currentProjectPath;
         return () => this.currentProjectPath === original;
       },
+      getSaveAsBlockMessage: jasmine.createSpy('blockMessage'),
       saveAs: jasmine.createSpy('saveAs').and.resolveTo(),
     };
-    header.message = { error: jasmine.createSpy('error') };
+    header.message = { error: jasmine.createSpy('error'), warning: jasmine.createSpy('warning') };
   });
 
   afterEach(() => Object.assign(window, previousApis));
@@ -80,4 +81,20 @@ describe('Header project save as', () => {
     });
     expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/Aily Projects/Copy');
   });
+  for (const mode of ['blockly', 'coder']) it(`blocks ${mode} Save As while AI is running without opening a dialog`, async () => {
+    header.projectService.getProjectMode.and.returnValue(mode);
+    header.projectService.getSaveAsBlockMessage.and.returnValue('AI 任务正在运行，请等待完成后再另存为。');
+    await header.process({ action: 'project-save-as' });
+    expect(window['ipcRenderer'].invoke).not.toHaveBeenCalled();
+    expect(header.projectService.saveAs).not.toHaveBeenCalled();
+    expect(header.message.warning).toHaveBeenCalledWith('AI 任务正在运行，请等待完成后再另存为。');
+  });
+  it('rechecks AI state after the destination dialog', async () => {
+    window['ipcRenderer'].invoke.and.callFake(async () => {
+      header.projectService.getSaveAsBlockMessage.and.returnValue('AI busy'); return '/copy';
+    });
+    await header.process({ action: 'project-save-as' });
+    expect(header.projectService.saveAs).not.toHaveBeenCalled(); expect(header.message.warning).toHaveBeenCalledWith('AI busy');
+  });
+
 });

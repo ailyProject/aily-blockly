@@ -11,6 +11,14 @@ export interface ProjectSaveDispatchResult {
   error?: string;
 }
 
+/** A retained editor revision. Writing a copy must never acknowledge/save the source. */
+export interface ProjectCopySnapshot {
+  write(targetPath: string): Promise<void>;
+  assertCurrent(): Promise<void>;
+  complete?(): Promise<void>;
+  release(): void;
+}
+
 export interface BlocklyLibraryRuntimeRebuildInput {
   projectPath: string;
   packageContent: string;
@@ -30,6 +38,8 @@ export interface ProjectApplicationPort {
   closeTerminal(): void;
   closeConnectionGraphWindows(): Promise<boolean>;
   hasActiveProjectMutation(projectPath: string): boolean;
+  hasRunningAi(): boolean;
+  prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
