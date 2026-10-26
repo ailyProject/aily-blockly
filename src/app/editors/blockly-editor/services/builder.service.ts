@@ -1403,6 +1403,7 @@ export class _BuilderService {
                 const duration = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
                 await this.saveBuildInfo(projectPath, 'success', duration, codeHash);
                 assertCurrent();
+                this.metrics.record('build_succeeded');
                 this.compileValidationService.triggerAfterSuccessfulCompile();
                 this.passed = true;
                 this.buildCompleted = true;
@@ -1693,6 +1694,7 @@ export class _BuilderService {
                     }
 
                     if (this.buildCompleted && !this.isErrored && !this.cancelled) {
+                      this.metrics.record('build_succeeded');
                       console.log('编译命令执行完成');
                       console.log(`编译耗时: ${buildDuration} 秒`);
 

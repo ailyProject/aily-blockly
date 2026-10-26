@@ -42,11 +42,11 @@ async function fixture(action) {
 test('anonymous milestones send immediately with a window-only session and no response dependency', async () => {
   await fixture(async ({ create, requests, timers }) => {
     const metrics = create();
-    for (const event of ['app_opened', 'project_created', 'upload_succeeded', 'compile_attempted']) {
+    for (const event of ['app_opened', 'project_created', 'upload_succeeded', 'compile_attempted', 'build_succeeded']) {
       assert.equal(metrics.record(event), undefined);
       await settle();
     }
-    assert.equal(requests.length, 4);
+    assert.equal(requests.length, 5);
     assert.equal(new Set(requests.map(request => request.body.session_id)).size, 1);
     assert.equal(requests[0].url, 'https://metrics.example.test/api/v1/metrics/me');
     assert.equal(requests[0].credentials, 'omit');
@@ -55,8 +55,9 @@ test('anonymous milestones send immediately with a window-only session and no re
     assert(Number.isFinite(Date.parse(requests[2].body.occurred_at)));
     assert.equal(requests[2].body.product, 'blockly');
     assert.equal(requests[3].body.event, 'compile_attempted');
+    assert.equal(requests[4].body.event, 'build_succeeded');
     create().record('app_opened'); await settle();
-    assert.notEqual(requests[0].body.session_id, requests[4].body.session_id);
+    assert.notEqual(requests[0].body.session_id, requests[5].body.session_id);
     assert.equal(timers.size, 0);
   });
 });

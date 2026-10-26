@@ -142,8 +142,8 @@ describe('Blockly compile and upload handoff', () => {
     const prepared = { code: 'void setup() {}', artifacts: null, projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }],
       revision: 1, sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' } };
     Object.assign(service, {
-      metrics: { record: () => {} },
-      passed: true, projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
+      metrics: { record: jasmine.createSpy('record') },
+      passed: true, projectService: { ensureCustomPartitionFile: async () => {}, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }) },
       workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
@@ -180,6 +180,7 @@ describe('Blockly compile and upload handoff', () => {
     f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
     f.command.next({ type: 'close', code: 0 }); f.command.complete();
     expect((await result).state).toBe('done'); expect(f.service.passed).toBeTrue();
+    expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted'], ['build_succeeded']]);
   });
 
   it('keeps real board/configuration drift guarded during generator preparation', async () => {
@@ -207,6 +208,7 @@ describe('Blockly compile and upload handoff', () => {
     f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
     f.command.next({ type: 'close', code: 1 }); f.command.complete();
     expect((await result).state).toBe('error'); expect(f.service.passed).toBeFalse();
+    expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 
   for (const outcome of ['success', 'compile-error', 'prepare-error', 'cancel']) it(`retains the Blockly build request through local handoff: ${outcome}`, async () => {
@@ -274,6 +276,8 @@ describe('Blockly compile and upload handoff', () => {
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
     expect((await result).state).toBe(ending === 'cancel' ? 'warn' : 'done');
+    expect(f.service.metrics.record.calls.allArgs()).toEqual(ending === 'cancel'
+      ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
     expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);

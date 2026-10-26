@@ -58,7 +58,7 @@ describe('Coder build metadata', () => {
         return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       },
     };
-    project = { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
+    project = { ensureCustomPartitionFile: async () => {}, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
       getProjectDependencyBlockMessage: () => undefined };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
@@ -156,7 +156,7 @@ describe('Coder build metadata', () => {
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
       { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() } as any,
-      { record: () => {} } as any,
+      { record: jasmine.createSpy('record') } as any,
     );
     let calls = 0;
     spyOn<any>(service, 'runOneShotCommand').and.callFake(async () => ({
@@ -182,6 +182,15 @@ describe('Coder build metadata', () => {
     return { compiler, operation };
   }
 
+  it('does not report cloud analysis as a Build success', async () => {
+    const { compiler } = createSwitchingCompiler();
+    project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', profileDigest: 'profile', capabilities: { analysis: true } });
+    compiler.runCloudCompile.and.resolveTo({ success: true });
+    expect((await compiler.runCompileFromDisk({ preprocessOnly: true })).success).toBeTrue();
+    expect(compiler.metrics.record).not.toHaveBeenCalled();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+  });
+
   for (const exitCode of [0, 1]) it(`returns the local result and publishes metadata only once after cloud handoff (exit ${exitCode})`, async () => {
     const { compiler, operation } = createSwitchingCompiler(exitCode);
     let finish!: (value: any) => void;
@@ -195,6 +204,8 @@ describe('Coder build metadata', () => {
     finish({ exitCode, combined: 'local compiler diagnostic', stdout: '', stderr: '', signal: null });
     const result = await pending;
     expect(result.success).toBe(exitCode === 0);
+    expect(compiler.metrics.record.calls.allArgs()).toEqual(exitCode === 0
+      ? [['compile_attempted'], ['build_succeeded']] : [['compile_attempted']]);
     if (exitCode) expect(result.result.fullStdErr).toBe('local compiler diagnostic');
     expect(readManifest().buildInfo.lastBuildStatus).toBe(exitCode ? 'failed' : 'success');
     expect(compiler.application.finishBuild).toHaveBeenCalledTimes(1);
@@ -233,6 +244,8 @@ describe('Coder build metadata', () => {
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
     expect((await pending).result.state).toBe(ending === 'cancel' ? 'warn' : 'done');
+    expect(compiler.metrics.record.calls.allArgs()).toEqual(ending === 'cancel'
+      ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
     expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
     expect(compiler.application.finishBuild).toHaveBeenCalledTimes(1); expect(save).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);
@@ -361,6 +374,7 @@ describe('Coder build metadata', () => {
     const notice = spyOn((service as any).application, 'updateNotice');
 
     expect((await service.runCompileFromDisk({ preprocessOnly: true })).success).toBeTrue();
+    expect((service as any).metrics.record).not.toHaveBeenCalled();
     expect(readManifest().buildInfo.lastBuildStatus).toBe('success');
     expect(finish).toHaveBeenCalledOnceWith(true, undefined);
     expect(notice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ state: 'done', progress: 100, setTimeout: 3000 }));

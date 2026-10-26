@@ -333,7 +333,10 @@ export class CompileService {
               if (this.cancelled) throw new Error('Cloud build cancelled.');
               if (result?.success !== true) throw new Error(result?.text || 'Cloud compilation failed.');
               buildStatus = 'success';
-              if (!options.preprocessOnly) this.compileValidationService.triggerAfterSuccessfulCompile();
+              if (!options.preprocessOnly) {
+                this.metrics.record('build_succeeded');
+                this.compileValidationService.triggerAfterSuccessfulCompile();
+              }
               const seconds = ((Date.now() - started) / 1000).toFixed(2);
               const completeText = options.preprocessOnly ? '云端预处理完成'
                 : result.reused === true ? this.translate.instant('CLOUD_BUILD.REUSED_RESULT', { seconds })
@@ -441,6 +444,7 @@ export class CompileService {
           }
 
           buildStatus = 'success';
+          this.metrics.record('build_succeeded');
           this.compileValidationService.triggerAfterSuccessfulCompile();
           const completeText = this.t('COMPLETE_WITH_TIME', { seconds: buildDuration });
           this.application.updateNotice({
