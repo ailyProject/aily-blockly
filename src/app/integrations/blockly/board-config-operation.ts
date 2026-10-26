@@ -190,7 +190,7 @@ export async function setBoardConfig(
       persisted: true,
       preprocess_requested: !requiresFile,
       message: requiresFile
-        ? '配置已保存。请先在 required_file_path 创建自定义分区 CSV，再调用 project_build。'
+        ? '配置已保存，项目尚无自定义分区 CSV；编译前客户端会从主板默认文件或匹配模板补齐，无模板时按已确认的 Flash 容量生成。AI 调整请使用分区管理器的 partition_snapshot / partition_load 读取主板模板或缺省草稿，按实际 Flash、OTA 和存储需求配置并通过 partition_save 保存到 required_file_path，再调用 project_build；AI 调用默认在 Dock 展示。'
         : '配置已保存并请求预处理；这不代表编译完成，请调用 project_build 验证。',
     };
   } catch (error) {

@@ -37,6 +37,8 @@ interface Esp32UploadProgressState {
   completedFiles: number;
   eraseRegionSizes: number[];
   currentFileBytes: number;
+  currentFileStartAddress: number | null;
+  incremental: boolean;
 }
 
 interface UploadActionState extends ActionState {
@@ -221,6 +223,8 @@ export class _UploaderService {
       state.completedFiles = Math.min(state.completedFiles, state.expectedFiles);
     }
     state.currentFileBytes = Math.max(0, currentFileBytes);
+    state.currentFileStartAddress = null;
+    state.incremental = false;
   }
 
   private completeEsp32FlashFile(state: Esp32UploadProgressState): number | null {
@@ -230,7 +234,7 @@ export class _UploaderService {
       state.expectedFiles,
       Math.max(state.completedFiles, state.currentFileIndex + 1)
     );
-    if (state.eraseRegionSizes.length > 0) {
+    if (state.eraseRegionSizes.length === state.expectedFiles) {
       const totalBytes = state.eraseRegionSizes.reduce((sum, size) => sum + size, 0);
       const completedBytes = state.eraseRegionSizes
         .slice(0, Math.min(state.completedFiles, state.eraseRegionSizes.length))
@@ -258,7 +262,7 @@ export class _UploaderService {
       return regionProgress;
     }
 
-    if (state.eraseRegionSizes.length > 0) {
+    if (state.eraseRegionSizes.length === state.expectedFiles) {
       const fallbackBytes = state.currentFileBytes || state.eraseRegionSizes[state.currentFileIndex] || 1;
       const totalBytes = state.eraseRegionSizes.reduce((sum, size) => sum + size, 0);
       const completedBytes = state.eraseRegionSizes
@@ -335,7 +339,9 @@ export class _UploaderService {
           currentFileIndex: -1,
           completedFiles: 0,
           eraseRegionSizes: [],
-          currentFileBytes: 0
+          currentFileBytes: 0,
+          currentFileStartAddress: null,
+          incremental: false
         };
 
         // 先判断当前是否处于编译状态
@@ -850,16 +856,32 @@ export class _UploaderService {
                     }
 
                     const esp32EraseRegionSize = this.parseEsp32EraseRegionSize(trimmedLine);
-                    if (esp32EraseRegionSize !== null) {
+                    // 新版 esptool 逐文件输出擦除范围；只使用写入前已知的完整范围计算字节权重。
+                    if (esp32EraseRegionSize !== null && esp32UploadState.currentFileIndex < 0) {
                       esp32UploadState.eraseRegionSizes.push(esp32EraseRegionSize);
                       esp32UploadState.expectedFiles = Math.max(esp32UploadState.expectedFiles, esp32UploadState.eraseRegionSizes.length);
                     }
 
+                    const esp32FileHeader = trimmedLine.match(/^Writing\s+['"](.+?)['"]\s+at\s+0x([0-9a-f]+)/i);
                     const esp32CompressedSize = this.parseEsp32CompressedSize(trimmedLine);
-                    if (esp32CompressedSize) {
-                      this.startEsp32FlashFile(esp32UploadState, esp32CompressedSize.originalBytes);
-                    } else if (/^Writing\s+['"].+?['"]\s+at\s+0x[0-9a-f]+/i.test(trimmedLine)) {
+                    if (esp32FileHeader) {
                       this.startEsp32FlashFile(esp32UploadState);
+                      esp32UploadState.currentFileStartAddress = parseInt(esp32FileHeader[2], 16);
+                      try {
+                        esp32UploadState.currentFileBytes = window['fs'].statSync(esp32FileHeader[1]).size;
+                      } catch {
+                        // 无法读取文件大小时，增量写入保留阶段进度，等待最终文件校验。
+                      }
+                    } else if (esp32CompressedSize) {
+                      // 文件头确定文件边界；增量烧录的多次 Compressed 属于同一文件。
+                      if (esp32UploadState.currentFileStartAddress === null) {
+                        this.startEsp32FlashFile(esp32UploadState, esp32CompressedSize.originalBytes);
+                      } else if (!esp32UploadState.incremental) {
+                        esp32UploadState.currentFileBytes = esp32CompressedSize.originalBytes;
+                      }
+                    }
+                    if (/^Reflashing\s+\d+\s+changed\s+sectors?\s+at\s+0x[0-9a-f]+/i.test(trimmedLine)) {
+                      esp32UploadState.incremental = true;
                     }
 
                     const esp32FileComplete =
@@ -892,9 +914,16 @@ export class _UploaderService {
                       lastUploadText = this.uploadT('COMPLETE_TEXT');
                       this.uploadCompleted = true;
                     } else if (isESP32Format) {
-                      const numericMatch = trimmedLine.match(/(\d+(?:\.\d+)?)%/);
+                      const numericMatch = trimmedLine.match(/Writing\s+at\s+0x([0-9a-f]+).*?(\d+(?:\.\d+)?)%/i);
                       if (numericMatch) {
-                        const regionProgress = parseFloat(numericMatch[1]);
+                        let regionProgress = parseFloat(numericMatch[2]);
+                        if (esp32UploadState.incremental && esp32UploadState.currentFileStartAddress !== null) {
+                          // 差异块的百分比只代表该块；用实际 Flash 地址映射整个固件的进度。
+                          regionProgress = esp32UploadState.currentFileBytes > 0
+                            ? (parseInt(numericMatch[1], 16) - esp32UploadState.currentFileStartAddress)
+                              / esp32UploadState.currentFileBytes * 100
+                            : 0;
+                        }
                         progressValue = this.calculateEsp32FlashProgress(esp32UploadState, regionProgress);
                       }
                     } else {
@@ -1265,7 +1294,7 @@ export class _UploaderService {
       throw { state: 'error', text: message };
     }
 
-    const firmwarePath = this.uploaderBleService.findFirmwareFile(buildPath);
+    const firmwarePath = this.resolveOtaFirmwareFile(buildPath, 'network-ota');
     if (!firmwarePath) {
       const message = this.networkT('NO_FIRMWARE');
       this.logNetworkOtaUpload(this.networkT('LOG_ERROR', { message }), 'error');
@@ -1514,8 +1543,21 @@ export class _UploaderService {
     });
   }
 
+  private resolveOtaFirmwareFile(buildPath: string, mode: 'ble' | 'network-ota'): string {
+    try {
+      return this.uploaderBleService.findFirmwareFile(buildPath);
+    } catch (error) {
+      const message = error?.message || String(error);
+      this.uploadInProgress = false;
+      this._builderService.isUploading = false;
+      this.handleUploadError(message, mode === 'ble' ? this.t('UPLOAD_FAILED_TITLE') : this.networkT('UPLOAD_FAILED_TITLE'), message);
+      this.workflowService.finishUpload(false, message);
+      throw { state: 'error', text: message };
+    }
+  }
+
   private async uploadByBle(buildPath: string, portInfo: any, boardName = ''): Promise<ActionState> {
-    const firmwarePath = this.uploaderBleService.findFirmwareFile(buildPath);
+    const firmwarePath = this.resolveOtaFirmwareFile(buildPath, 'ble');
     if (!firmwarePath) {
       const message = this.t('NO_FIRMWARE');
       this.logBleUpload(this.t('LOG_ERROR', { message }), 'error');

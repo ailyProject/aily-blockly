@@ -48,6 +48,7 @@ describe('Header custom partition menu', () => {
     header.selectDebounceTimer = null;
     header.projectService = { currentProjectPath: 'D:\\Projects\\语音 project', setPackageJson: jasmine.createSpy('write') };
     header.uiService = { openWindow: jasmine.createSpy('openWindow'), openToolWindow: jasmine.createSpy('openToolWindow').and.returnValue(true) };
+    header.mainUiAutomation = { openChildApp: jasmine.createSpy('openChildApp').and.resolveTo({ ok: true }) };
     header.closePortList = jasmine.createSpy('closeMenu');
     header.builderService = { triggerPreprocess: jasmine.createSpy('preprocess') };
     header.message = {
@@ -60,17 +61,18 @@ describe('Header custom partition menu', () => {
 
   afterEach(() => {
     expect(header.uiService.openWindow).not.toHaveBeenCalled();
+    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
     expect(header.projectService.setPackageJson).not.toHaveBeenCalled();
     expect(header.builderService.triggerPreprocess).not.toHaveBeenCalled();
   });
 
-  it('opens an installed child directly without reinstalling or changing the partition scheme', async () => {
+  it('opens an installed child embedded without a new window or changing the partition scheme', async () => {
     publish(true);
     await header.selectSubItem(custom);
     expect(manager.install).not.toHaveBeenCalled();
     expect(manager.reinstall).not.toHaveBeenCalled();
     expect(header.message.loading).not.toHaveBeenCalled();
-    expect(header.uiService.openToolWindow).toHaveBeenCalledOnceWith(partitionId, jasmine.objectContaining({ width: 920, height: 820 }));
+    expect(header.mainUiAutomation.openChildApp).toHaveBeenCalledOnceWith({ toolId: partitionId, mode: 'embedded' });
   });
 
   it('waits for installation, reports progress, and opens only once across repeated clicks', async () => {
@@ -79,12 +81,12 @@ describe('Header custom partition menu', () => {
     await install.installing;
     await header.selectSubItem(custom);
     expect(manager.install).toHaveBeenCalledOnceWith(partitionId);
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
     progress.next({ id: partitionId, action: 'install', phase: 'download', percent: 42 });
     expect(header.message.loading).toHaveBeenCalledOnceWith('正在安装 ESP32 分区管理器…', jasmine.objectContaining({ nzDuration: 0 }));
     install.finish();
     await first;
-    expect(header.uiService.openToolWindow).toHaveBeenCalledTimes(1);
+    expect(header.mainUiAutomation.openChildApp).toHaveBeenCalledTimes(1);
     expect(header.message.remove).toHaveBeenCalledOnceWith('install-notice');
     expect(header.closePortList).toHaveBeenCalledTimes(1);
   });
@@ -92,20 +94,20 @@ describe('Header custom partition menu', () => {
   it('reports installation failure and lets the next menu click retry', async () => {
     manager.install.and.rejectWith(new Error('network offline'));
     await header.selectSubItem(custom);
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
     expect(header.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/network offline.*重试/), jasmine.any(Object));
     expect(header.message.remove).toHaveBeenCalledOnceWith('install-notice');
     manager.install.and.callFake(async () => publish(true));
     await header.selectSubItem(custom);
     expect(manager.install).toHaveBeenCalledTimes(2);
-    expect(header.uiService.openToolWindow).toHaveBeenCalledTimes(1);
+    expect(header.mainUiAutomation.openChildApp).toHaveBeenCalledTimes(1);
   });
 
   it('repairs an incomplete installation before opening', async () => {
     publish(true, { config: null });
     await header.selectSubItem(custom);
     expect(manager.reinstall).toHaveBeenCalledOnceWith(partitionId, { forceClose: true });
-    expect(header.uiService.openToolWindow).toHaveBeenCalledTimes(1);
+    expect(header.mainUiAutomation.openChildApp).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes a stale catalog and then installs the newly discovered partition app', async () => {
@@ -114,7 +116,7 @@ describe('Header custom partition menu', () => {
     await header.selectSubItem(custom);
     expect(manager.refresh).toHaveBeenCalledOnceWith(true);
     expect(manager.install).toHaveBeenCalledOnceWith(partitionId);
-    expect(header.uiService.openToolWindow).toHaveBeenCalledTimes(1);
+    expect(header.mainUiAutomation.openChildApp).toHaveBeenCalledTimes(1);
   });
 
   it('reports a missing catalog entry without opening the removed built-in window', async () => {
@@ -122,7 +124,7 @@ describe('Header custom partition menu', () => {
     await header.selectSubItem(custom);
     expect(manager.refresh).toHaveBeenCalledOnceWith(true);
     expect(manager.install).not.toHaveBeenCalled();
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
     expect(header.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/not available.*重试/), jasmine.any(Object));
   });
 
@@ -130,7 +132,7 @@ describe('Header custom partition menu', () => {
     publish(false, { uninstalling: true });
     await header.selectSubItem(custom);
     expect(manager.install).not.toHaveBeenCalled();
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
     expect(header.message.error).toHaveBeenCalled();
   });
 
@@ -141,7 +143,7 @@ describe('Header custom partition menu', () => {
     header.projectService.currentProjectPath = '/another-project';
     install.finish();
     await opening;
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
     expect(header.message.remove).toHaveBeenCalledOnceWith('install-notice');
   });
 
@@ -156,12 +158,12 @@ describe('Header custom partition menu', () => {
     expect(header.message.remove).toHaveBeenCalledOnceWith('install-notice');
     install.finish();
     await opening;
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
   });
 
   it('reports an unavailable child entry without falling back to the removed window', async () => {
     publish(true);
-    header.uiService.openToolWindow.and.returnValue(false);
+    header.mainUiAutomation.openChildApp.and.resolveTo({ ok: false, message: '子应用入口不可用' });
     await header.selectSubItem(custom);
     expect(header.message.error).toHaveBeenCalledWith(jasmine.stringMatching(/子应用入口不可用/), jasmine.any(Object));
   });
@@ -171,6 +173,6 @@ describe('Header custom partition menu', () => {
     header.projectService.currentProjectPath = '';
     await header.selectSubItem(custom);
     expect(manager.install).not.toHaveBeenCalled();
-    expect(header.uiService.openToolWindow).not.toHaveBeenCalled();
+    expect(header.mainUiAutomation.openChildApp).not.toHaveBeenCalled();
   });
 });

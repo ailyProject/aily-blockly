@@ -36,6 +36,7 @@ import {
 } from '@core/auth/public-api';
 import { extractApiErrorDetails } from '../utils/api-error.utils';
 import { ElectronService } from '@core/platform/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
@@ -161,6 +162,7 @@ export class MainWindowComponent implements OnDestroy {
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
     private cloudProjectOpen: CloudProjectOpenService,
+    private metrics: MetricsService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -206,6 +208,7 @@ export class MainWindowComponent implements OnDestroy {
         .catch(error => this.message.error(error.message || '打开云工程失败'));
     });
     void this.electronService.sendRendererReady();
+    this.metrics.record('app_opened');
     void this.initializeAuthAndPromptIfNeeded();
     void this.ensureDefaultSubapps();
     // 重置 footer 状态

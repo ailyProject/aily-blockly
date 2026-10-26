@@ -36,6 +36,7 @@ import { Subscription, merge } from 'rxjs';
 import { BlocklyService } from '../../../editors/blockly-editor/services/blockly.service';
 import {
   UiAutomationRegistryService,
+  MainUiAutomationService,
   type UiAutomationCommandResult,
   type UiAutomationMenuItem,
   type UiAutomationMenuListOptions,
@@ -101,6 +102,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private readonly coderBoardConfig = inject(CoderBoardConfigService);
   private readonly coderPersistence = inject(CodeEditorProProjectService);
   private readonly requiredSubapps = inject(RequiredSubappService);
+  private readonly mainUiAutomation = inject(MainUiAutomationService);
   private readonly coderHeaderButtons = new Map<string, IMenuItem[]>();
 
   headerBtns: IMenuItem[] = HEADER_BTNS;
@@ -2070,10 +2072,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
       await this.requiredSubapps.ensureInstalled('ffs-manager-child');
       // Installation can finish after the user has left the original project/window.
       if (this.destroyed || this.projectService.currentProjectPath !== projectPath) return;
-      if (!this.uiService.openToolWindow('ffs-manager-child', {
-        title: 'ESP32 分区管理器', width: 920, height: 820, minWidth: 680, minHeight: 560,
-      })) {
-        throw new Error('子应用入口不可用');
+      const opened = await this.mainUiAutomation.openChildApp({ toolId: 'ffs-manager-child', mode: 'embedded' });
+      if (opened['ok'] !== true) {
+        throw new Error(String(opened['message'] || '子应用入口不可用'));
       }
     } catch (error) {
       if (!this.destroyed && this.projectService.currentProjectPath === projectPath) {

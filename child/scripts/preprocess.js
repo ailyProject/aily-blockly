@@ -73,6 +73,8 @@ async function main() {
     try {
         confirmBuildSource(config);
         invalidateBuildDelivery(config.currentProjectPath);
+        // Library preparation can spawn an archive extractor before the Builder.
+        workspace.markDelegated();
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
     } finally { workspace.release(); }

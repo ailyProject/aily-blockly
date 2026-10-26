@@ -50,6 +50,7 @@ export class CloudSpaceComponent {
   searchKeyword = ''; // 搜索关键词
   isLoginDialogOpen = false; // 标记登录对话框是否已打开
 
+  openingProjectIds = new Set<string>();
   projectView: 'mine' | 'students' = 'mine';
   isStudent = false;
   isTeacher = false;
@@ -213,10 +214,16 @@ export class CloudSpaceComponent {
   // }
 
   // 打开项目
-  openInNewTab(item) {
-    if (!item?.id) return;
-    void this.cloudProjectOpen.open(String(item.id))
-      .catch(error => this.message.error(error.message || '打开云工程失败'));
+  async openInNewTab(item) {
+    if (!item?.id || this.openingProjectIds.has(item.id)) return;
+    this.openingProjectIds.add(item.id);
+    try {
+      await this.cloudProjectOpen.open(String(item.id));
+    } catch (error) {
+      this.message.error(error.message || '打开云工程失败');
+    } finally {
+      this.openingProjectIds.delete(item.id);
+    }
   }
 
   // 获取云上项目列表

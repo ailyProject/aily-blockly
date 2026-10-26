@@ -70,6 +70,17 @@ test('identical current inputs reuse signed bytes without upload or a new cloud 
   assert.equal(f.broker.requests.size, 0); assert.equal(f.broker.artifactUsers.size, 0);
 });
 
+test('cloud artifact consumption records uploader delegation before entering the native consumer', async t => {
+  const f = fixture(t); await f.run();
+  await f.broker.withCurrentArtifact(f.sender, f.root, async () => {
+    const owner = JSON.parse(fs.readFileSync(path.join(f.root, '.build/aily-workspace.lock')));
+    assert.equal(owner.operation, 'verify');
+    assert.equal(owner.delegationVersion, 1);
+    assert.equal(owner.delegated, true);
+  });
+  assert.equal(fs.existsSync(path.join(f.root, '.build/aily-workspace.lock')), false);
+});
+
 test('the same user can reuse signed output after token role and subject serialization change', async t => {
   const f = authenticated(fixture(t)), first = await f.run();
   f.subject = { user_type: 'admin', id: f.subject.id };

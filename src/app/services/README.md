@@ -21,6 +21,7 @@ services/
 │   ├── platform/                 # Electron、操作系统、命令和日志
 │   │   ├── observability/        # 性能和可观测能力
 │   │   └── public-api.ts
+│   ├── metrics/                  # 宿主启动、创建、编译尝试、上传的异步上报
 │   └── preferences/              # 配置、设置、主题、语言和区域
 │       ├── models/
 │       └── public-api.ts
@@ -68,6 +69,8 @@ services/
 ```
 
 `shared` 只接收已经被两个以上领域共同使用、且没有单一业务归属的纯契约或纯逻辑，例如通知数据结构。不要为了“可能复用”提前放入；能明确归属某个领域的类型、策略和工具函数，仍应留在其所属目录。
+
+`core/metrics` 在渲染层使用原生 `fetch` 异步上报，默认开启，以 `metricsEnabled: false` 停用。主窗口展示、创建成功、进入编译工作流和上传成功处调用；编译失败也计入尝试。有 Token 则携带，没有也发送。每个窗口仅在内存保存随机会话 ID，匿名数据按窗口会话统计；不新增 Electron IPC、统计持久化或重试，不采集项目内容、Chat 或日活。桌面实现说明位于 `aily-blockly-docs/docs/2026-10-22/运营埋点.md`，后端接口与实施范围位于 `aily-services/docs/initiatives/operations-analytics-minimal-implementation-plan.md`。
 
 ## 新服务放在哪里
 

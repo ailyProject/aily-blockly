@@ -2340,6 +2340,8 @@ export class NpmService {
     try {
       output = await lastValueFrom(this.cmdService.spawn(executable, args, {
         cwd: projectPath, projectPath, projectSessionId: session.projectSessionId, signal: session.signal, streamId,
+        // 直接启动解压器，避免 Shell 拆分含空格的安装路径或解释路径中的特殊字符。
+        shellProfile: false,
       }, true).pipe(reduce((text, event) => {
         if (event.type === 'close') closed = true;
         if (event.type === 'error' || event.type === 'close' && event.code !== 0) throw new Error(event.error || event.stderr || 'Library source archive failed.');

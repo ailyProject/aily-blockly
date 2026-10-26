@@ -11,7 +11,7 @@ import {
   type AilyDataRef,
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
@@ -256,6 +256,13 @@ export class _ProjectService {
           await this.publishPreparedSaveOutputs(path, prepared, generated, assertRevision);
         } catch (error) {
           console.warn('Project ABI is saved; skipped stale derived metadata/code updates:', error);
+          if (isBuildWorkspaceRecoveryRequiredError(error)) {
+            const detail = (error instanceof Error ? error.message : String(error)).replace(/^BUILD_WORKSPACE_RECOVERY_REQUIRED:\s*/, '');
+            // Preserve the committed ABI, while making the required recovery
+            // visible to save/close callers instead of reporting full success.
+            throw Object.assign(new Error(`BUILD_WORKSPACE_RECOVERY_REQUIRED: Project file saved, but generated code could not be updated. ${detail}`),
+              { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED', projectSaved: true });
+          }
         }
       } finally { lease.release(); }
     });

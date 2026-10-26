@@ -1,8 +1,10 @@
+import { ensureProjectPartitionFile } from './project-partitions';
 import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
 import { BehaviorSubject, Subject, firstValueFrom } from 'rxjs';
+import { MetricsService } from '@core/metrics/public-api';
 import {
   CmdService,
   ElectronService,
@@ -833,6 +835,7 @@ export class ProjectService {
     private translate: TranslateService,
     private injector: Injector,
     private logService: LogService,
+    private metrics: MetricsService,
   ) {
     this.disposeLibraryChanges = window['libraryDependencies']?.onChanged?.(status => {
       this.acceptLibraryStatus(status.projectPath, status);
@@ -1290,9 +1293,12 @@ export class ProjectService {
       });
       if (options.deferActivation) {
         this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.PROJECT_CREATED') });
+        this.metrics.record('project_created');
         return true;
       }
-      return await this.finishProjectCreation(projectPath, options);
+      const created = await this.finishProjectCreation(projectPath, options);
+      if (created) this.metrics.record('project_created');
+      return created;
 
       // if (closeWindow) {
       //   this.uiService.closeWindow();
@@ -1316,7 +1322,9 @@ export class ProjectService {
 
       await this.initializeProjectDataSchema(projectPath);
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
-      return await this.finishProjectCreation(projectPath, options);
+      const created = await this.finishProjectCreation(projectPath, options);
+      if (created) this.metrics.record('project_created');
+      return created;
     } catch (error) {
       this.message.error(this.translate.instant('PROJECT.CREATE_FAILED') + ": " + error.message);
       this.application.updateFooterState({ state: 'error', text: this.translate.instant('PROJECT.CREATE_FAILED') });
@@ -2872,7 +2880,7 @@ export class ProjectService {
   }
 
   /** 为分区管理等功能提供统一的构建属性：本地读取 SDK，云端使用已注册元数据。 */
-  async getBoardBuildProperties(): Promise<Record<string, string>> {
+  async getBoardBuildProperties(overrides: Record<string, unknown> = {}): Promise<Record<string, string>> {
     const boardJson = this.currentBoardConfig || await this.getBoardJson();
     const boardName = this.getBoardNameFromBoardJson(boardJson);
     if (!boardName) throw new Error('Board identifier is unavailable.');
@@ -2881,7 +2889,8 @@ export class ProjectService {
     const raw = cloudProfile ? cloudBoardProperties(cloudProfile, boardName) : await this.getRawBoardsTxtConfig(boardName);
     if (!raw) throw new Error(this.translate.instant('PROJECT.SDK_CONFIG_NOT_READY'));
     const pkg = await this.getPackageJson();
-    const selected = cloudProfile ? getCloudBoardOptions(cloudProfile, pkg?.projectConfig) : pkg?.projectConfig || {};
+    const options = { ...pkg?.projectConfig, ...overrides };
+    const selected = cloudProfile ? getCloudBoardOptions(cloudProfile, options) : options;
     const result: Record<string, string> = {};
     const prefix = boardName + '.';
     for (const [key, value] of Object.entries(raw)) if (key.startsWith(prefix) && !key.startsWith(prefix + 'menu.')) result[key.slice(prefix.length)] = value;
@@ -2890,6 +2899,14 @@ export class ProjectService {
       for (const [key, value] of Object.entries(raw)) if (key.startsWith(optionPrefix)) result[key.slice(optionPrefix.length)] = value;
     }
     return result;
+  }
+
+  /** Materialize custom partitions before either backend captures its build inputs. */
+  async ensureCustomPartitionFile(projectPath = this.currentProjectPath, assertCurrent: () => void = () => {}) {
+    const project = this.isAilyCodeProject(projectPath) && !this.isCoderProjectContext
+      ? this.getCoderProjectContext(projectPath) : this;
+    if (project.currentProjectPath !== projectPath) throw new Error('BUILD_SOURCE_STALE: Build project changed.');
+    return ensureProjectPartitionFile(project, window['fs'], window['path'], assertCurrent);
   }
 
   async getCloudPartitionTemplate(name: string): Promise<string | null> {

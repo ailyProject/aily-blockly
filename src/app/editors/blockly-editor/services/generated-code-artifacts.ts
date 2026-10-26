@@ -36,11 +36,19 @@ export function captureArduinoGeneratedArtifacts(generator: unknown): readonly A
  */
 /** True when another host build/preprocess/publish still owns the project workspace. */
 export function isBuildWorkspaceBusyError(error: unknown): boolean {
+  return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_BUSY');
+}
+
+export function isBuildWorkspaceRecoveryRequiredError(error: unknown): boolean {
+  return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
+}
+
+function hasBuildWorkspaceErrorCode(error: unknown, expected: string): boolean {
   const code = error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code ?? '')
     : '';
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return code === 'BUILD_WORKSPACE_BUSY' || message.startsWith('BUILD_WORKSPACE_BUSY:');
+  return code === expected || message.startsWith(`${expected}:`);
 }
 
 export async function writePreparedArduinoGeneratedArtifacts(

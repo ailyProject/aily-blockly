@@ -3,6 +3,34 @@ import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api'
 import { detectProjectMode, projectDataRuntime } from '@domain/project/public-api';
 import { CloudSpaceComponent } from './cloud-space.component';
 
+describe('CloudSpace opening state', () => {
+  for (const outcome of ['success', 'error']) {
+    it(`suppresses duplicate opens and clears pending state on ${outcome}`, async () => {
+      let settle: () => void;
+      const error = new Error('open failed');
+      const open = jasmine.createSpy('open').and.returnValue(new Promise<void>((resolve, reject) => {
+        settle = () => outcome === 'success' ? resolve() : reject(error);
+      }));
+      const message = { error: jasmine.createSpy('error') };
+      const component = new CloudSpaceComponent({} as any, {} as any, {} as any, {} as any,
+        message as any, {} as any, {} as any, {} as any, {} as any, { open } as any,
+        {} as any, {} as any);
+      const item = { id: 'cloud-project' };
+
+      const pending = component.openInNewTab(item);
+      expect(component.openingProjectIds.has(item.id)).toBeTrue();
+      await component.openInNewTab(item);
+      expect(open).toHaveBeenCalledOnceWith(item.id);
+
+      settle();
+      await pending;
+      expect(component.openingProjectIds.has(item.id)).toBeFalse();
+      if (outcome === 'error') expect(message.error).toHaveBeenCalledOnceWith(error.message);
+      else expect(message.error).not.toHaveBeenCalled();
+    });
+  }
+});
+
 describe('CloudSpace project packaging and sync mode isolation', () => {
   const root = '/Aily Projects/demo';
   let component: any;

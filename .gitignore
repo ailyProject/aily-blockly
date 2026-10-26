@@ -74,6 +74,7 @@ child/aily-builder*
 
 # Unit tests
 /tests/coverage/
+/tests/.artifacts/
 /tests/out-tsc/
 /tests/test-results/
 

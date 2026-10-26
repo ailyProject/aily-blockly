@@ -131,11 +131,62 @@ test('IPC uses the current deployment instead of an old or renderer-supplied gat
   t.after(() => { global.fetch = previousFetch; });
   const sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
   const controller = registerCloudBuildHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    platform: 'win32', getRegion: () => 'cn',
     getOwner: () => ({ generation: 1 }), getGatewaySettings: () => ({ gatewayUrl: 'http://127.0.0.1:4318' }) });
   t.after(() => controller.shutdown());
   const result = await handlers.get('cloud-build')({ sender, senderFrame: frame }, { action: 'targets', settings: { gatewayUrl: 'https://old-origin.invalid' } });
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ['http://127.0.0.1:4318/api/v1/build/targets']);
+});
+
+test('IPC rejects cloud operations outside Windows cn before network, source or device access', async t => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => { assert.fail('Unsupported clients must not contact the gateway.'); };
+  t.after(() => { global.fetch = previousFetch; });
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    for (const region of ['cn', 'eu', 'localhost', undefined]) {
+      if (platform === 'win32' && region === 'cn') continue;
+      await t.test(`${platform}/${region}`, async t => {
+        const handlers = new Map(), frame = {}, sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
+        const controller = registerCloudBuildHandlers({
+          ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+          platform, getRegion: () => region, backend: 'cloud',
+          getOwner: () => ({ generation: 1 }),
+          getGatewaySettings: () => ({ gatewayUrl: 'http://127.0.0.1:4318' }),
+          getAuth: () => assert.fail('Must reject before reading credentials.'),
+          querySource: () => assert.fail('Must reject before capturing source.'),
+          uploadArtifact: () => assert.fail('Must reject before accessing devices.'),
+        });
+        t.after(() => controller.shutdown());
+        const invoke = action => handlers.get('cloud-build')({ sender, senderFrame: frame }, {
+          action, requestId: 'old-cloud-preference', platform: 'win32', region: 'cn',
+          settings: { gatewayUrl: 'http://127.0.0.1:4318' },
+        });
+        for (const action of ['health', 'boardSupport', 'targets', 'compile', 'analysis', 'upload', 'reusable', 'artifactPath']) {
+          const result = await invoke(action);
+          assert.equal(result.ok, false, action);
+          assert.equal(result.error.code, 'CLOUD_BUILD_UNAVAILABLE', action);
+        }
+        assert.equal((await invoke('configuration')).ok, true);
+        assert.equal((await invoke('cancel')).ok, true);
+        assert.equal((await invoke('cancelUpload')).ok, true);
+      });
+    }
+  }
+});
+
+test('IPC rechecks the main-process region after a cloud preference was enabled', async t => {
+  const handlers = new Map(), frame = {}, sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
+  let region = 'cn';
+  const controller = registerCloudBuildHandlers({
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    platform: 'win32', getRegion: () => region, backend: 'cloud', getOwner: () => ({ generation: 1 }),
+    getGatewaySettings: () => { region = 'eu'; return { gatewayUrl: 'http://127.0.0.1:4318' }; },
+    querySource: () => assert.fail('Region changed before compilation could begin.'),
+  });
+  t.after(() => controller.shutdown());
+  const result = await handlers.get('cloud-build')({ sender, senderFrame: frame }, { action: 'compile' });
+  assert.equal(result.error.code, 'CLOUD_BUILD_UNAVAILABLE');
 });
 
 function hostBridge() {
