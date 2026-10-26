@@ -2,6 +2,7 @@
   "name": "aily-blockly-e2e",
   "private": true,
   "scripts": {
+    "test:chat-attachments": "cd .. && node ./e2e/scripts/run-chat-attachments.mjs",
     "test": "cd .. && node ./e2e/scripts/run-e2e.mjs test",
     "test:ui": "cd .. && node ./e2e/scripts/run-e2e.mjs ui",
     "test:headed": "cd .. && node ./e2e/scripts/run-e2e.mjs headed",
