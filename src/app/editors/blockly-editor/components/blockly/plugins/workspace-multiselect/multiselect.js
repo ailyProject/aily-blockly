@@ -408,6 +408,20 @@ export class Multiselect {
    * @private
    */
   onKeyDown_(e) {
+    if (e.key === 'Escape' && !e.defaultPrevented &&
+        !e.ctrlKey && !e.metaKey && !e.altKey && this.dragSelection_.size &&
+        !Blockly.browserEvents.isTargetInput(e) &&
+        !Blockly.WidgetDiv.isVisible() && !Blockly.DropDownDiv.isVisible() &&
+        !Blockly.Gesture.inProgress() && !this.workspace_.keyboardAccessibilityMode) {
+      // Leave field editors, popups and active drags to Blockly's own Escape
+      // handlers. On the canvas, cancel both the group and additive mode.
+      this.controls_.disableMultiselect();
+      Blockly.getFocusManager().focusNode(this.workspace_.getRootFocusableNode());
+      this.controls_.updateMultiselect();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (this.multiSelectKeys_.indexOf(e.key.toLocaleLowerCase()) > -1 &&
         !inMultipleSelectionModeWeakMap.get(this.workspace_)) {
       this.controls_.enableMultiselect();
@@ -459,6 +473,12 @@ export class Multiselect {
    * @private
    */
   onBlur_(e) {
+    // Moving focus between the group, blocks and canvas is not leaving the
+    // workspace. Keep Shift selection active during these native transitions.
+    if (e.relatedTarget instanceof SVGElement &&
+        this.workspace_.getParentSvg().contains(e.relatedTarget)) {
+      return;
+    }
     if (inMultipleSelectionModeWeakMap.get(this.workspace_)) {
       // Revert last unselected block if the related target
       // is a field related element, for accomodating field update
