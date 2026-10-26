@@ -36,9 +36,11 @@ describe('Header project save as', () => {
     expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/Aily Projects/Copy');
   });
 
-  it('does nothing when the Coder dialog is cancelled', async () => {
+  for (const mode of ['blockly', 'coder']) it(`does nothing when the ${mode} dialog is cancelled`, async () => {
+    header.projectService.getProjectMode.and.returnValue(mode);
     window['ipcRenderer'].invoke.and.resolveTo('');
     await header.process({ action: 'project-save-as' });
+    expect(window['ipcRenderer'].invoke.calls.mostRecent().args[1].returnEmptyOnCancel).toBe(true);
     expect(header.projectService.saveAs).not.toHaveBeenCalled();
     expect(header.message.error).not.toHaveBeenCalled();
   });
@@ -73,11 +75,11 @@ describe('Header project save as', () => {
     expect(header.message.error).toHaveBeenCalled();
   });
 
-  it('retains the original Blockly dialog arguments and save call', async () => {
+  it('preserves Blockly defaults and opts into empty cancellation', async () => {
     header.projectService.getProjectMode.and.returnValue('blockly');
     await header.process({ action: 'project-save-as' });
     expect(window['ipcRenderer'].invoke).toHaveBeenCalledOnceWith('select-folder-saveAs', {
-      path: '/legacy/default', suggestedName: 'my_project_new',
+      path: '/legacy/default', suggestedName: 'my_project_new', returnEmptyOnCancel: true,
     });
     expect(header.projectService.saveAs).toHaveBeenCalledOnceWith('/Aily Projects/Copy');
   });

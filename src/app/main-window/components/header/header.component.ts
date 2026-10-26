@@ -1224,6 +1224,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const folderPath = await window['ipcRenderer'].invoke('select-folder-saveAs', {
       path: this.projectData.path,
       suggestedName: this.projectData.name + '_new',
+      returnEmptyOnCancel: true,
     });
     // console.log('选中的文件夹路径：', folderPath);
     return folderPath;
