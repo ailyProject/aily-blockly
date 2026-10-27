@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { _electron } from '@playwright/test'
 
 import { createRecoveredAgentHarness } from '../fixtures/abs-agent-tools.mjs'
 import { dropOneHostResponse } from '../fixtures/host-response-fault.mjs'
 import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { closeOwnedRepairHost } from '../fixtures/owned-repair-host.mjs'
-import { withoutRepairRoute, withoutPreservationEntry, withLegacyPreservationOnly, resumeRepairTarget } from '../fixtures/repair-environment-acceptance.mjs'
+import { interruptRepairCommit } from '../fixtures/repair-commit-fault.mjs'
+import { withoutRepairRoute, withoutPreservationEntry, withLegacyPreservationOnly, repairContinuationAction, resumeRepairTarget } from '../fixtures/repair-environment-acceptance.mjs'
 
 const absolute = name => {
   const value = process.env[name]
@@ -32,6 +34,7 @@ const source = path.join(suite, 'source-native')
 const failedSource = path.join(suite, 'source-load-failed')
 const closedSource = path.join(suite, 'source-closed-legacy')
 const opaqueSource = path.join(suite, 'source-opaque-canvas')
+const unknownViewSource = path.join(suite, 'source-unknown-view')
 const library = path.join(suite, 'fixture-library')
 const home = path.join(root, 'isolated-home')
 const ids = ['recovery-enabled', 'recovery-disabled']
@@ -40,6 +43,7 @@ const extra = { version: 3, params: [{ name: 'value', type: 'int', values: [0, 9
 const evidence = { isolation: { userProjectsModified: false, simulatorInvoked: false, uploaded: false,
   dailyInstallReplaced: false }, scenarios: [] }
 const protectedSnapshots = new Map()
+const protectedOwnerRecords = new Map()
 let app, page, harness, renderer, repairChild, nestedRepairChild
 const log = (...args) => console.log(new Date().toISOString(), ...args)
 const files = ['package.json', 'project.abi', 'project.abs', 'project.abs.map.json',
@@ -206,6 +210,7 @@ async function main() {
   await prepare(failedSource, true)
   await prepare(closedSource, false)
   await prepare(opaqueSource, true)
+  await prepare(unknownViewSource, false)
   // A never-opened legacy source must not be migrated just to recover it.
   const closedDocument = JSON.parse(await fs.readFile(path.join(closedSource, 'project.abi'), 'utf8'))
   const legacy = { ...closedDocument.pages[0].content, variables: closedDocument.sharedModel.variables ?? [] }
@@ -397,6 +402,37 @@ async function main() {
   evidence.scenarios.push({ kind: 'closed-legacy-source-with-invalid-draft', source: closedSource, target: opened.project,
     sourceBytesPreserved: true, sourceGuardPreserved: true, rawDraftArchivedExactly: true,
     sourceNotMigrated: true, ...closedResult })
+  await call('app_close', { project: opened.project })
+  await harness.dispose(); harness = undefined
+
+  // An unknown view is retained, not called stale. A conclusively exited file
+  // writer also stays on disk; the Agent follows the tool's preserving route.
+  harness = await createHarness(unknownViewSource)
+  const coordination = path.join(unknownViewSource, '.aily')
+  await fs.mkdir(coordination, { recursive: true })
+  const viewRecord = path.join(coordination, 'project-open.lock')
+  const fileRecord = path.join(coordination, 'project-files.write.lock')
+  const retired = spawnSync(process.execPath, ['-e', ''], { windowsHide: true })
+  assert.equal(retired.status, 0)
+  assert.throws(() => process.kill(retired.pid, 0), { code: 'ESRCH' })
+  await fs.writeFile(viewRecord, '{"pid":"retained-unconfirmed-view"}')
+  await fs.writeFile(fileRecord, JSON.stringify({ pid: retired.pid, token: randomUUID() }))
+  for (const file of [viewRecord, fileRecord]) protectedOwnerRecords.set(file, await fs.readFile(file))
+  const unknownBefore = await snapshot(unknownViewSource)
+  protectedSnapshots.set(unknownViewSource, unknownBefore)
+  const rejectedView = await call('app_open', { project: unknownViewSource }, true)
+  assert.equal(rejectedView.code, 'PROJECT_VIEW_OWNER_UNKNOWN')
+  assert.deepEqual(rejectedView.nextAction, { tool: 'project_recover', input: { project: unknownViewSource, action: 'open' } })
+  const copiedView = await call(rejectedView.nextAction.tool, rejectedView.nextAction.input)
+  assert.equal(copiedView.recoveryOpenVerification?.independentCopy, true)
+  assert.notEqual(copiedView.project, unknownViewSource)
+  const copiedResult = await editApplyBuild(copiedView.project, copiedView.generation)
+  await harness.settle()
+  await preserved(unknownViewSource, unknownBefore)
+  for (const [file, bytes] of protectedOwnerRecords) assert.deepEqual(await fs.readFile(file), bytes)
+  evidence.scenarios.push({ kind: 'unknown-view-and-exited-file-owner-preserving-copy', source: unknownViewSource,
+    target: copiedView.project, unknownViewNotReplaced: true, exitedFileMarkerRetained: true,
+    actualAgentFollowedOfferedTool: true, sourceBytesPreserved: true, ...copiedResult })
   await harness.dispose(); harness = undefined
   await open(opaqueSource, false)
   const opaqueBefore = await snapshot(opaqueSource)
@@ -431,16 +467,32 @@ async function main() {
   delete beforeNormalization.$ailyProjectData
   const normalizationInput = Buffer.from(JSON.stringify(beforeNormalization))
   await fs.writeFile(path.join(separate.project, 'project.abi'), normalizationInput)
+  const interruptedAck = await interruptRepairCommit(app, { pid: hostPid, appData: path.join(root, 'appdata'),
+    kind: 'final-ack', requestId: separate.forkReceipt.requestId })
   const waitingUntil = Date.now() + 90000
+  let ackInterruption
   while (!separate.runtimeAssociation?.ok || !['ready', 'load-failed'].includes(separate.repairEnvironment?.state)) {
     if (separate.repairEnvironment?.hostPid) repairChild = separate.repairEnvironment
+    if (separate.code === 'PROJECT_REPAIR_COMMIT_UNCONFIRMED') {
+      ackInterruption = separate
+      assert.equal(separate.details?.phase, 'final-ack')
+      assert.equal(separate.recoverability?.state, 'metadata-commit-unconfirmed')
+      assert.equal(separate.nextAction?.input?.action, 'inspect_environment')
+    }
     assert.ok(Date.now() < waitingUntil, 'The owned independent host must become observable within the test deadline')
-    assert.ok(['observe_fork', 'inspect_environment', 'resume_environment'].includes(separate.nextAction?.input?.action),
-      JSON.stringify(separate))
+    const action = repairContinuationAction(separate, separate.project)
     await new Promise(resolve => setTimeout(resolve, 500))
-    separate = await call(separate.nextAction.tool, separate.nextAction.input, false, true)
+    separate = await call(action.tool, action.input, false, true)
   }
   repairChild = separate.repairEnvironment
+  assert.ok(ackInterruption, 'The Agent must receive the actionable commit-interruption diagnostic')
+  const ackFault = await interruptedAck.restore()
+  const settledAck = JSON.parse(await fs.readFile(ackFault.filename, 'utf8'))
+  assert.equal(settledAck.state, 'completed')
+  assert.equal(settledAck.epoch, repairChild.epoch, 'ACK reconciliation must retain the exact launched epoch')
+  evidence.scenarios.push({ kind: 'launched-child-final-ack-interruption', target: separate.project,
+    sameAttemptSettled: true, authenticatedEpoch: repairChild.epoch, sourceGuardPreserved: true,
+    actionableCommitDiagnostic: true })
   const normalization = separate.recoveryContinuation?.initialNormalization
   assert.equal(normalization?.kind, 'project-data-normalization')
   assert.equal(normalization.beforeAbiHash, 'sha256:' + createHash('sha256').update(normalizationInput).digest('hex'))
@@ -531,6 +583,10 @@ async function main() {
     previousEnvironment, repairEnvironment: repairChild, ...replacementResult })
 
   const parentSnapshot = harness.sessionSnapshot()
+  const previousOwner = JSON.parse(await fs.readFile(path.join(root, 'appdata', 'agent-repair-environments',
+    'lineages', repairChild.lineageId, 'current.json'), 'utf8'))
+  assert.equal(previousOwner.hostPid, repairChild.hostPid)
+  assert.equal(previousOwner.environmentId, repairChild.environmentId)
   await harness.dispose(); harness = undefined
   // This is a fault in the suite's owned parent, not a user/simulator process.
   // The unrepresentable original canvas cannot survive this exit; the protocol
@@ -549,7 +605,39 @@ async function main() {
   assert.notEqual(newParentPid, hostPid)
   harness = await createHarness(opaqueSource, { sessionSnapshot: parentSnapshot, restoreHistory: true,
     expectedAssociation: childAssociation })
-  const adopted = await resumeRepairTarget(call, separate.project, environment => { repairChild = environment })
+  const interruptedAdoption = await interruptRepairCommit(app, { pid: newParentPid, appData: path.join(root, 'appdata'),
+    kind: 'adoption-current', lineageId: repairChild.lineageId, previousOwner })
+  let adoptionInterruption, firstChildState
+  const adopted = await resumeRepairTarget(async (...args) => {
+    const result = await call(...args)
+    firstChildState ??= result.childState
+    if (result.code === 'PROJECT_REPAIR_COMMIT_UNCONFIRMED') {
+      adoptionInterruption = result
+      assert.equal(result.details?.phase, 'adoption-current')
+      assert.equal(result.recoverability?.state, 'metadata-commit-unconfirmed')
+      assert.equal(result.nextAction?.input?.action, 'inspect_environment')
+    }
+    return result
+  }, separate.project, environment => { repairChild = environment })
+  const adoptionFault = await interruptedAdoption.restore({ required: false })
+  if (adoptionFault) {
+    assert.ok(adoptionInterruption, 'Adoption interruption must offer exact-target observation, not an unrelated owner wait')
+    const reservedOwner = path.join(path.dirname(adoptionFault.filename), 'owners', `${adoptionFault.value.epoch}.json`)
+    const retainedOwner = JSON.parse(await fs.readFile(reservedOwner, 'utf8'))
+    assert.equal(retainedOwner.ownerHostPid, newParentPid)
+    assert.equal(adopted.repairEnvironment.hostPid, previousOwner.hostPid)
+    assert.ok(adopted.repairEnvironment.epoch > retainedOwner.epoch, 'Retry must not overwrite the uncommitted owner declaration')
+    evidence.scenarios.push({ kind: 'owner-declaration-current-commit-interruption', target: separate.project,
+      retainedEpoch: retainedOwner.epoch, committedEpoch: adopted.repairEnvironment.epoch, sameChild: true,
+      sourceGuardPreserved: true, actionableCommitDiagnostic: true })
+  } else {
+    assert.equal(adoptionInterruption, undefined)
+    assert.equal(firstChildState, 'exited', 'Do not silently skip a live or unknown-child adoption fault')
+    assert.notEqual(adopted.repairEnvironment.hostPid, previousOwner.hostPid)
+    evidence.unexercised ??= []
+    evidence.unexercised.push({ kind: 'owner-declaration-current-commit-interruption',
+      reason: 'The original child was confirmed exited after parent shutdown; the real replacement route was exercised instead.' })
+  }
   assert.equal(adopted.repairEnvironment.parentHostPid, newParentPid)
   assert.equal(adopted.repairEnvironment.sourceView, 'unavailable')
   assert.notEqual(adopted.repairEnvironment.originalViewPreserved, true)
@@ -682,6 +770,8 @@ main().catch(async error => {
   // Read-only postconditions cover actual SDK shutdown and native disposal,
   // not just the point immediately after the last successful recovery tool.
   for (const [project, before] of protectedSnapshots) await preserved(project, before).catch(cleanupFailure)
+  for (const [file, bytes] of protectedOwnerRecords)
+    await fs.readFile(file).then(actual => assert.deepEqual(actual, bytes)).catch(cleanupFailure)
   if (evidence.ok && process.exitCode !== 1) {
     evidence.cleanupVerified = true
     evidence.sourceBytesPreservedAfterDisposal = true

@@ -5,14 +5,15 @@ const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { tryAcquireFileLock } = require('../child/scripts/native-file-lock');
 const { inspectBuildWorkspaceIdle } = require('../child/scripts/build-workspace-lease');
+const { getProcessState } = require('../child/scripts/process-state');
 const { createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 const { createProjectRecoveryReceipts } = require('./project-recovery-receipts');
 const legacy = require('./project-repair-environment');
+const { createRepairCommitStore, metadataCommitFailure, isMetadataCommitFailure } = require('./project-repair-commit');
 const key = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && key(a) === key(b);
 const ID = /^[A-Za-z0-9_-]{8,96}$/;
 const fault = (code, message, details) => Object.assign(new Error(message), { code, details });
-const alive = pid => { if (!Number.isSafeInteger(pid) || pid < 1) return 'unknown'; try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'ESRCH' ? false : 'unknown'; } };
 const location = record => path.join(record.parentAppData, 'agent-repair-environments', 'lineages', record.lineageId || record.environmentId);
 const currentFile = directory => path.join(directory, 'current.json');
 function privateDirectory(directory) {
@@ -50,14 +51,6 @@ function readLineage(directory, expectedCode) {
   if (!same(original.result.project, origin.project)) throw fault('PROJECT_REPAIR_LINEAGE_INVALID', 'Fork origin does not match this exact target.');
   return { directory, origin, current, record, original };
 }
-function recordEpoch(directory, current) {
-  const epochs = path.join(directory, 'owners'); privateDirectory(epochs);
-  const ownerFacts = value => ({ version: value.version, lineageId: value.lineageId, epoch: value.epoch,
-    ownerHostPid: value.ownerHostPid, environmentId: value.environmentId, recordFile: value.recordFile, hostPid: value.hostPid });
-  const file = path.join(epochs, `${current.epoch}.json`), text = JSON.stringify(ownerFacts(current));
-  try { fs.writeFileSync(file, text, { flag: 'wx', mode: 0o600 }); }
-  catch (error) { if (error.code !== 'EEXIST' || JSON.stringify(ownerFacts(legacy.readJson(file))) !== text) throw error; }
-}
 function environment(facts, state = facts.record.state) {
   const { origin, current, record } = facts;
   return { version: 2, state, project: origin.project, sourceProject: origin.sourceProject,
@@ -87,7 +80,9 @@ function readChildLineageIdentity(record, params, pid = process.pid) {
 function createRepairContinuationController(options) {
   const { appDataPath, execPath, appPath, env = process.env, serve = false } = options;
   const pid = options.pid || process.pid, hostCodeIdentity = legacy.codeIdentity(execPath, appPath);
-  const processState = options.processState || alive, query = options.queryChild || legacy.queryChild, launch = options.spawnChild || spawn;
+  const processState = options.processState || getProcessState, query = options.queryChild || legacy.queryChild, launch = options.spawnChild || spawn;
+  const commits = createRepairCommitStore({ readJson: (...args) => legacy.readJson(...args),
+    writeNew: (...args) => legacy.writeNew(...args), writeRecord: (...args) => legacy.writeRecord(...args), processState });
   const root = path.join(appDataPath, 'agent-repair-environments');
   const hashAbi = project => createProjectRecoveryReceipts(appDataPath).abiHash(project);
   function find(target) {
@@ -173,6 +168,7 @@ function createRepairContinuationController(options) {
       facts = rememberPhysicalOrigin(readLineage(facts.directory, hostCodeIdentity));
       // Inspection does not transfer ownership, even when this is a new parent.
       const status = processState(facts.current.hostPid), authenticated = status === true ? await query(publicRecord(facts)) : null;
+      commits.reconcile(facts, authenticated);
       const uncertain = pending(facts), retry = uncertain ? undefined : retryable(facts);
       return reply(facts, 'project_repair_inspect', undefined,
         authenticated?.state || (facts.record.launchState === 'prepared' ? 'starting' : status === false ? 'failed' : 'starting'),
@@ -224,8 +220,9 @@ function createRepairContinuationController(options) {
         throw fault('PROJECT_REPAIR_LINEAGE_INVALID', 'Resume does not match this target origin.');
       const directory = path.join(facts.directory, 'requests'); privateDirectory(directory);
       const requestFile = path.join(directory, params.resumeRequestId + '.json');
-      const oldRequest = fs.existsSync(requestFile) ? legacy.readJson(requestFile) : null;
       const state = processState(facts.current.hostPid), authenticated = state === true ? await query(publicRecord(facts)) : null;
+      commits.reconcile(facts, authenticated);
+      const oldRequest = fs.existsSync(requestFile) ? legacy.readJson(requestFile) : null;
       if (oldRequest) {
         if (oldRequest.resumeRequestId !== params.resumeRequestId || oldRequest.requestId !== params.requestId)
           throw fault('PROJECT_REPAIR_LINEAGE_INVALID', 'Resume request belongs to a different lineage.');
@@ -254,29 +251,36 @@ function createRepairContinuationController(options) {
               'The authenticated child still has a lifecycle or runtime writer; ownership was not changed.', { resource: 'repair-child-runtime', owner: { pid: facts.current.hostPid } });
             reservation.assertIdle();
           }
-          const epoch = facts.current.epoch + (transfer || facts.current.epoch === 0 ? 1 : 0);
+          const epoch = transfer || facts.current.epoch === 0 ? commits.nextEpoch(facts, pid) : facts.current.epoch;
           const next = { ...facts.current, epoch, ownerHostPid: pid, sourceView: sourceView(facts) };
-          recordEpoch(facts.directory, facts.current); recordEpoch(facts.directory, next);
-          legacy.writeRecord(currentFile(facts.directory), next);
-          legacy.writeNew(requestFile, { version: 1, requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch, state: 'completed' });
+          commits.recordEpoch(facts.directory, facts.current); commits.recordEpoch(facts.directory, next);
+          try { legacy.writeRecord(currentFile(facts.directory), next); }
+          catch (error) { throw metadataCommitFailure('adoption-current', error,
+            { requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch }); }
+          try { legacy.writeRecord(requestFile, { version: 1, requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch, state: 'completed' }); }
+          catch (error) { throw metadataCommitFailure('final-ack', error,
+            { requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch }); }
           facts = readLineage(facts.directory, hostCodeIdentity);
           return reply(facts, 'project_repair_resume', params.resumeRequestId, authenticated.state, { resumeState: 'completed', childState: 'authenticated' });
         } finally { reservation?.release(); }
       }
       const reservation = await reserveTarget(facts, false, params.resumeRequestId);
       try {
-        const epoch = facts.current.epoch + 1, environmentId = randomUUID();
+        const epoch = commits.nextEpoch(facts, pid), environmentId = randomUUID();
         const epochs = path.join(facts.directory, 'epochs'); privateDirectory(epochs);
         const privateRoot = path.join(epochs, environmentId); privateDirectory(privateRoot);
         const recordFile = path.join(epochs, `${epoch}-${environmentId}.json`);
         const record = { ...facts.record, state: 'starting', launchState: 'starting', environmentId, lineageId: facts.origin.lineageId, epoch,
-          parentHostPid: pid, hostPid: null, targetAbiHash: reservation.hash,
+          parentHostPid: pid, hostPid: null, targetAbiHash: reservation.hash, resumeRequestId: params.resumeRequestId,
           privateAppData: path.join(privateRoot, 'appdata'), profile: path.join(privateRoot, 'profile'),
           initialNormalization: null, originalViewPreserved: sourceView(facts) === 'retained' };
         record.projectViewRecovery = reservation.projectViewRecovery;
         const request = { version: 1, requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch,
           attemptId: environmentId, recordFile, state: 'preparing' };
-        (oldRequest ? legacy.writeRecord : legacy.writeNew)(requestFile, request);
+        // Requests are mutable facts serialized by this exact lineage guard.
+        // Atomic replacement keeps a first short write outside the nonce name;
+        // an existing nonce was already checked above, never repaired blindly.
+        legacy.writeRecord(requestFile, request);
         const notStarted = (error, phase) => {
           const failure = { phase, code: error.code || 'PROJECT_REPAIR_PREPARATION_FAILED', message: error.message };
           legacy.writeRecord(requestFile, { ...request, state: 'not-started', failure });
@@ -304,13 +308,16 @@ function createRepairContinuationController(options) {
         }
         child?.once?.('error', () => {});
         if (!Number.isSafeInteger(child?.pid) || child.pid < 1) throw fault('PROJECT_REPAIR_SPAWN_UNCONFIRMED', 'A new repair process could not be confirmed. Preserve this request for inspection.');
-        legacy.writeNew(path.join(privateRoot, 'spawn.json'), { pid: child.pid, environmentId });
+        legacy.writeNew(path.join(privateRoot, 'spawn.json'), { pid: child.pid, environmentId,
+          requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch });
         record.hostPid = child.pid; legacy.writeRecord(recordFile, record);
         const next = { version: 1, lineageId: facts.origin.lineageId, epoch, ownerHostPid: pid,
           environmentId, recordFile, hostPid: child.pid, sourceView: sourceView(facts) };
-        recordEpoch(facts.directory, facts.current); recordEpoch(facts.directory, next);
+        commits.recordEpoch(facts.directory, facts.current); commits.recordEpoch(facts.directory, next);
         legacy.writeRecord(currentFile(facts.directory), next);
-        legacy.writeRecord(requestFile, { version: 1, requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch, state: 'completed' });
+        try { legacy.writeRecord(requestFile, { ...request, state: 'completed' }); }
+        catch (error) { throw metadataCommitFailure('final-ack', error,
+          { requestId: params.requestId, resumeRequestId: params.resumeRequestId, epoch }); }
         child.unref?.();
         facts = readLineage(facts.directory, hostCodeIdentity);
         return reply(facts, 'project_repair_resume', params.resumeRequestId, 'starting', { resumeState: 'completed', childState: 'starting' });
@@ -326,11 +333,16 @@ function createRepairContinuationController(options) {
       guidance: 'Inspect the preserved current target using the normal recovery tool. An offered complete independent-copy route can continue without inventing historical source evidence.' } : {}),
     ...(error.code === 'PROJECT_REPAIR_EVIDENCE_CHANGED' ? {
       nextAction: { tool: 'project_recover', input: { project: params?.project, action: 'inspect_environment' } } } : {}),
+    ...(isMetadataCommitFailure(error) ? {
+      nextAction: { tool: 'project_recover', input: { project: params?.project, action: 'inspect_environment' } } } : {}),
     recoverability: { state: error.retryableResume ? 'not-started' : error.code === 'PROJECT_REPAIR_HISTORICAL_PROOF_UNAVAILABLE'
-      ? 'historical-proof-unavailable' : error.code === 'PROJECT_REPAIR_EVIDENCE_CHANGED' ? 'observation-raced' : 'blocked-by-owner',
+      ? 'historical-proof-unavailable' : error.code === 'PROJECT_REPAIR_EVIDENCE_CHANGED' ? 'observation-raced'
+        : isMetadataCommitFailure(error) ? 'metadata-commit-unconfirmed' : 'blocked-by-owner',
       automaticTakeover: false, doNotDeleteLocks: true, doNotRetryBlindly: true },
     observeAction: { tool: 'project_recover', input: { project: params?.project, action: 'inspect_environment' } },
-    resumeCondition: error.code === 'PROJECT_REPAIR_EVIDENCE_CHANGED'
+    resumeCondition: isMetadataCommitFailure(error)
+      ? 'Inspect the original request first and follow only the action returned by that observation. Do not replay the mutation, choose another nonce, delete a lease, or wait for an unrelated owner change.'
+      : error.code === 'PROJECT_REPAIR_EVIDENCE_CHANGED'
       ? 'Read the exact target lineage again. A raced observation does not authorize replaying a mutation, deleting a lease, or changing its request nonce.'
       : 'Resume only after the reported owner/resource state changes. Observation does not authorize retrying mutation, deleting a lease, or choosing a different request nonce.' }));
   return { inspect: params => safely('project_repair_inspect', params, inspect), resume: params => safely('project_repair_resume', params, resume),

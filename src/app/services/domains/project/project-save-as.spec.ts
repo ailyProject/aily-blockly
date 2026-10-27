@@ -19,6 +19,7 @@ describe('ProjectService save as mode isolation', () => {
   let snapshot: any;
   let application: any;
   let coderSnapshot: any;
+  let sourceCopyLeaseHeld: boolean;
 
   beforeEach(() => {
     previousApis = { fs: window['fs'], fsp: window['fsp'], path: window['path'], libraryDependencies: window['libraryDependencies'], packageJson: window['packageJson'] };
@@ -134,6 +135,16 @@ describe('ProjectService save as mode isolation', () => {
       fs.copyProjectDirectory(from, to);
       files.delete(`${to}/project.abs`); files.delete(`${to}/project.abs.map.json`);
     });
+    sourceCopyLeaseHeld = false;
+    fs.projectCopySourceVersion = 1;
+    fs.withProjectCopySource = jasmine.createSpy('sourceCopy').and.callFake(async (_path, guard, action) =>
+      new Promise(resolve => {
+        guard(); sourceCopyLeaseHeld = true;
+        action(() => { expect(sourceCopyLeaseHeld).toBeTrue(); }, result => {
+          sourceCopyLeaseHeld = false;
+          resolve(result.ok ? { ok: true, source: { mode: 'exclusive' } } : { ok: false, error: result.error });
+        });
+      }));
     window['libraryDependencies'] = { status: jasmine.createSpy('libraryStatus').and.callFake(async () => ({
       dirty: false, busy: false, manifest: JSON.parse(files.get(`${source}/package.json`)!),
     })) };
@@ -769,6 +780,7 @@ describe('ProjectService save as mode isolation', () => {
     const before = [...files];
     service.projectOpen.and.callFake(async (project: string) => {
       expect(service.currentProjectPath).toBe('');
+      expect(sourceCopyLeaseHeld).toBeFalse();
       expect(project).toBe(target);
       files.set(`${target}/project.abi`, '{"schemaVersion":3,"normalizedOnlyInTarget":true}');
       service.currentProjectPath = target;
@@ -786,6 +798,34 @@ describe('ProjectService save as mode isolation', () => {
     expect(f.application.captureBlocklyRecoveryCopySnapshot).not.toHaveBeenCalled();
     expect(f.application.captureBlocklyRecoveryFragment).not.toHaveBeenCalled();
     expect(flush).not.toHaveBeenCalled();
+  });
+
+  for (const code of ['PROJECT_FILE_BUSY', 'PROJECT_RECOVERY_SOURCE_BUSY'])
+    it(`retains source and creates no copy when cross-process admission reports ${code}`, async () => {
+      dirtyBlocklySnapshot(); service.currentProjectPath = '';
+      const before = [...files];
+      fs.withProjectCopySource.and.resolveTo({ ok: false, error: { code, message: 'source writer retained' } });
+      await expectAsync(service.saveClosedRecoveryAs(source, target)).toBeRejectedWith(jasmine.objectContaining({ code }));
+      expect([...files]).toEqual(before); expect(fsp.mkdir).not.toHaveBeenCalled();
+      expect(fsp.rm).not.toHaveBeenCalled(); expect(service.projectOpen).not.toHaveBeenCalled();
+    });
+
+  it('keeps the published saved-primary target when source-scope finalization fails after publication', async () => {
+    dirtyBlocklySnapshot(); service.currentProjectPath = '';
+    const before = [...files];
+    fs.withProjectCopySource.and.callFake(async (_path, _guard, action) => new Promise(resolve => {
+      action(() => {}, result => {
+        expect(result.ok).toBeTrue();
+        resolve({ ok: false, error: { code: 'ABS_COMMIT_UNCERTAIN', message: 'source release interrupted',
+          uncertain: true, callbackStarted: true, callbackCompleted: true } });
+      });
+    }));
+    const result = await service.saveClosedRecoveryAs(source, target);
+    expect(result.projectSaved).toBeTrue(); expect(result.partial).toBeTrue(); expect(result.activated).toBeFalse();
+    expect(result.recoverySource?.kind).toBe('saved-document'); expect(files.has(result.recoveryArchive)).toBeTrue();
+    expect(files.get(`${target}/project.abi`)).toBe(files.get(`${source}/project.abi`));
+    expect(fsp.rm).not.toHaveBeenCalled(); expect(service.projectOpen).not.toHaveBeenCalled();
+    for (const [name, value] of before) expect(files.get(name)).toBe(value);
   });
 
   for (const reason of ['view', 'writer', 'build', 'libraries'] as const)

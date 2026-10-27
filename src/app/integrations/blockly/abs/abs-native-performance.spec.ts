@@ -159,7 +159,8 @@ describe('native candidate performance boundaries', () => {
     expect(result.code).toBe('ABS_NATIVE_TIMEOUT');
     expect(result.diagnostic!.reason).toBe('native-timeout-' + phase);
     expect(result.diagnostic!.hint).toContain('before apply');
-    expect(result.diagnostic!.hint).toContain('do not repeat');
+    expect(result.diagnostic!.hint).toMatch(/do not (?:repeat|retry) unchanged/i);
+    expect(result.diagnostic!.hint).toContain('project_recover');
     expect(result.diagnostic!.truncated).not.toBeTrue();
   });
 });

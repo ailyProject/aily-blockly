@@ -31,6 +31,7 @@ import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-r
 import { forkClosedProject, forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
 import { inspectFailedProjectLoad } from './project-load-recovery';
+import { projectViewRecoveryFailure } from './project-view-recovery';
 import { importProjectMedia } from '../../../integrations/blockly/project-media-import';
 import { getBoardConfig, setBoardConfig } from '../../../integrations/blockly/board-config-operation';
 import { switchProjectBoard } from '../../../integrations/blockly/board-switch-operation';
@@ -242,6 +243,10 @@ export class BlocklyLiveOperationBridgeService {
       });
       return { ok: result['ok'] === true, operation: 'project_recovery_open', project,
         sourceGuardReleased: false, result,
+        ...(result['ok'] !== true ? { code: result['code'], message: result['message'],
+          ...(['PROJECT_FILE_BUSY', 'PROJECT_RECOVERY_SOURCE_BUSY', 'PROJECT_RECOVERY_SOURCE_UNVERIFIED'].includes(result['code'])
+            ? { nextAction: { tool: 'app_info', input: {} },
+              guidance: 'Source-copy admission did not establish a safe read scope. Keep the source, candidate and owner records. Observe app_info and the existing operation; retry only after its actual state changes. Do not delete locks, force rebind, loop unchanged requests or ask the user to repair internal files.' } : {}) } : {}),
         receipt: { version: 1, requestId: request.requestId, state: result['forkReceipt']?.state ?? 'unknown' } };
     } catch (error) {
       return { ok: false, operation: 'project_recovery_open', project, sourceGuardReleased: false,
@@ -1283,6 +1288,7 @@ export class BlocklyLiveOperationBridgeService {
     try {
       const opened = await this.projectService.projectOpen(requestedProject, {
         reason: sameProject ? 'chat-tool-reload' : 'chat-tool-open',
+        interactive: false,
       });
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
       const editorReady = this.electronService.exists(
@@ -1309,6 +1315,10 @@ export class BlocklyLiveOperationBridgeService {
           : {}),
       };
     } catch (error) {
+      const viewFailure = projectViewRecoveryFailure(error, requestedProject, { mode: developmentMode,
+        hasOpenView: !!this.projectService.currentProjectPath || !!this.projectService.coderProjects?.length,
+        hasSavedDocument: () => this.electronService.exists(this.electronService.pathJoin(requestedProject, 'project.abi')) });
+      if (viewFailure) return viewFailure;
       const loadStatus = this.projectService.getBlocklyProjectLoadStatus(requestedProject);
       return {
         ok: false,

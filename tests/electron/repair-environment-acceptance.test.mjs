@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { withoutRepairRoute, withoutPreservationEntry, withLegacyPreservationOnly, resumeRepairTarget } from '../../e2e/fixtures/repair-environment-acceptance.mjs'
+import { withoutRepairRoute, withoutPreservationEntry, withLegacyPreservationOnly, repairContinuationAction, resumeRepairTarget } from '../../e2e/fixtures/repair-environment-acceptance.mjs'
 
 test('missing preservation index retains paired strong tool proof and reparents only removed metadata', () => {
   const body = { sourceViewPreservation: { sourceView: { reference: { manifestHash: 'actual-complete-proof' } } } }
@@ -75,4 +75,28 @@ test('environment acceptance rejects a data fork or an action on a different tar
   for (const input of [{ project: 'target', action: 'fork' }, { project: 'different', action: 'resume_environment' }])
     await assert.rejects(resumeRepairTarget(async () => ({ nextAction: { tool: 'project_recover', input } }),
       'target', () => {}))
+})
+
+test('commit interruption acceptance follows the offered read-only observation', async () => {
+  const calls = [], project = 'target'
+  const result = await resumeRepairTarget(async (name, input) => {
+    calls.push({ name, input })
+    return calls.length === 1 ? { ok: false, observeAction: { tool: 'project_recover',
+      input: { project, action: 'inspect_environment' } } } : {
+      runtimeAssociation: { ok: true }, repairEnvironment: { version: 2, project, hostPid: 123 } }
+  }, project, () => {})
+  assert.equal(result.runtimeAssociation.ok, true)
+  assert.deepEqual(calls.map(call => call.input.action), ['inspect_environment', 'inspect_environment'])
+})
+
+test('observation fallback cannot authorize a mutating resume or alternate target', () => {
+  for (const input of [{ project: 'target', action: 'resume_environment' },
+    { project: 'different', action: 'inspect_environment' }, { project: 'target', action: 'fork' }])
+    assert.throws(() => repairContinuationAction({ observeAction: { tool: 'project_recover', input } }, 'target'))
+})
+
+test('invalid primary action cannot be bypassed using a valid observation fallback', () => {
+  assert.throws(() => repairContinuationAction({ nextAction: { tool: 'project_recover',
+    input: { project: 'target', action: 'fork' } }, observeAction: { tool: 'project_recover',
+    input: { project: 'target', action: 'inspect_environment' } } }, 'target'))
 })
