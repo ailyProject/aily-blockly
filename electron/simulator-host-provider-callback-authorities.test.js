@@ -263,7 +263,7 @@ test('normal Host product source callback fences generation, async hash races, p
     getReusableGeneratedCode: () => reusable ? code : null,
   };
 
-  const service = new Service({}, project, {}, {}, {}, {}, blockly, {}, {}, {}, {});
+  const service = new Service({}, project, {}, {}, {}, {}, blockly, {}, {}, {});
   const session = await service.open({ hostInstanceId: 'source-test', transport: {} });
 
   try {

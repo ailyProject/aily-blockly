@@ -21,7 +21,6 @@ import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-sce
 import {
   SubappHostProviderDispatcher,
   SubappHostProviderProductRegistryService,
-  ChildToolProcessService,
   type SubappHostProviderAdapter,
   type SubappHostProviderProductOpenContext,
   type SubappHostProviderProductSession,
@@ -65,7 +64,6 @@ export class SimulatorHostProviderProductService {
     private readonly projectDebug: ProjectDebugConfigurationService,
     private readonly ngZone: NgZone,
     private readonly commands: CmdService,
-    private readonly childTools: ChildToolProcessService,
   ) {}
 
   ensureRegistered(): void {
@@ -214,10 +212,9 @@ export class SimulatorHostProviderProductService {
         if (!activeProject.readActiveBinding() || (this.project.getRuntimeBoardModule()
           && this.project.getRuntimeBoardModule() !== manifest.name)) throw new SimulatorHostProviderOperationError('conflict');
 
-        const runtime = this.childTools.getRuntimeSnapshot(SIMULATOR_TOOL_ID);
-        const packagePath = runtime.hostInfo?.packagePath;
+        const packagePath = context.runtimePackagePath;
 
-        if (!runtime.running || !packagePath) throw new SimulatorHostProviderOperationError('operation-failed', 'Simulator resources are unavailable.');
+        if (!packagePath) throw new SimulatorHostProviderOperationError('operation-failed', 'Simulator resources are unavailable.');
 
         const assets = files.join(packagePath, 'assets');
 

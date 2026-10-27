@@ -10,6 +10,8 @@ const PORTABLE_IDENTIFIER_PATTERN =
 export interface SubappHostProviderProductOpenContext {
   readonly toolId: string;
   readonly hostInstanceId: string;
+  /** Package root of the exact Runtime stream bound by the workspace. */
+  readonly runtimePackagePath?: string;
   readonly transport: SubappHostProviderTransport;
 }
 
@@ -29,6 +31,7 @@ export interface SubappHostProviderProductFactory {
  * without a registered product factory keeps its existing lifecycle.
  */
 @Injectable({ providedIn: 'root' })
+
 export class SubappHostProviderProductRegistryService {
   private readonly factories = new Map<
     string,
@@ -44,13 +47,17 @@ export class SubappHostProviderProductRegistryService {
     factory: SubappHostProviderProductFactory,
   ): () => void {
     const toolId = requirePortableIdentifier(toolIdValue, 'toolId');
+
     if (!factory || typeof factory.open !== 'function') {
       throw new TypeError('Host Provider product factory is invalid.');
     }
+
     if (this.factories.has(toolId)) {
       throw new Error(`Host Provider product factory is already registered: ${toolId}`);
     }
+
     this.factories.set(toolId, factory);
+
     return () => {
       if (this.factories.get(toolId) === factory) {
         this.factories.delete(toolId);
@@ -62,7 +69,9 @@ export class SubappHostProviderProductRegistryService {
     context: SubappHostProviderProductOpenContext,
   ): Promise<SubappHostProviderProductSession | null> {
     const toolId = requirePortableIdentifier(context.toolId, 'toolId');
+
     requirePortableIdentifier(context.hostInstanceId, 'hostInstanceId');
+
     if (
       !context.transport
       || typeof context.transport.send !== 'function'
@@ -70,12 +79,17 @@ export class SubappHostProviderProductRegistryService {
     ) {
       throw new TypeError('Host Provider product transport is invalid.');
     }
+
     const factory = this.factories.get(toolId);
+
     if (!factory) return null;
+
     const session = await factory.open(context);
+
     if (!session || typeof session.close !== 'function') {
       throw new TypeError('Host Provider product factory returned an invalid session.');
     }
+
     return session;
   }
 }
@@ -87,5 +101,6 @@ function requirePortableIdentifier(value: unknown, label: string): string {
   ) {
     throw new TypeError(`${label} is invalid.`);
   }
+
   return value;
 }
