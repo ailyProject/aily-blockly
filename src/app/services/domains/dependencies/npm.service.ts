@@ -666,10 +666,19 @@ export class NpmService {
       guard();
       await window['cloudBuild']?.invalidate?.({ projectPath });
       guard();
-      await this.installBoardDeps(session, { showSuccessNotice: false });
-      guard();
-      if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
-        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      if (this.configService.isCoderProduct() && this.prjService.isAilyCodeProject(projectPath)) {
+        // A failed cloud preflight can leave a new/error dependency session.
+        // Coder needs the complete local chain to attest readiness before the
+        // compiler's disk check; installing SDKs alone does not mark it ready.
+        if (!await this.ensureProjectAndBoardDeps(projectPath, undefined, session)) {
+          throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+        }
+      } else {
+        await this.installBoardDeps(session, { showSuccessNotice: false });
+        guard();
+        if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
+          throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+        }
       }
       guard();
       // 只补齐执行依赖；重发板配置会重建 Blockly 运行时，使原任务的源码快照失效。

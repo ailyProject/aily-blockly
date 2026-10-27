@@ -47,6 +47,16 @@ describe('Coder dependency installation and recovery', () => {
 
   afterEach(() => Object.assign(window, original));
 
+  it('repairs an error dependency session completely before a local retry can compile', async () => {
+    project.setProjectDependencyResult(session, false);
+    expect(project.getProjectDependencyStatus('/project')).toBe('error');
+    await npm.prepareLocalCompileBackend('/project', () => false, () => {});
+    expect(npm.installBoardDeps).toHaveBeenCalledTimes(1);
+    expect(npm.application.materializeCoderProjectLibraries).toHaveBeenCalledTimes(1);
+    expect(project.getProjectDependencyStatus('/project')).toBe('ready');
+    expect(project.getProjectDependencyBlockMessage('/project')).toBeUndefined();
+  });
+
   it('keeps every build entry blocked through platform install, source preparation and refresh', fakeAsync(() => {
     let platformDone!: () => void;
     let sourcesDone!: () => void;

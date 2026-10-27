@@ -36,6 +36,7 @@ describe('Coder build metadata', () => {
         return files.get(path);
       },
       writeFileSync: (path: string, content: string) => files.set(path, content),
+      mkdirSync() {}, renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       readFileAsBase64: (path: string) => btoa(files.get(path)!),
       existsSync: exists,
       readDirSync: (path: string) => {
@@ -47,6 +48,7 @@ describe('Coder build metadata', () => {
       },
     };
     window['path'] = {
+      join: (...parts: string[]) => parts.join('/'),
       isExists: exists,
       getAilyBuilderPath: () => '/builder',
       getAppDataPath: () => '/app-data',
@@ -59,7 +61,7 @@ describe('Coder build metadata', () => {
         return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       },
     };
-    project = { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
+    project = { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
       ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
       getProjectDependencyBlockMessage: () => undefined };
     metadata = new CoderBuildInfoService(electron);
@@ -169,6 +171,44 @@ describe('Coder build metadata', () => {
     spyOn<any>(service, 'handleFailNotice');
     return service;
   }
+
+  for (const stage of ['preflight', 'cloud-execution', 'local-error', 'cancel-preparation']) it(`retries a failed cloud Coder task only after clicking: ${stage}`, async () => {
+    const compiler: any = createCompiler(() => stage === 'local-error' ? 1 : 0);
+    let local = false, owners = 0;
+    project.beginBuildBackendOperation = () => {
+      owners++;
+      return { useLocal() { local = true; }, release() { if (--owners === 0) local = false; } };
+    };
+    project.isCloudBuild = () => !local;
+    project.getCloudBoardProfile = async () => ({ boardModule: '@aily-project/board-test', capabilities: { compile: true } });
+    Object.assign(compiler.configService, { getCompileBackend: () => 'cloud', getCompileSettingsKey: () => 'cloud', getCloudBuildSettings: () => ({}) });
+    compiler.application.currentProcessState = 'IDLE';
+    compiler.application.startBuild = () => { compiler.application.currentProcessState = 'BUILDING'; return true; };
+    compiler.application.finishBuild = (ok: boolean) => { compiler.application.currentProcessState = ok ? 'IDLE' : 'ERROR'; };
+    Object.assign(compiler.npmService, { prepareCompileBackend: async () => {
+      if (!local && stage !== 'cloud-execution') throw new Error('unsupported board');
+    }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
+      expect(local).toBeTrue(); expect(owners).toBe(1);
+      if (stage === 'cancel-preparation') { compiler.cancel(); throw new Error('cancelled'); }
+    }) });
+    spyOn(compiler, 'runCloudCompile').and.rejectWith(new Error('gateway failed'));
+    const result = await compiler.runCompileFromDisk();
+    expect(result.success).toBeFalse();
+    expect(compiler.runOneShotCommand).not.toHaveBeenCalled();
+    expect(compiler.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    const retry = compiler.handleFailNotice.calls.mostRecent().args[4];
+    expect(retry).toEqual(jasmine.any(Function)); expect(owners).toBe(0);
+    const pending = retry(); await retry(); await pending;
+    expect(compiler.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+    expect(compiler.runOneShotCommand.calls.count()).toBe(stage === 'cancel-preparation' ? 0 : 1);
+    if (stage !== 'cancel-preparation') expect(readManifest().buildInfo.lastBuildStatus).toBe(stage === 'local-error' ? 'failed' : 'success');
+    expect(JSON.parse(files.get(`${root}/.log/compile/latest-result.json`)!)).toEqual(jasmine.objectContaining({
+      success: stage !== 'local-error' && stage !== 'cancel-preparation', source: 'manual',
+    }));
+    expect(local).toBeFalse(); expect(owners).toBe(0);
+    expect(compiler.configService.getCompileBackend()).toBe('cloud');
+    if (stage === 'local-error') expect(compiler.handleFailNotice.calls.mostRecent().args[4]).toBeUndefined();
+  });
 
   function createSwitchingCompiler(exitCode = 0) {
     const compiler: any = createCompiler(() => exitCode);
@@ -329,7 +369,7 @@ describe('Coder build metadata', () => {
     expect(result.success).toBeFalse();
     expect(result.result.fullStdErr).toBe(detail);
     expect(result.result.text).toBe('Compiler exited with code 1');
-    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail);
+    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail, undefined);
   });
 
   it('records successful compilation against the captured project even after a project switch', async () => {

@@ -19,7 +19,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 import { BlocklyService } from './blockly.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { CompileValidationService, type BuildCheckpoint } from '@domain/build/public-api';
+import { CompileValidationService, persistBuildResult, type BuildCheckpoint } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -38,6 +38,7 @@ import { patchBuildMetadata, captureBuildSource } from '../../../utils/build-pub
 import { getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
 import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 import { withLocalBuildSwitch, CLOUD_BUILD_CLOUD_REQUESTED } from '../../../utils/local-build-switch.utils';
+import { createCloudBuildLocalRetry } from '../../../utils/cloud-build-local-retry.utils';
 import {
   PYTHON_PROJECT_ENTRY,
   normalizeProjectMode,
@@ -56,6 +57,7 @@ const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
 
 @Injectable({ providedIn: 'root' })
 export class _BuilderService {
+  private buildAttempt = 0;
 
   constructor(
     private cmdService: CmdService,
@@ -1140,7 +1142,7 @@ export class _BuilderService {
 
 
   // 添加这个错误处理方法
-  private handleCompileError(errorMessage: string, sendToLog: boolean = true, details?: string): void {
+  private handleCompileError(errorMessage: string, sendToLog: boolean = true, details?: string, onRetryLocally?: () => void): void {
     // 计算编译耗时
     const buildEndTime = Date.now();
     const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
@@ -1155,6 +1157,7 @@ export class _BuilderService {
       text: this.messageWithDuration(cleanErrorMessage, buildDuration),
       state: 'error',
       detail: cleanDetailMessage,
+      onRetryLocally,
       setTimeout: 600000,
       sendToLog: sendToLog
     });
@@ -1169,6 +1172,15 @@ export class _BuilderService {
     graphSemanticRevision?: string,
     requestId?: string,
     checkpoint: BuildCheckpoint = {},
+  ): Promise<ActionState> {
+    return this.buildAttemptWithBackend(graphSemanticRevision, requestId, checkpoint);
+  }
+
+  private async buildAttemptWithBackend(
+    graphSemanticRevision?: string,
+    requestId?: string,
+    checkpoint: BuildCheckpoint = {},
+    retryLocally = false,
   ): Promise<ActionState> {
     // 提交时固定配置与项目；任务内切换编译后端不会改变用户设置，也不能混用两类产物。
     let cloudBuild = this.isCloudBuild();
@@ -1234,6 +1246,27 @@ export class _BuilderService {
     const requestedProjectPath = this.projectService.currentProjectPath;
     const requestedSettingsKey = this.compileSettingsKey();
     const backendOperation = this.projectService.beginBuildBackendOperation(requestedProjectPath);
+    const attempt = this.buildAttempt = (this.buildAttempt || 0) + 1;
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
+    let settled!: () => void;
+    const cleanup = new Promise<void>(resolve => { settled = resolve; });
+    const retry = createCloudBuildLocalRetry({
+      settled: cleanup,
+      isCurrent: () => this.buildAttempt === attempt && projectCurrent()
+        && this.compileSettingsKey() === requestedSettingsKey,
+      canStart: () => [ProcessState.IDLE, ProcessState.ERROR].includes(this.workflowService.currentState),
+      retry: async () => {
+        const checkpoint: BuildCheckpoint = {};
+        try {
+          const result = await this.buildAttemptWithBackend(graphSemanticRevision, undefined, checkpoint, true);
+          persistBuildResult(requestedProjectPath, true, result, undefined, checkpoint, 'manual');
+          return result;
+        } catch (error) {
+          if (checkpoint.startedAt) persistBuildResult(requestedProjectPath, false, undefined, error, checkpoint, 'manual');
+          throw error;
+        }
+      },
+    });
     const cancellation = new AbortController();
     this.buildCancellation = cancellation;
     let preparing: Promise<void>;
@@ -1245,6 +1278,15 @@ export class _BuilderService {
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
         this.buildStartTime = Date.now(); // 记录编译开始时间
+        if (retryLocally) {
+          backendOperation.useLocal();
+          cloudBuild = false;
+          this.noticeService.update({ title: this.t('PREPARING_TITLE'),
+            text: this.translate.instant('CLOUD_BUILD.SWITCHING_TO_LOCAL'), state: 'doing',
+            setTimeout: 0, stop: () => this.cancel() });
+          await this.npmService.prepareLocalCompileBackend(requestedProjectPath,
+            () => cancellation.signal.aborted, () => this.cancel());
+        }
         if (this.configService.getCompileBackend() === 'cloud') {
           await this.npmService.prepareCompileBackend(requestedProjectPath, () => cancellation.signal.aborted);
           if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()
@@ -1786,6 +1828,7 @@ export class _BuilderService {
               assertCurrent();
               this.buildPromiseReject = reject;
               backendOperation.useCloud();
+              cloudBuild = true;
               cloudBuild = await this.npmService.prepareCloudCompileBackend(projectPath, () => cancellation.signal.aborted);
               assertCurrent();
               if (!cloudBuild) {
@@ -1816,7 +1859,7 @@ export class _BuilderService {
           return;
         }
         const fullErrorMessage = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
-        this.handleCompileError(error.message, true, fullErrorMessage);
+        this.handleCompileError(error.message || error.text || String(error), true, fullErrorMessage, cloudBuild ? retry : undefined);
         this.workflowService.finishBuild(false, error.message);
         reject({ state: 'error', text: error.message, fullStdErr: fullErrorMessage });
       }
@@ -1837,6 +1880,7 @@ export class _BuilderService {
         this.activeCloudRequestId = null;
         this.cloudCancelPromise = null;
       }
+      settled();
     });
     }
 

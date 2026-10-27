@@ -131,20 +131,23 @@ describe('Blockly compile and upload handoff', () => {
       ['/project/node_modules/@aily-project/board-test/board.json', '{"name":"board"}'],
     ]);
     window['fs'] = { readFileSync: (file: string) => files.get(file),
+      existsSync: (file: string) => files.has(file), mkdirSync() {},
+      writeFileSync: (file: string, content: string) => files.set(file, content),
+      renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       replaceProjectText: async (request: any, check: () => void) => {
         check(); const file = `${request.projectPath}/${request.fileName}`;
         expect(`sha256:${await sha256Hex(files.get(file)!)}`).toBe(request.expectedHash);
         files.set(file, request.content);
         return { status: 'COMMITTED', hash: `sha256:${await sha256Hex(request.content)}` };
       } };
-    window['path'] = { isExists: () => false, getAppDataPath: () => '/appdata', getAilyChildPath: () => '/child' };
+    window['path'] = { join: (...parts: string[]) => parts.join('/'), isExists: () => false, getAppDataPath: () => '/appdata', getAilyChildPath: () => '/child' };
     window['builder'] = { captureBuildSource: () => ({ digest: 'test' }) };
     const service: any = Object.create(_BuilderService.prototype), command = new Subject<any>();
     const prepared = { code: 'void setup() {}', artifacts: null, projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }],
       revision: 1, sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' } };
     Object.assign(service, {
       metrics: { record: () => {} },
-      passed: true, projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
+      passed: true, projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }),
         getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo([]),
@@ -174,6 +177,49 @@ describe('Blockly compile and upload handoff', () => {
     };
     return { service, files, command, start };
   }
+
+  for (const stage of ['preflight', 'cloud-execution']) it(`offers an explicit new local Blockly task after ${stage} fails`, async () => {
+    const f = compileFixture();
+    let local = false, owners = 0;
+    f.service.projectService.beginBuildBackendOperation = () => {
+      owners++;
+      return { useLocal() { local = true; }, release() { if (--owners === 0) local = false; } };
+    };
+    f.service.projectService.isCloudBuild = () => !local;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.workflowService.currentState = ProcessState.IDLE;
+    f.service.workflowService.startBuild = () => { f.service.workflowService.currentState = ProcessState.BUILDING; return true; };
+    f.service.workflowService.finishBuild.and.callFake((success: boolean) => {
+      f.service.workflowService.currentState = success ? ProcessState.IDLE : ProcessState.ERROR;
+    });
+    const notices: any[] = [];
+    f.service.noticeService.update = (notice: any) => notices.push(notice);
+    f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
+    f.service.npmService = { prepareCompileBackend: async () => {
+      if (!local && stage === 'preflight') throw new Error('unsupported board');
+    }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
+      expect(local).toBeTrue(); expect(owners).toBe(1);
+    }) };
+    f.service.runCloudCompilation = jasmine.createSpy('cloud').and.rejectWith(new Error('gateway offline'));
+    const { result } = await f.start();
+    expect((await result).state).toBe('error');
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    expect(owners).toBe(0);
+    const retry = notices.find(n => n.state === 'error').onRetryLocally;
+    expect(retry).toEqual(jasmine.any(Function));
+    const pending = retry(); await retry();
+    for (let n = 0; n < 100 && !f.service.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(f.service.cmdService.spawn).toHaveBeenCalledTimes(1);
+    f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    await pending;
+    expect(f.service.passed).toBeTrue();
+    expect(JSON.parse(f.files.get('/project/.log/compile/latest-result.json')!)).toEqual(jasmine.objectContaining({ success: true, source: 'manual' }));
+    expect(local).toBeFalse(); expect(owners).toBe(0);
+    expect(f.service.configService.getCompileBackend()).toBe('cloud');
+    expect(f.service.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+  });
 
   it('publishes changed generator macros and reaches the compiler on the first build', async () => {
     const f = compileFixture(), { result } = await f.start();

@@ -48,6 +48,7 @@ describe('Coder concurrent process integration', () => {
     const contexts = new Map<string, any>();
     project = {
       currentProjectPath: '/a', currentProjectPath$: new BehaviorSubject('/a'),
+      captureCurrentProjectGuard: () => { const path = project.currentProjectPath; return () => project.currentProjectPath === path; },
       coderProjects$: new BehaviorSubject([{ path: '/a' }, { path: '/b' }]),
       coderProjects: [{ path: '/a' }, { path: '/b' }],
       coderOperationsSubject: new BehaviorSubject(new Map()),
@@ -58,7 +59,7 @@ describe('Coder concurrent process integration', () => {
       getCoderProjectContext(path: string) {
         if (!contexts.has(path)) contexts.set(path, {
           currentProjectPath: path, isCoderProjectContext: true,
-          beginBuildBackendOperation: () => ({ release() {} }),
+          captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }),
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
           syncCurrentBoardConfig: async () => true,
@@ -95,6 +96,32 @@ describe('Coder concurrent process integration', () => {
 
   function started(command: typeof commands[number]): void { command.output.next({ type: 'stdout', data: 'running\n', streamId: command.id }); }
   function finish(command: typeof commands[number]): void { command.output.next({ type: 'close', code: 0, streamId: command.id }); command.output.complete(); }
+
+  for (const state of ['done', 'error']) it(`owns the project while a notification retries locally and reports ${state}`, async () => {
+    const session = runtime.getSession('/a');
+    let complete!: () => void;
+    const retry = jasmine.createSpy('retry').and.callFake(async () => {
+      session.notice.update({ state: 'doing', text: 'local' });
+      await new Promise<void>(resolve => { complete = resolve; });
+      session.notice.update({ state, text: 'completed' });
+    });
+    project.getProjectDependencyBlockMessage.and.returnValue('dependency failure');
+    session.notice.update({ state: 'error', text: 'cloud', onRetryLocally: retry });
+    const click = session.state.notice!.onRetryLocally!;
+    const pending = click(); click();
+    expect(session.busy).toBe('build'); expect(runtime.getState('/a').build).toBe('doing');
+    expect(retry).toHaveBeenCalledTimes(1);
+    complete(); await pending;
+    expect(session.busy).toBeNull(); expect(runtime.getState('/a').build).toBe(state);
+  });
+
+  it('ignores a local retry notification after switching to another project', async () => {
+    const session = runtime.getSession('/a'), retry = jasmine.createSpy('retry');
+    session.notice.update({ state: 'error', text: 'cloud', onRetryLocally: retry });
+    const click = session.state.notice!.onRetryLocally!;
+    project.currentProjectPath = '/b'; project.currentProjectPath$.next('/b');
+    await click(); expect(retry).not.toHaveBeenCalled();
+  });
 
   it('does not start a build while board source/configuration is being synchronized', async () => {
     project.isProjectTransitionInProgress.and.returnValue(true);

@@ -174,7 +174,7 @@ describe('board cloud support and local fallback', () => {
     const compile = Object.assign(Object.create(CompileService.prototype), {
       metrics: { record: () => {} },
       configService: config, projectService: project, npmService: npm,
-      application: { startBuild: () => true, updateNotice: () => {} }, runCompile, t: (key: string) => key,
+      application: { startBuild: () => true, finishBuild() {}, updateNotice: () => {} }, handleFailNotice() {}, runCompile, t: (key: string) => key,
     });
     const blocked = await compile.runCompileFromDisk();
     expect(blocked.success).toBeFalse();
