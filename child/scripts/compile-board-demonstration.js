@@ -5,20 +5,24 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 const { captureBuildSource } = require('./build-source-capture');
-
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = async filename => JSON.parse(await fs.readFile(filename, 'utf8'));
 
 /** Prepare an isolated source project, then use the normal Host compilation entry. */
-async function compileBoardDemonstration(boardDirectory, appDataDirectory, expectedGraph) {
+async function compileBoardDemonstration(boardDirectory, demonstrationDirectory, appDataDirectory, expectedGraph, program) {
     const boardRoot = await fs.realpath(boardDirectory);
+    const demoRoot = await fs.realpath(demonstrationDirectory);
     const appData = await fs.realpath(appDataDirectory);
     const board = await json(path.join(boardRoot, 'package.json'));
     const definition = await json(path.join(boardRoot, 'board.json'));
-    const recipe = await json(path.join(boardRoot, 'demo', 'build.json'));
-    const circuit = await json(path.join(boardRoot, 'demo', 'circuit.json'));
-    const directions = await json(path.join(boardRoot, 'demo', 'gpio-directions.json'));
-    const code = await fs.readFile(path.join(boardRoot, 'demo', 'sketch.ino'), 'utf8');
+
+    if (program !== undefined && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(program)) throw new Error('Invalid demonstration program.');
+
+    const directory = program ? path.join(demoRoot, 'programs', program) : demoRoot;
+    const recipe = await json(path.join(demoRoot, 'build.json'));
+    const circuit = await json(path.join(directory, 'circuit.json'));
+    const directions = await json(path.join(directory, 'gpio-directions.json'));
+    const code = await fs.readFile(path.join(directory, 'sketch.ino'), 'utf8');
 
     if (recipe.schemaVersion !== 1 || recipe.fqbn !== definition.type
         || circuit.graphSemanticRevision !== expectedGraph || directions.graphSemanticRevision !== expectedGraph
@@ -32,6 +36,7 @@ async function compileBoardDemonstration(boardDirectory, appDataDirectory, expec
 
     const cacheKey = digest(JSON.stringify({ board: { name: board.name, version: board.version, dependencies: board.boardDependencies },
         definition, recipe, code, graph: expectedGraph, directions, builder: version.stdout.trim() }));
+
     const root = path.join(appData, 'temp', 'simulator-demonstrations', cacheKey);
     const manifestPath = path.join(root, '.build', 'aily-artifact-manifest.json');
     const sourceSha256 = digest(code);
@@ -45,8 +50,10 @@ async function compileBoardDemonstration(boardDirectory, appDataDirectory, expec
     await fs.mkdir(boardCopy, { recursive: true });
     await fs.writeFile(path.join(boardCopy, 'package.json'), JSON.stringify(board));
     await fs.writeFile(path.join(boardCopy, 'board.json'), JSON.stringify(definition));
+
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'board-demonstration', version: '1.0.0',
         dependencies: { [board.name]: board.version }, projectConfig: recipe.options }));
+
     await fs.writeFile(path.join(root, '.temp', 'sketch', 'sketch.ino'), code);
 
     const directionsPath = path.join(root, '.temp', 'gpio-directions.json');
@@ -58,10 +65,10 @@ async function compileBoardDemonstration(boardDirectory, appDataDirectory, expec
         sceneGpioDirectionsPath: directionsPath };
 
     config.sourceCapture = captureBuildSource(config);
-
     const requestPath = path.join(root, '.temp', `compile-request-${randomUUID()}.json`);
 
     await fs.writeFile(requestPath, JSON.stringify(config));
+
     await new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [path.join(__dirname, 'compile.js'), requestPath], {
             stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true,
@@ -104,6 +111,7 @@ if (require.main === module) {
         console.log(`AILY_DEMO_BUILD ${JSON.stringify(result)}`);
     }).catch(error => {
         console.error(error.message);
+
         process.exitCode = 1;
     });
 }

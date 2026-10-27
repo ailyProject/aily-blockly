@@ -1,21 +1,25 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+
 const { MAX_PROJECT_FILE_BYTES: MAX_BYTES, projectFileHash: hash, projectFileFault: fault,
   projectFileGuard, createProjectFileAccess, acquireProjectFileLock, assertNoPendingAbsGeneration } = require('./project-file-access');
 
 const SCENE_FILE = '.aily/simulator/scene-network-v2.json';
+const DEMONSTRATION_FILE = /^\.aily\/simulator\/demonstrations\/[A-Za-z0-9][A-Za-z0-9_-]*\/demo_script\.json$/;
 const FILES = new Set(['project.abi', 'project.abs', 'project.abs.map.json', 'package.json', SCENE_FILE]);
 const PROJECT_FILE_PUBLICATION_VERSION = 2;
 const PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION = 1;
 
 function assertNoAbsIdentityContext(access) {
   const { root, files } = access;
+
   // A plain project.abs is a type/field source, without Blockly block IDs.
   // A projection map or sync journal can bind identities and must still block.
   for (const relative of ['project.abs.map.json', path.join('.aily', 'abs-sync')]) {
     try { files.lstatSync(path.join(root, relative)); }
     catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+
     throw fault('BLOCKLY_IDENTITY_MIGRATION_BLOCKED', `Existing ABS identity context (${relative}); preserve drafts and use explicit recovery before migrating legacy shadow IDs.`);
   }
 }
@@ -41,104 +45,157 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
   let result;
   const warnings = [];
   const guard = projectFileGuard(assertCurrent);
+
   try {
-    if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath) || !FILES.has(fileName)
+    if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath)
+      || (!FILES.has(fileName) && !(typeof fileName === 'string' && DEMONSTRATION_FILE.test(fileName)))
       || typeof content !== 'string' || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
       || (backup !== undefined && (backup !== 'project-data' || fileName !== 'project.abi' || expectedHash === null))
       || (migrateLegacyShadowIds !== undefined && (migrateLegacyShadowIds !== true || backup !== 'project-data'))
       || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
       throw fault('PROJECT_FILE_INVALID', 'Expected an absolute project path, a supported mirror name and an exact byte hash.');
     }
+
     bytes = Buffer.from(content, 'utf8');
+
     const maxBytes = fileName === SCENE_FILE ? 32 * 1024 * 1024 : MAX_BYTES;
+
     if (bytes.length > maxBytes) throw fault('PROJECT_FILE_TOO_LARGE', 'Project file exceeds its publication limit.');
     guard();
+
     const root = await files.promises.realpath(projectPath);
+
     guard();
+
     const access = createProjectFileAccess(root, projectPath, files);
     const { checkRoot, checkDirectory, readRegular } = access;
     const target = path.join(root, fileName);
     const lockDirectory = path.join(root, '.aily');
-    const directories = fileName === SCENE_FILE ? [lockDirectory, path.join(lockDirectory, 'simulator')] : [];
+    const parents = fileName.split('/').slice(0, -1);
+    const directories = parents.map((_, index) => path.join(root, ...parents.slice(0, index + 1)));
     const checkParents = () => { checkRoot(); for (const directory of directories) checkDirectory(directory); };
     assertRoot = checkParents;
+
     read = () => {
       try { checkParents(); }
       catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+
       try { if (files.lstatSync(target).size > maxBytes) throw fault('PROJECT_FILE_TOO_LARGE', 'Project file exceeds its publication limit.'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
+
       const value = readRegular(target);
+
       if (value?.length > maxBytes) throw fault('PROJECT_FILE_TOO_LARGE', 'Project file exceeds its publication limit.');
+
       return value;
     };
+
     checkRoot();
+
     // Refuse known conflicts before creating any temporary file or lock directory.
     const original = read();
+
     if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
     if (hash(original) !== expectedHash) return { status: 'CONFLICT', error: 'Project file changed; external content was retained.' };
+
     for (const directory of directories) {
       guard(); checkRoot();
+
       try { files.mkdirSync(directory); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+
       checkDirectory(directory);
     }
+
     if (!original?.equals(bytes)) {
       temporary = path.join(path.dirname(target), `.${path.basename(fileName)}.${randomUUID()}.tmp`);
       const handle = await files.promises.open(temporary, 'wx', 0o600);
+
       temporaryOwned = true;
+
       try {
         guard();
+
         await handle.writeFile(bytes);
         await handle.sync();
       } finally { await handle.close(); }
     }
+
     if (backup) {
       guard();
+
       checkRoot();
+
       const backupPath = path.join(root, `.project-data-backup.${randomUUID()}.tmp`);
       const backupHandle = await files.promises.open(backupPath, 'wx', 0o600);
+
       backupTemporary = backupPath;
+
       try {
         guard();
+
         await backupHandle.writeFile(original);
         await backupHandle.sync();
       } finally { await backupHandle.close(); }
     }
+
     guard();
+
     checkRoot();
+
     const lock = await acquireProjectFileLock(access, guard, timeoutMs);
+
     try {
       // No awaits from the guard through the final byte check and rename.
       guard();
       lock.assertOwned();
+
       checkParents();
       assertNoPendingAbsGeneration(access);
+
       if (migrateLegacyShadowIds) assertNoAbsIdentityContext(access);
+
       const previous = read();
+
       if (hash(previous) !== expectedHash) result = { status: 'CONFLICT', error: 'Project file changed before commit; external content was retained.' };
       else {
         if (backup) {
           const directory = path.join(lockDirectory, 'project-data-backups');
+
           try { files.mkdirSync(directory); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+
           checkDirectory(directory);
+
           const backupPath = path.join(directory, `${expectedHash.slice(7)}.abi`);
+
           // Publish a fully flushed original without ever replacing an existing backup.
           // Hard-link then remove our temporary name; a crash can leave a recoverable
           // extra link, never a partially written file masquerading as a valid backup.
           try { files.linkSync(backupTemporary, backupPath); }
+
           catch (error) { if (error.code !== 'EEXIST') throw error; }
+
           files.unlinkSync(backupTemporary);
+
           backupTemporary = undefined;
+
           if (!readRegular(backupPath)?.equals(previous)) throw fault('PROJECT_FILE_BACKUP_CONFLICT', 'Project Data backup is not the expected original; retained all files.');
+
           backupHash = expectedHash;
+
           guard();
           if (hash(read()) !== expectedHash) throw fault('PROJECT_FILE_CONFLICT', 'Project file changed while preparing its backup; external content was retained.');
         }
+
         if (!previous?.equals(bytes)) {
           renameAttempted = true;
+
           files.renameSync(temporary, target);
+
           temporaryOwned = false;
         }
+
         if (!read()?.equals(bytes)) throw fault('PROJECT_FILE_COMMIT_UNCERTAIN', 'Project file changed during publication.');
+
         result = { status: 'COMMITTED', hash: hash(bytes) };
       }
     } finally {
@@ -148,6 +205,7 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
     if (renameAttempted) {
       try {
         const actual = read();
+
         result = actual?.equals(bytes) ? { status: 'COMMITTED', hash: hash(bytes) }
           : hash(actual) === expectedHash ? { status: 'NOT_COMMITTED', code: error.code, error: error.message }
           : { status: 'UNKNOWN', code: 'PROJECT_FILE_COMMIT_UNCERTAIN', error: error.message };
@@ -160,11 +218,13 @@ async function replaceProjectText(request, assertCurrent, options = {}) {
       try { assertRoot(); await files.promises.unlink(temporary); }
       catch (error) { if (error.code !== 'ENOENT') warnings.push(error.message); }
     }
+
     if (backupTemporary) {
       try { assertRoot(); await files.promises.unlink(backupTemporary); }
       catch (error) { if (error.code !== 'ENOENT') warnings.push(error.message); }
     }
   }
+
   return { ...result, ...(backupHash ? { backupHash } : {}), ...(warnings.length ? { warnings } : {}) };
 }
 

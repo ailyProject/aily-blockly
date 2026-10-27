@@ -21,6 +21,7 @@ import { SimulatorMainAgentSceneChangeService } from './simulator-main-agent-sce
 import {
   SubappHostProviderDispatcher,
   SubappHostProviderProductRegistryService,
+  ChildToolProcessService,
   type SubappHostProviderAdapter,
   type SubappHostProviderProductOpenContext,
   type SubappHostProviderProductSession,
@@ -64,6 +65,7 @@ export class SimulatorHostProviderProductService {
     private readonly projectDebug: ProjectDebugConfigurationService,
     private readonly ngZone: NgZone,
     private readonly commands: CmdService,
+    private readonly childTools: ChildToolProcessService,
   ) {}
 
   ensureRegistered(): void {
@@ -174,9 +176,8 @@ export class SimulatorHostProviderProductService {
         return isCurrent() ? { sha256: sourceSha256, isCurrent } : null;
       },
     });
-
-    const demonstrations = new SimulatorBoardDemonstrationProvider({ projectIdentity, workspaceIdentity, files,
-      compile: async (board, graph, signal) => {
+    const demonstrations = new SimulatorBoardDemonstrationProvider({ projectIdentity, projectRoot, workspaceIdentity, files,
+      compile: async (board, graph, signal, program) => {
         const streamId = `board-demo-${crypto.randomUUID()}`;
         const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'compile-board-demonstration.js');
         const cancel = () => { void this.commands.kill(streamId); };
@@ -184,7 +185,7 @@ export class SimulatorHostProviderProductService {
         signal.addEventListener('abort', cancel, { once: true });
 
         try {
-          const result = await lastValueFrom(this.commands.spawn('node', [script, board.path, window['path'].getAppDataPath(), graph],
+          const result = await lastValueFrom(this.commands.spawn('node', [script, board.path, board.demoPath, window['path'].getAppDataPath(), graph, ...(program ? [program] : [])],
             { streamId, signal }, true));
 
           signal.throwIfAborted();
@@ -206,14 +207,30 @@ export class SimulatorHostProviderProductService {
       assertCurrent: () => {
         if (!activeProject.readActiveBinding()) throw new SimulatorHostProviderOperationError('conflict');
       },
-      readBoard: async () => {
+      readBoard: async signal => {
         const path = await this.project.getBoardPackagePath();
         const manifest = await this.project.getBoardPackageJson();
 
         if (!activeProject.readActiveBinding() || (this.project.getRuntimeBoardModule()
           && this.project.getRuntimeBoardModule() !== manifest.name)) throw new SimulatorHostProviderOperationError('conflict');
 
-        return { path, name: manifest.name, version: manifest.version };
+        const runtime = this.childTools.getRuntimeSnapshot(SIMULATOR_TOOL_ID);
+        const packagePath = runtime.hostInfo?.packagePath;
+
+        if (!runtime.running || !packagePath) throw new SimulatorHostProviderOperationError('operation-failed', 'Simulator resources are unavailable.');
+
+        const assets = files.join(packagePath, 'assets');
+
+        const index = JSON.parse(new TextDecoder('utf-8', { fatal: true })
+          .decode(await files.readFile(files.join(assets, 'demo-index.json'), signal)));
+
+        const id = index[manifest.name];
+
+        if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) {
+          throw new SimulatorHostProviderOperationError('operation-failed', 'This board has no demonstration resources.');
+        }
+
+        return { id, path, demoPath: files.join(assets, id, 'demo'), name: manifest.name, version: manifest.version };
       },
     });
 
@@ -274,7 +291,7 @@ export class SimulatorHostProviderProductService {
           project: {
             ...composition.projectCallbacks,
             requestBoardDemonstrationCode: async (request, signal) => {
-              const source = await demonstrations.read({ projectIdentity: request.projectIdentity }, signal);
+              const source = await demonstrations.read({ projectIdentity: request.projectIdentity, lessonId: request.lessonId }, signal);
               const lesson = source.script.lessons.find(item => item.id === request.lessonId);
 
               if (!lesson || source.boardPackageName !== request.boardPackageName || source.revision !== request.expectedRevision
