@@ -5,8 +5,8 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { once } = require('node:events');
 const { createBuildDeliveryAuthority } = require('./build-delivery-authority');
+const { observeChildProcessTerminal } = require('./child-process-terminal');
 
 const { fixture } = require('./test/fixtures/build-delivery-fixture.cjs');
 for (const coder of [false, true]) test(`only an observed successful ${coder ? 'Coder' : 'Blockly'} build can report a current source boundary`, async t => {
@@ -112,10 +112,15 @@ for (const [coder, outcome] of [[false, 'normal'], [true, 'normal'], [false, 'fa
         const options = { ...f.options, args: [path.join(childRoot, 'scripts/compile.js'), f.request] };
         const handle = await api.begin(f.sender, options);
         const child = spawn(options.command, options.args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+        const terminal = new Promise(resolve => {
+            const observer = observeChildProcessTerminal(child, resolve);
+            t.after(() => observer.dispose());
+        });
         let stderr = '', messages = 0;
         child.stderr.on('data', bytes => { stderr += bytes.toString(); });
         child.on('message', message => { messages++; handle.onMessage(message); });
-        const [code, signal] = await once(child, 'close');
+        const { code, signal, kind, closeObserved } = await terminal;
+        assert.equal(closeObserved, kind === 'close');
         handle.onExit(code, signal, false);
         assert.equal(code, outcome === 'failed' ? 7 : 0, stderr);
         assert.equal(signal, null);

@@ -101,6 +101,10 @@ export const routes: Routes = [
         loadComponent: () => import('./tools/child-tool-host/child-tool-host.component').then(m => m.ChildToolHostComponent)
     },
     {
+        path: "child-tool/simulator",
+        loadComponent: () => import('./tools/simulator-web/simulator-route.component').then(m => m.SimulatorRouteComponent)
+    },
+    {
         path: "child-tool/:toolId",
         loadComponent: () => import('./tools/child-tool-host/child-tool-host.component').then(m => m.ChildToolHostComponent)
     },

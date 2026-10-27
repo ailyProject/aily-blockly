@@ -1,3 +1,4 @@
+import { isCmdTerminalOutput, type CmdPhysicalTerminal } from '../../core/platform/cmd-output';
 import { Injectable, OnDestroy } from '@angular/core';
 import { ChildToolConfig, getChildToolConfig } from '../../../configs/tool.config';
 import { ConfigService } from '@core/preferences/public-api';
@@ -60,7 +61,7 @@ interface SharedChildToolRuntime {
   streamId?: string;
   hostInfo?: ChildToolHostInfo | null;
   running?: boolean;
-  exit?: { code: number | null; signal: string | null; expected: boolean };
+  exit?: { code: number | null; signal: string | null; expected: boolean; terminal?: CmdPhysicalTerminal };
 }
 
 interface ChildToolSession {
@@ -1077,12 +1078,12 @@ export class ChildToolProcessService implements OnDestroy {
       return;
     }
 
-    if (output.type === 'close') {
+    if (isCmdTerminalOutput(output) || output.type === 'runtime-exit') {
       const expectedStopReason = this.hostShuttingDown
         ? 'shutdown'
         : session.expectedStopReason || (output.expected ? 'shutdown' : null);
       const shouldRecover = !expectedStopReason && session.refCount > 0;
-      const reason = `${config.id} server closed with code ${this.formatProcessExitCode(output.code)}${this.formatBufferedStderr(session)}`;
+      const reason = `${config.id} server process ended with code ${this.formatProcessExitCode(output.code)}${this.formatBufferedStderr(session)}`;
       const details = {
         code: output.code,
         signal: output.signal,
@@ -1094,10 +1095,10 @@ export class ChildToolProcessService implements OnDestroy {
         this.logExpectedStop(config, details);
         this.rejectReady(session, reason);
       } else if (session.readyReject || (session.running && session.refCount > 0)) {
-        this.logError(config, 'process closed', details);
+        this.logError(config, 'process ended', details);
         this.rejectReady(session, reason);
       } else {
-        this.log(config, 'process closed', details);
+        this.log(config, 'process ended', details);
       }
       this.handleClose(session);
       this.publishRuntimeState(
@@ -1165,7 +1166,7 @@ export class ChildToolProcessService implements OnDestroy {
       const exited = runtimes.find(runtime => runtime?.toolId === toolId
         && !!session.streamId && runtime.streamId === session.streamId && runtime.running === false);
       if (exited) {
-        this.handleProcessOutput(config, session, session.streamId, { type: 'close', ...exited.exit });
+        this.handleProcessOutput(config, session, session.streamId, { ...exited.exit, type: 'runtime-exit' });
         continue;
       }
       if (session.refCount === 0 || session.startPromise || session.readyResolve || session.reconcilePromise) continue;

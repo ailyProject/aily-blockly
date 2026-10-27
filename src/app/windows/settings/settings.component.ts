@@ -24,7 +24,7 @@ import { NzProgressModule } from 'ng-zorro-antd/progress';
 import { BaseDialogComponent, DialogButton } from '../../components/base-dialog/base-dialog.component';
 import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialog/unsave-dialog.component';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { CmdService, ElectronService } from '@core/platform/public-api';
+import { isCmdTerminalOutput, CmdService, ElectronService } from '@core/platform/public-api';
 import { NzToolTipModule } from "ng-zorro-antd/tooltip";
 import { NpmService } from '@domain/dependencies/public-api';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
@@ -1106,7 +1106,7 @@ export class SettingsComponent implements OnDestroy {
       // Preview uses the builder's own age rules, including paired cache metadata.
       const preview = await lastValueFrom(this.cmdService.spawn(command, [...args, '--dry-run', '--json'], {}, true).pipe(
         reduce((json, output) => {
-          if (output.type === 'error' || (output.type === 'close' && output.code !== 0)) {
+          if (output.type === 'error' || (isCmdTerminalOutput(output) && output.code !== 0)) {
             throw new Error(output.error || output.stderr || 'Cache preview failed');
           }
           return output.type === 'stdout' ? json + (output.data || '') : json;
@@ -1131,7 +1131,7 @@ export class SettingsComponent implements OnDestroy {
             return;
           }
 
-          if (output.type === 'close') {
+          if (isCmdTerminalOutput(output)) {
             this.finishClearCache(output.code === 0, startTime, output.stderr);
           } else if (output.type === 'error') {
             this.finishClearCache(false, startTime, output.error);

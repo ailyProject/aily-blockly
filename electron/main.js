@@ -25,6 +25,7 @@ const builder = require("./tools/builder");
 const linter = require("./tools/linter");
 const connector = require("./tools/connector");
 const { createPackagedRendererServer } = require("./packaged-renderer-server");
+const { loadPackagedRendererSecurityOptions } = require("./packaged-renderer-security-config");
 const { resolveDevRendererUrl } = require("./dev-renderer-url");
 const {
   markInstalledForAppVersion,
@@ -418,10 +419,11 @@ if (!usesMacDevelopmentProtocol) {
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
 process.env.DEV = serve;
-const packagedRendererServer = createPackagedRendererServer();
+let packagedRendererServer;
 
 async function ensurePackagedRendererServerStarted() {
   if (serve) return null;
+  packagedRendererServer ??= createPackagedRendererServer(loadPackagedRendererSecurityOptions());
   return packagedRendererServer.start({
     rootDirectory: path.join(__dirname, "..", "renderer"),
   });
@@ -767,6 +769,7 @@ const {
   getRunningSubappConfig,
   stopAllChildToolSessions,
   nativeSubappRegistry,
+  browserExecutionRegistry,
   beginWindowShutdown,
 } = require("./window");
 const { createApplicationQuitCoordinator } = require('./application-quit');
@@ -1142,6 +1145,7 @@ async function handleCliBridgeCommand(action, payload, signal) {
         'subapp_agent_call',
         'subapp_agent_release',
         'subapp_agent_owner',
+        'subapp_agent_tools',
       ]);
       if (!dir && !projectOptionalOperations.has(operation)) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
       const liveOperationTimeoutMs = operation === 'project_build'
@@ -2716,6 +2720,7 @@ function createWindow() {
   registerBleHandlers();
   const subappReleaseTrustRoot = loadBundledSubappReleaseTrustRoot();
   registerSubappManagerHandlers(() => mainWindow, {
+    browserExecutionRegistry,
     releaseTrustPolicies: subappReleaseTrustRoot.policies,
     canMutateSharedTree: () => !hasOtherRunningInstances(),
     getRunningSubappConfig,
@@ -3149,7 +3154,7 @@ async function cleanupRegisteredChildProcesses() {
     killAllTerminals(),
     cancelAllAilyServicesStreams(),
     connector.shutdown(),
-    packagedRendererServer.close(),
+    packagedRendererServer?.close(),
   ]);
   releaseAllAuthCredentialsLocks();
 }

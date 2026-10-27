@@ -1,5 +1,6 @@
 // 通过预加载桥接向渲染进程安全暴露 Electron 和原生能力。
 const { contextBridge, ipcRenderer, shell, webFrame, clipboard } = require("electron");
+require('./subapp-browser-execution-preload');
 const { SerialPort } = require("serialport");
 const { createThrottledSerialPort, createRawSerialPort, listPorts } = require("./serial");
 const { exec } = require("child_process");
@@ -478,6 +479,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     respond: (requestId, result) => ipcRenderer.send('child-app-host-command-response', { requestId, result }),
   },
   childToolSession: {
+    browserExecution: (payload) => ipcRenderer.invoke('subapp-browser-execution', payload),
     observeNative: (payload) => ipcRenderer.invoke('subapp-native-observer', payload),
     onNativeObserverChanged: (callback) => {
       const listener = () => callback();

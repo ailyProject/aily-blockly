@@ -1,7 +1,11 @@
 <div class="code-editor-pro">
+    @if (browserMode) {
+    <div #browserProjectView class="browser-project-view" aria-label="Aily Coder"></div>
+    } @else {
     @for (projectPath of coderEmbedSrc ? [coderFrameProjectPath] : []; track projectPath) {
     <iframe #coderEmbedFrame class="coder-embed-frame" [class.is-ready]="coderEmbedFrameReady" title="Aily Coder"
         [src]="coderEmbedSrc" (load)="onCoderEmbedFrameLoad()"></iframe>
+    }
     }
     <app-coder-loading
         [stage]="coderLoadingStage"

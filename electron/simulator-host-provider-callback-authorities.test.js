@@ -247,6 +247,8 @@ test('normal Host product source callback fences generation, async hash races, p
     currentProjectPath: currentRoot, isProjectOpening: false,
     isAilyCodeProject: () => false,
     projectActivation$: { subscribe: () => ({ unsubscribe() {} }) },
+    captureCurrentProjectActivation: () => ({ path: currentRoot, projectSessionId: 'source-test-generation',
+      signal: new AbortController().signal, requireCurrent() {} }),
   };
 
   const Service = await loadHostProductService({
@@ -2479,7 +2481,8 @@ async function loadIntegrationModule() {
     `aily-simulator-product-callbacks-${process.pid}-${Date.now()}.cjs`,
   );
 
-  const simulatorRoot = path.resolve(__dirname, '../../aily-simulator');
+  const simulatorRoot = process.env.AILY_SIMULATOR_SOURCE_ROOT
+    || path.resolve(__dirname, '../../aily-simulator');
 
   const sdkEntry = path.join(
     simulatorRoot,
@@ -2643,13 +2646,14 @@ async function loadHostProductService({ digest, onComposition }) {
     './simulator-board-demonstration-provider': { SimulatorBoardDemonstrationProvider: CallbackAuthority },
     './simulator-blockly-editor-callback-authority': { SimulatorBlocklyEditorCallbackAuthority: CallbackAuthority },
     './simulator-entitlement-callback-authority': { SimulatorEntitlementCallbackAuthority: CallbackAuthority },
+    './simulator-current-project-scope': { captureSimulatorProjectReadAuthority: () => { throw new Error('Unexpected Artifact authority capture'); } },
     './simulator-electron-project-artifact-file-port': { createSimulatorElectronProjectArtifactFilePort: () => ({}) },
   };
 
   const module = { exports: {} };
 
   vm.runInNewContext(transformed.code, {
-    module, exports: module.exports, TextEncoder, Uint8Array,
+    module, exports: module.exports, TextEncoder, Uint8Array, AbortController, AbortSignal, DOMException,
     crypto: { subtle: { digest } },
     window: { path: path.win32 },
     require(specifier) {

@@ -68,7 +68,7 @@
           @for (tool of openToolList; track tool) {
           <div class="tool-panel" [class.active]="tool === topTool" [style.z-index]="tool === topTool ? 100 : 1">
             @if (isChildTool(tool)) {
-            <app-child-tool-host [toolId]="tool" [active]="tool === topTool"></app-child-tool-host>
+            <app-child-tool-presentation [toolId]="tool" [active]="tool === topTool"></app-child-tool-presentation>
             } @else {
             @switch (tool) {
             @case ("code-viewer") {

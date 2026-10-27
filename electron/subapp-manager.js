@@ -76,8 +76,13 @@ function resolveSubappRoot(options = {}) {
   const platform = options.platform || process.platform;
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
   if (options.rootDir) return path.resolve(options.rootDir);
+  const env = options.env || process.env;
+  // Main and its child runtimes must discover the same trusted installation.
+  // An explicit process configuration also lets isolated candidates reuse the
+  // installed SDK prefix without replacing another active Subapp generation.
+  if (env.AILY_SUBAPP_INSTALL_ROOT) return platformPath.resolve(env.AILY_SUBAPP_INSTALL_ROOT);
   return platformPath.join(resolveAilyNpmPrefix({
-    env: options.env || process.env,
+    env,
     platform,
     appDataPath: resolveAppDataPath(options.env, platform, options.home),
   }), 'app');
@@ -815,11 +820,22 @@ function readInstalledState(rootDir, entry) {
     );
     const resourceLifecycle = readRuntimeResourceLifecycleConfig(declaredRuntime);
     const processMessagePort = readRuntimeProcessMessagePortConfig(declaredRuntime);
+    const browserExecution = declaredRuntime.browserExecution
+      ? { protocol: require('./subapp-browser-execution-source').readBrowserExecutionSource({
+        packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
+      }).protocol }
+      : null;
+    const nodeControl = declaredRuntime.nodeControl === undefined ? null
+      : { protocol: require('./subapp-node-control-source').readNodeControlSource({
+        packagePath: runnablePackagePath, packageName: entry.package, version: installedVersion,
+      }).protocol };
     const runtime = {
       ...(declaredRuntime.headless === true ? { headless: true } : {}),
       ...(declaredRuntime.observer === true ? { observer: true } : {}),
       ...(apiServer ? { apiServer } : {}),
       ...(processMessagePort ? { processMessagePort } : {}),
+      ...(browserExecution ? { browserExecution } : {}),
+      ...(nodeControl ? { nodeControl } : {}),
       ...(resourceLifecycle ? { resourceLifecycle } : {}),
     };
     let agent = null;
@@ -2396,11 +2412,20 @@ async function activatePreparedSubapp(rootDir, entry, prepared, options) {
   return versions.activate(rootDir, entry, prepared);
 }
 
+function resolveSubappHealthNodeExecutable(childPath = process.env.AILY_CHILD_PATH) {
+  const candidate = require('./tools/managed-npm-cli').getChildNodeExecutable(childPath);
+  if (!path.isAbsolute(candidate)) throw new Error('Bundled Node is required for Subapp startup health checks.');
+  const executable = fs.realpathSync(candidate);
+  if (!fs.statSync(executable).isFile()) throw new Error('Bundled Node health executable is not a regular file.');
+  return executable;
+}
+
 async function verifyInstalledSubappStartup({
   packagePath,
   entry,
   phase,
   env = process.env,
+  execPath = process.execPath,
   startupTimeoutMs = SUBAPP_HEALTH_STARTUP_TIMEOUT_MS,
   shutdownTimeoutMs = SUBAPP_HEALTH_SHUTDOWN_TIMEOUT_MS,
 }) {
@@ -2414,7 +2439,7 @@ async function verifyInstalledSubappStartup({
     throw new Error(`Subapp ${phase} health check main entry is missing.`);
   }
   const stderr = [];
-  const child = spawn(process.execPath, [
+  const child = spawn(execPath, [
     mainEntry,
     'serve',
     '--host', '127.0.0.1',
@@ -3165,8 +3190,15 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     listChildToolHolders: listChildToolHoldersForCatalogId,
     killProcessTree: killRegisteredProcessTree,
     verifyInstalledPackage: handlerOptions.verifyInstalledPackage
-      || verifyInstalledSubappStartup,
+      || (input => verifyInstalledSubappStartup({ ...input, execPath: resolveSubappHealthNodeExecutable() })),
   });
+
+  if (handlerOptions.browserExecutionRegistry) {
+    require('./subapp-browser-execution-ipc').registerBrowserExecutionHandlers({
+      ipcMain, ...handlerOptions.browserExecutionRegistry,
+      prepareLaunch: payload => defaultManager.prepareLaunch(payload),
+    });
+  }
 
   const handleMutation = (action) => async (_event, payload = {}) => {
     const result = await defaultManager[action](payload);
@@ -3246,6 +3278,7 @@ module.exports = {
   resolveInstalledPackagePath,
   readInstalledState,
   resolveSubappRoot,
+  resolveSubappHealthNodeExecutable,
   safeSubappShutdownUrl,
   resolveSubappUpdateRoot,
   resolveUiIndex,

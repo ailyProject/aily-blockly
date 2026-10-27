@@ -1,4 +1,5 @@
 import { of, Subject } from 'rxjs';
+import { createEmptySceneEditorDocumentV2 } from '@aily-project/scene-model';
 import { BuilderService } from './builder.service';
 
 describe('BuilderService typed cancellation', () => {
@@ -17,8 +18,9 @@ describe('BuilderService typed cancellation', () => {
   it('preserves the explicit normal Builder cancellation code and localized text', async () => {
     const result = { state: 'warn', text: '已取消，耗时 1.23 秒', errorCode: 'build-cancelled' };
     const service = failureHarness(result);
+    const sceneDocument = await createEmptySceneEditorDocumentV2('main');
     const error = await service.buildActiveBlocklyProject({ projectPath: '/workspace/blockly',
-      graphSemanticRevision: 'a'.repeat(64), requestId: 'request-main' }).catch(value => value);
+      graphSemanticRevision: sceneDocument.graphSemanticRevision, requestId: 'request-main', sceneDocument }).catch(value => value);
     expect(error).toEqual(jasmine.any(Error));
     expect(error.errorCode).toBe('build-cancelled');
     expect(error.message).toBe(result.text);
@@ -28,8 +30,9 @@ describe('BuilderService typed cancellation', () => {
 
   for (const state of ['warn', 'error']) it(`does not infer ${state} cancellation from text`, async () => {
     const service = failureHarness({ state, text: '已取消，耗时 1.23 秒' });
+    const sceneDocument = await createEmptySceneEditorDocumentV2('main');
     const error = await service.buildActiveBlocklyProject({ projectPath: '/workspace/blockly',
-      graphSemanticRevision: 'a'.repeat(64), requestId: 'request-main' }).catch(value => value);
+      graphSemanticRevision: sceneDocument.graphSemanticRevision, requestId: 'request-main', sceneDocument }).catch(value => value);
     expect(error.errorCode).toBeUndefined();
     expect(error.state).toBe(state);
   });

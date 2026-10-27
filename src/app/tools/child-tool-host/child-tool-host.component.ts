@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectorRef, Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core';
+import { ChangeDetectorRef, Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges, ViewChild } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -10,7 +10,7 @@ import { Connection, WindowMessenger, connect } from 'penpal';
 import { combineLatest, firstValueFrom, merge, Subscription } from 'rxjs';
 import { SubWindowComponent } from '../../components/sub-window/sub-window.component';
 import { ToolContainerComponent } from '../../components/tool-container/tool-container.component';
-import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication, isWindowOnlyTool } from '../../configs/tool.config';
+import { ChildToolConfig, getChildToolConfig, isAppAvailableForApplication } from '../../configs/tool.config';
 import { AILY_CODER_EDITOR_SUBAPP_ID } from '../../configs/required-subapp.config';
 import {
   ChildToolHostInfo,
@@ -42,6 +42,7 @@ import { NoticeService, UiService } from '@core/app-shell/public-api';
 import { ProjectService, type CoderWorkspaceContext } from '@domain/project/public-api';
 import { SubappActivityDockComponent } from '../../components/subapp-activity-dock/subapp-activity-dock.component';
 import { ChildToolNativeObserverComponent } from '../child-tool-native-observer/child-tool-native-observer.component';
+import { ChildToolBrowserSurfaceComponent } from '../child-tool-browser-surface/child-tool-browser-surface.component';
 import {
   type ChildAuthStateSnapshot,
   normalizeChildAuthStateSnapshot,
@@ -99,6 +100,7 @@ interface ChatResourcePickerRequest {
     ToolContainerComponent,
     SubappActivityDockComponent,
     ChildToolNativeObserverComponent,
+    ChildToolBrowserSurfaceComponent,
   ],
   templateUrl: './child-tool-host.component.html',
   styleUrl: './child-tool-host.component.scss'
@@ -113,6 +115,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   routePath = '';
   hostStatus: HostStatus = 'idle';
   get isNativeObserver(): boolean { return this.config?.runtime?.observer === true; }
+  get isBrowserExecution(): boolean { return !!this.config?.runtime?.browserExecution; }
+  browserSurfaceVisible = false;
+  @ViewChild(ChildToolBrowserSurfaceComponent) private browserSurface?: ChildToolBrowserSurfaceComponent;
   iframeSrc: SafeResourceUrl | null = null;
   frameLoaded = false;
   errorMessage = '';
@@ -252,12 +257,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   get isStandalone(): boolean {
     return this.currentUrl.startsWith('/child-tool/');
-  }
-
-  get visibleStandaloneWinBtns(): string[] {
-    return isWindowOnlyTool(this.resolvedToolId)
-      ? this.standaloneWinBtns.filter(button => button !== 'go-main')
-      : this.standaloneWinBtns;
   }
 
   get backendFailedKey(): string {
@@ -469,13 +468,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     if (this.closing) return { ok: false, message: '子应用正在关闭' };
     this.closing = true;
 
+    if (this.isBrowserExecution) {
+      try { await this.browserSurface?.close(); }
+      catch (error) { this.closing = false; return { ok: false, message: this.stringifyHostMessageValue(error) || 'Browser View cleanup remains unconfirmed.' }; }
+    }
+
     const canClose = await this.notifyChildBeforeClose('close', options.strict === true);
     if (!canClose) {
       this.closing = false;
       return { ok: false, message: '子应用拒绝关闭，可能存在未完成操作。' };
     }
 
-    if (options.strict === true && this.resolvedToolId) {
+    if (options.strict === true && this.resolvedToolId && !this.isBrowserExecution) {
       await this.processService.forceStop(this.resolvedToolId);
       this.acquired = false;
     }
@@ -495,6 +499,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   restart(): Promise<Record<string, unknown>> {
     if (this.isNativeObserver) return Promise.resolve({ ok: false, message: 'An observer cannot restart the execution Runtime.' });
+    if (this.isBrowserExecution) return Promise.resolve({ ok: false, message: 'A Browser View cannot restart the shared execution Runtime.' });
     if (this.restartTask) {
       return this.restartTask;
     }
@@ -605,6 +610,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private async performRestart(force = false): Promise<Record<string, unknown>> {
+    if (this.isBrowserExecution) return { ok: false, message: 'A Browser View cannot restart the shared execution Runtime.' };
     if (!this.config) return { ok: false, message: '子应用配置未就绪' };
     if (!force && !await this.notifyChildBeforeClose('restart')) {
       return { ok: false, message: '子应用拒绝重启，可能存在未完成操作。' };
@@ -675,10 +681,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   async embed(): Promise<Record<string, unknown>> {
-    if (isWindowOnlyTool(this.resolvedToolId)) {
-      return { ok: false, toolId: this.resolvedToolId, action: 'embed', message: '此工具仅支持独立窗口，不能切换为内嵌模式。' };
-    }
-
     if (!this.isStandalone) {
       return { ok: true, toolId: this.resolvedToolId, action: 'embed', message: '子应用已经处于内嵌模式。' };
     }
@@ -1038,6 +1040,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.destroyPenpalConnection();
     this.log(restart ? 'restart server' : 'start server');
 
+    if (this.isBrowserExecution) {
+      this.iframeSrc = null; this.browserSurfaceVisible = true;
+      return; // The presentation controller owns its independent UI lease/ref.
+    }
+
     try {
       const deferPreparedUpdate = !restart && this.deferPreparedUpdateOnInitialLaunch;
       this.deferPreparedUpdateOnInitialLaunch = false;
@@ -1067,6 +1074,17 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.titleKey = config.titleKey;
     this.routePath = config.routePath || `/child-tool/${config.id}`;
     this.syncSubappRestartRequirement();
+  }
+
+  onBrowserSurfaceReady(hostInfo: ChildToolHostInfo): void {
+    this.serverInfo = hostInfo; this.adoptRuntimeConfig(hostInfo);
+    this.hostStatus = 'ready'; this.frameLoaded = true; this.uiHealthFailed = false;
+    this.cdr.markForCheck();
+  }
+
+  onBrowserSurfaceFailed(message: string): void {
+    this.hostStatus = 'error'; this.frameLoaded = false; this.errorMessage = message;
+    this.cdr.markForCheck();
   }
 
   private handleRuntimeSnapshot(snapshot: ChildToolRuntimeSnapshot): void {
@@ -2025,17 +2043,6 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
     const config = getChildToolConfig(toolId);
     const surface = current.presentation?.surface || 'compact';
-
-    if (surfaceState === 'expanded' && isWindowOnlyTool(toolId)) {
-      const opened = await this.mainUiAutomation.openChildApp({ toolId, mode: 'window' });
-
-      if (opened['ok'] !== true) return opened;
-
-      this.subappActivityService.setSurfaceState(sessionId, toolId, 'collapsed');
-
-      return { ok: true, sessionId, toolId, surfaceState: 'collapsed' };
-    }
-
     if (surfaceState === 'expanded' && !config?.runtime?.observer && !config?.ui?.surfaces?.[surface]?.entry) {
       // A window-only subapp remains usable from the activity bar without
       // mounting a Dock iframe for an undeclared surface.

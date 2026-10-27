@@ -8,6 +8,7 @@ const { isWin32, isDarwin, isLinux } = require('./platform');
 const { killRegisteredProcessTree } = require('./process-tree');
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
+const { observeChildProcessTerminal } = require('./child-process-terminal');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -529,12 +530,14 @@ class CommandManager {
       projectPath: options.projectPath,
       projectSessionId: options.projectSessionId,
       stopRequested: false,
+      terminalListeners: new Set(),
     };
 
     this.processes.set(streamId, entry);
 
-    child.once('close', (code, signal) => {
-      entry.closed = true;
+    entry.terminalObservation = observeChildProcessTerminal(child, terminal => {
+      const { code, signal } = terminal;
+      entry.terminal = terminal;
       // During cancellation, wait for the tree result before forgetting the
       // command. Interrupted build markers still require confirmed cleanup.
       const safeExit = !child.pid || (Number.isInteger(code) && !signal);
@@ -551,10 +554,16 @@ class CommandManager {
       }
       for (const listener of this.processExitListeners) {
         try {
-          listener({ streamId, pid: child.pid, code, signal, expected: entry.stopRequested });
+          listener({ streamId, pid: child.pid, code, signal, expected: entry.stopRequested, terminal });
         } catch (error) {
           console.warn('[PROC_TRACE][CMD_EXIT_LISTENER_ERROR]', { streamId, error: String(error) });
         }
+      }
+      const listeners = [...entry.terminalListeners];
+      entry.terminalListeners.clear();
+      for (const listener of listeners) {
+        try { listener(terminal); }
+        catch (error) { console.warn('[PROC_TRACE][CMD_TERMINAL_LISTENER_ERROR]', { streamId, error: String(error) }); }
       }
     });
 
@@ -601,6 +610,12 @@ class CommandManager {
       process: child,
       startedAt,
       get stopRequested() { return entry.stopRequested; },
+      onTerminal(listener) {
+        if (typeof listener !== 'function') throw new TypeError('Command terminal listener is required');
+        if (entry.terminal) listener(entry.terminal);
+        else entry.terminalListeners.add(listener);
+        return () => entry.terminalListeners.delete(listener);
+      },
       shouldLogOutput
     };
   }
@@ -620,7 +635,7 @@ class CommandManager {
     // Interrupted protected builds may stay registered after parent close.
     // That PID may now belong to someone else; only explicit recovery can
     // resolve unconfirmed ownership. Confirmed stops may retry file cleanup.
-    if (entry.closed && !entry.terminationConfirmed) return false;
+    if (entry.terminal && !entry.terminationConfirmed) return false;
     if (entry.process) {
       console.info('[PROC_TRACE][CMD_KILL]', {
         streamId,
@@ -637,7 +652,7 @@ class CommandManager {
             // A failed taskkill can race a supervised build's normal finish.
             // Its own marker cleanup confirms completion; parent close alone
             // cannot establish that installer/compiler descendants stopped.
-            const completedBuild = entry.closed && entry.completedNormally
+            const completedBuild = entry.terminal && entry.completedNormally
               && entry.buildWorkspace?.canReleaseResources();
             if (!stopped && !completedBuild) {
               if (entry.projectSessionId) entry.terminationUnconfirmed = true;
@@ -659,7 +674,7 @@ class CommandManager {
         } finally {
           if (!entry.terminationConfirmed) {
             entry.stopRequested = false;
-            if (entry.closed && !entry.buildWorkspace && !entry.projectSessionId) this.releaseCommandResources(streamId, entry);
+            if (entry.terminal && !entry.buildWorkspace && !entry.projectSessionId) this.releaseCommandResources(streamId, entry);
           }
         }
       })().finally(() => { entry.stopPromise = undefined; });
@@ -860,7 +875,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }
           catch { delivery.abandon(); }
         });
-        process.once('close', (code, signal) => delivery.onExit(code, signal,
+        result.onTerminal(({ code, signal }) => delivery.onExit(code, signal,
           result.stopRequested || commandManager.getProcess(streamId) !== undefined));
       }
       // console.log(options);
@@ -896,24 +911,28 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         });
       });
 
-      // 监听进程关闭
-      process.on('close', (code, signal) => {
-        console.log(`[CMD][${streamId}] close, code: ${code}, signal: ${signal}`);
+      // Reuse this command's sole physical observer for delivery and Renderer.
+      // A missing close event is never recreated for legacy consumers.
+      result.onTerminal(terminal => {
+        const { code, signal } = terminal;
+        console.log(`[CMD][${streamId}] ${terminal.kind}, code: ${code}, signal: ${signal}`);
 
-        console.info('[PROC_TRACE][CMD_CLOSE]', {
+        console.info('[PROC_TRACE][CMD_TERMINAL]', {
           streamId,
           pid: process.pid,
           code,
           signal,
+          terminal,
           durationMs: Date.now() - result.startedAt
         });
 
         sendCmdData(senderWindow, `cmd-data-${streamId}`, {
-          type: 'close',
+          type: terminal.kind === 'close' ? 'close' : 'terminal',
           code,
           signal,
           streamId,
           expected: result.stopRequested,
+          terminal,
         });
       });
 

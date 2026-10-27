@@ -82,7 +82,11 @@ test('process exit is observable in main after inventory cleanup without a rende
   }).process;
   try {
     await waitFor(() => events.length === 1);
-    assert.deepEqual(events, [{ streamId: 'exit-fixture', pid: child.pid, code: 7, signal: null, expected: false }]);
+    const { terminal, ...event } = events[0];
+    assert.deepEqual(event, { streamId: 'exit-fixture', pid: child.pid, code: 7, signal: null, expected: false });
+    assert.ok(['close', 'exit-and-stdio-closed'].includes(terminal.kind));
+    assert.equal(terminal.code, 7); assert.equal(terminal.signal, null);
+    assert.equal(terminal.closeObserved, terminal.kind === 'close');
   } finally {
     remove();
     if (child.exitCode === null) { child.kill(); await waitForExit(child); }

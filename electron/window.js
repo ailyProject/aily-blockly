@@ -1,5 +1,7 @@
 // 管理主窗口和子窗口的创建、状态同步及窗口控制操作。
-const { ipcMain, BrowserWindow, app, screen, webContents } = require("electron");
+const { ipcMain, BrowserWindow, MessageChannelMain, app, screen, webContents } = require("electron");
+const { createConfiguredBrowserExecutionHost } = require('./subapp-browser-resource-config');
+const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain });
 const { requestWindowAttention } = require('./window-attention');
 const {
     getActiveCmdProcesses,
@@ -65,6 +67,28 @@ const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+const { SubappBrowserOwnerBridge } = require('./subapp-browser-owner-bridge');
+const browserOwnerBridge = new SubappBrowserOwnerBridge({ send: sendCmdProcessMessage,
+    resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
+        && !session.exit && getCmdProcessMessagePortInfo(streamId)) || null,
+});
+const { SubappNodeControlBroker } = require('./subapp-node-control-broker');
+const nodeControlBroker = new SubappNodeControlBroker({ MessageChannelMain, send: sendCmdProcessMessage,
+    resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
+        && !session.exit && getCmdProcessMessagePortInfo(streamId)) || null,
+});
+const { SubappBrowserProcessBroker } = require('./subapp-browser-process-broker');
+const browserProcessBroker = new SubappBrowserProcessBroker({ host: browserExecutionHost,
+    send: sendCmdProcessMessage,
+    resolveStream: streamId => {
+        for (const [toolId, session] of childToolSessions) {
+            if (session.streamId === streamId && !session.stopping && isChildToolSessionAlive(session) && getCmdProcessMessagePortInfo(streamId)) {
+                return { toolId, messagePort: session.messagePort };
+            }
+        }
+        return null;
+    },
+});
 const { SubappOwnerSupervisor, registerSubappOwnerSupervisor } = require('./subapp-owner-supervisor');
 const subappOwnerSupervisor = new SubappOwnerSupervisor({
     resolveRuntime: (toolId, ownerId) => {
@@ -203,6 +227,7 @@ async function stopChildToolSessionProcess(session) {
     if (session.stopPromise) return session.stopPromise;
     session.stopping = true;
     const stopPromise = Promise.resolve().then(async () => {
+        await browserExecutionHost.closeRuntime(session.streamId);
         if (session.nativeStop) {
             try { await session.nativeStop(); }
             catch (error) {
@@ -246,7 +271,8 @@ function stopAllChildToolSessions() {
         cancelChildToolRelease(session);
         pendingChildToolProcessMessages.delete(session.streamId);
     }
-    childToolSessionsStopPromise = Promise.allSettled(sessions.map(async ([toolId, session]) => {
+    const browserDrain = browserExecutionHost.closeAll();
+    const processDrain = Promise.allSettled(sessions.map(async ([toolId, session]) => {
         try {
             const stopped = await stopChildToolSessionProcess(session);
             if (!stopped) return false;
@@ -256,9 +282,17 @@ function stopAllChildToolSessions() {
             cancelChildToolRelease(session);
             pendingChildToolProcessMessages.delete(session.streamId);
         }
-    })).then(results => {
+    }));
+    const nodeControlDrain = nodeControlBroker.closeAll();
+    childToolSessionsStopPromise = Promise.allSettled([browserDrain, processDrain, nodeControlDrain]).then(([browserResult, processResult, nodeControlResult]) => {
+        const results = processResult.status === 'fulfilled' ? processResult.value : [];
+        const failures = [];
+        if (browserResult.status === 'rejected') failures.push(browserResult.reason);
+        if (nodeControlResult.status === 'rejected') failures.push(nodeControlResult.reason);
+        if (processResult.status === 'rejected') failures.push(processResult.reason);
         for (let index = 0; index < results.length; index += 1) {
             if (results[index].status === 'rejected' || results[index].value !== true) {
+                failures.push(results[index].status === 'rejected' ? results[index].reason : new Error('Registered Runtime termination is unconfirmed'));
                 const [toolId, session] = sessions[index];
                 console.warn('[ChildToolSession] Shutdown remains unconfirmed; command cleanup will retry', {
                     toolId, streamId: session.streamId,
@@ -266,6 +300,7 @@ function stopAllChildToolSessions() {
             }
         }
         broadcastChildToolSessionStateChanged();
+        if (failures.length) throw new AggregateError(failures, 'Registered Runtime drain remains unconfirmed');
         return results;
     });
     return childToolSessionsStopPromise;
@@ -324,6 +359,9 @@ function routeChildToolProcessMessage(event) {
     const sessionEntry = Array.from(childToolSessions.entries())
         .find(([, session]) => session.streamId === streamId);
     if (sessionEntry) {
+        if (browserOwnerBridge.handle(streamId, event.message)) return;
+        if (nodeControlBroker.handle(streamId, event.message)) return;
+        if (browserProcessBroker.handle(streamId, event.message)) return;
         if (ailyHostAuthRelay?.handle(sessionEntry[0], sessionEntry[1].streamId, event.message)) {
             return;
         }
@@ -376,6 +414,10 @@ onCmdProcessMessage(routeChildToolProcessMessage);
 onCmdProcessExit(handleChildToolProcessExit);
 
 function handleChildToolProcessExit(event) {
+    nodeControlBroker.runtimeExited(event.streamId);
+    void browserExecutionHost.closeRuntime(event.streamId).catch(error => {
+        console.warn('[BrowserExecution] Runtime exit teardown remains unconfirmed', error.message);
+    });
     pendingChildToolProcessMessages.delete(event.streamId);
     ailyHostAuthRelay?.releaseProcess(event.streamId);
     for (const [toolId, session] of childToolSessions) {
@@ -384,6 +426,7 @@ function handleChildToolProcessExit(event) {
             code: event.code,
             signal: event.signal,
             expected: event.expected || session.stopping === true || applicationIsQuitting,
+            ...(event.terminal ? { terminal: { ...event.terminal } } : {}),
         };
         clearChildToolMessageControllerBinding(session);
         delete session.lastProviderNegotiationRequest;
@@ -2038,6 +2081,11 @@ function registerWindowHandlers(mainWindow, options = {}) {
             payload,
         );
         if (!authorization.success) return authorization;
+        // This lifecycle namespace is issued only by the Main-owned View
+        // broker. A legacy renderer controller cannot manufacture its context.
+        if (typeof payload.message?.type === 'string' && payload.message.type.startsWith('aily-subapp-node-control.')) {
+            return { success: false, reason: 'reserved-message-type' };
+        }
         return await sendCmdProcessMessage(authorization.streamId, payload.message);
     });
 
@@ -2301,6 +2349,18 @@ module.exports = {
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
     getRunningSubappConfig,
+    browserExecutionRegistry: {
+        broker: browserProcessBroker,
+        nodeControlBroker,
+        ownerBridge: browserOwnerBridge,
+        host: browserExecutionHost,
+        supervisor: subappOwnerSupervisor,
+        resolveRuntime: (toolId, ownerId) => {
+            const runtime = childToolSessions.get(toolId);
+            return runtime && !runtime.stopping && isChildToolSessionAlive(runtime)
+                && childToolHasOwnerId(runtime, ownerId) ? runtime : null;
+        },
+    },
     nativeSubappRegistry: {
         supervisor: subappOwnerSupervisor,
         register(sender, { toolId, streamId, publicInfo, stop, packageDependencies = [] }) {

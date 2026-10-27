@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { Subscription } from 'rxjs';
-import {
+import { isCmdTerminalOutput,
   CmdOutput,
   CmdService,
   CrossPlatformCmdService,
@@ -617,7 +617,7 @@ export class CompileService {
           if (!this.activeStreamId && o.streamId) {
             this.activeStreamId = o.streamId;
           }
-          if (o.type === 'close') {
+          if (isCmdTerminalOutput(o)) {
             exitCode = o.code ?? (o.signal ? 1 : 0);
             signal = o.signal || null;
           }

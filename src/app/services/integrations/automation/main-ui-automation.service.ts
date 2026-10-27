@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 
-import { getChildToolConfig, getChildToolConfigs, isWindowOnlyTool, type ChildToolConfig } from '../../../configs/tool.config';
+import { getChildToolConfig, getChildToolConfigs, type ChildToolConfig } from '../../../configs/tool.config';
 import { ChildAppHostRegistryService, type ChildAppHostAction } from '@integration/subapps/public-api';
 import { UiAutomationRegistryService } from './ui-automation-registry.service';
 import {
@@ -182,20 +182,18 @@ export class MainUiAutomationService {
 
   async openChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
-    const requestedMode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;
+    const mode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;
     const config = getChildToolConfig(toolId);
     if (!toolId || !config) {
       return { ok: false, message: `未找到子应用: ${toolId || '(空)'}` };
     }
-
-    if (requestedMode !== 'embedded' && requestedMode !== 'window') {
-      return { ok: false, message: `不支持的打开模式: ${requestedMode}；可用 embedded 或 window。` };
+    if (mode !== 'embedded' && mode !== 'window') {
+      return { ok: false, message: `不支持的打开模式: ${mode}；可用 embedded 或 window。` };
     }
     if (config.app?.extension === true) {
       return this.extensionUiUnavailable(config);
     }
 
-    const mode = isWindowOnlyTool(toolId) ? 'window' : requestedMode;
     const hasPlacement = ['x', 'y', 'width', 'height', 'displayId'].some(key => params[key] !== undefined);
     const placement = {
       ...(this.optionalNumber(params, 'x') !== undefined ? { x: this.optionalNumber(params, 'x') } : {}),
@@ -277,10 +275,6 @@ export class MainUiAutomationService {
     }
     if (config.app?.extension === true && action !== 'close' && action !== 'prepareUpdate') {
       return this.extensionUiUnavailable(config);
-    }
-
-    if (action === 'embed' && isWindowOnlyTool(toolId)) {
-      return { ok: false, toolId, action, message: '此工具仅支持独立窗口，不能切换为内嵌模式。' };
     }
 
     const routePath = this.routePath(config);
@@ -512,10 +506,7 @@ export class MainUiAutomationService {
         url: this.sanitizeLocalUrl(session?.hostInfo?.url),
       },
       supportedActions: config.app?.extension === true ? [] : [
-        ...(isWindowOnlyTool(config.id) ? [] : ['open_embedded']),
-        'open_window', 'restart', 'detach',
-        ...(isWindowOnlyTool(config.id) ? [] : ['embed']),
-        'focus',
+        'open_embedded', 'open_window', 'restart', 'detach', 'embed', 'focus',
         'maximize', 'unmaximize', 'minimize', 'restore', 'move', 'resize', 'close',
       ],
     };

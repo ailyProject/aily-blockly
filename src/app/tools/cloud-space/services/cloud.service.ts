@@ -4,7 +4,7 @@ import { HttpClient, HttpHeaders, HttpErrorResponse, HttpParams } from '@angular
 import { Observable, throwError, from, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { API } from '../../../configs/api.config';
-import { CmdService, CmdOutput, PlatformService } from '@core/platform/public-api';
+import { isCmdTerminalOutput, CmdService, CmdOutput, PlatformService } from '@core/platform/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 
@@ -400,7 +400,7 @@ export class CloudService {
                   errors.push(output.error);
                   allErrors += output.error;
                 }
-              } else if (output.type === 'close') {
+              } else if (isCmdTerminalOutput(output)) {
                 exitCode = output.code;
                 resolve(output);
               }

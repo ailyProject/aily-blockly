@@ -153,6 +153,8 @@ test('cancellation unsubscribes the HTTP operation and a closed authority reject
 
 async function loadModules() {
   const root = path.resolve(__dirname, '..');
+  const simulatorRoot = process.env.AILY_SIMULATOR_SOURCE_ROOT
+    || path.resolve(root, '../aily-simulator');
 
   const built = await esbuild.build({
     stdin: { contents: `
@@ -162,7 +164,7 @@ async function loadModules() {
     `, resolveDir: root, loader: 'ts' },
     bundle: true, platform: 'node', format: 'cjs', write: false, external: ['rxjs'],
     alias: { '@aily-project/simulator-protocol/entitlement':
-      path.resolve(root, '../aily-simulator/packages/simulator-protocol/dist/public/entitlement.js') },
+      path.resolve(simulatorRoot, 'packages/simulator-protocol/src/public/entitlement.ts') },
     plugins: [{ name: 'angular-service-test-boundary', setup(build) {
       build.onResolve({ filter: /^(@angular\/|@core\/auth)/ }, args => ({ path: args.path, namespace: 'test-boundary' }));
 

@@ -28,8 +28,9 @@ class SubappOwnerSupervisor {
                 if (isMainFrame && !isInPlace) invalidate();
             });
             contents.once('destroyed', () => {
-                invalidate();
-                this.renderers.delete(contents.id);
+                void this.invalidate(contents.id).then(() => {
+                    if (!state.bindings.size) this.renderers.delete(contents.id);
+                });
             });
         }
         return { ok: true, generation: state.generation };
@@ -103,14 +104,13 @@ class SubappOwnerSupervisor {
         const state = this.renderers.get(rendererId);
         if (!state) return;
         const bindings = [...state.bindings.values()];
-        state.bindings.clear();
         state.generation = randomUUID(); // Fence old document IPC synchronously.
         const recovery = Promise.all(bindings.map(async binding => {
             // Idempotent owner release is retryable; domain commands are never replayed.
             let result;
             for (let attempt = 0; attempt < 3; attempt++) {
                 result = await this.cleanup(binding);
-                if (result.ok) return;
+                if (result.ok) { if (state.bindings.get(binding.key) === binding) state.bindings.delete(binding.key); return; }
             }
             this.onError('[subapp-owner] Renderer exit cleanup failed', {
                 toolId: binding.toolId, ownerSessionId: binding.ownerSessionId, error: result.error,
@@ -138,11 +138,24 @@ class SubappOwnerSupervisor {
         };
         check();
         return Object.assign(check, { ownerSessionId, runtime: Object.freeze({ streamId, origin: new URL(binding.wsUrl).origin }),
-            attachCleanup(cleanup) {
+            processLeaseIdentity() {
+                check();
+                if (!binding.processLease) throw new Error('Browser owner binding requires an acknowledged process lease');
+                return Object.freeze({ ...binding.processLease });
+            },
+            attachCleanup(cleanup, options = {}) {
                 check();
                 if (typeof cleanup !== 'function') throw new TypeError('Native cleanup must be a function');
+                if (options.priority !== undefined && options.priority !== 'execution') throw new TypeError('Unknown cleanup priority');
+                if (options.priority === 'execution') {
+                    if (binding.executionCleanup && binding.executionCleanup !== cleanup) throw new Error('An execution owner cleanup is already registered');
+                    binding.executionCleanup = cleanup;
+                }
                 binding.cleanups.add(cleanup);
-                return () => binding.cleanups.delete(cleanup);
+                return () => {
+                    if (binding.executionCleanup === cleanup) binding.executionCleanup = null;
+                    return binding.cleanups.delete(cleanup);
+                };
             },
         });
     }
@@ -155,6 +168,13 @@ class SubappOwnerSupervisor {
             // Acquisition may have reached the Runtime despite a lost reply.
             // Fence the file first, then release after that request settles.
             await binding.ready?.catch(() => {});
+            // Browser release must publish its actual Worker/Node receipt before
+            // ordinary connection cleanup can revoke the process transport.
+            const execution = binding.executionCleanup;
+            if (execution && binding.cleanups.has(execution)) {
+                await execution(); binding.cleanups.delete(execution);
+                if (binding.executionCleanup === execution) binding.executionCleanup = null;
+            }
             // Join all native cleanup, even if one fails. Keep failed callbacks
             // available to the existing bounded recovery path.
             const results = await Promise.allSettled([...binding.cleanups].map(async cleanup => {

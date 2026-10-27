@@ -67,6 +67,10 @@ export interface ChildToolRuntimeResourceLifecycleConfig {
 }
 
 export interface ChildToolRuntimeConfig {
+  /** Package-local sandbox execution document, owned independently of Views. */
+  browserExecution?: { protocol: 'aily-browser-execution-v1' };
+  /** Explicit opt-in; installed Views receive only a Main-bound JSON port. */
+  nodeControl?: { protocol: 'aily-subapp-node-control-v1' };
   /** Native/headless runtime; no iframe entry or UI surfaces. */
   headless?: boolean;
   /** Host-projected observation UI. Never starts or retains the execution Runtime. */
@@ -194,13 +198,6 @@ export function getChildToolConfig(toolId: string): ChildToolConfig | null {
 
 export function isChildTool(toolId: string): boolean {
   return !!getChildToolConfig(toolId);
-}
-
-// 宿主产品展示约束，独立于子应用版本及各入口的默认打开方式。
-const WINDOW_ONLY_TOOL_IDS: ReadonlySet<string> = new Set(['simulator']);
-
-export function isWindowOnlyTool(toolId: string): boolean {
-  return WINDOW_ONLY_TOOL_IDS.has(toolId);
 }
 
 export function getChildToolAppItems(): AppItem[] {

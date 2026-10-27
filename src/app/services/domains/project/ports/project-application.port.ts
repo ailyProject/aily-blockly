@@ -29,6 +29,8 @@ export interface ProjectApplicationPort {
   updateFooterState(state: ProjectFooterState): void;
   closeTerminal(): void;
   closeConnectionGraphWindows(): Promise<boolean>;
+  /** Browser application source owner; absent in Native-only adapters. */
+  closeBrowserProjectDocument?(): Promise<void>;
   hasActiveProjectMutation(projectPath: string): boolean;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;

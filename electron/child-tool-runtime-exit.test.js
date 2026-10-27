@@ -19,12 +19,34 @@ test('main broadcasts an exact-stream exit to every window even after its spawni
     assert.equal(message.channel, 'child-tool-session-state-changed');
     assert.equal(message.payload[0].running, false);
     assert.equal(message.payload[0].exit.expected, false);
+    assert.equal(Object.hasOwn(message.payload[0].exit, 'terminal'), false);
   }
   assert.equal(harness.api.isChildToolSessionAlive(session), false);
   harness.register('stream-2');
   harness.exit({ streamId: 'stream-1', code: 1, signal: null, expected: false });
   assert.equal(harness.messages.length, 2);
   assert.equal(harness.api.listChildToolSessions()[0].running, true);
+});
+
+test('registered state broadcasts preserve physical terminal facts without inventing close or cleanup ACK', () => {
+  for (const terminal of [
+    { kind: 'close', code: 0, signal: null, closeObserved: true },
+    { kind: 'exit-and-stdio-closed', code: 1, signal: null, closeObserved: false },
+  ]) {
+    const harness = createHarness();
+    harness.register('stream-1');
+    harness.exit({ streamId: 'stream-1', code: terminal.code, signal: terminal.signal, expected: false, terminal });
+    assert.equal(harness.messages.length, 2);
+    for (const message of harness.messages) {
+      const exit = message.payload[0].exit;
+      assert.deepEqual(JSON.parse(JSON.stringify(exit.terminal)), terminal);
+      assert.notEqual(exit.terminal, terminal, 'Published metadata must be a snapshot');
+      assert.equal(Object.hasOwn(exit, 'businessCleanupAcknowledged'), false);
+    }
+    harness.exit({ streamId: 'stream-1', code: 1, signal: null, expected: false,
+      terminal: { kind: 'close', code: 1, signal: null, closeObserved: true } });
+    assert.equal(harness.messages.length, 2, 'Late close must not rebroadcast an already published registered terminal');
+  }
 });
 
 test('graceful shutdown is marked expected before the process exits', async () => {
@@ -72,7 +94,7 @@ test('concurrent session stops share one shutdown and completed stops do not rep
   };
   const first = harness.api.stopChildToolSessionProcess(session);
   const second = harness.api.stopChildToolSessionProcess(session);
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 1);
   finish(true);
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
@@ -115,9 +137,8 @@ test('Main drains all registered sessions before sweeping remaining command owne
     },
   }, calls);
   const operation = cleanup();
-  const repeatedStops = harness.api.stopAllChildToolSessions();
-  await Promise.resolve();
-  await Promise.resolve();
+  const repeatedStops = assert.rejects(harness.api.stopAllChildToolSessions(), /Registered Runtime drain remains unconfirmed/);
+  await new Promise(resolve => setImmediate(resolve));
   const admission = ['begin-window', 'stop-cli', 'begin-command', 'begin-npm', 'begin-auth'];
   assert.deepEqual(calls, [...admission, 'stop:failed-stream', 'stop:stopped-stream']);
   finish();
@@ -141,6 +162,22 @@ test('Main still sweeps remaining owners when the registered-session drain rejec
   }, calls);
   await cleanup();
   assert.deepEqual(calls, ['begin-window', 'stop-cli', 'begin-command', 'begin-npm', 'begin-auth', 'drain', 'cmd', 'npm', 'release-auth']);
+});
+
+test('a failed Browser drain still attempts and joins an unrelated Native session drain', async () => {
+  const pending = Promise.withResolvers(), calls = [];
+  const harness = createHarness({ browserHost: {
+    closeAll: async () => { calls.push('browser-all'); throw new Error('Browser close failed'); },
+    closeRuntime: async streamId => { calls.push(`browser:${streamId}`); },
+  } });
+  harness.register('native-stream');
+  harness.stop = async () => { calls.push('native-stop'); await pending.promise; return true; };
+  const operation = harness.api.stopAllChildToolSessions();
+  const failure = assert.rejects(operation, /Registered Runtime drain remains unconfirmed/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['browser-all', 'browser:native-stream', 'native-stop']);
+  pending.resolve(); await failure;
+  assert.equal(harness.api.childToolSessions.size, 0);
 });
 
 function loadMainCleanup(overrides, calls) {
@@ -168,7 +205,7 @@ function loadMainCleanup(overrides, calls) {
   return context.cleanupRegisteredChildProcesses;
 }
 
-function createHarness() {
+function createHarness(options = {}) {
   const file = path.join(__dirname, 'window.js');
   const localRequire = createRequire(file);
   const harness = { messages: [], active: [], stop: async () => true };
@@ -192,6 +229,9 @@ function createHarness() {
     module,
     require: id => {
       if (id === 'electron') return electron;
+      if (id === './subapp-browser-resource-config' && options.browserHost) return {
+        createConfiguredBrowserExecutionHost: () => options.browserHost,
+      };
       if (id === './cmd') return {
         getActiveCmdProcesses: () => harness.active,
         onCmdProcessMessage() {},

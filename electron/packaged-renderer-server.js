@@ -8,13 +8,19 @@ const MAX_REQUEST_URL_LENGTH = 16 * 1024;
 function createPackagedRendererServer(options = {}) {
   const createHttpServer = options.createHttpServer || http.createServer;
   const fsImplementation = options.fs || fs;
+  const indexFile = options.indexFile || 'index.html';
   let state = null;
+  let owned = null;
   let startTask = null;
   let closeTask = null;
 
   async function start(startOptions = {}) {
-    if (state) return publicState(state);
+    if (closeTask) await closeTask;
+    if (owned?.retiring) {
+      throw new Error('Packaged renderer server cleanup must complete before restart.');
+    }
     if (startTask) return startTask;
+    if (state) return publicState(state);
     startTask = startInternal(startOptions).finally(() => {
       startTask = null;
     });
@@ -28,7 +34,7 @@ function createPackagedRendererServer(options = {}) {
     );
     const indexPath = resolveContainedFile(
       rootDirectory,
-      'index.html',
+      indexFile,
       fsImplementation,
     );
     if (!indexPath) {
@@ -36,14 +42,23 @@ function createPackagedRendererServer(options = {}) {
     }
 
     let expectedHost = null;
+    let resource;
     const server = createHttpServer((request, response) => {
+      if (resource.retiring) {
+        response.destroy();
+        return;
+      }
       void handleRequest({
         request,
         response,
         rootDirectory,
         expectedHost,
         fsImplementation,
+        indexFile,
+        securityOptions: options,
+        resource,
       }).catch(() => {
+        if (response.destroyed) return;
         if (!response.headersSent) {
           writeEmpty(response, 500);
         } else {
@@ -51,29 +66,53 @@ function createPackagedRendererServer(options = {}) {
         }
       });
     });
+    resource = {
+      server,
+      rootDirectory,
+      retiring: false,
+      listenerClosed: false,
+      sockets: new Map(),
+      streams: new Map(),
+    };
+    owned = resource;
+    server.on('connection', (socket) => {
+      const closed = new Promise((resolve) => {
+        socket.once('close', () => {
+          resource.sockets.delete(socket);
+          resolve();
+        });
+      });
+      resource.sockets.set(socket, closed);
+      if (resource.retiring) socket.destroy();
+    });
 
     try {
       const address = await listen(server);
       expectedHost = `${LOOPBACK_HOST}:${address.port}`;
-      state = {
-        server,
-        rootDirectory,
-        port: address.port,
-        origin: `http://${expectedHost}`,
-      };
+      resource.port = address.port;
+      resource.origin = `http://${expectedHost}`;
+      state = resource;
       return publicState(state);
     } catch (error) {
-      await closeHttpServer(server).catch(() => undefined);
+      try {
+        await retireResource(resource);
+        if (owned === resource) owned = null;
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError],
+          'Packaged renderer startup and cleanup both failed.');
+      }
       throw error;
     }
   }
 
   function status() {
-    return state ? publicState(state) : { state: 'stopped' };
+    return state ? publicState(state) : {
+      state: owned ? (owned.retiring ? 'closing' : 'starting') : 'stopped',
+    };
   }
 
   function rendererUrl(hash = '') {
-    if (!state) {
+    if (!state || state.retiring) {
       throw new Error('Packaged renderer server is not started.');
     }
     return createRendererUrl(state.origin, hash);
@@ -81,10 +120,17 @@ function createPackagedRendererServer(options = {}) {
 
   function close() {
     if (closeTask) return closeTask;
-    const closing = state;
-    state = null;
-    if (!closing) return Promise.resolve();
-    closeTask = closeHttpServer(closing.server).finally(() => {
+    const pendingStart = startTask;
+    if (owned) owned.retiring = true;
+    closeTask = (async () => {
+      // A late listen result remains ours, including a failed startup's cleanup.
+      if (pendingStart) await pendingStart.catch(() => undefined);
+      const closing = owned;
+      if (!closing) return;
+      await retireResource(closing);
+      if (state === closing) state = null;
+      if (owned === closing) owned = null;
+    })().finally(() => {
       closeTask = null;
     });
     return closeTask;
@@ -105,8 +151,11 @@ async function handleRequest(options) {
     rootDirectory,
     expectedHost,
     fsImplementation,
+    indexFile,
+    securityOptions,
+    resource,
   } = options;
-  applySecurityHeaders(response);
+  applySecurityHeaders(response, securityOptions);
   if (!expectedHost || request.headers.host !== expectedHost) {
     writeEmpty(response, 421);
     return;
@@ -123,10 +172,14 @@ async function handleRequest(options) {
   }
   const filePath = resolveContainedFile(
     rootDirectory,
-    relativePath || 'index.html',
+    relativePath || indexFile,
     fsImplementation,
   );
   if (!filePath) {
+    writeEmpty(response, 404);
+    return;
+  }
+  if (securityOptions?.strictPublicFiles === true && !isStrictPublicFile(rootDirectory, relativePath || indexFile, fsImplementation)) {
     writeEmpty(response, 404);
     return;
   }
@@ -144,7 +197,7 @@ async function handleRequest(options) {
     response.end();
     return;
   }
-  await pipeFile(fsImplementation, filePath, response);
+  await pipeFile(fsImplementation, filePath, response, resource);
 }
 
 function parseRequestPath(requestUrl) {
@@ -258,11 +311,26 @@ function createRendererUrl(origin, hash = '') {
   return `${parsed.origin}/${normalizedHash}`;
 }
 
-function applySecurityHeaders(response) {
+function applySecurityHeaders(response, options = {}) {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (options.crossOriginIsolated === true) response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  if (options.contentSecurityPolicy) response.setHeader('Content-Security-Policy', options.contentSecurityPolicy);
+}
+
+function isStrictPublicFile(rootDirectory, relativePath, fsImplementation) {
+  const extensions = new Set(['.html', '.js', '.mjs', '.css', '.json', '.map', '.svg', '.png', '.jpg', '.jpeg',
+    '.gif', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.wasm', '.txt', '.bin', '.hex', '.elf', '.data', '.rom', '.dat']);
+  if (!extensions.has(path.extname(relativePath).toLowerCase())) return false;
+  let candidate = rootDirectory;
+  for (const part of relativePath.split('/')) {
+    if (!part || part.startsWith('.')) return false;
+    candidate = path.join(candidate, part);
+    try { if (fsImplementation.lstatSync(candidate).isSymbolicLink()) return false; } catch { return false; }
+  }
+  return true;
 }
 
 function writeEmpty(response, statusCode) {
@@ -271,13 +339,38 @@ function writeEmpty(response, statusCode) {
   response.end();
 }
 
-function pipeFile(fsImplementation, filePath, response) {
+function pipeFile(fsImplementation, filePath, response, resource) {
   return new Promise((resolve, reject) => {
     const stream = fsImplementation.createReadStream(filePath);
-    stream.once('error', reject);
-    response.once('finish', resolve);
-    response.once('close', resolve);
-    stream.pipe(response);
+    let streamError = null;
+    const finished = () => { stream.unpipe(response); stream.destroy(); };
+    const closed = new Promise((resolveClosed, rejectClosed) => {
+      stream.once('close', () => {
+        resource.streams.delete(stream);
+        response.removeListener('finish', finished);
+        response.removeListener('close', finished);
+        if (resource.retiring && streamError) rejectClosed(streamError);
+        else resolveClosed();
+        if (streamError) reject(streamError);
+        else resolve();
+      });
+    });
+    // The HTTP request and explicit retirement observe the same close outcome.
+    // Retain a rejection handler even when a request fails before close() starts.
+    closed.catch(() => undefined);
+    resource.streams.set(stream, closed);
+    stream.once('error', (error) => {
+      streamError = error;
+      response.destroy();
+    });
+    response.once('finish', finished);
+    response.once('close', finished);
+    try {
+      stream.pipe(response);
+    } catch (error) {
+      streamError = error;
+      stream.destroy();
+    }
   });
 }
 
@@ -302,13 +395,50 @@ function listen(server) {
   });
 }
 
-function closeHttpServer(server) {
+async function retireResource(resource) {
+  resource.retiring = true;
+  const tasks = [closeHttpServer(resource)];
+  const errors = [];
+  // HTTP close does not own the lifetime of preconnect sockets or file FDs.
+  for (const [stream, closed] of resource.streams) {
+    try {
+      stream.destroy();
+      tasks.push(closed);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  for (const [socket, closed] of resource.sockets) {
+    try {
+      socket.destroy();
+      tasks.push(closed);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  for (const outcome of await Promise.allSettled(tasks)) {
+    if (outcome.status === 'rejected') errors.push(outcome.reason);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) {
+    throw new AggregateError(errors, 'Packaged renderer resource cleanup failed.');
+  }
+}
+
+function closeHttpServer(resource) {
   return new Promise((resolve, reject) => {
-    if (!server.listening) {
+    if (resource.listenerClosed) {
       resolve();
       return;
     }
-    server.close((error) => error ? reject(error) : resolve());
+    resource.server.close((error) => {
+      if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') {
+        reject(error);
+        return;
+      }
+      resource.listenerClosed = true;
+      resolve();
+    });
   });
 }
 

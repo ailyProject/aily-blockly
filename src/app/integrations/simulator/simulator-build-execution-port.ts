@@ -115,6 +115,9 @@ implements SimulatorBuildExecutionPort {
     ) {
       throw new TypeError('Latest Artifact descriptor port is invalid.');
     }
+    if (typeof options.readCompileScene !== 'function') {
+      throw new TypeError('Current compile Scene reader is invalid.');
+    }
     this.activeProject = options.activeProject;
     this.mainAgent = options.mainAgent;
     this.builder = options.builder;
@@ -171,6 +174,8 @@ implements SimulatorBuildExecutionPort {
     observer.report('compiling', 500);
     try {
       const sceneDocument = await this.readCompileScene(request.sceneRevision, signal);
+      throwIfAborted(signal);
+      this.requireActiveBlocklyProject();
       if (sceneDocument.graphSemanticRevision !== request.sceneRevision || sceneDocument.sceneId !== request.sceneId) {
         throw new Error('Simulator Scene changed before compilation.');
       }
