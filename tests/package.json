@@ -17,6 +17,7 @@
     "test:abs-sync": "cd .. && node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless",
     "test:project-recovery-receipts": "cd .. && node --test tests/electron/project-recovery-receipts.test.cjs tests/electron/live-operation-project-routing.test.cjs tests/electron/project-repair-environment.test.cjs tests/electron/project-repair-commit.test.cjs tests/electron/project-repair-normalization.test.cjs tests/electron/project-repair-handoff.test.cjs tests/electron/project-repair-primary.test.cjs tests/electron/repair-environment-acceptance.test.mjs tests/electron/repair-commit-fault.test.mjs tests/repair-build-idle.test.cjs tests/electron/project-view-lock-recovery.test.cjs tests/electron/project-copy-admission.test.cjs tests/electron/project-copy-source.test.cjs tests/process-state.test.cjs",
     "test:platform-resource-roots": "cd .. && node --test tests/platform-resource-roots.test.cjs child/scripts/board-toolchain-dependencies.test.js child/scripts/compile-preprocess.test.js",
+    "test:packaged-child-paths": "cd .. && node --test tests/electron/packaged-child-paths.test.cjs",
     "test:abs-realm:electron": "cd .. && node tests/electron/abs-realm-recovery.acceptance.cjs",
     "guard:aily-chat-mainline": "cd .. && node tests/architecture/guard-aily-chat-mainline.js",
     "architecture:services": "cd .. && node tests/architecture/check-angular-service-architecture.mjs",

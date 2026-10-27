@@ -419,7 +419,7 @@ test('a prepared lineage cannot be claimed by another caller while its original 
 });
 for (const relative of ['electron/project-repair-environment.js', 'electron/project-repair-lineage.js', 'electron/project-repair-commit.js', 'electron/project-repair-normalization.js',
   'electron/project-recovery-receipts.js', 'electron/project-repair-handoff.js', 'electron/project-repair-primary.js',
-  'electron/project-file-access.js', 'electron/project-lock.js', 'child/scripts/native-file-lock.js',
+  'electron/project-file-access.js', 'electron/project-lock.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',
   'child/scripts/build-workspace-lease.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js']) test(`a helper-only change to ${relative} changes code identity and rejects old lineage`, async t => {
   const f = fixture(t); await f.prepare.ensure(f.source, f.request);
   const before = codeIdentity(process.execPath, f.appPath); fs.appendFileSync(path.join(f.appPath, relative), '\nchanged boundary');

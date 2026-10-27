@@ -3,8 +3,9 @@ const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
 const { createHash } = require('node:crypto');
-const { tryAcquireFileLock } = require('../child/scripts/native-file-lock');
-const { getProcessState } = require('../child/scripts/process-state');
+const { childScriptPath } = require('./child-script-path');
+const { tryAcquireFileLock } = require(childScriptPath('native-file-lock.js'));
+const { getProcessState } = require(childScriptPath('process-state.js'));
 
 const LOCK_SEGMENTS = [".aily", "project-open.lock"];
 
