@@ -11,7 +11,7 @@ import {
   SimpleChanges,
 } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
-import { TranslateService } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Connection, WindowMessenger, connect } from 'penpal';
 import { Subscription } from 'rxjs';
 
@@ -41,7 +41,7 @@ type CompactHostStatus = 'idle' | 'starting' | 'connecting' | 'ready' | 'stopped
 
 @Component({
   selector: 'app-child-tool-surface-host',
-  imports: [CommonModule],
+  imports: [CommonModule, TranslateModule],
   templateUrl: './child-tool-surface-host.component.html',
   styleUrl: './child-tool-surface-host.component.scss',
 })

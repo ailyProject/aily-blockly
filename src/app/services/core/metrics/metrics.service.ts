@@ -3,7 +3,7 @@ import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { getServerUrl } from '../../../configs/api.config';
 
-type MetricsEvent = 'app_opened' | 'project_created' | 'compile_attempted' | 'upload_succeeded';
+type MetricsEvent = 'app_opened' | 'project_created' | 'compile_attempted' | 'build_succeeded' | 'upload_succeeded';
 
 /** 渲染窗口内的尽力上报；不持久化、不补报，也不影响业务结果。 */
 @Injectable({ providedIn: 'root' })

@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { BehaviorSubject } from 'rxjs';
 import { IMenuItem } from '../../../configs/menu.config';
+import { selectFirmwareFile } from '../../../../../child/scripts/firmware-selection';
 
 const BLE_OTA_SERVICE_UUID = '00008018-0000-1000-8000-00805f9b34fb';
 const BLE_OTA_RECV_FW_CHAR_UUID = '00008020-0000-1000-8000-00805f9b34fb';
@@ -513,17 +514,11 @@ export class UploaderBleService implements BleOtaTransport {
   findFirmwareFile(buildPath: string): string {
     if (!buildPath || !window['fs']?.existsSync(buildPath)) return '';
 
-    const files = this.collectFiles(buildPath)
-      .filter(filePath => filePath.toLowerCase().endsWith('.bin'));
-
-    const appBins = files.filter(filePath => {
-      const name = window['path'].basename(filePath).toLowerCase();
-      return !/(bootloader|partition|boot_app0|ota_data|spiffs|littlefs|filesystem|fatfs)/.test(name);
-    });
-
-    return appBins.find(filePath => window['path'].basename(filePath).toLowerCase().endsWith('.ino.bin'))
-      || appBins[0]
-      || '';
+    const selected = selectFirmwareFile(this.collectFiles(buildPath));
+    if (selected && !window['fs'].statSync(selected).size) {
+      throw new Error(`FIRMWARE_EMPTY: 固件为空，已停止上传：${selected}`);
+    }
+    return selected;
   }
 
   readFirmwareFile(filePath: string): Uint8Array {
@@ -1246,6 +1241,7 @@ export class UploaderBleService implements BleOtaTransport {
     for (const entry of entries) {
       const name = entry.name || entry;
       const filePath = window['path'].join(dirPath, name);
+      if (window['fs'].lstatSync(filePath)._isSymbolicLink) continue;
       const isDirectory = entry._isDirectory ?? window['fs'].statSync(filePath)._isDirectory;
       const isFile = entry._isFile ?? window['fs'].statSync(filePath)._isFile;
       if (isDirectory) {

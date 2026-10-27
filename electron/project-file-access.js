@@ -20,6 +20,10 @@ function projectFileGuard(assertCurrent) {
 
 /** Physical project identity and regular-file checks, shared by all host publications. */
 function createProjectFileAccess(root, projectPath, files = fs) {
+  // The JS resolver lstats every ancestor on every guard. Keep the same physical
+  // path checks, using the native resolver (also used by fs.promises.realpath).
+  // Injected/older file systems may only provide the ordinary synchronous API.
+  const realpath = files.realpathSync.native || files.realpathSync;
   const identities = new Map();
   const checkDirectory = directory => {
     const stat = files.lstatSync(directory);
@@ -33,7 +37,7 @@ function createProjectFileAccess(root, projectPath, files = fs) {
   checkDirectory(root);
   const checkRoot = () => {
     checkDirectory(root);
-    if (files.realpathSync(projectPath) !== root || files.realpathSync(root) !== root) {
+    if (realpath(projectPath) !== root || realpath(root) !== root) {
       throw projectFileFault('PROJECT_FILE_UNSAFE_PATH', 'Project root identity changed during publication.');
     }
   };

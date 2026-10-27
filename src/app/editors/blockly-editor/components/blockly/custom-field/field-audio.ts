@@ -1,3 +1,4 @@
+import { MediaFieldFilePicker } from './field-media-file-picker';
 import * as Blockly from 'blockly/core';
 import { projectDataRuntime } from '@domain/project/project-data/public-api';
 import { projectResourceGc } from '../../../services/project-resource-gc.service';
@@ -195,6 +196,7 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
   private playhead: HTMLElement | null = null;
   private playButton: HTMLButtonElement | null = null;
   private fileInput: HTMLInputElement | null = null;
+  private filePicker: MediaFieldFilePicker | null = null;
   private sampleRateSelect: HTMLSelectElement | null = null;
   private channelsSelect: HTMLSelectElement | null = null;
   private bitRateSelect: HTMLSelectElement | null = null;
@@ -331,6 +333,7 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
   }
 
   override dispose() {
+    this.filePicker?.dispose();
     this.isDisposed = true;
     this.clearSettingsTimer();
     this.invalidateOperations();
@@ -388,12 +391,13 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
     this.fileInput.type = 'file';
     this.fileInput.accept = 'audio/*,.wav,.mp3,.aac,.m4a,.ogg,.flac,.webm';
     this.fileInput.hidden = true;
+    this.filePicker = new MediaFieldFilePicker(editor, this.fileInput);
     this.fileInput.addEventListener('change', () => this.handleSelectedFile());
     actions.append(
       this.fileInput,
       this.createButton(
         translateAudioMessage('BUTTON_UPLOAD'),
-        () => this.fileInput?.click(),
+        () => this.filePicker?.open(),
         translateAudioMessage('UPLOAD_TOOLTIP'),
       ),
       this.createButton(translateAudioMessage('BUTTON_CLEAR'), () => this.clearAudio()),
@@ -1264,8 +1268,8 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
       outputDuration: audioPath
         ? this.finiteNumber(value.outputDuration, Math.max(0, trimEnd - trimStart), 0, duration)
         : 0,
-      sourcePath,
-      audioPath,
+      ...(sourcePath ? { sourcePath } : {}),
+      ...(audioPath ? { audioPath } : {}),
     };
   }
 
@@ -1420,6 +1424,8 @@ export class FieldAudio extends Blockly.Field<AudioFieldValue> {
   }
 
   private disposeDropdown() {
+    this.filePicker?.dispose();
+    this.filePicker = null;
     this.removePointerListeners?.();
     const shouldCommitPendingSettings = this.hasPendingSettings();
     this.clearSettingsTimer();

@@ -5,6 +5,7 @@
  */
 
 import * as Blockly from 'blockly/core';
+import { MediaFieldFilePicker } from './field-media-file-picker';
 import { GlobalServiceManager } from '../../../services/bitmap-upload-bridge';
 import { projectDataRuntime, AilyDataRef, isAilyDataRef, cacheProjectDataImage, prepareProjectDataImage,
     registerNativeFieldPreparation, releaseProjectDataImage } from '@domain/project/project-data/public-api';
@@ -38,8 +39,10 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
     private resolvedImageData: string | null = null;
     private resolvedImageRefId = '';
     private loadingImage: Promise<string | null> | null = null;
+    private geometryFields: FieldImagePreviewConfig['geometryFields'];
 
     // 事件绑定数组
+    private filePicker: MediaFieldFilePicker | null = null;
     private boundEvents: Blockly.browserEvents.Data[] = [];
 
     // 配置选项
@@ -57,6 +60,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
 
         this.SERIALIZABLE = true;
         this.previewSize = config?.previewSize ?? DEFAULT_PREVIEW_SIZE;
+        this.geometryFields = config?.geometryFields;
 
         // 生成唯一ID
         this.fieldId = 'field_image_preview_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -158,6 +162,17 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
      */
     private createEditor(): HTMLElement {
         const editor = this.createElement('div', 'imagePreviewEditor');
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/*';
+        fileInput.hidden = true;
+        editor.appendChild(fileInput);
+        this.filePicker = new MediaFieldFilePicker(editor, fileInput);
+        this.bindEvent(fileInput, 'change', () => {
+            const file = fileInput.files?.[0];
+            fileInput.value = '';
+            if (file) this.handleFileSelected(file);
+        });
 
         // 创建文件选择区域
         const fileSection = this.createFileSection();
@@ -259,7 +274,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         this.widthInput.className = 'sizeInput';
         this.widthInput.min = '1';
         this.widthInput.max = '1000';
-        this.widthInput.value = (this.getValue()?.width || DEFAULT_WIDTH).toString();
+        this.widthInput.value = this.editorGeometry('width', DEFAULT_WIDTH).toString();
         this.widthInput.style.color = '#333';
         this.widthInput.style.backgroundColor = '#fff';
         this.widthInput.style.border = '1px solid #ddd';
@@ -279,7 +294,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         this.heightInput.className = 'sizeInput';
         this.heightInput.min = '1';
         this.heightInput.max = '1000';
-        this.heightInput.value = (this.getValue()?.height || DEFAULT_HEIGHT).toString();
+        this.heightInput.value = this.editorGeometry('height', DEFAULT_HEIGHT).toString();
         this.heightInput.style.color = '#333';
         this.heightInput.style.backgroundColor = '#fff';
         this.heightInput.style.border = '1px solid #ddd';
@@ -316,7 +331,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         this.xInput.className = 'positionInput';
         this.xInput.min = '0';
         this.xInput.max = '320';
-        this.xInput.value = (this.getValue()?.x || 0).toString();
+        this.xInput.value = this.editorGeometry('x', 0).toString();
         this.xInput.style.width = '60px';
         this.xInput.style.padding = '4px 8px';
         this.xInput.style.border = '1px solid #ddd';
@@ -337,7 +352,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         this.yInput.className = 'positionInput';
         this.yInput.min = '0';
         this.yInput.max = '240';
-        this.yInput.value = (this.getValue()?.y || 0).toString();
+        this.yInput.value = this.editorGeometry('y', 0).toString();
         this.yInput.style.width = '60px';
         this.yInput.style.padding = '4px 8px';
         this.yInput.style.border = '1px solid #ddd';
@@ -360,7 +375,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
         const section = this.createElement('div', 'screenSection');
 
         const label = this.createElement('label', 'sectionLabel');
-        label.textContent = '屏幕设置';
+        label.textContent = '预览屏幕设置';
         section.appendChild(label);
 
         const screenContainer = this.createElement('div', 'screenSettingsContainer');
@@ -409,7 +424,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
 
         // 旋转选择
         const rotationLabel = this.createElement('span', 'screenLabel');
-        rotationLabel.textContent = '旋转:';
+        rotationLabel.textContent = '预览旋转:';
         screenContainer.appendChild(rotationLabel);
 
         this.rotationSelect = document.createElement('select');
@@ -588,23 +603,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
      * 打开文件选择对话框
      */
     private openFileDialog() {
-        // 这里需要通过Electron的IPC调用文件选择对话框
-        // 暂时使用简单的文件输入
-        const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = 'image/*';
-        fileInput.style.display = 'none';
-
-        fileInput.onchange = (e) => {
-            const file = (e.target as HTMLInputElement).files?.[0];
-            if (file) {
-                this.handleFileSelected(file);
-            }
-        };
-
-        document.body.appendChild(fileInput);
-        fileInput.click();
-        document.body.removeChild(fileInput);
+        this.filePicker?.open();
     }
 
     /**
@@ -758,7 +757,38 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
             image,
         };
 
-        this.setValue(newValue);
+        this.commitEditorValue(newValue);
+    }
+
+    private geometryField(key: 'width' | 'height' | 'x' | 'y'): Blockly.FieldNumber | null {
+        const name = this.geometryFields?.[key];
+        const field = name ? this.getSourceBlock()?.getField(name) : null;
+        return field instanceof Blockly.FieldNumber ? field : null;
+    }
+
+    private editorGeometry(key: 'width' | 'height' | 'x' | 'y', fallback: number): number {
+        return Number(this.geometryField(key)?.getValue() ?? this.getValue()?.[key] ?? fallback);
+    }
+
+    // Keep legacy generator parameters authoritative. Only editor actions synchronize
+    // peers: deserialization and ABS validation must never mutate another field.
+    private commitEditorValue(value: ImagePreviewValue): void {
+        const group = Blockly.Events.getGroup();
+        if (!group) Blockly.Events.setGroup(true);
+        try {
+            const next = this.doClassValidation_(value);
+            if (!next) return;
+            for (const key of ['width', 'height', 'x', 'y'] as const) {
+                const field = this.geometryField(key);
+                if (field) {
+                    field.setValue(next[key]);
+                    next[key] = Number(field.getValue());
+                }
+            }
+            this.setValue(next);
+        } finally {
+            Blockly.Events.setGroup(group);
+        }
     }
 
     /**
@@ -787,7 +817,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
                 byteLength: parsed.bytes.byteLength,
                 image,
             };
-            this.setValue(newValue);
+            this.commitEditorValue(newValue);
             await cacheProjectDataImage(this, image, imageData);
         });
         projectDataRuntime.trackMutation(mutation);
@@ -830,6 +860,8 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
      * 销毁编辑器
      */
     private disposeEditor() {
+        this.filePicker?.dispose();
+        this.filePicker = null;
         // 清理事件绑定
         for (const event of this.boundEvents) {
             Blockly.browserEvents.unbind(event);
@@ -927,6 +959,7 @@ export class FieldImagePreview extends Blockly.Field<ImagePreviewValue> {
      * 销毁字段
      */
     override dispose() {
+        this.filePicker?.dispose();
         releaseProjectDataImage(this);
         // 清理DOM引用
         this.blockDisplayImage = null;
@@ -962,6 +995,8 @@ export interface FieldImagePreviewConfig extends Blockly.FieldConfig {
     defaultWidth?: number;
     defaultHeight?: number;
     previewSize?: number;
+    /** Optional sibling numeric fields used by the block's code generator. */
+    geometryFields?: Partial<Record<'width' | 'height' | 'x' | 'y', string>>;
 }
 
 function finiteInteger(value: unknown, fallback: number): number {

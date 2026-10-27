@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "子应用活动面板",
+    "TITLE": "子应用",
+    "OPEN_FULL": "打开完整子应用",
+    "COLLAPSE": "收起",
+    "CALL_COUNT": "调用次数：{{count}}",
+    "RUNTIME_READY": "运行服务已就绪",
+    "RUNTIME_STARTING": "运行服务正在启动",
+    "RUNTIME_ERROR": "运行服务出错",
+    "RUNTIME_STOPPED": "运行服务已停止",
+    "RUNTIME_UNKNOWN": "运行服务状态未知",
+    "INVOCATION_RUNNING": "智能体正在调用",
+    "INVOCATION_SUCCEEDED": "上次调用成功",
+    "INVOCATION_FAILED": "上次调用失败",
+    "INVOCATION_CANCELLED": "上次调用已取消",
+    "INVOCATION_IDLE": "无进行中的调用",
+    "WAITING_RUNTIME": "等待运行服务",
+    "LOADING_SURFACE": "正在加载紧凑视图",
+    "RUNTIME_NOT_RETAINED": "此面板不会启动或保持子应用运行服务。",
+    "SURFACE_ERROR": "紧凑视图不可用",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} 视图"
+  },
   "BLOCKLY_FUNCTION_VIEW": {
     "LABEL": "查看函数或整个文件",
     "ALL": "整个文件",
@@ -1193,6 +1215,7 @@
         "NO_TUTORIAL_PROVIDED": "库作者未提供教程"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 任务正在运行，请等待完成后再另存为。",
       "OPEN_IN_CODER": "使用 Aily Coder 打开",
       "CONVERT_CODER_TITLE": "转换为 Coder 项目",
       "CONVERT_CODER_CONTENT": "此文件属于 Blockly 项目。将创建 Coder 副本并安装依赖；副本可能无法再使用积木编辑。原项目保留。",

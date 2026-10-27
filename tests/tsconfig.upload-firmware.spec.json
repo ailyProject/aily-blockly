@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/editors/blockly-editor/services/uploader.service.spec.ts",
+    "../src/app/services/domains/device/uploader-ble.service.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

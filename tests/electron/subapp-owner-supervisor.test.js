@@ -186,3 +186,95 @@ test('IPC validates sender generation and rejects an unowned or non-local runtim
     assert.equal((await invoke(event, { action: 'track', ...h.binding() })).ok, false);
     assert.equal((await invoke({ ...event, senderFrame: {} }, { action: 'connect' })).ok, false);
 });
+
+test('host shutdown fences synchronously, joins owners and native cleanup, and prevents late renderer replay', async () => {
+    const h = harness();
+    await h.supervisor.track(h.renderer, h.binding());
+    await h.supervisor.track(h.renderer, h.binding('owner-b'));
+    h.runtime.nativeOwnerControl = true;
+    await h.supervisor.track(h.renderer, h.binding('native-owner'));
+    const native = h.supervisor.createOwnerGuard(h.renderer, h.binding('native-owner'));
+    const blocked = Promise.withResolvers(); native.attachCleanup(() => blocked.promise);
+    const pending = h.supervisor.shutdown();
+    assert.equal(h.supervisor.shutdown(), pending);
+    assert.throws(() => h.supervisor.connect(contents(2)), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+    await assert.rejects(h.supervisor.track(h.renderer, h.binding('late')), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+    assert.throws(native, { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+    let finished = false; pending.then(() => { finished = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(finished, false);
+    assert.deepEqual(h.calls.map(call => call.ownerSessionId), ['owner-a', 'owner-b']);
+    blocked.resolve();
+    assert.deepEqual(await pending, { complete: true, errors: [], pending: 0, timedOut: false });
+    h.renderer.emit('destroyed'); await h.supervisor.idle();
+    assert.equal(h.calls.length, 2);
+    assert.deepEqual(h.errors, []);
+});
+
+test('global shutdown joins an already running crash recovery without duplicate release', async () => {
+    const held = Promise.withResolvers(); let attempts = 0;
+    const h = harness(async () => { if (++attempts === 1) throw Error('retryable'); await held.promise; });
+    await h.supervisor.track(h.renderer, h.binding());
+    h.renderer.emit('render-process-gone');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(attempts, 2);
+    const pending = h.supervisor.shutdown();
+    held.resolve();
+    assert.equal((await pending).complete, true);
+    assert.equal(attempts, 2);
+    assert.deepEqual(h.errors, []);
+});
+
+test('deadline aborts an already active lifecycle request and forbids cleanup retries', async () => {
+    const h = harness(binding => new Promise((_resolve, reject) => {
+        binding.signal.addEventListener('abort', () => reject(Error('deadline')), { once: true });
+    }));
+    await h.supervisor.track(h.renderer, h.binding());
+    const controller = new AbortController();
+    const pending = h.supervisor.shutdown({ signal: controller.signal });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.calls.length, 1);
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.complete, false); assert.equal(result.timedOut, true); assert(result.pending > 0);
+    await h.supervisor.idle();
+    assert.equal(h.calls.length, 1); assert.equal(h.supervisor.requests.size, 0);
+});
+
+test('native cleanup cannot be claimed joined at deadline or send a late lifecycle RPC', async () => {
+    const h = harness(), native = Promise.withResolvers(), controller = new AbortController();
+    await h.supervisor.track(h.renderer, h.binding());
+    h.supervisor.createOwnerGuard(h.renderer, h.binding()).attachCleanup(() => native.promise);
+    const pending = h.supervisor.shutdown({ signal: controller.signal });
+    await new Promise(resolve => setImmediate(resolve)); controller.abort();
+    const result = await pending;
+    assert.equal(result.complete, false); assert.equal(result.pending, 1); assert.equal(result.timedOut, true);
+    assert.equal(h.calls.length, 0);
+    native.resolve(); await h.supervisor.idle();
+    assert.equal(h.calls.length, 0);
+    assert.equal(result.complete, false, 'late callbacks cannot relabel the selected deadline result');
+});
+
+test('deadline fences a pending lease acquisition and never acknowledges or resurrects it', async () => {
+    const h = harness(binding => new Promise((_resolve, reject) => {
+        binding.signal.addEventListener('abort', () => reject(Error('lease aborted')), { once: true });
+    }));
+    h.runtime.hostInfo.runtimeConfig.agent.lifecycle.ownerLease = { method: 'fixture.lease' };
+    const tracking = h.supervisor.track(h.renderer, h.binding());
+    const rejected = assert.rejects(tracking, /lease aborted/);
+    await new Promise(resolve => setImmediate(resolve));
+    const controller = new AbortController(), pending = h.supervisor.shutdown({ signal: controller.signal });
+    controller.abort(); await rejected;
+    assert.equal((await pending).complete, false);
+    await h.supervisor.idle();
+    assert.equal(h.calls.length, 1); assert.equal(h.calls[0].method, 'fixture.lease');
+    assert.equal(h.supervisor.renderers.get(1).bindings.size, 0);
+});
+
+test('failed owner acknowledgements remain incomplete even when cleanup work has settled', async () => {
+    const h = harness(async () => { throw Error('unavailable'); });
+    await h.supervisor.track(h.renderer, h.binding());
+    const result = await h.supervisor.shutdown();
+    assert.equal(result.complete, false); assert.equal(result.pending, 0); assert.equal(result.timedOut, false);
+    assert.equal(h.calls.length, 3); assert.deepEqual(result.errors, ['unavailable']);
+});

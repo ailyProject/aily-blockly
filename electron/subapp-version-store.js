@@ -267,6 +267,20 @@ function publishCandidate(rootDir, entry, candidate, options = {}) {
   });
 
   const destination = path.join(parent, entry.version);
+  let replacementBackup;
+  let movedNew = false;
+  if (options.replacementTransaction) {
+    options.replacementTransaction.rollback = () => {
+      if (replacementBackup && fs.existsSync(replacementBackup)) {
+        if (fs.existsSync(destination)) fs.renameSync(destination, path.join(parent, `.failed-repair-${randomUUID()}`));
+        fs.renameSync(replacementBackup, destination);
+        replacementBackup = undefined;
+      } else if (movedNew && fs.existsSync(destination)) {
+        fs.renameSync(destination, path.join(parent, `.failed-repair-${randomUUID()}`));
+      }
+      movedNew = false;
+    };
+  }
   if (fs.existsSync(destination)) {
     if (!options.replace) {
       const existing = inspectVersion(rootDir, entry, {
@@ -277,9 +291,10 @@ function publishCandidate(rootDir, entry, candidate, options = {}) {
     }
     const replaced = path.join(parent, `.replaced-${entry.version}-${randomUUID()}`);
     fs.renameSync(destination, replaced);
+    if (options.retainPrevious) replacementBackup = replaced;
     try {
       fs.renameSync(candidate.project, destination);
-      fs.rmSync(replaced, { recursive: true, force: true });
+      if (!options.retainPrevious) fs.rmSync(replaced, { recursive: true, force: true });
     } catch (error) {
       if (!fs.existsSync(destination) && fs.existsSync(replaced)) fs.renameSync(replaced, destination);
       throw error;
@@ -287,9 +302,16 @@ function publishCandidate(rootDir, entry, candidate, options = {}) {
   } else {
     fs.renameSync(candidate.project, destination);
   }
-  return inspectVersion(rootDir, entry, {
-    version: entry.version, path: relativePath, ...(integrity ? { integrity } : {}),
-  });
+  movedNew = true;
+  try {
+    const prepared = inspectVersion(rootDir, entry, {
+      version: entry.version, path: relativePath, ...(integrity ? { integrity } : {}),
+    });
+    return replacementBackup ? { ...prepared, replacementBackup } : prepared;
+  } catch (error) {
+    options.replacementTransaction?.rollback();
+    throw error;
+  }
 }
 
 function readPrepared(rootDir, entry) {

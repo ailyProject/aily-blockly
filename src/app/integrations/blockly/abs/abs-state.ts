@@ -5,7 +5,10 @@ import type { AbsDiagnostic } from './abs-diagnostics';
 
 export const ABS_SCHEMA_HEADER = '# ABS Schema: 2';
 // Projection algorithm identifier, independent of the production wire protocol version.
-export const ABS_PROJECTION_VERSION = 'abs-v2.preview.5';
+export const ABS_PROJECTION_VERSION = 'abs-v2.preview.7';
+
+/** Restrictions may be added by ABS; omission never unlocks retained blocks. */
+export type AbsBlockProtection = Partial<Record<'deletable' | 'movable' | 'editable', false>>;
 
 export interface AbsSourceRange { start: number; end: number }
 export interface AbsSyntaxNode extends AbsSourceRange {
@@ -18,9 +21,12 @@ export interface AbsSyntaxNode extends AbsSourceRange {
   extraState?: unknown;
   extraRange?: AbsSourceRange;
   disabled: boolean;
+  protection?: AbsBlockProtection;
+  comment?: string | null;
+  shadowFields?: Record<string, Record<string, unknown>>;
 }
 
-/** Opaque serialized attributes remain in ABI, not the syntax tree or map. */
+/** Opaque attributes are retained in the complete ABS state section. */
 export interface AbsAbiBlock {
   type: string;
   id: string;

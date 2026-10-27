@@ -9,6 +9,7 @@ interface PartitionProject {
   isCloudBuild(): boolean;
   isAilyCodeProject(root: string): boolean;
   getPackageJson(): Promise<any>;
+  getEffectivePackageText(projectPath: string): string;
   getBoardJson(): Promise<any>;
   getBoardConfigMenu(options: { persistDefaults: boolean }): Promise<any[]>;
   getBoardFile(name: string): Promise<string | null>;
@@ -17,7 +18,11 @@ interface PartitionProject {
   getCloudPartitionTemplate(name: string): Promise<string | null>;
 }
 
-const signature = (pkg: any) => JSON.stringify([pkg.entry, pkg.arduinoSketch, pkg.devmode, pkg.board, pkg.dependencies, pkg.projectConfig]);
+const signature = (pkg: any) => JSON.stringify(
+  [pkg.entry, pkg.arduinoSketch, pkg.devmode, pkg.board, pkg.dependencies, pkg.projectConfig],
+  (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value,
+);
 
 /** Both compile entry points call this before hashing or freezing source files. */
 export async function ensureProjectPartitionFile(
@@ -26,12 +31,18 @@ export async function ensureProjectPartitionFile(
   const root = project.currentProjectPath;
   const board = project.currentBoardConfig;
   const cloud = project.isCloudBuild();
+  const readSaved = () => signature(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')));
+  // Library edits are installed immediately but remain unsaved until Save.
+  // Capture each authority independently, including disk before the first await:
+  // a valid pending edit differs from disk without either input having changed.
+  const saved = readSaved();
   const pkg = await project.getPackageJson();
   const expected = signature(pkg);
   const guard = () => {
     assertCurrent();
     if (project.currentProjectPath !== root || project.currentBoardConfig !== board || project.isCloudBuild() !== cloud
-      || signature(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))) !== expected) {
+      || readSaved() !== saved
+      || signature(JSON.parse(project.getEffectivePackageText(root))) !== expected) {
       throw new Error('BUILD_SOURCE_STALE: 项目或开发板配置已改变，请重新编译。');
     }
   };

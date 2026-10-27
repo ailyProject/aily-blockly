@@ -27,16 +27,18 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 function host(overrides = {}) {
   const app = new EventEmitter();
   const calls = [];
+  const warnings = [];
   let quits = 0;
   app.quit = () => { quits++; };
   const sandbox = vm.createContext({
-    app, console: { info() {}, warn() {} },
+    app, console: { info() {}, warn(...args) { warnings.push({ args, calls: [...calls] }); } },
     ipcMain: new EventEmitter(), mainWindow: null, createApplicationQuitCoordinator,
     isCurrentRendererGenerationReady: () => false,
     beginWindowShutdown: () => calls.push('notify-windows'), cliBridge: { close: () => calls.push('stop-cli') },
     beginCommandShutdown: () => calls.push('block-commands'),
     beginNpmShutdown: () => calls.push('block-npm'),
     beginAuthCredentialsShutdown: () => calls.push('block-auth'),
+    stopAllChildToolSessions: async () => { calls.push('stop-child-tools'); return { complete: true }; },
     releaseAllAuthCredentialsLocks: () => calls.push('release-auth'),
     getActiveCmdProcesses: () => [], getActiveNpmProcesses: () => [],
     getActiveTerminals: () => [], getActiveAilyServicesStreams: () => [],
@@ -54,7 +56,7 @@ function host(overrides = {}) {
     ...overrides,
   });
   vm.runInContext(cleanup + '\n' + quitSetup, sandbox);
-  return { calls, get quits() { return quits; },
+  return { calls, warnings, get quits() { return quits; },
     get completed() { return vm.runInContext('applicationQuit.canClose()', sandbox); },
     begin() { let prevented = false; app.emit('before-quit', { preventDefault() { prevented = true; } }); return prevented; },
   };
@@ -64,7 +66,8 @@ test('quit blocks new commands and installers before stopping registered process
   const h = host();
   assert.equal(h.begin(), true);
   await settle();
-  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth', 'stop-libraries', 'stop-cloud', 'stop-commands', 'stop-npm', 'release-auth']);
+  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth', 'stop-child-tools', 'stop-libraries', 'stop-cloud', 'stop-commands', 'stop-npm', 'release-auth']);
+  assert.deepEqual(h.warnings, []);
   assert.equal(h.completed, true);
   assert.equal(h.quits, 1);
   assert.equal(h.begin(), false);
@@ -106,6 +109,33 @@ test('one failing cleanup still allows the remaining services to finish before q
   finish(true); await settle();
   assert.equal(h.completed, true);
   assert.equal(h.quits, 1);
+});
+
+test('application cleanup waits for child-tool owner and Runtime drain before the process fallback', async () => {
+  const childTools = Promise.withResolvers(); let drains = 0;
+  const h = host({ stopAllChildToolSessions: () => { drains++; return childTools.promise; } });
+  h.begin(); h.begin(); await settle();
+  assert.equal(drains, 1);
+  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth']);
+  assert.equal(h.completed, false); assert.equal(h.quits, 0);
+  childTools.resolve({ complete: true }); await settle();
+  assert(h.calls.indexOf('stop-libraries') > h.calls.indexOf('block-auth'));
+  assert(h.calls.includes('stop-commands'));
+  assert.equal(h.completed, true); assert.equal(h.quits, 1); assert.deepEqual(h.warnings, []);
+});
+
+test('an incomplete child-tool drain is reported before the registered-process fallback', async () => {
+  const failure = { complete: false, timedOut: true, sessions: 1, pending: 1,
+    ownerCleanup: { complete: false, timedOut: true, pending: 1, errors: ['deadline'] } };
+  let drains = 0;
+  const h = host({ stopAllChildToolSessions: async () => { drains++; return failure; } });
+  h.begin(); await settle();
+  assert.equal(drains, 1); assert.equal(h.warnings.length, 1);
+  assert.deepEqual(h.warnings[0].args, ['[PROC_TRACE][CHILD_TOOL_SHUTDOWN_INCOMPLETE]', failure]);
+  assert.deepEqual(h.warnings[0].calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth']);
+  assert(h.calls.includes('stop-commands')); assert(h.calls.includes('stop-npm'));
+  assert.equal(h.completed, true); assert.equal(h.quits, 1);
+  assert.equal(failure.ownerCleanup.complete, false, 'fallback must not relabel owner cleanup as acknowledged');
 });
 
 test('native main-window close waits for process cleanup', () => {

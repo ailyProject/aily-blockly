@@ -1,5 +1,5 @@
 import { expandAbsValueInput } from './abs-value-inputs';
-import { AbsSyncError, type AbsSyntaxNode } from './abs-state';
+import { AbsSyncError, type AbsSyntaxNode, type AbsBlockProtection } from './abs-state';
 import type { AbsFieldDefinition, AbsFieldToken } from './abs-field-values';
 import type { BlockMeta } from './block-definition.model';
 import { hasUniqueAbsArguments } from './abs-argument-identity';
@@ -18,6 +18,9 @@ export interface AbsRawNode {
   parameters: Array<AbsRawValue & { name?: string }>;
   sections: Array<{ name?: string; inline?: AbsRawValue; children: AbsRawNode[] }>;
   disabled: boolean;
+  protection?: AbsBlockProtection;
+  comment?: string | null;
+  shadowFields?: Record<string, Record<string, unknown>>;
   omittedParentheses?: true;
   extraState?: unknown;
   extraRange?: { start: number; end: number };
@@ -27,14 +30,20 @@ export interface AbsRawNode {
 
 /** Traverse source calls without binding slots or executing any runtime callback. */
 export function* walkAbsRawSyntax(roots: readonly AbsRawNode[], disabled = false): Generator<{ node: AbsRawNode; disabled: boolean }> {
-  for (const node of roots) {
-    const inactive = disabled || node.disabled;
+  const pending = roots.map(node => ({ node, disabled })).reverse();
+  while (pending.length) {
+    const { node, disabled: outerDisabled } = pending.pop()!;
+    const inactive = outerDisabled || node.disabled;
     yield { node, disabled: inactive };
-    for (const parameter of node.parameters) if (parameter.child) yield* walkAbsRawSyntax([parameter.child], inactive);
+    const children: Array<{ node: AbsRawNode; disabled: boolean }> = [];
+    for (const parameter of node.parameters) if (parameter.child) children.push({ node: parameter.child, disabled: inactive });
     for (const section of node.sections) {
-      if (section.inline?.child) yield* walkAbsRawSyntax([section.inline.child], inactive);
-      yield* walkAbsRawSyntax(section.children, inactive);
+      // @next is a sequence continuation, not an input owned by this block.
+      const inherited = section.name === 'next' ? outerDisabled : inactive;
+      if (section.inline?.child) children.push({ node: section.inline.child, disabled: inherited });
+      for (const child of section.children) children.push({ node: child, disabled: inherited });
     }
+    for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
   }
 }
 
@@ -81,6 +90,9 @@ export function bindAbsSyntax(raw: readonly AbsRawNode[], options: AbsSyntaxOpti
       type: raw.type, fields: Object.create(null), fieldRanges: Object.create(null), inputs: Object.create(null),
       disabled: raw.disabled, start: raw.start, end: raw.end,
     };
+    if (Object.hasOwn(raw, 'comment')) node.comment = raw.comment;
+    if (raw.shadowFields) node.shadowFields = raw.shadowFields;
+    if (raw.protection) node.protection = { ...raw.protection };
     if (Object.hasOwn(raw, 'extraState')) { node.extraState = raw.extraState; node.extraRange = raw.extraRange; }
     else {
       const prepared = options.prepareExtraState?.(raw);

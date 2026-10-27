@@ -1,3 +1,4 @@
+import { encodeAbsState } from './abs-full-state';
 import { assertNoOversizedInlineValues } from '@domain/project/public-api';
 import { absJson } from './abs-json';
 export { absJson } from './abs-json';
@@ -41,7 +42,9 @@ export function assertAbsBaselineContext(map: AbsIdentityMap, current: AbsBaseli
     const changed = [map.generation !== current.generation && 'generation', map.baseAbiHash !== current.currentAbiHash && 'workspace',
       map.pageAbiHash !== current.currentPageAbiHash && 'page', map.savedAbiHash !== current.savedAbiHash && 'saved-abi'].filter(Boolean);
     throw new AbsSyncError('ABS_BASELINE_STALE', 'Project state changed since this ABS projection was prepared.', undefined, [], {
-      reason: changed.join(','), hint: 'Use the generation returned by the latest library/board operation. Otherwise refresh the current projection once and preserve any draft; do not reinstall libraries or infer that the user changed blocks.' });
+      reason: changed.join(','), hint: changed.some(part => part !== 'generation')
+        ? 'Preserve the canvas, disk ABS and AI candidate. Call project_recover(action="inspect") once and use only the offered token-bound preserving recovery (refresh/rebind/repair), or fork when the source lease cannot be owned. Then read the new baseline and reapply the intended edit. Do not overwrite files, export (including outFile) over competing edits, clear locks or force-bind a stale candidate to bypass concurrent edits.'
+        : 'Use the generation returned by the latest library/board operation. Preserve the draft and compare the current projection before preparing it again; do not reinstall libraries.' });
   }
 }
 
@@ -170,7 +173,9 @@ async function buildAbsProjection(workspace: AbsAbiWorkspace, context: AbsProjec
     if (group) group.push(reference); else procedureReferences.set(reference.blockId, [reference]);
   }
   const previous = projectionVersion === 'abs-v2.preview.3';
-  const { abs, blockAtPath, symbolAtPath } = renderAbs(snapshot, contracts, symbols, projectionVersion);
+  const completeState = projectionVersion === ABS_PROJECTION_VERSION;
+  const { abs: program, blockAtPath, symbolAtPath } = renderAbs(snapshot, contracts, symbols, projectionVersion);
+  const abs = completeState ? await encodeAbsState(program, document, blockAtPath, contracts, snapshot) : program;
   const entries = indexAbsSyntax(parseAbsSyntax(abs, previous ? {} : absSyntaxOptions(snapshot, contracts)));
   const fingerprints = await fingerprintAbsNodes(entries);
   const [baseAbiHash, pageAbiHash, baseAbsHash, contractsHash] = await Promise.all([
@@ -207,13 +212,19 @@ export function assertCurrentAbsProjection(baseline: AbsProjection): void {
 
 export async function validateAbsProjection(baseline: AbsProjection, allowPreviousForRecovery = false): Promise<void> {
   const version = baseline.map.projectionVersion;
-  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.3', 'abs-v2.preview.4'].includes(version)) {
+  if (![ABS_PROJECTION_VERSION, 'abs-v2.preview.3', 'abs-v2.preview.4', 'abs-v2.preview.5', 'abs-v2.preview.6'].includes(version)) {
     throw new AbsSyncError('ABS_PROJECTION_UNSUPPORTED', 'Unsupported immutable projection version.');
   }
   if (!allowPreviousForRecovery) assertCurrentAbsProjection(baseline);
-  const expected = await buildAbsProjection(baseline.workspace, {
-    ...baseline.map, document: baseline.document, contracts: baseline.contracts,
-  }, version);
+  let expected: AbsProjection;
+  try {
+    expected = await buildAbsProjection(baseline.workspace, {
+      ...baseline.map, document: baseline.document, contracts: baseline.contracts,
+    }, version);
+  } catch (error) {
+    if (!(error instanceof AbsSyncError)) throw error;
+    throw new AbsSyncError('ABS_MAP_INVALID', 'Immutable baseline cannot reconstruct its project state.');
+  }
   if (expected.abs !== baseline.abs || absJson(expected.map) !== absJson(baseline.map)) {
     throw new AbsSyncError('ABS_MAP_INVALID', 'Identity map does not match its immutable baseline.');
   }

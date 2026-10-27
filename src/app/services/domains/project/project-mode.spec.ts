@@ -11,6 +11,7 @@ describe('project mode boundaries', () => {
   function createService(mode: ProjectMode): any {
     const service = Object.create(ProjectService.prototype);
     service.configService = {
+      getCompileSettingsKey: () => 'local',
       data: { recentlyProjects: [coder, blockly] },
       init: jasmine.createSpy('init').and.resolveTo(),
       getPreferredChatAgentRuntimeMode: () => mode,
@@ -41,6 +42,8 @@ describe('project mode boundaries', () => {
     expect(detectProjectMode({ manifest: { type: 'coder', entry: 'src/main.cpp' }, hasAbi: false, hasAci: false })).toBe('coder');
     expect(detectProjectMode({ manifest: { type: 'coder' }, hasAbi: true, hasAci: false })).toBe('coder');
     expect(detectProjectMode({ hasAbi: true, hasAci: false })).toBe('blockly');
+    expect(detectProjectMode({ hasAbi: false, hasAci: false, hasCompleteAbs: true })).toBe('blockly');
+    expect(detectProjectMode({ manifest: { type: 'coder' }, hasAbi: false, hasAci: false, hasCompleteAbs: true })).toBe('coder');
     expect(detectProjectMode({ hasAbi: false, hasAci: true })).toBe('coder');
     expect(detectProjectMode({ manifest: { type: 'module' }, hasAbi: false, hasAci: false })).toBeNull();
   });
@@ -61,6 +64,24 @@ describe('project mode boundaries', () => {
   });
 
   for (const mode of ['blockly', 'coder'] as const) {
+    it(`returns a typed noninteractive ${mode} view conflict without a human dialog or forced acquisition`, async () => {
+      const service = createService(mode);
+      const originalLock = window['projectLock'];
+      const acquire = jasmine.createSpy('acquire').and.resolveTo({ ok: false, conflict: true,
+        code: 'PROJECT_VIEW_OWNER_UNKNOWN', holder: { pid: 200 },
+        ownership: { state: 'unknown', reason: 'process-query-unavailable' } });
+      window['projectLock'] = { tryAcquire: acquire };
+      const target = mode === 'coder' ? coder.path : blockly.path;
+      try {
+        await expectAsync(service.projectOpen(target, { reason: 'chat-tool-open', interactive: false }))
+          .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_VIEW_OWNER_UNKNOWN',
+            projectView: jasmine.objectContaining({ project: target, sourceViewPreserved: true }) }));
+        expect(acquire).toHaveBeenCalledOnceWith(target);
+        expect(service.modalService.confirm).not.toHaveBeenCalled();
+        expect(service.currentProjectPath).toBe(blockly.path);
+      } finally { window['projectLock'] = originalLock; }
+    });
+
     it(`still activates matching ${mode} projects through the correct editor`, async () => {
       const service = createService(mode);
       const originalIpc = window['ipcRenderer'];

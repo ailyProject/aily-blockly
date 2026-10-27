@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "サブアプリのアクティビティパネル",
+    "TITLE": "サブアプリ",
+    "OPEN_FULL": "サブアプリ全体を開く",
+    "COLLAPSE": "折りたたむ",
+    "CALL_COUNT": "呼び出し回数：{{count}}",
+    "RUNTIME_READY": "ランタイム準備完了",
+    "RUNTIME_STARTING": "ランタイム起動中",
+    "RUNTIME_ERROR": "ランタイムエラー",
+    "RUNTIME_STOPPED": "ランタイム停止",
+    "RUNTIME_UNKNOWN": "ランタイム状態不明",
+    "INVOCATION_RUNNING": "エージェント実行中",
+    "INVOCATION_SUCCEEDED": "前回の呼び出し成功",
+    "INVOCATION_FAILED": "前回の呼び出し失敗",
+    "INVOCATION_CANCELLED": "前回の呼び出しキャンセル済み",
+    "INVOCATION_IDLE": "実行中の呼び出しなし",
+    "WAITING_RUNTIME": "ランタイムを待機中",
+    "LOADING_SURFACE": "コンパクト表示を読み込み中",
+    "RUNTIME_NOT_RETAINED": "このパネルはサブアプリのランタイムを起動したり、維持したりしません。",
+    "SURFACE_ERROR": "コンパクト表示を利用できません",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} ビュー"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "プロジェクトの公開に失敗しました",
         "WORKSPACE_PROJECT_NOT_FOUND": "プロジェクトが見つかりません",
@@ -1049,6 +1071,7 @@
         "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI タスクを実行中です。完了してから名前を付けて保存してください。",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",

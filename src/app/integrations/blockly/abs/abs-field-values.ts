@@ -9,6 +9,8 @@ export interface AbsFieldDefinition {
   max?: number;
   precision?: number;
   valueType?: 'string' | 'number' | 'boolean' | 'json';
+  /** Exact inactive data retained without executing a dynamic option provider. */
+  preservedValue?: { value?: unknown };
   /** Supplied by a model-aware adapter, never inferred from the field name/value. */
   symbol?: {
     kind: 'variable' | 'procedure';
@@ -53,6 +55,14 @@ export function readAbsFieldToken(raw: string): AbsFieldToken {
 }
 
 export function resolveAbsFieldValue(token: AbsFieldToken, definition?: AbsFieldDefinition): unknown {
+  if (definition?.preservedValue) {
+    const stored = definition.preservedValue;
+    if (Object.hasOwn(stored, 'value') && (JSON.stringify(token.value) === JSON.stringify(stored.value)
+      || !token.quoted && typeof stored.value === 'string' && token.raw === stored.value)) return stored.value;
+    throw new AbsSyncError('ABS_RUNTIME_SHAPE_UNSUPPORTED', 'Changing an inactive option requires isolated native validation; the block remains disabled.', undefined, [], {
+      reason: 'inactive-field-edit', hint: 'Keep the user disabled state. Validate this configuration in the isolated candidate; do not enable or delete blocks to bypass validation.',
+    });
+  }
   if (token.omitted && !(definition?.type === 'field_dropdown' && definition.options?.some(option => option[1] === ''))) {
     throw new Error('An omitted argument is only valid for a dropdown with an empty option.');
   }
