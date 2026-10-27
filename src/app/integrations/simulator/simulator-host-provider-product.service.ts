@@ -84,6 +84,55 @@ export class SimulatorHostProviderProductService {
       : bindProviderSession(context, [], () => undefined);
   }
 
+  /** Build the active code once before opening the Simulator, through Blockly's normal Builder. */
+  async prepareCurrentProjectForSimulation(signal?: AbortSignal): Promise<void> {
+    const scope = await this.openCurrentProjectScope(signal);
+
+    if (!scope) throw new Error('请先打开一个 Blockly 项目。');
+
+    const current = AbortSignal.any([scope.activation.signal, ...(signal ? [signal] : [])]);
+    const requestId = `simulator-open-${crypto.randomUUID()}`;
+    const cancel = () => this.builder.cancelActiveBlocklyProjectBuild(requestId);
+
+    current.addEventListener('abort', cancel, { once: true });
+
+    try {
+      scope.requireCurrent();
+
+      const scene = await scope.callbacks.readScene({
+        projectIdentity: scope.projectIdentity,
+        sceneId: scope.sceneId,
+      }, current);
+
+      if (scene.kind !== 'aily-project-scene-network-descriptor') {
+        throw new Error('当前项目还没有电路场景，请先生成电路连线。');
+      }
+
+      await this.builder.buildActiveBlocklyProject({
+        projectPath: scope.activation.path,
+        graphSemanticRevision: scene.document.graphSemanticRevision,
+        sceneDocument: scene.document,
+        requestId,
+      });
+
+      scope.requireCurrent();
+
+      const context = await scope.callbacks.readContext({ projectIdentity: scope.projectIdentity }, current);
+
+      if (!context.activeArtifactRevision) throw new Error('Builder 未生成当前项目的仿真固件。');
+
+      await scope.callbacks.readArtifact({
+        projectIdentity: scope.projectIdentity,
+        artifactRevision: context.activeArtifactRevision,
+      }, current);
+
+      scope.requireCurrent();
+    } finally {
+      current.removeEventListener('abort', cancel);
+      await scope.close();
+    }
+  }
+
   /** The normal Browser caller borrows the same product construction as the
    * Native registration. No Runtime, project table or replacement owner is
    * created here; a same-path reload ends the original captured session. */

@@ -12,6 +12,8 @@ import { ElectronService } from '@core/platform/public-api';
 import { ProjectService } from '@domain/project/public-api';
 import { ImageViewerComponent } from '../../../../components/image-viewer/image-viewer.component';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
+import { SimulatorHostProviderProductService } from '../../../../integrations/simulator/simulator-host-provider-product.service';
+import { getChildToolConfig } from '../../../../configs/tool.config';
 import { InstalledChildToolLauncherService } from '../../services/installed-child-tool-launcher.service';
 import { Subscription } from 'rxjs';
 import { getToolWebUrl } from '../../../../configs/api.config';
@@ -84,6 +86,7 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     private themeService: ThemeService,
     private ngZone: NgZone,
     private installedChildTools: InstalledChildToolLauncherService,
+    private simulatorProjects: SimulatorHostProviderProductService,
     private ailyChatDemandSession: AilyChatDemandSessionService,
   ) { }
 
@@ -518,16 +521,29 @@ export class DevToolComponent implements OnInit, AfterViewInit, OnDestroy {
     this.uiService.openFeedback();
   }
 
+  private circuitOpening = false;
+
   async showCircuit() {
-    const result = await this.installedChildTools.launch('simulator', {
-      mode: 'window',
-    });
-    if (result.status === 'not-installed') {
-      this.messageService.warning('Simulator 子应用尚未安装，已打开应用商店。');
-    } else if (result.status === 'unavailable') {
-      this.messageService.warning('Simulator 子应用当前不可用，已打开应用商店，请检查安装状态。');
-    } else if (result.status === 'failed') {
-      this.messageService.error(result.message || '无法打开 Simulator 子应用。');
+    if (this.circuitOpening) return;
+
+    this.circuitOpening = true;
+
+    try {
+      if (getChildToolConfig('simulator')) await this.simulatorProjects.prepareCurrentProjectForSimulation();
+
+      const result = await this.installedChildTools.launch('simulator', { mode: 'window' });
+
+      if (result.status === 'not-installed') {
+        this.messageService.warning('Simulator 子应用尚未安装，已打开应用商店。');
+      } else if (result.status === 'unavailable') {
+        this.messageService.warning('Simulator 子应用当前不可用，已打开应用商店，请检查安装状态。');
+      } else if (result.status === 'failed') {
+        this.messageService.error(result.message || '无法打开 Simulator 子应用。');
+      }
+    } catch (error) {
+      this.messageService.error(error instanceof Error ? error.message : '仿真固件编译失败。');
+    } finally {
+      this.circuitOpening = false;
     }
   }
 
