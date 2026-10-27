@@ -29,10 +29,11 @@ function codeIdentity(execPath, appPath) {
   const inputs = ['package.json', 'electron/main.js', 'electron/preload.js', 'renderer/index.html',
     'electron/project-repair-environment.js', 'electron/project-repair-lineage.js', 'electron/project-repair-commit.js', 'electron/project-repair-normalization.js',
     'electron/project-recovery-receipts.js', 'electron/project-repair-handoff.js', 'electron/project-repair-primary.js',
-    'electron/project-file-access.js', 'electron/project-lock.js', 'electron/project-copy-admission.js', 'electron/project-copy-source.js', 'child/scripts/native-file-lock.js',
+    'electron/project-file-access.js', 'electron/project-lock.js', 'electron/project-copy-admission.js', 'electron/project-copy-source.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',
     'child/scripts/build-workspace-lease.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js'].sort();
   return hash(JSON.stringify([key(execPath), key(appPath), ...inputs.map(relative => {
-    const file = path.join(appPath, relative);
+    const root = path.extname(appPath) === '.asar' && relative.startsWith('child/scripts/') ? path.dirname(appPath) : appPath;
+    const file = path.join(root, relative);
     return [relative, fs.existsSync(file) ? hash(fs.readFileSync(file)) : null];
   })]));
 }

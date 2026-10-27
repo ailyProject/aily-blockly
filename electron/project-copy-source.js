@@ -2,7 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createProjectFileAccess, acquireProjectFileLock, projectFileGuard } = require('./project-file-access');
-const { getProcessState } = require('../child/scripts/process-state');
+const { childScriptPath } = require('./child-script-path');
+const { getProcessState } = require(childScriptPath('process-state.js'));
 const { inspectProjectCopyBuild } = require('./project-copy-admission');
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
