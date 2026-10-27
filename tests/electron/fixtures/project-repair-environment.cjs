@@ -18,7 +18,7 @@ module.exports = function fixture(t) {
   for (const name of ['main.js', 'preload.js']) fs.writeFileSync(path.join(appPath, 'electron', name), 'same code');
   for (const relative of ['electron/project-repair-environment.js', 'electron/project-repair-lineage.js', 'electron/project-repair-commit.js',
     'electron/project-repair-normalization.js', 'electron/project-recovery-receipts.js', 'electron/project-repair-handoff.js', 'electron/project-repair-primary.js',
-    'electron/project-file-access.js', 'electron/project-lock.js', 'electron/project-copy-admission.js', 'electron/project-copy-source.js', 'child/scripts/native-file-lock.js',
+    'electron/project-file-access.js', 'electron/project-lock.js', 'electron/project-copy-admission.js', 'electron/project-copy-source.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',
     'child/scripts/build-workspace-lease.js', 'child/scripts/system-boot-id.js', 'child/scripts/process-state.js']) {
     const file = path.join(appPath, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'same protocol code');
   }

@@ -1,8 +1,9 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { inspectBuildWorkspaceIdle } = require('../child/scripts/build-workspace-lease');
-const { getProcessState } = require('../child/scripts/process-state');
+const { childScriptPath } = require('./child-script-path');
+const { inspectBuildWorkspaceIdle } = require(childScriptPath('build-workspace-lease.js'));
+const { getProcessState } = require(childScriptPath('process-state.js'));
 const { createProjectFileAccess } = require('./project-file-access');
 
 const operations = new Set(['compile', 'preprocess', 'publish', 'clean', 'verify']);
