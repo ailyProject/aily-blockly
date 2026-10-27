@@ -17,7 +17,7 @@ import { isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArt
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
-import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave } from './prepared-project-save';
+import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave, ProjectSaveDataRuntime } from './prepared-project-save';
 import type { BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
 
@@ -291,8 +291,23 @@ export class _ProjectService {
     });
   }
 
-  prepareSave(document: BlocklyProjectDocument, assertCurrent: () => void): Promise<PreparedBlocklySave> {
-    return prepareBlocklySave(document, snapshot => this.blocklyService.getProjectAbiForSave(snapshot), assertCurrent);
+  prepareSave(document: BlocklyProjectDocument, assertCurrent: () => void, runtime?: ProjectSaveDataRuntime): Promise<PreparedBlocklySave> {
+    return prepareBlocklySave(document, snapshot => this.blocklyService.getProjectAbiForSave(snapshot), assertCurrent, runtime);
+  }
+
+  /** Derived outputs for a new project, without changing the source editor's clean baseline. */
+  async publishCopyOutputs(path: string, document: BlocklyProjectDocument, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+    assertCurrent();
+    const manifestPath = window['path'].join(path, 'package.json');
+    const manifest = JSON.parse(window['fs'].readFileSync(manifestPath, 'utf8'));
+    manifest[AILY_BLOCKLY_USED_LIBRARIES_FIELD] = this.blocklyService.getProjectUsedLibraryManifest(manifest, document);
+    window['fs'].writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    if (generated?.code != null) {
+      await publishGeneratorMacros(path, generated.projectMacros, assertCurrent);
+      await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts,
+        generated.artifacts === null ? undefined : generated.code);
+      assertCurrent();
+    }
   }
 
   commitPreparedSave(path: string, prepared: PreparedBlocklySave, expectedAbi: string | null, assertCurrent: () => void) {

@@ -1188,7 +1188,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         focusChildFrame: () => this.focusChildFrame(),
         writeClipboardText: (payload: { text?: string } = {}) => this.writeClipboardText(payload),
         openFile: (payload: { path?: string } = {}) => this.openFile(payload),
-        reportAiOperationState: (payload: { active?: boolean; sessionId?: string | null } = {}) => {
+        reportAiOperationState: (payload: { active?: boolean; running?: boolean; sessionId?: string | null } = {}) => {
           return this.ngZone.run(() => this.reportAiOperationState(payload));
         },
         reportActiveChatSession: (payload: { sessionId?: string | null } = {}) => {
@@ -1433,6 +1433,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private destroyPenpalConnection(): void {
     this.clearChildReadyTimer();
     this.setAilyChatOperationActive(false);
+    this.aiOperationRegistry.setActive(`child-chat-run:${this.hostContextId}`, false);
     void this.closeNativeWebviewSurface();
     this.remoteApi = null;
     if (this.penpalConnection) {
@@ -2084,13 +2085,18 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private reportAiOperationState(
-    payload: { active?: boolean; sessionId?: string | null } = {},
+    payload: { active?: boolean; running?: boolean; sessionId?: string | null } = {},
   ): Record<string, unknown> {
     if (!this.isAilyChatTool()) {
       return { ok: false, message: 'AI operation state is only available to Aily Chat' };
     }
 
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+    // A whole task can be thinking/reading/running Coder tools with no Blockly write overlay.
+    this.aiOperationRegistry.setActive(`child-chat-run:${this.hostContextId}`,
+      payload.running === true || payload.active === true, {
+        projectPath: this.projectService.currentProjectPath, sessionId,
+      });
     if (
       payload.active !== true &&
       sessionId &&

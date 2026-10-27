@@ -245,6 +245,21 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       }
       return result.dirtyAfter > 0;
     },
+    captureCopy: async () => {
+      const result = await this.requestCoderLifecycle('copy-snapshot');
+      if (!result.ok || !result.snapshotToken || !Array.isArray(result.files)) {
+        throw new Error(result.message || 'Coder 编辑器不支持项目快照，请更新编辑器后重试。');
+      }
+      return { token: result.snapshotToken, files: result.files };
+    },
+    checkCopy: async snapshotToken => {
+      const result = await this.requestCoderLifecycle('check-copy-snapshot', 10_000, snapshotToken);
+      if (!result.ok) throw new Error(result.message || 'Coder 编辑内容已变化，请重新执行另存为。');
+    },
+    completeCopy: async snapshotToken => {
+      const result = await this.requestCoderLifecycle('complete-copy-snapshot', 10_000, snapshotToken);
+      if (!result.ok) throw new Error(result.message || '副本已保存，原编辑器有新修改，已保留这些修改。');
+    },
   };
 
   /** Worker 内扩展通过 BroadcastChannel 请求访达/资源管理器高亮 */
@@ -575,9 +590,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private requestCoderLifecycle(
-    action: 'status' | 'save-all',
+    action: 'status' | 'save-all' | 'copy-snapshot' | 'check-copy-snapshot' | 'complete-copy-snapshot',
     timeoutMs = 10_000,
-  ): Promise<{ ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }> {
+    snapshotToken?: string,
+  ): Promise<{ ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string;
+    snapshotToken?: string; files?: Array<{ path: string; bytes: Uint8Array }> }> {
     const target = this.coderEmbedFrame?.nativeElement?.contentWindow;
     if (!target || !this.coderWorkbenchReady) {
       return Promise.resolve({
@@ -591,7 +608,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const requestId = `aily-coder-editor-lifecycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     return new Promise(resolve => {
       let settled = false;
-      const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }) => {
+      const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string;
+        snapshotToken?: string; files?: Array<{ path: string; bytes: Uint8Array }> }) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -607,6 +625,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           dirtyBefore?: number;
           dirtyAfter?: number;
           message?: string;
+          snapshotToken?: string;
+          files?: Array<{ path: string; bytes: Uint8Array }>;
         };
         if (
           payload?.channel !== AILY_CODER_EDITOR_HOST_LIFECYCLE_RESPONSE_CHANNEL ||
@@ -618,6 +638,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           ok: payload.ok === true,
           dirtyBefore: Number.isFinite(payload.dirtyBefore) ? Number(payload.dirtyBefore) : 0,
           dirtyAfter: Number.isFinite(payload.dirtyAfter) ? Number(payload.dirtyAfter) : 0,
+          ...(typeof payload.snapshotToken === 'string' ? { snapshotToken: payload.snapshotToken } : {}),
+          ...(Array.isArray(payload.files) ? { files: payload.files } : {}),
           ...(typeof payload.message === 'string' && payload.message ? { message: payload.message } : {}),
         });
       };
@@ -633,6 +655,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         channel: AILY_CODER_EDITOR_HOST_LIFECYCLE_REQUEST_CHANNEL,
         requestId,
         action,
+        snapshotToken,
       }, '*');
     });
   }

@@ -13,6 +13,14 @@ export interface ProjectSaveDispatchResult extends Partial<ProjectSaveOutcome> {
   error?: string;
 }
 
+/** A retained editor revision. Writing a copy must never acknowledge/save the source. */
+export interface ProjectCopySnapshot {
+  write(targetPath: string): Promise<void>;
+  assertCurrent(): Promise<void>;
+  complete?(): Promise<void>;
+  release(): void;
+}
+
 export interface BlocklyLibraryRuntimeRebuildInput {
   projectPath: string;
   packageContent: string;
@@ -34,6 +42,8 @@ export interface ProjectApplicationPort {
   hasActiveProjectMutation(projectPath: string): boolean;
   /** Only the selected Blockly runtime; does not inspect or stop other projects. */
   hasActiveBlocklyBuildOrUpload(projectPath: string): boolean;
+  hasRunningAi(): boolean;
+  prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   captureBlocklySaveAsSnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
   captureBlocklyRecoveryCopySnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;

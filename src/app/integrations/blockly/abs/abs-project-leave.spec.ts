@@ -141,7 +141,7 @@ describe('shared save-as menu', () => {
     const view: any = Object.create(HeaderComponent.prototype);
     let select: (path: string) => void;
     view.selectSaveAsFolder = jasmine.createSpy('folder').and.callFake(() => new Promise<string>(resolve => { select = resolve; }));
-    view.projectService = projectFixture({ getProjectMode: () => mode,
+    view.projectService = projectFixture({ getSaveAsBlockMessage: () => undefined, getProjectMode: () => mode,
       saveAs: jasmine.createSpy('saveAs').and.rejectWith(new Error('copy failed')) });
     view.message = { error: jasmine.createSpy('error') };
     const first = view.process({ action: 'project-save-as' });
@@ -158,7 +158,7 @@ describe('shared save-as menu', () => {
     const view: any = Object.create(HeaderComponent.prototype);
     let select!: (path: string) => void;
     view.selectSaveAsFolder = () => new Promise<string>(resolve => { select = resolve; });
-    view.projectService = projectFixture({ saveAs: jasmine.createSpy('saveAs') });
+    view.projectService = projectFixture({ getSaveAsBlockMessage: () => undefined, saveAs: jasmine.createSpy('saveAs') });
     view.message = { error: jasmine.createSpy('error') };
     const pending = view.process({ action: 'project-save-as' });
     replaceSession(view.projectService); select('/copy'); await pending;

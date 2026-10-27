@@ -22,6 +22,7 @@ export class ToolboxSearchCategory extends Blockly.ToolboxCategory {
   static readonly SEARCH_CATEGORY_KIND = 'search';
   private searchField?: HTMLInputElement;
   private blockSearcher = new BlockSearcher();
+  private searchIndexed = false;
 
   /**
    * Initializes a ToolboxSearchCategory.
@@ -39,7 +40,6 @@ export class ToolboxSearchCategory extends Blockly.ToolboxCategory {
   ) {
     super(categoryDef, parentToolbox, opt_parent);
     try {
-      this.initBlockSearcher();
       this.registerShortcut();
     } catch (error) {
       console.error('Error initializing ToolboxSearchCategory:', error);
@@ -179,6 +179,13 @@ export class ToolboxSearchCategory extends Blockly.ToolboxCategory {
       this.flyoutItems_ = [];
       (this.workspace_ as Blockly.WorkspaceSvg).getFlyout()?.hide();
       return;
+    }
+
+    // Variable creation/deletion rebuilds the toolbox. Do not construct every
+    // library block (and run its initialization callbacks) for an unused search.
+    if (!this.searchIndexed) {
+      this.initBlockSearcher();
+      this.searchIndexed = true;
     }
 
     this.flyoutItems_ = this.blockSearcher.blockTypesMatching(query).map((blockType) => {

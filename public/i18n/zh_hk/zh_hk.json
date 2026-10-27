@@ -1148,6 +1148,7 @@
         "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 任務正在執行，請等待完成後再另存為。",
       "OPEN_IN_CODER": "使用 Aily Coder 開啟",
       "CONVERT_CODER_TITLE": "轉換為 Coder 專案",
       "CONVERT_CODER_CONTENT": "此檔案屬於 Blockly 專案。將建立 Coder 副本並安裝依賴；副本可能無法再使用積木編輯。原專案保留。",

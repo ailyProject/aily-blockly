@@ -192,6 +192,51 @@ describe('v2 actual workspace generation coordinator', () => {
     return service.applyGeneration(source, request.base.generation, {}, validation);
   };
 
+  it('Save As commits a new destination generation without saving or acknowledging the source', async () => {
+    await baseline();
+    roots().setFieldValue('copy-edit', 'TEXT');
+    editor.publishAbsContext.calls.reset();
+    const originalDisk = [...disk];
+    const copy = new Map(disk);
+    const oldPath = window['path'];
+    const sourceOpen = window['fs'].openProjectSyncStorage;
+    window['path'] = { resolve: value => value, join: (...parts) => parts.join('/') };
+    window['fs'].openProjectSyncStorage = async (path, guard) => {
+      expect(guard()).toBeUndefined();
+      if (path !== 'D:/copy') return sourceOpen(path, guard);
+      return {
+        read: async key => copy.get(key) ?? null,
+        withLock: operation => new Promise((resolve, reject) => operation({
+          read: async key => copy.get(key) ?? null,
+          replace: async (key, expected, content) => {
+            guard();
+            const value = copy.get(key) ?? null;
+            if ((value === null ? null : await hashAbsText(value)) !== expected) return false;
+            if (content === null) copy.delete(key); else copy.set(key, content);
+            return true;
+          },
+        }, result => result.ok ? resolve(result.value) : reject(new Error(result.error.message)))),
+      };
+    };
+    spyOn(project, 'publishCopyOutputs').and.resolveTo();
+    let snapshot;
+    try {
+      snapshot = await service.prepareCopy();
+      expect(gate.busy).toBeTrue();
+      await snapshot.write('D:/copy');
+      await snapshot.assertCurrent();
+      expect([...disk]).toEqual(originalDisk);
+      expect(copy.get('project.abi')).toContain('copy-edit');
+      expect(copy.get('project.abs')).toContain('copy-edit');
+      const map = JSON.parse(copy.get('project.abs.map.json')!);
+      expect(map.scope.projectKey).toBe('D:/copy');
+      expect(JSON.parse(copy.get('committed.json')!).generation).toBe(map.generation);
+      expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+      expect(editor.publishAbsContext).not.toHaveBeenCalled();
+    } finally { snapshot?.release(); window['path'] = oldPath; }
+    expect(gate.busy).toBeFalse();
+  });
+
   it('automatically prefers the AI field while retaining unrelated live fields and comments', async () => {
     renderWorkspace();
     const base = await baseline();

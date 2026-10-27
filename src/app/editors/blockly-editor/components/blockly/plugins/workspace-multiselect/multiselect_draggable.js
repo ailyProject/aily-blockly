@@ -339,16 +339,20 @@ export class MultiselectDraggable {
   }
 
   /**
-   * A function that turns off the highlight selection
-   * of the subdraggables. Currently not used as it
-   * causes a bug when selecting a block by clicking
-   * while in multiselect mode.
+   * Notify the controls when focus leaves the group. They reconcile the
+   * selection after the focus transition, preserving Shift selection and
+   * the temporary child focus used when starting a group drag.
    */
   unselect() {
-    // TODO: Look into this after gestures have been updated
-    // for (const draggable of this.subDraggables) {
-    //   draggable[0].unselect();
-    // }
+    Blockly.common.fireSelectedEvent(null);
+  }
+
+  /** Open the clicked member's menu without replacing the selected group. */
+  showContextMenu(event) {
+    let block = this.workspace.getBlockById(event.target?.closest?.('[data-id]')?.getAttribute('data-id'));
+    while (block?.isShadow()) block = block.getParent();
+    if (!this.subDraggables.has(block)) block = this.subDraggables.keys().next().value;
+    block?.showContextMenu?.(event);
   }
 
 

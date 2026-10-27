@@ -21,6 +21,8 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
 import { fenceBlocklyWorkspaceInput } from '../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
+import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -104,6 +106,17 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     } catch (error) {
       return { error: (error instanceof Error ? error.message : String(error)).slice(0, 2000) };
     }
+  }
+
+  hasRunningAi(): boolean {
+    return this.aiOperationRegistry.readActive().some(operation => operation.source.startsWith('child-chat-run:')
+      || operation.source.startsWith('child-tool:'));
+  }
+
+  prepareProjectCopy(projectPath: string) {
+    return this.projectService.getProjectMode(projectPath) === 'coder'
+      ? this.injector.get(CodeEditorProProjectService).prepareCopy(projectPath)
+      : this.injector.get(AbsWorkspaceSyncService).prepareCopy();
   }
 
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult> {

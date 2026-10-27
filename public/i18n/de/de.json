@@ -1071,6 +1071,7 @@
         "NO_TUTORIAL_PROVIDED": "Der Bibliotheksautor hat kein Tutorial bereitgestellt"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "Eine KI-Aufgabe läuft. Warten Sie, bis sie abgeschlossen ist, bevor Sie das Projekt unter einem neuen Namen speichern.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
