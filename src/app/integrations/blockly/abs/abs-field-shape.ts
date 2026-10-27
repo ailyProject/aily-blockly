@@ -23,11 +23,13 @@ export function resolveAbsFieldShapeAnchors(json: Record<string, any>, base: Abs
   return result;
 }
 
-/** Merge proven declaration fragments; argument placement is part of the mechanism, not guessed. */
+/** Merge proven declaration fragments; argument placement is part of the mechanism, not guessed.
+ * An unproved serializer makes this optimization inapplicable. The caller must
+ * retain the complete extraState and use native preparation/readback instead. */
 export function prepareAbsFieldShape(base: AbsBlockShapeContract, rules: readonly BlocklyFieldShapeRule[],
   values: Readonly<Record<string, unknown>> = {},
   extraState?: unknown,
-): AbsBlockShapeContract {
+): AbsBlockShapeContract | undefined {
   const fail = (message: string): never => { throw new AbsSyncError('ABS_RUNTIME_SHAPE_UNSUPPORTED', message); };
   const attributes: string[] = [];
   const nativeAttributes = rules.flatMap(rule => rule.mutationAttribute ? [rule.mutationAttribute] : []);
@@ -39,7 +41,7 @@ export function prepareAbsFieldShape(base: AbsBlockShapeContract, rules: readonl
   const nativePattern = new RegExp('^' + nativePrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     + nativeAttributes.map(name => ` ${name}="(?:true|false)"`).join('') + '></mutation>$');
   if (extraState != null && (!nativeAttributes.length || typeof extraState !== 'string' || !nativePattern.test(extraState))) {
-    fail('Unverified field-dependent extraState.');
+    return undefined;
   }
   const argumentOrder = [...base.argumentOrder!];
   const result: AbsBlockShapeContract = { ...base, inputs: { ...base.inputs }, argumentOrder, fieldShape: rules };

@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Панель активности подприложений",
+    "TITLE": "Подприложения",
+    "OPEN_FULL": "Открыть полное подприложение",
+    "COLLAPSE": "Свернуть",
+    "CALL_COUNT": "Вызовов: {{count}}",
+    "RUNTIME_READY": "Среда выполнения готова",
+    "RUNTIME_STARTING": "Среда выполнения запускается",
+    "RUNTIME_ERROR": "Ошибка среды выполнения",
+    "RUNTIME_STOPPED": "Среда выполнения остановлена",
+    "RUNTIME_UNKNOWN": "Состояние среды выполнения неизвестно",
+    "INVOCATION_RUNNING": "Агент выполняется",
+    "INVOCATION_SUCCEEDED": "Последний вызов успешен",
+    "INVOCATION_FAILED": "Последний вызов завершился ошибкой",
+    "INVOCATION_CANCELLED": "Последний вызов отменён",
+    "INVOCATION_IDLE": "Нет активного вызова",
+    "WAITING_RUNTIME": "Ожидание среды выполнения",
+    "LOADING_SURFACE": "Загрузка компактного представления",
+    "RUNTIME_NOT_RETAINED": "Панель не запускает и не поддерживает работу среды выполнения подприложения.",
+    "SURFACE_ERROR": "Компактное представление недоступно",
+    "SURFACE_TITLE": "Представление {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Не удалось опубликовать проект",
         "WORKSPACE_PROJECT_NOT_FOUND": "Проект не найден",

@@ -18,6 +18,7 @@ import { prepareAbsStructuralSyntax } from '../../../integrations/blockly/abs/ab
 import { captureStructuralMutators } from '../components/blockly/plugins/block-plus-minus/src/structural-mutators';
 import { prepareNativeModels } from './blockly-native-model-preparation';
 import { nativeFieldDependencies } from './blockly-native-field-dependencies';
+import { inactiveAbsSyntax } from '../../../integrations/blockly/abs/abs-native-preservation';
 
 /** Native binding has no library/shape templates. Only the shared grammar knows ABS spelling. */
 export function bindNativeAbs(source: string, execution: NativeCandidateWorkspace, declarations: Map<string, Record<string, any>>,
@@ -157,7 +158,7 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
     return new Set([...pending.map(item => item.block), ...dependencies?.blocks ?? []]);
   };
   const modelDeclarations = modelPreparation ? prepareNativeModels(execution, modelPreparation.generator, blocks,
-    resolvePending, modelPreparation.requestId, modelPreparation) : [];
+    resolvePending, modelPreparation.requestId, { ...modelPreparation, inactiveNodes: inactiveAbsSyntax(syntax) }) : [];
   for (const item of pending) setField(item.block, item.node, item.name, item.token);
   if (assigned && assigned.size !== consumed.size || hostCalls.some(call => !consumed.has(call.start))) throw new Error('Native candidate identities or host bindings contain unused calls.');
   structural.assertCurrent();

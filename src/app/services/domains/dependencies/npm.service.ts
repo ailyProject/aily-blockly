@@ -1437,6 +1437,9 @@ export class NpmService {
 
       return;
     }
+    if (await window['env'].get('AILY_REPAIR_READONLY_NPM_PREFIX')) {
+      throw new Error('Independent repair environments reuse existing SDK/compiler resources read-only. Missing platform resources cannot be installed or refreshed here; source and shared tools remain unchanged.');
+    }
     this.assertDependencySession(session);
 
     try {

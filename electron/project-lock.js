@@ -3,6 +3,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { app } = require("electron");
+const { createHash } = require('node:crypto');
+const { tryAcquireFileLock } = require('../child/scripts/native-file-lock');
 
 const LOCK_SEGMENTS = [".aily", "project-open.lock"];
 
@@ -122,7 +124,30 @@ function writeLockPayload() {
  * @returns {{ ok: true, normalizedPath: string, lockPath?: string, alreadyHeld?: boolean, recoveredStale?: boolean }
  *   | { ok: false, conflict?: boolean, holder?: object, normalizedPath?: string, error?: string }}
  */
+function withViewRecordGuard(projectPath, action) {
+  let guard;
+  try {
+    const root = normalizeProjectPathStrict(projectPath), directory = path.join(root, '.aily');
+    fs.mkdirSync(directory, { recursive: true });
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return { ok: false, error: 'Unsafe project view coordination directory.' };
+    guard = tryAcquireFileLock(path.join(directory, 'project-view.guard'));
+    if (!guard) return { ok: false, code: 'PROJECT_VIEW_BUSY', error: 'Another project-view operation owns the record.' };
+    guard.assertHeld();
+    return action(root);
+  } catch (error) { return { ok: false, code: error.code, error: error.message }; }
+  finally { guard?.close(); }
+}
+
 function tryAcquireLock(projectPath, options = {}) {
+  const strict = options.strict === true;
+  // Dead-owner evidence is an internal handoff capability, never a forwarded
+  // public option or caller-supplied PID assertion.
+  return withViewRecordGuard(projectPath, () => tryAcquireLockUnlocked(projectPath,
+    { strict, force: strict ? false : !!options.force }));
+}
+
+function tryAcquireLockUnlocked(projectPath, options = {}) {
   const { force = false } = options;
   let normalized;
   try {
@@ -164,9 +189,14 @@ function tryAcquireLock(projectPath, options = {}) {
     return { ok: true, normalizedPath: normalized, lockPath, alreadyHeld: true };
   }
 
+  // Repair bootstrap has already resolved any exact known-dead previous view.
+  // A new/unknown record is never treated as stale or offered force takeover.
+  if (options.strict) return { ok: false, code: 'PROJECT_REPAIR_TARGET_BUSY',
+    error: 'Another project-view record remains; strict repair opening did not replace it.', normalizedPath: normalized };
+
   if (existing && isLockStaleAfterReboot(existing)) {
     // 锁创建于上次重启之前，直接视为陈旧
-  } else if (existing && isPidAlive(existing.pid) && isHolderProcessMatch(existing)) {
+  } else if (existing && existing.pid !== options.confirmedDeadPid && isPidAlive(existing.pid) && isHolderProcessMatch(existing)) {
     return {
       ok: false,
       conflict: true,
@@ -191,13 +221,19 @@ function tryAcquireLock(projectPath, options = {}) {
     return { ok: true, normalizedPath: normalized, lockPath, recoveredStale: true };
   } catch (e2) {
     if (e2.code === "EEXIST") {
-      return tryAcquireLock(projectPath, { force: true });
+      if (options.noForceRetry) return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'Project-view ownership changed during recovery.', normalizedPath: normalized };
+      return tryAcquireLockUnlocked(projectPath, { force: true });
     }
     return { ok: false, error: e2.message, normalizedPath: normalized };
   }
 }
 
 function releaseLock(projectPath) {
+  if (!projectPath || !fs.existsSync(normalizeProjectPathLoose(projectPath))) return { ok: true };
+  return withViewRecordGuard(projectPath, () => releaseLockUnlocked(projectPath));
+}
+
+function releaseLockUnlocked(projectPath) {
   if (!projectPath) {
     return { ok: true };
   }
@@ -216,6 +252,42 @@ function releaseLock(projectPath) {
     }
   }
   return { ok: true };
+}
+
+function readViewLockSnapshot(projectPath) {
+  const root = normalizeProjectPathStrict(projectPath), filename = getLockPath(root);
+  let before;
+  try { before = fs.lstatSync(filename); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 64 * 1024) throw new Error('Unsafe project-view record.');
+  const bytes = fs.readFileSync(filename), after = fs.lstatSync(filename);
+  if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.size !== after.size) throw new Error('Project-view record changed while reading.');
+  return { project: root, owner: JSON.parse(bytes.toString('utf8')), contents: bytes.toString('utf8'),
+    hash: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+    identity: { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs } };
+}
+
+/** Exact lineage-owned stale VIEW handoff only. File/npm/build leases are not
+ * consulted or removed here; the caller must retain their independent guards. */
+function recoverExitedViewLock(projectPath, expected, assertCurrent, isExited) {
+  return withViewRecordGuard(projectPath, () => {
+    assertCurrent();
+    const current = readViewLockSnapshot(projectPath);
+    if (!expected || !current || current.project !== expected.project || current.hash !== expected.hash
+      || JSON.stringify(current.identity) !== JSON.stringify(expected.identity)
+      || !Number.isSafeInteger(current.owner?.pid) || current.owner.pid <= 0 || current.owner.pid !== expected.owner?.pid
+      || typeof current.owner.execPath !== 'string' || !path.isAbsolute(current.owner.execPath)
+      || !Number.isFinite(current.owner.startedAt) || current.owner.startedAt <= 0
+      || current.owner.execPath !== expected.owner.execPath || isExited(current.owner.pid) !== true)
+      return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The exact exited repair view was not confirmed; its record was retained.' };
+    assertCurrent();
+    const final = readViewLockSnapshot(projectPath);
+    if (!final || final.hash !== expected.hash || JSON.stringify(final.identity) !== JSON.stringify(expected.identity)
+      || isExited(final.owner.pid) !== true) return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The repair view changed before its non-force handoff; retained the current record.' };
+    const acquired = tryAcquireLockUnlocked(projectPath, { force: false, noForceRetry: true, confirmedDeadPid: current.owner.pid });
+    if (!acquired.ok) return acquired;
+    const released = releaseLockUnlocked(projectPath);
+    return released.ok ? { ok: true, recoveredStaleView: true, previousViewHash: current.hash } : released;
+  });
 }
 
 function focusProcessByPid(pid) {
@@ -270,4 +342,6 @@ module.exports = {
   releaseLock,
   focusProcessByPid,
   isPidAlive,
+  readViewLockSnapshot,
+  recoverExitedViewLock,
 };

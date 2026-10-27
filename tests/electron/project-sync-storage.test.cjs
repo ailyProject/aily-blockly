@@ -76,6 +76,21 @@ test('known conflicts and exact no-ops do not create temporary files', async () 
   });
 });
 
+test('repair archives are confined append-only originals, never arbitrary writable files', async () => {
+  const root = project(); const store = await openProjectSyncStorage(root, guard);
+  const original = JSON.stringify({ abs: '\ufefforiginal\r\n中文', map: '{broken', abi: 'exact bytes' });
+  await store.withLock(async locked => {
+    assert.equal(await locked.replace('recoveries/repair-1.json', null, original), true);
+    assert.equal(await locked.replace('recoveries/repair-1.json', null, 'lost data'), false);
+    await assert.rejects(locked.replace('recoveries/repair-1.json', hash(original), 'changed'), { code: 'ABS_STORAGE_WRITE_INVALID' });
+    await assert.rejects(locked.replace('recoveries/repair-1.json', hash(original), null), { code: 'ABS_STORAGE_WRITE_INVALID' });
+  });
+  assert.equal(await store.read('recoveries/repair-1.json'), original);
+  for (const key of ['recoveries/../outside.json', 'recoveries\\x.json', 'recoveries/id/file.json', 'recoveries/.json']) {
+    await assert.rejects(store.read(key), { code: 'ABS_STORAGE_KEY_INVALID' });
+  }
+});
+
 test('stale renderer and an external edit during temp preparation stop the final rename', async () => {
   for (const cause of ['stale', 'external']) {
     const root = project(); fs.writeFileSync(path.join(root, 'project.abi'), 'before'); let current = true;

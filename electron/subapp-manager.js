@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { execFile, spawn } = require('child_process');
 const semver = require('semver');
 const { killRegisteredProcessTree } = require('./process-tree');
@@ -1631,11 +1632,14 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
     if (versions.isUninstalling(rootDir, entry)) {
       throw new Error(`Subapp was uninstalled while preparing: ${entry.id}`);
     }
+    await options.beforePublish?.(candidate.source);
     const prepared = versions.publishCandidate(rootDir, entry, candidate, {
       distribution,
       integrity: bundle?.integrity || distribution?.integrity,
       installMode: portability.portable ? 'portable' : 'legacy-npm',
       replace: options.reinstall === true,
+      retainPrevious: options.retainPrevious === true,
+      replacementTransaction: options.replacementTransaction,
     });
     published = true;
     tracker?.setExtract(100);
@@ -2871,6 +2875,98 @@ function createSubappManager(options = {}) {
     return list({ locale: payload.locale || 'en' });
   }
 
+  /** Agent recovery is not reinstall: keep version and holders, never stop/upgrade. */
+  async function repair(payload = {}) {
+    const id = validateId(payload.id);
+    return enqueueMutation(id, async () => {
+      const { index } = await loadIndex('cache-first');
+      const entry = index[id];
+      if (!entry) throw fault('SUBAPP_REPAIR_UNAVAILABLE', 'Subapp is not present in the managed catalog');
+      assertNotUninstalling(id, entry);
+      const original = readInstalledState(rootDir, entry);
+      if (index.dev === true || original.development || original.localNext)
+        throw fault('SUBAPP_REPAIR_DEVELOPMENT_LINK', 'Development/next links are read-only. Refresh the active locator; do not rewrite the link.');
+      if (!semver.valid(original.installedVersion))
+        throw fault('SUBAPP_REPAIR_IDENTITY_REQUIRED', 'A verifiable installed version is required; repair will not install a guessed or latest version.');
+      const originalManifest = readJson(path.join(original.packagePath, 'package.json'));
+      const activeFile = () => versions.activePath(rootDir, entry);
+      const activeBytes = () => {
+        const file = activeFile();
+        return file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+      };
+      const originalActive = activeBytes();
+      const selectionMode = versions.readActiveManifest(rootDir, entry)?.mode || 'auto';
+      const selection = versions.readSelection(rootDir, entry);
+      const selectedDistribution = selection?.version === original.installedVersion
+        && (original.packagePath === selection.packagePath || original.packagePath.startsWith(`${selection.packagePath}${path.sep}`))
+        ? selection.distribution : null;
+      const identity = () => {
+        const current = readInstalledState(rootDir, entry);
+        return JSON.stringify([current.packagePath, current.installedVersion, current.development, current.localNext,
+          fs.readFileSync(path.join(current.packagePath, 'package.json'), 'utf8'), activeBytes()]);
+      };
+      const expected = identity();
+      const assertIdle = async () => {
+        if (options.getRunningSubappConfig?.(id))
+          throw fault('SUBAPP_REPAIR_BUSY', 'Subapp is running; wait for it to become idle. Recovery never stops it.');
+        const holders = typeof options.listChildToolHolders === 'function'
+          ? await options.listChildToolHolders(id) : [];
+        const processes = typeof options.listBusyHolders === 'function'
+          ? await options.listBusyHolders(original.packagePath) : await listProcessesUsingPath(original.packagePath, options);
+        const busy = options.hasProcessesUsingPath || hasProcessesUsingPackagePath;
+        if (holders?.length || processes?.length || await busy(original.packagePath, options.platform || process.platform))
+          throw fault('SUBAPP_REPAIR_BUSY', 'Subapp has active process/session holders; wait before retrying repair. No processes were stopped.');
+      };
+      await assertIdle();
+      // Catalog distribution belongs to its catalog version, not necessarily this installed version.
+      const target = { ...entry, version: original.installedVersion,
+        dist: selectedDistribution || (entry.version === original.installedVersion ? entry.dist : undefined) };
+      let release;
+      let prepared;
+      let activationAttempted = false;
+      const transaction = {};
+      try {
+        prepared = await prepareVersionPackage(rootDir, target, options.runNpm || runNpm, {
+          ...options, forceClose: false, reinstall: true, retainPrevious: true,
+          replacementTransaction: transaction,
+          beforePublish: async source => {
+            const manifest = readJson(path.join(source, 'package.json'));
+            const runnable = resolveRunnablePackage(source, id, manifest);
+            if (!isDeepStrictEqual(originalManifest.ailySubapp?.agent ?? null, runnable.packageJson.ailySubapp?.agent ?? null))
+              throw fault('SUBAPP_REPAIR_CAPABILITY_CHANGED', 'Same-version repair must preserve the original Agent declaration and skill list.');
+            const agent = readSubappAgentConfig(runnable.packagePath, runnable.packageJson);
+            for (const relative of agent?.skills || []) {
+              const file = resolvePackageRelativePath(runnable.packagePath, relative, 'Subapp Agent skill');
+              const realRoot = fs.realpathSync(runnable.packagePath);
+              if (!fs.existsSync(file.resolved) || !fs.statSync(file.resolved).isFile())
+                throw fault('SUBAPP_SKILL_MISSING', `Subapp Agent skill not found: ${relative}`);
+              const realFile = fs.realpathSync(file.resolved);
+              if (!realFile.startsWith(`${realRoot}${path.sep}`))
+                throw fault('SUBAPP_SKILL_INVALID', 'Subapp Agent skill escapes its installed package');
+            }
+            release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+            assertNotUninstalling(id, entry);
+            if (identity() !== expected) throw fault('SUBAPP_REPAIR_SOURCE_CHANGED', 'Active installation changed while preparing repair. Refresh before retrying.');
+            await assertIdle();
+          },
+        });
+        activationAttempted = true;
+        versions.activate(rootDir, target, prepared, { mode: selectionMode });
+        return { ok: true, operation: 'child_app_recover', action: 'repair', id,
+          version: target.version, packagePath: prepared.packagePath, repaired: true,
+          previousPackagePreserved: true };
+      } catch (error) {
+        // The launch lock remains held while the exact old directory is restored.
+        transaction.rollback?.();
+        if (activationAttempted && activeBytes() !== originalActive) {
+          if (originalActive === null) fs.rmSync(activeFile(), { force: true });
+          else writeJsonAtomic(activeFile(), JSON.parse(originalActive));
+        }
+        throw error;
+      } finally { release?.(); }
+    });
+  }
+
   return {
     rootDir,
     get indexUrl() {
@@ -2879,6 +2975,7 @@ function createSubappManager(options = {}) {
     list,
     install: (payload) => mutate('install', payload),
     reinstall: (payload) => mutate('reinstall', payload),
+    repair,
     update: (payload) => mutate('update', payload),
     downloadUpdate,
     prepareLaunch,
@@ -2998,6 +3095,15 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
   ipcMain.handle('subapp-manager-reinstall', handleMutation('reinstall'));
+  ipcMain.handle('subapp-manager-repair', async (_event, payload = {}) => {
+    try {
+      const result = await defaultManager.repair(payload);
+      sendChanged({ action: 'repair', id: payload.id });
+      return result;
+    } catch (error) {
+      return { ok: false, code: error.code || 'SUBAPP_RECOVERY_FAILED', error: error.message || String(error) };
+    }
+  });
   ipcMain.handle('subapp-manager-update', handleMutation('update'));
   ipcMain.handle('subapp-manager-download-update', handleMutation('downloadUpdate'));
   ipcMain.handle('subapp-manager-install-update', handleMutation('installUpdate'));

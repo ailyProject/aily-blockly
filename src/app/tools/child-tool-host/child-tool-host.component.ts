@@ -153,6 +153,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private blockSelectionSubscription: Subscription | null = null;
   private toolSignalSubscription: Subscription | null = null;
   private subappActivitySubscription: Subscription | null = null;
+  private chatActivityTitlesVersion = 0;
   private configReloadSubscription: Subscription | null = null;
   private aiWritingStateSubscription: Subscription | null = null;
   private authStateSubscription: Subscription | null = null;
@@ -209,7 +210,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.standaloneWinBtns = platformService.isWindows()
       ? ['go-main', 'minimize', 'maximize', 'close']
       : ['go-main'];
-    this.langSubscription = this.translate.onLangChange.subscribe(() => this.syncHostContext());
+    this.langSubscription = this.translate.onLangChange.subscribe(() => {
+      this.syncHostContext();
+      this.pushChatSubappActivities();
+    });
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
     this.projectPathSubscription = combineLatest([
       this.projectService.currentProjectPath$,
@@ -385,6 +389,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.initialized = true;
     this.subappCatalogSubscription = this.subappManager.state$.subscribe(() => {
       this.syncSubappRestartRequirement();
+      this.pushChatSubappActivities();
       this.cdr.markForCheck();
     });
     this.subappProgressSubscription = this.subappManager.progress$.subscribe((progress) => {
@@ -2028,22 +2033,44 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private pushChatSubappActivities(): void {
+    const version = ++this.chatActivityTitlesVersion;
     if (!this.isAilyChatTool() || typeof this.remoteApi?.setSubappActivities !== 'function') {
       return;
     }
 
     const sessionId = this.ailyChatSessionId;
-    const items = sessionId
-      ? this.subappActivityService.getSessionActivities(sessionId).map(activity => this.projectSubappActivity(activity))
-      : [];
-    void Promise.resolve(this.remoteApi.setSubappActivities({ sessionId, items })).catch(() => undefined);
+    const remote = this.remoteApi;
+    const lang = this.translate.currentLang || this.translate.defaultLang || 'en';
+    const activities = sessionId ? this.subappActivityService.getSessionActivities(sessionId) : [];
+    const items = activities.map(activity => this.projectSubappActivity(activity));
+    void Promise.resolve(remote.setSubappActivities({ sessionId, items })).catch(() => undefined);
+
+    if (!activities.length) return;
+    const titles = new Map(items.map(item => [item['toolId'], item['title']]));
+    // Collapsed cards also need their namespace. Keep state updates immediate;
+    // only the latest pending title load may publish a translated snapshot.
+    void Promise.all([...new Set(activities.map(activity => activity.toolId))]
+      .map(toolId => this.toolI18n.load(toolId, lang)))
+      .then(() => {
+        if (version !== this.chatActivityTitlesVersion || this.remoteApi !== remote
+          || this.ailyChatSessionId !== sessionId
+          || (this.translate.currentLang || this.translate.defaultLang || 'en') !== lang) return;
+        const latest = this.subappActivityService.getSessionActivities(sessionId)
+          .map(activity => this.projectSubappActivity(activity));
+        if (!latest.some(item => titles.get(item['toolId']) !== item['title'])) return;
+        return Promise.resolve(remote.setSubappActivities({ sessionId, items: latest }));
+      })
+      .catch(() => undefined);
   }
 
   private projectSubappActivity(activity: SubappActivity): Record<string, unknown> {
+    const config = getChildToolConfig(activity.toolId);
+    const translatedTitle = config?.titleKey ? this.translate.instant(config.titleKey) : '';
     return {
       sessionId: activity.sessionId,
       toolId: activity.toolId,
-      title: activity.title,
+      title: typeof translatedTitle === 'string' && translatedTitle && translatedTitle !== config?.titleKey
+        ? translatedTitle : activity.title,
       icon: activity.icon,
       toolName: activity.toolName,
       invocationState: activity.invocationState,
@@ -2052,7 +2079,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       invocationCount: activity.invocationCount,
       activeInvocationCount: activity.activeInvocationCount,
       lastUsedAt: activity.lastUsedAt,
-      extension: getChildToolConfig(activity.toolId)?.app?.extension === true,
+      extension: config?.app?.extension === true,
       ...(activity.summary ? { summary: { ...activity.summary } } : {}),
     };
   }

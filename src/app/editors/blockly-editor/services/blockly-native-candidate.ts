@@ -7,6 +7,7 @@ import { assertNativeGenerationStable } from './blockly-native-generation-eviden
 import { createNativeRuntimeAssetLoader } from './blockly-native-runtime-asset';
 import { NATIVE_CANDIDATE_PHASES, nativeCandidateBudget, nativeCandidateTimeout, type NativeCandidatePhase } from './blockly-native-progress';
 import { nativeReplayEvent, describeNativeReplayEvent, type NativeReplayEvent } from './blockly-native-replay-diagnostics';
+import { NativeCandidateTiming } from './blockly-native-observation';
 
 const loadNativeRuntimeAsset = createNativeRuntimeAssetLoader();
 
@@ -45,12 +46,14 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
   const { perPassMs: timeoutMs } = nativeCandidateBudget(options.timeoutMs, 1);
   const abort = new AbortController();
   let phase: NativeCandidatePhase = 'asset';
+  const timing = new NativeCandidateTiming();
   let replayObservation: { detail: string; realmMs: number; receivedAt: number } | undefined;
   const outstandingRegistration = new Map<number, NativeReplayEvent>();
   const onAbort = () => abort.abort(options.signal?.reason);
   options.signal?.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => {
-    const error = nativeCandidateTimeout(phase, timeoutMs);
+    const error = nativeCandidateTimeout(phase, timeoutMs, timing.snapshot());
+    error.message += ' Timing contains completed stages and last-delivered observations, not proof that the last phase consumed the entire budget.';
     if (phase === 'replay' && replayObservation) {
       error.message += ` Last observed: ${replayObservation.detail}; realm=${Math.round(replayObservation.realmMs)}ms, received ${Math.round(performance.now() - replayObservation.receivedAt)}ms ago. This is the last delivered observation, not proof of the current execution point.`;
       if (outstandingRegistration.size) error.message += ' Outstanding registration observations: '
@@ -63,6 +66,7 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
     const source = await loadNativeRuntimeAsset(document.baseURI, nativeBuild.sha256, abort.signal);
     assertCurrent(); abort.signal.throwIfAborted();
     phase = 'realm';
+    timing.hostPhaseChanged(phase);
     frame = document.createElement('iframe');
     // Keep real SVG geometry available; display:none makes native measurements invalid.
     frame.style.cssText = 'position:fixed;left:-11000px;top:0;width:1024px;height:768px;border:0;pointer-events:none;';
@@ -81,6 +85,7 @@ async function evaluateNativeCandidatePass(request: NativeCandidateRequest, opti
           const reply = event.data;
           if (NATIVE_CANDIDATE_PHASES.includes(reply?.phase)) {
             phase = reply.phase;
+            timing.observe(reply);
             const replay = phase === 'replay' ? nativeReplayEvent(reply.replay) : undefined;
             if (replay && Number.isFinite(reply.elapsedMs) && reply.elapsedMs >= 0) {
               const detail = describeNativeReplayEvent(replay, detached.steps);

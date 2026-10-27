@@ -17,6 +17,7 @@ import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tas
 import { NativeCommentPreparation } from './blockly-native-comment-preparation';
 import { createNativeCandidateGraphics } from './blockly-native-graphics';
 import type { NativeCandidateProgress } from './blockly-native-progress';
+import { NativeCandidateProgressReporter } from './blockly-native-observation';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
 import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
 import { registerCustomFunctionContract, captureCustomFunctionRegistration } from './blockly-custom-function-contract';
@@ -37,7 +38,8 @@ export function installNativeCandidateRealm(): void {
     // work finishes. Timing is diagnostic only, never candidate authority.
     const send = (value: Record<string, unknown>) => port.postMessage({ ...value, elapsedMs: performance.now() - started });
     const request = decodeNativeCandidateRequest(event.data);
-    const progress: NativeCandidateProgress = phase => send({ phase });
+    const reporter = new NativeCandidateProgressReporter(send);
+    const progress: NativeCandidateProgress = reporter.progress;
     const errors: Error[] = [];
     let workspace: any;
     let phase = 'initialization';
@@ -45,7 +47,7 @@ export function installNativeCandidateRealm(): void {
     let replayStep = 0;
     const observeReplay = (replay: NativeReplayEvent) => send({ phase: 'replay', replay });
     const tasks = new NativeRegistrationTasks(realm.setTimeout.bind(realm), realm.clearTimeout.bind(realm));
-    const uiTasks = new NativeUiTasks();
+    const uiTasks = new NativeUiTasks(timing => reporter.ui(timing));
     const comments = new NativeCommentPreparation(native, uiTasks);
     const deny = (name: string) => () => {
       const message = `Native candidate does not support ${name}. Phase: ${phase}`;

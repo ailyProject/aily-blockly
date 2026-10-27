@@ -41,6 +41,19 @@ describe('Native ABI comment preparation', () => {
     expect(result.state).toEqual(candidate.verify!.state);
   });
 
+  it('accepts native bubble placement for an open comment without requested coordinates', async () => {
+    const candidate = request(true);
+    const comment = (candidate.verify!.state.blocks.blocks[0]['icons'] as any).comment;
+    delete comment.x; delete comment.y;
+    const result = await run(candidate);
+    const saved = result.state['blocks'].blocks[0].icons.comment;
+    expect(saved.x).toEqual(jasmine.any(Number));
+    expect(saved.y).toEqual(jasmine.any(Number));
+    expect(saved.text).toBe(comment.text);
+    expect(comment.x).toBeUndefined();
+    expect(comment.y).toBeUndefined();
+  });
+
   it('does not admit a replaced comment visibility callback', async () => {
     const candidate = request(true);
     candidate.steps.push({ kind: 'script', label: 'replaced core hook', source: `

@@ -1,4 +1,5 @@
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
+import type { AbsNativeTiming } from '../../../integrations/blockly/abs/abs-diagnostics';
 
 /** Bounded execution stages, never library source, field values or filesystem paths. */
 export const NATIVE_CANDIDATE_PHASES = ['asset', 'realm', 'replay', 'binding', 'views', 'ui', 'load', 'resources', 'generate', 'readback', 'cleanup'] as const;
@@ -13,9 +14,10 @@ export function nativeCandidateBudget(timeoutMs: number | undefined, passes: 1 |
   return { perPassMs, totalMs: timeoutMs ?? perPassMs * passes };
 }
 
-export function nativeCandidateTimeout(phase: NativeCandidatePhase, timeoutMs: number): AbsSyncError {
+export function nativeCandidateTimeout(phase: NativeCandidatePhase, timeoutMs: number, nativeTiming?: AbsNativeTiming): AbsSyncError {
   return new AbsSyncError('ABS_NATIVE_TIMEOUT', `Native candidate timed out during ${phase} (${Math.round(timeoutMs)}ms budget).`, undefined, [], {
     reason: `native-timeout-${phase}`,
+    ...(nativeTiming ? { nativeTiming } : {}),
     hint: 'Preparation timed out before apply; do not repeat unchanged requests. Retain ABS; report draft path/phase/incomplete status. Ask the user to retry after reducing load or restarting the updated host. If publication is UNKNOWN, inspect project_recover.',
   });
 }

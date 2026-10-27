@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Aktivitätsbereich für Unteranwendungen",
+    "TITLE": "Unteranwendungen",
+    "OPEN_FULL": "Vollständige Unteranwendung öffnen",
+    "COLLAPSE": "Einklappen",
+    "CALL_COUNT": "Aufrufe: {{count}}",
+    "RUNTIME_READY": "Laufzeit bereit",
+    "RUNTIME_STARTING": "Laufzeit startet",
+    "RUNTIME_ERROR": "Laufzeitfehler",
+    "RUNTIME_STOPPED": "Laufzeit angehalten",
+    "RUNTIME_UNKNOWN": "Laufzeitstatus unbekannt",
+    "INVOCATION_RUNNING": "Agent wird ausgeführt",
+    "INVOCATION_SUCCEEDED": "Letzter Aufruf erfolgreich",
+    "INVOCATION_FAILED": "Letzter Aufruf fehlgeschlagen",
+    "INVOCATION_CANCELLED": "Letzter Aufruf abgebrochen",
+    "INVOCATION_IDLE": "Kein aktiver Aufruf",
+    "WAITING_RUNTIME": "Warten auf die Laufzeit",
+    "LOADING_SURFACE": "Kompaktansicht wird geladen",
+    "RUNTIME_NOT_RETAINED": "Der Bereich startet die Laufzeit der Unteranwendung nicht und hält sie nicht aktiv.",
+    "SURFACE_ERROR": "Kompaktansicht nicht verfügbar",
+    "SURFACE_TITLE": "Ansicht {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Projekt konnte nicht veröffentlicht werden",
         "WORKSPACE_PROJECT_NOT_FOUND": "Projekt nicht gefunden",

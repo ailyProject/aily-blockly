@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Panneau d’activité des sous-applications",
+    "TITLE": "Sous-applications",
+    "OPEN_FULL": "Ouvrir la sous-application complète",
+    "COLLAPSE": "Réduire",
+    "CALL_COUNT": "Appels : {{count}}",
+    "RUNTIME_READY": "Environnement d’exécution prêt",
+    "RUNTIME_STARTING": "Démarrage de l’environnement d’exécution",
+    "RUNTIME_ERROR": "Erreur de l’environnement d’exécution",
+    "RUNTIME_STOPPED": "Environnement d’exécution arrêté",
+    "RUNTIME_UNKNOWN": "État d’exécution inconnu",
+    "INVOCATION_RUNNING": "Agent en cours d’exécution",
+    "INVOCATION_SUCCEEDED": "Dernier appel réussi",
+    "INVOCATION_FAILED": "Dernier appel échoué",
+    "INVOCATION_CANCELLED": "Dernier appel annulé",
+    "INVOCATION_IDLE": "Aucun appel actif",
+    "WAITING_RUNTIME": "En attente de l’environnement d’exécution",
+    "LOADING_SURFACE": "Chargement de la vue compacte",
+    "RUNTIME_NOT_RETAINED": "Le panneau ne démarre pas et ne maintient pas actif l’environnement d’exécution de la sous-application.",
+    "SURFACE_ERROR": "Vue compacte indisponible",
+    "SURFACE_TITLE": "Vue {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Échec de la publication du projet",
         "WORKSPACE_PROJECT_NOT_FOUND": "Projet introuvable",

@@ -5,6 +5,7 @@ import { generationEvidence, AbsGenerationEvidence } from './abs-generation-prot
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsAbiWorkspace, AbsProjectionContracts } from './abs-state';
 import { absProgramDocument, sameAbsProgram } from './abs-program-state';
+import type { describeAbsRepair } from './abs-generation-repair';
 
 type Inspection = Awaited<ReturnType<typeof inspectAbsGeneration>>;
 export interface AbsDraftReadiness {
@@ -12,6 +13,7 @@ export interface AbsDraftReadiness {
   baseline?: AbsGenerationEvidence;
   runtime?: ReturnType<typeof compareAbsContracts>;
   refresh?: { token: string; savesCanvas?: true };
+  repair?: Awaited<ReturnType<typeof describeAbsRepair>>;
   /** Canvas uses its live baseline; savedChangedFromBaseline uses the saved ABI
    * hash, not the normalized live document. Neither grants overwrite authority. */
   workspace?: { changedFromBaseline: boolean; savedChangedFromBaseline: boolean; matchesSaved: boolean };

@@ -258,7 +258,8 @@ describe('ABS identity projection and baseline merge', () => {
       const stale = error as AbsSyncError;
       expect(stale.code).toBe('ABS_BASELINE_STALE');
       expect(stale.diagnostic?.reason).toBe('workspace');
-      expect(stale.diagnostic?.hint).toContain('new user input');
+      expect(stale.diagnostic?.hint).toContain('token-bound preserving recovery');
+      expect(stale.diagnostic?.hint).not.toContain('wait for new user input');
       expect(stale.diagnostic?.hint).toContain('outFile');
     }
   });

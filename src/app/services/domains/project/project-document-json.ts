@@ -1,4 +1,5 @@
 import { ProjectDataError } from './project-data/project-data.types';
+import { isPlainProjectJsonObject } from './project-json-object';
 
 const MAX_DOCUMENT_DEPTH = 32_768;
 const MAX_DOCUMENT_NODES = 2_000_000;
@@ -40,7 +41,7 @@ function copyDocument<T>(value: T, strict: boolean): T {
     }
     if (active.has(source)) reject('Circular JSON object', key);
     const array = Array.isArray(source);
-    if (strict && !array && ![null, Object.prototype].includes(Object.getPrototypeOf(source))) reject('Unsupported JSON object', key);
+    if (strict && !array && !isPlainProjectJsonObject(source)) reject('Unsupported JSON object', key);
     const keys = array ? null : Object.keys(source);
     if (strict) keys?.sort();
     const length = array ? source.length : keys!.length;
@@ -102,7 +103,7 @@ export function canonicalProjectJsonStringify(value: unknown): string {
     const object = current as object;
     if (active.has(object)) reject('Circular JSON object', key);
     const array = Array.isArray(object);
-    if (!array && ![null, Object.prototype].includes(Object.getPrototypeOf(object))) reject('Unsupported JSON object', key);
+    if (!array && !isPlainProjectJsonObject(object)) reject('Unsupported JSON object', key);
     // JSON.stringify orders array-index object keys numerically, even after the
     // original canonical normalizer inserted all keys in lexical order.
     const keys = array ? null : Object.keys(object).sort((a, b) => {

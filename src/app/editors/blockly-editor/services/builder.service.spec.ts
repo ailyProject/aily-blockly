@@ -50,7 +50,7 @@ describe('BuilderService background preprocess ownership', () => {
     service.electronService = { pathJoin: (...parts: string[]) => parts.join('/') };
     service.cmdService = { spawn: jasmine.createSpy('spawn') };
     service.t = (key: string) => key;
-    for (const method of ['clearProgressTimer', 'updateCancelledNotice', 'ensureCancelState', 'handleCompileError']) service[method] = jasmine.createSpy(method);
+    for (const method of ['clearProgressTimer', 'updateCancelledNotice', 'ensureCancelState', 'handleCompileError', 'safeUpdateNotice']) service[method] = jasmine.createSpy(method);
     return service;
   }
 
@@ -82,8 +82,11 @@ describe('BuilderService background preprocess ownership', () => {
         service[method] = async () => {};
       }
       service.recordPreprocessDuration = () => {};
-      service.cmdService.spawn.and.returnValue(new Subject());
-      service.cmdService.kill = async () => true;
+      service.backgroundOutput = new Subject();
+      service.cmdService.spawn.and.returnValue(service.backgroundOutput);
+      service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(true);
+      service.logService = { update: jasmine.createSpy('log') };
+      service.appendCompileLog = jasmine.createSpy('compileLog');
       return service;
     }
 
@@ -102,25 +105,107 @@ describe('BuilderService background preprocess ownership', () => {
       expect(service.cmdService.spawn).not.toHaveBeenCalled();
       service.destroy();
     }));
+
+    it('keeps a real active stream until normal completion and suppresses stale AI-era output', fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      expect(service.cmdService.spawn).toHaveBeenCalledTimes(1);
+      const subscription = service.preprocessProcess, streamId = service.preprocessStreamId;
+      service.blocklyService.aiExecutionActive$.next(true);
+      expect(service.preprocessProcess).toBe(subscription); expect(service.preprocessStreamId).toBe(streamId);
+      expect(subscription.closed).toBeFalse(); expect(service.cmdService.kill).not.toHaveBeenCalled();
+      service.backgroundOutput.next({ type: 'stdout', data: '[ERROR] stale diagnostics' });
+      service.backgroundOutput.next({ type: 'stderr', data: 'stale output' });
+      service.backgroundOutput.complete(); tick();
+      expect(service.preprocessError).toBeNull(); expect(service.logService.update).not.toHaveBeenCalled();
+      expect(service.appendCompileLog).not.toHaveBeenCalled();
+      expect(service.preprocessProcess).toBeNull(); expect(service.preprocessStreamId).toBeNull();
+      service.destroy();
+    }));
+
+    it('installation invalidates background results without terminating their registered process', fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      const subscription = service.preprocessProcess;
+      service.workflowService.currentState = ProcessState.INSTALLING;
+      service.workflowService.state$.next(ProcessState.INSTALLING); tick();
+      expect(service.preprocessProcess).toBe(subscription); expect(subscription.closed).toBeFalse();
+      expect(service.cmdService.kill).not.toHaveBeenCalled(); expect(service.pendingPrecompile).toBeTrue();
+      service.backgroundOutput.error(new Error('stale install-era process error')); tick();
+      expect(service.preprocessError).toBeNull(); expect(service.logService.update).not.toHaveBeenCalled();
+      expect(service.preprocessProcess).toBeNull(); expect(service.preprocessStreamId).toBeNull();
+      service.destroy();
+    }));
+
+    for (const replacement of [false, true]) it(`settles its terminal stream after diagnostic publication fails${replacement ? ' without clearing a newer stream' : ''}`, fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      const newer = { unsubscribe: jasmine.createSpy('newerUnsubscribe') };
+      service.preprocessError = '[ERROR] background failed'; service.preprocessFullError = 'full background error';
+      service.appendCompileLog.and.callFake(() => {
+        if (replacement) { service.preprocessProcess = newer; service.preprocessStreamId = 'newer-preprocess'; }
+        throw Object.assign(new Error('No space for diagnostic log'), { code: 'ENOSPC' });
+      });
+      expect(() => { service.backgroundOutput.complete(); tick(); }).not.toThrow();
+      expect(service.appendCompileLog).toHaveBeenCalledTimes(1);
+      expect(service.preprocessProcess).toBe(replacement ? newer : null);
+      expect(service.preprocessStreamId).toBe(replacement ? 'newer-preprocess' : null);
+      expect(service.cmdService.kill).not.toHaveBeenCalled();
+      service.preprocessProcess = null; service.preprocessStreamId = null; service.destroy();
+    }));
+
+    it('settles a nullable stream error even when diagnostic collection itself fails', fakeAsync(() => {
+      const service = backgroundBuilder(); service.init();
+      service.blocklyService.dependencySubject.next('changed'); tick(500);
+      service.appendPreprocessErrorOutput = () => { throw new Error('Diagnostic collection unavailable'); };
+      expect(() => { service.backgroundOutput.error(null); tick(); }).not.toThrow();
+      expect(service.preprocessProcess).toBeNull(); expect(service.preprocessStreamId).toBeNull();
+      expect(service.cmdService.kill).not.toHaveBeenCalled(); service.destroy();
+    }));
   });
 
-  it('blocks foreground compilation when a detached background command cannot be stopped', async () => {
+  it('reports a busy foreground drain at its existing budget without killing a detached background command', fakeAsync(() => {
     const service = queuedBuilder();
     service.preprocessStreamId = 'preprocess';
     service.cmdService.kill = jasmine.createSpy('kill').and.resolveTo(false);
-
-    const result = await service.build().catch((error: { text: string }) => error);
-
-    expect(result.text).toContain('未确认停止');
+    let result: any;
+    service.build().catch(error => { result = error; }); tick(60_000);
+    expect(result.text).toContain('still running');
     expect(service.preprocessStreamId).toBe('preprocess');
-    expect(service.cmdService.spawn).not.toHaveBeenCalled();
-  });
+    expect(service.cmdService.spawn).not.toHaveBeenCalled(); expect(service.cmdService.kill).not.toHaveBeenCalled();
+  }));
+
+  it('foreground source capture starts only after the existing preprocess naturally closes', fakeAsync(() => {
+    const service = queuedBuilder(); service.preprocessRunGeneration = 1;
+    service.preprocessProcess = {}; service.preprocessStreamId = 'existing-preprocess';
+    const capture = jasmine.createSpy('capture').and.callFake(async () => { throw new Error('after-drain capture boundary'); });
+    service.projectService.getBuildPath = capture;
+    service.cmdService.kill = jasmine.createSpy('kill');
+    const build = service.build().catch(() => undefined); tick(500);
+    expect(capture).not.toHaveBeenCalled(); expect(service.cmdService.kill).not.toHaveBeenCalled();
+    service.preprocessProcess = null; service.preprocessStreamId = null; tick(100);
+    expect(capture).toHaveBeenCalledTimes(1); expect(service.cmdService.kill).not.toHaveBeenCalled();
+    void build;
+  }));
+
+  for (const reason of ['cancelled', 'project-changed']) it(`drain rejects ${reason} even when the process finishes at that boundary`, fakeAsync(() => {
+    const service = queuedBuilder(); service.preprocessProcess = {};
+    let cancelled = false, outcome: any;
+    service.waitForPreprocessDrain('D:/owned', () => cancelled, 'compile').catch(error => { outcome = error; }); tick();
+    if (reason === 'cancelled') cancelled = true;
+    else service.projectService.currentProjectPath = 'D:/other';
+    service.preprocessProcess = null; tick(100);
+    expect(outcome.message).toMatch(/cancelled|project changed/i); expect(service.cmdService.spawn).not.toHaveBeenCalled();
+  }));
 
   it('does not finish workflow while cancelled preparation is pending', async () => {
     const service = queuedBuilder();
     let completePreparation!: () => void;
-    service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); });
+    let enteredPreparation!: () => void;
+    const entered = new Promise<void>(resolve => { enteredPreparation = resolve; });
+    service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); enteredPreparation(); });
     const build = service.build().catch((error: unknown) => error);
+    await entered;
     service.cancel();
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(service.workflowService.finishBuild).not.toHaveBeenCalled();
@@ -133,14 +218,17 @@ describe('BuilderService background preprocess ownership', () => {
   it('rejects a project switch during preparation instead of building the newly selected project', async () => {
     const service = queuedBuilder();
     let completePreparation!: () => void;
-    service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); });
+    let enteredPreparation!: () => void;
+    const entered = new Promise<void>(resolve => { enteredPreparation = resolve; });
+    service.projectService.getBuildPath = () => new Promise(resolve => { completePreparation = () => resolve(''); enteredPreparation(); });
     const build = service.build().catch((error: { text: string }) => error);
+    await entered;
     service.projectService.currentProjectPath = 'D:/other'; completePreparation();
     expect((await build).text).toContain('Build project changed before capture');
     expect(service.cmdService.spawn).not.toHaveBeenCalled();
   });
 
-  it('invalidates and detaches an active preprocess before asynchronous process cleanup', () => {
+  it('invalidates an active preprocess without detaching or killing its registered process', () => {
     const unsubscribe = jasmine.createSpy('unsubscribe');
     const kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(() => undefined));
     const service = Object.create(_BuilderService.prototype) as any;
@@ -154,11 +242,11 @@ describe('BuilderService background preprocess ownership', () => {
 
     expect(result).toBeUndefined();
     expect(service.preprocessRunGeneration).toBe(4);
-    expect(service.preprocessProcess).toBeNull();
+    expect(service.preprocessProcess).toEqual({ unsubscribe });
     expect(service.preprocessStreamId).toBe('builder_preprocess_1');
     expect(service.pendingPrecompile).toBeTrue();
-    expect(unsubscribe).toHaveBeenCalled();
-    expect(kill).toHaveBeenCalledOnceWith('builder_preprocess_1');
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
   });
 
   it('retains pending preprocessing when installation interrupts preparation, but not after destruction', () => {

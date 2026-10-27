@@ -63,6 +63,11 @@ import {
 } from './project-root-path';
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
+import { projectSaveOutcomeError, type ProjectSaveOutcome, type ProjectSaveAsOutcome, type ProjectRecoveryCopyOptions } from './project-save-outcome';
+import { captureProjectCopyLibraries } from './project-copy-libraries';
+import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
+import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
+import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import { resolveVariantPaths } from '../../../utils/board-variant.utils';
@@ -92,7 +97,8 @@ export type ProjectActivationReason =
   | 'reload'
   | 'chat-tool-create'
   | 'chat-tool-open'
-  | 'chat-tool-reload';
+  | 'chat-tool-reload'
+  | 'abs-journal-reopen';
 
 export interface ProjectActivationEvent {
   path: string;
@@ -125,6 +131,8 @@ interface ProjectOpenOptions {
   sessionResource?: string | null;
   /** In-process ownership only; never accepted from IPC/Agent parameters. */
   lifecycleOwner?: symbol;
+  /** Host-only exact journal authority. Never accepted from IPC/Agent options. */
+  recoveryReopen?: { assertCurrent(): void };
 }
 
 interface ProjectCreationOptions {
@@ -146,6 +154,9 @@ export interface BlocklyProjectLoadStatus {
   providedIn: 'root',
 })
 export class ProjectService {
+  private independentRepairNormalization?: { project: string; transitions: Record<string, any>[] };
+  private recoveryTargets?: ProjectRecoveryTargets;
+  private get savedRecoveryTargets(): ProjectRecoveryTargets { return this.recoveryTargets ??= new ProjectRecoveryTargets(); }
 
   stateSubject = new BehaviorSubject<'default' | 'loading' | 'loaded' | 'saving' | 'saved' | 'error'>('default');
 
@@ -1391,6 +1402,22 @@ export class ProjectService {
     const result = await normalizeProjectDataDocument({ projectPath, document, originalContent, materialize: true },
       this.createProjectDataStore(projectPath), check);
     this.reportProjectDataNormalization(projectPath, result);
+    const repair = this.independentRepairNormalization;
+    if (originalContent !== undefined && result.persistedText !== undefined && originalContent !== result.persistedText
+      && (repair?.project === projectPath || this.savedRecoveryTargets.has(projectPath))) {
+      const [beforeAbiHash, afterAbiHash] = await Promise.all([sha256Hex(originalContent), sha256Hex(result.persistedText)]);
+      check();
+      const transition = { version: 1, kind: 'project-data-normalization', beforeAbiHash: `sha256:${beforeAbiHash}`,
+        afterAbiHash: `sha256:${afterAbiHash}`, publication: { status: result.publication?.status,
+          hash: result.publication?.hash, backupHash: result.publication?.backupHash },
+        changes: { schemaMarker: result.migration.upgradedLegacyDocument ? 1 : 0,
+          inlinePayloads: result.migration.migration.migrated.length, genericValues: result.migration.genericExternalized.length,
+          shadowIds: result.identityMigration.length, fieldValues: result.legacyFieldMigration.length,
+          shapes: result.legacyShapeMigration.length, blockTypes: result.legacyTypeMigration.length } };
+      await this.savedRecoveryTargets.advanceNormalization(projectPath, transition, check);
+      check();
+      if (repair?.project === projectPath) repair.transitions.push(transition);
+    }
     if (result.persistedText !== undefined) onPublished?.(result.persistedText);
     return result.document;
   }
@@ -1419,6 +1446,44 @@ export class ProjectService {
       + `migrated ${result.migration.migrated.length} specialized payload(s) and `
       + `${result.genericExternalized.length} generic oversized value(s).`,
     );
+  }
+
+  /** Consume only host-verified journal recovery authority. Normal open/reload
+   * keeps its existing policy; this path neither saves nor discards edits. */
+  async reopenRecoveredBlocklyProject(path: string, assertCurrent: () => void): Promise<{ project: string; activated: boolean }> {
+    const source = this.currentProjectPath;
+    let reopening = false;
+    const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
+    const check = () => {
+      assertCurrent();
+      if (!source || path !== source || this.currentProjectPath !== source || this.getProjectMode(source) !== 'blockly') {
+        fail('ABS_REOPEN_CONTEXT_STALE', 'Recovered project is not the exact active Blockly project.');
+      }
+      if ((!reopening && this.isProjectOpening) || this.dependencyLifecycle.isBusy(source)
+        || this.getCoderOperation(source) || this.application.hasActiveProjectMutation(source)
+        || this.application.hasActiveBlocklyBuildOrUpload(source)) {
+        fail('ABS_REOPEN_BUSY', 'A project task is still active; recovery did not save, discard or stop it.');
+      }
+    };
+    check();
+    if (this.isProjectTransitionInProgress(source)) fail('ABS_REOPEN_BUSY', 'A project lifecycle operation is already active.');
+    const lifecycle = this.acquireProjectLifecycle([source]);
+    try {
+      const libraries = await window['libraryDependencies']?.status(source);
+      check();
+      if (!libraries || typeof libraries.dirty !== 'boolean' || typeof libraries.busy !== 'boolean') {
+        fail('ABS_REOPEN_LIBRARY_STATE_UNAVAILABLE', 'Recovery requires verified library-manager state.');
+      }
+      if (libraries.dirty || libraries.busy) fail('ABS_REOPEN_LIBRARY_CHANGES', 'Pending library edits are retained; reopen cannot discard them.');
+      reopening = true;
+      const activated = await this.projectOpen(source, { reason: 'abs-journal-reopen', lifecycleOwner: lifecycle.token,
+        recoveryReopen: { assertCurrent: check } });
+      // projectOpen already awaits normal editor load completion. Never call
+      // the retired canvas guard after teardown; the coordinator verifies the
+      // replacement activation and mirrors after this returns.
+      return { project: source, activated: activated === true && this.currentProjectPath === source
+        && this.getBlocklyProjectLoadStatus(source).ready };
+    } finally { lifecycle.release(); }
   }
 
   // 打开项目
@@ -1637,6 +1702,10 @@ export class ProjectService {
     // Reject before acquiring locks, closing windows, changing routes or publishing activation.
     if (!(await this.ensureProjectModeAllowed(projectPath))) return false;
 
+    const recovery = activationReason === 'abs-journal-reopen' ? options.recoveryReopen : undefined;
+    if (activationReason === 'abs-journal-reopen' && !recovery) throw new Error('Journal reopen requires in-process recovery authority.');
+    recovery?.assertCurrent();
+
     if (activationReason === 'chat-tool-reload' && this.getProjectMode(projectPath) !== 'coder') {
       // History has already restored the root manifest. Reconcile node_modules
       // to that version, including removals, without publishing a saved edit.
@@ -1694,6 +1763,7 @@ export class ProjectService {
 
     if (this.electronService.isElectron && window['projectLock']) {
       let r = await window['projectLock'].tryAcquire(projectPath);
+      if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
       if (!r.ok && r.conflict && r.holder) {
         const action = await this.promptProjectLockConflict(r.holder);
         if (action === 'cancel') {
@@ -1732,7 +1802,17 @@ export class ProjectService {
       return false;
     }
 
-    if (previousProjectPath && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
+    if (recovery) {
+      const libraries = await window['libraryDependencies']?.status(projectPath);
+      recovery.assertCurrent();
+      if (!libraries || libraries.dirty !== false || libraries.busy !== false) {
+        throw new Error('Library state changed before recovered workspace activation; all edits were retained.');
+      }
+      // The lifecycle gate already excludes new project tasks. Retire only its
+      // proven-idle dependency session; do not send process-stop/cancel commands.
+      const idle = this.dependencyLifecycle.get(projectPath);
+      if (idle) this.dependencyLifecycle.release(idle);
+    } else if (previousProjectPath && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
       try {
         await this.stopProjectCommands(previousProjectPath);
       } catch (error) {
@@ -1868,7 +1948,7 @@ export class ProjectService {
   }
 
   // 保存项目
-  async save(path = this.currentProjectPath, feedbackTimeoutMs = 5000): Promise<{ success: boolean; error?: string; path?: string }> {
+  async save(path = this.currentProjectPath, feedbackTimeoutMs = 5000): Promise<ProjectSaveDispatchResult & { path?: string }> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
     if (this.isProjectOpening && this.getProjectMode(path) !== 'coder') {
       return Promise.resolve({
@@ -1895,8 +1975,12 @@ export class ProjectService {
     const session = this.dependencyLifecycle.get(path);
     const current = () => this.currentProjectPath === path && this.dependencyLifecycle.get(path) === session;
     if (current()) this.stateSubject.next('saving');
+    let outcome: Partial<ProjectSaveOutcome> = {};
     try {
       const result = await this.application.dispatchProjectSave(path, feedbackTimeoutMs);
+      if (result?.projectSaved !== undefined) outcome = { projectSaved: result.projectSaved,
+        generatedCodePublished: result.generatedCodePublished, partial: result.partial,
+        ...(result.code ? { code: result.code } : {}) };
       if (result?.success !== true) throw new Error(result?.error || '编辑器未确认保存成功');
       // Saving an inactive Coder tab is valid. Its acknowledgement must not
       // change a replacement project's status or read that project's manifest.
@@ -1907,35 +1991,345 @@ export class ProjectService {
           this.stateSubject.next('saved');
         }
       }
-      return { success: true, path };
+      return { ...outcome, success: true, path };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('项目保存失败:', message);
-      if (current()) this.stateSubject.next('error');
-      return { success: false, error: message, path };
+      if (current()) this.stateSubject.next(outcome.projectSaved ? 'saved' : 'error');
+      return { ...outcome, success: false, error: message, path };
     }
   }
 
 
   getSaveAsBlockMessage(): string | undefined {
-    return this.application.hasRunningAi() ? this.translate.instant('PROJECT.SAVE_AS_AI_BUSY') : undefined;
+    return this.application.hasRunningAi?.() ? this.translate.instant('PROJECT.SAVE_AS_AI_BUSY') : undefined;
   }
 
-  async saveAs(path: string): Promise<void> {
-    const assertAvailable = () => {
-      const blocked = this.getSaveAsBlockMessage();
-      if (blocked) throw new Error(blocked);
+  private assertSaveAsAvailable(): void {
+    const blocked = this.getSaveAsBlockMessage();
+    if (blocked) throw new Error(blocked);
+  }
+
+  async saveAs(path: string): Promise<ProjectSaveAsOutcome | void> {
+    this.assertSaveAsAvailable();
+    const sourceProjectPath = this.currentProjectPath;
+    if (this.getProjectMode(sourceProjectPath) === 'coder') {
+      await this.saveCoderAs(sourceProjectPath, path);
+      return;
+    }
+    return this.saveBlocklyCopy(path, 'save-as');
+  }
+
+  /** An explicit target-only recovery, never a bypass to save the source. */
+  saveRecoveryAs(path: string, options?: ProjectRecoveryCopyOptions): Promise<ProjectSaveAsOutcome> {
+    if (this.getProjectMode(this.currentProjectPath) !== 'blockly') {
+      return Promise.reject(new Error('Recovery copies require the active Blockly project.'));
+    }
+    return this.saveBlocklyCopy(path, 'recovery', undefined, options);
+  }
+
+  /** Open-for-recovery never loads or migrates a closed source in place. Its
+   * complete saved document is copied first; only the independent target opens. */
+  saveClosedRecoveryAs(source: string, target: string): Promise<ProjectSaveAsOutcome> {
+    if (!source || this.getProjectMode(source) !== 'blockly')
+      return Promise.reject(new Error('Closed recovery requires a saved Blockly source.'));
+    this.assertClosedRecoverySource(source);
+    return this.saveBlocklyCopy(target, 'recovery', source);
+  }
+
+  private assertClosedRecoverySource(source: string): void {
+    if (this.currentProjectPath || this.coderProjects.length || this.isProjectOpening
+      || this.isProjectTransitionInProgress(source) || this.application.hasActiveProjectMutation(source)
+      || this.application.hasActiveBlocklyBuildOrUpload(source) || this.dependencyLifecycle.isBusy(source))
+      throw Object.assign(new Error('Recovery opening must not replace a live view or bypass an active source owner.'),
+        { code: 'PROJECT_RECOVERY_OPEN_BUSY' });
+  }
+
+  hasSavedRecoveryTarget(path = this.currentProjectPath): boolean {
+    return this.savedRecoveryTargets.has(path);
+  }
+
+  /** Native bootstrap is available only in the exact same-build child created
+   * for a completed fork. Register its saved-primary repair capability before
+   * the first native load, without loading or tearing down the source view. */
+  async openIndependentRepairTarget(): Promise<Record<string, any>> {
+    const native = window['fs']?.projectRepairEnvironment;
+    const outcome = await native?.admission();
+    if (!outcome || this.currentProjectPath || this.coderProjects.length || this.isProjectOpening)
+      throw new Error('Independent repair bootstrap cannot replace an existing view or invent a recovery capability.');
+    const check = () => {
+      if (this.currentProjectPath || this.coderProjects.length || this.isProjectOpening)
+        throw new Error('The independent repair view changed before target admission.');
     };
-    assertAvailable();
-    const source = this.currentProjectPath;
+    if (outcome.recoverySource?.kind === 'workspace') await this.savedRecoveryTargets.rememberNativePrimary(outcome, check);
+    else await this.savedRecoveryTargets.remember(outcome, check);
+    check();
+    const rechecked = await native.admission();
+    if (!rechecked || rechecked.project !== outcome.project || rechecked.targetAbiHash !== outcome.targetAbiHash)
+      throw new Error('Completed recovery evidence changed before initial target loading.');
+    const normalization = { project: outcome.project, transitions: [] as Record<string, any>[] };
+    this.independentRepairNormalization = normalization;
+    try {
+      try { await this.projectOpen(outcome.project, { saveBeforeReload: false }); }
+      catch (error) { if (!this.getBlocklyProjectLoadStatus(outcome.project).error) throw error; }
+      return { ok: true, operation: 'project_repair_bootstrap', project: outcome.project,
+        loadStatus: this.getBlocklyProjectLoadStatus(outcome.project), normalizationTransitions: normalization.transitions };
+    } finally { if (this.independentRepairNormalization === normalization) this.independentRepairNormalization = undefined; }
+  }
+
+  canCloseIndependentRepairTarget(target: string): boolean {
+    return !!target && !this.currentProjectPath && !this.coderProjects.length && !this.isProjectOpening
+      && !this.isProjectTransitionInProgress(target) && !this.application.hasActiveProjectMutation(target)
+      && !this.application.hasActiveBlocklyBuildOrUpload(target) && !this.dependencyLifecycle.isBusy(target);
+  }
+
+  canAdoptIndependentRepairTarget(target: string): boolean {
+    return this.isSameProjectPath(target, this.currentProjectPath) && !this.isProjectOpening
+      && !this.isProjectTransitionInProgress(target) && !this.application.hasActiveProjectMutation(target)
+      && !this.application.hasActiveBlocklyBuildOrUpload(target) && !this.dependencyLifecycle.isBusy(target);
+  }
+
+  private assertSavedRecoveryContext(path: string): void {
+    const load = this.getBlocklyProjectLoadStatus(path);
+    if (!this.isSameProjectPath(path, this.currentProjectPath) || load.ready || !load.error
+      || this.getProjectMode(path) !== 'blockly' || this.isProjectOpening
+      || this.application.hasActiveProjectMutation(path) || this.application.hasActiveBlocklyBuildOrUpload(path)
+      || this.dependencyLifecycle.isBusy(path)) {
+      throw Object.assign(new Error('The saved recovery project changed or has an active operation. Observe its existing status before dependency repair.'),
+        { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
+    }
+  }
+
+  async inspectSavedRecoveryTarget(path = this.currentProjectPath): Promise<SavedRecoveryTargetAdmission | null> {
+    if (!this.hasSavedRecoveryTarget(path)) return null;
+    if (this.isProjectTransitionInProgress(path)) throw new Error('The recovery target is transitioning; no dependency mutation was admitted.');
+    const current = () => this.assertSavedRecoveryContext(path);
+    const saved = await this.savedRecoveryTargets.inspect(path, current);
+    if (!saved) return null;
+    const state = await window['libraryDependencies']?.status(path); current();
+    if (!state || typeof state.dirty !== 'boolean' || typeof state.busy !== 'boolean') {
+      throw new Error('Verified library-manager facts are unavailable for this recovery target.');
+    }
+    return { ok: true, operation: 'project_abi_check', project: path, scope: 'saved-recovery-project',
+      abiHash: saved.abiHash, sourceProject: saved.sourceProject, recoverySource: saved.recoverySource,
+      ...(saved.nativePrimaryProof ? { nativePrimaryProof: saved.nativePrimaryProof } : {}),
+      recoveryArchive: saved.recoveryArchive, pendingMutation: false, loadStatus: this.getBlocklyProjectLoadStatus(path),
+      unsavedLibraryChanges: state.dirty || state.busy, libraryState: { dirty: state.dirty, busy: state.busy } };
+  }
+
+  /** Only a verified independently copied target can reload after managed
+   * dependency installation while its initial native load is incomplete. */
+  async reloadSavedRecoveryTarget(path = this.currentProjectPath): Promise<SavedRecoveryTargetReload> {
+    const before = await this.inspectSavedRecoveryTarget(path);
+    if (!before) throw Object.assign(new Error('No current saved-recovery target capability exists; inspect and fork the current source first.'),
+      { code: 'PROJECT_RECOVERY_TARGET_UNVERIFIED' });
+    if (before.unsavedLibraryChanges) throw new Error('Pending library-manager edits remain; recovery does not discard or save them implicitly.');
+    const lease = this.acquireProjectLifecycle([path]);
+    let snapshot: Awaited<ReturnType<typeof captureProjectDiskRecovery>> | undefined, release: (() => void) | undefined;
+    try {
+      const primary = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
+      if (`sha256:${await sha256Hex(primary)}` !== before.abiHash) throw new Error('Recovery target bytes changed before reload.');
+      const check = () => {
+        this.assertSavedRecoveryContext(path);
+        if (window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== primary) {
+          throw Object.assign(new Error('The recovery primary changed during partial capture. Preserve the newer document and inspect again.'),
+            { code: 'PROJECT_RECOVERY_SOURCE_CHANGED' });
+        }
+      };
+      const marker = await this.savedRecoveryTargets.inspect(path, check);
+      if (!marker || marker.abiHash !== before.abiHash) throw new Error('Recovery target bytes changed before reload.');
+      const libraries = await window['libraryDependencies']?.status(path); check();
+      if (!libraries || libraries.dirty !== false || libraries.busy !== false) throw new Error('Library manager changed before recovery reload.');
+      const fragment = await this.application.captureBlocklyRecoveryFragment?.(path)
+        ?? { error: 'The partial native capture API is unavailable.' };
+      check(); snapshot = await captureProjectDiskRecovery(path, check, fragment);
+      const archive = await snapshot.publish(path);
+      if (snapshot.activationBlocked) return { ok: false, project: path, ready: false,
+        activationBlocked: snapshot.activationBlocked, recoveryArchive: archive.recoveryArchive,
+        message: snapshot.activationBlocked.message };
+      release = snapshot.freezeForActivation?.();
+      const activated = await this.projectOpen(path, { reason: 'reload', saveBeforeReload: false, lifecycleOwner: lease.token });
+      const ready = activated === true && this.isSameProjectPath(path, this.currentProjectPath)
+        && this.getBlocklyProjectLoadStatus(path).ready;
+      const afterAbi = window['fs'].readFileSync(`${path}/project.abi`, 'utf8');
+      return { ok: ready, project: path, ready, loadStatus: this.getBlocklyProjectLoadStatus(path),
+        recoveryReload: { version: 1, project: path, source: 'saved-document', beforeAbiHash: before.abiHash,
+          afterAbiHash: `sha256:${await sha256Hex(afterAbi)}`, ready }, recoveryArchive: archive.recoveryArchive };
+    } finally { release?.(); snapshot?.dispose(); lease.release(); }
+  }
+
+  private async saveBlocklyCopy(path: string, mode: 'save-as' | 'recovery', closedSource?: string, options?: ProjectRecoveryCopyOptions): Promise<ProjectSaveAsOutcome> {
+    const sourceProjectPath = closedSource ?? this.currentProjectPath;
+    const session = projectDataRuntime.getSessionToken();
+    const loadStatus = mode === 'recovery' && !closedSource ? this.getBlocklyProjectLoadStatus(sourceProjectPath) : undefined;
+    const failedLoad = !!loadStatus?.error && !loadStatus.ready;
+    if (mode === 'recovery' && !closedSource && !loadStatus!.ready && !failedLoad) {
+      throw Object.assign(new Error('The source is still loading; observe its existing load status before creating a recovery copy.'),
+        { code: 'PROJECT_RECOVERY_NOT_READY' });
+    }
+    const assertCurrent = () => {
+      if (mode === 'save-as') this.assertSaveAsAvailable();
+      if (closedSource) { this.assertClosedRecoverySource(closedSource); return; }
+      if (this.currentProjectPath !== sourceProjectPath || projectDataRuntime.getSessionToken() !== session) {
+        throw new Error('当前项目会话已切换，请重新执行另存为');
+      }
+      if (failedLoad) {
+        const current = this.getBlocklyProjectLoadStatus(sourceProjectPath);
+        if (current.ready || current.error !== loadStatus!.error || this.isProjectOpening
+          || this.isProjectTransitionInProgress(sourceProjectPath) || this.application.hasActiveProjectMutation(sourceProjectPath)
+          || this.application.hasActiveBlocklyBuildOrUpload(sourceProjectPath) || this.dependencyLifecycle.isBusy(sourceProjectPath)) {
+          throw Object.assign(new Error('The failed-load source changed or has an active owner; no recovery authority was bypassed.'),
+            { code: 'PROJECT_RECOVERY_SOURCE_BUSY' });
+        }
+      }
+    };
+    path = await this.resolveSaveAsTarget(sourceProjectPath, path);
+    assertCurrent();
+    const libraries = await captureProjectCopyLibraries(sourceProjectPath);
+    assertCurrent();
+    const snapshot = await (closedSource
+      ? captureProjectDiskRecovery(sourceProjectPath, assertCurrent, { notApplicable: true })
+      : failedLoad ? (async () => {
+      let fragment: ProjectRecoveryFragment;
+      try { fragment = await this.application.captureBlocklyRecoveryFragment?.(sourceProjectPath)
+        ?? { error: 'The matching host does not expose partial native capture.' }; }
+      catch (error) { fragment = { error: error instanceof Error ? error.message : String(error) }; }
+      assertCurrent();
+      return captureProjectDiskRecovery(sourceProjectPath, assertCurrent, fragment);
+    })() : mode === 'recovery'
+      ? this.application.captureBlocklyRecoveryCopySnapshot(sourceProjectPath)
+      : this.application.captureBlocklySaveAsSnapshot(sourceProjectPath));
+    let reserved = false;
+    let saved: ProjectSaveOutcome | undefined;
+    let copiedFiles: Record<string, string | null> | undefined;
+    const observeTarget = () => Object.fromEntries(['package.json', 'project.abi', 'project.abs', 'project.abs.map.json'].map(name => {
+      const file = `${path}/${name}`;
+      return [name, window['fs'].existsSync(file) ? window['fs'].readFileSync(file, 'utf8') : null];
+    }));
+    try {
+      assertCurrent();
+      await libraries.assertCurrent(); assertCurrent();
+      // Only the editor owns the unsaved document. A fork never saves the source
+      // or treats its old project.abi as the current canvas.
+      await window['fsp'].mkdir(path); reserved = true;
+      assertCurrent();
+      if (mode === 'recovery') {
+        if (typeof window['fs'].copyRecoveryProjectDirectory !== 'function') throw new Error('Recovery copy requires the matching Electron host.');
+        window['fs'].copyRecoveryProjectDirectory(sourceProjectPath, path);
+      } else window['fs'].copyProjectDirectory(sourceProjectPath, path);
+      await libraries.assertCurrent(); assertCurrent();
+      const packageJson = JSON.parse(libraries.manifestText);
+      delete packageJson.cloudId;
+      const name = window['path'].basename(path);
+      packageJson.name = deriveProjectPackageName(name);
+      packageJson.nickname = name;
+      if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
+      window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
+      copiedFiles = observeTarget();
+      saved = await snapshot.publish(path);
+      if (!saved.projectSaved) throw projectSaveOutcomeError(saved);
+      if (mode === 'recovery' && !saved.recoverySource) saved.recoverySource = {
+        version: 1, kind: 'workspace', complete: true, loadFailed: false, partialCanvas: 'not-applicable',
+      };
+    } catch (error) {
+      // An uncertain publication may already be committed. Keep its recovery
+      // location, just as the ordinary publication path never rolls it back.
+      const failure = error as { projectSaved?: boolean; abiSaved?: boolean; generatedCodePublished?: boolean;
+        uncertain?: boolean; code?: string; publication?: { abiSaved?: boolean } };
+      const projectSaved = failure?.projectSaved === true || failure?.abiSaved === true || failure?.publication?.abiSaved === true;
+      let targetChanged = false;
+      try { targetChanged = !!copiedFiles && JSON.stringify(observeTarget()) !== JSON.stringify(copiedFiles); }
+      catch { targetChanged = true; }
+      if (reserved && (projectSaved || failure?.uncertain === true || targetChanged)) {
+        snapshot.dispose();
+        const detail = error instanceof Error ? error.message : String(error);
+        const warning = `另存为目标 ${path} 已保留：${projectSaved ? '项目文件已写入，但发布尚未完整确认'
+          : failure.uncertain ? '发布结果未知，不能确认项目文件是否已写入' : '目标内容已变化，本次快照未确认提交，不能清理其他写入'}。未切换工作区，请先检查该目标的恢复状态。${detail}`;
+        this.message.warning(warning);
+        return { sourceProject: sourceProjectPath, project: path, projectSaved,
+          generatedCodePublished: failure.generatedCodePublished === true, partial: true, activated: false,
+          code: !projectSaved && failure.uncertain ? 'PROJECT_SAVE_AS_UNKNOWN'
+            : !projectSaved && targetChanged ? 'PROJECT_SAVE_AS_TARGET_CONFLICT' : failure.code || 'PROJECT_SAVE_AS_PARTIAL',
+          error: warning, warnings: [warning] };
+      }
+      if (reserved) {
+        try { await window['fsp'].rm(path, { recursive: true, force: true }); }
+        catch (cleanupError) { console.warn('清理未完成的 Blockly 另存为目录失败:', path, cleanupError); }
+      }
+      snapshot.dispose();
+      throw error;
+    }
+    const result: ProjectSaveAsOutcome = { ...saved, sourceProject: sourceProjectPath, project: path, activated: false };
+    if (mode === 'recovery' && result.recoverySource?.kind === 'saved-document') {
+      // The target was actually published, not inferred from a filename or an
+      // arbitrary archive supplied by the caller. No source authority is reset.
+      try { await this.savedRecoveryTargets.remember(result, assertCurrent); }
+      catch (error) {
+        snapshot.dispose();
+        return { ...result, partial: true, activated: false,
+          activationBlocked: { reason: 'source-changed', message: error instanceof Error ? error.message : String(error) },
+          code: 'PROJECT_RECOVERY_SOURCE_CHANGED',
+          error: 'The recovery project was saved, but its source changed before activation. The source view and saved target were retained.' };
+      }
+    }
+    const warn = (detail: string) => {
+      (result.warnings ??= []).push(detail);
+      this.message.warning(detail);
+    };
+    let unfreeze: (() => void) | undefined;
+    try {
+      try {
+        if (options?.activation === 'retain-source') {
+          await libraries.assertCurrent(); assertCurrent();
+          // Publication and navigation are different capabilities. A repair
+          // child may save C, but must retain its exact native B view.
+          result.activationDeferred = { reason: 'isolated-repair-host' };
+          if (snapshot.activationBlocked) result.activationBlocked = snapshot.activationBlocked;
+        } else if (snapshot.activationBlocked) {
+          result.activationBlocked = snapshot.activationBlocked;
+          warn(`恢复副本 ${path} 已保存，但未能归档原半初始化画布，因此保留原视图、不自动切换。${snapshot.activationBlocked.message}`);
+        } else {
+          unfreeze = snapshot.freezeForActivation?.();
+          await libraries.assertCurrent(); assertCurrent();
+          if (!snapshot.isCurrent() || this.currentProjectPath !== (closedSource ? '' : sourceProjectPath)) {
+          if (failedLoad) result.activationBlocked = { reason: 'source-changed', message: 'The partial source view changed after it was archived.' };
+          warn(`项目已另存至 ${path}，但原工作区已有新修改；已保留当前工作区，请手动打开副本。`);
+          } else if (this.isProjectOpening || this.isProjectTransitionInProgress(sourceProjectPath)
+          || this.application.hasActiveProjectMutation(sourceProjectPath)) {
+          if (failedLoad) result.activationBlocked = { reason: 'source-busy', message: 'An operation now owns the original project; activation was not attempted.' };
+          // Do not enqueue behind another navigation: projectOpen() waits for
+          // its existing task and would otherwise replace that newer project.
+          warn(`项目已另存至 ${path}，但原项目正在切换或仍有运行中的操作；未切换项目，请在操作结束后打开副本。`);
+          } else {
+          result.activated = await this.projectOpen(path);
+          if (!result.activated) warn(`项目已另存至 ${path}，但未能切换，请手动打开该项目。`);
+          }
+        }
+      } catch (error) {
+        if (failedLoad && this.currentProjectPath === sourceProjectPath) result.activationBlocked = {
+          reason: 'source-changed', message: error instanceof Error ? error.message : String(error),
+        };
+        warn(`项目已另存至 ${path}，但未切换：${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (result.partial) warn(result.error || `项目已另存至 ${path}，但生成代码尚未完整发布。`);
+      return result;
+    } finally {
+      unfreeze?.();
+      snapshot.dispose();
+    }
+  }
+
+  /** Coder copies dirty buffers to the destination without first saving them
+   * back into the source. Recovery copies keep their separate Blockly path. */
+  private async saveCoderAs(source: string, target: string): Promise<void> {
     const unchanged = this.captureCurrentProjectGuard();
     const assertSource = () => {
       if (!unchanged()) throw new Error('当前项目会话已切换，请重新执行另存为');
-      assertAvailable();
+      this.assertSaveAsAvailable();
     };
-    path = await this.resolveSaveAsTarget(source, path);
+    target = await this.resolveSaveAsTarget(source, target);
     assertSource();
-    const lease = this.acquireProjectLifecycle([source, path]);
+    const lease = this.acquireProjectLifecycle([source, target]);
     let snapshot: Awaited<ReturnType<ProjectApplicationPort['prepareProjectCopy']>> | undefined;
     try {
       if (window['libraryDependencies']) {
@@ -1958,23 +2352,24 @@ export class ProjectService {
         }
       };
       await assertSnapshot();
-      // A failed mkdir never grants ownership of an existing destination.
-      await window['fsp'].mkdir(path);
+      // Only a successful exclusive reservation grants permission to clean up.
+      await window['fsp'].mkdir(target);
+      let snapshotWriteStarted = false;
       try {
         await assertSnapshot();
-        window['fs'].copyProjectDirectory(source, path);
-        // Apply dirty editor contents only to B; never save A as an intermediate step.
+        window['fs'].copyProjectDirectory(source, target);
         const packageJson = JSON.parse(manifest);
+        const name = window['path'].basename(target);
         delete packageJson.cloudId;
-        const name = window['path'].basename(path);
         packageJson.name = deriveProjectPackageName(name);
         packageJson.nickname = name;
-        if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
-        window['fs'].writeFileSync(window['path'].join(path, 'package.json'), JSON.stringify(packageJson, null, 2));
-        await snapshot.write(path);
-        // A dirty package.json buffer also belongs in B; identity always belongs to B.
-        const copiedManifest = JSON.parse(window['fs'].readFileSync(window['path'].join(path, 'package.json'), 'utf8'));
-        // Match explicit Save: pending library selections overlay a dirty manifest editor.
+        if (Object.hasOwn(packageJson, 'path')) packageJson.path = target;
+        window['fs'].writeFileSync(window['path'].join(target, 'package.json'), JSON.stringify(packageJson, null, 2));
+        snapshotWriteStarted = true;
+        await snapshot.write(target);
+        // The editor may include a dirty package buffer; preserve its content,
+        // overlay pending managed dependencies, and always retain B's identity.
+        const copiedManifest = JSON.parse(window['fs'].readFileSync(window['path'].join(target, 'package.json'), 'utf8'));
         if (pendingLibraries) for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'ailyLocalLibrarySources']) {
           if (pendingLibraries[field] === undefined) delete copiedManifest[field];
           else copiedManifest[field] = pendingLibraries[field];
@@ -1982,21 +2377,25 @@ export class ProjectService {
         delete copiedManifest.cloudId;
         copiedManifest.name = deriveProjectPackageName(name);
         copiedManifest.nickname = name;
-        if (Object.hasOwn(copiedManifest, 'path')) copiedManifest.path = path;
-        window['fs'].writeFileSync(window['path'].join(path, 'package.json'), JSON.stringify(copiedManifest, null, 2));
+        if (Object.hasOwn(copiedManifest, 'path')) copiedManifest.path = target;
+        window['fs'].writeFileSync(window['path'].join(target, 'package.json'), JSON.stringify(copiedManifest, null, 2));
         await assertSnapshot();
       } catch (error) {
-        try { await window['fsp'].rm(path, { recursive: true, force: true }); }
-        catch (cleanupError) { console.warn('清理未完成的另存为目录失败:', path, cleanupError); }
+        if (snapshotWriteStarted) {
+          // Once editor publication begins its acknowledgement may be lost.
+          // Never delete a complete or partially published independent copy.
+          throw Object.assign(new Error(`另存为目标 ${target} 已保留，未切换项目：${error instanceof Error ? error.message : String(error)}`),
+            { code: 'PROJECT_SAVE_AS_PARTIAL', project: target, sourceProject: source });
+        }
+        try { await window['fsp'].rm(target, { recursive: true, force: true }); }
+        catch (cleanupError) { console.warn('清理未完成的 Coder 另存为目录失败:', target, cleanupError); }
         throw error;
       }
-      // Release the editor lease synchronously before normal activation takes over.
-      // The path-scoped lifecycle owner still prevents conflicting host transitions.
       snapshot.release();
-      if (!(await this.projectOpen(path, { lifecycleOwner: lease.token }))) {
-        throw new Error(`项目已另存至 ${path}，但未能切换，请手动打开该项目`);
+      if (!(await this.projectOpen(target, { lifecycleOwner: lease.token }))) {
+        throw new Error(`项目已另存至 ${target}，但未能切换，请手动打开该项目`);
       }
-      // Retained Coder tabs must not later Save All the transferred edits back into A.
+      // Transfer edits out of retained source tabs only after B was activated.
       await snapshot.complete?.();
     } finally { snapshot?.release(); lease.release(); }
   }

@@ -1,6 +1,7 @@
 import { assertGenerationCandidate, assertGenerationProjectionRequest, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { AbsSyncError } from './abs-state';
+import { readAbsBlockStateRequest } from './abs-block-state';
 
 // Only obsolete remote writes are retired. Native UI editing is unrelated to this boundary.
 const retiredWrites = new Set(['abi_add', 'abi_delete', 'abi_connect', 'abi_set_field', 'abi_move']);
@@ -16,6 +17,7 @@ export function rejectAbsLiveRequest(operation: string, input: Record<string, an
         reason: 'legacy-abi-write', hint: 'Update/reconnect Chat or the MCP client. Do not fall back to offline ABI writes after an ABS failure.',
       });
     }
+    if (operation === 'blocks_set_state') { readAbsBlockStateRequest(input); return null; }
     if (!generationOperations.has(operation)) return null;
     assertGenerationRequest(input);
     if (operation === 'abs_projection') assertGenerationProjectionRequest(input);
