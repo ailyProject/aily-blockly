@@ -120,7 +120,11 @@ describe('board cloud support and local fallback', () => {
     support.supported = supported;
     npm.ensureCloudLibrarySources = jasmine.createSpy('cloudSources').and.resolveTo();
     operation.useCloud();
-    expect(await npm.prepareCloudCompileBackend('/project', () => false)).toBe(supported);
+    if (supported) expect(await npm.prepareCloudCompileBackend('/project', () => false)).toBeTrue();
+    else await expectAsync(npm.prepareCloudCompileBackend('/project', () => false))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'CLOUD_BOARD_UNSUPPORTED' }));
+    expect(project.isCloudBuild()).toBeTrue();
+    expect(npm.installBoardDeps).not.toHaveBeenCalled();
     expect(window['cloudBuild'].boardSupport).toHaveBeenCalledTimes(2);
     expect(npm.ensureCloudLibrarySources.calls.count()).toBe(supported ? 1 : 0);
     expect(project.syncCurrentBoardConfig).not.toHaveBeenCalled();
@@ -145,7 +149,7 @@ describe('board cloud support and local fallback', () => {
     expect(npm.installBoardDeps).not.toHaveBeenCalled();
   });
 
-  for (const code of ['GATEWAY_TIMEOUT', 'CLOUD_BRIDGE_UNAVAILABLE', 'CLOUD_BOARD_PROFILE_INVALID']) {
+  for (const code of ['CLOUD_BOARD_UNSUPPORTED', 'GATEWAY_TIMEOUT', 'CLOUD_BRIDGE_UNAVAILABLE', 'CLOUD_BOARD_PROFILE_INVALID']) {
     it(`does not silently resume locally after ${code} during cloud reentry`, async () => {
       npm.ensureCloudLibrarySources = jasmine.createSpy('cloudSources').and.resolveTo();
       window['cloudBuild'].boardSupport.and.rejectWith(Object.assign(new Error(code), { code }));

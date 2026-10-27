@@ -237,14 +237,21 @@ describe('Coder build metadata', () => {
     expect(compiler.runCloudCompile).toHaveBeenCalledTimes(1);
     expect(compiler.application.finishBuild).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
     stopped(true);
-    if (ending === 'local' || ending === 'unsupported') {
+    if (ending === 'local') {
       for (let n = 0; n < 100 && launches < 2; n++) await new Promise(resolve => setTimeout(resolve, 1));
       expect(launches).toBe(2);
       commands[1].next({ type: 'stdout', data: 'compiled\n' });
-      if (ending === 'unsupported') expect(compiler.localSwitchAction).toBeUndefined();
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
-    expect((await pending).result.state).toBe(ending === 'cancel' ? 'warn' : 'done');
+    const result = await pending;
+    expect(result.result.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
+    if (ending === 'unsupported') {
+      expect(result.result.text).toContain('Board no longer supports cloud builds');
+      expect(launches).toBe(1);
+      expect(operation.local).toBeFalse();
+      expect(compiler.localSwitchAction).toBeUndefined();
+      expect(readManifest().buildInfo.lastBuildStatus).toBe('failed');
+    }
     expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
     expect(compiler.application.finishBuild).toHaveBeenCalledTimes(1); expect(save).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);

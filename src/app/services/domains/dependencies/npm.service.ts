@@ -693,9 +693,7 @@ export class NpmService {
       backend = await project.resolveCompileBackend(session, true);
     } catch (error) {
       guard();
-      // This task already chose local execution. Only explicit lack of board
-      // support resumes it locally; transport, protocol and stale-session errors remain failures.
-      if (error?.code === 'CLOUD_BOARD_UNSUPPORTED') return false;
+      // A failed cloud selection must not silently restart the local compiler.
       throw error;
     }
     guard();

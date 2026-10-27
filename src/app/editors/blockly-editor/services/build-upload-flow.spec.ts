@@ -147,7 +147,7 @@ describe('Blockly compile and upload handoff', () => {
       passed: true, projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }),
-        getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo({}),
+        getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo([]),
         ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; } },
       workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
@@ -212,6 +212,33 @@ describe('Blockly compile and upload handoff', () => {
     expect((await result).state).toBe('error'); expect(f.service.passed).toBeFalse();
   });
 
+  for (const metadataFailure of [false, true]) it(`restores cloud pins before capture and requires result metadata persistence (failure=${metadataFailure})`, async () => {
+    const f = compileFixture();
+    f.service.projectService.isCloudBuild = () => true;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService = { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {} };
+    let pinsRestored = false;
+    f.service.projectService.getBoardConfigMenu.and.callFake(async (options: any) => {
+      expect(options).toEqual({ requireCloudTarget: true }); pinsRestored = true; return [];
+    });
+    const prepareSource = f.service.runWithInteractiveProjectCode;
+    f.service.runWithInteractiveProjectCode = (...args: any[]) => {
+      expect(pinsRestored).toBeTrue(); return prepareSource(...args);
+    };
+    f.service.runCloudCompilation = jasmine.createSpy('cloud').and.resolveTo({ state: 'done', text: 'cloud complete' });
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.callFake(async () => {
+      if (metadataFailure) throw new Error('metadata unavailable');
+    });
+    const { result } = await f.start();
+    const completed = await result;
+    expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(1);
+    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'success', jasmine.any(String), 'hash', true);
+    expect(completed.state).toBe(metadataFailure ? 'error' : 'done');
+    expect(f.service.passed).toBe(!metadataFailure);
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    if (metadataFailure) expect(completed.text).toBe('metadata unavailable');
+  });
+
   for (const outcome of ['success', 'compile-error', 'prepare-error', 'cancel']) it(`retains the Blockly build request through local handoff: ${outcome}`, async () => {
     const f = compileFixture();
     const operation = { local: false, useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
@@ -246,6 +273,9 @@ describe('Blockly compile and upload handoff', () => {
     f.service.projectService.isCloudBuild = () => !operation.local;
     f.service.configService.getCompileBackend = () => 'cloud';
     f.service.workflowService.currentState = ProcessState.BUILDING;
+    f.service.workflowService.finishBuild.and.callFake((success: boolean) => {
+      f.service.workflowService.currentState = success ? ProcessState.IDLE : ProcessState.ERROR;
+    });
     f.service.ensureCancelState = () => {};
     const commands = [f.command, new Subject<any>()];
     let launches = 0, stopped!: (value: boolean) => void;
@@ -279,14 +309,20 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(1);
     expect(operation.release).not.toHaveBeenCalled();
     stopped(true);
-    if (ending === 'local' || ending === 'unsupported') {
+    if (ending === 'local') {
       for (let n = 0; n < 100 && launches < 2; n++) await new Promise(resolve => setTimeout(resolve, 1));
       expect(launches).toBe(2);
       commands[1].next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
-      if (ending === 'unsupported') expect(f.service.localSwitchAction).toBeUndefined();
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
-    expect((await result).state).toBe(ending === 'cancel' ? 'warn' : 'done');
+    const completed = await result;
+    expect(completed.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
+    if (ending === 'unsupported') {
+      expect(completed.text).toContain('Board no longer supports cloud builds');
+      expect(launches).toBe(1);
+      expect(operation.local).toBeFalse();
+      expect(f.service.localSwitchAction).toBeUndefined();
+    }
     expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);
