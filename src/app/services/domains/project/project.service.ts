@@ -65,9 +65,10 @@ import { detectProjectMode, getProjectApplicationName, type ProjectMode } from '
 import { deriveProjectPackageName } from './project-package-name';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
+import { resolveVariantPaths } from '../../../utils/board-variant.utils';
 import {
-  canonicalCloudJson, cloudBoardProperties, getCloudBoardOptions, getCloudBoardProfileFreeSlots,
-  getCloudBuildSettings, isCloudBoardProfileOnline, selectCloudBoardProfile,
+  canonicalCloudJson, cloudBoardProperties, getCloudBoardOptions,
+  getCloudBuildSettings, selectCloudBoardProfile,
   type CloudBoardProfile,
 } from '../../../utils/cloud-build-settings.utils';
 
@@ -1148,6 +1149,13 @@ export class ProjectService {
     const args = [`npm install ${packageSpec}`];
     if (installOptions.prefixPath) {
       args.push(`--prefix "${installOptions.prefixPath}"`);
+    }
+    // Keep cloud board installs from reifying shared AppData SDK/compiler dependencies.
+    if (installOptions.prefixPath
+      && this.configService?.getCompileBackend?.() === 'cloud'
+      && window['platform']?.type === 'win32'
+      && installOptions.prefixPath === window['path'].getAppDataPath()) {
+      args.push('--global');
     }
     if (installOptions.noSave) {
       args.push('--no-save');
@@ -2705,16 +2713,17 @@ export class ProjectService {
   isCloudBuild(projectPath = this.currentProjectPath): boolean {
     if (this.configService?.getCompileBackend?.() !== 'cloud') return false;
     if (this.usesLocalBuildOperation(projectPath)) return false;
-    const selected = this.boardCompileBackends?.get(projectPath);
-    if (!selected || selected.cloud || selected.settingsKey !== this.getCompileBackendKey()) return true;
-    try {
-      const boardModule = this.boardModuleFromManifest(JSON.parse(this.getEffectivePackageText(projectPath)), projectPath);
-      const pkg = JSON.parse(this.electronService.readFile(`${projectPath}/node_modules/${boardModule}/package.json`));
-      return boardModule !== selected.boardModule || pkg.version !== selected.boardVersion;
-    } catch { return true; }
+    // Availability must never silently replace the selected compile backend.
+    // Only an explicit task-local switch may prepare local SDK/compiler packages.
+    return true;
   }
 
-  /** 只对接口明确不支持的板包回退本地；保留云偏好，并按工程、板包版本隔离选择。 */
+  private unsupportedCloudBoard(boardModule: string, boardVersion: string): Error {
+    const message = `${this.translate.instant('PROJECT.CLOUD_BOARD_UNSUPPORTED')} (${boardModule}@${boardVersion}) ${this.translate.instant('CLOUD_BUILD.SWITCH_TO_LOCAL')}`;
+    return Object.assign(new Error(message), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+  }
+
+  /** Unsupported cloud boards require an explicit local choice before SDK preparation. */
   async resolveCompileBackend(session?: ProjectDependencySession, refresh = false): Promise<'cloud' | 'local'> {
     if (this.configService.getCompileBackend() !== 'cloud') return 'local';
     if (this.usesLocalBuildOperation(this.currentProjectPath)) return 'local';
@@ -2732,7 +2741,8 @@ export class ProjectService {
     guard();
     const cached = this.boardCompileBackends?.get(projectPath);
     if (!refresh && cached?.settingsKey === settingsKey && cached.boardModule === boardModule && cached.boardVersion === boardVersion) {
-      return cached.cloud ? 'cloud' : 'local';
+      if (!cached.cloud) throw this.unsupportedCloudBoard(boardModule, boardVersion);
+      return 'cloud';
     }
     const bridge = window['cloudBuild'];
     const restartRequired = () => Object.assign(new Error(this.translate.instant('PROJECT.CLOUD_BRIDGE_RESTART_REQUIRED')),
@@ -2757,9 +2767,10 @@ export class ProjectService {
       throw Object.assign(new Error('Board changed during support lookup.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
     }
     // 以接口支持字段为准；HTTP、超时和协议错误由主进程保留，不作为不支持。
-    const fallback = support.supported === false;
-    (this.boardCompileBackends ??= new Map()).set(projectPath, { settingsKey, boardModule, boardVersion, cloud: !fallback });
-    return fallback ? 'local' : 'cloud';
+    const unsupported = support.supported === false;
+    (this.boardCompileBackends ??= new Map()).set(projectPath, { settingsKey, boardModule, boardVersion, cloud: !unsupported });
+    if (unsupported) throw this.unsupportedCloudBoard(boardModule, boardVersion);
+    return 'cloud';
   }
 
   private cloudBoardProfileCache?: { key: string; profile: CloudBoardProfile };
@@ -2811,9 +2822,8 @@ export class ProjectService {
       const gateway = window['cloudBuild'];
       if (!gateway?.targets) throw new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'));
       const settings = getCloudBuildSettings(this.configService?.data);
-      const lookup = async (profileDigest?: string, compatibleWith?: CloudBoardProfile): Promise<CloudBoardProfile | undefined> => {
-        const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest,
-          ...(profileDigest ? { profileDigest } : {}) });
+      const lookup = async (): Promise<CloudBoardProfile | undefined> => {
+        const targets = await gateway.targets({ ...settings, boardModule, boardVersion, boardDigest });
         guard();
         const currentModule = await this.getBoardModule();
         guard();
@@ -2823,15 +2833,11 @@ export class ProjectService {
           board: JSON.parse(this.electronService.readFile(boardJsonPath)) }) !== originalBoardInput) {
           throw Object.assign(new Error('Board changed during cloud target lookup.'), { code: 'PROJECT_DEPENDENCY_CANCELLED' });
         }
-        return selectCloudBoardProfile(targets?.profiles, { boardModule, boardVersion, boardDigest }, profileDigest, compatibleWith);
+        return selectCloudBoardProfile(targets?.profiles, { boardModule, boardVersion, boardDigest });
       };
-      // 优先刷新已缓存目标，减少返回体；目标移除或离线时再查找可用替代目标。
-      let profile = cached ? await lookup(cached.profileDigest) : undefined;
-      if (!profile || !isCloudBoardProfileOnline(profile)) profile = await lookup();
-      else if (options.refresh && getCloudBoardProfileFreeSlots(profile) === 0) {
-        const alternative = await lookup(undefined, profile);
-        if (alternative && isCloudBoardProfileOnline(alternative) && getCloudBoardProfileFreeSlots(alternative) > 0) profile = alternative;
-      }
+      // 每次新编译刷新整板目标，重新按空闲状态和优先级选择，避免旧宿主机缓存固定后续任务。
+      // 新任务会绑定新目标摘要；同任务重试和产物复用仍使用各自的严格编译契约校验。
+      const profile = await lookup();
       if (!profile) {
         throw Object.assign(new Error(this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE')),
           { code: 'CLOUD_TARGET_UNAVAILABLE' });
@@ -3282,6 +3288,9 @@ export class ProjectService {
     const options: any[] = [];
     const boardName = Object.keys(boardConfig)[0].split('.')[0];
     const menuPrefix = `${boardName}.menu.${menuType}.`;
+    const baseProperties = Object.fromEntries(Object.entries(boardConfig)
+      .filter(([key]) => key.startsWith(boardName + '.') && !key.startsWith(boardName + '.menu.'))
+      .map(([key, value]) => [key.slice(boardName.length + 1), value]));
 
     // 首先收集所有选项的基本信息
     const optionDatas = new Set<string>();
@@ -3300,6 +3309,11 @@ export class ProjectService {
 
     // 构建选项列表，只包含key和data，key为menuType，data为optionData
     optionDatas.forEach(optionData => {
+      const optionPrefix = `${menuPrefix}${optionData}.`;
+      const properties = Object.fromEntries(Object.entries(boardConfig).filter(([key]) => key.startsWith(optionPrefix))
+        .map(([key, value]) => [key.slice(optionPrefix.length), value]));
+      const variant = properties['build.variant'] || properties['build.variant_h']
+        ? resolveVariantPaths(baseProperties, properties) : { variant: '', header: '' };
       const option = {
         name: boardConfig[`${menuPrefix}${optionData}`] || optionData,
         key: menuType,
@@ -3308,8 +3322,8 @@ export class ProjectService {
         // // 其他属性 如 build.variant
         extra: {
           build: {
-            variant: boardConfig[`${menuPrefix}${optionData}.build.variant`] || '',
-            variant_h: boardConfig[`${menuPrefix}${optionData}.build.variant_h`] || ''
+            variant: variant.variant,
+            variant_h: variant.header
           }
         }
       }
@@ -3321,7 +3335,7 @@ export class ProjectService {
   }
 
   /** Build the current board's configuration menu from its root menu.json. */
-  async getBoardConfigMenu(options: { persistDefaults?: boolean } = {}): Promise<IMenuItem[]> {
+  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}): Promise<IMenuItem[]> {
     if (!this.isCoderProjectContext && this.isAilyCodeProject()) {
       const path = this.currentProjectPath;
       const context = this.getCoderProjectContext(path);
@@ -3353,7 +3367,7 @@ export class ProjectService {
           });
         }
       } catch (error) {
-        if ((error as any)?.code === 'PROJECT_DEPENDENCY_CANCELLED') throw error;
+        if ((error as any)?.code === 'PROJECT_DEPENDENCY_CANCELLED' || options.requireCloudTarget) throw error;
         return [{ name: 'PROJECT.CLOUD_TARGET_UNAVAILABLE', disabled: true,
           tooltip: this.translate.instant('PROJECT.CLOUD_TARGET_UNAVAILABLE'), icon: 'fa-light fa-triangle-exclamation' },
           ...menu.map(item => ({ ...item, disabled: true }))];
@@ -3418,11 +3432,16 @@ export class ProjectService {
       }
 
       const optionNameIncludes = menuItem.extra?.optionNameIncludes;
+      const currentValue = currentProjectConfig[menuItem.key];
       if (optionNameIncludes) {
+        // Keep the effective signed selection visible even when an older
+        // project lacks a board-specific selection outside this UI filter.
+        const effective = cloudProfile && children.find(child => this.compareConfigs(child.data,
+          currentValue ?? cloudDefaults[menuItem.key]));
         children = children.filter(child => String(child.name || '').includes(optionNameIncludes));
+        if (effective && !children.includes(effective)) children.unshift({ ...effective, disabled: true });
       }
 
-      const currentValue = currentProjectConfig[menuItem.key];
       let hasSelectedChild = false;
       for (const child of children) {
         child.key = child.key || menuItem.key;
@@ -3447,12 +3466,17 @@ export class ProjectService {
 
       // boards.txt treats the first option as the effective default. Keep the
       // menu aligned with that behavior when the project has no matching value.
-      if (!sdkUnavailable && !hasSelectedChild && children.length > 0) {
+      if (!sdkUnavailable && !hasSelectedChild && children.length > 0 && (!cloudProfile || currentValue === undefined)) {
         children[0].check = true;
+        if (cloudProfile && persistDefaults && children[0].extra?.syncPinConfig) {
+          pinConfigDefaults.push(children[0]);
+        }
       }
 
+      // Cloud defaults already belong to the signed build configuration. Merely
+      // opening the port menu must not rewrite the project and stale its result.
       if (
-        persistDefaults && currentValue === undefined &&
+        persistDefaults && !cloudProfile && currentValue === undefined &&
         menuItem.extra?.selectFirstByDefault &&
         children.length > 0 &&
         packageJson
@@ -3476,7 +3500,8 @@ export class ProjectService {
       assertCurrent();
     }
     for (const pinConfig of pinConfigDefaults) {
-      await this.syncBoardPinConfig(pinConfig);
+      if (cloudProfile) await this.syncBoardPinConfig(pinConfig, { notifyChange: false });
+      else await this.syncBoardPinConfig(pinConfig);
       assertCurrent();
     }
 
@@ -3546,7 +3571,7 @@ export class ProjectService {
   }
 
   // 同步 menu.json 选项声明的开发板引脚配置。
-  async syncBoardPinConfig(pinConfig: any): Promise<boolean> {
+  async syncBoardPinConfig(pinConfig: any, options: { notifyChange?: boolean } = {}): Promise<boolean> {
     const cloud = this.isCloudBuild();
     // 本地模式已将变体写入板包，可沿用原有快捷路径；云模式必须核对当前运行态引脚。
     if (!cloud && pinConfig.data == this.currentBoardPinConfig.board) return true;
@@ -3589,7 +3614,9 @@ export class ProjectService {
         this.currentBoardConfig = updatedBoard;
         if (!this.isCoderProjectContext) window['boardConfig'] = updatedBoard;
         this.boardConfigUpdatedSubject.next(updatedBoard);
-        this.boardChangeSubject.next();
+        // Restoring pins for an already selected cloud configuration is a
+        // read-only hydration. User selections keep the normal invalidation.
+        if (options.notifyChange !== false) this.boardChangeSubject.next();
       } else {
         await this.setBoardJson(updatedBoard);
       }

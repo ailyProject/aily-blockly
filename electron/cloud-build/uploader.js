@@ -5,6 +5,8 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const protocol = require('./protocol');
+const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
+const { normalizeUploadExitCode } = require(path.join(childRoot, 'scripts/upload'));
 // 云端仅提供签名固件和受限烧录计划；串口访问与烧录命令始终在用户电脑执行。
 
 function regularFile(root, relative) {
@@ -36,16 +38,34 @@ function resolveTool(runtimeRoot, id, version, platform = process.platform) {
   if (!relative) throw protocol.error('UPLOADER_MISSING', `The installed ${id} package has no native uploader executable.`);
   return { command: regularFile(root, relative), root, ...(id === 'avrdude' ? { configPath: regularFile(root, 'etc/avrdude.conf') } : {}) };
 }
-function buildUploadCommand(record, request, runtimeRoot, artifactRoot = record.directory, platform = process.platform) {
+function verifiedFlashPlan(record) {
   const manifest = record.manifest, plan = manifest.flashPlan;
   // 验证签名后仍逐项限制工具、芯片、参数和固件摘要，不执行云端返回的任意命令。
   protocol.verifyManifest(manifest, record.signature, record.publicKey);
+  if (manifest.action === 'compile' && !plan) throw protocol.error('CLOUD_UPLOAD_REBUILD_REQUIRED', 'This cloud firmware has no local upload plan. Compile the project again after updating the cloud compiler.');
   if (manifest.action !== 'compile' || manifest.fixture || manifest.runner !== 'aily-builder' || !plan || plan.fixture
       || plan.schemaVersion !== 1 || plan.profileDigest !== manifest.profileDigest
       || Object.keys(plan).some(key => !['schemaVersion', 'profileId', 'digest', 'profileDigest', 'protocol', 'uploaderId', 'targetChip', 'segments', 'options', 'lifecycle', 'fixture', 'jobId', 'inputDigest', 'boardDigest', 'boardModule', 'boardVersion'].includes(key))
       || !Array.isArray(plan.segments) || !plan.segments.length || plan.segments.length > 16) {
     throw protocol.error('UPLOAD_UNSUPPORTED', 'Only verified compilation results with an approved flash plan can be uploaded.');
   }
+  return plan;
+}
+function artifactUploadInfo(record) {
+  const plan = verifiedFlashPlan(record);
+  const tools = { avrdude: ['avrdude', 'avrdude'], esptool: ['esptool', 'esptool_py'] };
+  const supported = tools[plan.protocol];
+  if (!supported || plan.uploaderId !== supported[0]) {
+    throw protocol.error('UPLOAD_UNSUPPORTED', 'This cloud target has no supported local serial uploader.');
+  }
+  const toolId = supported[1], toolVersion = record.manifest.toolVersions?.[toolId];
+  if (typeof toolVersion !== 'string' || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u.test(toolVersion)) {
+    throw protocol.error('UPLOAD_UNSUPPORTED', 'Cloud firmware has no exact local uploader version. Compile the project again.');
+  }
+  return { protocol: plan.protocol, uploaderId: plan.uploaderId, toolId, toolVersion };
+}
+function buildUploadCommand(record, request, runtimeRoot, artifactRoot = record.directory, platform = process.platform) {
+  const manifest = record.manifest, plan = verifiedFlashPlan(record);
   const port = validatePort(request.serialPort, platform);
   const options = plan.options || {}, lifecycle = plan.lifecycle || {};
   if (Object.keys(lifecycle).some(key => !['reset', 'verify'].includes(key)) || ![undefined, 'none', 'serial-dtr'].includes(lifecycle.reset)
@@ -123,24 +143,31 @@ async function uploadCloudArtifact(record, request, { runtimeRoot, signal, onPro
     await assertCurrent?.();
     if (signal.aborted) throw protocol.error('CANCELLED', 'Upload cancelled.');
     send({ progress: 0 });
-    if (runProcess) await runProcess(command.command, command.args, signal, send);
+    let outputTail = '';
+    const reportOutput = event => { if (event.log) outputTail = (outputTail + event.log + '\n').slice(-64 * 1024); send(event); };
+    if (runProcess) {
+      const result = await runProcess(command.command, command.args, signal, reportOutput);
+      const code = result && Object.hasOwn(result, 'code') ? result.code : 0;
+      if (normalizeUploadExitCode(code, result?.signal, outputTail) !== 0) throw protocol.error('UPLOAD_FAILED', 'Uploader reported a fatal error or did not exit successfully.');
+    }
     else {
       const child = spawn(command.command, command.args, { shell: false, windowsHide: true, detached: process.platform !== 'win32', cwd: staging, stdio: ['ignore', 'pipe', 'pipe'] });
       let stopping; const abort = () => { stopping ||= stopProcess(child); stopping.catch(() => {}); };
       signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
       for (const stream of [child.stdout, child.stderr]) {
         const lines = readline.createInterface({ input: stream });
+        stream.on('data', data => { outputTail = (outputTail + data.toString()).slice(-64 * 1024); });
         lines.on('line', log => { const match = log.match(/(\d+(?:\.\d+)?)\s*%/u); send({ log: log.slice(0, 8192), ...(match ? { progress: Math.min(99, Number(match[1])) } : {}) }); });
       }
       try {
-        const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+        const { code, exitSignal } = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, exitSignal) => resolve({ code, exitSignal })); });
         if (stopping) await stopping;
         if (signal.aborted) throw protocol.error('CANCELLED', 'Upload cancelled.');
-        if (code !== 0) throw protocol.error('UPLOAD_FAILED', `Uploader exited with code ${code}.`);
+        if (normalizeUploadExitCode(code, exitSignal, outputTail) !== 0) throw protocol.error('UPLOAD_FAILED', `Uploader failed (exit code ${code}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
       } finally { signal.removeEventListener('abort', abort); }
     }
     if (signal.aborted) throw protocol.error('CANCELLED', 'Upload cancelled.');
     send({ progress: 100 }); return { success: true, state: 'done', text: 'Upload complete.' };
   } finally { fs.rmSync(staging, { recursive: true, force: true }); }
 }
-module.exports = { uploadCloudArtifact };
+module.exports = { uploadCloudArtifact, artifactUploadInfo };

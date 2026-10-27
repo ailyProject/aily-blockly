@@ -537,27 +537,44 @@ function createManagedToolLifecycle(config, hooks = {}) {
       if (!context.childPath && config.requireChildPath !== false) {
         throw new Error(config.missingChildPathError || 'AILY_CHILD_PATH is not configured');
       }
-      const installPackage = hooks.installPackage || installManagedPackage;
-      await installPackage({
-        packageSpec: typeof config.packageSpec === 'function'
-          ? config.packageSpec(options)
-          : `${config.packageName}@${options.targetVersion || 'latest'}`,
-        childPath: context.childPath,
-        prefix: context.prefix,
-        force: options.force === true,
-        onLog: hooks.onNpmLog,
-        logMessages: config.npmLogMessages,
-      }, context);
-      await hooks.afterInstall?.(context);
-      readyResult = probe(context);
-      installResult = readyResult.ok
-        ? { ...readyResult, installed: true, error: '' }
-        : {
-          ...readyResult,
-          installed: false,
-          error: readyResult.error || config.installIncompleteError
-            || `${config.packageName} installation is incomplete`,
-        };
+      let targetVersion = options.targetVersion || 'latest';
+      if (config.preserveNewerThanLatest === true && targetVersion === 'latest') {
+        const currentState = probe(context);
+        const currentVersion = semver.clean(String(currentState.version || '').trim());
+        if (currentState.ok && currentVersion) {
+          targetVersion = await (hooks.getLatestVersion || getLatestManagedPackageVersion)({
+            packageName: config.packageName, childPath: context.childPath, prefix: context.prefix,
+            onLog: hooks.onNpmLog, logMessages: config.npmLogMessages,
+          }, context);
+          if (semver.gt(currentVersion, targetVersion)) {
+            readyResult = currentState;
+            installResult = { ...currentState, installed: false, skipped: true, preservedNewer: true };
+          }
+        }
+      }
+      if (!installResult) {
+        const installPackage = hooks.installPackage || installManagedPackage;
+        await installPackage({
+          packageSpec: typeof config.packageSpec === 'function'
+            ? config.packageSpec(options)
+            : `${config.packageName}@${targetVersion}`,
+          childPath: context.childPath,
+          prefix: context.prefix,
+          force: options.force === true,
+          onLog: hooks.onNpmLog,
+          logMessages: config.npmLogMessages,
+        }, context);
+        await hooks.afterInstall?.(context);
+        readyResult = probe(context);
+        installResult = readyResult.ok
+          ? { ...readyResult, installed: true, error: '' }
+          : {
+            ...readyResult,
+            installed: false,
+            error: readyResult.error || config.installIncompleteError
+              || `${config.packageName} installation is incomplete`,
+          };
+      }
     } catch (error) {
       installResult = failureState(error);
       readyResult = probe(context);
@@ -571,7 +588,7 @@ function createManagedToolLifecycle(config, hooks = {}) {
         error: installResult.error || readyResult.error,
       };
     rememberReadyResult(effectiveReadyResult);
-    if (installResult.ok && installResult.installed && readyResult.ok
+    if (installResult.ok && (installResult.installed || installResult.preservedNewer === true) && readyResult.ok
       && context.readinessPolicy?.configPath && context.readinessPolicy.appVersion
       && isCurrentReadinessContext(context)) {
       try {

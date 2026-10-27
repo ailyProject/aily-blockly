@@ -404,7 +404,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG'),
     });
-    const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    let boardJson = await this.projectService.resolveBoardConfigForRuntime();
     assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
@@ -412,6 +412,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     window['boardConfig'] = boardJson;
     await this.projectService.loadBoardMenuConfig();
     assertCurrent();
+    if (this.projectService.isCloudBuild()) {
+      // Restore the saved/effective pin selection before generators or source
+      // captures observe this board. Opening Upload later must not change it.
+      await this.projectService.getBoardConfigMenu();
+      assertCurrent();
+      boardJson = this.projectService.currentBoardConfig || boardJson;
+      this.blocklyService.boardConfig = boardJson;
+      window['boardConfig'] = boardJson;
+    }
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
