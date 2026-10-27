@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Painel de atividade de subaplicativos",
+    "TITLE": "Subaplicativos",
+    "OPEN_FULL": "Abrir o subaplicativo completo",
+    "COLLAPSE": "Recolher",
+    "CALL_COUNT": "Chamadas: {{count}}",
+    "RUNTIME_READY": "Ambiente de execução pronto",
+    "RUNTIME_STARTING": "Iniciando o ambiente de execução",
+    "RUNTIME_ERROR": "Erro no ambiente de execução",
+    "RUNTIME_STOPPED": "Ambiente de execução parado",
+    "RUNTIME_UNKNOWN": "Estado de execução desconhecido",
+    "INVOCATION_RUNNING": "Agente em execução",
+    "INVOCATION_SUCCEEDED": "Última chamada concluída",
+    "INVOCATION_FAILED": "Última chamada falhou",
+    "INVOCATION_CANCELLED": "Última chamada cancelada",
+    "INVOCATION_IDLE": "Nenhuma chamada ativa",
+    "WAITING_RUNTIME": "Aguardando o ambiente de execução",
+    "LOADING_SURFACE": "Carregando a visualização compacta",
+    "RUNTIME_NOT_RETAINED": "O painel não inicia nem mantém ativo o ambiente de execução do subaplicativo.",
+    "SURFACE_ERROR": "Visualização compacta indisponível",
+    "SURFACE_TITLE": "Visualização {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Falha ao publicar o projeto",
         "WORKSPACE_PROJECT_NOT_FOUND": "Projeto não encontrado",
@@ -1049,6 +1071,7 @@
         "NO_TUTORIAL_PROVIDED": "O autor da biblioteca não forneceu um tutorial"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "Uma tarefa de IA está em execução. Aguarde sua conclusão antes de salvar o projeto com outro nome.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",

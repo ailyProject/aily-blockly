@@ -1,3 +1,4 @@
+import { splitAbsState } from './abs-full-state';
 import { parseBlockDefinition } from './block-definition.model';
 import { readAbsFieldToken, resolveAbsFieldValue } from './abs-field-values';
 import { assertAbsBaselineContext, createAbsProjection, hashAbsText, indexAbsSyntax, validateAbsProjection } from './abs-identity-map';
@@ -117,7 +118,7 @@ describe('ABS identity projection and baseline merge', () => {
     abi['customSerializer'] = { state: ['unreferenced'] };
     const projection = await project(abi);
     expect(projection.abs).not.toContain('@meta');
-    expect(projection.abs).not.toContain('root-id');
+    expect(splitAbsState(projection.abs).program).not.toContain('root-id');
     expect(projection.abs).toContain('@disabled');
     expect(projection.map.nodes.length).toBe(3);
     expect((await reconcileAbs(projection, projection.abs)).workspace).toEqual(abi);
@@ -192,6 +193,17 @@ describe('ABS identity projection and baseline merge', () => {
     const baseline = await project(workspace({ ...block('a'), disabledReasons: ['user'] }));
     await expectAsync(reconcileAbs(baseline, source('delay()'))).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_REQUIRES_HOST' }));
   });
+  it('allows an initially disabled new block and retains that state in later edits', async () => {
+    const baseline = await project(workspace(block('a')));
+    const created = await reconcileAbs(baseline, source('delay()\nfresh() @disabled'), { newId: () => 'new' });
+    expect(created.workspace.blocks.blocks[1]['disabledReasons']).toEqual(['MANUALLY_DISABLED']);
+    const next = await project(created.workspace);
+    expect((await reconcileAbs(next, next.abs + '\n# presentation only')).workspace).toEqual(created.workspace);
+    await expectAsync(reconcileAbs(next, source('delay()\nfresh()')))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_REQUIRES_HOST' }));
+    await expectAsync(reconcileAbs(baseline, source('delay() @disabled')))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_REQUIRES_HOST' }));
+  });
   it('validates the map against original content rather than trusting its block IDs', async () => {
     const baseline = await project(workspace(block('a'), { type: 'second', id: 'b' }));
     baseline.map.nodes[0].blockId = 'b';
@@ -199,7 +211,7 @@ describe('ABS identity projection and baseline merge', () => {
   });
   it('includes immutable full-project context in its hash without losing other pages', async () => {
     const abi = workspace(block('a'));
-    const document = { pages: [{ id: 'other', content: workspace(block('other')) }] };
+    const document = { pages: [{ id: 'other', content: workspace(block('other')) }, { id: 'main', content: abi }] };
     const baseline = await createAbsProjection(abi, { document, generation: 'g', baselineRef: 'r', savedAbiHash: null, scope: { projectKey: 'p', pageId: 'main' } });
     document.pages[0].id = 'changed';
     await expectAsync(validateAbsProjection(baseline)).toBeResolved();
@@ -239,6 +251,17 @@ describe('ABS identity projection and baseline merge', () => {
     expect(() => assertAbsBaselineContext(baseline.map, { ...context, generation: 'old' })).toThrowError(AbsSyncError);
     expect(() => assertAbsBaselineContext(baseline.map, { ...context, savedAbiHash: 'external-save' })).toThrowError(AbsSyncError);
     expect(() => assertAbsBaselineContext(baseline.map, { ...context, scope: { projectKey: 'other', pageId: 'main' } })).toThrowError(AbsSyncError);
+    try {
+      assertAbsBaselineContext(baseline.map, { ...context, currentAbiHash: 'user-edit' });
+      fail('Concurrent edits must reject the old baseline');
+    } catch (error) {
+      const stale = error as AbsSyncError;
+      expect(stale.code).toBe('ABS_BASELINE_STALE');
+      expect(stale.diagnostic?.reason).toBe('workspace');
+      expect(stale.diagnostic?.hint).toContain('token-bound preserving recovery');
+      expect(stale.diagnostic?.hint).not.toContain('wait for new user input');
+      expect(stale.diagnostic?.hint).toContain('outFile');
+    }
   });
 });
 

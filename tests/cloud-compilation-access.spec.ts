@@ -120,7 +120,7 @@ describe('cloud compilation account access', () => {
     const compile = Object.assign(Object.create(CompileService.prototype), {
       metrics: { record: () => {} },
       configService: config,
-      projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', getProjectDependencyBlockMessage: () => undefined },
+      projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', getProjectDependencyBlockMessage: () => undefined },
       application: { startBuild: () => true, updateNotice: () => {} },
       runCompile, t: (key: string) => key,
     });
@@ -137,7 +137,7 @@ describe('cloud compilation account access', () => {
     const blockly = Object.assign(Object.create(_BuilderService.prototype), {
       metrics: { record: () => {} },
       configService: config,
-      projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {} },
+      projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {} },
       workflowService: { startBuild: () => true, finishBuild: () => {} },
       clearProgressTimer: () => {}, handleCompileError: () => {},
     });

@@ -6,6 +6,7 @@ const { createHash } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { test, after } = require('node:test');
 const { replaceProjectText } = require('../../electron/project-file-writer');
+const { createProjectFileAccess } = require('../../electron/project-file-access');
 const roots = [];
 const project = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-project-file-writer-')); roots.push(root); return root; };
 after(() => { for (const root of roots) {
@@ -22,6 +23,29 @@ const assertClean = root => {
   assert.equal(fs.readdirSync(root).filter(name => name.endsWith('.tmp')).length, 0);
   assert.equal(fs.existsSync(path.join(root, '.aily', 'project-files.write.lock')), false);
 };
+
+for (const native of [false, true]) test(`physical guards use an uncached ${native ? 'native' : 'fallback'} resolver`, () => {
+  const root = project(), physical = fs.realpathSync(root);
+  let calls = 0, redirected = false;
+  const resolve = value => { calls++; return redirected ? physical + '-replaced' : fs.realpathSync(value); };
+  const realpathSync = native
+    ? Object.assign(() => { throw new Error('recursive JS resolver must not run'); }, { native: resolve })
+    : resolve;
+  const access = createProjectFileAccess(physical, root, { ...fs, realpathSync });
+  access.checkRoot(); assert.equal(calls, 2);
+  redirected = true;
+  assert.throws(() => access.checkRoot(), { code: 'PROJECT_FILE_UNSAFE_PATH' });
+});
+
+test('native physical guards still reject a retargeted ancestor junction', () => {
+  const root = project(), first = project(), second = project();
+  const alias = path.join(root, 'alias');
+  fs.symlinkSync(first, alias, 'junction');
+  const access = createProjectFileAccess(fs.realpathSync(alias), alias);
+  access.checkRoot();
+  fs.unlinkSync(alias); fs.symlinkSync(second, alias, 'junction');
+  assert.throws(() => access.checkRoot(), { code: 'PROJECT_FILE_UNSAFE_PATH' });
+});
 test('publishes exact UTF-8 bytes, BOM and CRLF and cleans temporary files', async () => {
   const root = project(); initialize(root); const content = '\ufeff中文 😀\r\n{"saved":true}';
   assert.deepEqual(await replaceProjectText(request(root, content), guard), { status: 'COMMITTED', hash: hash(content) });

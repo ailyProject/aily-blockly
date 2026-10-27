@@ -127,7 +127,11 @@ export class NativeCandidateWorkspace {
     if (!field || field.SERIALIZABLE === false) throw new Error(`Native field is unavailable: ${name}.`);
     const requestedValue = structuredClone(value);
     this.owned(block.id, () => field.loadState(structuredClone(requestedValue))); this.assertClean();
-    if (!sameJsonValue(field.saveState(), requestedValue)) throw new Error(`Native field did not retain requested value: ${name}.`);
+    if (!sameJsonValue(field.saveState(), requestedValue)) {
+      const media = block.type === 'tftespi_image' || block.type === 'tftespi_animation';
+      throw new Error(`Native field did not retain requested value: ${name}.` + (media
+        ? ' Import the original media with project_media_import and use its returned value unchanged; legacy Base64 fields are not canonical resource references.' : ''));
+    }
     request.fields.push({ name, value: requestedValue });
   }
 

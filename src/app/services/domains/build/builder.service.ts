@@ -9,6 +9,7 @@ import {
 import { CompileService } from './compile.service';
 import { persistBuildResult, type BuildCheckpoint, type BuildResultSnapshot } from './build-result-snapshot';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
+import { BLOCKLY_BUILD_PORT, type BlocklyBuildPort, type BlocklyBuildOutcome } from './ports/blockly-build.port';
 
 export interface BuildFinishedEvent {
   projectPath?: string;
@@ -40,6 +41,7 @@ export class BuilderService {
     private electronService: ElectronService,
     private compileService: CompileService,
     @Optional() @Inject(CODER_EXECUTION_PORT) private coderExecution?: CoderExecutionPort,
+    @Optional() @Inject(BLOCKLY_BUILD_PORT) private blocklyBuild?: BlocklyBuildPort,
   ) {
     this.init();
   }
@@ -102,7 +104,7 @@ export class BuilderService {
         this.projectService.currentProjectPath,
       )
       || this.projectService.isAilyCodeProject(projectPath)
-      || !this.actionService.hasListener('builder-compile-begin')
+      || !this.blocklyBuild?.isAvailable()
     ) {
       throw new Error('The requested Blockly Project is not active.');
     }
@@ -122,33 +124,26 @@ export class BuilderService {
   ) {
     const projectPath = this.projectService.currentProjectPath;
     let checkpoint: BuildCheckpoint | undefined;
+    let editorExecution = false;
     try {
       await this.persistActiveCoderProjectBeforeBuild(
         projectPath,
       );
-      // Pro / code-editor-pro 路由下 Blockly 未挂载，compile-begin 无监听者会一直等反馈；
-      // Coder 工程改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
-      let feedback: any;
-      if (!this.actionService.hasListener('builder-compile-begin')) {
+      let completion: BlocklyBuildOutcome;
+      if (this.blocklyBuild?.isAvailable()) {
+        editorExecution = true;
+        completion = await this.blocklyBuild.build({ projectPath, ...payload });
+      } else if (!this.actionService.hasListener('builder-compile-begin')) {
+        // A disk/Coder route has no mounted Blockly build executor.
         const r = await this.compileService.runCompileFromDisk({ projectPath });
-        feedback = {
-          success: true,
-          data: { success: r.success, result: r.result },
-        };
+        completion = { success: r.success, result: r.result, checkpoint: {} };
       } else {
-        feedback = await this.actionService.dispatchWithFeedback(
-          'compile-begin',
-          payload,
-          600000,
-        ).toPromise();
+        throw Object.assign(new Error('The active Blockly build executor is unavailable.'), { buildOutcome: 'not-started' });
       }
 
-      // listener handler 内部 catch 了编译错误，所以 feedback.success 总是 true
-      // 需要检查 data.success 来判断编译是否真正成功
-      checkpoint = feedback?.data?.checkpoint;
-      const buildResult = feedback?.data?.result;
-      const buildSuccess = feedback?.success !== false
-        && feedback?.data?.success !== false
+      checkpoint = completion.checkpoint;
+      const buildResult = completion.result;
+      const buildSuccess = completion.success === true
         && !!buildResult
         && buildResult?.state !== 'error';
 
@@ -158,9 +153,9 @@ export class BuilderService {
 
       if (!buildSuccess) {
         // 编译失败，构造包含状态和错误详情的错误对象抛出
-        const error: any = new Error(buildResult?.text || feedback?.error || '编译失败');
+        const error: any = new Error(buildResult?.text || buildResult?.message || '编译失败');
         error.state = buildResult?.state || 'error';
-        error.text = buildResult?.text || feedback?.error || '编译失败';
+        error.text = error.message;
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildResult = buildResult;
         throw error;
@@ -170,6 +165,9 @@ export class BuilderService {
       this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
       return buildResult;
     } catch (error: any) {
+      if (!error || typeof error !== 'object') error = new Error(String(error));
+      // Editor admission (busy/stale/unmounted) does not attest a compiler exit.
+      if (editorExecution && !checkpoint?.startedAt) error.buildOutcome = 'not-started';
       // console.error('编译失败:', error);
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('编译', error?.text || error?.message || '编译失败');

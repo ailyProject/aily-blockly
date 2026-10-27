@@ -1,5 +1,7 @@
 import { evaluateNativeCandidate } from '../../../editors/blockly-editor/services/blockly-native-candidate';
 import type { NativeCandidateRequest } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
+import { applyAbsStateEdits } from './abs-state-edits';
+import { parseAbsSyntax } from './abs-syntax';
 
 describe('Native ABI comment preparation', () => {
   function request(pinned: boolean): NativeCandidateRequest {
@@ -18,10 +20,38 @@ describe('Native ABI comment preparation', () => {
   const run = (candidate: NativeCandidateRequest) => evaluateNativeCandidate(candidate, { assertCurrent: () => {} });
   afterEach(() => expect(document.querySelector('[data-blockly-native-candidate]')).toBeNull());
 
+  for (const existing of [false, true]) for (const text of ['New note 中文', '']) {
+    it(`round-trips ${text ? 'text' : 'empty text'} edits on ${existing ? 'existing' : 'new'} comments through real Blockly`, async () => {
+      const candidate = request(false), block = candidate.verify!.state.blocks.blocks[0];
+      if (!existing) delete block['icons'];
+      else Object.assign((block['icons'] as any).comment, { width: 230, height: 110, x: 410, y: 230 });
+      applyAbsStateEdits(block, parseAbsSyntax('# ABS Schema: 2\ncomment_test() @comment:' + JSON.stringify(text))[0], () => undefined);
+      const result = await run(candidate);
+      expect(result.state).toEqual(candidate.verify!.state);
+      if (text) expect((result.state['blocks'].blocks[0]['icons'] as any).comment).toEqual(existing
+        ? { text, pinned: false, width: 230, height: 110, x: 410, y: 230 }
+        : { text, pinned: false, width: 160, height: 80 });
+      else expect(result.state['blocks'].blocks[0]['icons']).toBeUndefined();
+    });
+  }
+
   for (const pinned of [false, true]) it(`preserves complete ${pinned ? 'open' : 'closed'} comments through final verification`, async () => {
     const candidate = request(pinned);
     const result = await run(candidate);
     expect(result.state).toEqual(candidate.verify!.state);
+  });
+
+  it('accepts native bubble placement for an open comment without requested coordinates', async () => {
+    const candidate = request(true);
+    const comment = (candidate.verify!.state.blocks.blocks[0]['icons'] as any).comment;
+    delete comment.x; delete comment.y;
+    const result = await run(candidate);
+    const saved = result.state['blocks'].blocks[0].icons.comment;
+    expect(saved.x).toEqual(jasmine.any(Number));
+    expect(saved.y).toEqual(jasmine.any(Number));
+    expect(saved.text).toBe(comment.text);
+    expect(comment.x).toBeUndefined();
+    expect(comment.y).toBeUndefined();
   });
 
   it('does not admit a replaced comment visibility callback', async () => {

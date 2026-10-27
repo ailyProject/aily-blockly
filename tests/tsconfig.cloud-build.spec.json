@@ -1,6 +1,9 @@
 {
   "extends": "./tsconfig.spec.json",
   "include": [
+    "../tests/cloud-build-local-retry.spec.ts",
+    "../src/app/components/notification/notification.component.spec.ts",
+    "../tests/cloud-builder2-contract.spec.ts",
     "../tests/cloud-compilation-access.spec.ts",
     "../tests/cloud-board-support.spec.ts",
     "../tests/cloud-build-diagnostics.spec.ts",

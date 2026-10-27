@@ -43,6 +43,21 @@ for (const [platform, arch] of [['darwin', 'arm64'], ['darwin', 'x64'], ['darwin
         path.join(scripts, 'build-workspace-lease.js'), project],
       { cwd: root, env: { ...process.env, NODE_PATH: '' }, encoding: 'utf8', timeout: 10000 });
       assert.equal(result.status, 0, result.stderr);
+      const electronRoot = path.join(root, 'resources/app/electron');
+      await fs.mkdir(electronRoot, { recursive: true });
+      for (const name of ['subapp-install-lock.js', 'subapp-process-identity.js']) {
+        await fs.copyFile(path.join(__dirname, '../electron', name), path.join(electronRoot, name));
+      }
+      const subapp = spawnSync(process.execPath, ['-e', `
+        const assert=require('node:assert/strict');
+        const {acquireInstallLock}=require(process.argv[1]);
+        const release=acquireInstallLock(process.argv[2]);
+        assert.equal(typeof release,'function');
+        assert.equal(acquireInstallLock(process.argv[2]),null);
+        release();acquireInstallLock(process.argv[2])();`,
+        path.join(electronRoot, 'subapp-install-lock.js'), path.join(root, 'subapp-lock')],
+      { cwd: root, env: { ...process.env, NODE_PATH: '', AILY_CHILD_PATH: destination }, encoding: 'utf8', timeout: 10000 });
+      assert.equal(subapp.status, 0, subapp.stderr);
     }
   });
 }

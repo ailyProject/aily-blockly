@@ -6,10 +6,11 @@ import {
 
 /** Immutable strings: callers and library callbacks cannot mutate the retained save candidate. */
 export interface PreparedBlocklySave { readonly abiText: string; readonly documentText: string }
+export type ProjectSaveDataRuntime = Pick<typeof projectDataRuntime, 'put' | 'flushPending' | 'getStore'>;
 
 export async function prepareBlocklySave(
   document: BlocklyProjectDocument, saveShape: (snapshot: BlocklyProjectDocument) => unknown,
-  assertCurrent: () => void, runtime: typeof projectDataRuntime = projectDataRuntime,
+  assertCurrent: () => void, runtime: ProjectSaveDataRuntime = projectDataRuntime,
 ): Promise<PreparedBlocklySave> {
   assertCurrent();
   const documentText = JSON.stringify(document);

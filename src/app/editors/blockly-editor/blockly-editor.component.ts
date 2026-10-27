@@ -1,3 +1,5 @@
+import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
@@ -402,7 +404,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG'),
     });
-    const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    let boardJson = await this.projectService.resolveBoardConfigForRuntime();
     assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
@@ -410,6 +412,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     window['boardConfig'] = boardJson;
     await this.projectService.loadBoardMenuConfig();
     assertCurrent();
+    if (this.projectService.isCloudBuild()) {
+      // Restore the saved/effective pin selection before generators or source
+      // captures observe this board. Opening Upload later must not change it.
+      await this.projectService.getBoardConfigMenu();
+      assertCurrent();
+      boardJson = this.projectService.currentBoardConfig || boardJson;
+      this.blocklyService.boardConfig = boardJson;
+      window['boardConfig'] = boardJson;
+    }
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
@@ -453,7 +464,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
-      diskText,
+      diskText, completeAbs,
     } = await this.loadProjectAbiDocument(projectPath, assertCurrent, session.signal);
     assertCurrent();
 
@@ -493,7 +504,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     } finally {
       loadLease.release();
     }
-    if (!usedBoardTemplateAbi) {
+    // Complete ABS history can still reference resources absent from the current canvas.
+    // Keep content-addressed data until GC can mark every retained history root.
+    if (!usedBoardTemplateAbi && !completeAbs) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -581,11 +594,14 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
+    completeAbs: boolean;
     diskText: string;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
-    let abiContent = await this.electronService.readFileAsync(abiPath);
+    const absPort = await openAbsHostStorage(projectPath, assertCurrent);
+    const derivedAbi = await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
+    let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
@@ -621,7 +637,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     return {
       document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
       usedBoardTemplate,
-      diskText,
+      diskText, completeAbs: derivedAbi !== null,
     };
   }
 
@@ -1485,6 +1501,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private async restoreMissingProjectLibraries(projectPath: string, missingLibraries: MissingLibInfo[], session: ProjectDependencySession): Promise<boolean> {
+    this.projectService.assertProjectDependencySession(session);
+    // A verified recovery target must settle loading before managed Agent
+    // tools can repair its dependencies. Awaiting a human-only dialog here
+    // would leave its independent host permanently in STARTING.
+    if (this.projectService.hasSavedRecoveryTarget(projectPath)) {
+      throw Object.assign(new ProjectToolboxOnlyLoadError(
+        `修复副本缺少可用积木库：${missingLibraries.map(lib => lib.name).join(', ')}。请通过库工具恢复依赖后重新加载此副本。`,
+      ), { code: 'PROJECT_RECOVERY_LIBRARIES_REQUIRED' });
+    }
     try {
       this.projectService.assertProjectDependencySession(session);
       await new Promise<void>((resolve, reject) => {

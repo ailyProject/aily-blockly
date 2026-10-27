@@ -5,6 +5,7 @@ import * as Blockly from 'blockly';
 import { loadBlocklyWorkspace, isBlocklyWorkspaceInteracting } from '../utils/blockly-performance';
 import { BlocklyFunctionView, emptyBlocklyFunctionView, isBlocklyFunctionViewBlockVisible } from '../utils/blockly-function-view';
 import { installBlocklyVariableComparator } from '../utils/blockly-variable-order';
+import { shouldRetainBlocklySelection, type BlocklySelectionChange } from '../utils/blockly-selection-focus';
 import { processI18n, processJsonVar, processStaticFilePath, processToolboxI18n, resolveSerialPortValueAfterCdcDisabled } from '../components/blockly/abf';
 import { TranslateService } from '@ngx-translate/core';
 import { ElectronService, LogService } from '@core/platform/public-api';
@@ -49,7 +50,7 @@ import { BlocklyProjectRevision } from './blockly-project-revision';
 import { BlocklyProjectDirtyState } from './blockly-project-dirty-state';
 import { assertProjectLoadPreserved } from './blockly-project-clean-state';
 import { BlocklyCodePreparationInvalidatedError, BlocklyProjectCodePreparation, type PreparedBlocklyCode } from './prepared-project-code';
-import { BlocklyWorkspaceEditGate, BlocklyWorkspaceEditLease, fenceBlocklyWorkspaceInput } from './blockly-workspace-edit-lease';
+import { BlocklyEditError, BlocklyWorkspaceEditGate, BlocklyWorkspaceEditLease, fenceBlocklyWorkspaceInput } from './blockly-workspace-edit-lease';
 import { assertAbsProjectSharedChange } from '../../../integrations/blockly/abs/abs-project-references';
 import { AbsReferenceContractCache } from '../../../integrations/blockly/abs/abs-reference-contract-cache';
 import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
@@ -1211,11 +1212,15 @@ export class BlocklyService {
 
   getProjectDocument(owner?: BlocklyWorkspaceEditLease): BlocklyProjectDocument {
     this.assertWorkspaceEditAvailable(owner);
+    return this.readProjectDocumentSnapshot(this.workspace ? this.getWorkspaceJson() : undefined);
+  }
+
+  private readProjectDocumentSnapshot(workspace: any): BlocklyProjectDocument {
     // Ownership normalization already detaches its input. Do not first clone
     // the previous large active page only to clone it again and replace it.
     const document = this.workspace ? this.readStoredProjectDocument() : this.getStoredProjectDocument();
     return this.workspace ? replaceBlocklyPageWorkspace(
-      document, document.activePageId, this.getWorkspaceJson(),
+      document, document.activePageId, workspace,
       captureBlocklyRootClassifier(this.workspace, Blockly.Blocks), this.captureWorkspaceViewState(),
     ) : document;
   }
@@ -1225,11 +1230,39 @@ export class BlocklyService {
     return this.projectOperations.run(() => { this.assertWorkspaceEditAvailable(); return operation(); });
   }
 
+  /** Recovery owns reads and new-destination publication only. Never lends an
+   * editor lease, resets quarantine or overlaps an active native writer. */
+  runRecoveryCopyOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.projectOperations.run(() => {
+      if (this.workspaceEditGate.busy) throw new BlocklyEditError('BLOCKLY_EDIT_BUSY', 'A workspace writer is still active.');
+      return operation();
+    });
+  }
+
   captureProjectSnapshot(owner?: BlocklyWorkspaceEditLease) {
     const document = this.getProjectDocument(owner);
     const revision = this.projectRevision.observe(document);
     this.projectDirtyState?.observeSnapshot(this.projectRevision.documentText);
     return { document, revision, documentText: this.projectRevision.documentText };
+  }
+
+  /** Recovery may inspect a quarantined canvas, never mutate it or clear its
+   * input fence. An active writer still excludes this complete read. */
+  captureRecoverySnapshot() {
+    if (this.workspaceEditGate.busy) throw new BlocklyEditError('BLOCKLY_EDIT_BUSY', 'Recovery inspection cannot read an active workspace writer.');
+    const workspace = this.workspace, pageId = this.getActivePageId();
+    const release = fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
+    try {
+      // Deliberately omit getWorkspaceJson's custom prepareSerialization hook:
+      // this entry observes native persisted state, not model/code preparation.
+      const state = workspace ? Blockly.serialization.workspaces.save(workspace) : undefined;
+      const document = this.readProjectDocumentSnapshot(state);
+      if (this.workspaceEditGate.busy || workspace !== this.workspace || pageId !== this.getActivePageId()) {
+        throw new BlocklyEditError('BLOCKLY_EDIT_STALE', 'Recovery workspace changed during inspection.');
+      }
+      const revision = this.projectRevision.observe(document);
+      return { document, revision, documentText: this.projectRevision.documentText };
+    } finally { release(); }
   }
 
   /** Call inside the existing operation queue with explicit edit ownership. */
@@ -3306,12 +3339,28 @@ export class BlocklyService {
     return Math.min(...result.matchedBy.map((source) => order.indexOf(source)));
   }
 
-  /**
-   * 从工作区同步当前选中的 block 列表（含多选模式）
-   */
+  /** Focus moving to another pane is not an explicit editor deselection. */
+  updateSelectedBlockFromEvent(event: BlocklySelectionChange): void {
+    if (!event.ailySelectionClear && !event.newElementId && shouldRetainBlocklySelection()) return;
+    this.selectedBlockSubject.next(event.newElementId || null);
+  }
+
+  private publishSelectedBlockIds(blockIds: string[]): void {
+    const selected = new Set(blockIds);
+    // Blockly removes single-block styling on blur. Keep its editor highlight
+    // until the selection changes, without changing focus or emitting events.
+    for (const id of new Set([...(this.selectedBlockIdsSubject.value ?? []), ...blockIds])) {
+      const block = this.workspace?.getBlockById(id);
+      if (block instanceof Blockly.BlockSvg) block.pathObject.updateSelected(selected.has(id));
+    }
+    this.selectedBlockIdsSubject.next(blockIds);
+  }
+
+  /** 从工作区同步当前选中的 block 列表（含多选模式）。 */
   syncSelectedBlocksFromWorkspace(): void {
     if (!this.workspace) {
-      this.selectedBlockIdsSubject.next([]);
+      this.publishSelectedBlockIds([]);
+      this.selectedBlockSubject.next(null);
       return;
     }
 
@@ -3321,7 +3370,7 @@ export class BlocklyService {
         const block = this.workspace!.getBlockById(id);
         return block && !block.isInFlyout && !block.isInsertionMarker();
       });
-      this.selectedBlockIdsSubject.next(blockIds);
+      this.publishSelectedBlockIds(blockIds);
       this.selectedBlockSubject.next(blockIds[0] ?? null);
       return;
     }
@@ -3330,7 +3379,7 @@ export class BlocklyService {
     if (candidateId) {
       const block = this.workspace.getBlockById(candidateId);
       if (block && !block.isInFlyout && !block.isInsertionMarker()) {
-        this.selectedBlockIdsSubject.next([candidateId]);
+        this.publishSelectedBlockIds([candidateId]);
         return;
       }
     }
@@ -3339,15 +3388,16 @@ export class BlocklyService {
     if (
       selected &&
       selected instanceof Blockly.BlockSvg &&
+      selected.workspace === this.workspace &&
       !selected.isInFlyout &&
       !selected.isInsertionMarker()
     ) {
-      this.selectedBlockIdsSubject.next([selected.id]);
+      this.publishSelectedBlockIds([selected.id]);
       this.selectedBlockSubject.next(selected.id);
       return;
     }
 
-    this.selectedBlockIdsSubject.next([]);
+    this.publishSelectedBlockIds([]);
     this.selectedBlockSubject.next(null);
   }
 

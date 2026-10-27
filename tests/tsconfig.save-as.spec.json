@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/services/domains/project/project-save-as.spec.ts",
+    "../src/app/main-window/components/header/header-save-as.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-workspace-sync.service.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-leave.spec.ts",
+    "../src/app/editors/code-editor-pro/code-editor-pro-copy.spec.ts",
+    "../src/app/tools/child-tool-host/child-tool-ai-run-state.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

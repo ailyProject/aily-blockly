@@ -216,8 +216,101 @@ test('release refuses to remove a contender whose ownership token has changed', 
   release();
   assert.ok(fs.existsSync(owner.directory));
   assert.deepEqual(JSON.parse(fs.readFileSync(ticketPath, 'utf8')), changed);
-  assert.throws(() => acquireInstallLock(root), /Invalid subapp lock ticket/);
+  const next = acquireInstallLock(root);
+  assert.equal(typeof next, 'function', 'the closed OS guard makes the retained record inactive');
+  next();
 });
+
+for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
+  test(`a failed ${code} release cannot strand the lock while the owner stays alive`, t => {
+    const { root } = fixture(t);
+    let owner;
+    const release = acquireInstallLock(root, { onPhase(phase, value) { if (phase === 'acquired') owner = value; } });
+    const original = fs.rmSync;
+    const mock = t.mock.method(fs, 'rmSync', (target, options) => {
+      if (target === owner.directory) throw Object.assign(new Error('Windows unlink denied'), { code });
+      return original(target, options);
+    });
+    release();
+    assert.ok(fs.existsSync(owner.directory));
+    const next = acquireInstallLock(root);
+    assert.equal(typeof next, 'function');
+    next();
+    mock.mock.restore();
+    release();
+    assert.equal(fs.existsSync(owner.directory), false);
+  });
+}
+
+test('partial release with ticket already deleted also leaves no active lock', t => {
+  const { root } = fixture(t);
+  let owner;
+  const release = acquireInstallLock(root, { onPhase(phase, value) { if (phase === 'acquired') owner = value; } });
+  const original = fs.rmSync;
+  const mock = t.mock.method(fs, 'rmSync', (target, options) => {
+    if (target === owner.directory) {
+      original(path.join(target, 'ticket.json'), { force: true });
+      throw Object.assign(new Error('Windows rmdir denied'), { code: 'EPERM' });
+    }
+    return original(target, options);
+  });
+  release();
+  const next = acquireInstallLock(root);
+  assert.equal(typeof next, 'function'); next();
+  mock.mock.restore(); release();
+});
+
+test('legacy PID reuse is ignored, while live or unknown legacy identities are respected', t => {
+  const { root } = fixture(t);
+  const token = randomUUID();
+  const stale = path.join(root, '.contenders', `${process.pid}-${token}`);
+  fs.mkdirSync(stale, { recursive: true });
+  fs.writeFileSync(path.join(stale, 'ticket.json'), JSON.stringify({ schemaVersion: 1, pid: process.pid, token, ticket: 1 }));
+  const created = fs.statSync(stale).birthtimeMs;
+  assert.equal(acquireInstallLock(root, { processStartedAt: () => null }), null);
+  assert.equal(acquireInstallLock(root, { processStartedAt: () => created - 10000 }), null);
+  const release = acquireInstallLock(root, { processStartedAt: () => created + 10000 });
+  assert.equal(typeof release, 'function'); release();
+  assert.ok(fs.existsSync(stale), 'never delete another contender to recover it');
+});
+
+test('Windows process creation lookup is bounded and permission failures stay unknown', () => {
+  const { processStartedAt } = require('../../electron/subapp-process-identity');
+  const date = '2026-10-25T01:23:45.1234567Z';
+  assert.equal(processStartedAt(42, { platform: 'win32', execFileSync(command, args, settings) {
+    assert.equal(command, 'powershell.exe');
+    assert.match(args.at(-1), /GetProcessById\(42\).*StartTime/);
+    assert.equal(settings.windowsHide, true); assert.equal(settings.timeout, 3000);
+    return date;
+  } }), Date.parse(date));
+  assert.equal(processStartedAt(42, { platform: 'win32', execFileSync() { throw new Error('Access denied'); } }), null);
+});
+
+test('Windows real file handle prevents deletion but does not keep a released install lock active',
+  { skip: process.platform !== 'win32', timeout: 20000 }, async t => {
+    const { root } = fixture(t);
+    let owner;
+    const release = acquireInstallLock(root, { onPhase(phase, value) { if (phase === 'acquired') owner = value; } });
+    const ready = path.join(root, 'holder-ready.json'), gate = path.join(root, 'holder-exit');
+    const ticket = path.join(owner.directory, 'ticket.json');
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "$f=[IO.File]::Open($env:AILY_LOCK_TEST_TICKET,'Open','Read','ReadWrite'); try { [IO.File]::WriteAllText($env:AILY_LOCK_TEST_READY,'{}'); while (-not [IO.File]::Exists($env:AILY_LOCK_TEST_GATE)) { Start-Sleep -Milliseconds 20 } } finally { $f.Dispose() }"],
+    { env: { ...process.env, AILY_LOCK_TEST_TICKET: ticket, AILY_LOCK_TEST_READY: ready, AILY_LOCK_TEST_GATE: gate }, windowsHide: true });
+    const exited = new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
+    try {
+      await untilFile(ready);
+      release();
+      assert.ok(fs.existsSync(owner.directory));
+      const next = acquireInstallLock(root);
+      assert.equal(typeof next, 'function'); next();
+      releaseGate(gate); await exited;
+      release();
+      assert.equal(fs.existsSync(owner.directory), false);
+    } finally {
+      if (child.exitCode === null) child.kill();
+      await exited; release();
+    }
+  });
 
 test('PID permission failures fail closed while confirmed dead PIDs are ignored', t => {
   const { root } = fixture(t);

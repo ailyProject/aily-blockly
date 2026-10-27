@@ -2,8 +2,9 @@ import { serializeRuntimeFieldContract } from '../../../editors/blockly-editor/s
 import type { AbsFieldDefinition } from './abs-field-values';
 
 /** The host and isolated realm describe the same native model-backed field protocol. */
-export function captureAbsFieldContract(field: unknown, serializedValue?: unknown): AbsFieldDefinition {
-  const { variableTypes, ...definition } = serializeRuntimeFieldContract(field, serializedValue);
+export function captureAbsFieldContract(field: unknown, serializedValue?: unknown,
+  options: { preserveDropdownValue?: boolean } = {}): AbsFieldDefinition {
+  const { variableTypes, ...definition } = serializeRuntimeFieldContract(field, serializedValue, options);
   return { ...definition, ...(definition.type === 'field_variable' ? { symbol: {
     kind: 'variable' as const, storage: 'variable-state' as const,
     ...(variableTypes ? { allowedTypes: variableTypes } : {}),

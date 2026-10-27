@@ -22,6 +22,21 @@ const { isWin32, isDarwin, isLinux } = require("./platform");
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { startCliBridge } = require("./cli-bridge");
+const { routeLiveOperationProject } = require('./live-operation-project-routing');
+const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
+const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
+const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
+const repairBootstrap = readRepairBootstrap(process.env.AILY_REPAIR_BOOTSTRAP, { execPath: process.execPath, appPath: app.getAppPath() });
+let repairEnvironmentController;
+let repairContinuationController;
+let repairBootstrapStarted = false;
+if (repairBootstrap) {
+  process.env.AILY_APPDATA_PATH = repairBootstrap.record.privateAppData;
+  process.env.AILY_REPAIR_READONLY_NPM_PREFIX = repairBootstrap.record.sharedResources.npmPrefix;
+  app.setPath('userData', repairBootstrap.record.profile);
+} else {
+  delete process.env.AILY_REPAIR_READONLY_NPM_PREFIX;
+}
 const builder = require("./tools/builder");
 const linter = require("./tools/linter");
 const connector = require("./tools/connector");
@@ -413,12 +428,13 @@ if (shouldUseMultiInstance()) {
   }
 }
 
-for (const protocol of PROTOCOLS) {
+for (const protocol of repairBootstrap ? [] : PROTOCOLS) {
   app.removeAsDefaultProtocolClient(protocol);
 }
 
 const args = process.argv.slice(1);
 const serve = args.some((val) => val === "--serve");
+const devRendererOrigin = serve ? rendererOverride(process.env.AILY_DEV_RENDERER_URL) || 'http://localhost:4200' : null;
 process.env.DEV = serve;
 const packagedRendererServer = createPackagedRendererServer();
 
@@ -434,7 +450,7 @@ function resolveAppRendererUrl(hash = "") {
     return packagedRendererServer.rendererUrl(hash);
   }
   if (hash === undefined || hash === null || hash === "") {
-    return "http://localhost:4200";
+    return devRendererOrigin;
   }
   if (
     typeof hash !== "string"
@@ -443,7 +459,7 @@ function resolveAppRendererUrl(hash = "") {
   ) {
     throw new TypeError("Renderer hash is invalid.");
   }
-  return `http://localhost:4200/${hash.startsWith("#") ? hash : `#${hash}`}`;
+  return `${devRendererOrigin}/${hash.startsWith("#") ? hash : `#${hash}`}`;
 }
 
 function loadAppRenderer(targetWindow, hash = "") {
@@ -457,7 +473,7 @@ if (serve) {
 }
 
 // 注册协议处理
-for (const protocol of PROTOCOLS) {
+for (const protocol of repairBootstrap ? [] : PROTOCOLS) {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(protocol, process.execPath, createDevelopmentProtocolArgs({
@@ -478,7 +494,31 @@ ipcMain.on('project-open-ready', (event) => {
   if (mainWindow && event.sender === mainWindow.webContents) {
     projectOpenRendererReady = true;
     if (pendingFileToOpen) void updateMainWindowWithPendingData();
+    if (repairBootstrap && !repairBootstrapStarted) {
+      repairBootstrapStarted = true;
+      void requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+        { operation: 'project_repair_bootstrap', params: {} }, 130000).then(result => {
+        repairBootstrap.complete(result?.loadStatus, result?.normalizationTransitions);
+      }).catch(error => { repairBootstrap.failed(); console.error('Independent repair bootstrap failed:', error.message); });
+    }
   }
+});
+ipcMain.handle('project-repair-admission', event => {
+  if (!repairBootstrap || event.sender !== mainWindow?.webContents) return null;
+  return repairBootstrap.admission();
+});
+ipcMain.handle('project-repair-environment-ensure', async (event, sourceProject, requestId) => {
+  if (event.sender !== mainWindow?.webContents || repairBootstrap) throw new Error('Only the original host renderer may launch its completed repair fork.');
+  repairEnvironmentController ??= createRepairEnvironmentController({ appDataPath: process.env.AILY_APPDATA_PATH,
+    execPath: process.execPath, appPath: app.getAppPath(), serve,
+    sourceRendererGeneration: () => rendererGeneration,
+    sourceViewRetained: record => record.parentHostPid === process.pid && record.sourceRendererGeneration === rendererGeneration && !!mainWindow && !mainWindow.isDestroyed()
+      && !mainWindow.webContents.isDestroyed() && projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow()) === projectLock.normalizeProjectPathLoose(record.sourceProject) });
+  return repairEnvironmentController.ensure(sourceProject, requestId);
+});
+ipcMain.handle('project-repair-fork-policy', (event, params) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Fork policy is private to the active renderer.');
+  return repairForkPolicy(repairBootstrap?.record, params, getOpenedProjectPathFromWindow());
 });
 let pendingRoute = null;
 let pendingQueryParams = null;
@@ -776,6 +816,7 @@ const {
   getRunningSubappConfig,
   nativeSubappRegistry,
   beginWindowShutdown,
+  stopAllChildToolSessions,
 } = require("./window");
 const { createApplicationQuitCoordinator } = require('./application-quit');
 let libraryDependenciesRegistered = false;
@@ -948,17 +989,17 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       return;
     }
     if (rendererCommandAvailability() === 'closed') {
-      resolve({ ok: false, message: '主窗口不可用' });
+      resolve({ ok: false, errorCode: 'RENDERER_UNAVAILABLE', message: '主窗口不可用' });
       return;
     }
     if (!isCurrentRendererGenerationReady()) {
-      resolve({ ok: false, message: '渲染进程尚未就绪' });
+      resolve({ ok: false, errorCode: 'RENDERER_NOT_READY', message: '渲染进程尚未就绪' });
       return;
     }
 
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      resolve({ ok: false, message: '等待渲染进程响应超时' });
+      resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
       return;
     }
 
@@ -967,7 +1008,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       ipcMain.removeListener(responseChannel, listener);
-      resolve({ ok: false, message: '等待渲染进程响应超时' });
+      resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
     }, remaining);
 
     const listener = (event, message) => {
@@ -1023,7 +1064,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       }
       const availability = rendererCommandAvailability();
       if (availability === 'closed') {
-        resolve({ ok: false, message: '主窗口不可用' });
+        resolve({ ok: false, errorCode: 'RENDERER_UNAVAILABLE', message: '主窗口不可用' });
         return;
       }
       if (availability === 'ready') {
@@ -1032,7 +1073,7 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       }
       const remaining = startupDeadline - Date.now();
       if (remaining <= 0) {
-        resolve({ ok: false, message: '渲染进程尚未就绪' });
+        resolve({ ok: false, errorCode: 'RENDERER_NOT_READY', message: '渲染进程尚未就绪' });
         return;
       }
       console.info('[RendererLifecycle] command waiting for renderer', {
@@ -1045,16 +1086,16 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
           return;
         }
         if (status === 'closed') {
-          resolve({ ok: false, message: '主窗口不可用' });
+          resolve({ ok: false, errorCode: 'RENDERER_UNAVAILABLE', message: '主窗口不可用' });
           return;
         }
         if (status === 'ready') {
           if (isCurrentRendererGenerationReady()) dispatch(resolve);
           else if (Date.now() < startupDeadline) waitUntilReady();
-          else resolve({ ok: false, message: '渲染进程尚未就绪' });
+          else resolve({ ok: false, errorCode: 'RENDERER_NOT_READY', message: '渲染进程尚未就绪' });
           return;
         }
-        resolve({ ok: false, message: '渲染进程尚未就绪' });
+        resolve({ ok: false, errorCode: 'RENDERER_NOT_READY', message: '渲染进程尚未就绪' });
       });
     };
 
@@ -1140,8 +1181,49 @@ async function handleCliBridgeCommand(action, payload) {
         : { ok: false, message: '渲染进程返回了无效的项目关闭结果' };
     }
     case 'blockly-live-operation': {
-      const dir = requestedPath ? path.resolve(requestedPath) : getOpenedProjectPathFromWindow();
       const operation = payload && payload.operation;
+      if (operation === 'project_repair_inspect' || operation === 'project_repair_resume' || operation === 'project_repair_handoff_prepare') {
+        repairContinuationController ??= createRepairContinuationController({ appDataPath: process.env.AILY_APPDATA_PATH,
+          execPath: process.execPath, appPath: app.getAppPath(), serve,
+          sourceViewRetained: origin => origin.sourceRendererGeneration === rendererGeneration && !!mainWindow && !mainWindow.isDestroyed()
+            && !mainWindow.webContents.isDestroyed() && projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow()) === projectLock.normalizeProjectPathLoose(origin.sourceProject) });
+        if (operation === 'project_repair_handoff_prepare') {
+          if (repairBootstrap) return { ok: false, operation, code: 'PROJECT_REPAIR_HANDOFF_OWNER_REQUIRED',
+            message: 'A nested repair target must be prepared by its authenticated root owner, not by another repair child.' };
+          repairEnvironmentController ??= createRepairEnvironmentController({ appDataPath: process.env.AILY_APPDATA_PATH,
+            execPath: process.execPath, appPath: app.getAppPath(), serve,
+            sourceRendererGeneration: () => rendererGeneration,
+            sourceViewRetained: record => record.parentHostPid === process.pid && record.sourceRendererGeneration === rendererGeneration
+              && !!mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()
+              && projectLock.normalizeProjectPathLoose(getOpenedProjectPathFromWindow()) === projectLock.normalizeProjectPathLoose(record.sourceProject) });
+          return createRepairHandoffController({ continuation: repairContinuationController, environments: repairEnvironmentController }).prepare(payload.params);
+        }
+        return operation === 'project_repair_inspect' ? repairContinuationController.inspect(payload.params)
+          : repairContinuationController.resume(payload.params);
+      }
+      if (operation === 'project_repair_shutdown') {
+        return shutdownRepairEnvironment(repairBootstrap, payload.params, {
+          currentProject: getOpenedProjectPathFromWindow,
+          admit: project => requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+            { operation: 'project_repair_shutdown_admission', path: project }, 12000),
+          close: () => setImmediate(() => mainWindow?.close()),
+        });
+      }
+      if (operation === 'project_repair_identity' || operation === 'project_repair_adoptable') {
+        if (!repairBootstrap || payload.path && projectLock.normalizeProjectPathLoose(payload.path) !== projectLock.normalizeProjectPathLoose(repairBootstrap.record.project))
+          return { ok: false, code: 'PROJECT_REPAIR_IDENTITY_MISMATCH', message: 'This host is not the requested independent repair environment.' };
+        const current = getOpenedProjectPathFromWindow();
+        if (current && projectLock.normalizeProjectPathLoose(current) !== projectLock.normalizeProjectPathLoose(repairBootstrap.record.project))
+          return { ok: false, code: 'PROJECT_REPAIR_TARGET_CHANGED', message: 'The independent repair view no longer owns its exact target.' };
+        const identity = repairBootstrap.identity(payload.params);
+        if (identity.ok !== true || operation === 'project_repair_identity') return identity;
+        const status = await requestMainWindow('cli-bridge:blockly-live-operation', 'cli-bridge:blockly-live-operation:response',
+          { operation: 'project_repair_adoption_admission', path: repairBootstrap.record.project }, 12000);
+        return { ...identity, ownerStatus: { idle: status?.ok === true } };
+      }
+      if (['project_repair_bootstrap', 'project_repair_shutdown_admission', 'project_repair_adoption_admission'].includes(operation)) return { ok: false, code: 'PROJECT_REPAIR_BOOTSTRAP_PRIVATE', message: 'Repair bootstrap is an internal host operation.' };
+      const route = routeLiveOperationProject(operation, requestedPath, getOpenedProjectPathFromWindow());
+      const dir = route.path;
       const projectOptionalOperations = new Set([
         'search_boards_libraries',
         'project_create',
@@ -1154,6 +1236,7 @@ async function handleCliBridgeCommand(action, payload) {
         'main_menu_execute',
         'child_app_list',
         'child_app_get',
+        'child_app_recover',
         'child_app_open',
         'child_app_control',
         'child_app_window_list',
@@ -1163,14 +1246,20 @@ async function handleCliBridgeCommand(action, payload) {
         'subapp_agent_release',
         'subapp_agent_owner',
       ]);
-      if (!dir && !projectOptionalOperations.has(operation)) return { ok: false, message: '当前没有打开的项目,且未提供 path' };
-      const liveOperationTimeoutMs = operation === 'project_build'
+      if (!dir && !projectOptionalOperations.has(operation) && !route.parameterScoped)
+        return { ok: false, message: '当前没有打开的项目,且未提供 path' };
+      const liveOperationTimeoutMs = operation === 'project_build_status'
+        || operation === 'project_build' && payload?.params?.buildRequest
+        ? 25000
+        : operation === 'project_build'
         ? 620000
         : operation === 'project_upload'
           ? 920000
         : operation === 'board_switch'
           ? 420000
-        : operation === 'project_create'
+        : operation === 'child_app_recover' && payload?.params?.action === 'repair'
+          ? 620000
+        : operation === 'project_create' || operation === 'project_fork'
           ? 300000
           : operation === 'project_open'
             ? 130000
@@ -1178,7 +1267,9 @@ async function handleCliBridgeCommand(action, payload) {
             ? 600000
           : operation === 'project_save' && payload?.params?.chunk === true
             ? 140000
-          : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config'
+          : operation === 'abs_recovery' && payload?.params?.action === 'repair'
+            ? 120000
+          : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config' || operation === 'blocks_set_state'
             ? 120000
             : operation === 'subapp_agent_call' || operation === 'subapp_agent_release' || operation === 'subapp_agent_owner'
               ? 620000
@@ -1198,6 +1289,12 @@ async function handleCliBridgeCommand(action, payload) {
         },
         liveOperationTimeoutMs,
       );
+      if ((operation === 'project_build_status' || operation === 'project_build' && payload?.params?.buildRequest)
+        && !result?.buildReceipt && ['RENDERER_RESPONSE_TIMEOUT', 'RENDERER_REQUEST_CANCELLED',
+          'RENDERER_UNAVAILABLE', 'RENDERER_NOT_READY'].includes(result?.errorCode)) {
+        return { ...result, ok: false, operation, project: dir, buildOutcome: 'unknown',
+          errorCode: 'BUILD_OBSERVATION_UNCONFIRMED', buildRequestId: payload?.params?.buildRequest?.requestId };
+      }
       return result && typeof result === 'object' ? result : { ok: false, message: '渲染进程返回了无效结果' };
     }
     case 'mcp-runtime': {
@@ -2132,6 +2229,7 @@ function loadEnv() {
     config: conf,
   });
   builder.configureCacheEnvironment();
+  if (repairBootstrap) process.env.AILY_BUILDER_PATH = path.join(path.dirname(repairBootstrap.record.privateAppData), 'builder-cache');
   process.env.AILY_CONNECTOR_DATA_PATH = path.join(
     process.env.AILY_APPDATA_PATH,
     "connector",
@@ -2391,6 +2489,11 @@ function loadEnv() {
   process.env.AILY_TOOLS_PATH = path.join(process.env.AILY_APPDATA_PATH, "tools");
   // 默认全局SDK路径
   process.env.AILY_SDK_PATH = path.join(process.env.AILY_APPDATA_PATH, "sdk");
+  if (repairBootstrap) {
+    process.env.AILY_SDK_PATH = repairBootstrap.record.sharedResources.sdk;
+    process.env.AILY_TOOLS_PATH = repairBootstrap.record.sharedResources.tools;
+    process.env.AILY_COMPILERS_PATH = repairBootstrap.record.sharedResources.compilers;
+  }
   // zip包下载镜像地址：auto 模式输出完整列表，手动模式仅输出选中地址
   process.env.AILY_ZIP_URLS = buildZipUrls(conf);
   // zip包下载地址
@@ -2404,11 +2507,12 @@ function loadEnv() {
   // aily-builder、aily-linter 与 aily-connector 由 npm 安装到应用专用的全局 prefix。
 
   // 先准备应用运行环境；工具路径、按需安装与重试由各自生命周期统一负责。
-  runInstallEnv(childPath);
+  if (repairBootstrap) applyChildToolEnv(childPath);
+  else runInstallEnv(childPath);
   const appVersion = app.getVersion();
   const isE2E = process.env.AILY_E2E === "1";
   const allowE2ERefresh = process.env.AILY_E2E_ALLOW_TOOL_REFRESH === "1";
-  const refreshEnabled = !isE2E || allowE2ERefresh;
+  const refreshEnabled = !repairBootstrap && (!isE2E || allowE2ERefresh);
   const localTools = [['aily-builder', builder], ['aily-linter', linter]];
   const toolPolicy = { configPath: userConfigPath, appVersion, refreshEnabled, installIfMissing: refreshEnabled };
   for (const [, tool] of localTools) tool.configure(childPath, toolPolicy);
@@ -2661,7 +2765,7 @@ function createWindow() {
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         console.log('Reloading renderer after crash...');
-        mainWindow.loadURL("http://localhost:4200");
+        void loadAppRenderer(mainWindow);
       }
     }, 1000);
   });
@@ -2682,7 +2786,7 @@ function createWindow() {
       console.log(`${retryDelay}ms 后尝试重新加载...`);
       setTimeout(() => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.loadURL("http://localhost:4200");
+          void loadAppRenderer(mainWindow);
         }
       }, retryDelay);
     });
@@ -3079,7 +3183,7 @@ app.on("ready", async () => {
   }
 
   try {
-    ensureRosettaIfNeededOnDarwin();
+    if (!repairBootstrap) ensureRosettaIfNeededOnDarwin();
     loadEnv();
     applyAppIdentity(process.env.AILY_BUILD_PRODUCT);
     // Run after Electron's ready listeners have installed the default native menu.
@@ -3091,7 +3195,7 @@ app.on("ready", async () => {
   if (isDarwin && app.dock) {
     setupDarwinDockMenu();
   }
-  if (isWin32) {
+  if (isWin32 && !repairBootstrap) {
     setupWindowsJumpListTasks();
   }
 
@@ -3217,6 +3321,9 @@ async function cleanupRegisteredChildProcesses() {
   beginCommandShutdown();
   beginNpmShutdown();
   beginAuthCredentialsShutdown();
+
+  const childTools = await stopAllChildToolSessions();
+  if (!childTools.complete) console.warn('[PROC_TRACE][CHILD_TOOL_SHUTDOWN_INCOMPLETE]', childTools);
 
   await Promise.allSettled([
     require('./library-dependencies').stopLibraryDependencyWorkers(),
@@ -3379,7 +3486,11 @@ ipcMain.handle('project-commands-stop', async (event, data) => {
 
 ipcMain.handle("project-lock-try", (event, data) => {
   const { projectPath, force } = data || {};
-  const r = projectLock.tryAcquireLock(projectPath, { force: !!force });
+  if (repairBootstrap) {
+    const rejection = checkRepairProjectOpen(repairBootstrap.record, projectPath);
+    if (rejection) return rejection;
+  }
+  const r = projectLock.tryAcquireLock(projectPath, { force: !!force, strict: !!repairBootstrap });
   if (r.ok) {
     heldProjectLockNormalized = r.normalizedPath;
   }

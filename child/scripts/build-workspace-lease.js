@@ -17,6 +17,7 @@ const canonical = value => process.platform === 'win32' ? value.toLowerCase() : 
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const OPERATIONS = new Set(['compile', 'preprocess', 'publish', 'clean', 'verify']);
 const NON_DELEGATING_OPERATIONS = new Set(['publish', 'clean']);
+const ISOLATED_RECOVERY_GUIDANCE = "Original build outputs remain protected. Use project_recover(action='fork') to save an independent recovery project; continue validation and compilation only after that copy is activated. The original workspace has not been unlocked.";
 
 /** Cooperative host build lease, not a file-editor lock or a security boundary.
  * A dead parent does NOT prove that its compiler descendants stopped.
@@ -104,7 +105,7 @@ function writeOwner(workspace, record) {
     }
 }
 
-function assertBuilderAbsent(workspace, recovery = 'Confirm the complete process tree stopped before cleanup.') {
+function assertBuilderAbsent(workspace, recovery = ISOLATED_RECOVERY_GUIDANCE) {
     if (markerExists(workspace, path.join(workspace.directory, BUILDER_MARKER))) {
         throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Builder has not released its delegated phase. ${recovery}`);
     }
@@ -140,7 +141,7 @@ function assertPreviousRecoverable(workspace) {
         if (markerExists(workspace, builderPath)) {
             const builder = readOwner(workspace, builderPath);
             if (builder.record.ownerToken !== record.token || builder.record.supervisor !== record.supervisor) {
-                throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', 'Build phase ownership is inconsistent; preserve it for verified cleanup.');
+                throw fault('BUILD_WORKSPACE_RECOVERY_REQUIRED', `Build phase ownership is inconsistent. ${ISOLATED_RECOVERY_GUIDANCE}`);
             }
             fs.unlinkSync(builderPath);
         }
@@ -154,11 +155,7 @@ function assertPreviousRecoverable(workspace) {
         assertLegacyClaimsStopped(previous);
         writeOwner(workspace, { ...record, recoveryObservedBootId: bootId });
     }
-    const restartRecovery = bootId && (!previousBoot || (isSystemBootId(previousBoot)
-        && previousBoot.split(':')[0] === bootId.split(':')[0]));
-    const recovery = restartRecovery
-        ? 'Restart the computer, then reopen this project to recover safely; restarting only Aily is insufficient.'
-        : 'Cannot verify the system boot identity. Confirm all compiler descendants stopped before cleanup.';
+    const recovery = `${bootId ? '' : 'Cannot verify the system boot identity. '}${ISOLATED_RECOVERY_GUIDANCE}`;
     assertBuilderAbsent(workspace, alive ? undefined : recovery);
     if (record.nativeLeaseVersion === 1 && (record.released === true || NON_DELEGATING_OPERATIONS.has(record.operation))) return;
     if (alive) throw fault('BUILD_WORKSPACE_BUSY', 'Another host build/preprocess owns this project.');
@@ -348,4 +345,61 @@ function createBuildWorkspaceSupervisor(projectPath) {
     };
 }
 
-module.exports = { acquireBuildWorkspace, createBuildWorkspaceSupervisor, OWNER_ENV, BUILDER_ENV };
+/** Hold the existing cooperative build exclusion while observing idleness.
+ * Unlike acquisition/recovery this never rewrites owner journals, retires old
+ * claims or removes Builder evidence. A dead delegated parent is not idle. */
+function inspectBuildWorkspaceIdle(projectPath) {
+    const workspace = openWorkspace(projectPath);
+    const ownerFacts = record => record ? { pid: record.pid, operation: record.operation,
+        delegated: record.delegated === true, released: record.released === true } : null;
+    const deny = (reason, owner, recordPath, code = 'BUILD_WORKSPACE_RECOVERY_REQUIRED') => {
+        const details = { resource: 'build-workspace', reason, owner: ownerFacts(owner), recordPath };
+        return Object.assign(fault(code, 'Build idleness is not established; existing ownership evidence remains unchanged.'),
+            { resource: details.resource, owner: details.owner, details });
+    };
+    let guard;
+    try { guard = acquireNative(workspace); }
+    catch (error) {
+        let owner; try { owner = readOwner(workspace).record; } catch { /* Unknown owner remains unknown. */ }
+        throw deny('native-guard-unavailable', owner, workspace.anchor, error.code || 'BUILD_WORKSPACE_BUSY');
+    }
+    const assertMarkersAbsent = () => {
+        for (const [name, reason] of [[BUILDER_MARKER, 'builder-phase-unconfirmed'], [LEGACY_RECOVERY_MARKER, 'legacy-recovery-unconfirmed']]) {
+            const filename = path.join(workspace.directory, name);
+            if (!markerExists(workspace, filename)) continue;
+            let owner; try { owner = readOwner(workspace, filename).record; } catch { /* Preserve malformed/foreign markers too. */ }
+            throw deny(reason, owner, filename);
+        }
+    };
+    const assertIdle = () => {
+        try {
+            guard.assertHeld(); workspace.check(); assertMarkersAbsent();
+            let owner;
+            try { owner = readOwner(workspace); }
+            catch (error) { if (error.code !== 'ENOENT') throw deny('owner-unreadable', null, workspace.filename); }
+            if (owner) {
+                const record = owner.record;
+                const alive = processAlive(record.pid);
+                const released = record.nativeLeaseVersion === 1 && record.released === true;
+                const stoppedBeforeDelegation = record.nativeLeaseVersion === 1 && record.delegationVersion === 1
+                    && record.delegated === false && !alive;
+                if (!released && !stoppedBeforeDelegation) throw deny(
+                    alive ? 'owner-alive' : record.nativeLeaseVersion !== 1 || record.delegationVersion !== 1
+                        ? 'legacy-owner-unconfirmed' : 'delegation-unconfirmed',
+                    record, workspace.filename, alive ? 'BUILD_WORKSPACE_BUSY' : undefined);
+                const after = readOwner(workspace);
+                if (!sameFile(owner.stat, after.stat) || owner.bytes !== after.bytes) throw deny('owner-changed', after.record, workspace.filename);
+            }
+            assertMarkersAbsent(); guard.assertHeld();
+        } catch (error) {
+            guard.close();
+            if (error.details?.resource === 'build-workspace') throw error;
+            throw deny('inspection-changed', null, workspace.filename, error.code || 'BUILD_WORKSPACE_CHANGED');
+        }
+    };
+    try { assertIdle(); }
+    catch (error) { guard.close(); throw error; }
+    return { assertIdle, release: () => guard.close() };
+}
+
+module.exports = { acquireBuildWorkspace, createBuildWorkspaceSupervisor, inspectBuildWorkspaceIdle, OWNER_ENV, BUILDER_ENV };

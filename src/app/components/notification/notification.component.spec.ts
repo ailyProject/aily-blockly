@@ -80,7 +80,7 @@ describe('NotificationComponent progress animation', () => {
     }).compileComponents();
     const fixture = TestBed.createComponent(NotificationComponent);
     fixture.detectChanges();
-    stateSubject.next({ state: 'doing', title: 'Download', text: 'Progress', progress: 100 });
+    stateSubject.next({ state: 'doing', title: 'Download', text: 'Progress' });
     fixture.componentInstance.startProgressAnimation(100);
     // Angular's render scheduler also requests frames. Retain this animation's
     // callback so scheduler callbacks cannot replace the controlled test frame.
@@ -122,4 +122,24 @@ describe('NotificationComponent progress animation', () => {
     expect(box.getBoundingClientRect().width).toBeLessThanOrEqual(450);
     fixture.destroy();
   });
+  it('shows the task-local switch only on error and invokes it only on click', async () => {
+    const stateSubject = new BehaviorSubject<any>(null), retry = jasmine.createSpy('retry');
+    await TestBed.configureTestingModule({
+      imports: [NotificationComponent, TranslateModule.forRoot()],
+      providers: [{provide: NoticeService, useValue: {stateSubject}}, {provide: UiService, useValue: {}}],
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NotificationComponent);
+    fixture.detectChanges();
+    stateSubject.next({state: 'doing', text: 'cloud', onRetryLocally: retry});
+    expect(fixture.nativeElement.querySelector('.retry-locally')).toBeNull();
+    stateSubject.next({state: 'error', text: 'gateway failed', onRetryLocally: retry});
+    const button = fixture.nativeElement.querySelector('button.retry-locally');
+    expect(button.textContent).toContain('CLOUD_BUILD.SWITCH_TO_LOCAL');
+    expect(retry).not.toHaveBeenCalled(); button.click();
+    expect(retry).toHaveBeenCalledTimes(1);
+    stateSubject.next({state: 'error', text: 'local compiler error'});
+    expect(fixture.nativeElement.querySelector('.retry-locally')).toBeNull();
+    fixture.destroy();
+  });
+
 });

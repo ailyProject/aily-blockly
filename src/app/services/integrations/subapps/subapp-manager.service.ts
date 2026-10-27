@@ -166,6 +166,14 @@ export class SubappManagerService implements OnDestroy {
     return this.mutate('reinstall', id, options);
   }
 
+  async repair(id: string): Promise<Record<string, unknown>> {
+    const api = (window as any).electronAPI?.subapps;
+    if (!api?.repair) throw new Error('The host does not support same-version subapp repair.');
+    const result = await api.repair({ id });
+    await this.refresh(false);
+    return result;
+  }
+
   update(id: string, options: { forceClose?: boolean } = {}): Promise<void> {
     return this.mutate('update', id, options);
   }

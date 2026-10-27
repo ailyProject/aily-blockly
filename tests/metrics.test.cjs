@@ -16,6 +16,7 @@ function load(source, imports = {}) {
 }
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+const cloudBuildLocalRetry = load('src/app/utils/cloud-build-local-retry.utils.ts');
 
 async function fixture(action) {
   const original = { window: global.window, fetch: global.fetch, setTimeout: global.setTimeout, clearTimeout: global.clearTimeout };
@@ -154,13 +155,15 @@ test('Python and Arduino report actual upload success before auxiliary cleanup, 
 });
 
 test('disk compilation reports an attempt before local or cloud failure, but not preprocessing or a busy rejection', async () => {
-  const { CompileService } = load('src/app/services/domains/build/compile.service.ts');
+  const { CompileService } = load('src/app/services/domains/build/compile.service.ts', {
+    '../../../utils/cloud-build-local-retry.utils': cloudBuildLocalRetry,
+  });
   const records = [];
   const service = Object.create(CompileService.prototype);
   let backend = 'local', accepted = true;
   Object.assign(service, {
     metrics: { record: event => records.push(event) },
-    projectService: { currentProjectPath: '/project', isCloudBuild: () => backend === 'cloud',
+    projectService: { currentProjectPath: '/project', isCloudBuild: () => backend === 'cloud', captureCurrentProjectGuard: () => () => true,
       getProjectDependencyBlockMessage: () => undefined, beginBuildBackendOperation: () => ({ release() {} }) },
     configService: { getCompileBackend: () => backend, getCompileSettingsKey: () => backend,
       getCloudBuildSettings: () => ({}), isCoderProduct: () => false },
@@ -183,12 +186,13 @@ test('Blockly compilation reports preparation failure as an attempt, while Pytho
   const { _BuilderService } = load('src/app/editors/blockly-editor/services/builder.service.ts', {
     '@shared/public-api': { resolveLinuxBoardProjectRoute: data => data.devmode === 'python' ? {} : null },
     '@core/app-shell/public-api': { ProcessState: { BUILDING: 'BUILDING' } },
+    '../../../utils/cloud-build-local-retry.utils': cloudBuildLocalRetry,
   });
   const records = [], service = Object.create(_BuilderService.prototype);
   Object.assign(service, {
     metrics: { record: event => records.push(event) },
     configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local' },
-    projectService: { currentProjectPath: '/project', currentPackageData: {},
+    projectService: { currentProjectPath: '/project', currentPackageData: {}, captureCurrentProjectGuard: () => () => true,
       beginBuildBackendOperation: () => ({ release() {} }) },
     workflowService: { startBuild: () => true, finishBuild() {} },
     clearProgressTimer() {}, handleCompileError() {}, t: key => key,

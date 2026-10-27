@@ -5,6 +5,7 @@ import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { NpmService } from '../../../services/domains/dependencies/npm.service';
 
 describe('Blockly compile and upload handoff', () => {
   let originalFs: any, originalPath: any, originalBuilder: any;
@@ -130,22 +131,27 @@ describe('Blockly compile and upload handoff', () => {
       ['/project/node_modules/@aily-project/board-test/board.json', '{"name":"board"}'],
     ]);
     window['fs'] = { readFileSync: (file: string) => files.get(file),
+      existsSync: (file: string) => files.has(file), mkdirSync() {},
+      writeFileSync: (file: string, content: string) => files.set(file, content),
+      renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
       replaceProjectText: async (request: any, check: () => void) => {
         check(); const file = `${request.projectPath}/${request.fileName}`;
         expect(`sha256:${await sha256Hex(files.get(file)!)}`).toBe(request.expectedHash);
         files.set(file, request.content);
         return { status: 'COMMITTED', hash: `sha256:${await sha256Hex(request.content)}` };
       } };
-    window['path'] = { isExists: () => false, getAppDataPath: () => '/appdata', getAilyChildPath: () => '/child' };
+    window['path'] = { join: (...parts: string[]) => parts.join('/'), isExists: () => false, getAppDataPath: () => '/appdata', getAilyChildPath: () => '/child' };
     window['builder'] = { captureBuildSource: () => ({ digest: 'test' }) };
     const service: any = Object.create(_BuilderService.prototype), command = new Subject<any>();
     const prepared = { code: 'void setup() {}', artifacts: null, projectMacros: [{ name: 'WIDTH', value: 'WIDTH=320' }],
       revision: 1, sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' } };
     Object.assign(service, {
       metrics: { record: jasmine.createSpy('record') },
-      passed: true, projectService: { ensureCustomPartitionFile: async () => {}, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
+      passed: true, projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
-        getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }) },
+        getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }),
+        getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo([]),
+        ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; } },
       workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
@@ -171,6 +177,49 @@ describe('Blockly compile and upload handoff', () => {
     };
     return { service, files, command, start };
   }
+
+  for (const stage of ['preflight', 'cloud-execution']) it(`offers an explicit new local Blockly task after ${stage} fails`, async () => {
+    const f = compileFixture();
+    let local = false, owners = 0;
+    f.service.projectService.beginBuildBackendOperation = () => {
+      owners++;
+      return { useLocal() { local = true; }, release() { if (--owners === 0) local = false; } };
+    };
+    f.service.projectService.isCloudBuild = () => !local;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.workflowService.currentState = ProcessState.IDLE;
+    f.service.workflowService.startBuild = () => { f.service.workflowService.currentState = ProcessState.BUILDING; return true; };
+    f.service.workflowService.finishBuild.and.callFake((success: boolean) => {
+      f.service.workflowService.currentState = success ? ProcessState.IDLE : ProcessState.ERROR;
+    });
+    const notices: any[] = [];
+    f.service.noticeService.update = (notice: any) => notices.push(notice);
+    f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
+    f.service.npmService = { prepareCompileBackend: async () => {
+      if (!local && stage === 'preflight') throw new Error('unsupported board');
+    }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
+      expect(local).toBeTrue(); expect(owners).toBe(1);
+    }) };
+    f.service.runCloudCompilation = jasmine.createSpy('cloud').and.rejectWith(new Error('gateway offline'));
+    const { result } = await f.start();
+    expect((await result).state).toBe('error');
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    expect(f.service.npmService.prepareLocalCompileBackend).not.toHaveBeenCalled();
+    expect(owners).toBe(0);
+    const retry = notices.find(n => n.state === 'error').onRetryLocally;
+    expect(retry).toEqual(jasmine.any(Function));
+    const pending = retry(); await retry();
+    for (let n = 0; n < 100 && !f.service.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(f.service.cmdService.spawn).toHaveBeenCalledTimes(1);
+    f.command.next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
+    f.command.next({ type: 'close', code: 0 }); f.command.complete();
+    await pending;
+    expect(f.service.passed).toBeTrue();
+    expect(JSON.parse(f.files.get('/project/.log/compile/latest-result.json')!)).toEqual(jasmine.objectContaining({ success: true, source: 'manual' }));
+    expect(local).toBeFalse(); expect(owners).toBe(0);
+    expect(f.service.configService.getCompileBackend()).toBe('cloud');
+    expect(f.service.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
+  });
 
   it('publishes changed generator macros and reaches the compiler on the first build', async () => {
     const f = compileFixture(), { result } = await f.start();
@@ -211,6 +260,33 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.metrics.record.calls.allArgs()).toEqual([['compile_attempted']]);
   });
 
+  for (const metadataFailure of [false, true]) it(`restores cloud pins before capture and requires result metadata persistence (failure=${metadataFailure})`, async () => {
+    const f = compileFixture();
+    f.service.projectService.isCloudBuild = () => true;
+    f.service.configService.getCompileBackend = () => 'cloud';
+    f.service.npmService = { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {} };
+    let pinsRestored = false;
+    f.service.projectService.getBoardConfigMenu.and.callFake(async (options: any) => {
+      expect(options).toEqual({ requireCloudTarget: true }); pinsRestored = true; return [];
+    });
+    const prepareSource = f.service.runWithInteractiveProjectCode;
+    f.service.runWithInteractiveProjectCode = (...args: any[]) => {
+      expect(pinsRestored).toBeTrue(); return prepareSource(...args);
+    };
+    f.service.runCloudCompilation = jasmine.createSpy('cloud').and.resolveTo({ state: 'done', text: 'cloud complete' });
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.callFake(async () => {
+      if (metadataFailure) throw new Error('metadata unavailable');
+    });
+    const { result } = await f.start();
+    const completed = await result;
+    expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(1);
+    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'success', jasmine.any(String), 'hash', true);
+    expect(completed.state).toBe(metadataFailure ? 'error' : 'done');
+    expect(f.service.passed).toBe(!metadataFailure);
+    expect(f.service.cmdService.spawn).not.toHaveBeenCalled();
+    if (metadataFailure) expect(completed.text).toBe('metadata unavailable');
+  });
+
   for (const outcome of ['success', 'compile-error', 'prepare-error', 'cancel']) it(`retains the Blockly build request through local handoff: ${outcome}`, async () => {
     const f = compileFixture();
     const operation = { local: false, useLocal() { this.local = true; }, release: jasmine.createSpy('release') };
@@ -245,13 +321,26 @@ describe('Blockly compile and upload handoff', () => {
     f.service.projectService.isCloudBuild = () => !operation.local;
     f.service.configService.getCompileBackend = () => 'cloud';
     f.service.workflowService.currentState = ProcessState.BUILDING;
+    f.service.workflowService.finishBuild.and.callFake((success: boolean) => {
+      f.service.workflowService.currentState = success ? ProcessState.IDLE : ProcessState.ERROR;
+    });
     f.service.ensureCancelState = () => {};
     const commands = [f.command, new Subject<any>()];
     let launches = 0, stopped!: (value: boolean) => void;
     f.service.cmdService.spawn.and.callFake(() => commands[launches++]);
     f.service.cmdService.kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
-    f.service.npmService = { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
-      prepareLocalCompileBackend: async () => {}, prepareCloudCompileBackend: jasmine.createSpy('prepareCloud').and.resolveTo(ending !== 'unsupported') };
+    Object.assign(f.service.projectService, {
+      getProjectDependencySession: () => ({ projectPath: '/project' }), assertProjectDependencySession() {},
+      resolveCompileBackend: async () => {
+        if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        return 'cloud';
+      },
+    });
+    f.service.npmService = Object.assign(Object.create(NpmService.prototype), {
+      prjService: f.service.projectService, configService: { isCoderProduct: () => false },
+      prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
+      prepareLocalCompileBackend: async () => {},
+    });
     let clouds = 0;
     f.service.runCloudCompilation = jasmine.createSpy('cloud').and.callFake(async () => {
       if (++clouds === 1 || ending === 'local') throw Object.assign(new Error('local requested'), { code: CLOUD_BUILD_LOCAL_REQUESTED });
@@ -268,16 +357,22 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.runCloudCompilation).toHaveBeenCalledTimes(1);
     expect(operation.release).not.toHaveBeenCalled();
     stopped(true);
-    if (ending === 'local' || ending === 'unsupported') {
+    if (ending === 'local') {
       for (let n = 0; n < 100 && launches < 2; n++) await new Promise(resolve => setTimeout(resolve, 1));
       expect(launches).toBe(2);
       commands[1].next({ type: 'stdout', data: 'Sketch uses 123 bytes\n' });
-      if (ending === 'unsupported') expect(f.service.localSwitchAction).toBeUndefined();
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
-    expect((await result).state).toBe(ending === 'cancel' ? 'warn' : 'done');
-    expect(f.service.metrics.record.calls.allArgs()).toEqual(ending === 'cancel'
+    const completed = await result;
+    expect(completed.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
+    expect(f.service.metrics.record.calls.allArgs()).toEqual(ending === 'cancel' || ending === 'unsupported'
       ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
+    if (ending === 'unsupported') {
+      expect(completed.text).toContain('Board no longer supports cloud builds');
+      expect(launches).toBe(1);
+      expect(operation.local).toBeFalse();
+      expect(f.service.localSwitchAction).toBeUndefined();
+    }
     expect(clouds).toBe(ending === 'cancel' || ending === 'unsupported' ? 1 : 2);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(operation.release).toHaveBeenCalledTimes(1);

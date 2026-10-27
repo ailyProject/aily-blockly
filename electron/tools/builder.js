@@ -60,6 +60,7 @@ function sendNpmLog(log) {
 const lifecycle = createManagedToolLifecycle({
   toolKey: AILY_BUILDER_KEY,
   packageName: PACKAGE_NAME,
+  preserveNewerThanLatest: true,
   probe: probeAilyBuilderCommand,
   emptyState: () => ({ path: getAilyBuilderCommandPath() }),
   missingChildPathError: 'AILY_CHILD_PATH 未设置',
