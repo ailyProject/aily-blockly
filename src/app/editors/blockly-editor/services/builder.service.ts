@@ -1325,6 +1325,9 @@ export class _BuilderService {
           if (cloudBuild) {
             if (cancellation.signal.aborted || requestedSettingsKey !== this.compileSettingsKey()) throw new Error('Cloud build configuration changed or was cancelled.');
             await this.npmService.ensureCloudLibrarySources(projectPath);
+            // Restore selected/default cloud pins before generating code and
+            // capturing the generator revision. Opening Upload must be idempotent.
+            await this.projectService.getBoardConfigMenu({ requireCloudTarget: true });
           }
           if (!cloudBuild) await this.waitForAilyBuilderReady();
           assertPackage(); assertBoard();
@@ -1401,7 +1404,7 @@ export class _BuilderService {
                 const codeHash = await this.electronService.calculateHash(code);
                 assertCurrent();
                 const duration = ((Date.now() - this.buildStartTime) / 1000).toFixed(2);
-                await this.saveBuildInfo(projectPath, 'success', duration, codeHash);
+                await this.saveBuildInfo(projectPath, 'success', duration, codeHash, true);
                 assertCurrent();
                 this.compileValidationService.triggerAfterSuccessfulCompile();
                 this.passed = true;
@@ -1869,7 +1872,13 @@ export class _BuilderService {
     try {
       this.safeUpdateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
         state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel(requestId) });
+      const dependencySession = this.projectService.getProjectDependencySession(config.currentProjectPath);
       const result = await runCloudBuildWithProgress({ requestId, config, settings, profileDigest: profile.profileDigest, action: 'compile' }, bridge, {
+        prepareTool: async tool => {
+          assertCurrent();
+          await this.npmService.installCloudUploadTool(tool, dependencySession);
+          assertCurrent();
+        },
         localSwitch: action => {
           switchToLocal = action;
           this.safeUpdateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
@@ -1972,7 +1981,8 @@ export class _BuilderService {
     projectPath: string,
     status: 'success' | 'failed' | 'cancelled',
     duration: string,
-    codeHash: string
+    codeHash: string,
+    requirePersistence = false
   ): Promise<void> {
     try {
       const manifest = patchBuildMetadata(projectPath, {
@@ -1986,6 +1996,7 @@ export class _BuilderService {
       console.log('✅ 编译元数据已保存:', manifest.buildInfo);
     } catch (error) {
       console.error('❌ 保存编译元数据失败:', error);
+      if (requirePersistence) throw error;
     }
   }
 

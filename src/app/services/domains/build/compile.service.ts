@@ -576,7 +576,9 @@ export class CompileService {
         state: 'doing', setTimeout: 0, stop: () => this.cancel() });
     };
     try {
+      const dependencySession = this.projectService.getProjectDependencySession(root);
       return await runCloudBuildWithProgress({ requestId, config, settings, profileDigest, action }, gateway, {
+        prepareTool: tool => this.npmService.installCloudUploadTool(tool, dependencySession),
         localSwitch: request => {
           switchToLocal = request;
           this.application.updateNotice({ title: this.buildNoticeTitle(boardName), text: this.t('PREPARING_TITLE'),
