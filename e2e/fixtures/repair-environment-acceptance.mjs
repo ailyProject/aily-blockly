@@ -50,6 +50,19 @@ export function withLegacyPreservationOnly(snapshot) {
   return result
 }
 
+/** Follow only an explicitly offered action. Failed native commits may offer
+ * a read-only observation rather than another mutating resume. */
+export function repairContinuationAction(result, project) {
+  const action = result.nextAction ?? result.observeAction
+  assert.equal(action?.tool, 'project_recover', JSON.stringify(result))
+  assert.equal(action.input?.project, project)
+  assert.ok(['observe_fork', 'inspect_environment', 'resume_environment'].includes(action.input.action),
+    'Environment recovery must follow the offered exact-target route')
+  if (!result.nextAction) assert.equal(action.input.action, 'inspect_environment',
+    'An observation fallback must never replay a mutation')
+  return action
+}
+
 /** Follow actual tool-issued actions; never synthesize a replacement fork. */
 export async function resumeRepairTarget(call, project, onEnvironment) {
   let result = await call('project_recover', { project, action: 'inspect_environment' }, false, true)
@@ -57,12 +70,11 @@ export async function resumeRepairTarget(call, project, onEnvironment) {
   while (!result.runtimeAssociation?.ok) {
     if (result.repairEnvironment?.hostPid) onEnvironment(result.repairEnvironment)
     assert.ok(Date.now() < deadline, 'A known-idle repair host must resume within the test deadline')
-    assert.equal(result.nextAction?.tool, 'project_recover', JSON.stringify(result))
-    assert.ok(['inspect_environment', 'resume_environment'].includes(result.nextAction.input?.action),
+    const action = repairContinuationAction(result, project)
+    assert.ok(['inspect_environment', 'resume_environment'].includes(action.input.action),
       'Environment recovery must not replay an old data fork')
-    assert.equal(result.nextAction.input.project, project)
     await new Promise(resolve => setTimeout(resolve, 300))
-    result = await call(result.nextAction.tool, result.nextAction.input, false, true)
+    result = await call(action.tool, action.input, false, true)
   }
   assert.equal(result.repairEnvironment.version, 2)
   assert.equal(result.repairEnvironment.project, project)

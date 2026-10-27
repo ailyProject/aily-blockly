@@ -37,6 +37,61 @@ test('public acquire cannot claim an alive foreign PID is confirmed dead', t => 
   const result = locks.tryAcquireLock(f.project, { confirmedDeadPid: 200, noForceRetry: false });
   assert.equal(result.conflict, true); assert.deepEqual(fs.readFileSync(f.lock), before);
 });
+test('ordinary view acquisition retains an unknown owner instead of treating access denial as exit', t => {
+  const f = fixture(t); f.write(f.owner); const before = fs.readFileSync(f.lock);
+  const locks = load({ pid: 101, processState: () => undefined });
+  const result = locks.tryAcquireLock(f.project);
+  assert.equal(result.ok, false); assert.equal(result.code, 'PROJECT_VIEW_OWNER_UNKNOWN');
+  assert.equal(result.conflict, true); assert.equal(result.ownership.state, 'unknown');
+  assert.deepEqual(fs.readFileSync(f.lock), before);
+});
+for (const query of [() => { throw Object.assign(new Error('query denied'), { code: 'EPERM' }); }, () => '']) {
+  test('an unavailable executable query is not evidence of PID reuse', t => {
+    const f = fixture(t); f.write(f.owner); const before = fs.readFileSync(f.lock);
+    const locks = load({ pid: 101, processState: () => true, executableQuery: query });
+    const result = locks.tryAcquireLock(f.project);
+    assert.equal(result.ok, false); assert.equal(result.code, 'PROJECT_VIEW_OWNER_UNKNOWN');
+    assert.deepEqual(fs.readFileSync(f.lock), before);
+  });
+}
+test('a wall clock correction does not retire a live legacy view record', t => {
+  const f = fixture(t); f.write({ ...f.owner, startedAt: 1 }); const before = fs.readFileSync(f.lock);
+  const locks = load({ pid: 101, processState: () => true });
+  assert.equal(locks.tryAcquireLock(f.project).ok, false); assert.deepEqual(fs.readFileSync(f.lock), before);
+});
+test('an invalid existing owner record is retained and diagnosed, not replaced', t => {
+  const f = fixture(t); fs.writeFileSync(f.lock, '{incomplete'); const before = fs.readFileSync(f.lock);
+  const result = load({ pid: 101 }).tryAcquireLock(f.project);
+  assert.equal(result.code, 'PROJECT_VIEW_OWNER_UNKNOWN'); assert.deepEqual(fs.readFileSync(f.lock), before);
+});
+test('ordinary acquisition still recovers a definitely exited owner without force', t => {
+  const f = fixture(t); f.write(f.owner);
+  const locks = load({ pid: 101, processState: () => false });
+  const result = locks.tryAcquireLock(f.project);
+  assert.equal(result.ok, true); assert.equal(result.recoveredStale, true);
+  assert.equal(JSON.parse(fs.readFileSync(f.lock)).pid, 101); locks.releaseLock(f.project);
+});
+test('a stored boot hint does not override live PID/executable evidence', t => {
+  const f = fixture(t); f.write({ ...f.owner, bootId: 'win32:11111111-1111-4111-8111-111111111111' });
+  const before = fs.readFileSync(f.lock), locks = load({ pid: 101, processState: () => true });
+  assert.equal(locks.tryAcquireLock(f.project).conflict, true); assert.deepEqual(fs.readFileSync(f.lock), before);
+});
+test('a stored boot hint does not turn a permission-denied owner into an exited owner', t => {
+  const f = fixture(t); f.write({ ...f.owner, bootId: 'win32:11111111-1111-4111-8111-111111111111' });
+  const before = fs.readFileSync(f.lock), result = load({ pid: 101, processState: () => undefined }).tryAcquireLock(f.project);
+  assert.equal(result.code, 'PROJECT_VIEW_OWNER_UNKNOWN'); assert.deepEqual(fs.readFileSync(f.lock), before);
+});
+test('malformed executable query output is unknown instead of proof of PID reuse', t => {
+  const f = fixture(t); f.write(f.owner); const before = fs.readFileSync(f.lock);
+  const result = load({ pid: 101, processState: () => true, executableQuery: () => 'ExecutablePath=unavailable' }).tryAcquireLock(f.project);
+  assert.equal(result.code, 'PROJECT_VIEW_OWNER_UNKNOWN'); assert.deepEqual(fs.readFileSync(f.lock), before);
+});
+test('a proven different executable recovers only the stale original view', t => {
+  const f = fixture(t); f.write(f.owner);
+  const locks = load({ pid: 101, processState: () => true,
+    executableQuery: () => 'ExecutablePath=' + path.join(path.parse(process.execPath).root, 'different.exe') });
+  assert.equal(locks.tryAcquireLock(f.project).recoveredStale, true); locks.releaseLock(f.project);
+});
 test('the permanent native view guard serializes normal acquire and release without touching a held record', t => {
   const f = fixture(t), locks = load({ pid: 101 }); f.write(f.owner);
   const guard = tryAcquireFileLock(path.join(f.project, '.aily', 'project-view.guard'));

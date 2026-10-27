@@ -17,6 +17,7 @@ export * from './project-data/project-data.types';
 export * from './project-debug-configuration.service';
 export * from './operations/project-creation-workflow';
 export * from './project-root-path';
+export * from './project-view-ownership';
 export * from './project-package-name';
 export * from './project-save-outcome';
 export { captureProjectDiskRecovery, inspectProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';

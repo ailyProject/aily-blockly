@@ -18,6 +18,6 @@ export function nativeCandidateTimeout(phase: NativeCandidatePhase, timeoutMs: n
   return new AbsSyncError('ABS_NATIVE_TIMEOUT', `Native candidate timed out during ${phase} (${Math.round(timeoutMs)}ms budget).`, undefined, [], {
     reason: `native-timeout-${phase}`,
     ...(nativeTiming ? { nativeTiming } : {}),
-    hint: 'Preparation timed out before apply; do not repeat unchanged requests. Retain ABS; report draft path/phase/incomplete status. Ask the user to retry after reducing load or restarting the updated host. If publication is UNKNOWN, inspect project_recover.',
+    hint: 'Preparation timed out before apply. Retain the ABS draft and intent generation. Call project_recover(action="inspect") once and follow only offered recovery. Do not retry unchanged or bypass protection; unsupported effects still require a host fix.',
   });
 }

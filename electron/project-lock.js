@@ -1,10 +1,10 @@
 // 管理项目目录独占锁，防止多个应用实例重复打开同一项目。
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const { app } = require("electron");
 const { createHash } = require('node:crypto');
 const { tryAcquireFileLock } = require('../child/scripts/native-file-lock');
+const { getProcessState } = require('../child/scripts/process-state');
 
 const LOCK_SEGMENTS = [".aily", "project-open.lock"];
 
@@ -55,26 +55,7 @@ function readLock(lockPath) {
 }
 
 function isPidAlive(pid) {
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 锁文件创建时间早于系统最近一次启动 → 必定是陈旧锁（进程不可能跨越重启存活）
- */
-function isLockStaleAfterReboot(lockData) {
-  if (!lockData || !lockData.startedAt) {
-    return false;
-  }
-  const bootTimeMs = Date.now() - os.uptime() * 1000;
-  return lockData.startedAt < bootTimeMs - 5000; // 5s 容差
+  return getProcessState(pid) === true;
 }
 
 /**
@@ -83,7 +64,7 @@ function isLockStaleAfterReboot(lockData) {
  */
 function isHolderProcessMatch(lockData) {
   if (!lockData || !lockData.pid || !lockData.execPath) {
-    return false;
+    return 'unknown';
   }
   if (process.platform === "win32") {
     try {
@@ -97,14 +78,34 @@ function isHolderProcessMatch(lockData) {
       if (match) {
         const actual = match[1].trim().toLowerCase();
         const expected = lockData.execPath.trim().toLowerCase();
+        if (!path.isAbsolute(actual)) return 'unknown';
         return actual === expected;
       }
-      return false;
+      return 'unknown';
     } catch {
-      return false;
+      return 'unknown';
     }
   }
   return true; // 非 Windows 平台回退到仅 PID 检查
+}
+
+function viewOwnerState(owner) {
+  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1 || typeof owner.execPath !== 'string'
+    || !path.isAbsolute(owner.execPath) || !Number.isFinite(owner.startedAt) || owner.startedAt <= 0)
+    return { state: 'unknown', reason: 'invalid-owner-record' };
+  const state = getProcessState(owner.pid);
+  if (state !== true) return { state: state === false ? 'exited' : 'unknown',
+    reason: state === false ? 'process-exited' : 'process-query-unavailable' };
+  const match = isHolderProcessMatch(owner);
+  return match === false ? { state: 'exited', reason: 'pid-reused' }
+    : { state: match === true ? 'active' : 'unknown', reason: match === true ? 'process-matched' : 'executable-query-unavailable' };
+}
+
+function viewConflict(normalizedPath, holder, ownership) {
+  return { ok: false, conflict: true, code: ownership.state === 'unknown' ? 'PROJECT_VIEW_OWNER_UNKNOWN' : 'PROJECT_VIEW_OCCUPIED',
+    normalizedPath, ...(holder ? { holder } : {}), ownership,
+    error: ownership.state === 'unknown' ? 'Project-view ownership is unconfirmed; its record was retained.'
+      : 'Another process still owns the project view; its record was retained.' };
 }
 
 function writeLockPayload() {
@@ -184,7 +185,10 @@ function tryAcquireLockUnlocked(projectPath, options = {}) {
     }
   }
 
-  const existing = readLock(lockPath);
+  let snapshot;
+  try { snapshot = readViewLockSnapshot(normalized); }
+  catch { return viewConflict(normalized, undefined, { state: 'unknown', reason: 'invalid-owner-record' }); }
+  const existing = snapshot?.owner;
   if (existing && existing.pid === process.pid) {
     return { ok: true, normalizedPath: normalized, lockPath, alreadyHeld: true };
   }
@@ -194,23 +198,15 @@ function tryAcquireLockUnlocked(projectPath, options = {}) {
   if (options.strict) return { ok: false, code: 'PROJECT_REPAIR_TARGET_BUSY',
     error: 'Another project-view record remains; strict repair opening did not replace it.', normalizedPath: normalized };
 
-  if (existing && isLockStaleAfterReboot(existing)) {
-    // 锁创建于上次重启之前，直接视为陈旧
-  } else if (existing && existing.pid !== options.confirmedDeadPid && isPidAlive(existing.pid) && isHolderProcessMatch(existing)) {
-    return {
-      ok: false,
-      conflict: true,
-      holder: {
-        pid: existing.pid,
-        execPath: existing.execPath,
-        appVersion: existing.appVersion,
-        startedAt: existing.startedAt,
-      },
-      normalizedPath: normalized,
-    };
-  }
+  const ownership = existing?.pid === options.confirmedDeadPid && options.confirmedDeadPid
+    ? { state: 'exited', reason: 'exact-native-handoff' } : viewOwnerState(existing);
+  if (ownership.state !== 'exited') return viewConflict(normalized, existing, ownership);
 
   try {
+    const current = readViewLockSnapshot(normalized);
+    if (!snapshot || !current || current.hash !== snapshot.hash
+      || JSON.stringify(current.identity) !== JSON.stringify(snapshot.identity))
+      return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'Project-view ownership changed before recovery; its record was retained.', normalizedPath: normalized };
     fs.unlinkSync(lockPath);
   } catch (e) {
     return { ok: false, error: e.message, normalizedPath: normalized };
@@ -221,8 +217,7 @@ function tryAcquireLockUnlocked(projectPath, options = {}) {
     return { ok: true, normalizedPath: normalized, lockPath, recoveredStale: true };
   } catch (e2) {
     if (e2.code === "EEXIST") {
-      if (options.noForceRetry) return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'Project-view ownership changed during recovery.', normalizedPath: normalized };
-      return tryAcquireLockUnlocked(projectPath, { force: true });
+      return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'Project-view ownership changed during recovery; the newer record was retained.', normalizedPath: normalized };
     }
     return { ok: false, error: e2.message, normalizedPath: normalized };
   }
@@ -283,7 +278,7 @@ function recoverExitedViewLock(projectPath, expected, assertCurrent, isExited) {
     const final = readViewLockSnapshot(projectPath);
     if (!final || final.hash !== expected.hash || JSON.stringify(final.identity) !== JSON.stringify(expected.identity)
       || isExited(final.owner.pid) !== true) return { ok: false, code: 'PROJECT_VIEW_CHANGED', error: 'The repair view changed before its non-force handoff; retained the current record.' };
-    const acquired = tryAcquireLockUnlocked(projectPath, { force: false, noForceRetry: true, confirmedDeadPid: current.owner.pid });
+    const acquired = tryAcquireLockUnlocked(projectPath, { force: false, confirmedDeadPid: current.owner.pid });
     if (!acquired.ok) return acquired;
     const released = releaseLockUnlocked(projectPath);
     return released.ok ? { ok: true, recoveredStaleView: true, previousViewHash: current.hash } : released;
@@ -291,8 +286,9 @@ function recoverExitedViewLock(projectPath, expected, assertCurrent, isExited) {
 }
 
 function focusProcessByPid(pid) {
-  if (!isPidAlive(pid)) {
-    return { ok: false, reason: "dead" };
+  const state = getProcessState(pid);
+  if (state !== true) {
+    return { ok: false, reason: state === false ? 'dead' : 'unknown' };
   }
   const { execFileSync } = require("child_process");
   if (process.platform === "darwin") {

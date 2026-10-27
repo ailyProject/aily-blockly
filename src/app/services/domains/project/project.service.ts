@@ -2,6 +2,7 @@ import { ensureProjectPartitionFile } from './project-partitions';
 import { normalizeProjectOpenPath, findArduinoSketchEntry, prepareArduinoSketchProject } from './coder/arduino-sketch';
 import { Injectable, Injector } from '@angular/core';
 import { ProjectLifecycleError, ProjectLifecycleGate, type ProjectLifecycleLease } from './project-lifecycle-gate';
+import { projectViewOpenError } from './project-view-ownership';
 import { ProjectDependencyLifecycle, type ProjectDependencySession } from './project-dependency-lifecycle';
 import { BehaviorSubject, Subject, firstValueFrom } from 'rxjs';
 import { MetricsService } from '@core/metrics/public-api';
@@ -65,6 +66,7 @@ import { detectProjectMode, getProjectApplicationName, type ProjectMode } from '
 import { deriveProjectPackageName } from './project-package-name';
 import { projectSaveOutcomeError, type ProjectSaveOutcome, type ProjectSaveAsOutcome, type ProjectRecoveryCopyOptions } from './project-save-outcome';
 import { captureProjectCopyLibraries } from './project-copy-libraries';
+import { withProjectCopySourceLock } from './project-copy-source-lock';
 import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
 import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
@@ -129,6 +131,8 @@ interface ProjectOpenOptions {
   reason?: ProjectActivationReason;
   saveBeforeReload?: boolean;
   sessionResource?: string | null;
+  /** Automation must receive an actionable conflict, not wait for a UI choice. */
+  interactive?: boolean;
   /** In-process ownership only; never accepted from IPC/Agent parameters. */
   lifecycleOwner?: symbol;
   /** Host-only exact journal authority. Never accepted from IPC/Agent options. */
@@ -1497,6 +1501,8 @@ export class ProjectService {
       }
     }
     if (this.projectOpenTask) {
+      if (options.interactive === false) throw projectViewOpenError(projectPath, { code: 'PROJECT_VIEW_BUSY',
+        error: 'An existing project navigation is still in progress; no replacement was queued.' });
       if (this.isSameProjectPath(this.projectOpenTask.path, projectPath)) {
         return this.projectOpenTask.promise;
       }
@@ -1728,7 +1734,10 @@ export class ProjectService {
       if (!this.coderProjects.some(project => this.isSameProjectPath(project.path, projectPath))) {
         if (window['projectLock']) {
           const lock = await window['projectLock'].tryAcquire(projectPath);
-          if (!lock.ok) { this.message.error('工程已被其他窗口占用'); return false; }
+          if (!lock.ok) {
+            if (options.interactive === false) throw projectViewOpenError(projectPath, lock);
+            this.message.error('工程已被其他窗口占用'); return false;
+          }
         }
         try {
           if (findArduinoSketchEntry(projectPath)) prepareArduinoSketchProject(projectPath);
@@ -1764,6 +1773,7 @@ export class ProjectService {
     if (this.electronService.isElectron && window['projectLock']) {
       let r = await window['projectLock'].tryAcquire(projectPath);
       if (!r.ok && recovery) throw new Error('Recovered project ownership changed; no project lock was forced.');
+      if (!r.ok && options.interactive === false) throw projectViewOpenError(projectPath, r);
       if (!r.ok && r.conflict && r.holder) {
         const action = await this.promptProjectLockConflict(r.holder);
         if (action === 'cancel') {
@@ -2167,9 +2177,10 @@ export class ProjectService {
       throw Object.assign(new Error('The source is still loading; observe its existing load status before creating a recovery copy.'),
         { code: 'PROJECT_RECOVERY_NOT_READY' });
     }
+    let assertNativeCopySource: (() => void) | undefined;
     const assertCurrent = () => {
       if (mode === 'save-as') this.assertSaveAsAvailable();
-      if (closedSource) { this.assertClosedRecoverySource(closedSource); return; }
+      if (closedSource) { this.assertClosedRecoverySource(closedSource); assertNativeCopySource?.(); return; }
       if (this.currentProjectPath !== sourceProjectPath || projectDataRuntime.getSessionToken() !== session) {
         throw new Error('当前项目会话已切换，请重新执行另存为');
       }
@@ -2207,36 +2218,45 @@ export class ProjectService {
       return [name, window['fs'].existsSync(file) ? window['fs'].readFileSync(file, 'utf8') : null];
     }));
     try {
-      assertCurrent();
-      await libraries.assertCurrent(); assertCurrent();
-      // Only the editor owns the unsaved document. A fork never saves the source
-      // or treats its old project.abi as the current canvas.
-      await window['fsp'].mkdir(path); reserved = true;
-      assertCurrent();
-      if (mode === 'recovery') {
-        if (typeof window['fs'].copyRecoveryProjectDirectory !== 'function') throw new Error('Recovery copy requires the matching Electron host.');
-        window['fs'].copyRecoveryProjectDirectory(sourceProjectPath, path);
-      } else window['fs'].copyProjectDirectory(sourceProjectPath, path);
-      await libraries.assertCurrent(); assertCurrent();
-      const packageJson = JSON.parse(libraries.manifestText);
-      delete packageJson.cloudId;
-      const name = window['path'].basename(path);
-      packageJson.name = deriveProjectPackageName(name);
-      packageJson.nickname = name;
-      if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
-      window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
-      copiedFiles = observeTarget();
-      saved = await snapshot.publish(path);
-      if (!saved.projectSaved) throw projectSaveOutcomeError(saved);
-      if (mode === 'recovery' && !saved.recoverySource) saved.recoverySource = {
-        version: 1, kind: 'workspace', complete: true, loadFailed: false, partialCanvas: 'not-applicable',
+      const publish = async () => {
+        assertCurrent();
+        await libraries.assertCurrent(); assertCurrent();
+        // Only the editor owns the unsaved document. A fork never saves the source
+        // or treats its old project.abi as the current canvas.
+        await window['fsp'].mkdir(path); reserved = true;
+        assertCurrent();
+        if (mode === 'recovery') {
+          if (typeof window['fs'].copyRecoveryProjectDirectory !== 'function') throw new Error('Recovery copy requires the matching Electron host.');
+          window['fs'].copyRecoveryProjectDirectory(sourceProjectPath, path);
+        } else window['fs'].copyProjectDirectory(sourceProjectPath, path);
+        await libraries.assertCurrent(); assertCurrent();
+        const packageJson = JSON.parse(libraries.manifestText);
+        delete packageJson.cloudId;
+        const name = window['path'].basename(path);
+        packageJson.name = deriveProjectPackageName(name);
+        packageJson.nickname = name;
+        if (Object.hasOwn(packageJson, 'path')) packageJson.path = path;
+        window['fs'].writeFileSync(`${path}/package.json`, JSON.stringify(packageJson, null, 2));
+        copiedFiles = observeTarget();
+        saved = await snapshot.publish(path);
+        if (!saved.projectSaved) throw projectSaveOutcomeError(saved);
+        if (mode === 'recovery' && !saved.recoverySource) saved.recoverySource = {
+          version: 1, kind: 'workspace', complete: true, loadFailed: false, partialCanvas: 'not-applicable',
+        };
       };
+      if (closedSource) await withProjectCopySourceLock(sourceProjectPath, assertCurrent, async assertOwned => {
+        assertNativeCopySource = assertOwned;
+        try { await publish(); }
+        finally { assertNativeCopySource = undefined; }
+      });
+      else await publish();
     } catch (error) {
       // An uncertain publication may already be committed. Keep its recovery
       // location, just as the ordinary publication path never rolls it back.
       const failure = error as { projectSaved?: boolean; abiSaved?: boolean; generatedCodePublished?: boolean;
         uncertain?: boolean; code?: string; publication?: { abiSaved?: boolean } };
-      const projectSaved = failure?.projectSaved === true || failure?.abiSaved === true || failure?.publication?.abiSaved === true;
+      const projectSaved = saved?.projectSaved === true || failure?.projectSaved === true
+        || failure?.abiSaved === true || failure?.publication?.abiSaved === true;
       let targetChanged = false;
       try { targetChanged = !!copiedFiles && JSON.stringify(observeTarget()) !== JSON.stringify(copiedFiles); }
       catch { targetChanged = true; }
@@ -2246,8 +2266,9 @@ export class ProjectService {
         const warning = `另存为目标 ${path} 已保留：${projectSaved ? '项目文件已写入，但发布尚未完整确认'
           : failure.uncertain ? '发布结果未知，不能确认项目文件是否已写入' : '目标内容已变化，本次快照未确认提交，不能清理其他写入'}。未切换工作区，请先检查该目标的恢复状态。${detail}`;
         this.message.warning(warning);
-        return { sourceProject: sourceProjectPath, project: path, projectSaved,
-          generatedCodePublished: failure.generatedCodePublished === true, partial: true, activated: false,
+        return { ...saved, sourceProject: sourceProjectPath, project: path, projectSaved,
+          generatedCodePublished: saved?.generatedCodePublished === true || failure.generatedCodePublished === true,
+          partial: true, activated: false,
           code: !projectSaved && failure.uncertain ? 'PROJECT_SAVE_AS_UNKNOWN'
             : !projectSaved && targetChanged ? 'PROJECT_SAVE_AS_TARGET_CONFLICT' : failure.code || 'PROJECT_SAVE_AS_PARTIAL',
           error: warning, warnings: [warning] };
@@ -2259,6 +2280,7 @@ export class ProjectService {
       snapshot.dispose();
       throw error;
     }
+    if (!saved) { snapshot.dispose(); throw new Error('Project copy publication was not confirmed.'); }
     const result: ProjectSaveAsOutcome = { ...saved, sourceProject: sourceProjectPath, project: path, activated: false };
     if (mode === 'recovery' && result.recoverySource?.kind === 'saved-document') {
       // The target was actually published, not inferred from a filename or an

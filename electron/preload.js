@@ -689,6 +689,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
     projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
+    projectCopySourceVersion: 1,
+    withProjectCopySource: (projectPath, assertCurrent, action) => require('./project-copy-source').withProjectCopySource(projectPath, assertCurrent, action),
     readCodeDeclaration: (candidate, roots) => require('./code-suggestion-declarations').readCodeDeclaration(candidate, roots),
     readFileSync: (path, encoding = "utf8") => require("fs").readFileSync(path, encoding),
     readFileBufferAsync: async (path) => {
