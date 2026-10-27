@@ -62,6 +62,7 @@ describe('Coder concurrent process integration', () => {
           coderProjects: project.coderProjects, currentBoardConfig: {}, boardChangeSubject: new Subject(),
           isAilyCodeProject: () => true, beginCoderOperation: () => () => {},
           syncCurrentBoardConfig: async () => true,
+          ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
           getProjectDependencyBlockMessage: (path: string) => project.getProjectDependencyBlockMessage(path),
         });
         return contexts.get(path);

@@ -1,5 +1,6 @@
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { CompileService } from './compile.service';
+import { NpmService } from '../dependencies/npm.service';
 import { of, Subject } from 'rxjs';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 
@@ -59,6 +60,7 @@ describe('Coder build metadata', () => {
       },
     };
     project = { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: root, isAilyCodeProject: () => true,
+      ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; },
       getProjectDependencyBlockMessage: () => undefined };
     metadata = new CoderBuildInfoService(electron);
     window['builder'] = { captureBuildSource: jasmine.createSpy('captureBuildSource').and.returnValue({ digest: 'captured' }),
@@ -210,7 +212,17 @@ describe('Coder build metadata', () => {
     let launches = 0, stopped!: (value: boolean) => void, clouds = 0;
     compiler.cmdService = { spawn: jasmine.createSpy('spawn').and.callFake(() => commands[launches++]),
       kill: jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; })) };
-    compiler.npmService.prepareCloudCompileBackend = async () => ending !== 'unsupported';
+    Object.assign(project, {
+      getProjectDependencySession: () => ({ projectPath: root }), assertProjectDependencySession() {},
+      getCoderProjectContext: () => project,
+      resolveCompileBackend: async () => {
+        if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        return 'cloud';
+      },
+    });
+    // Exercise the real reentry adapter: ProjectService rejects unsupported boards.
+    compiler.npmService = Object.assign(Object.create(NpmService.prototype), compiler.npmService,
+      { prjService: project, configService: compiler.configService });
     compiler.runCloudCompile.and.callFake(async () => {
       if (++clouds === 1 || ending === 'local') throw Object.assign(new Error('local requested'), { code: CLOUD_BUILD_LOCAL_REQUESTED });
       return { success: true };

@@ -623,13 +623,24 @@ export class NpmService {
     if (this.configService.getCompileBackend() !== 'cloud') return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const project = this.getDependencyProject(session);
+    const guard = () => {
+      this.assertDependencySession(session);
+      if (isCancelled()) throw Object.assign(new Error('Build cancelled during board support lookup.'), { code: 'CANCELLED' });
+    };
+    guard();
     const boardModule = await project.getBoardModule();
-    this.assertDependencySession(session);
+    guard();
     if (!boardModule) return;
     const wasCloud = project.isCloudBuild();
-    const backend = await project.resolveCompileBackend(session, true);
-    this.assertDependencySession(session);
-    if (isCancelled()) throw Object.assign(new Error('Build cancelled during board support lookup.'), { code: 'CANCELLED' });
+    let backend: 'cloud' | 'local';
+    try {
+      backend = await project.resolveCompileBackend(session, true);
+    } catch (error) {
+      // A late unsupported reply must not replace the user's cancellation.
+      guard();
+      throw error;
+    }
+    guard();
     if (wasCloud && backend === 'local') {
       await this.installBoardDeps(session);
       if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
@@ -677,7 +688,16 @@ export class NpmService {
       if (isCancelled()) throw Object.assign(new Error('Build cancelled during cloud preparation.'), { code: 'CANCELLED' });
     };
     guard();
-    const backend = await project.resolveCompileBackend(session, true);
+    let backend: 'cloud' | 'local';
+    try {
+      backend = await project.resolveCompileBackend(session, true);
+    } catch (error) {
+      guard();
+      // This task already chose local execution. Only explicit lack of board
+      // support resumes it locally; transport, protocol and stale-session errors remain failures.
+      if (error?.code === 'CLOUD_BOARD_UNSUPPORTED') return false;
+      throw error;
+    }
     guard();
     if (backend !== 'cloud') return false;
     await this.ensureCloudLibrarySources(projectPath, session);

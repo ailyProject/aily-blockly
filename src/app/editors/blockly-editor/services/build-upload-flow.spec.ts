@@ -5,6 +5,7 @@ import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
+import { NpmService } from '../../../services/domains/dependencies/npm.service';
 
 describe('Blockly compile and upload handoff', () => {
   let originalFs: any, originalPath: any, originalBuilder: any;
@@ -146,6 +147,7 @@ describe('Blockly compile and upload handoff', () => {
       passed: true, projectService: { beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', currentPackageData: {},
         getBuildPath: async () => '/project/.build', getBoardModule: async () => '@aily-project/board-test',
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }),
+        getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo({}),
         ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; } },
       workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
@@ -249,8 +251,18 @@ describe('Blockly compile and upload handoff', () => {
     let launches = 0, stopped!: (value: boolean) => void;
     f.service.cmdService.spawn.and.callFake(() => commands[launches++]);
     f.service.cmdService.kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
-    f.service.npmService = { prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
-      prepareLocalCompileBackend: async () => {}, prepareCloudCompileBackend: jasmine.createSpy('prepareCloud').and.resolveTo(ending !== 'unsupported') };
+    Object.assign(f.service.projectService, {
+      getProjectDependencySession: () => ({ projectPath: '/project' }), assertProjectDependencySession() {},
+      resolveCompileBackend: async () => {
+        if (ending === 'unsupported') throw Object.assign(new Error('Board no longer supports cloud builds'), { code: 'CLOUD_BOARD_UNSUPPORTED' });
+        return 'cloud';
+      },
+    });
+    f.service.npmService = Object.assign(Object.create(NpmService.prototype), {
+      prjService: f.service.projectService, configService: { isCoderProduct: () => false },
+      prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
+      prepareLocalCompileBackend: async () => {},
+    });
     let clouds = 0;
     f.service.runCloudCompilation = jasmine.createSpy('cloud').and.callFake(async () => {
       if (++clouds === 1 || ending === 'local') throw Object.assign(new Error('local requested'), { code: CLOUD_BUILD_LOCAL_REQUESTED });
