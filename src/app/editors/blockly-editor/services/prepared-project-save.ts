@@ -9,7 +9,7 @@ export interface PreparedBlocklySave { readonly abiText: string; readonly docume
 
 export async function prepareBlocklySave(
   document: BlocklyProjectDocument, saveShape: (snapshot: BlocklyProjectDocument) => unknown,
-  assertCurrent: () => void, runtime: typeof projectDataRuntime = projectDataRuntime,
+  assertCurrent: () => void, runtime: Pick<typeof projectDataRuntime, 'put' | 'flushPending' | 'getStore'> = projectDataRuntime,
 ): Promise<PreparedBlocklySave> {
   assertCurrent();
   const documentText = JSON.stringify(document);

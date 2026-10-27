@@ -26,6 +26,7 @@ describe('Project command lifecycle during close', () => {
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.coderProjectContexts = new Map();
     service.stateSubject = new BehaviorSubject('loaded');
+    service.configService = { getCompileSettingsKey: () => 'fixture-local' };
     service.electronService = { isElectron: true };
     service.messageService = { warning: jasmine.createSpy('warning') };
     service.logService = { update: jasmine.createSpy('log') };

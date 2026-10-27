@@ -14,9 +14,14 @@ class SubappOwnerSupervisor {
         this.pending = new Map();
         this.recoveries = new Set();
         this.processLeases = processLeases;
+        this.requests = new Set();
+        this.quitting = false;
+        this.shutdownWork = null;
+        this.abortReason = null;
     }
 
     connect(contents) {
+        this.requireAdmission();
         if (!contents || contents.isDestroyed()) throw new Error('Subapp owner renderer is unavailable');
         let state = this.renderers.get(contents.id);
         if (!state) {
@@ -36,6 +41,7 @@ class SubappOwnerSupervisor {
     }
 
     require(contents, generation) {
+        this.requireAdmission();
         const state = this.renderers.get(contents?.id);
         if (!state || contents.isDestroyed() || generation !== state.generation) {
             throw Object.assign(new Error('Subapp owner renderer generation has ended'), { code: 'SUBAPP_RENDERER_EXPIRED' });
@@ -69,7 +75,7 @@ class SubappOwnerSupervisor {
                 method: request?.method, params: { ...(request?.params || {}) }, native, cleanups: new Set(),
                 timeoutMs: Math.max(100, Math.min(30_000, Number(request?.timeoutMs) || 5000)), processLease };
             state.bindings.set(key, binding);
-            binding.ready = processLease ? Promise.resolve().then(() => this.send({ ...binding,
+            binding.ready = processLease ? Promise.resolve().then(() => this.request({ ...binding,
                 method: lifecycle.ownerLease.method, params: { ...(lifecycle.ownerLease.params || {}), ...processLease },
                 timeoutMs: Math.max(100, Math.min(30_000, Number(lifecycle.ownerLease.timeoutMs) || 5000)),
             })) : Promise.resolve();
@@ -101,7 +107,7 @@ class SubappOwnerSupervisor {
 
     async invalidate(rendererId) {
         const state = this.renderers.get(rendererId);
-        if (!state) return;
+        if (!state) return [];
         const bindings = [...state.bindings.values()];
         state.bindings.clear();
         state.generation = randomUUID(); // Fence old document IPC synchronously.
@@ -109,15 +115,62 @@ class SubappOwnerSupervisor {
             // Idempotent owner release is retryable; domain commands are never replayed.
             let result;
             for (let attempt = 0; attempt < 3; attempt++) {
+                if (this.abortReason) return { ok: false, error: this.abortReason.message };
                 result = await this.cleanup(binding);
-                if (result.ok) return;
+                if (result.ok) return result;
             }
             this.onError('[subapp-owner] Renderer exit cleanup failed', {
                 toolId: binding.toolId, ownerSessionId: binding.ownerSessionId, error: result.error,
             });
+            return result;
         }));
         this.recoveries.add(recovery);
-        try { await recovery; } finally { this.recoveries.delete(recovery); }
+        try { return await recovery; } finally { this.recoveries.delete(recovery); }
+    }
+
+    requireAdmission() {
+        if (this.quitting) throw Object.assign(new Error('Application is quitting.'), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+    }
+
+    request(binding) {
+        if (this.abortReason) return Promise.reject(this.abortReason);
+        const controller = new AbortController();
+        this.requests.add(controller);
+        return Promise.resolve().then(() => {
+            if (this.abortReason) throw this.abortReason;
+            return this.send({ ...binding, signal: controller.signal });
+        }).finally(() => this.requests.delete(controller));
+    }
+
+    /** Terminal host fence. The caller supplies the one global shutdown deadline. */
+    shutdown({ signal } = {}) {
+        if (this.shutdownWork) return this.shutdownWork;
+        this.quitting = true;
+        const recoveries = [...this.recoveries];
+        const drains = [...this.renderers.keys()].map(id => this.invalidate(id));
+        this.shutdownWork = new Promise(resolve => {
+            let settled = false;
+            const finish = result => {
+                if (settled) return;
+                settled = true;
+                signal?.removeEventListener('abort', abort);
+                resolve(result);
+            };
+            const abort = () => {
+                this.abortReason = new Error('Subapp owner cleanup exceeded host shutdown deadline');
+                for (const controller of this.requests) controller.abort(this.abortReason);
+                finish({ complete: false, errors: [this.abortReason.message], pending: this.pending.size, timedOut: true });
+            };
+            signal?.addEventListener('abort', abort, { once: true });
+            if (signal?.aborted) abort();
+            Promise.allSettled([...recoveries, ...drains]).then(results => {
+                const errors = results.flatMap(result => result.status === 'rejected'
+                    ? [String(result.reason?.message || result.reason)]
+                    : result.value.filter(row => !row.ok).map(row => row.error));
+                finish({ complete: errors.length === 0, errors, pending: this.pending.size, timedOut: false });
+            });
+        });
+        return this.shutdownWork;
     }
 
     /** Native port: pin an acknowledged owner AND its registered Runtime.
@@ -155,6 +208,7 @@ class SubappOwnerSupervisor {
             // Acquisition may have reached the Runtime despite a lost reply.
             // Fence the file first, then release after that request settles.
             await binding.ready?.catch(() => {});
+            if (this.abortReason) throw this.abortReason;
             // Join all native cleanup, even if one fails. Keep failed callbacks
             // available to the existing bounded recovery path.
             const results = await Promise.allSettled([...binding.cleanups].map(async cleanup => {
@@ -162,7 +216,8 @@ class SubappOwnerSupervisor {
             }));
             const failure = results.find(result => result.status === 'rejected');
             if (failure) throw failure.reason;
-            if (!binding.native) await this.send(binding);
+            if (this.abortReason) throw this.abortReason;
+            if (!binding.native) await this.request(binding);
         })
             .then(() => ({ ok: true }), error => ({ ok: false, error: String(error?.message || error) }))
             .finally(() => this.pending.delete(binding.key));

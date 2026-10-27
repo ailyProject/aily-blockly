@@ -9,6 +9,8 @@ export interface AbsHostBoundCall {
   type: string;
   argumentOrder?: readonly AbsArgumentDefinition[];
   extraState?: unknown;
+  /** Internal unchanged inactive-instance coverage, rechecked by identity matching. */
+  preserveInactive?: true;
 }
 
 /** Host-only, source-instance evidence. Never an Agent payload or a type-wide permission. */

@@ -4,8 +4,8 @@ import { NgZone } from '@angular/core';
 import 'blockly/blocks';
 import '../../../editors/blockly-editor/components/blockly/plugins/block-plus-minus/src/index.js';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
-import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess } from './abs-baseline-store';
-import { absJson, hashAbsText, indexAbsSyntax } from './abs-identity-map';
+import { AbsBaselineStore, AbsSyncStoragePort, AbsSyncStorageAccess, absBaselineKey } from './abs-baseline-store';
+import { absJson, createAbsProjection, hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { parseAbsSyntax } from './abs-syntax';
 import { normalizeAbsSerializedWorkspace } from './abs-serialized-workspace';
 import { composeBlocklyPage, replaceBlocklyPageWorkspace } from '../../../editors/blockly-editor/services/blockly-project-model';
@@ -83,7 +83,7 @@ describe('v2 actual workspace generation coordinator', () => {
     const access: AbsSyncStorageAccess = {
       read, replace: async (key, expected, content) => {
         expect(held).toBeTrue();
-        if (key === failWrite) throw new Error('injected write failure');
+        if (key === failWrite || failWrite === 'recoveries/*' && key.startsWith('recoveries/')) throw new Error('injected write failure');
         const before = await read(key);
         if ((before === null ? null : await hashAbsText(before)) !== expected) return false;
         if (content === null) disk.delete(key); else disk.set(key, content);
@@ -139,7 +139,9 @@ describe('v2 actual workspace generation coordinator', () => {
         withNativeStateLoading(Blockly, editor.workspace, state,
           () => Blockly.serialization.workspaces.load(state, editor.workspace), block => nativeFieldOrder(block, definitions));
       }),
-      prepareProjectCode: jasmine.createSpy('prepareCode').and.resolveTo(null),
+      prepareProjectCode: jasmine.createSpy('prepareCode').and.callFake(async (_assertCurrent, owner) => ({
+        revision: editor.captureProjectSnapshot(owner).revision, code: '', artifacts: null, blockCodeMapText: null,
+      })),
       markWorkspaceCodeDirty: jasmine.createSpy('dirty'),
       requestWorkspaceVisualRefresh: jasmine.createSpy('visualRefresh'),
       publishAbsContext: jasmine.createSpy('publishAbsContext'),
@@ -429,6 +431,15 @@ describe('v2 actual workspace generation coordinator', () => {
     await expectAsync(project.hasUnsavedChanges()).toBeRejected();
   });
 
+  it('keeps the saved ABI fact when ordinary save leaves ABS mirrors pending', async () => {
+    await baseline(); roots().setFieldValue('saved before mirror failure', 'TEXT'); failWrite = 'project.abs';
+    await expectAsync((project as any).absSaveHandler(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({
+      code: 'ABS_SAVE_INCOMPLETE', projectSaved: true, generatedCodePublished: false, partial: true,
+    }));
+    expect(disk.get('project.abi')).toContain('saved before mirror failure');
+    expect(gate.blocked).toBeTrue();
+  });
+
   const enableDefaults = (extra = '') => {
     const replay = enableNative(), source = nativeDefaultSource + extra;
     new Function('Blockly', 'Arduino', source)(Blockly, { forBlock: {} });
@@ -697,15 +708,63 @@ describe('v2 actual workspace generation coordinator', () => {
     editor.publishAbsContext.and.callFake(() => expect(NgZone.isInAngularZone()).toBeTrue());
     await zone.run(async () => {
       const { base, source, validation } = await validateNativeEdit();
-      expect(outside).toHaveBeenCalledTimes(1);
+      expect(outside).toHaveBeenCalledTimes(2); // Baseline export and candidate preparation.
       expect(NgZone.isInAngularZone()).toBeTrue();
       const progress = jasmine.createSpy('progress').and.callFake(() => expect(NgZone.isInAngularZone()).toBeTrue());
       expect((await service.applyGeneration(source, base.generation, { chunk: true, onProgress: progress }, validation)).publication.status).toBe('COMMITTED');
-      expect(outside).toHaveBeenCalledTimes(3); // Reuse checks and loading have separate scopes; publication stays in the caller.
+      expect(outside).toHaveBeenCalledTimes(4); // Reuse checks and loading have separate scopes; publication stays in the caller.
       expect(progress).toHaveBeenCalled();
       expect(NgZone.isInAngularZone()).toBeTrue();
       expect(editor.publishAbsContext).toHaveBeenCalled();
     });
+  });
+
+  for (const mode of ['export', 'save', 'reuse', 'read-only'] as const)
+  it(`keeps ${mode} storage/digests outside Angular and publishes editor state inside`, async () => {
+    await baseline();
+    if (mode === 'save') roots().setFieldValue('saved edit', 'TEXT');
+    const zone = new NgZone({ enableLongStackTrace: false });
+    service = new AbsWorkspaceSyncService(editor, project, zone);
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    let digests = 0;
+    spyOn(crypto.subtle, 'digest').and.callFake((algorithm, data) => {
+      digests++; expect(NgZone.isInAngularZone()).toBeFalse();
+      return digest(algorithm, data);
+    });
+    const read = port.read;
+    spyOn(port, 'read').and.callFake(key => { expect(NgZone.isInAngularZone()).toBeFalse(); return read(key); });
+    editor.prepareProjectCode.and.callFake(async () => { expect(NgZone.isInAngularZone()).toBeTrue(); return null; });
+    editor.publishAbsContext.calls.reset();
+    editor.publishAbsContext.and.callFake(() => expect(NgZone.isInAngularZone()).toBeTrue());
+    (project.publishPreparedSaveOutputs as jasmine.Spy).and.callFake(async (_path, _prepared, _generated, guard) => {
+      expect(NgZone.isInAngularZone()).toBeTrue(); guard();
+    });
+    await zone.run(async () => {
+      const result = await service.exportGeneration({ save: mode === 'save', reuseCurrent: mode === 'reuse', publish: mode !== 'read-only' });
+      expect(result.publication.status).toBe(mode === 'read-only' ? 'NOT_COMMITTED' : 'COMMITTED');
+      if (mode === 'reuse') expect(result.reused).toBeTrue();
+      expect(NgZone.isInAngularZone()).toBeTrue();
+    });
+    expect(digests).toBeGreaterThan(0);
+    if (mode === 'save') expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(editor.publishAbsContext.calls.count()).toBe(mode === 'read-only' ? 0 : 1);
+    expect(gate.blocked).toBeFalse();
+  });
+
+  it('returns an isolated save error to the caller and releases its workspace lease', async () => {
+    await baseline();
+    const before = [...disk], zone = new NgZone({ enableLongStackTrace: false });
+    service = new AbsWorkspaceSyncService(editor, project, zone);
+    spyOn(project, 'prepareSave').and.callFake(async () => {
+      expect(NgZone.isInAngularZone()).toBeFalse(); throw new Error('save preparation failed');
+    });
+    editor.publishAbsContext.calls.reset();
+    await zone.run(async () => {
+      await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWithError('save preparation failed');
+      expect(NgZone.isInAngularZone()).toBeTrue();
+    });
+    expect([...disk]).toEqual(before); expect(editor.publishAbsContext).not.toHaveBeenCalled();
+    expect(gate.blocked).toBeFalse();
   });
 
   it('keeps pure candidate digests outside Angular and resumes the caller for publication', async () => {
@@ -2717,6 +2776,88 @@ describe('v2 actual workspace generation coordinator', () => {
     expect((await rebind(tools, 'sha256:' + '0'.repeat(64))).code).toBe('ABS_REBIND_STALE'); expect([...disk]).toEqual(before);
   });
 
+  it('offers a guarded repair with raw draft evidence for combined scope/map/source conflicts', async () => {
+    const { tools, source } = await wireBase();
+    project.currentProjectPath = 'D:/copied-project';
+    disk.set('project.abs', source); disk.set('project.abs.map.json', '{broken copied map');
+    const before = [...disk], diagnosis = await inspect(tools);
+    expect(diagnosis.diagnostics.issues).toContain('ABS_SCOPE_INVALID');
+    expect(diagnosis.diagnostics.issues).toContain('ABS_MAP_INVALID');
+    expect(diagnosis.diagnostics.issues).toContain('ABS_SOURCE_CONFLICT');
+    expect(diagnosis.diagnostics.rebind).toBeUndefined();
+    expect(diagnosis.diagnostics.draft).toEqual(jasmine.objectContaining({
+      hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength,
+    }));
+    expect(diagnosis.diagnostics.repair).toEqual(jasmine.objectContaining({ authority: 'workspace', token: jasmine.stringMatching(/^sha256:/) }));
+    expect([...disk]).toEqual(before);
+  });
+
+  it('repairs the copied conflict from the current canvas and retains the exact original draft/map/ABI', async () => {
+    const { tools, source } = await wireBase();
+    project.currentProjectPath = 'D:/copied-project';
+    disk.set('project.abs', source); disk.set('project.abs.map.json', '{broken copied map');
+    const oldAbi = disk.get('project.abi'), oldPointer = disk.get('committed.json');
+    const diagnosis = await inspect(tools);
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'repair', authority: 'workspace', token: diagnosis.diagnostics.repair?.token ?? 'sha256:' + '0'.repeat(64) });
+    expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
+    expect(result.publication?.status).toBe('COMMITTED');
+    expect(result.evidence?.binding.scope.projectKey).toBe('D:/copied-project');
+    if (!result.recoveryArchive) return;
+    const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
+    expect(archive.disk).toEqual({ abi: oldAbi, abs: source, map: '{broken copied map' });
+    expect(archive.committed.pointer).toBe(oldPointer);
+    const restored: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'read_repair', generation: result.publication.generation });
+    expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(source);
+    expect((await inspect(tools)).diagnostics.status).toBe('ready');
+    expect(roots().getFieldValue('TEXT')).toBe('before');
+  });
+
+  it('reuses a completed repair after a lost reply without rewriting the original archive', async () => {
+    const { tools, source } = await wireBase(); disk.set('project.abs', source); disk.set('project.abs.map.json', 'broken');
+    const diagnosis = await inspect(tools), token = diagnosis.diagnostics.repair.token;
+    const request = () => ({ version: 2, requestId: crypto.randomUUID(), action: 'repair', authority: 'workspace', token });
+    const first: any = await tools.execute('abs_recovery', request());
+    expect(first.ok).withContext(JSON.stringify(first)).toBeTrue();
+    const before = [...disk], again: any = await tools.execute('abs_recovery', request());
+    expect(again.ok).withContext(JSON.stringify(again)).toBeTrue(); expect(again.reused).toBeTrue();
+    expect(again.publication.generation).toBe(first.publication.generation); expect([...disk]).toEqual(before);
+  });
+
+  it('classifies an internally lost repair acknowledgement as unknown and permits verified observation', async () => {
+    const { tools, source } = await wireBase(); disk.set('project.abs', source); disk.set('project.abs.map.json', 'broken');
+    const diagnosis = await inspect(tools), token = diagnosis.diagnostics.repair.token;
+    const request = () => ({ version: 2, requestId: crypto.randomUUID(), action: 'repair', authority: 'workspace', token });
+    loseCommitReply = true;
+    const unknown: any = await tools.execute('abs_recovery', request());
+    expect(unknown.ok).toBeFalse(); expect(unknown.code).toBe('ABS_REPAIR_OUTCOME_UNKNOWN');
+    expect(unknown.publication.status).toBe('UNKNOWN'); expect(gate.blocked).toBeFalse();
+    loseCommitReply = false;
+    expect((await inspect(tools)).diagnostics.status).toBe('ready');
+    const before = [...disk], observed: any = await tools.execute('abs_recovery', request());
+    expect(observed.ok).withContext(JSON.stringify(observed)).toBeTrue(); expect(observed.reused).toBeTrue();
+    expect([...disk]).toEqual(before);
+  });
+
+  it('does not replace any mirror if original-input archival fails', async () => {
+    const { tools, source } = await wireBase(); disk.set('project.abs', source); disk.set('project.abs.map.json', 'broken');
+    const diagnosis = await inspect(tools), before = [...disk]; failWrite = 'recoveries/*';
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'repair',
+      authority: 'workspace', token: diagnosis.diagnostics.repair.token });
+    expect(result.ok).toBeFalse(); expect([...disk]).toEqual(before); expect(gate.blocked).toBeFalse();
+  });
+
+  for (const changed of ['disk', 'canvas']) it(`rejects a repair token after the inspected ${changed} changes`, async () => {
+    const { tools, source } = await wireBase(); disk.set('project.abs', source); disk.set('project.abs.map.json', 'broken');
+    const diagnosis = await inspect(tools);
+    if (changed === 'disk') disk.set('project.abs', source + '\n'); else roots().setFieldValue('new user edit', 'TEXT');
+    const before = [...disk];
+    const result: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(), action: 'repair',
+      authority: 'workspace', token: diagnosis.diagnostics.repair.token });
+    expect(result.ok).toBeFalse(); expect(result.code).toBe('ABS_REPAIR_STALE'); expect([...disk]).toEqual(before);
+  });
+
   it('upgrades a verified previous projection through inspect/rebind without loading or saving ABI', async () => {
     const { tools, exported } = await wireBase();
     const key = `baselines/${exported.receipt.base.generation}.json`;
@@ -2996,8 +3137,51 @@ describe('v2 actual workspace generation coordinator', () => {
     const base = await baseline(); (project.publishPreparedSaveOutputs as jasmine.Spy).and.rejectWith(new Error('header disk full'));
     const result = await apply(base);
     expect(result.publication.status).toBe('COMMITTED'); expect(result.warnings.length).toBe(1);
+    expect(result.derivedOutputs).toEqual(jasmine.objectContaining({ published: false, code: 'PROJECT_DERIVED_OUTPUT_PENDING', error: 'header disk full' }));
     expect(roots().getFieldValue('TEXT')).toBe('after'); expect(gate.blocked).toBeFalse();
     expect(editor.requestWorkspaceVisualRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  for (const publicationFailure of [false, true]) it('reports a caught generator failure after committed apply, publication failure=' + publicationFailure, async () => {
+    const { tools, request, source } = await wireBase();
+    const validated: any = await tools.execute('abs_validate', request, source);
+    expect(validated.ok).toBeTrue();
+    editor.prepareProjectCode.and.callFake(async (_assertCurrent, lease) => ({
+      revision: editor.captureProjectSnapshot(lease).revision, code: null, artifacts: null, blockCodeMapText: null,
+      error: '[BLOCKLY_GENERATOR_MISSING] missing generator fixture',
+    }));
+    if (publicationFailure) (project.publishPreparedSaveOutputs as jasmine.Spy).and.rejectWith(new Error('header write failed'));
+    const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validated.receipt }, source);
+    expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED');
+    expect(result.receipt.validation.scope).toBe('complete-generation');
+    expect(result.derivedOutputs.published).toBeFalse(); expect(result.derivedOutputs.code).toBe('PROJECT_CODE_GENERATION_FAILED');
+    expect(result.derivedOutputs.error).toContain('missing generator fixture');
+    expect(result.warnings.length).toBe(publicationFailure ? 2 : 1);
+    if (publicationFailure) expect(result.derivedOutputs.error).toContain('header write failed');
+    expect(disk.get('project.abs')).toBeDefined(); expect(roots().getFieldValue('TEXT')).toBe('wire edit');
+    expect(gate.blocked).toBeFalse(); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled();
+  });
+
+  for (const missing of ['null', 'empty-error']) it('does not certify generated artifacts for a missing preparation: ' + missing, async () => {
+    const { tools, request, source } = await wireBase();
+    const validated: any = await tools.execute('abs_validate', request, source);
+    editor.prepareProjectCode.and.callFake(async (_assertCurrent, lease) => missing === 'null' ? null : {
+      revision: editor.captureProjectSnapshot(lease).revision, code: null, artifacts: null, blockCodeMapText: null, error: '',
+    });
+    const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validated.receipt }, source);
+    expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED');
+    expect(result.derivedOutputs).toEqual(jasmine.objectContaining({ published: false, code: 'PROJECT_CODE_GENERATION_FAILED' }));
+    expect(result.derivedOutputs.error).toContain('did not produce code'); expect(result.warnings.length).toBe(1);
+    expect(roots().getFieldValue('TEXT')).toBe('wire edit'); expect(gate.blocked).toBeFalse();
+  });
+
+  it('keeps an attempted generator failure visible when an unchanged ABS baseline is reused', async () => {
+    const base = await baseline(), before = [...disk];
+    editor.prepareProjectCode.and.resolveTo(null);
+    const result = await service.exportGeneration({ save: true, reuseCurrent: true });
+    expect(result.reused).toBeTrue(); expect(result.publication.generation).toBe(base.generation);
+    expect(result.derivedOutputs).toEqual(jasmine.objectContaining({ published: false, code: 'PROJECT_CODE_GENERATION_FAILED' }));
+    expect(result.warnings.length).toBe(1); expect([...disk]).toEqual(before);
   });
 
   it('queued work is bound to its original page/project/runtime, not a later activation', async () => {
@@ -3073,5 +3257,291 @@ describe('v2 actual workspace generation coordinator', () => {
     } });
     expect(result.publication.status).toBe('COMMITTED');
     expect(queued).toBeDefined(); await queued; expect(saving).toHaveBeenCalledTimes(1);
+  });
+
+  describe('explicit existing block state coordinator', () => {
+    for (const id of ['x'.repeat(300), 'x'.repeat(512), '😀'.repeat(256)]) {
+      it('saves an exact inspected native ID without truncation, preserving state and protection: ' + id.length + ' UTF-16 units', async () => {
+        const state = nativeState(); state.blocks.blocks[0].id = id;
+        Blockly.serialization.workspaces.load(state, editor.workspace);
+        const live = editor.workspace.getBlockById(id)!;
+        live.setDisabledReason(true, 'LIBRARY_RULE');
+        const original = editor.captureProjectSnapshot().document;
+        const base = await baseline();
+        const inspection = await service.setBlockState({ version: 2, requestId: 'state-id-request-0001',
+          action: 'inspect', blockTypes: ['abs_sync_root'] });
+        expect(inspection.instances[0].blockId).toBe(id); expect(inspection.expectedGeneration).toBe(base.generation);
+        const result = await service.setBlockState({ version: 2, requestId: 'state-id-request-0002', action: 'update',
+          expectedGeneration: inspection.expectedGeneration,
+          changes: [{ blockId: inspection.instances[0].blockId, disabled: true, collapsed: true }] });
+        expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED');
+        expect(result.receipt.states[0].blockId).toBe(id);
+        expect(editor.workspace.getBlockById(id)).toBe(live); expect(live.isDeletable()).toBeFalse();
+        expect([...live.getDisabledReasons()]).toEqual(['LIBRARY_RULE', 'MANUALLY_DISABLED']);
+        const savedDocument = JSON.parse(disk.get('project.abi')!), saved = composeBlocklyPage(savedDocument, 'main');
+        expect(saved.blocks.blocks[0].id).toBe(id); expect(saved.blocks.blocks[0].data).toBe('opaque');
+        expect(saved.blocks.blocks[0].fields.TEXT).toBe('before');
+        expect(saved.blocks.blocks[0].deletable).toBeFalse(); expect(saved.blocks.blocks[0].movable).toBeFalse();
+        expect(saved.blocks.blocks[0].collapsed).toBeTrue(); expect(saved.blocks.blocks[0].disabledReasons).toEqual(['LIBRARY_RULE', 'MANUALLY_DISABLED']);
+        expect(savedDocument.sharedModel).toEqual(original.sharedModel); expect(savedDocument.pages[1]).toEqual(original.pages[1]);
+        expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+      });
+    }
+
+    it('rejects a mixed over-limit batch before native setters, persistence or generation work', async () => {
+      const base = await baseline(), before = [...disk], live = roots();
+      const setter = spyOn(live, 'setDisabledReason').and.callThrough();
+      await expectAsync(Promise.resolve().then(() => service.setBlockState({ version: 2, requestId: 'state-id-request-0001', action: 'update',
+        expectedGeneration: base.generation, changes: [{ blockId: 'protected', disabled: true },
+          { blockId: 'x'.repeat(513), collapsed: true }] })))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BLOCK_STATE_ID_LIMIT', publication: { status: 'NOT_COMMITTED' } }));
+      expect(setter).not.toHaveBeenCalled(); expect([...disk]).toEqual(before);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+    });
+
+    const stateRequest = (generation: string, changes = [{ blockId: 'protected', disabled: true, collapsed: true }]) => ({
+      version: 2, requestId: 'state-request-000001', action: 'update', expectedGeneration: generation, changes,
+    });
+    const inspectState = () => service.setBlockState({ version: 2, requestId: 'state-request-000001',
+      action: 'inspect', blockIds: ['protected'] });
+    const firstState = (expectedCanvas: string) => service.setBlockState({ version: 2, requestId: 'state-request-000002',
+      action: 'update', expectedCanvas, changes: [{ blockId: 'protected', disabled: true }] });
+
+    it('discovers live IDs before a first export without probing broken providers, flushing or writing', async () => {
+      const root = roots(), field = new Blockly.FieldDropdown(() => [['Alpha', 'A']]);
+      root.appendDummyInput('DYNAMIC_OPTIONS').appendField(field, 'MODE');
+      const provider = spyOn(field, 'getOptions').and.throwError('first export provider failure');
+      const before = [...disk], result = await inspectState();
+      expect(result.ok).toBeTrue(); expect(result.baseline.status).toBe('missing');
+      expect(result.expectedGeneration).toBeUndefined(); expect(result.expectedCanvas).toEqual(jasmine.any(String));
+      expect(result.receipt.expectedCanvas).toBe(result.expectedCanvas);
+      expect(result.instances[0].blockId).toBe('protected'); expect(result.instances[0].sourceRange).toBeUndefined();
+      expect(provider).not.toHaveBeenCalled(); expect(projectDataRuntime.flushPending).not.toHaveBeenCalled();
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect([...disk]).toEqual(before);
+    });
+
+    for (const existingAbi of [false, true]) it('bootstraps the first generation only after explicit inspected disable, existing ABI=' + existingAbi, async () => {
+      const root = roots(), field = new Blockly.FieldDropdown(() => [['Alpha', 'A']]);
+      root.appendDummyInput('DYNAMIC_OPTIONS').appendField(field, 'MODE');
+      const provider = spyOn(field, 'getOptions').and.throwError('first export provider failure');
+      if (existingAbi) disk.set('project.abi', absJson(editor.captureProjectSnapshot().document));
+      const oldAbi = disk.get('project.abi') ?? null;
+      disk.set('project.abs', 'old unapplied user draft');
+      const inspection = await inspectState(), result = await firstState(inspection.expectedCanvas);
+      expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED');
+      expect(result.receipt.expectedCanvas).toBe(inspection.expectedCanvas); expect(result.receipt.expectedGeneration).toBeUndefined();
+      expect(result.receipt.inputAbiHash).toBe(oldAbi === null ? null : await hashAbsText(oldAbi));
+      expect(result.receipt.output.binding.generation).toEqual(jasmine.any(String));
+      expect(provider).not.toHaveBeenCalled(); expect(root.isEnabled()).toBeFalse(); expect(root.isDeletable()).toBeFalse();
+      expect(roots()).toBe(root); expect(disk.get('project.abs')).toContain('@disabled');
+      const baselineRecord = JSON.parse(disk.get(absBaselineKey(result.receipt.output.binding.generation))!);
+      expect(baselineRecord.inputAbs).toBe('old unapplied user draft');
+      expect(result.draftArchive).toEqual(jasmine.objectContaining({ generation: result.receipt.output.binding.generation,
+        baseGeneration: null, origin: 'initial-baseline' }));
+      const recoveredDraft = await service.readArchivedDraft(result.draftArchive.generation);
+      expect(recoveredDraft.abs).toBe('old unapplied user draft'); expect(recoveredDraft.baseGeneration).toBeNull();
+      expect(recoveredDraft.hash).toBe(await hashAbsText('old unapplied user draft'));
+      expect((await new AbsBaselineStore(port, scope).loadCommitted())!.map.generation).toBe(result.receipt.output.binding.generation);
+      expect(gate.blocked).toBeFalse();
+    });
+
+    for (const changed of ['canvas', 'disk', 'inactive-page']) it('rejects a stale first-baseline inspection before native mutation: ' + changed, async () => {
+      const inspection = await inspectState(), root = roots();
+      if (changed === 'canvas') root.setFieldValue('later user edit', 'TEXT');
+      if (changed === 'disk') disk.set('project.abs', 'later external draft');
+      if (changed === 'inactive-page') editor.mutateOtherPage();
+      const before = [...disk];
+      await expectAsync(firstState(inspection.expectedCanvas)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BLOCK_STATE_INSPECTION_STALE' }));
+      expect(root.isEnabled()).toBeTrue(); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+      expect([...disk]).toEqual(before); expect(gate.blocked).toBeFalse();
+    });
+
+    it('returns states from the same canvas boundary as its token after asynchronous disk inspection', async () => {
+      const read = port.read.bind(port);
+      spyOn(port, 'read').and.callFake(async key => {
+        if (key === 'project.abs') roots().setCollapsed(true);
+        return read(key);
+      });
+      const result = await inspectState();
+      expect(result.instances[0].collapsed).toBeTrue(); expect(result.expectedCanvas).toEqual(jasmine.any(String));
+    });
+
+    it('rejects a token after the declarative catalog changes even when the canvas and runtime epoch do not', async () => {
+      const result = await inspectState();
+      declare({ type: 'state_later_catalog', message0: 'new definition', previousStatement: null });
+      await expectAsync(firstState(result.expectedCanvas)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BLOCK_STATE_INSPECTION_STALE' }));
+      expect(roots().isEnabled()).toBeTrue(); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+
+    for (const bad of ['orphan-map', 'invalid-pointer']) it('still inspects live state but never grants bootstrap authority for ' + bad, async () => {
+      disk.set(bad === 'orphan-map' ? 'project.abs.map.json' : 'committed.json', '{}');
+      const before = [...disk], result = await inspectState();
+      expect(result.ok).toBeTrue(); expect(result.instances[0].blockId).toBe('protected');
+      expect(result.baseline.status).toBe('unavailable'); expect(result.expectedCanvas).toBeUndefined();
+      expect(result.expectedGeneration).toBeUndefined(); expect([...disk]).toEqual(before);
+    });
+
+    it('restores a definitely uncommitted first state change and exposes its journal without granting another token', async () => {
+      const inspection = await inspectState(), root = roots(); failWrite = 'project.abi';
+      const result = await firstState(inspection.expectedCanvas);
+      expect(result.ok).toBeFalse(); expect(result.publication.status).toBe('NOT_COMMITTED');
+      expect(result.application).toBe('ROLLED_BACK'); expect(root.isEnabled()).toBeTrue();
+      expect(disk.has('project.abi')).toBeFalse(); expect(gate.blocked).toBeFalse();
+      failWrite = undefined;
+      const next = await inspectState();
+      expect(next.ok).toBeTrue(); expect(next.baseline).toEqual({ status: 'unavailable', code: 'ABS_TRANSACTION_PENDING' });
+      expect(next.expectedCanvas).toBeUndefined(); expect(next.instances[0].blockId).toBe('protected');
+    });
+
+    it('does not advertise ordinary generated sources as first-baseline draft archives', async () => {
+      const base = await baseline();
+      await expectAsync(service.readArchivedDraft(base.generation)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DRAFT_ARCHIVE_MISSING' }));
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.draftArchive).toBeUndefined();
+      await expectAsync(service.readArchivedDraft(result.receipt.output.binding.generation))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DRAFT_ARCHIVE_MISSING' }));
+    });
+    it('inspects exact live IDs and committed locations without publishing or generating', async () => {
+      const base = await baseline(), before = [...disk];
+      const result = await service.setBlockState({ version: 2, requestId: 'state-request-000001', action: 'inspect', blockIds: ['protected'], limit: 1 });
+      expect(result.ok).toBeTrue(); expect(result.expectedGeneration).toBe(base.generation);
+      expect(result.instances).toEqual([jasmine.objectContaining({ blockId: 'protected', type: 'abs_sync_root', manualDisabled: false, collapsed: false })]);
+      expect(result.instances[0].sourceRange.start).toBeGreaterThanOrEqual(0);
+      expect([...disk]).toEqual(before); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('commits manual/collapse changes, keeps library reasons and preserves native instances and protection', async () => {
+      roots().setDisabledReason(true, 'LIBRARY_RULE');
+      const base = await baseline(), root = roots();
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeTrue(); expect(result.projectSaved).toBeTrue(); expect(result.partial).toBeFalse();
+      expect(result.publication.status).toBe('COMMITTED'); expect(result.receipt.output.binding.generation).not.toBe(base.generation);
+      expect(result.receipt.beforeStates[0].disabledReasons).toEqual(['LIBRARY_RULE']);
+      expect(result.receipt.states[0]).toEqual(jasmine.objectContaining({ manualDisabled: true, collapsed: true, disabledReasons: ['LIBRARY_RULE', 'MANUALLY_DISABLED'] }));
+      expect(result.receipt.output.binding.abiHash).toBe(await hashAbsText(disk.get('project.abi')!));
+      expect(result.receipt.output.binding.mapHash).toBe(await hashAbsText(disk.get('project.abs.map.json')!));
+      expect(result.abs).toBe(disk.get('project.abs')); expect(result.abs).toContain('@disabled');
+      expect(roots()).toBe(root); expect(roots().isDeletable()).toBeFalse();
+      expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+      const saved = composeBlocklyPage(JSON.parse(disk.get('project.abi')!), 'main');
+      expect(saved.blocks.blocks[0]['collapsed']).toBeTrue(); expect(saved.blocks.blocks[0]['disabledReasons']).toEqual(['LIBRARY_RULE', 'MANUALLY_DISABLED']);
+    });
+    it('persists clearing only the manual reason without claiming the library-disabled block is enabled', async () => {
+      roots().setDisabledReason(true, 'LIBRARY_RULE'); roots().setDisabledReason(true, 'MANUALLY_DISABLED');
+      const base = await baseline();
+      const result = await service.setBlockState(stateRequest(base.generation, [{ blockId: 'protected', disabled: false, collapsed: false }]));
+      expect(result.ok).toBeTrue(); expect(result.receipt.states[0]).toEqual(jasmine.objectContaining({ manualDisabled: false, disabled: true, disabledReasons: ['LIBRARY_RULE'] }));
+      expect(roots().isEnabled()).toBeFalse(); expect(gate.blocked).toBeFalse();
+    });
+    it('lets an explicit disable bypass a broken active dropdown provider without executing or retaining its side effects', async () => {
+      const root = roots(), field = new Blockly.FieldDropdown(() => [['Alpha', 'A'], ['Beta', 'B']]);
+      root.appendDummyInput('DYNAMIC_OPTIONS').appendField(field, 'MODE'); root.setCollapsed(true);
+      const base = await baseline(), beforeText = root.getFieldValue('TEXT');
+      expect(root.isEnabled()).toBeTrue(); expect(root.getDisabledReasons().size).toBe(0);
+      const provider = spyOn(field, 'getOptions').and.callFake(() => {
+        root.setFieldValue('unowned option-provider mutation', 'TEXT');
+        throw new Error('active dropdown provider fixture');
+      });
+      const result = await service.setBlockState({ version: 2, requestId: 'state-request-000001', action: 'update',
+        expectedGeneration: base.generation, changes: [{ blockId: 'protected', disabled: true }] });
+      expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED'); expect(result.projectSaved).toBeTrue();
+      expect(provider).not.toHaveBeenCalled(); expect(root.getFieldValue('TEXT')).toBe(beforeText); expect(root.isCollapsed()).toBeTrue();
+      expect([...root.getDisabledReasons()]).toEqual(['MANUALLY_DISABLED']);
+      expect(result.receipt.beforeStates[0]).toEqual(jasmine.objectContaining({ disabledReasons: [], collapsed: true }));
+      expect(result.receipt.states[0]).toEqual(jasmine.objectContaining({ disabledReasons: ['MANUALLY_DISABLED'], collapsed: true }));
+      expect(composeBlocklyPage(JSON.parse(disk.get('project.abi')!), 'main').blocks.blocks[0].fields.TEXT).toBe(beforeText);
+      expect(roots()).toBe(root); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+    });
+    it('preserves committed evidence when only derived output publication fails', async () => {
+      const base = await baseline(); (project.publishPreparedSaveOutputs as jasmine.Spy).and.rejectWith(new Error('derived header fixture'));
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeFalse(); expect(result.partial).toBeTrue(); expect(result.projectSaved).toBeTrue();
+      expect(result.publication.status).toBe('COMMITTED'); expect(result.requiresReload).toBeFalse();
+      expect(result.receipt.output.binding.abiHash).toBe(await hashAbsText(disk.get('project.abi')!));
+      expect(result.abs).toBe(disk.get('project.abs')); expect(result.receipt.states[0].manualDisabled).toBeTrue();
+      expect(roots().getDisabledReasons().has('MANUALLY_DISABLED')).toBeTrue(); expect(gate.blocked).toBeFalse();
+    });
+    it('does not start when the requested generation is stale', async () => {
+      const base = await baseline(), before = [...disk];
+      await expectAsync(service.setBlockState(stateRequest('old-generation'))).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_STALE' }));
+      expect([...disk]).toEqual(before); expect(roots().isCollapsed()).toBeFalse(); expect(roots().isEnabled()).toBeTrue();
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+    });
+    it('does not overwrite an unapplied ABS candidate to change block state', async () => {
+      const base = await baseline(); disk.set('project.abs', base.source + '\n# unapplied old candidate');
+      const before = [...disk];
+      await expectAsync(service.setBlockState(stateRequest(base.generation))).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SOURCE_CONFLICT' }));
+      expect([...disk]).toEqual(before); expect(roots().isCollapsed()).toBeFalse(); expect(roots().isEnabled()).toBeTrue();
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+    });
+    it('preflights every protected target before touching an earlier editable target', async () => {
+      editor.workspace.getBlockById('child').setEditable(false);
+      const base = await baseline(), before = [...disk];
+      await expectAsync(service.setBlockState(stateRequest(base.generation, [
+        { blockId: 'protected', disabled: true, collapsed: false }, { blockId: 'child', disabled: true, collapsed: false },
+      ]))).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_STATE_EDIT_FORBIDDEN' }));
+      expect([...disk]).toEqual(before); expect(roots().isEnabled()).toBeTrue(); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('restores only tracked state after native setter failure, without rebuilding the canvas', async () => {
+      const base = await baseline(), before = [...disk], root = roots();
+      spyOn(root, 'setCollapsed').and.callFake(value => { if (value) throw new Error('native setter fixture'); });
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeFalse(); expect(result.application).toBe('ROLLED_BACK');
+      expect([...disk]).toEqual(before); expect(roots()).toBe(root); expect(root.isEnabled()).toBeTrue(); expect(root.isCollapsed()).toBeFalse();
+      expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+    });
+    it('quarantines an unowned setter callback instead of claiming complete rollback or discarding its edit', async () => {
+      const base = await baseline(), before = [...disk], root = roots(), child = editor.workspace.getBlockById('child');
+      const setCollapsed = root.setCollapsed.bind(root);
+      spyOn(root, 'setCollapsed').and.callFake(value => {
+        setCollapsed(value);
+        if (value) { child.setFieldValue(99, 'NUM'); throw new Error('unowned callback fixture'); }
+      });
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeFalse(); expect(result.application).toBe('UNKNOWN');
+      expect(result.requiresReload).toBeTrue(); expect(result.partial).toBeTrue(); expect(result.rollbackError).toBeDefined();
+      expect([...disk]).toEqual(before); expect(roots()).toBe(root); expect(root.isEnabled()).toBeTrue(); expect(root.isCollapsed()).toBeFalse();
+      expect(child.getFieldValue('NUM')).toBe(99); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled();
+      expect(gate.blocked).toBeTrue();
+    });
+    it('does not adopt a foreign committed generation as the state operation save baseline across its CAS boundary', async () => {
+      const base = await baseline(), store = new AbsBaselineStore(port, scope), committed = (await store.loadCommitted())!;
+      const foreignWorkspace = composeBlocklyPage(JSON.parse(disk.get('project.abi')!), 'main');
+      foreignWorkspace.blocks.blocks[0].fields.TEXT = 'foreign saved program';
+      const document = replaceBlocklyPageWorkspace(JSON.parse(disk.get('project.abi')!), 'main', foreignWorkspace, () => undefined);
+      const abi = absJson(document), generation = 'foreign-state-generation';
+      const projection = await createAbsProjection(foreignWorkspace, { document, scope, generation,
+        baselineRef: absBaselineKey(generation), savedAbiHash: await hashAbsText(abi), contracts: committed.contracts });
+      const exportInContext = (service as any).exportInContext.bind(service);
+      spyOn(service as any, 'exportInContext').and.callFake(async (...args: any[]) => {
+        const expected = await store.captureDisk();
+        await store.stage({ projection, mode: 'import', inputAbs: expected.abs!, abi, expected });
+        const foreign = await store.commit(generation, () => {}, async (text, hash, storage) => {
+          expect(await storage.replace('project.abi', hash, text)).toBeTrue();
+        });
+        expect(foreign.status).toBe('COMMITTED');
+        return exportInContext(...args);
+      });
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeFalse(); expect(result.code).toBe('ABS_DISK_CONFLICT'); expect(result.application).toBe('UNKNOWN');
+      expect(result.requiresReload).toBeTrue(); expect(gate.blocked).toBeTrue();
+      expect(disk.get('project.abi')).toBe(abi); expect(disk.get('project.abs')).toBe(projection.abs);
+      expect(JSON.parse(disk.get('project.abs.map.json')!).generation).toBe(generation);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled();
+    });
+    it('rolls back tracked state after a definite pre-ABI publication failure while preserving its journal', async () => {
+      const base = await baseline(), root = roots(), abi = disk.get('project.abi'); failWrite = 'project.abi';
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeFalse(); expect(result.publication.status).toBe('NOT_COMMITTED');
+      expect(roots()).toBe(root); expect(root.isEnabled()).toBeTrue(); expect(root.isCollapsed()).toBeFalse();
+      expect(disk.get('project.abi')).toBe(abi); expect((await service.inspectRecovery())!.abiSaved).toBeFalse();
+      expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeFalse();
+    });
+    it('does not undo an unknown commit acknowledgement or claim that the state change was cancelled', async () => {
+      const base = await baseline(), root = roots(); loseCommitReply = true;
+      const result = await service.setBlockState(stateRequest(base.generation));
+      expect(result.ok).toBeFalse(); expect(result.application).toBe('UNKNOWN'); expect(result.requiresReload).toBeTrue();
+      expect(root.getDisabledReasons().has('MANUALLY_DISABLED')).toBeTrue(); expect(root.isCollapsed()).toBeTrue();
+      expect(roots()).toBe(root); expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(gate.blocked).toBeTrue();
+    });
   });
 });

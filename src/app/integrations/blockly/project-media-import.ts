@@ -1,5 +1,5 @@
 import { projectDataRuntime } from '@domain/project/project-data/public-api';
-import { createElectronProjectDataFileSystem, ProjectDataFileSystem } from '../../services/domains/project/project-data/project-data-file-system';
+import { createElectronProjectDataFileSystem, ProjectDataFileSystem } from '@domain/project/public-api';
 import type { AilyDataRef } from '@domain/project/project-data/public-api';
 
 type Format = 'rgb565' | 'rgb332';

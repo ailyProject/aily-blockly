@@ -13,8 +13,9 @@ const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
-const { copyProjectDirectory, importProjectDirectory } = require("./project-file-copy");
+const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload } = require('./build-workspace-publication');
+const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
@@ -526,6 +527,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),
     install: (options) => ipcRenderer.invoke("subapp-manager-install", options),
     reinstall: (options) => ipcRenderer.invoke("subapp-manager-reinstall", options),
+    repair: (options) => ipcRenderer.invoke("subapp-manager-repair", options),
     update: (options) => ipcRenderer.invoke("subapp-manager-update", options),
     downloadUpdate: (options) => ipcRenderer.invoke("subapp-manager-download-update", options),
     installUpdate: (options) => ipcRenderer.invoke("subapp-manager-install-update", options),
@@ -668,6 +670,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     upload: (data) => ipcRenderer.invoke("uploader-upload", data),
   },
   fs: {
+    projectRecoveryReceipts: recoveryReceipts,
+    projectRepairEnvironment: {
+      forkPolicy: params => ipcRenderer.invoke('project-repair-fork-policy', params),
+      admission: () => ipcRenderer.invoke('project-repair-admission'),
+      ensure: (sourceProject, requestId) => ipcRenderer.invoke('project-repair-environment-ensure', sourceProject, requestId),
+    },
     projectFilePublicationVersion: PROJECT_FILE_PUBLICATION_VERSION,
     projectShadowIdentityMigrationVersion: PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION,
     replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
@@ -692,7 +700,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       return entries.map(e => ({ name: e.name, _isDirectory: e.isDirectory(), _isFile: e.isFile() }));
     },
     readdirSync: (path) => require("fs").readdirSync(path),
-    writeFileSync: (path, data) => require("fs").writeFileSync(path, data),
+    writeFileSync: (path, data, options) => require("fs").writeFileSync(path, data, options),
     writeFileBuffer: (path, data) => {
       require("fs").writeFileSync(path, Buffer.from(data));
     },
@@ -713,6 +721,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     mkdirSync: (path) => require("fs").mkdirSync(path, { recursive: true }),
     copySync: (src, dest) => require("fs").cpSync(src, dest, { recursive: true }),
     copyProjectDirectory: (src, dest) => copyProjectDirectory(src, dest),
+    copyRecoveryProjectDirectory: (src, dest) => copyRecoveryProjectDirectory(src, dest),
     importProjectDirectory: (src, dest, unwrapArchive) => importProjectDirectory(src, dest, unwrapArchive),
     convertBlocklyProjectToCoder: (src, entry) => require('./blockly-coder-conversion').convertBlocklyProjectToCoder(src, entry),
     existsSync: (path) => require("fs").existsSync(path),

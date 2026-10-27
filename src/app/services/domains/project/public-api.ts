@@ -18,6 +18,8 @@ export * from './project-debug-configuration.service';
 export * from './operations/project-creation-workflow';
 export * from './project-root-path';
 export * from './project-package-name';
+export * from './project-save-outcome';
+export { captureProjectDiskRecovery, inspectProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
 export * from './project-mode';
 export * from './project-document-json';
 export * from './legacy-shadow-identities';

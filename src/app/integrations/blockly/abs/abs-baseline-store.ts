@@ -2,6 +2,7 @@ import { captureAbsAbiRecipe, deriveAbsAbi } from './abs-abi-derivation';
 import { decodeAbsState } from './abs-full-state';
 import { absJson, assertCurrentAbsProjection, createAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
+import type { AbsRecoveryArchive } from './abs-generation-repair';
 
 /**
  * Project-scoped host capability. Keys are relative to its private sync directory,
@@ -20,6 +21,9 @@ export interface AbsSyncStoragePort {
 }
 
 export interface AbsDiskSnapshot { abi: string | null; abs: string | null; map: string | null }
+export interface AbsJournalRecovery {
+  action: 'recover' | 'abandon'; generation: string; token: string; scope: AbsIdentityMap['scope'];
+}
 export interface AbsGenerationInput {
   projection: AbsProjection;
   mode: 'import' | 'export';
@@ -32,6 +36,7 @@ export interface AbsGenerationInput {
   inputMap?: string | null;
   /** Explicit draft refresh: inputAbs/inputMap are the durable original draft pair. */
   draftBaseGeneration?: string;
+  recoveryArchive?: { key: string; hash: string };
 }
 interface GenerationRecord extends Omit<AbsGenerationInput, 'expected'> {
   schemaVersion: 1;
@@ -86,6 +91,7 @@ export class AbsBaselineStore {
     if (input.projection.map.savedAbiHash !== savedHash) throw new AbsSyncError('ABS_MAP_INVALID', 'Saved ABI hash does not match the prepared save shape.');
     const expected = await this.hashDisk(input.expected);
     await this.assertDraftArchive({ ...input, expected });
+    if (input.recoveryArchive) await this.readRepairArchive(input.recoveryArchive);
     if (input.inputMap !== undefined && (typeof input.inputMap !== 'string' && input.inputMap !== null
       || await hashNullable(input.inputMap) !== expected.map)) throw new AbsSyncError('ABS_GENERATION_INVALID', 'Recovery map must retain the exact replaced bytes.');
     await this.port.withLock(async storage => {
@@ -121,9 +127,75 @@ export class AbsBaselineStore {
 
   async readArchivedDraft(generation: string) {
     const { record } = await this.readGeneration(this.port, generation);
-    if (!record.draftBaseGeneration) throw new AbsSyncError('ABS_DRAFT_ARCHIVE_MISSING', 'This generation is not an archived draft.');
-    return { generation, baseGeneration: record.draftBaseGeneration, abs: record.inputAbs!,
+    const initial = !record.draftBaseGeneration && record.previousCommitted === null && record.expected.map === null
+      && record.expected.abs !== null && typeof record.inputAbs === 'string'
+      && await hashAbsText(record.inputAbs) === record.expected.abs;
+    if (!record.draftBaseGeneration && !initial) throw new AbsSyncError('ABS_DRAFT_ARCHIVE_MISSING', 'This generation is not an archived draft.');
+    return { generation, baseGeneration: record.draftBaseGeneration ?? null, ...(initial ? { origin: 'initial-baseline' as const } : {}), abs: record.inputAbs!,
       hash: record.expected.abs!, bytes: new TextEncoder().encode(record.inputAbs!).byteLength };
+  }
+
+  /** Exact originals are durable before any replacement of user-visible mirrors. */
+  async archiveRepair(generation: string, expected: AbsDiskSnapshot, pointerHash: string,
+    workspace: string, repairToken: string, assertCurrent: () => void): Promise<AbsRecoveryArchive> {
+    absBaselineKey(generation);
+    return this.port.withLock(async storage => {
+      assertCurrent();
+      if (await storage.read(PREPARED) !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the existing transaction before repair.');
+      const pointer = await storage.read(COMMITTED);
+      if (await hashNullable(pointer) !== pointerHash || absJson(await this.captureDisk(storage)) !== absJson(expected)) {
+        throw new AbsSyncError('ABS_REPAIR_STALE', 'Repair inputs changed; inspect again.');
+      }
+      if (!pointer) throw new AbsSyncError('ABS_BASELINE_MISSING', 'Repair requires the inspected baseline.');
+      const previous = this.parsePointer(pointer);
+      const baseline = await storage.read(absBaselineKey(previous.generation));
+      if (baseline === null || await hashAbsText(baseline) !== previous.hash) {
+        throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Original baseline changed before archival.');
+      }
+      const content = absJson({ schemaVersion: 1, generation, authority: 'workspace', repairToken, scope: this.scope,
+        disk: expected, committed: { pointer, baseline }, workspace });
+      const key = `recoveries/${generation}.json`;
+      assertCurrent();
+      if (!await storage.replace(key, null, content)) throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_CONFLICT', 'Repair archive already exists.');
+      const file = async (text: string | null) => ({ hash: await hashNullable(text), bytes: text === null ? 0 : new TextEncoder().encode(text).byteLength });
+      const files = { abi: await file(expected.abi), abs: await file(expected.abs), map: await file(expected.map),
+        committed: await file(pointer), baseline: await file(baseline) };
+      assertCurrent();
+      return { generation, key, hash: await hashAbsText(content), files, draft: files.abs };
+    });
+  }
+
+  async readRepair(generation: string) {
+    const { archive, recoveryArchive } = await this.inspectRepair(generation);
+    const abs = archive.disk.abs as string | null;
+    return { authority: 'workspace' as const, recoveryArchive,
+      draft: { abs, hash: await hashNullable(abs), bytes: abs === null ? 0 : new TextEncoder().encode(abs).byteLength } };
+  }
+
+  async inspectRepair(generation: string) {
+    const { record } = await this.readGeneration(this.port, generation);
+    if (!record.recoveryArchive) throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_MISSING', 'This generation has no repair archive.');
+    const archive = await this.readRepairArchive(record.recoveryArchive);
+    const file = async (text: string | null) => ({ hash: await hashNullable(text), bytes: text === null ? 0 : new TextEncoder().encode(text).byteLength });
+    const files = { abi: await file(archive.disk.abi), abs: await file(archive.disk.abs), map: await file(archive.disk.map),
+      committed: await file(archive.committed.pointer), baseline: await file(archive.committed.baseline) };
+    return { archive, recoveryArchive: { generation, ...record.recoveryArchive, files, draft: files.abs } };
+  }
+
+  private async readRepairArchive(reference: { key: string; hash: string }) {
+    if (!/^recoveries\/[A-Za-z0-9_-]{1,96}\.json$/.test(reference.key) || !/^sha256:[a-f0-9]{64}$/.test(reference.hash)) {
+      throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_INVALID', 'Invalid recovery archive reference.');
+    }
+    const content = await this.port.read(reference.key);
+    if (content === null || await hashAbsText(content) !== reference.hash) {
+      throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_INVALID', 'Recovery archive is missing or changed.');
+    }
+    const value = JSON.parse(content);
+    if (value.schemaVersion !== 1 || value.authority !== 'workspace' || !/^sha256:[a-f0-9]{64}$/.test(value.repairToken) || !value.disk
+      || !['abi', 'abs', 'map'].every(key => value.disk[key] === null || typeof value.disk[key] === 'string')
+      || typeof value.committed?.pointer !== 'string' || typeof value.committed?.baseline !== 'string'
+      || typeof value.workspace !== 'string') throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_INVALID', 'Invalid archived repair inputs.');
+    return value;
   }
 
   private async assertDraftArchive(record: Pick<AbsGenerationInput, 'mode' | 'inputAbs' | 'inputMap' | 'draftBaseGeneration' | 'expected'>) {
@@ -167,6 +239,37 @@ export class AbsBaselineStore {
     return { ...result, mode: record.mode };
   }
 
+  /** Exact journal authority, not general permission to reset the project or its editor. */
+  inspectJournalRecovery(): Promise<AbsJournalRecovery | null> {
+    return this.port.withLock(storage => this.describeJournalRecovery(storage));
+  }
+
+  private async describeJournalRecovery(storage: AbsSyncStorageAccess): Promise<AbsJournalRecovery | null> {
+    const prepared = await storage.read(PREPARED);
+    if (prepared === null) return null;
+    const pointer = this.parsePointer(prepared), loaded = await this.readGeneration(storage, pointer.generation);
+    if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Prepared baseline checksum mismatch.');
+    const { record } = loaded, disk = await this.captureDisk(storage), hashes = await this.hashDisk(disk);
+    const committed = await storage.read(COMMITTED), committedHash = await hashNullable(committed);
+    if (committed !== prepared && committedHash !== record.previousCommitted) return null;
+    const action = absJson(hashes) === absJson(record.expected) ? 'abandon' : 'recover';
+    if (action === 'recover' && (record.mode === 'import' ? disk.abi !== record.abi : hashes.abi !== record.expected.abi)) return null;
+    if (![[disk.abs, record.projection.abs, hashes.abs, record.expected.abs],
+      [disk.map, absJson(record.projection.map), hashes.map, record.expected.map]].every(([current, output, actual, expected]) => current === output || actual === expected)) return null;
+    const token = await hashAbsText(absJson({ version: 1, action, scope: this.scope,
+      generation: pointer.generation, preparedHash: await hashAbsText(prepared), baselineHash: pointer.hash,
+      committedHash, hashes }));
+    return { action, generation: pointer.generation, token, scope: { ...this.scope } };
+  }
+
+  private async assertJournalRecovery(storage: AbsSyncStorageAccess, action: 'recover' | 'abandon',
+    generation: string | undefined, token: string): Promise<void> {
+    const offered = await this.describeJournalRecovery(storage);
+    if (!offered || offered.action !== action || offered.generation !== generation || offered.token !== token) {
+      throw new AbsSyncError('ABS_JOURNAL_RECOVERY_STALE', 'The inspected journal, scope or project files changed. Inspect once for a new journal capability.');
+    }
+  }
+
   /**
    * Called only after resource validation and workspace readback. commitAbi must
    * save this exact text using the host's prepared-project save port, not recapture
@@ -179,6 +282,7 @@ export class AbsBaselineStore {
     return this.port.withLock(async storage => {
       const { record, pointer } = await this.readGeneration(storage, generation);
       assertCurrentAbsProjection(record.projection);
+      if (record.recoveryArchive) await this.readRepairArchive(record.recoveryArchive);
       if (await storage.read(PREPARED) !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover or abandon the prepared transaction first.');
       if (absJson(await this.hashDisk(await this.captureDisk(storage))) !== absJson(record.expected)) {
         return this.result(storage, record, 'CONFLICT', 'Project files changed during preparation.');
@@ -203,21 +307,24 @@ export class AbsBaselineStore {
   }
 
   /** Restart recovery verifies actual bytes; it never re-applies or re-saves input ABS. */
-  async recover(assertCurrent: () => void): Promise<AbsPublishResult | null> {
+  async recover(assertCurrent: () => void, capability?: { generation?: string; token?: string }): Promise<AbsPublishResult | null> {
     return this.port.withLock(async storage => {
+      if (capability?.token !== undefined) await this.assertJournalRecovery(storage, 'recover', capability.generation, capability.token);
       const text = await storage.read(PREPARED);
       if (text === null) return null;
       const pointer = this.parsePointer(text);
       const { record, pointer: actual } = await this.readGeneration(storage, pointer.generation);
       if (absJson(pointer) !== absJson(actual)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Prepared baseline checksum mismatch.');
+      if (record.recoveryArchive) await this.readRepairArchive(record.recoveryArchive);
       try { return await this.publish(storage, record, text, assertCurrent); }
       catch (error) { return this.classifyFailure(storage, record, error); }
     });
   }
 
   /** Explicit cancellation only before ABI commit; immutable input/baseline stays available. */
-  async abandon(generation: string): Promise<void> {
+  async abandon(generation: string, token?: string): Promise<void> {
     await this.port.withLock(async storage => {
+      if (token !== undefined) await this.assertJournalRecovery(storage, 'abandon', generation, token);
       const text = await storage.read(PREPARED);
       if (text === null) return;
       const pointer = this.parsePointer(text);

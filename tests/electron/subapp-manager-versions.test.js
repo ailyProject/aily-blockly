@@ -112,6 +112,150 @@ function fixture(t, options = {}) {
   };
 }
 
+test('Agent repair keeps the installed version even when the catalog has a newer release', async t => {
+  const oldVersion = '0.1.32';
+  const archive = portableSubappTarball({ packageName: PACKAGE, version: oldVersion, id: ID });
+  let stopped = 0;
+  const f = fixture(t, { archive, managerOptions: {
+    listBusyHolders: async () => [],
+    forceStopChildToolByCatalogId: async () => { stopped++; throw new Error('must not stop'); },
+  } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), oldVersion);
+  const result = await f.manager.repair({ id: ID });
+  assert.equal(result.version, oldVersion);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, oldVersion);
+  assert.ok(f.calls.some(call => call.args[0] === 'view' && call.args[1] === `${PACKAGE}@${oldVersion}`));
+  assert.equal(stopped, 0);
+});
+
+test('Agent repair rejects active holders before download without stopping anything', async t => {
+  const f = fixture(t, { managerOptions: {
+    listChildToolHolders: async () => [{ pid: 12345, toolId: ID }],
+    listBusyHolders: async () => [],
+    forceStopChildToolByCatalogId: async () => { throw new Error('must not stop'); },
+  } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), f.entry.version);
+  await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_BUSY' });
+  assert.equal(f.downloads.length, 0);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('Agent repair validates declared skills before replacing the old same-version package', async t => {
+  const version = '0.1.33';
+  const archive = npmTarball({
+    'package.json': JSON.stringify({ name: PACKAGE, version, main: 'server/index.js',
+      aily: { uiIndex: 'ui/index.html' },
+      ailySubapp: { id: ID, agent: { protocolVersion: 1, skills: ['skill/missing/SKILL.md'],
+        tools: { transport: 'aily-child-rpc', manifest: 'agent/tools.json' } } },
+      ailyPortable: { version: 1, platforms: ['darwin', 'win32', 'linux'], architectures: ['arm64', 'x64'] } }),
+    'server/index.js': 'module.exports=1', 'ui/index.html': 'fixture',
+    'agent/tools.json': JSON.stringify({ protocolVersion: 1, transport: 'aily-child-rpc', tools: [] }),
+  });
+  const f = fixture(t, { archive, managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  await assert.rejects(f.manager.repair({ id: ID }), /skill.*not found/i);
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+});
+
+test('Agent repair replaces a damaged same-version generation only after validation and retains the old files', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const old = readInstalledState(f.rootDir, f.entry);
+  fs.writeFileSync(path.join(old.packagePath, 'old-marker.txt'), 'preserve');
+  const result = await f.manager.repair({ id: ID });
+  assert.equal(result.repaired, true);
+  assert.equal(result.version, old.installedVersion);
+  const parent = path.dirname(path.dirname(old.packagePath));
+  const backup = fs.readdirSync(parent).find(name => name.startsWith(`.replaced-${old.installedVersion}-`));
+  assert.ok(backup);
+  assert.equal(fs.readFileSync(path.join(parent, backup, 'source/old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, old.installedVersion);
+});
+
+test('Agent repair rechecks newly busy holders after preparation and leaves the active package unchanged', async t => {
+  let busy = false;
+  const f = fixture(t, { managerOptions: {
+    listBusyHolders: async () => busy ? [{ pid: 43210 }] : [],
+  } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  f.managerOptions.downloadFile = async (_url, destination) => { fs.writeFileSync(destination, f.archive); busy = true; };
+  const manager = createSubappManager(f.managerOptions);
+  await assert.rejects(manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_BUSY' });
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+});
+
+test('Agent repair download failure keeps the old active generation', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  const manager = createSubappManager({ ...f.managerOptions, downloadFile: async () => { throw new Error('offline fixture'); } });
+  await assert.rejects(manager.repair({ id: ID }), /offline fixture/);
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('Agent repair refuses managed development/next generations without downloading or replacing them', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const candidate = versions.createCandidate(f.rootDir, f.entry);
+  writeRunnablePackage(candidate.source, f.entry.version);
+  const prepared = versions.publishCandidate(f.rootDir, f.entry, candidate, { installMode: 'next' });
+  versions.activate(f.rootDir, f.entry, prepared, { mode: 'pinned' });
+  await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_DEVELOPMENT_LINK' });
+  assert.equal(f.downloads.length, 0);
+});
+
+test('Agent repair cannot silently remove the original Agent/skill declaration', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), f.entry.version);
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  const manifest = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
+  manifest.ailySubapp.agent = { skills: ['skill/existing/SKILL.md'], tools: { manifest: 'agent/tools.json' } };
+  fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify(manifest));
+  await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_CAPABILITY_CHANGED' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(source, 'package.json'))).ailySubapp.agent, manifest.ailySubapp.agent);
+});
+
+test('Agent repair preserves a pinned selector and restores its exact old package on activation failure', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const originalPrepared = versions.readPrepared(f.rootDir, f.entry);
+  versions.activate(f.rootDir, f.entry, originalPrepared, { mode: 'pinned' });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const before = fs.readFileSync(activePath, 'utf8');
+  const activate = versions.activate;
+  versions.activate = (...args) => { activate(...args); throw new Error('activation receipt fixture'); };
+  try { await assert.rejects(f.manager.repair({ id: ID }), /activation receipt fixture/); }
+  finally { versions.activate = activate; }
+  assert.equal(fs.readFileSync(activePath, 'utf8'), before);
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(versions.readActiveManifest(f.rootDir, f.entry).mode, 'pinned');
+  const result = await f.manager.repair({ id: ID });
+  assert.equal(result.ok, true);
+  assert.equal(versions.readActiveManifest(f.rootDir, f.entry).mode, 'pinned');
+});
+
+test('Agent repair preserves a concurrent active-selection change rather than rolling it back', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const externalEntry = { ...f.entry, version: '0.1.34' };
+  const candidate = versions.createCandidate(f.rootDir, externalEntry);
+  writeRunnablePackage(candidate.source, externalEntry.version);
+  const external = versions.publishCandidate(f.rootDir, externalEntry, candidate);
+  const manager = createSubappManager({ ...f.managerOptions, downloadFile: async (_url, target) => {
+    fs.writeFileSync(target, f.archive);
+    versions.activate(f.rootDir, externalEntry, external);
+  } });
+  await assert.rejects(manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_SOURCE_CHANGED' });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, externalEntry.version);
+});
+
 async function transferServer(t, handler) {
   const server = http.createServer(handler);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

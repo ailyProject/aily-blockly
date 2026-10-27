@@ -1,10 +1,17 @@
 import { Injectable, Injector } from '@angular/core';
-import { ActionService, UiService } from '@core/app-shell/public-api';
+import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
 import {
   BlocklyLibraryRuntimeRebuildInput,
   ProjectApplicationPort,
   ProjectService,
+  type BlocklySaveAsSnapshot,
+  type ProjectSaveDispatchResult,
+  type ProjectRecoveryFragment,
+  type AilyDataRef,
+  canonicalProjectJsonStringify,
+  materializeGenericProjectDataValues,
+  projectDataRuntime,
 } from '@domain/project/public-api';
 import { AiOperationRegistryService } from '@integration/automation/public-api';
 import { isAilyLibraryPackageName } from '@shared/public-api';
@@ -12,6 +19,7 @@ import { applyCdcSerialPortOverrides } from '../../editors/blockly-editor/compon
 import { BlocklyGeneratorRuntimeService } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
+import { fenceBlocklyWorkspaceInput } from '../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
 
 @Injectable({ providedIn: 'root' })
@@ -50,10 +58,63 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         && this.generatorRuntime.isActive() && this.blocklyService.isWorkspaceEditInProgress();
   }
 
-  dispatchProjectSave(path: string, timeoutMs: number): Promise<{ success: boolean; error?: string }> {
+  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean {
+    if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) return false;
+    return [ProcessState.BUILDING, ProcessState.UPLOADING, ProcessState.INSTALLING]
+      .includes(this.injector.get(WorkflowService).currentState);
+  }
+
+  captureBlocklySaveAsSnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+    return this.blocklyEditorProjectService.captureSaveAsSnapshot(path);
+  }
+
+  captureBlocklyRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+    return this.blocklyEditorProjectService.captureRecoveryCopySnapshot(path);
+  }
+
+  async captureBlocklyRecoveryFragment(path: string): Promise<ProjectRecoveryFragment> {
+    const workspace = this.blocklyService.workspace, token = projectDataRuntime.getSessionToken();
+    const assertCurrent = () => {
+      if (!this.isSameProjectPath(path, this.projectService.currentProjectPath)
+        || !this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
+        || workspace !== this.blocklyService.workspace || token !== projectDataRuntime.getSessionToken()
+        || this.blocklyService.isWorkspaceEditInProgress()) {
+        throw new Error('The partial native view changed or belongs to another project.');
+      }
+    };
+    try {
+      assertCurrent();
+      const snapshot = this.blocklyService.captureRecoverySnapshot();
+      const document = await materializeGenericProjectDataValues(snapshot.document, {
+        resolve: async <TValue>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<TValue>(ref); assertCurrent(); return value; },
+      });
+      assertCurrent();
+      if (this.blocklyService.captureRecoverySnapshot().documentText !== snapshot.documentText) {
+        throw new Error('The partial native view changed while its data references were read.');
+      }
+      const isCurrent = () => {
+        try { assertCurrent(); return this.blocklyService.captureRecoverySnapshot().documentText === snapshot.documentText; }
+        catch { return false; }
+      };
+      return { documentText: canonicalProjectJsonStringify(document), isCurrent,
+        freezeForActivation: () => {
+          if (!isCurrent()) throw new Error('The partial native view changed before activation.');
+          return fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
+        } };
+    } catch (error) {
+      return { error: (error instanceof Error ? error.message : String(error)).slice(0, 2000) };
+    }
+  }
+
+  dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult> {
     return new Promise((resolve) => {
       this.actionService.dispatch('project-save', { path }, (result) => {
-        resolve({ success: result.success, error: result.error });
+        const outcome = result.data;
+        const structured = outcome && typeof outcome.projectSaved === 'boolean'
+          && typeof outcome.generatedCodePublished === 'boolean' && typeof outcome.partial === 'boolean'
+          ? outcome : undefined;
+        resolve({ ...structured, success: result.success && (!structured || structured.projectSaved && !structured.partial),
+          error: structured?.error || (structured?.partial ? '项目文件已保存，但生成代码未完整发布。' : result.error) });
       }, timeoutMs);
     });
   }

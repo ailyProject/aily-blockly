@@ -14,7 +14,7 @@ const { markToolRefreshedForAppVersion, shouldRefreshToolForAppVersion } = requi
 const prefixMutationTails = new Map();
 
 function getManagedNpmPrefix() {
-  return process.env.AILY_NPM_PREFIX
+  return process.env.AILY_REPAIR_READONLY_NPM_PREFIX || process.env.AILY_NPM_PREFIX
     || (process.env.AILY_APPDATA_PATH
       ? path.join(process.env.AILY_APPDATA_PATH, 'npm-global')
       : '');
@@ -267,6 +267,7 @@ function installManagedPackage({
   onLog,
   logMessages,
 }) {
+  if (process.env.AILY_REPAIR_READONLY_NPM_PREFIX) return Promise.reject(new Error('Independent repair environments reuse existing managed tools read-only; tool installation or refresh is not permitted.'));
   const args = [
     'install',
     '--global',
@@ -587,6 +588,7 @@ function createManagedToolLifecycle(config, hooks = {}) {
   }
 
   function performInstallMutation(options = {}, capturedContext) {
+    if (process.env.AILY_REPAIR_READONLY_NPM_PREFIX) throw new Error('Independent repair environments cannot mutate shared managed tools.');
     const context = capturedContext || getContext(options);
     if (typeof hooks.preflightMutation === 'function') {
       try {

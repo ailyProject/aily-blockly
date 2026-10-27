@@ -2,6 +2,7 @@
   "name": "aily-blockly-tests",
   "private": true,
   "scripts": {
+    "test:subapp-owner-quit": "cd .. && node --test --test-concurrency=1 tests/electron/subapp-owner-supervisor.test.js tests/electron/subapp-lifecycle-rpc.test.js tests/electron/subapp-agent-owner-lifecycle.test.js tests/electron/application-quit.test.js tests/electron/child-tool-session-shutdown.test.js tests/electron/app-shutdown.test.js",
     "test:subapp-owner-ble": "cd .. && node tests/electron/subapp-owner-supervisor.ble.electron.cjs",
     "test:subapp-dock-i18n": "cd .. && node --test tests/subapp-dock-i18n.test.cjs tests/subapp-activity-titles.test.cjs tests/tool-i18n-generations.test.cjs",
     "test:tool-i18n": "cd .. && node --test tests/tool-i18n-generations.test.cjs",
@@ -13,6 +14,9 @@
     "test:build-workspace": "cd .. && node --test tests/build-workspace-recovery.test.cjs tests/system-boot-id.test.cjs tests/package-build-lock-runtime.test.cjs child/scripts/build-workspace-lease.test.js child/scripts/build-workspace-publication.test.js tests/electron/build-workspace-supervisor.test.js tests/electron/cloud-build-reuse.test.js child/scripts/build-source-capture.test.js child/scripts/blockly-upload-state.test.js",
     "test:blockly-recovery": "cd .. && node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless --ts-config=tests/tsconfig.blockly-recovery.spec.json --include=../tests/blockly-interaction-recovery.spec.ts --include=../tests/blockly-pointer-boundary.spec.ts --include=../tests/blockly-viewport-focus.spec.ts --include=src/app/editors/blockly-editor/utils/blockly-drag-layer.spec.ts --include=src/app/editors/blockly-editor/utils/blockly-multiselect-v13.spec.ts --include=src/app/services/domains/project/project-lifecycle-operation.spec.ts --include=src/app/editors/blockly-editor/components/dev-tool/dev-tool-coder.spec.ts",
     "test:abs-sync": "cd .. && node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless",
+    "test:project-recovery-receipts": "cd .. && node --test tests/electron/project-recovery-receipts.test.cjs tests/electron/live-operation-project-routing.test.cjs tests/electron/project-repair-environment.test.cjs tests/electron/project-repair-normalization.test.cjs tests/electron/project-repair-handoff.test.cjs tests/electron/project-repair-primary.test.cjs tests/electron/repair-environment-acceptance.test.mjs tests/repair-build-idle.test.cjs tests/electron/project-view-lock-recovery.test.cjs",
+    "test:platform-resource-roots": "cd .. && node --test tests/platform-resource-roots.test.cjs child/scripts/board-toolchain-dependencies.test.js child/scripts/compile-preprocess.test.js",
+    "test:abs-realm:electron": "cd .. && node tests/electron/abs-realm-recovery.acceptance.cjs",
     "guard:aily-chat-mainline": "cd .. && node tests/architecture/guard-aily-chat-mainline.js",
     "architecture:services": "cd .. && node tests/architecture/check-angular-service-architecture.mjs",
     "architecture:services:inventory": "cd .. && node tests/architecture/check-angular-service-architecture.mjs --inventory",

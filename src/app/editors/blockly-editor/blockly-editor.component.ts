@@ -1492,6 +1492,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private async restoreMissingProjectLibraries(projectPath: string, missingLibraries: MissingLibInfo[], session: ProjectDependencySession): Promise<boolean> {
+    this.projectService.assertProjectDependencySession(session);
+    // A verified recovery target must settle loading before managed Agent
+    // tools can repair its dependencies. Awaiting a human-only dialog here
+    // would leave its independent host permanently in STARTING.
+    if (this.projectService.hasSavedRecoveryTarget(projectPath)) {
+      throw Object.assign(new ProjectToolboxOnlyLoadError(
+        `修复副本缺少可用积木库：${missingLibraries.map(lib => lib.name).join(', ')}。请通过库工具恢复依赖后重新加载此副本。`,
+      ), { code: 'PROJECT_RECOVERY_LIBRARIES_REQUIRED' });
+    }
     try {
       this.projectService.assertProjectDependencySession(session);
       await new Promise<void>((resolve, reject) => {

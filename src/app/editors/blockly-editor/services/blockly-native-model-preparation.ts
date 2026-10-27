@@ -12,9 +12,11 @@ import { assertNativeBudget } from './blockly-native-budget';
  * The final fresh realm must reproduce each registration with the complete ABI. */
 export function prepareNativeModels(execution: NativeCandidateWorkspace, generator: Blockly.Generator,
   blocks: ReadonlyMap<AbsSyntaxNode, Blockly.Block>, resolveReferences: () => ReadonlySet<Blockly.Block>, requestId: string,
-  retained: { retainedCalls?: number[]; retainedIds?: string[] } = {}): AbsNativeModelDeclaration[] {
+  retained: { retainedCalls?: number[]; retainedIds?: string[]; inactiveNodes?: ReadonlySet<AbsSyntaxNode> } = {}): AbsNativeModelDeclaration[] {
   const nodes = new Map([...blocks].map(([node, block]) => [block, node]));
   const disabled = (block: Blockly.Block): boolean => {
+    const node = nodes.get(block);
+    if (node && retained.inactiveNodes?.has(node)) return true;
     for (let current: Blockly.Block | null = block; current; current = current.getSurroundParent()) if (nodes.get(current)?.disabled) return true;
     return false;
   };
@@ -75,20 +77,32 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     if (previous?.kind !== 'loop') declarations.set(key, effect);
     assertNativeBudget('declarations', declarations.size, 'model-preparation');
   }, () => {
-    generator.init(execution.workspace);
-    const remaining = new Set([...blocks.values()].filter(block => !disabled(block)));
-    while (remaining.size) {
-      let progress = false;
-      for (const block of remaining) {
-        if (!ready(block)) continue;
-        remaining.delete(block); progress = true;
-        const callback = generator.forBlock[block.type];
-        if (!callback) continue; // Complete generation checks generator coverage.
-        callback.call(generator, block, generator);
-        execution.assertClean(); execution.models.assertCurrent();
+    // Generators and init may scan the whole workspace, not just this worklist.
+    // A preserved parent may be absent here, so native topology alone cannot
+    // expose its children's inherited inactivity. Mask the same complete set
+    // used for ownership/worklist admission, without persisting that inheritance.
+    const reason = 'ABS_NATIVE_MODEL_PREPARATION';
+    // Already-disabled blocks keep every original reason, including this one.
+    const masked = [...blocks.values()].filter(block => disabled(block) && block.isEnabled());
+    try {
+      for (const block of masked) block.setDisabledReason(true, reason);
+      generator.init(execution.workspace);
+      const remaining = new Set([...blocks.values()].filter(block => !disabled(block)));
+      while (remaining.size) {
+        let progress = false;
+        for (const block of remaining) {
+          if (!ready(block)) continue;
+          remaining.delete(block); progress = true;
+          const callback = generator.forBlock[block.type];
+          if (!callback) continue; // Complete generation checks generator coverage.
+          callback.call(generator, block, generator);
+          execution.assertClean(); execution.models.assertCurrent();
+        }
+        unresolved = resolveReferences();
+        if (!progress) break; // Missing/cyclic dependencies remain errors, never guessed models.
       }
-      unresolved = resolveReferences();
-      if (!progress) break; // Missing/cyclic dependencies remain errors, never guessed models.
+    } finally {
+      for (const block of masked) block.setDisabledReason(false, reason);
     }
   });
   return effects();

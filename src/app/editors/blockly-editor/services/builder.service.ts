@@ -630,17 +630,20 @@ export class _BuilderService {
 
       console.log('检测到依赖变化，准备重新预处理');
 
-      // 1. 先终止正在运行的预处理进程（如果有）
+      // A newer advisory request invalidates the old result, not its process
+      // tree. Let its delegated workspace transaction finish normally first.
       if (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop) {
-        console.log('终止正在运行的预处理进程...');
+        console.log('等待正在运行的预处理进程自然结束...');
         const stopStartedAt = Date.now();
         try {
-          await this.stopPreprocess();
+          await this.waitForPreprocessDrain(this.projectService.currentProjectPath,
+            () => this.shouldCancelBackgroundPreprocess(runGeneration), 'background');
         } catch (error) {
-          console.warn('终止旧的预处理进程失败:', error);
+          if (this.initialized) this.pendingPrecompile = true;
+          if (!this.shouldCancelBackgroundPreprocess(runGeneration)) console.warn('后台预处理仍在运行，本次更新保持待处理:', error);
           return;
         } finally {
-          this.recordPreprocessDuration('stop_existing_process', stopStartedAt);
+          this.recordPreprocessDuration('drain_existing_process', stopStartedAt);
         }
       }
 
@@ -737,6 +740,17 @@ export class _BuilderService {
         const spawnStartedAt = Date.now();
         const preprocessStreamId = `builder_preprocess_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         this.preprocessStreamId = preprocessStreamId;
+        this.pendingPrecompile = false;
+        let settled = false;
+        const isCurrent = () => this.initialized && runGeneration === this.preprocessRunGeneration
+          && currentProjectPath === this.projectService.currentProjectPath;
+        const settleOwnedStream = () => {
+          settled = true;
+          if (this.preprocessStreamId === preprocessStreamId) {
+            this.preprocessProcess = null;
+            this.preprocessStreamId = null;
+          }
+        };
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
@@ -744,6 +758,7 @@ export class _BuilderService {
           true,
         ).subscribe({
           next: (output) => {
+            if (!isCurrent()) return;
             // 将预编译普通输出发送到日志（错误信息先收集，最后统一发送）
             if (output.data) {
               // 检查输出中是否包含错误信息
@@ -789,40 +804,36 @@ export class _BuilderService {
             }
           },
           error: (error) => {
-            const errorMsg = error.error || error.message || error;
-            console.warn('后台预处理失败:', errorMsg);
-            // 收集错误信息
-            this.preprocessError = '后台预处理失败: ' + errorMsg;
-            this.appendPreprocessErrorOutput('后台预处理失败: ' + errorMsg);
-            // 清理引用
-            if (this.preprocessProcess === subscription) {
-              this.preprocessProcess = null;
-              this.preprocessStreamId = null;
-            }
+            try {
+              if (!isCurrent()) return;
+              const errorMsg = error?.error || error?.message || error || '预编译进程异常结束';
+              console.warn('后台预处理失败:', errorMsg);
+              this.preprocessError = '后台预处理失败: ' + errorMsg;
+              this.appendPreprocessErrorOutput('后台预处理失败: ' + errorMsg);
+            } catch (diagnosticError) {
+              console.warn('无法记录后台预处理诊断:', diagnosticError);
+            } finally { settleOwnedStream(); }
           },
           complete: () => {
-            // 检查是否有错误发生，如果有则一次性发送所有错误到日志
-            if (this.preprocessError) {
-              console.warn('后台预处理完成但有错误:', this.preprocessError);
-              // 清理 ANSI 颜色代码并一次性发送所有错误
-              const cleanFullError = this.preprocessFullError.replace(/\[\d+(;\d+)*m/g, '');
-              this.logService.update({ "detail": cleanFullError, "state": "error" });
-              this.appendCompileLog(cleanFullError, 'ERROR');
-            } else {
-              console.log('后台预处理完成');
-              // this.logService.update({ "detail": '后台预处理完成', "state": "done" });
-            }
-            // 清理引用
-            if (this.preprocessProcess === subscription) {
-              this.preprocessProcess = null;
-              this.preprocessStreamId = null;
-            }
+            try {
+              if (!isCurrent()) return;
+              if (this.preprocessError) {
+                console.warn('后台预处理完成但有错误:', this.preprocessError);
+                const cleanFullError = this.preprocessFullError.replace(/\[\d+(;\d+)*m/g, '');
+                this.logService.update({ "detail": cleanFullError, "state": "error" });
+                this.appendCompileLog(cleanFullError, 'ERROR');
+              } else {
+                console.log('后台预处理完成');
+              }
+            } catch (diagnosticError) {
+              console.warn('无法记录后台预处理诊断:', diagnosticError);
+            } finally { settleOwnedStream(); }
           }
         });
         this.recordPreprocessDuration('spawn_command_stream', spawnStartedAt);
 
         // 保存订阅引用以便后续终止
-        this.preprocessProcess = subscription;
+        if (!settled && this.preprocessStreamId === preprocessStreamId) this.preprocessProcess = subscription;
       } catch (error) {
         if (error instanceof BlocklyCodePreparationInvalidatedError) return;
         console.warn('启动后台预处理失败:', error);
@@ -841,15 +852,8 @@ export class _BuilderService {
       }
 
       if (state === ProcessState.INSTALLING) {
-        if (this.preprocessProcess || this.preprocessStreamId) {
-          console.log('依赖安装开始，终止正在运行的预编译');
-          this.pendingPrecompile = true;
-          try {
-            await this.stopPreprocess();
-          } catch (error) {
-            console.warn('依赖安装前终止预编译失败:', error);
-          }
-        }
+        ++this.preprocessRunGeneration;
+        this.pendingPrecompile = true;
         return;
       }
 
@@ -870,12 +874,9 @@ export class _BuilderService {
   private handleAiExecutionActiveChange(waiting: boolean): void {
     if (waiting) {
       this.preprocessRunGeneration += 1;
-      // AI 操作开始，终止正在运行的预编译（结果会过时）
-      if (this.preprocessProcess || this.preprocessStreamId) {
-        console.log('AI操作开始，终止正在运行的预编译');
-        this.pendingPrecompile = true; // 标记需要重新预编译
-        this.cancelBackgroundPreprocess();
-      }
+      // Its output is now stale, but killing a delegated compiler transaction
+      // can strand unknown descendants. Keep observing its normal completion.
+      this.pendingPrecompile = true;
     } else {
       // AI 操作完成，触发延迟的预编译
       this.triggerPendingPrecompile('ai-complete', 'AI操作已完成，触发延迟的预编译');
@@ -941,7 +942,26 @@ export class _BuilderService {
    * 检查预编译是否正在进行中
    */
   isPreprocessing(): boolean {
-    return !!(this.preprocessProcess || this.preprocessStreamId);
+    return !!(this.preprocessProcess || this.preprocessStreamId || this.preprocessStop);
+  }
+
+  private async waitForPreprocessDrain(projectPath: string, isCancelled: () => boolean,
+    purpose: 'compile' | 'upload' | 'background', budgetMs = 60_000): Promise<void> {
+    const startedAt = Date.now();
+    const assertCurrent = () => {
+      if (isCancelled() || projectPath !== this.projectService.currentProjectPath) {
+        throw new Error(`${purpose} cancelled or project changed while waiting for preprocessing.`);
+      }
+    };
+    assertCurrent();
+    while (this.isPreprocessing()) {
+      assertCurrent();
+      if (Date.now() - startedAt >= budgetMs) throw Object.assign(
+        new Error('Background preprocessing is still running; no process was terminated. Retry after its normal completion.'),
+        { code: 'BACKGROUND_PREPROCESS_BUSY' });
+      await this.waitForDelay(Math.min(100, budgetMs - (Date.now() - startedAt)));
+    }
+    assertCurrent();
   }
 
   /** Upload owns scheduling before it owns the device. Let an already-running
@@ -950,14 +970,7 @@ export class _BuilderService {
     if (this.isCloudBuild()) { await this.stopPreprocess(); return; }
     ++this.preprocessRunGeneration;
     const projectPath = this.projectService.currentProjectPath;
-    const startedAt = Date.now();
-    while (this.isPreprocessing()) {
-      if (isCancelled() || projectPath !== this.projectService.currentProjectPath) {
-        throw new Error('Upload cancelled or project changed while waiting for preprocessing.');
-      }
-      if (Date.now() - startedAt >= 60_000) throw new Error('Background preprocessing is still running; retry upload after it finishes.');
-      await this.waitForDelay(100);
-    }
+    await this.waitForPreprocessDrain(projectPath, isCancelled, 'upload');
   }
 
   async canReuseBuildForUpload(isCancelled: () => boolean): Promise<boolean> {
@@ -1244,8 +1257,9 @@ export class _BuilderService {
         const tempPath = this.electronService.pathJoin(this.currentProjectPath, '.temp');
         if (cloudBuild && (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop)) await this.stopPreprocess();
 
-        // 1. 检查是否有预编译程序正在运行，等待其完成
-        if (!cloudBuild && this.preprocessProcess) {
+        // Foreground work invalidates advisory results, not their processes.
+        ++this.preprocessRunGeneration;
+        if (!cloudBuild && this.isPreprocessing()) {
           this.safeUpdateNotice({
             title: this.t('PREPARING_TITLE'),
             text: this.t('PRECOMPILE_RUNNING'),
@@ -1259,32 +1273,8 @@ export class _BuilderService {
           
           console.log('检测到后台预编译正在运行，等待其完成...');
           
-          // 等待预编译完成（轮询检查）
-          const maxWaitTime = 60000; // 最多等待60秒
-          const checkInterval = 500; // 每500ms检查一次
-          let waited = 0;
-          
-          while (this.preprocessProcess && waited < maxWaitTime) {
-            await new Promise(resolve => setTimeout(resolve, checkInterval));
-            waited += checkInterval;
-            
-            // 检查是否被取消
-            if (cancellation.signal.aborted) {
-              console.log('等待预编译时被取消');
-              this.workflowService.finishBuild(false, 'Cancelled while waiting for preprocessing');
-              reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
-              return;
-            }
-          }
-          
-          if (!this.preprocessProcess && !this.preprocessStreamId) {
-            console.log('后台预编译已完成，继续编译流程');
-          }
         }
-        if (this.preprocessProcess || this.preprocessStreamId || this.preprocessStop) {
-          console.warn('等待预编译停止后继续编译');
-          await this.stopPreprocess();
-        }
+        if (!cloudBuild) await this.waitForPreprocessDrain(requestedProjectPath, () => cancellation.signal.aborted, 'compile');
 
         // compile.js owns fresh preprocessing in the same supervised transaction.
         // Background diagnostics/cache are advisory, never a gate for a new build.
