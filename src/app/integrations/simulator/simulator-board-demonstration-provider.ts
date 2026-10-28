@@ -1,5 +1,5 @@
 import { SimulatorHostProviderOperationError } from '@aily-project/simulator-host-sdk';
-import { validateSceneDemonstrationScript } from '@aily-project/simulator-protocol/scene';
+import { validateSceneDemonstrationScript, splitDemonstrationCircuits } from '@aily-project/simulator-protocol/scene';
 import { verifySceneEditorDocumentV2Revisions } from '@aily-project/scene-model';
 
 import type { SimulatorHostBoardDemonstrationRead, SimulatorHostBoardDemonstrationWrite,
@@ -10,7 +10,7 @@ type BoardPackage = { id: string; path: string; demoPath: string; name: string; 
 
 /** Simulator-owned course resources; native paths stay inside Host callbacks. */
 export class SimulatorBoardDemonstrationProvider {
-  private artifacts: SimulatorProjectArtifactCallbackAuthority | null = null;
+  private readonly artifacts = new Map<string, SimulatorProjectArtifactCallbackAuthority>();
   private board: BoardPackage | null = null;
 
   constructor(private readonly options: {
@@ -31,9 +31,7 @@ export class SimulatorBoardDemonstrationProvider {
 
     if (this.board?.path !== board.path || this.board.demoPath !== board.demoPath
       || this.board.name !== board.name || this.board.version !== board.version) {
-      this.artifacts?.close();
-
-      this.artifacts = null;
+      this.closeArtifacts();
       this.board = board;
     }
 
@@ -50,29 +48,52 @@ export class SimulatorBoardDemonstrationProvider {
 
     const sourceCode = new TextDecoder('utf-8', { fatal: true }).decode(await this.readFile(`${directory}/sketch.ino`, 64 * 1024, signal));
 
+    const circuits = lesson.members ? await splitDemonstrationCircuits(document, lesson.members.map(member => member.boardInstanceId)) : [];
+    const members = lesson.members ? await Promise.all(lesson.members.map(async (member, index) => ({
+      id: member.id, document: circuits[index]!, artifact: null,
+      sourceCode: new TextDecoder('utf-8', { fatal: true }).decode(await this.readFile(`programs/${member.program}/sketch.ino`, 64 * 1024, signal)),
+    }))) : undefined;
+
     this.requireProject(request.projectIdentity, signal);
 
-    return { schemaVersion: 1, kind: 'aily-board-demonstration-snapshot', projectIdentity: request.projectIdentity,
+    return { ...(members ? { members } : {}), schemaVersion: 1, kind: 'aily-board-demonstration-snapshot', projectIdentity: request.projectIdentity,
       boardPackageName: board.name, boardPackageVersion: board.version, lessonId: lesson.id, revision: await digest(bytes), script, document, sourceCode, artifact: null };
   }
 
   async compile(request: SimulatorHostBoardDemonstrationRead, signal: AbortSignal): Promise<SimulatorHostBoardDemonstrationSnapshot> {
     const snapshot = await this.read(request, signal);
-    const root = await this.options.compile(this.board!, snapshot.document.graphSemanticRevision, signal, snapshot.script.lessons.find(lesson => lesson.id === snapshot.lessonId)?.program);
+    const lesson = snapshot.script.lessons.find(lesson => lesson.id === snapshot.lessonId)!;
 
-    this.requireProject(request.projectIdentity, signal);
-    this.artifacts?.close();
+    this.closeArtifacts();
 
-    this.artifacts = new SimulatorProjectArtifactCallbackAuthority({ projectRoot: root,
-      projectIdentity: this.options.projectIdentity, workspaceIdentity: this.options.workspaceIdentity, files: this.options.files });
+    const compile = async (document: typeof snapshot.document, program?: string) => {
+      const root = await this.options.compile(this.board!, document.graphSemanticRevision, signal, program);
 
-    const artifact = await this.artifacts.callbacks.readArtifact({ projectIdentity: request.projectIdentity, artifactRevision: null }, signal);
+      this.requireProject(request.projectIdentity, signal);
 
-    if (artifact.artifact.build.graph?.graphSemanticRevision !== snapshot.document.graphSemanticRevision) {
-      throw new SimulatorHostProviderOperationError('conflict', 'Compiled demonstration and circuit differ.');
+      const authority = new SimulatorProjectArtifactCallbackAuthority({ projectRoot: root,
+        projectIdentity: this.options.projectIdentity, workspaceIdentity: this.options.workspaceIdentity, files: this.options.files });
+
+      this.artifacts.set(root, authority);
+
+      const artifact = await authority.callbacks.readArtifact({ projectIdentity: request.projectIdentity, artifactRevision: null }, signal);
+
+      if (artifact.artifact.build.graph?.graphSemanticRevision !== document.graphSemanticRevision) {
+        throw new SimulatorHostProviderOperationError('conflict', 'Compiled demonstration and circuit differ.');
+      }
+
+      return artifact;
+    };
+
+    if (snapshot.members && lesson.members) {
+      for (const member of snapshot.members) {
+        member.artifact = await compile(member.document, lesson.members.find(item => item.id === member.id)!.program);
+      }
+
+      return snapshot;
     }
 
-    return { ...snapshot, artifact };
+    return { ...snapshot, artifact: await compile(snapshot.document, lesson.program) };
   }
 
   async write(request: SimulatorHostBoardDemonstrationWrite, signal: AbortSignal): Promise<SimulatorHostBoardDemonstrationSnapshot> {
@@ -96,22 +117,28 @@ export class SimulatorBoardDemonstrationProvider {
   }
 
   hasArtifactReference(reference: string): boolean {
-    return this.artifacts?.hasArtifactReference(reference) ?? false;
+    return [...this.artifacts.values()].some(authority => authority.hasArtifactReference(reference));
   }
 
   readArtifactChunk(request: SimulatorSubappHostArtifactChunkRequestV1, signal: AbortSignal) {
     this.requireProject(request.projectIdentity, signal);
 
-    if (!this.artifacts) throw new SimulatorHostProviderOperationError('operation-failed');
+    const authority = [...this.artifacts.values()].find(authority => authority.hasArtifactReference(request.artifactReference));
 
-    return this.artifacts.callbacks.readArtifactChunk(request, signal);
+    if (!authority) throw new SimulatorHostProviderOperationError('operation-failed');
+
+    return authority.callbacks.readArtifactChunk(request, signal);
   }
 
   close(): void {
-    this.artifacts?.close();
-
-    this.artifacts = null;
+    this.closeArtifacts();
     this.board = null;
+  }
+
+  private closeArtifacts(): void {
+    for (const authority of this.artifacts.values()) authority.close();
+
+    this.artifacts.clear();
   }
 
   private requireProject(projectIdentity: string, signal: AbortSignal): void {

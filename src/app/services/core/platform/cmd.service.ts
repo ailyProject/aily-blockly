@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { lastValueFrom, Observable, Subject } from 'rxjs';
 import { LogService } from './log.service';
 import { isCmdTerminalOutput, type CmdOutput } from './cmd-output';
+
 export type { CmdOutput, CmdPhysicalTerminal } from './cmd-output';
 export { isCmdTerminalOutput } from './cmd-output';
 
@@ -9,8 +10,11 @@ declare const electronAPI: any;
 
 export interface CmdOptions {
   command?: string;
+
   args?: string[];
+
   cwd?: string;
+
   env?: { [key: string]: string };
   streamId?: string;
   shellProfile?: boolean;
@@ -19,6 +23,8 @@ export interface CmdOptions {
   buildWorkspace?: string;
   /** Experimental full-delivery request; only the host compile entry may attest it. */
   buildDeliveryRequest?: string;
+  /** Upload only the Artifact whose simulation was verified, without rebuilding. */
+  expectedArtifactId?: string;
   projectPath?: string;
   projectSessionId?: string;
   signal?: AbortSignal;
@@ -29,15 +35,18 @@ interface QueuedTask {
   cwd?: string;
   silent: boolean;
   options?: Partial<CmdOptions>;
+
   removeAbortListener: () => void;
   resolve: (value: CmdOutput) => void;
   reject: (reason?: any) => void;
+
   subject: Subject<CmdOutput>;
 }
 
 @Injectable({
   providedIn: 'root'
 })
+
 export class CmdService {
   private subjects = new Map<string, Subject<CmdOutput>>();
   private taskQueue: QueuedTask[] = [];
@@ -54,11 +63,15 @@ export class CmdService {
    */
   spawn(command: string, args?: string[], options?: Partial<CmdOptions>, silent: boolean = false): Observable<CmdOutput> {
     const { signal, ...processOptions } = options || {};
+
     if (signal?.aborted) return new Observable(observer => observer.error(cancelledCommandError()));
+
     const requestedStreamId = typeof options?.streamId === 'string' ? options.streamId.trim() : '';
     const streamId = requestedStreamId || `cmd_${Date.now()}_${Math.random()}`;
     const subject = new Subject<CmdOutput>();
+
     this.subjects.set(streamId, subject);
+
     const cmdOptions: CmdOptions = {
       command,
       args: args || [],
@@ -72,26 +85,33 @@ export class CmdService {
     let settled = false;
     let removeListener: (() => void) | undefined;
     const onAbort = () => subject.error(cancelledCommandError());
+
     const cleanup = () => {
       if (settled) return;
+
       settled = true;
+
       signal?.removeEventListener('abort', onAbort);
       removeListener?.();
       this.subjects.delete(streamId);
     };
+
     subject.subscribe({ error: cleanup, complete: cleanup });
 
     // 注册数据监听器
     removeListener = window['cmd'].onData(streamId, (data: CmdOutput) => {
       if (settled || signal?.aborted) return;
+
       // 累积 stderr/stdout 数据
       if (data.type === 'stderr' && data.data) {
         collectedStderr += data.data;
+
         if (collectedStderr.length > MAX_COLLECTED_SIZE) {
           collectedStderr = collectedStderr.slice(-MAX_COLLECTED_SIZE);
         }
       } else if (data.type === 'stdout' && data.data) {
         collectedStdout += data.data;
+
         if (collectedStdout.length > MAX_COLLECTED_SIZE) {
           collectedStdout = collectedStdout.slice(-MAX_COLLECTED_SIZE);
         }
@@ -106,8 +126,10 @@ export class CmdService {
         // 跳过 taskkill/pkill 等进程清理命令（找不到进程时返回非零是正常的）
         const lowerCmd = command.toLowerCase();
         const isCleanupCmd = lowerCmd === 'taskkill' || lowerCmd === 'pkill' || lowerCmd === 'kill' || lowerCmd === 'killall';
+
         if (data.code !== 0 && collectedStderr && !isCleanupCmd && !silent) {
           const fullCmd = [command, ...(args || [])].join(' ');
+
           this.logService.update({
             title: `命令执行失败`,
             detail: `${fullCmd}\n${collectedStderr}`,
@@ -123,25 +145,31 @@ export class CmdService {
         subject.complete();
       }
     });
+
     signal?.addEventListener('abort', onAbort, { once: true });
+
     if (signal?.aborted) {
       onAbort();
+
       return subject.asObservable();
     }
 
     // 执行命令
     window['cmd'].run(cmdOptions).then((result: any) => {
       if (settled) return;
+
       if (!result.success) {
         subject.error(new Error(result.error));
       }
     }).catch((error: any) => {
       if (settled) return;
+
       subject.error(error);
     });
 
     return subject.asObservable();
   }
+
   /**
    * 快速执行命令（支持队列顺序执行）
    * @param command 命令字符串
@@ -159,10 +187,13 @@ export class CmdService {
 
     return new Observable<CmdOutput>((observer) => {
       const signal = options?.signal;
+
       if (signal?.aborted) {
         observer.error(cancelledCommandError());
+
         return;
       }
+
       const task: QueuedTask = {
         command,
         cwd,
@@ -171,6 +202,7 @@ export class CmdService {
         removeAbortListener: () => signal?.removeEventListener('abort', onAbort),
         resolve: (value: CmdOutput) => {
           observer.next(value);
+
           if (isCmdTerminalOutput(value) || value.type === 'error') {
             observer.complete();
           }
@@ -180,9 +212,12 @@ export class CmdService {
         },
         subject
       };
+
       const onAbort = () => {
         const index = this.taskQueue.indexOf(task);
+
         if (index < 0) return;
+
         this.taskQueue.splice(index, 1);
         task.reject(cancelledCommandError());
       };
@@ -190,6 +225,7 @@ export class CmdService {
       signal?.addEventListener('abort', onAbort, { once: true });
       this.taskQueue.push(task);
       this.processQueue();
+
       return task.removeAbortListener;
     });
   }
@@ -201,6 +237,7 @@ export class CmdService {
    */
   private executeCommand(command: string, cwd?: string, silent: boolean = false, options?: Partial<CmdOptions>): Observable<CmdOutput> {
     if (options?.signal?.aborted) return new Observable(observer => observer.error(cancelledCommandError()));
+
     // console.log(`run command: ${command}`);
     if (!silent) {
       this.logService.update({
@@ -209,9 +246,11 @@ export class CmdService {
         state: 'info'
       });
     }
+
     const parts = parseCommand(command);
     const cmd = parts[0];
     const args = parts.slice(1);
+
     return this.spawn(cmd, args, { ...options, cwd: cwd ?? options?.cwd }, silent);
   }
 
@@ -228,6 +267,7 @@ export class CmdService {
     try {
       while (this.taskQueue.length > 0) {
         const task = this.taskQueue.shift()!;
+
         task.removeAbortListener();
 
         try {
@@ -250,9 +290,9 @@ export class CmdService {
               }
             });
           });
-
         } catch (error) {
           if (!task.options?.signal?.aborted) console.error(`Error processing queued command: ${task.command}`, error);
+
           task.reject(error);
         }
       }
@@ -274,9 +314,11 @@ export class CmdService {
 
   async runAsyncChecked(command: string, cwd?: string, useQueue: boolean = true, silent: boolean = false, options?: Partial<CmdOptions>): Promise<CmdOutput> {
     const result = await this.runAsync(command, cwd, useQueue, silent, options);
+
     if (result.type === 'error' || (result.code ?? 0) !== 0 || result.signal) {
       throw new Error(result.error || result.stderr || result.stdout || `Command failed with exit code ${result.code ?? 'unknown'}: ${command}`);
     }
+
     return result;
   }
 
@@ -288,10 +330,12 @@ export class CmdService {
     const subject = this.subjects.get(streamId);
     // The stream may close before main confirms that its process tree has stopped.
     const result = await window['cmd'].kill(streamId);
+
     if (result.success) {
       subject?.complete();
       this.subjects.delete(streamId);
     }
+
     return result.success;
   }
 
@@ -300,6 +344,7 @@ export class CmdService {
    */
   async killByName(processName: string): Promise<boolean> {
     console.warn(`Refusing to kill process by name: ${processName}`);
+
     return false;
   }
 
@@ -311,6 +356,7 @@ export class CmdService {
       task.removeAbortListener();
       task.reject(new Error('Queue cleared'));
     });
+
     this.taskQueue = [];
   }
 
@@ -335,6 +381,7 @@ export class CmdService {
    */
   async sendInput(streamId: string, input: string): Promise<boolean> {
     const result = await window['cmd'].input(streamId, input);
+
     return result.success;
   }
 }
@@ -366,6 +413,7 @@ function parseCommand(command: string): string[] {
       // 只有在非引号状态下的空格才作为分隔符
       if (current.length > 0) {
         result.push(current);
+
         current = '';
       }
     } else {
@@ -378,5 +426,6 @@ function parseCommand(command: string): string[] {
   if (current.length > 0) {
     result.push(current);
   }
+
   return result;
 }

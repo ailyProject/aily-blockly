@@ -3,6 +3,8 @@ const path = require('path');
 const { spawn } = require('child_process');
 const os = require('os');
 const ailyCodeProject = require('./aily-code-project');
+const { acquireBuildWorkspace } = require('./build-workspace-lease');
+const { verifyUploadArtifact, resolveVerifiedFirmware, assertVerifiedFirmwareArguments } = require('./verified-upload');
 
 // 简单的日志工具
 const logger = {
@@ -13,15 +15,16 @@ const logger = {
 
 // 延时函数
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
 // 动态加载 serialport 模块
 let SerialPort = null;
 
 function formatFatalError(error) {
     if (!error) return 'Unknown error';
+
     if (error instanceof Error) {
         return error.stack || error.message;
     }
+
     return String(error);
 }
 
@@ -34,6 +37,7 @@ const UPLOAD_OUTPUT_TAIL_LIMIT = 64 * 1024;
 
 function hasFatalUploadOutput(output) {
     const text = String(output || '');
+
     return /\bfatal\b[^\r\n]*\berror\b|\berror\b[^\r\n]*\bfatal\b/i.test(text);
 }
 
@@ -41,9 +45,11 @@ function normalizeUploadExitCode(code, signal, output) {
     if (typeof code === 'number' && code !== 0) {
         return code;
     }
+
     if (signal || code !== 0 || hasFatalUploadOutput(output)) {
         return 1;
     }
+
     return 0;
 }
 
@@ -61,6 +67,7 @@ function loadSerialPort() {
     if (SerialPort) return SerialPort;
 
     const resourcesPath = path.resolve(__dirname, '..', '..');
+
     const possiblePaths = [
         path.join(resourcesPath, 'app.asar.unpacked', 'electron', 'node_modules', 'serialport', 'dist'),
         path.join(resourcesPath, 'app.asar.unpacked', 'electron', 'node_modules', 'serialport'),
@@ -74,7 +81,9 @@ function loadSerialPort() {
     for (const modulePath of possiblePaths) {
         try {
             const serialportModule = require(modulePath);
+
             SerialPort = serialportModule.SerialPort || serialportModule;
+
             // logger.log('成功加载 serialport 模块:', modulePath);
             return SerialPort;
         } catch (e) {
@@ -83,6 +92,7 @@ function loadSerialPort() {
     }
 
     const detail = lastError ? `，最后错误: ${lastError.message}` : '';
+
     throw new Error(`无法加载 serialport 模块，请确保已安装依赖${detail}`);
 }
 
@@ -91,9 +101,11 @@ async function getPortsList() {
     try {
         const SP = loadSerialPort();
         const ports = await SP.list();
+
         return ports;
     } catch (error) {
         logger.error('获取串口列表失败:', error);
+
         return [];
     }
 }
@@ -101,6 +113,7 @@ async function getPortsList() {
 // 1200bps touch 操作：以1200波特率连接串口并断开，触发板子重置
 async function perform1200bpsTouch(portPath) {
     logger.log('执行 1200bps touch, 串口:', portPath);
+
     const SP = loadSerialPort();
     
     return new Promise((resolve, reject) => {
@@ -114,6 +127,7 @@ async function perform1200bpsTouch(portPath) {
             if (err) {
                 logger.error('1200bps touch 串口打开失败:', err.message);
                 reject(err);
+
                 return;
             }
 
@@ -123,6 +137,7 @@ async function perform1200bpsTouch(portPath) {
                     if (closeErr) {
                         logger.warn('1200bps touch 串口关闭警告:', closeErr.message);
                     }
+
                     // 再等待250ms让板子完成重置
                     setTimeout(() => {
                         logger.log('1200bps touch 完成');
@@ -141,20 +156,28 @@ async function perform1200bpsTouch(portPath) {
 // 返回新端口路径，超时返回 null
 async function waitForNewPort(portsBefore, timeout = 10000, interval = 200) {
     const startTime = Date.now();
+
     logger.log(`开始轮询等待新串口（超时 ${timeout}ms，间隔 ${interval}ms）...`);
+
     while (Date.now() - startTime < timeout) {
         const portsNow = await getPortsList();
+
         // console.log('当前串口列表:', portsNow.map(p => p.path));
         const newPorts = portsNow.filter(
             p => !portsBefore.some(ep => ep.path === p.path)
         );
+
         if (newPorts.length > 0) {
             logger.log(`轮询 ${Date.now() - startTime}ms 后检测到新端口:`, newPorts[0].path);
+
             return newPorts[0].path;
         }
+
         await delay(interval);
     }
+
     logger.log(`轮询超时（${timeout}ms），未检测到新端口`);
+
     return null;
 }
 
@@ -162,6 +185,7 @@ function normalizeUploadParam(value) {
     if (!value || typeof value !== 'string') {
         return '';
     }
+
     return value.trim().replace(/;+$/, '').trim();
 }
 
@@ -175,6 +199,7 @@ function readUploadCommandFromPreprocess(currentProjectPath) {
     }
 
     let preprocess;
+
     try {
         preprocess = JSON.parse(fs.readFileSync(preprocessPath, 'utf8'));
     } catch (error) {
@@ -183,6 +208,7 @@ function readUploadCommandFromPreprocess(currentProjectPath) {
 
     const upload = preprocess?.upload;
     const command = normalizeUploadParam(upload?.command);
+
     if (!command) {
         return {
             success: false,
@@ -203,6 +229,7 @@ function readUploadCommandFromPreprocess(currentProjectPath) {
 
 function selectUploadParam(currentProjectPath, configuredUploadParam) {
     const normalizedConfigured = normalizeUploadParam(configuredUploadParam);
+
     if (normalizedConfigured) {
         return {
             success: true,
@@ -212,6 +239,7 @@ function selectUploadParam(currentProjectPath, configuredUploadParam) {
     }
 
     const preprocessResult = readUploadCommandFromPreprocess(currentProjectPath);
+
     if (preprocessResult.success) {
         return {
             success: true,
@@ -231,12 +259,14 @@ function selectUploadParam(currentProjectPath, configuredUploadParam) {
 function selectUploadParamForPort(currentProjectPath, portType, boardJson, configUploadParam) {
     if (portType === 'debugger') {
         const debuggerUploadParam = normalizeUploadParam(boardJson?.linkUploadParam);
+
         if (!debuggerUploadParam) {
             return {
                 success: false,
                 reason: '当前开发板未配置 linkUploadParam，不能使用调试探针烧录'
             };
         }
+
         return {
             success: true,
             uploadParam: debuggerUploadParam,
@@ -245,6 +275,7 @@ function selectUploadParamForPort(currentProjectPath, portType, boardJson, confi
     }
 
     const configuredUploadParam = normalizeUploadParam(configUploadParam || boardJson?.uploadParam);
+
     return selectUploadParam(currentProjectPath, configuredUploadParam);
 }
 
@@ -252,14 +283,17 @@ function parseUploadBoolean(value, fallback = false) {
     if (value === undefined || value === null || value === '') {
         return fallback;
     }
+
     if (typeof value === 'boolean') {
         return value;
     }
+
     return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
 }
 
 function resolveUploadLifecycleFlags(uploadFlags, defaults = {}) {
     const flags = uploadFlags || {};
+
     return {
         use1200bpsTouch: parseUploadBoolean(
             flags['upload.use_1200bps_touch'],
@@ -275,17 +309,20 @@ function resolveUploadLifecycleFlags(uploadFlags, defaults = {}) {
 function validateCommandResult(command, args) {
     const commandText = String(command || '').replace(/^"|"$/g, '').trim();
     const hasArgs = Array.isArray(args) ? args.some((item) => String(item || '').trim().length > 0) : false;
+
     return commandText.length > 0 && hasArgs;
 }
 
 async function main() {
     const configPath = process.argv[2];
+
     if (!configPath) {
         logger.error('Usage: node upload.js <config-path>');
         process.exit(1);
     }
 
     let config;
+
     try {
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     } catch (error) {
@@ -318,22 +355,43 @@ async function main() {
     //     uploadParam: configUploadParam
     // });
 
+    let uploadWorkspace;
+    let verifiedArtifact;
+
+    const verifyCurrentArtifact = () => {
+        if (!uploadWorkspace) return;
+
+        uploadWorkspace.assertOwned();
+        verifyUploadArtifact(currentProjectPath, config.verifiedBuild);
+    };
+
     try {
+        if (config.expectedArtifactId !== undefined) {
+            if (config.expectedArtifactId !== config.verifiedBuild?.artifactId
+                || !['serial', 'debugger'].includes(portType)
+                || path.resolve(buildPath) !== path.join(fs.realpathSync(currentProjectPath), '.build')) {
+                throw new Error('SIMULATION_UPLOAD_STALE: Verified Artifact upload configuration changed.');
+            }
+
+            uploadWorkspace = acquireBuildWorkspace(currentProjectPath, 'verify');
+            verifiedArtifact = verifyUploadArtifact(currentProjectPath, config.verifiedBuild);
+        }
+
         // 1. 路径准备
         const tempPath = path.join(currentProjectPath, '.temp');
         // const buildPath = path.join(tempPath, 'build');
         const compilerPath = path.join(appDataPath, 'compiler');
         const sdkPath = path.join(appDataPath, 'sdk');
         const toolsPath = path.join(appDataPath, 'tools');
-
         // 2. 读取项目信息
         const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
+
         if (!fs.existsSync(projectPackageJsonPath)) {
             throw new Error(`未找到项目包文件: ${projectPackageJsonPath}`);
         }
+
         const projectPackageJson = JSON.parse(fs.readFileSync(projectPackageJsonPath, 'utf8'));
         const projectConfig = projectPackageJson.projectConfig || {};
-
         // 3. 读取板子信息
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
         const boardJsonPath = path.join(boardModulePath, 'board.json');
@@ -342,24 +400,24 @@ async function main() {
         if (!fs.existsSync(boardJsonPath)) {
             throw new Error(`未找到板子配置文件: ${boardJsonPath}`);
         }
+
         const boardJson = JSON.parse(fs.readFileSync(boardJsonPath, 'utf8'));
 
         if (!fs.existsSync(boardPackageJsonPath)) {
             throw new Error(`未找到板子包文件: ${boardPackageJsonPath}`);
         }
+
         const boardPackageJson = JSON.parse(fs.readFileSync(boardPackageJsonPath, 'utf8'));
         const boardDependencies = boardPackageJson.boardDependencies || {};
-
         // 4. 根据烧录方式选择 board.json 中的显式命令；显式命令优先于 builder 解析结果。
         // 调试探针只允许使用 linkUploadParam；串口显式参数为空时才回退到预处理结果。
         const isDebuggerUpload = portType === 'debugger';
-
         // core
         const coreItem = boardJson?.core || 'arduino';
         const core = coreItem.split(":")[0];
-
         // 5. 根据核心选择不同的上传参数处理方式
         let defaultBaudRate;
+
         if (core === 'arduino') {
             defaultBaudRate = '115200';
         } else {
@@ -371,28 +429,34 @@ async function main() {
 
         // 6. 获取波特率
         const baudRate = projectConfig?.UploadSpeed || defaultBaudRate;
+
         console.log('使用的波特率:', baudRate);
 
         // 共用准备：获取工具依赖、SDK路径、平台信息
         const toolDependencies = {};
+
         Object.entries(boardDependencies || {})
             .filter(([key, value]) => key.startsWith('tool-') || key.startsWith('@aily-project/tool-'))
             .forEach(([key, value]) => {
                 let name = key;
                 const prefixAily = '@aily-project/tool-';
                 const prefixTool = 'tool-';
+
                 if (name.startsWith(prefixAily)) {
                     name = name.slice(prefixAily.length);
                 } else if (name.startsWith(prefixTool)) {
                     name = name.slice(prefixTool.length);
                 }
+
                 toolDependencies[name] = value;
             });
 
         let fullSdkPath = '';
+
         Object.entries(boardDependencies || {}).forEach(([key, version]) => {
             if (key.startsWith('@aily-project/sdk-')) {
                 const sdk = key.replace(/^@aily-project\/sdk-/, '') + '_' + version;
+
                 fullSdkPath = path.join(sdkPath, sdk);
             }
         });
@@ -405,18 +469,22 @@ async function main() {
             boardJson,
             configUploadParam,
         );
+
         if (!uploadSelection.success) {
             throw new Error(`未找到可用的上传命令：${uploadSelection.reason || '预处理未输出上传命令'}`);
         }
 
         const uploadParamSource = uploadSelection.source;
         const uploadParam = uploadSelection.uploadParam;
+
         const lifecycleFlags = resolveUploadLifecycleFlags(uploadSelection.uploadFlags, {
             use1200bpsTouch: configuredUse1200bpsTouch,
             waitForUploadPort: configuredWaitForUpload,
         });
+
         const use_1200bps_touch = lifecycleFlags.use1200bpsTouch;
         const wait_for_upload = lifecycleFlags.waitForUploadPort;
+
         if (uploadParamSource === 'preprocess') {
             logger.log(`[preprocess] 使用 aily-builder 完整上传命令，tool=${uploadSelection.toolName}`);
             logger.log('[preprocess] 上传端口切换标志:', lifecycleFlags);
@@ -431,13 +499,16 @@ async function main() {
 
             // 将 pnum 从 GENERIC_F103R8TX 格式转换为 STM32F103R8 芯片名称
             let chipName = pnum;
+
             if (chipName && chipName.startsWith('GENERIC_')) {
                 chipName = 'STM32' + chipName.replace('GENERIC_', '').slice(0, -2);
+
                 logger.log('芯片名称转换:', pnum, '→', chipName);
             }
 
             const runDebuggerUpload = async (activeUploadParam, sourceTag) => {
                 const uploadCommands = activeUploadParam.split(';').map(s => s.trim()).filter(s => s.length > 0);
+
                 if (uploadCommands.length === 0) {
                     throw new Error('上传命令为空');
                 }
@@ -446,12 +517,14 @@ async function main() {
 
                 for (let i = 0; i < uploadCommands.length; i++) {
                     const cmd = uploadCommands[i];
+
                     logger.log(`执行命令 [${i + 1}/${uploadCommands.length}]: ${cmd}`);
 
                     const skipToolResolve = sourceTag === 'preprocess' ? true : true;
+
                     const { command: cmdPath, args: cmdArgs } = await processUploadParams(
                         cmd, buildPath, toolsPath, fullSdkPath, baudRate,
-                        toolDependencies, '', platform, chipName, skipToolResolve
+                        toolDependencies, '', platform, chipName, skipToolResolve, verifiedArtifact
                     );
 
                     if (!validateCommandResult(cmdPath, cmdArgs)) {
@@ -460,11 +533,17 @@ async function main() {
 
                     if (probeVidPid) {
                         const probeSelector = probeSerial ? `${probeVidPid}:${probeSerial}` : probeVidPid;
+
                         cmdArgs.push('--probe', probeSelector);
                     }
 
                     const shellCmd = wrapInQuotesIfNeeded(cmdPath);
+
                     logger.log(`Executing: ${shellCmd} ${cmdArgs.join(' ')}`);
+
+                    if (verifiedArtifact) assertVerifiedFirmwareArguments(verifiedArtifact, buildPath, cmdArgs);
+
+                    verifyCurrentArtifact();
 
                     const exitCode = await new Promise((resolveCmd, rejectCmd) => {
                         const child = spawn(shellCmd, cmdArgs, {
@@ -474,12 +553,15 @@ async function main() {
                         });
 
                         const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+
                         const detectPhase = (text) => {
                             const clean = stripAnsi(text);
                             const phaseMatch = clean.match(/(Erasing|Programming|Verifying)\s+.*?(\d+)%/i);
+
                             if (phaseMatch) {
                                 logger.log(`[probe-rs:phase] ${phaseMatch[1]} ${phaseMatch[2]}%`);
                             }
+
                             if (/Finished\s+in\s+[\d.]+s/i.test(clean)) {
                                 logger.log('[probe-rs:phase] Finished');
                             }
@@ -489,6 +571,7 @@ async function main() {
                             process.stdout.write(data);
                             detectPhase(data.toString());
                         });
+
                         if (child.stderr) child.stderr.on('data', (data) => {
                             process.stderr.write(data);
                             detectPhase(data.toString());
@@ -500,23 +583,28 @@ async function main() {
 
                     if (exitCode !== 0) {
                         logger.error(`命令 [${i + 1}] 执行失败，退出码: ${exitCode}`);
-                        process.exit(exitCode);
+
+                        throw Object.assign(new Error(`Upload command failed: ${exitCode}`), { exitCode });
                     }
                 }
             };
 
             await runDebuggerUpload(uploadParam, uploadParamSource);
-
             logger.log('所有上传命令执行完成');
-            process.exit(0);
+
+            process.exitCode = 0;
+
+            return;
         }
 
         // ========== 串口上传路径 ==========
         logger.log('烧录方式: 串口 (serial)', initialSerialPort);
 
         const SERIAL_PLACEHOLDER = '__SERIAL_PORT_PLACEHOLDER__';
+
         const resolveSerialCommand = async (activeUploadParam, sourceTag) => {
             const skipToolResolve = sourceTag === 'preprocess';
+
             const parsed = await processUploadParams(
                 activeUploadParam,
                 buildPath,
@@ -527,18 +615,25 @@ async function main() {
                 SERIAL_PLACEHOLDER,
                 platform,
                 pnum,
-                skipToolResolve
+                skipToolResolve,
+                verifiedArtifact
             );
 
             if (!validateCommandResult(parsed.command, parsed.args)) {
                 throw new Error('上传命令解析后为空');
             }
+
             return parsed;
         };
 
         let command;
         let templateArgs;
+
         ({ command, args: templateArgs } = await resolveSerialCommand(uploadParam, uploadParamSource));
+
+        if (verifiedArtifact) assertVerifiedFirmwareArguments(verifiedArtifact, buildPath, templateArgs);
+
+        verifyCurrentArtifact();
 
         // 上传预处理：处理 1200bps touch 和 wait_for_upload
         // 四种组合：
@@ -547,10 +642,10 @@ async function main() {
         //   touch=false, wait=true  → 不做 touch，轮询等待新端口出现（外部触发）
         //   touch=true,  wait=true  → 执行 1200bps touch，然后轮询等待新端口出现
         let finalSerialPort = initialSerialPort;
-
         // 如果需要检测新端口，先记录当前端口列表作为基准
         const needDetectNewPort = use_1200bps_touch || wait_for_upload;
         const portsBefore = needDetectNewPort ? await getPortsList() : [];
+
         if (needDetectNewPort) {
             logger.log('操作前串口列表:', portsBefore.map(p => p.path));
         }
@@ -569,6 +664,7 @@ async function main() {
         // （与 Arduino IDE 行为一致；SAMD / UNO R4 等板子枚举 bootloader 通常需要 1-3 秒）
         if (wait_for_upload || use_1200bps_touch) {
             const newPort = await waitForNewPort(portsBefore, 3000, 200);
+
             if (newPort) {
                 finalSerialPort = newPort;
             } else {
@@ -578,10 +674,12 @@ async function main() {
 
         // 将占位符替换为最终串口，生成最终参数
         logger.log('使用串口:', finalSerialPort);
+
         const args = templateArgs.map(a => a.replace(SERIAL_PLACEHOLDER, finalSerialPort));
         const shellCommand = wrapInQuotesIfNeeded(command);
 
         logger.log(`Executing: ${shellCommand} ${args.join(' ')}`);
+        verifyCurrentArtifact();
 
         // 12. 执行上传命令。部分旧版 SDK 包装脚本会吞掉底层工具的异常并返回 0，
         // 因此在透传输出的同时保留末尾内容，用致命错误文本兜底校正退出码。
@@ -591,7 +689,9 @@ async function main() {
                 shell: true,
                 stdio: ['inherit', 'pipe', 'pipe']
             });
+
             let outputTail = '';
+
             const streamState = {
                 stdout: { used: false, endsWithLineBreak: true },
                 stderr: { used: false, endsWithLineBreak: true }
@@ -602,12 +702,14 @@ async function main() {
                 outputTail = (outputTail + text).slice(-UPLOAD_OUTPUT_TAIL_LIMIT);
                 streamState[streamName].used = true;
                 streamState[streamName].endsWithLineBreak = /[\r\n]$/.test(text);
+
                 process[streamName].write(data);
             };
 
             child.stdout?.on('data', (data) => forwardOutput('stdout', data));
             child.stderr?.on('data', (data) => forwardOutput('stderr', data));
             child.on('error', reject);
+
             child.on('close', (code, signal) => {
                 // 确保无结尾换行的工具错误也能被上层逐行解析器及时消费。
                 for (const streamName of ['stdout', 'stderr']) {
@@ -615,6 +717,7 @@ async function main() {
                         process[streamName].write('\n');
                     }
                 }
+
                 resolve({
                     code,
                     signal,
@@ -627,17 +730,28 @@ async function main() {
         if (result.exitCode !== result.code && hasFatalUploadOutput(result.outputTail)) {
             logger.error('[ERROR] 上传工具报告了致命错误，但返回了退出码 0，已按上传失败处理。');
         }
-        process.exitCode = result.exitCode;
 
+        process.exitCode = result.exitCode;
     } catch (error) {
         logger.error(`[ERROR] ${error.message}`);
-        process.exit(1);
+
+        process.exitCode = error.exitCode || 1;
+    } finally {
+        uploadWorkspace?.release();
     }
 }
 
-async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate, toolDependencies, serialPort, platform, pnum, skipToolResolve = false) {
+async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, baudRate, toolDependencies, serialPort, platform, pnum, skipToolResolve = false, verifiedArtifact) {
     // 1. 基础变量替换
     let paramString = uploadParam;
+
+    if (verifiedArtifact) {
+        const sdkBootApp0 = path.join(sdkPath, 'tools', 'partitions', 'boot_app0.bin');
+
+        if (paramString.includes(sdkBootApp0)) {
+            paramString = paramString.split(sdkBootApp0).join(resolveVerifiedFirmware(verifiedArtifact, buildPath, 'aily-boot-app0.bin'));
+        }
+    }
     
     // 替换 ${baud}
     if (paramString.includes('${baud}')) {
@@ -656,24 +770,30 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
     // 替换 ${boot_app0}
     if (paramString.includes('${boot_app0}')) {
-        paramString = paramString.replace(/\$\{boot_app0\}/g, `"${path.join(sdkPath, 'tools', 'partitions', 'boot_app0.bin')}"`);
+        const bootApp0 = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, 'aily-boot-app0.bin')
+            : path.join(sdkPath, 'tools', 'partitions', 'boot_app0.bin');
+
+        paramString = paramString.replace(/\$\{boot_app0\}/g, `"${bootApp0}"`);
     }
 
     // 替换 ${bootloader}
     if (paramString.includes('${bootloader}')) {
-        const bootLoaderFile = await findFile(buildPath, '*.bootloader.bin');
+        const bootLoaderFile = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, '*.bootloader.bin')
+            : await findFile(buildPath, '*.bootloader.bin');
+
         paramString = paramString.replace(/\$\{bootloader\}/g, `"${bootLoaderFile}"`);
     }
 
     // 替换 ${partitions}
     if (paramString.includes('${partitions}')) {
-        const partitionsFile = await findFile(buildPath, '*.partitions.bin');
+        const partitionsFile = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, '*.partitions.bin')
+            : await findFile(buildPath, '*.partitions.bin');
+
         paramString = paramString.replace(/\$\{partitions\}/g, `"${partitionsFile}"`);
     }
 
     // 分割参数
     let paramList = parseArgs(paramString);
-
     // 2. 查找工具可执行文件
     const toolName = paramList[0];
     let commandPath = toolName;
@@ -686,6 +806,7 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
             const matchedTool = Object.keys(toolDependencies).find(key => {
                 return key.toLowerCase().includes(toolName.toLowerCase());
             });
+
             if (matchedTool) {
                 toolVersion = toolDependencies[matchedTool];
             }
@@ -693,17 +814,20 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
 
         const isWindows = platform === 'win32';
         const toolFileName = toolName + (isWindows ? '.exe' : '');
-        
         commandPath = await findFile(toolsPath, toolFileName, toolVersion);
+
         // console.log("Command Path: ", commandPath);
         
         // 如果在 toolsPath 中未找到，尝试从 PATH 环境变量中查找
         if (!commandPath && process.env.PATH) {
             const pathDirs = process.env.PATH.split(path.delimiter);
+
             for (const dir of pathDirs) {
                 const candidate = path.join(dir, toolFileName);
+
                 if (fs.existsSync(candidate)) {
                     commandPath = candidate;
+
                     break;
                 }
             }
@@ -722,17 +846,18 @@ async function processUploadParams(uploadParam, buildPath, toolsPath, sdkPath, b
         if (match) {
             const fileName = match[1];
             const ext = path.extname(fileName).toLowerCase().replace('.', '');
-            
             let findRes = '';
             
             if (!['bin', 'elf', 'hex', 'eep', 'img', 'uf2'].includes(ext)) {
                 findRes = await findFile(toolsPath, fileName);
+
                 if (!findRes) {
                     findRes = await findFile(path.join(sdkPath, 'tools'), fileName);
                 }
             } else {
                 // console.log('Searching build path for file:', buildPath, fileName);
-                findRes = await findFile(buildPath, fileName);
+                findRes = verifiedArtifact ? resolveVerifiedFirmware(verifiedArtifact, buildPath, fileName)
+                    : await findFile(buildPath, fileName);
             }
 
             if (findRes) {
@@ -756,21 +881,26 @@ function parseArgs(str) {
     const args = [];
     let current = '';
     let inQuote = false;
+
     for (let i = 0; i < str.length; i++) {
         const char = str[i];
+
         if (char === '"') {
             inQuote = !inQuote;
             current += char;
         } else if (char === ' ' && !inQuote) {
             if (current) {
                 args.push(current);
+
                 current = '';
             }
         } else {
             current += char;
         }
     }
+
     if (current) args.push(current);
+
     return args;
 }
 
@@ -787,11 +917,11 @@ async function findFile(basePath, pattern, version = '') {
     if (!fs.existsSync(basePath)) return '';
 
     const files = await findFilesRecursive(basePath);
-    
     let matchedFiles = [];
     
     if (pattern.includes('*')) {
         const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
+
         matchedFiles = files.filter(f => regex.test(path.basename(f)));
     } else {
         matchedFiles = files.filter(f => path.basename(f) === pattern);
@@ -801,6 +931,7 @@ async function findFile(basePath, pattern, version = '') {
 
     if (version && matchedFiles.length > 1) {
         const versionMatched = matchedFiles.find(f => f.includes(version));
+
         if (versionMatched) return versionMatched;
     }
 
@@ -811,15 +942,18 @@ async function findFile(basePath, pattern, version = '') {
 async function findFilesRecursive(dir) {
     let results = [];
     const list = fs.readdirSync(dir);
+
     for (const file of list) {
         const filePath = path.join(dir, file);
         const stat = fs.statSync(filePath);
+
         if (stat && stat.isDirectory()) {
             results = results.concat(await findFilesRecursive(filePath));
         } else {
             results.push(filePath);
         }
     }
+
     return results;
 }
 
