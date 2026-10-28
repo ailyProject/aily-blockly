@@ -445,6 +445,7 @@
             "UI_THEME": "UI Theme",
             "BLOCKLY_THEME": "Blockly Theme",
             "BLOCKLY_MINIMAP": "Blockly Minimap",
+            "BLOCKLY_SOUNDS": "Interaction sounds",
             "FLYOUT_AUTO_CLOSE": "Auto Close Toolbox",
             "COMPILATION_OPTIONS": "Compilation Options",
             "REGION": "Service Region",

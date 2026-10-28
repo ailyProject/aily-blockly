@@ -380,6 +380,7 @@
             "UI_THEME": "مظهر واجهة المستخدم",
             "BLOCKLY_THEME": "مظهر Blockly",
             "BLOCKLY_MINIMAP": "خريطة Blockly المصغرة",
+            "BLOCKLY_SOUNDS": "أصوات التفاعل",
             "FLYOUT_AUTO_CLOSE": "إغلاق صندوق الأدوات تلقائيًا",
             "COMPILATION_OPTIONS": "خيارات التجميع",
             "REGION": "منطقة الخدمة",

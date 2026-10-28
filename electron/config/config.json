@@ -95,7 +95,8 @@
   "platform": "win32",
   "devmode": false,
   "blockly": {
-    "renderer": "thrasos"
+    "renderer": "thrasos",
+    "sounds": true
   },
   "coder": {
     "enabled": false

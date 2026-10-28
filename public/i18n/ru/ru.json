@@ -380,6 +380,7 @@
             "UI_THEME": "Тема интерфейса",
             "BLOCKLY_THEME": "Тема Blockly",
             "BLOCKLY_MINIMAP": "Миникарта Blockly",
+            "BLOCKLY_SOUNDS": "Звуки действий",
             "FLYOUT_AUTO_CLOSE": "Автоматически закрывать панель инструментов",
             "COMPILATION_OPTIONS": "Параметры компиляции",
             "REGION": "Регион обслуживания",
