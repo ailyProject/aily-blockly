@@ -19,6 +19,9 @@ export interface AbsGenerationCandidateRequest extends AbsGenerationRequest {
   candidate: { hash: string; bytes: number };
   createVariables?: AbsVariableCreation[];
   sourceEdits?: AbsSourceEdits;
+  /** AI request delta wins overlapping edits; unrelated current state is retained. */
+  concurrentEdits?: 'request-priority';
+  intentGeneration?: string;
 }
 export interface AbsGenerationValidation extends AbsGenerationCandidateRequest {
   workspaceRevision: number;
@@ -57,6 +60,11 @@ export function assertGenerationCandidate(value: any): asserts value is AbsGener
   assertGenerationRequest(value);
   assertAbsVariableCreations(value['createVariables']);
   assertAbsSourceEdits(value['sourceEdits']);
+  if (value['concurrentEdits'] !== undefined && value['concurrentEdits'] !== 'request-priority'
+    || value['concurrentEdits'] === 'request-priority' && (typeof value['intentGeneration'] !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(value['intentGeneration']))
+    || value['concurrentEdits'] === undefined && value['intentGeneration'] !== undefined) {
+    throw new AbsSyncError('ABS_REQUEST_INVALID', 'Invalid concurrent request policy or intent generation.');
+  }
   const { base, candidate } = value as any;
   if (!base || typeof base.generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(base.generation)
     || typeof base.scope?.projectKey !== 'string' || !base.scope.projectKey || typeof base.scope?.pageId !== 'string' || !base.scope.pageId

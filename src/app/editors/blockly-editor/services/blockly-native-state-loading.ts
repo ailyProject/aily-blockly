@@ -6,6 +6,10 @@ import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata'
 import { NativeOwnedOperation, retireNativeInputDefault, withNativeBlockCreation } from './blockly-native-block-effects';
 import { nativeFieldDependencies, withNativeFieldDependencies } from './blockly-native-field-dependencies';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
+import { indexAbsBlockActivity } from '../../../integrations/blockly/abs/abs-block-activity';
+import { withPreservedDropdownValue, prepareInactiveDropdownDisplay } from './blockly-inactive-field-loading';
+import { isBlocklyBlockActive } from './blockly-block-activity';
+import type { AbsAbiBlock } from '../../../integrations/blockly/abs/abs-state';
 
 type FieldOrder = (block: Blockly.Block) => readonly string[] | undefined;
 
@@ -185,7 +189,8 @@ export function nativeLoadedStateView<T>(state: T, workspace: Blockly.Workspace)
  * earlier field; that new instance must receive its saved value too.
  */
 export function restoreNativeFields(block: Blockly.Block, values: Record<string, any>, order?: FieldOrder,
-  loadState: (field: Blockly.Field, value: unknown) => void = (field, value) => field.loadState(value)): string[] {
+  loadState: (field: Blockly.Field, value: unknown) => void = (field, value) => field.loadState(value),
+  options: { preserveDropdownValue?: boolean } = {}): string[] {
   values = adaptLegacyU8g2Font(block, adaptLegacyU8g2Begin(block, values));
   const names = Object.keys(values);
   const applied = new Map<string, { field: Blockly.Field; value: string }>();
@@ -196,19 +201,23 @@ export function restoreNativeFields(block: Blockly.Block, values: Record<string,
       if (!Object.hasOwn(values, name)) return false;
       const field = block.getField(name);
       if (!field || applied.get(name)?.field === field) return false;
-      retainLegacyU8g2Font(block, field, name, values[name]);
-      retainLegacySscmaSerial(block, field, name, values[name]);
-      const contract = serializeRuntimeFieldContract(field, values[name]);
+      if (!options.preserveDropdownValue) {
+        retainLegacyU8g2Font(block, field, name, values[name]);
+        retainLegacySscmaSerial(block, field, name, values[name]);
+      }
+      const contract = serializeRuntimeFieldContract(field, values[name], options);
       // An existing dropdown can depend on a later selector without being
       // replaced. Wait for its requested option instead of accepting a default.
-      return contract.type !== 'field_dropdown' || contract.options!.some(option => option[1] === values[name]);
+      return contract.type !== 'field_dropdown' || !!contract.preservedValue || contract.options!.some(option => option[1] === values[name]);
     });
     if (name === undefined) break;
     if (remaining-- <= 0) throw new Error(`Native field restoration did not stabilize: ${block.type}/${block.id}.`);
     const field = block.getField(name)!;
-    loadState(field, structuredClone(values[name]));
+    const load = () => loadState(field, structuredClone(values[name]));
+    if (options.preserveDropdownValue) withPreservedDropdownValue(field, values[name], load);
+    else load();
     const value = absJson(field.saveState());
-    if (serializeRuntimeFieldContract(field, values[name]).type === 'field_dropdown' && value !== absJson(values[name])) {
+    if (serializeRuntimeFieldContract(field, values[name], options).type === 'field_dropdown' && value !== absJson(values[name])) {
       throw new Error(`Native dropdown rejected saved value: ${block.type}/${block.id}/${name}.`);
     }
     applied.delete(name);
@@ -217,7 +226,7 @@ export function restoreNativeFields(block: Blockly.Block, values: Record<string,
   for (const name of names) {
     const field = block.getField(name), saved = applied.get(name);
     if (field && !saved) {
-      const contract = serializeRuntimeFieldContract(field, values[name]);
+      const contract = serializeRuntimeFieldContract(field, values[name], options);
       const dependencies = nativeFieldDependencies(block.workspace);
       if (dependencies && contract.type === 'field_dropdown') {
         dependencies.defer(block, name, () => {
@@ -301,18 +310,31 @@ function loadNativeState<T>(native: typeof Blockly, workspace: Blockly.Workspace
   const claimed = new WeakSet<Blockly.Block>();
   const orders = new Map<string, readonly string[]>();
   let owned: NativeOwnedOperation;
+  let loading = true;
+  let activity: ReadonlyMap<string, boolean>;
   try {
+    // Normal native import permits absent IDs. Allocate only in this detached
+    // loading view before applying the strict ABS identity/activity reader.
+    for (const entry of entries) if (!entry['id']) {
+      const descriptor = Object.getOwnPropertyDescriptor(entry, 'id');
+      let id: string;
+      do { id = native.utils.idGenerator.genUid(); } while (ids.has(id));
+      ids.add(id); entry['id'] = id;
+      restore.push(() => { if (descriptor) Object.defineProperty(entry, 'id', descriptor); else delete entry['id']; });
+    }
+    const children = new Set<unknown>();
+    for (const entry of entries) {
+      for (const input of Object.values(entry['inputs'] as AbsAbiBlock['inputs'] ?? {})) {
+        if (input.block) children.add(input.block);
+        if (input.shadow) children.add(input.shadow);
+      }
+      if ((entry['next'] as AbsAbiBlock['next'])?.block) children.add((entry['next'] as AbsAbiBlock['next']).block);
+    }
+    activity = indexAbsBlockActivity({ blocks: { blocks: entries.filter(entry => !children.has(entry)) as unknown as AbsAbiBlock[] } });
     for (const entry of entries) {
       const fields = entry['fields'];
       const savedInputs = entry['inputs'];
       let tftView: ReturnType<typeof adaptLegacyTftSetup> | undefined;
-      if (!entry['id']) {
-        const descriptor = Object.getOwnPropertyDescriptor(entry, 'id');
-        let id: string;
-        do { id = native.utils.idGenerator.genUid(); } while (ids.has(id));
-        ids.add(id); entry['id'] = id;
-        restore.push(() => { if (descriptor) Object.defineProperty(entry, 'id', descriptor); else delete entry['id']; });
-      }
       const current = () => {
         const block = created.get(entry['id'] as string);
         if (!block || block.isDisposed()) return undefined;
@@ -359,7 +381,8 @@ function loadNativeState<T>(native: typeof Blockly, workspace: Blockly.Workspace
             // Contract/saveState getters do not gain creation ownership.
             orders.set(block.id, restoreNativeFields(block,
               entry['type'] === 'tftespi_setup' ? loadingView(block).fields : fields as Record<string, any>, order,
-              (field, value) => owned(entry['id'] as string, () => field.loadState(value))));
+              (field, value) => owned(entry['id'] as string, () => field.loadState(value)),
+              { preserveDropdownValue: activity.get(entry['id'] as string) === false || !isBlocklyBlockActive(block) }));
             loaded.add(block);
           }
           finally { loading = false; }
@@ -380,6 +403,13 @@ function loadNativeState<T>(native: typeof Blockly, workspace: Blockly.Workspace
     }, (block, id, owner) => {
       createdBy.set(block, owner);
       if (id) created.set(id, block);
+      // Blockly restores collapse before disabled reasons and input attachment.
+      // Its ARIA label can therefore read a dormant field before loadState. The
+      // detached topology owns this construction-only inactive fact; afterwards
+      // the same wrapper follows actual live activity, including later enabling.
+      if (id && activity.get(id) === false) for (const input of block.inputList) for (const field of input.fieldRow) {
+        prepareInactiveDropdownDisplay(field, () => loading || !isBlocklyBlockActive(block));
+      }
       if (typeof block.loadExtraState === 'function') {
         const descriptor = Object.getOwnPropertyDescriptor(block, 'loadExtraState'), original = block.loadExtraState;
         Object.defineProperty(block, 'loadExtraState', { configurable: true, writable: true,
@@ -391,6 +421,7 @@ function loadNativeState<T>(native: typeof Blockly, workspace: Blockly.Workspace
       }
     });
   } finally {
+    loading = false;
     for (const undo of restore.reverse()) undo();
   }
 }

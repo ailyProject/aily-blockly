@@ -43,6 +43,9 @@
         <div class="title">{{data.title}}</div>
         <div class="text">{{data.text}}</div>
         <div class="btns">
+            @if (data.state=='error' && data.onRetryLocally) {
+            <button type="button" class="btn link retry-locally" (click)="data.onRetryLocally()">{{ 'CLOUD_BUILD.SWITCH_TO_LOCAL' | translate }}</button>
+            }
             @if (data.state=='doing' && data.onSwitchToLocal) {
             <button type="button" class="btn link switch-to-local" (click)="data.onSwitchToLocal()">{{ 'CLOUD_BUILD.SWITCH_TO_LOCAL' | translate }}</button>
             }

@@ -27,7 +27,7 @@ interface ProjectDataRuntimeSessionSnapshot {
   readonly store: ProjectDataStore;
 }
 
-class ProjectDataRuntime {
+export class ProjectDataRuntime {
   private store: ProjectDataStore | null = null;
   private sessionId = '';
   private readonly preparedValues = new Map<string, PreparedValueEntry>();

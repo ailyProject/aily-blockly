@@ -1,3 +1,4 @@
+import { MediaFieldFilePicker } from './field-media-file-picker';
 import * as Blockly from 'blockly/core';
 import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
@@ -286,6 +287,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   private frameIndexElement: HTMLElement | null = null;
   private playButton: HTMLButtonElement | null = null;
   private fileInput: HTMLInputElement | null = null;
+  private filePicker: MediaFieldFilePicker | null = null;
   private widthInput: HTMLInputElement | null = null;
   private heightInput: HTMLInputElement | null = null;
   private fpsInput: HTMLInputElement | null = null;
@@ -433,6 +435,7 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   }
 
   override dispose() {
+    this.filePicker?.dispose();
     this.isDisposed = true;
     this.uploadRequestId += 1;
     this.clearSettingsTimer();
@@ -486,12 +489,13 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
       ? 'image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif'
       : 'video/mp4,image/gif,.mp4,.gif';
     this.fileInput.hidden = true;
+    this.filePicker = new MediaFieldFilePicker(editor, this.fileInput);
     this.fileInput.addEventListener('change', () => void this.onFileSelected());
     actions.appendChild(this.fileInput);
     actions.append(
       this.createButton(
         Blockly.Msg['TFTESPI_ANIMATION_BUTTON_UPLOAD'],
-        () => this.fileInput?.click(),
+        () => this.filePicker?.open(),
         this.imageMode
           ? this.getMessage('UPLOAD_TOOLTIP')
           : Blockly.Msg['TFTESPI_ANIMATION_UPLOAD_TOOLTIP'],
@@ -1374,6 +1378,8 @@ export class FieldTftEsPiAnimation extends Blockly.Field<TftEsPiAnimationValue> 
   }
 
   private disposeDropdown() {
+    this.filePicker?.dispose();
+    this.filePicker = null;
     this.clearSettingsTimer();
     this.commitSettings();
     this.stopPreview(false);

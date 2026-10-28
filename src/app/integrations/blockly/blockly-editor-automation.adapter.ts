@@ -11,7 +11,7 @@ import {
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService } from '../../editors/blockly-editor/services/project.service';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
-import { projectDataRuntime } from '@domain/project/public-api';
+import { projectDataRuntime, projectSaveOutcomeError } from '@domain/project/public-api';
 
 @Injectable({ providedIn: 'root' })
 export class BlocklyEditorAutomationAdapter implements
@@ -56,7 +56,8 @@ export class BlocklyEditorAutomationAdapter implements
   }
 
   async saveProject(path: string): Promise<void> {
-    await this.projectService.save(path);
+    const outcome = await this.projectService.save(path);
+    if (!outcome.projectSaved || outcome.partial) throw projectSaveOutcomeError(outcome);
   }
 
   getProjectRevisionSnapshot(): Promise<BlocklyProjectRevisionSnapshot> {

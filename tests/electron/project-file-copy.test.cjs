@@ -4,9 +4,65 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { test, after } = require('node:test');
-const { copyProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
+const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require('../../electron/project-file-copy');
 const roots = [];
 const directory = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-project-copy-')); roots.push(root); return root; };
+
+test('recovery copies retain resources and source bytes but never inherit public ABS or its private authority', () => {
+  const source = directory(), target = directory();
+  const values = { 'package.json': '{"name":"source"}', 'project.abi': 'native snapshot',
+    'project.abs': 'unapplied draft', 'project.abs.map.json': 'old map',
+    '.aily/abs-sync/committed.json': 'old pointer', '.aily/abs-sync/pending.json': 'pending journal',
+    '.aily/data/resource.txt': 'retained resource', 'node_modules/fixture/package.json': '{}',
+    '.aily/project-files.write.lock': 'writer', '.build/aily-workspace.lock': 'owner' };
+  for (const [file, text] of Object.entries(values)) {
+    fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+    fs.writeFileSync(path.join(source, file), text);
+  }
+  copyRecoveryProjectDirectory(source, target);
+  for (const file of ['project.abs', 'project.abs.map.json', '.aily/abs-sync', '.aily/project-files.write.lock', '.build'])
+    assert.equal(fs.existsSync(path.join(target, file)), false, file);
+  for (const file of ['package.json', 'project.abi', '.aily/data/resource.txt', 'node_modules/fixture/package.json'])
+    assert.equal(fs.readFileSync(path.join(target, file), 'utf8'), values[file]);
+  for (const [file, text] of Object.entries(values)) assert.equal(fs.readFileSync(path.join(source, file), 'utf8'), text);
+});
+
+test('copies retarget canonical local-library directory links to the destination without file-symlink privilege', () => {
+  const source = directory(), target = directory();
+  const local = 'local-libraries/@aily-project/lib-local-fixture';
+  fs.mkdirSync(path.join(source, local), { recursive: true });
+  fs.writeFileSync(path.join(source, local, 'package.json'), '{"name":"@aily-project/lib-local-fixture","version":"1.0.0"}');
+  fs.writeFileSync(path.join(source, local, 'generator.js'), 'original generator');
+  fs.mkdirSync(path.join(source, 'node_modules/@aily-project'), { recursive: true });
+  const relative = 'node_modules/@aily-project/lib-local-fixture';
+  fs.symlinkSync(path.join(source, local), path.join(source, relative), process.platform === 'win32' ? 'junction' : 'dir');
+  copyRecoveryProjectDirectory(source, target);
+  assert.equal(fs.realpathSync(path.join(target, relative)), fs.realpathSync(path.join(target, local)));
+  fs.writeFileSync(path.join(target, relative, 'generator.js'), 'target-only edit');
+  assert.equal(fs.readFileSync(path.join(source, local, 'generator.js'), 'utf8'), 'original generator');
+});
+
+test('materializes an external linked library without copying its repository or retaining the link', () => {
+  const source = directory(), target = directory(), external = directory();
+  fs.writeFileSync(path.join(external, 'package.json'), '{"name":"@aily-project/lib-external-fixture"}');
+  fs.writeFileSync(path.join(external, 'generator.js'), 'external original');
+  fs.mkdirSync(path.join(external, '.git')); fs.writeFileSync(path.join(external, '.git/config'), 'not copied');
+  fs.mkdirSync(path.join(source, 'node_modules/@aily-project'), { recursive: true });
+  const relative = 'node_modules/@aily-project/lib-external-fixture';
+  fs.symlinkSync(external, path.join(source, relative), process.platform === 'win32' ? 'junction' : 'dir');
+  copyRecoveryProjectDirectory(source, target);
+  assert.equal(fs.lstatSync(path.join(target, relative)).isSymbolicLink(), false);
+  assert.equal(fs.existsSync(path.join(target, relative, '.git')), false);
+  fs.writeFileSync(path.join(target, relative, 'generator.js'), 'copied edit');
+  assert.equal(fs.readFileSync(path.join(external, 'generator.js'), 'utf8'), 'external original');
+});
+
+test('rejects linked metadata directories before a copy can follow them outside the project', () => {
+  const source = directory(), target = directory(), external = directory();
+  fs.symlinkSync(external, path.join(source, '.aily'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => copyRecoveryProjectDirectory(source, target), /metadata/);
+  assert.equal(fs.readdirSync(external).length, 0);
+});
 after(() => { for (const root of roots) {
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   assert.ok(path.basename(root).startsWith('aily-project-copy-'));

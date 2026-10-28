@@ -10,24 +10,26 @@ function deferred<T>() {
 }
 
 describe('switching a running cloud build to local', () => {
-  function fixture() {
-    const run = deferred<any>(), cancel = deferred<any>();
+  async function fixture() {
+    const run = deferred<any>(), cancel = deferred<any>(), started = deferred<void>();
     let requestSwitch!: () => boolean, listener!: (event: any) => void, current = true;
     const log = jasmine.createSpy('log'), progress = jasmine.createSpy('progress'), unsubscribe = jasmine.createSpy('unsubscribe');
-    const bridge = { run: () => run.promise,
+    const bridge = { run: jasmine.createSpy('run').and.callFake(() => { started.resolve(); return run.promise; }),
       cancel: jasmine.createSpy('cancel').and.returnValue(cancel.promise),
       onProgress: (callback: any) => { listener = callback; return unsubscribe; } };
     let settled = false;
     const result = runCloudBuildWithProgress({ requestId: 'owned' }, bridge, {
       isCurrent: () => current, log, progress, localSwitch: action => { requestSwitch = action; },
     }).then(value => value, error => error).finally(() => { settled = true; });
+    // Exercise a submitted build, after the asynchronous resource preflight.
+    await started.promise;
     return { run, cancel, bridge, result, log, progress, unsubscribe,
       switch: () => requestSwitch(), emit: (event: any) => listener(event),
       invalidate: () => { current = false; }, settled: () => settled };
   }
 
   for (const first of ['run', 'cancel'] as const) it(`waits for both cloud completion and cancellation when ${first} finishes first`, async () => {
-    const f = fixture();
+    const f = await fixture();
     expect(f.switch()).toBeTrue(); expect(f.switch()).toBeFalse();
     await Promise.resolve();
     expect(f.bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'owned' });
@@ -41,7 +43,7 @@ describe('switching a running cloud build to local', () => {
   });
 
   it('discards late cloud notices and compiler logs after the user switches', async () => {
-    const f = fixture(); f.switch();
+    const f = await fixture(); f.switch();
     f.emit({ requestId: 'owned', stage: 'compiling', progress: 90, log: 'cancelled cloud output' });
     f.run.reject({ code: 'CANCELLED', message: 'aborted' }); f.cancel.resolve(true);
     expect((await f.result).code).toBe(CLOUD_BUILD_LOCAL_REQUESTED);
@@ -49,24 +51,53 @@ describe('switching a running cloud build to local', () => {
   });
 
   it('does not start local compilation if Stop, settings or project changes invalidate the task', async () => {
-    const f = fixture(); f.switch(); f.invalidate();
+    const f = await fixture(); f.switch(); f.invalidate();
     f.run.reject({ code: 'CANCELLED', message: 'aborted' }); f.cancel.resolve(true);
     expect((await f.result).code).toBe('CANCELLED');
   });
 
   it('does not start local compilation if cancellation fails', async () => {
-    const f = fixture(); f.switch();
+    const f = await fixture(); f.switch();
     f.cancel.reject(new Error('IPC disconnected')); f.run.resolve({ success: true });
     expect((await f.result).message).toBe('IPC disconnected');
   });
 
   it('ignores a stale button after completion or project invalidation', async () => {
-    const f = fixture(); f.run.resolve({ success: true });
+    const f = await fixture(); f.run.resolve({ success: true });
     expect((await f.result).success).toBeTrue(); expect(f.switch()).toBeFalse();
     expect(f.bridge.cancel).not.toHaveBeenCalled();
-    const other = fixture(); other.invalidate(); expect(other.switch()).toBeFalse();
+    const other = await fixture(); other.invalidate(); expect(other.switch()).toBeFalse();
     other.run.resolve({ success: true }); await other.result;
     expect(other.bridge.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('switching before the cloud request is submitted', () => {
+  for (const invalidated of [false, true]) it(`waits for resource preflight without submitting a cloud build (invalidated=${invalidated})`, async () => {
+    const requirements = deferred<[]>(), cancelled = deferred<boolean>();
+    let current = true, settled = false, requestSwitch!: () => boolean;
+    const unsubscribe = jasmine.createSpy('unsubscribe');
+    const bridge = {
+      preparationRequirements: () => requirements.promise,
+      run: jasmine.createSpy('run').and.resolveTo({ success: true }),
+      cancel: jasmine.createSpy('cancel').and.returnValue(cancelled.promise),
+      onProgress: () => unsubscribe,
+    };
+    const result = runCloudBuildWithProgress({ requestId: 'preparing' }, bridge, {
+      isCurrent: () => current, log: () => {}, progress: () => {}, localSwitch: action => { requestSwitch = action; },
+    }).then(value => value, error => error).finally(() => { settled = true; });
+    expect(requestSwitch()).toBeTrue();
+    if (invalidated) current = false;
+    cancelled.resolve(true);
+    for (let n = 0; n < 5; n++) await Promise.resolve();
+    expect(settled).toBeFalse();
+    expect(bridge.run).not.toHaveBeenCalled();
+    requirements.resolve([]);
+    expect((await result).code).toBe(invalidated ? 'BUILD_SOURCE_STALE' : CLOUD_BUILD_LOCAL_REQUESTED);
+    expect(bridge.run).not.toHaveBeenCalled();
+    expect(bridge.cancel).toHaveBeenCalledOnceWith({ requestId: 'preparing' });
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(requestSwitch()).toBeFalse();
   });
 });
 

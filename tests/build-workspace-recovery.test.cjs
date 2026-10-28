@@ -13,6 +13,17 @@ const modulePath = require.resolve('../child/scripts/build-workspace-lease');
 const nativePath = require.resolve('../child/scripts/native-file-lock');
 const { acquireBuildWorkspace } = require(modulePath);
 
+function assertKilled(result) {
+  assert.ifError(result.error);
+  assert.equal(result.stderr, '', 'Injected termination must not be an earlier script failure.');
+  if (process.platform === 'win32') {
+    // Windows TerminateProcess has an exit code, not a POSIX wait signal.
+    assert.equal(result.status, 1); assert.equal(result.signal, null);
+  } else {
+    assert.equal(result.status, null); assert.equal(result.signal, 'SIGKILL');
+  }
+}
+
 function project(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-native-recovery-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -102,14 +113,16 @@ for (const stage of ['anchor-open', 'kernel-acquired', 'prepared', 'installed'])
     const f = project(t);
     const script = `const fs=require('node:fs'),path=require('node:path'),stage=process.argv[3];
       const open=fs.openSync,write=fs.writeFileSync,rename=fs.renameSync;
-      fs.openSync=(...args)=>{const fd=open(...args);if(stage==='anchor-open'&&String(args[0]).endsWith('.guard'))process.kill(process.pid,'SIGKILL');return fd};
-      fs.writeFileSync=(...args)=>{const result=write(...args);if(stage==='prepared'&&String(args[0]).endsWith('.tmp'))process.kill(process.pid,'SIGKILL');return result};
-      fs.renameSync=(...args)=>{const result=rename(...args);if(stage==='installed')process.kill(process.pid,'SIGKILL');return result};
+      const crash=()=>{write(path.join(process.argv[2],'crash-point'),stage);process.kill(process.pid,'SIGKILL')};
+      fs.openSync=(...args)=>{const fd=open(...args);if(stage==='anchor-open'&&String(args[0]).endsWith('.guard'))crash();return fd};
+      fs.writeFileSync=(...args)=>{const result=write(...args);if(stage==='prepared'&&String(args[0]).endsWith('.tmp'))crash();return result};
+      fs.renameSync=(...args)=>{const result=rename(...args);if(stage==='installed')crash();return result};
       const native=require(require.resolve('fs-native-extensions',{paths:[path.dirname(process.argv[1])]})),lock=native.tryLock;
-      native.tryLock=(...args)=>{const result=lock(...args);if(result&&stage==='kernel-acquired')process.kill(process.pid,'SIGKILL');return result};
+      native.tryLock=(...args)=>{const result=lock(...args);if(result&&stage==='kernel-acquired')crash();return result};
       require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'publish');`;
     const result = spawnSync(process.execPath, ['-e', script, modulePath, f.root, stage], { encoding: 'utf8', timeout: 10000 });
-    assert.equal(result.signal, 'SIGKILL', result.stderr);
+    assertKilled(result);
+    assert.equal(fs.readFileSync(path.join(f.root, 'crash-point'), 'utf8'), stage);
     acquireBuildWorkspace(f.root, 'publish').release();
     assert.equal(fs.statSync(f.anchor).size, 0); // Presence is harmless, not a held lock.
     assert.equal(fs.existsSync(f.marker), false);
@@ -189,7 +202,7 @@ test('a granted compiler surviving its parent remains protected before writing a
     { encoding: 'utf8', timeout: 10000 });
   const pid = Number(fs.readFileSync(path.join(f.root, 'descendant.pid'), 'utf8'));
   t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } });
-  assert.equal(result.signal, 'SIGKILL', result.stderr); process.kill(pid, 0);
+  assertKilled(result); process.kill(pid, 0);
   assert.equal(fs.existsSync(path.join(f.root, '.build/aily-builder.lock')), false);
   assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
 });
@@ -256,7 +269,12 @@ test('a legacy orphan is observed once and recovered only after a different kern
   delete record.bootId; delete record.delegationVersion; delete record.delegated;
   fs.writeFileSync(f.marker, JSON.stringify(record));
   const beforeRestart = patchedModule({}, BOOT_A);
-  assert.throws(() => beforeRestart.acquireBuildWorkspace(f.root, 'publish'), /Restart the computer/);
+  assert.throws(() => beforeRestart.acquireBuildWorkspace(f.root, 'publish'), error => {
+    assert.equal(error.code, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
+    assert.match(error.message, /project_recover\(action='fork'\)/);
+    assert.doesNotMatch(error.message, /Restart the computer/);
+    return true;
+  });
   const observed = fs.readFileSync(f.marker, 'utf8');
   assert.equal(JSON.parse(observed).recoveryObservedBootId, BOOT_A);
   assert.throws(() => beforeRestart.acquireBuildWorkspace(f.root, 'publish'), /RECOVERY_REQUIRED/);
@@ -292,7 +310,11 @@ test('unavailable boot identity and wall-clock changes cannot retire a granted o
   const f = fixture(t, 'verify', true), record = { ...JSON.parse(f.bytes), bootId: BOOT_A, startedAt: '1990-01-01T00:00:00.000Z' };
   fs.writeFileSync(f.marker, JSON.stringify(record));
   for (const bootId of [null, BOOT_A]) {
-    assert.throws(() => patchedModule({}, bootId).acquireBuildWorkspace(f.root, 'publish'), /RECOVERY_REQUIRED/);
+    assert.throws(() => patchedModule({}, bootId).acquireBuildWorkspace(f.root, 'publish'), error => {
+      assert.equal(error.code, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
+      assert.match(error.message, /project_recover\(action='fork'\)/);
+      return true;
+    });
     assert.equal(fs.readFileSync(f.marker, 'utf8'), JSON.stringify(record));
   }
 });
@@ -326,9 +348,11 @@ test('a crash immediately after recording a grant remains protected before the c
   const f = project(t);
   const child = spawnSync(process.execPath, ['-e', `
     const fs=require('node:fs'); const owner=require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');
-    const rename=fs.renameSync;fs.renameSync=(...args)=>{rename(...args);process.kill(process.pid,'SIGKILL')};
+    const rename=fs.renameSync;fs.renameSync=(...args)=>{rename(...args);
+      fs.writeFileSync(require('node:path').join(process.argv[2],'crash-point'),'grant-recorded');process.kill(process.pid,'SIGKILL')};
     owner.childEnvironment();`, modulePath, f.root], { encoding: 'utf8', timeout: 10000 });
-  assert.equal(child.signal, 'SIGKILL', child.stderr);
+  assertKilled(child);
+  assert.equal(fs.readFileSync(path.join(f.root, 'crash-point'), 'utf8'), 'grant-recorded');
   assert.equal(JSON.parse(fs.readFileSync(f.marker)).delegated, true);
   assert.throws(() => acquireBuildWorkspace(f.root, 'publish'), /RECOVERY_REQUIRED/);
 });

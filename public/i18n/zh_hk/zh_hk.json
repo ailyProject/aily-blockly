@@ -1,4 +1,26 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "子應用活動面板",
+    "TITLE": "子應用",
+    "OPEN_FULL": "開啟完整子應用",
+    "COLLAPSE": "收起",
+    "CALL_COUNT": "調用次數：{{count}}",
+    "RUNTIME_READY": "執行服務已就緒",
+    "RUNTIME_STARTING": "執行服務正在啟動",
+    "RUNTIME_ERROR": "執行服務出錯",
+    "RUNTIME_STOPPED": "執行服務已停止",
+    "RUNTIME_UNKNOWN": "執行服務狀態未知",
+    "INVOCATION_RUNNING": "智能體正在調用",
+    "INVOCATION_SUCCEEDED": "上次調用成功",
+    "INVOCATION_FAILED": "上次調用失敗",
+    "INVOCATION_CANCELLED": "上次調用已取消",
+    "INVOCATION_IDLE": "無進行中的調用",
+    "WAITING_RUNTIME": "等待執行服務",
+    "LOADING_SURFACE": "正在載入精簡檢視",
+    "RUNTIME_NOT_RETAINED": "此面板不會啟動或保留子應用執行服務。",
+    "SURFACE_ERROR": "精簡檢視無法使用",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} 檢視"
+  },
   "BLOCKLY_FUNCTION_VIEW": {
     "LABEL": "查看函數或整個檔案",
     "ALL": "整個檔案",
@@ -1126,6 +1148,7 @@
         "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 任務正在執行，請等待完成後再另存為。",
       "OPEN_IN_CODER": "使用 Aily Coder 開啟",
       "CONVERT_CODER_TITLE": "轉換為 Coder 專案",
       "CONVERT_CODER_CONTENT": "此檔案屬於 Blockly 專案。將建立 Coder 副本並安裝依賴；副本可能無法再使用積木編輯。原專案保留。",

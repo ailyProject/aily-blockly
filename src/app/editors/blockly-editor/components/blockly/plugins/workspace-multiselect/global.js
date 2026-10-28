@@ -537,52 +537,18 @@ export const isFieldInputIncrementable = function(blockType, fieldName) {
 /**
  * Get the next available declared name by incrementing its trailing number.
  * @param {string} name The current field value.
- * @param {!Blockly.Workspace} workspace The workspace to check against.
- * @param {string} fieldName The field name to check.
- * @param {string=} excludeBlockId Block id to exclude from duplicate scan.
+ * @param {!Map<string, number>} existingValues Declared-name counts, including
+ *     the field currently being renamed.
  * @returns {string} The next available name.
  */
-const getNextAvailableName = function(name, workspace, fieldName, excludeBlockId) {
+const getNextAvailableName = function(name, existingValues) {
+  // The index includes this field. A second occurrence is the actual conflict.
+  if ((existingValues.get(name) || 0) <= 1) return name;
   const match = name.match(/^(.*?)(\d+)$/);
-  let baseName, num;
-  if (match) {
-    baseName = match[1];
-    num = parseInt(match[2], 10);
-  } else {
-    baseName = name;
-    num = 1;
-  }
-
-  // Only compare other declared-name fields. A display NAME or literal TEXT
-  // must not force a declaration with the same raw field name to be renamed.
-  const existingValues = new Set();
-  const allBlocks = workspace.getAllBlocks(false);
-  for (const block of allBlocks) {
-    if (excludeBlockId && block.id === excludeBlockId) {
-      continue;
-    }
-    for (const input of block.inputList || []) {
-      for (const field of input.fieldRow || []) {
-        if (field instanceof Blockly.FieldTextInput &&
-            field.name === fieldName &&
-            isFieldInputIncrementable(block.type, field.name)) {
-          existingValues.add(field.getValue());
-        }
-      }
-    }
-  }
-
-  if (!existingValues.has(name)) {
-    return name;
-  }
-
-  let nextNum = num + 1;
-  let candidate = baseName + nextNum;
-  while (existingValues.has(candidate)) {
-    nextNum++;
-    candidate = baseName + nextNum;
-  }
-  return candidate;
+  const baseName = match ? match[1] : name;
+  let nextNum = (match ? parseInt(match[2], 10) : 1) + 1;
+  while (existingValues.get(baseName + nextNum)) nextNum++;
+  return baseName + nextNum;
 };
 
 /**
@@ -594,23 +560,31 @@ const getNextAvailableName = function(name, workspace, fieldName, excludeBlockId
  */
 export const incrementFieldInputValues = function(block, workspace) {
   if (!block || !workspace) return;
+  const fieldsOf = b => (b.inputList || []).flatMap(input => input.fieldRow || [])
+      .filter(field => field instanceof Blockly.FieldTextInput &&
+        isFieldInputIncrementable(b.type, field.name));
+  const fields = (block.getDescendants ? block.getDescendants(false) : [block]).flatMap(fieldsOf);
+  if (!fields.length) return;
 
-  const descendants = block.getDescendants ?
-      block.getDescendants(false) : [block];
-
-  for (const b of descendants) {
-    for (const input of b.inputList || []) {
-      for (const field of input.fieldRow || []) {
-        if (field instanceof Blockly.FieldTextInput &&
-            isFieldInputIncrementable(b.type, field.name)) {
-          const currentValue = field.getValue();
-          const newValue = getNextAvailableName(
-              currentValue, workspace, field.name, b.id);
-          if (newValue !== currentValue) {
-            field.setValue(newValue);
-          }
-        }
-      }
+  // Scan the project once per pasted stack, not once for every declaration.
+  // Counts preserve collisions within the copied stack and exclude each field
+  // itself without discarding another declaration that has the same name.
+  const names = new Map();
+  for (const b of workspace.getAllBlocks(false)) for (const field of fieldsOf(b)) {
+    let values = names.get(field.name);
+    if (!values) names.set(field.name, values = new Map());
+    const value = field.getValue();
+    values.set(value, (values.get(value) || 0) + 1);
+  }
+  for (const field of fields) {
+    const values = names.get(field.name);
+    const currentValue = field.getValue();
+    const newValue = getNextAvailableName(currentValue, values);
+    if (newValue !== currentValue) {
+      field.setValue(newValue);
+      const actualValue = field.getValue();
+      values.set(currentValue, values.get(currentValue) - 1);
+      values.set(actualValue, (values.get(actualValue) || 0) + 1);
     }
   }
 };

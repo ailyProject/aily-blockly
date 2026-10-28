@@ -210,6 +210,14 @@ function cancelChildToolRelease(session) {
     session.releaseTimer = null;
 }
 
+const stopAllChildToolSessions = require('./child-tool-session-shutdown').createChildToolSessionShutdown({
+    beginShutdown: beginWindowShutdown,
+    drainOwners: options => subappOwnerSupervisor.shutdown(options),
+    getSessions: () => childToolSessions.values(),
+    cancelRelease: cancelChildToolRelease,
+    stopSession: stopChildToolSessionProcess,
+});
+
 async function stopChildToolSessionProcess(session) {
     if (!session) return false;
     session.stopping = true;
@@ -1879,6 +1887,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.handle("child-tool-session-acquire", (event, toolIdOrPayload) => {
+        if (applicationIsQuitting) return null;
         const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
             ? toolIdOrPayload
             : { toolId: toolIdOrPayload, leaseId: 'legacy-renderer' };
@@ -1911,6 +1920,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.handle("child-tool-session-register", async (event, payload = {}) => {
+        if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
         const toolId = sanitizeChildToolId(payload.toolId);
         if (!toolId || !payload.hostInfo || !payload.streamId) {
             return { success: false, reason: 'invalid-payload' };
@@ -1955,6 +1965,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             pendingChildToolProcessMessages.delete(existing.streamId);
         }
 
+        if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
         const session = {
             hostInfo: payload.hostInfo,
             streamId: payload.streamId,
@@ -2265,6 +2276,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 module.exports = {
     beginWindowShutdown,
+    stopAllChildToolSessions,
     registerWindowHandlers,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
@@ -2272,6 +2284,9 @@ module.exports = {
     nativeSubappRegistry: {
         supervisor: subappOwnerSupervisor,
         register(sender, { toolId, streamId, publicInfo, stop, packageDependencies = [] }) {
+            if (applicationIsQuitting) {
+                throw Object.assign(new Error('Application is quitting.'), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+            }
             const processInfo = getActiveCmdProcesses().find(info => info.streamId === streamId);
             if (sender.isDestroyed() || !processInfo || processInfo.pid !== publicInfo.pid || typeof stop !== 'function') {
                 throw new Error('Native Runtime must belong to a live supervised process.');

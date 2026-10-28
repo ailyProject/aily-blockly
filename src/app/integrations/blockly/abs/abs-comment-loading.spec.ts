@@ -2,6 +2,7 @@ import * as Blockly from 'blockly';
 import { loadAbsWorkspaceState } from './abs-workspace-state';
 import { BlocklyCommentLoading } from '../../../editors/blockly-editor/services/blockly-comment-loading';
 import { assertAbsReadback } from './abs-readback';
+import { evaluateNativeCandidate } from '../../../editors/blockly-editor/services/blockly-native-candidate';
 
 describe('live workspace comment loading', () => {
   let host: HTMLDivElement, workspace: Blockly.WorkspaceSvg;
@@ -38,5 +39,26 @@ describe('live workspace comment loading', () => {
     assertAbsReadback(expected, Blockly.serialization.workspaces.save(workspace) as any, { mode: 'requested' });
     expect(() => comments.run(() => { throw Error('failed load'); })).toThrowError('failed load');
     expect(Blockly.icons.CommentIcon.prototype.setBubbleVisible).toBe(hook);
+  });
+
+  it('carries native default bubble placement through host readback, save and reopen', async () => {
+    const expected: any = state();
+    delete expected.blocks.blocks[0].icons.comment.x;
+    delete expected.blocks.blocks[0].icons.comment.y;
+    const prepared = await evaluateNativeCandidate({ blocks: [], steps: [
+      { kind: 'context', mode: 'arduino' },
+      { kind: 'definitions', definitions: [{ type, message0: 'comment owner' }] },
+      { kind: 'script', label: 'comment generator', source: `Arduino.forBlock.${type} = () => '';` },
+    ], verify: { state: expected, contracts: { fields: { 'comment-owner': {} } } } }, { assertCurrent() {} });
+    await loadAbsWorkspaceState(prepared.state as any, workspace, {}, () => {});
+    const saved = Blockly.serialization.workspaces.save(workspace) as any;
+    assertAbsReadback(expected, saved);
+    assertAbsReadback(prepared.state as any, saved);
+    const persisted = JSON.parse(JSON.stringify(saved));
+    workspace.clear();
+    await loadAbsWorkspaceState(persisted, workspace, {}, () => {});
+    assertAbsReadback(persisted, Blockly.serialization.workspaces.save(workspace) as any);
+    expect(persisted.blocks.blocks[0].icons.comment.x).toEqual(jasmine.any(Number));
+    expect(expected.blocks.blocks[0].icons.comment.x).toBeUndefined();
   });
 });

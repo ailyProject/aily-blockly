@@ -33,10 +33,11 @@ export async function runProjectBuild(
     const stderr = stripAnsi(String(buildResult?.fullStdErr || ''));
     return {
       is_error: true,
-      metadata: { buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr } },
+      metadata: { buildOutcome: error?.buildOutcome,
+        buildResult: buildResult || { state: 'error', text: error?.message || String(error), fullStdErr: error?.fullStdErr } },
       content: JSON.stringify({
         success: false,
-        message: `编译失败: ${buildResult?.text || error?.message || String(error)}`,
+        message: `${error?.buildOutcome === 'not-started' ? '编译未开始' : '编译失败'}: ${buildResult?.text || error?.message || String(error)}`,
         errors: extractCompileErrors(stderr) || stderr.trim().slice(0, 3000) || undefined,
       }),
     };

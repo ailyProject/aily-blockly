@@ -22,11 +22,12 @@ import { SchematicPresentationAdapter } from './integrations/schematic/schematic
 import { BlocklyEditorAutomationAdapter } from './integrations/blockly/blockly-editor-automation.adapter';
 import { AutomationUiAdapter } from './integrations/automation/automation-ui.adapter';
 import { ActionService } from '@core/app-shell/public-api';
-import { BUILD_ACTION_PORT, BUILD_APPLICATION_PORT } from '@domain/build/public-api';
+import { BUILD_ACTION_PORT, BUILD_APPLICATION_PORT, BLOCKLY_BUILD_PORT } from '@domain/build/public-api';
 import { DEPENDENCY_APPLICATION_PORT } from '@domain/dependencies/public-api';
 import { DEVICE_APPLICATION_PORT } from '@domain/device/public-api';
 import { PROJECT_APPLICATION_PORT } from '@domain/project/public-api';
 import { BuildApplicationAdapter } from './integrations/build/build-application.adapter';
+import { BlocklyBuildAdapter } from './integrations/build/blockly-build.adapter';
 import { DependencyApplicationAdapter } from './integrations/dependencies/dependency-application.adapter';
 import { DeviceApplicationAdapter } from './integrations/device/device-application.adapter';
 import { ProjectApplicationAdapter } from './integrations/project/project-application.adapter';
@@ -70,6 +71,10 @@ export const appConfig: ApplicationConfig = {
     {
       provide: BUILD_ACTION_PORT,
       useExisting: ActionService,
+    },
+    {
+      provide: BLOCKLY_BUILD_PORT,
+      useExisting: BlocklyBuildAdapter,
     },
     {
       provide: BUILD_APPLICATION_PORT,

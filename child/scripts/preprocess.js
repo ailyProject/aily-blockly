@@ -12,6 +12,7 @@ const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDelivery } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
+const { resolvePlatformResourceRoots, prepareReadOnlyToolsView } = require('./platform-resource-roots');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
@@ -112,9 +113,8 @@ async function preprocessProject(config, workspace) {
         ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
         : path.join(tempPath, 'preprocess.json');
     
-    const compilerPath = path.join(appDataPath, 'compiler');
-    const sdkPath = path.join(appDataPath, 'sdk');
-    const toolsPath = path.join(appDataPath, 'tools');
+    const resources = resolvePlatformResourceRoots(appDataPath);
+    const { compilerPath, sdkPath, toolsPath, readOnly: readOnlyResources } = resources;
 
     // 2. 读取项目信息
     const projectPackageJsonPath = path.join(currentProjectPath, 'package.json');
@@ -358,7 +358,8 @@ async function preprocessProject(config, workspace) {
     compilerParam += buildProperties;
 
     // 9. 同步编译器工具
-    await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath);
+    if (!readOnlyResources) await syncCompilerToolsToToolsPath(fullCompilerPath, toolsPath);
+    const builderToolsPath = prepareReadOnlyToolsView(appDataPath, resources, fullCompilerPath);
 
     // 10. 执行预编译
     logger.log('开始预编译...');
@@ -369,7 +370,7 @@ async function preprocessProject(config, workspace) {
         `"${compileSourcePath}"`,
         '--board', `"${boardType}"`,
         '--sdk-path', `"${fullSdkPath}"`,
-        '--tools-path', `"${toolsPath}"`,
+        '--tools-path', `"${builderToolsPath}"`,
         '--build-path', `"${buildPath}"`,
         '--tool-versions', `"${toolVersions.join(',')}"`,
         '--save-result', `"${preprocessCachePath}"`

@@ -84,14 +84,15 @@ function collectCloudLibraries(manifest, root, coder, read = readPhysical) {
   }
   return libraries;
 }
-function captureSnapshot(config, profile, { identityOnly = false, onEncode } = {}) {
+function captureSnapshot(config, profile, { identityOnly = false, onEncode, limits = {} } = {}) {
+  const budget = protocol.inputLimits(limits);
   // 单次捕获内相同物理文件只读取、哈希一次；保留各逻辑路径，维持相对 include 与 __FILE__ 语义。
   // 缓存不跨捕获保存，后续源码修改必须重新参与内容身份计算。
   const physical = new Map(), observed = new Map(), encoded = new WeakMap();
   const read = filename => {
     // NTFS 文件 ID 可能超过安全整数，使用 BigInt 防止不同文件被错误合并。
     const before = fs.lstatSync(filename, { bigint: true });
-    if (!before.isFile() || before.isSymbolicLink() || before.size > protocol.MAX_BYTES) throw fault('Unsafe build input.', 'UNSAFE_PATH');
+    if (!before.isFile() || before.isSymbolicLink() || before.size > budget.maxFileBytes) throw fault('Unsafe build input.', 'UNSAFE_PATH');
     const signature = preciseState(before), key = before.dev && before.ino ? `${before.dev}:${before.ino}` : path.resolve(filename);
     const existing = physical.get(key);
     if (existing && existing.signature !== signature) throw fault('Build source changed while capturing.');
@@ -125,6 +126,7 @@ function captureSnapshot(config, profile, { identityOnly = false, onEncode } = {
   let total = 0;
   const add = (relative, bytes) => {
     protocol.validateRelativePath(relative);
+    if (bytes.length > budget.maxFileBytes) throw fault('Build file exceeds the cloud input budget.', 'INPUT_TOO_LARGE');
     let identity = encoded.get(bytes);
     if (!identity) {
       identity = { sizeBytes: bytes.length, sha256: protocol.sha256(bytes) };
@@ -147,7 +149,7 @@ function captureSnapshot(config, profile, { identityOnly = false, onEncode } = {
     if (previous) total -= previous.sizeBytes;
     total += bytes.length;
     files.set(relative, item);
-    if (total > protocol.MAX_BYTES || files.size > protocol.MAX_FILES) throw fault('Project exceeds the cloud build input budget.', 'INPUT_TOO_LARGE');
+    if (total > budget.maxInputBytes || files.size > budget.maxFiles) throw fault('Project exceeds the cloud build input budget.', 'INPUT_TOO_LARGE');
   };
   const walk = (directory, destination, skipRootFiles = new Set(), depth = 0) => {
     if (depth > 32) throw fault('Source tree exceeds its depth limit.', 'UNSAFE_PATH');
@@ -227,7 +229,7 @@ function captureSnapshot(config, profile, { identityOnly = false, onEncode } = {
     libraries, files: [...files.values()] };
   snapshot.inputDigest = protocol.snapshotDigest(snapshot);
   // 文件已由受检查的读取或自有缓冲区生成；这里只校验清单，避免二次解码、哈希全部源码。
-  protocol.validateSnapshot(snapshot);
+  protocol.validateSnapshot(snapshot, budget);
   for (const [filename, signature] of observed) {
     if (preciseState(fs.lstatSync(filename, { bigint: true })) !== signature) throw fault('Build source changed while capturing.');
   }

@@ -7,6 +7,7 @@ import { NativeCandidateWorkspace } from '../../../editors/blockly-editor/servic
 import { createNativeStructureObserver } from '../../../editors/blockly-editor/services/blockly-native-structure';
 import { prepareNativeModels } from '../../../editors/blockly-editor/services/blockly-native-model-preparation';
 import type { AbsSyntaxNode } from './abs-state';
+import { NativeCandidateProgressReporter, NativeCandidateTiming } from '../../../editors/blockly-editor/services/blockly-native-observation';
 
 describe('native candidate performance boundaries', () => {
   it('parses detached declaration syntax once per type and keeps two complete binding readbacks', () => {
@@ -100,6 +101,38 @@ describe('native candidate performance boundaries', () => {
     expect(nativeCandidateBudget(3000, 2)).toEqual({ perPassMs: 3000, totalMs: 3000 });
     for (const value of [0, -1, NaN, Infinity, 60001]) expect(() => nativeCandidateBudget(value, 2)).toThrowError(/Invalid/);
   });
+  it('measures completed realm phases without counting message delivery delay as phase execution', () => {
+    let now = 0;
+    const replies: Record<string, any>[] = [];
+    const reporter = new NativeCandidateProgressReporter(value => replies.push(value), () => now);
+    reporter.progress('load'); now = 40; reporter.progress('ui');
+    now = 55; reporter.ui({ callbacks: 64, pending: 1, snapshots: 65, callbackMs: 5, snapshotMs: 10 });
+    now = 70; reporter.progress('generate'); now = 85; reporter.progress('ui'); now = 90; reporter.progress('readback');
+    const last = replies[replies.length - 1];
+    expect(last['completedPhases'].find((value: any) => value.phase === 'ui').elapsedMs).toBe(35);
+    expect(last['completedPhases'].find((value: any) => value.phase === 'load').elapsedMs).toBe(40);
+    expect(last['ui'].snapshots).toBe(65);
+    now = 0;
+    const timing = new NativeCandidateTiming(() => now);
+    now = 10; timing.hostPhaseChanged('realm');
+    now = 110; timing.observe({ ...last, elapsedMs: 90 }); now = 150;
+    const captured = timing.snapshot();
+    expect(captured.elapsedMs).toBe(150);
+    expect(captured.realmElapsedMs).toBe(90);
+    expect(captured.lastObservationAgeMs).toBe(40);
+    expect(captured.completedPhases.find(value => value.phase === 'load')!.elapsedMs).toBe(40);
+    expect(captured.ui!.snapshotMs).toBe(10);
+  });
+  it('roundtrips bounded native timing while removing arbitrary trace contents', () => {
+    const value: any = { elapsedMs: 10000, lastObservationAgeMs: 250, realmElapsedMs: 9750,
+      completedPhases: [{ phase: 'load', elapsedMs: 9000, source: 'secret' }, { phase: '../private', elapsedMs: 5 }, { phase: 'ui', elapsedMs: Infinity }],
+      ui: { callbacks: 64, pending: 40, snapshots: 65, callbackMs: 5, snapshotMs: 700, fields: 'secret' }, path: 'secret' };
+    const result = serializeAbsFailure(nativeCandidateTimeout('ui', 10000, value));
+    expect(result.diagnostic!.nativeTiming).toEqual({ elapsedMs: 10000, lastObservationAgeMs: 250, realmElapsedMs: 9750,
+      completedPhases: [{ phase: 'load', elapsedMs: 9000 }], ui: { callbacks: 64, pending: 40, snapshots: 65, callbackMs: 5, snapshotMs: 700 } });
+    value.elapsedMs = NaN;
+    expect(serializeAbsFailure(nativeCandidateTimeout('ui', 10000, value)).diagnostic!.nativeTiming).toBeUndefined();
+  });
   it('captures only block-local seed data without visiting the descendant graph', () => {
     Blockly.Blocks['abs_seed_probe'] = { init() { this.appendDummyInput().appendField(new Blockly.FieldTextInput('value'), 'TEXT'); } };
     const workspace = new Blockly.Workspace();
@@ -126,7 +159,8 @@ describe('native candidate performance boundaries', () => {
     expect(result.code).toBe('ABS_NATIVE_TIMEOUT');
     expect(result.diagnostic!.reason).toBe('native-timeout-' + phase);
     expect(result.diagnostic!.hint).toContain('before apply');
-    expect(result.diagnostic!.hint).toContain('do not repeat');
+    expect(result.diagnostic!.hint).toMatch(/do not (?:repeat|retry) unchanged/i);
+    expect(result.diagnostic!.hint).toContain('project_recover');
     expect(result.diagnostic!.truncated).not.toBeTrue();
   });
 });

@@ -25,11 +25,11 @@ function libraryContentKey(files, root) {
   for (const file of selected) { safePath(file.path); check(integer(file.sizeBytes) && hash(file.sha256)); }
   return protocol.sha256(protocol.canonicalJson({ schemaVersion: 1, policy: POLICY, files: selected }));
 }
-function toManifest(snapshot) {
+function toManifest(snapshot, limits = {}) {
   const identity = { ...protocol.snapshotBody(snapshot), inputDigest: snapshot.inputDigest };
   const manifest = { schemaVersion: 1, kind: KIND, snapshot: identity,
     libraryKeys: identity.libraries.map(library => ({ name: library.name, root: library.root, key: libraryContentKey(identity.files, library.root) })) };
-  validateManifest(manifest);
+  validateManifest(manifest, protocol.inputLimits(limits));
   return manifest;
 }
 function validateManifest(manifest, limits = {}) {
@@ -49,8 +49,9 @@ function validateManifest(manifest, limits = {}) {
     check(closed(macro, ['name','value']) && /^[A-Za-z_]\w{0,127}$/.test(macro.name || '')
       && typeof macro.value === 'string' && macro.value.length <= 4096 && !/[\x00\r\n]/.test(macro.value));
   }
-  const maxFiles = limits.maxFiles ?? 4096, maxBytes = limits.maxInputBytes ?? 128 * 1024 * 1024, maxFile = limits.maxFileBytes ?? maxBytes;
-  check(integer(maxFiles) && integer(maxBytes) && integer(maxFile));
+  const maxFiles = limits.maxFiles ?? 4096, requestedMaxBytes = limits.maxInputBytes ?? protocol.MAX_INPUT_BYTES, maxFile = limits.maxFileBytes ?? 128 * 1024 * 1024;
+  check(integer(maxFiles) && integer(requestedMaxBytes) && integer(maxFile));
+  const maxBytes = Math.min(requestedMaxBytes, protocol.MAX_INPUT_BYTES);
   check(Array.isArray(s.files) && s.files.length > 0 && s.files.length <= maxFiles);
   const blobs = new Map(), paths = [], originalPaths = new Set(); let totalBytes = 0;
   for (const file of s.files) {

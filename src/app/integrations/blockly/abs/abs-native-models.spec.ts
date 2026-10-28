@@ -2,6 +2,7 @@ import { evaluateNativeCandidate } from '../../../editors/blockly-editor/service
 import type { NativeCandidateRequest } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
 import { modelSteps } from './abs-native-models.fixture';
 import { normalizeAbsSerializedWorkspace } from './abs-serialized-workspace';
+import { indexAbsAbi } from './abs-abi-index';
 import { dhtModelFixture } from './abs-native-dht-model.fixture';
 import { spiModelFixture } from './abs-native-spi-model.fixture';
 import { adoptAbsNativeModels, assertAbsNativeModelDeclarations } from './abs-native-model-declarations';
@@ -229,6 +230,32 @@ describe('native initializer model preparation', () => {
         modelDeclarations: [{ ...effect, ownerId: 'owned-' + effect.start }] } });
     });
   }
+  it('keeps an enabled next statement active after a disabled sibling', async () => {
+    const result = await run(request('test_object_init("ignored", Sensor) @disabled\n    @next:\n        test_object_init("active", Sensor)\ntest_object_read($active)'));
+    expect(result.binding!.modelDeclarations!.map(item => item.name)).toEqual(['active']);
+  });
+  it('honors disabled producers during recursive native generation without disabling their next sibling', async () => {
+    const value = request('model_scope()\n    test_object_init("ignored", Sensor) @disabled\n    test_object_init("active", Sensor)\ntest_object_read($active)');
+    value.steps.push({ kind: 'definitions', definitions: [{ type: 'model_scope', message0: '%1',
+      args0: [{ type: 'input_statement', name: 'DO' }], previousStatement: null, nextStatement: null,
+    }] }, { kind: 'script', label: 'recursive-model-scope', source: `
+      Arduino.forBlock.model_scope = (block, generator) => generator.statementToCode(block, 'DO');
+    ` });
+    const result = await run(value), declarations = result.binding!.modelDeclarations!;
+    expect(declarations.map(item => item.name)).toEqual(['active']);
+    const ignored = result.binding!.instances.find(item => item.seed.fields?.['NAME'] === 'ignored')!;
+    expect(ignored.seed['disabledReasons']).toBeUndefined();
+    const state = normalizeAbsSerializedWorkspace(result.state);
+    // Reconciliation owns persisted reasons; shape discovery must not invent them.
+    indexAbsAbi(state).get(ignored.id)!['disabledReasons'] = ['MANUALLY_DISABLED', 'LIBRARY_DISABLED'];
+    const contracts = { fields: Object.fromEntries(result.binding!.instances.map(item => [item.id, item.shape.fields])) };
+    const verified = await run({ blocks: [], steps: value.steps, verify: { state, contracts,
+      modelDeclarations: declarations.map(effect => ({ ...effect,
+        ownerId: result.binding!.instances.find(item => item.start === effect.start)!.id })),
+    } });
+    expect(indexAbsAbi(normalizeAbsSerializedWorkspace(verified.state)).get(ignored.id)!['disabledReasons'])
+      .toEqual(['MANUALLY_DISABLED', 'LIBRARY_DISABLED']);
+  });
   it('does not guess models from missing references or disabled initializers', async () => {
     for (const abs of ['test_object_read($missing)', 'test_object_read($sensor)\ntest_object_init("sensor", Sensor) @disabled']) {
       await expectAsync(run(request(abs))).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SYMBOL_MISSING' }));

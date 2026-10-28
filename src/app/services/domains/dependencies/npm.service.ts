@@ -353,7 +353,7 @@ export class NpmService {
 
     // 独立安装板包时尚无项目清单，按 boards.json.mode 选择 Linux 或默认 Arduino npm 来源。
     const cmd = this.configService.withBoardNpmRegistry(
-      `npm install ${board.name}@${board.version} --prefix "${appDataPath}"`,
+      `npm install ${board.name}@${board.version}${this.configService?.getCompileBackend?.() === 'cloud' && window['platform']?.type === 'win32' ? ' --global' : ''} --prefix "${appDataPath}"`,
       board,
     );
 
@@ -623,13 +623,24 @@ export class NpmService {
     if (this.configService.getCompileBackend() !== 'cloud') return;
     const session = this.prjService.getProjectDependencySession(projectPath);
     const project = this.getDependencyProject(session);
+    const guard = () => {
+      this.assertDependencySession(session);
+      if (isCancelled()) throw Object.assign(new Error('Build cancelled during board support lookup.'), { code: 'CANCELLED' });
+    };
+    guard();
     const boardModule = await project.getBoardModule();
-    this.assertDependencySession(session);
+    guard();
     if (!boardModule) return;
     const wasCloud = project.isCloudBuild();
-    const backend = await project.resolveCompileBackend(session, true);
-    this.assertDependencySession(session);
-    if (isCancelled()) throw Object.assign(new Error('Build cancelled during board support lookup.'), { code: 'CANCELLED' });
+    let backend: 'cloud' | 'local';
+    try {
+      backend = await project.resolveCompileBackend(session, true);
+    } catch (error) {
+      // A late unsupported reply must not replace the user's cancellation.
+      guard();
+      throw error;
+    }
+    guard();
     if (wasCloud && backend === 'local') {
       await this.installBoardDeps(session);
       if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
@@ -655,10 +666,19 @@ export class NpmService {
       guard();
       await window['cloudBuild']?.invalidate?.({ projectPath });
       guard();
-      await this.installBoardDeps(session, { showSuccessNotice: false });
-      guard();
-      if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
-        throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+      if (this.configService.isCoderProduct() && this.prjService.isAilyCodeProject(projectPath)) {
+        // A failed cloud preflight can leave a new/error dependency session.
+        // Coder needs the complete local chain to attest readiness before the
+        // compiler's disk check; installing SDKs alone does not mark it ready.
+        if (!await this.ensureProjectAndBoardDeps(projectPath, undefined, session)) {
+          throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+        }
+      } else {
+        await this.installBoardDeps(session, { showSuccessNotice: false });
+        guard();
+        if (!await this.ensureCoderDependencyLibrarySources(projectPath, undefined, session)) {
+          throw new Error(this.translate.instant('NPM.DEPS_RETRY_REQUIRED'));
+        }
       }
       guard();
       // 只补齐执行依赖；重发板配置会重建 Blockly 运行时，使原任务的源码快照失效。
@@ -677,7 +697,14 @@ export class NpmService {
       if (isCancelled()) throw Object.assign(new Error('Build cancelled during cloud preparation.'), { code: 'CANCELLED' });
     };
     guard();
-    const backend = await project.resolveCompileBackend(session, true);
+    let backend: 'cloud' | 'local';
+    try {
+      backend = await project.resolveCompileBackend(session, true);
+    } catch (error) {
+      guard();
+      // A failed cloud selection must not silently restart the local compiler.
+      throw error;
+    }
     guard();
     if (backend !== 'cloud') return false;
     await this.ensureCloudLibrarySources(projectPath, session);
@@ -1427,7 +1454,8 @@ export class NpmService {
   // 安装开发板依赖
   async installBoardDependencies(packageJson: any, manageInstallState: boolean = true, force = false, session?: ProjectDependencySession, showSuccessNotice = true) {
     this.assertDependencySession(session);
-    const boardDependencies: Record<string, string> = this.isCloudBuild(session?.projectPath) ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
+    const cloudMode = this.isCloudBuild(session?.projectPath);
+    const boardDependencies: Record<string, string> = cloudMode ? getCloudEditorDependencies(packageJson) : packageJson.boardDependencies || {};
     if (Object.keys(boardDependencies).length === 0) return;
 
     if (!force && await this.areBoardPlatformDepsReady(boardDependencies)) {
@@ -1435,6 +1463,9 @@ export class NpmService {
       console.log('[installBoardDependencies] 平台依赖已就绪，跳过');
 
       return;
+    }
+    if (await window['env'].get('AILY_REPAIR_READONLY_NPM_PREFIX')) {
+      throw new Error('Independent repair environments reuse existing SDK/compiler resources read-only. Missing platform resources cannot be installed or refreshed here; source and shared tools remain unchanged.');
     }
     this.assertDependencySession(session);
 
@@ -1469,6 +1500,12 @@ export class NpmService {
         const depPathPackageJson = `${depPath}/package.json`;
         let installedVersionWhenMismatch: string | undefined;
         const versionStr = String(version);
+        if (cloudMode) {
+          await this.installIsolatedCloudPackage({ name: key, version: declaredVersion }, session, registry);
+          this.assertDependencySession(session);
+          continue;
+        }
+
 
         if (this.configService.isCoderProduct()) {
           await this.removeIncompleteSdkDirectory(key, versionStr, platformBases, session);
@@ -1841,6 +1878,61 @@ export class NpmService {
   // 安装工具
   async installTool(tool: any) {
     await this.installPackage(tool, this.translate.instant('NPM.TYPE_TOOL'), tool?.version);
+  }
+
+  /** Prepare only the exact uploader package, outside the shared AppData npm graph. */
+  async installCloudUploadTool(tool: { name: string; version: string }, session?: ProjectDependencySession): Promise<void> {
+    this.assertDependencySession(session);
+    if (!tool || !/^@aily-project\/tool-[A-Za-z0-9_.-]+$/.test(tool.name || '')
+        || typeof tool.version !== 'string'
+        || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/.test(tool.version)
+        || !valid(tool.version)) throw new Error('Invalid exact cloud uploader tool dependency.');
+    await this.installIsolatedCloudPackage(tool, session);
+  }
+
+  /** Keep editor dependency declarations intact without reifying the AppData root graph. */
+  private async installIsolatedCloudPackage(tool: { name: string; version: string }, session?: ProjectDependencySession, registry = ''): Promise<void> {
+    this.assertDependencySession(session);
+    if (window['platform']?.type !== 'win32') throw new Error('Cloud package installation requires Windows.');
+    if (!tool || !this.isValidNpmPackageName(tool.name)
+        || typeof tool.version !== 'string' || !tool.version.trim()
+        || /["%\x00\r\n]/.test(tool.version)) throw new Error('Invalid cloud dependency declaration.');
+    const appDataPath = window['path'].getAppDataPath();
+    if (typeof appDataPath !== 'string' || !appDataPath || /["\x00\r\n]/.test(appDataPath)) throw new Error('Invalid cloud uploader package path.');
+    const packagePath = `${appDataPath}/node_modules/${tool.name}/package.json`;
+    let rebuild = false;
+    if (window['path'].isExists(packagePath)) {
+      try {
+        const installed = JSON.parse(window['fs'].readFileSync(packagePath, 'utf8'));
+        rebuild = installed.name === tool.name && this.depVersionSatisfiesDecl(installed.version, tool.version);
+      } catch { /* Reinstall a missing or unreadable wrapper using its declaration. */ }
+    }
+    const operation = rebuild ? 'rebuild' : 'install';
+    // Windows global prefix still uses AppData/node_modules. Its npm graph does
+    // not reify SDK/compiler dependencies declared by AppData/package.json.
+    const cmd = appendScopedNpmRegistry(`npm ${operation} "${tool.name}@${tool.version}" --global --prefix "${appDataPath}" --foreground-scripts`, registry);
+    try {
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.INSTALLING_TITLE'),
+        text: this.translate.instant('NPM.INSTALLING', { name: tool.name }),
+        state: 'doing', showProgress: false, setTimeout: 300000,
+      });
+      if (session) await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false, session);
+      else await this.cmdService.runAsyncChecked(cmd, appDataPath, true, false);
+      this.assertDependencySession(session);
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.INSTALL_COMPLETE_TITLE'),
+        text: this.translate.instant('NPM.INSTALL_COMPLETE', { name: tool.name }),
+        state: 'done', setTimeout: 3000,
+      });
+    } catch (error) {
+      this.assertDependencySession(session);
+      this.application.updateNotice({
+        title: this.translate.instant('NPM.INSTALL_FAILED_TITLE'),
+        text: this.translate.instant('NPM.INSTALL_FAILED', { name: tool.name }), state: 'error',
+      });
+      throw error;
+    }
   }
 
   // 安装SDK
@@ -2377,7 +2469,7 @@ export class NpmService {
         || normalized.split('/').some(part => !part || part === '.' || part === '..')
         || fields['Symbolic Link'] || fields['Hard Link'] || /L|l[rwx-]{9}/.test(fields['Attributes'] || '')) throw new Error('Unsafe library source archive entry.');
       const size = Number(fields['Size'] || '0');
-      if (!Number.isSafeInteger(size) || size < 0 || ++count > 4096 || (total += size) > 128 * 1024 * 1024) throw new Error('Library source archive exceeds its limit.');
+      if (!Number.isSafeInteger(size) || size < 0 || size > 128 * 1024 * 1024 || ++count > 4096 || (total += size) > 256 * 1024 * 1024) throw new Error('Library source archive exceeds its limit.');
     }
     if (!count) throw new Error('Library source archive inventory is empty.');
   }

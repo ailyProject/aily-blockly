@@ -1,3 +1,4 @@
+import { MediaFieldFilePicker } from './field-media-file-picker';
 import * as Blockly from 'blockly/core';
 import { projectDataRuntime, AilyDataRef, isAilyDataRef } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
@@ -252,6 +253,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
     private frameStrip: HTMLElement | null = null;
     private statusElement: HTMLElement | null = null;
     private fileInput: HTMLInputElement | null = null;
+    private filePicker: MediaFieldFilePicker | null = null;
     private playTestButton: HTMLButtonElement | null = null;
     private widthInput: HTMLInputElement | null = null;
     private heightInput: HTMLInputElement | null = null;
@@ -446,6 +448,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
     }
 
     override dispose() {
+        this.filePicker?.dispose();
         this.commitParameterInputChange();
         this.stopPlayTest(false);
         this.clearSourceRedecodeTimer();
@@ -464,7 +467,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         );
         this.bindEditorContainerEvents(dropdownEditor);
 
-        const toolbar = this.createToolbar();
+        const toolbar = this.createToolbar(dropdownEditor);
         dropdownEditor.appendChild(toolbar);
         dropdownEditor.appendChild(this.createStatus());
         dropdownEditor.appendChild(this.createFrameEditor());
@@ -494,7 +497,7 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         });
     }
 
-    private createToolbar() {
+    private createToolbar(editor: HTMLElement) {
         const toolbar = this.createElementWithClassname('div', 'u8g2AnimationToolbar ailyMediaFieldToolbar');
         const dimensionGroup = this.createElementWithClassname('div', 'u8g2AnimationControlGroup ailyMediaFieldSettings');
 
@@ -531,12 +534,13 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
         this.fileInput.accept = 'video/mp4,image/gif,image/png,.mp4,.gif,.png';
         this.fileInput.style.display = 'none';
         actionGroup.appendChild(this.fileInput);
+        this.filePicker = new MediaFieldFilePicker(editor, this.fileInput);
         this.bindEvent(this.fileInput, 'change', this.onFileSelected.bind(this));
 
         this.addControlButton(
             actionGroup,
             Blockly.Msg['U8G2_ANIMATION_BUTTON_UPLOAD'],
-            () => this.fileInput?.click(),
+            () => this.filePicker?.open(),
             Blockly.Msg['U8G2_ANIMATION_UPLOAD_TOOLTIP'],
         );
         this.addControlButton(
@@ -2493,6 +2497,8 @@ export class FieldU8g2Animation extends Blockly.Field<U8g2AnimationValue> {
     }
 
     private dropdownDispose() {
+        this.filePicker?.dispose();
+        this.filePicker = null;
         this.commitParameterInputChange();
         this.closeFrameEditor();
         this.stopPlayTest(false);

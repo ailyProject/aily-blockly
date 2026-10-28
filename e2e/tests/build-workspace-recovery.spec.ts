@@ -5,6 +5,16 @@ import path from 'node:path';
 import type {TestInfo} from '@playwright/test';
 import {expect, getMainWindow, launchAilyElectron, openBlocklyProject, readAilyHostOperation, ROOT, test} from '../fixtures/electron-app';
 
+function expectForcedExit(result: {status: number | null; signal: string | null; stderr: unknown; error?: Error}) {
+  expect(result.error).toBeUndefined();
+  expect(result.stderr).toBe('');
+  if (process.platform === 'win32') {
+    expect(result.status).toBe(1); expect(result.signal).toBeNull();
+  } else {
+    expect(result.status).toBeNull(); expect(result.signal).toBe('SIGKILL');
+  }
+}
+
 async function seedProject(info: TestInfo): Promise<{project: string; seed: string}> {
   const seed = process.env['AILY_E2E_PLATFORM_SEED'];
   test.skip(!seed, 'Set AILY_E2E_PLATFORM_SEED to installed platform assets.');
@@ -26,7 +36,7 @@ for (const operation of ['publish', 'compile']) test(`issue 745: interrupted ${o
   const crashed = spawnSync(process.execPath, ['-e',
     `require(process.argv[1]).acquireBuildWorkspace(process.argv[2], process.argv[3]); process.kill(process.pid, 'SIGKILL');`,
     path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project, operation], {encoding: 'utf8'});
-  expect(crashed.signal).toBe('SIGKILL');
+  expectForcedExit(crashed);
   if (process.env['AILY_ISSUE745_BASELINE'] !== '1') {
     // Kill the next process immediately after installing its recovered owner.
     const interruptedRecovery = spawnSync(process.execPath, ['-e',
@@ -35,7 +45,7 @@ for (const operation of ['publish', 'compile']) test(`issue 745: interrupted ${o
          if(String(args[1]).endsWith('aily-workspace.lock'))process.kill(process.pid,'SIGKILL');return result};
        require(process.argv[1]).acquireBuildWorkspace(process.argv[2], process.argv[3]);`,
       path.join(ROOT, 'child/scripts/build-workspace-lease.js'), project, operation], {encoding: 'utf8'});
-    expect(interruptedRecovery.signal).toBe('SIGKILL');
+    expectForcedExit(interruptedRecovery);
   }
   const marker = path.join(project, '.build/aily-workspace.lock');
   const abandoned = await readFile(marker, 'utf8');
@@ -134,7 +144,7 @@ test('issue 745: a surviving delegated process stays protected and save reports 
   const marker = path.join(project, '.build/aily-workspace.lock');
   let abandoned = '';
   try {
-    expect(crashed.signal).toBe('SIGKILL');
+    expectForcedExit(crashed);
     abandoned = await readFile(marker, 'utf8');
     launch = await launchAilyElectron({
       environment: {AILY_E2E_TOOLCHAIN_SEED: seed, AILY_E2E_TOOLCHAIN_PROJECT: project},
@@ -152,7 +162,10 @@ test('issue 745: a surviving delegated process stays protected and save reports 
       attempts.push(saved);
       expect(saved.success).toBe(false);
       expect(saved.error).toContain('Project file saved, but generated code could not be updated.');
-      expect(saved.error).toContain('Restart the computer');
+      expect(saved.error).toContain("project_recover(action='fork')");
+      expect(saved.error).not.toContain('Restart the computer');
+      expect(saved.projectSaved).toBe(true);
+      expect(saved.generatedCodePublished).toBe(false);
       expect(await readFile(marker, 'utf8')).toBe(abandoned);
       expect(() => process.kill(descendant, 0)).not.toThrow();
       expect(JSON.parse(await readFile(path.join(project, 'project.abi'), 'utf8'))).toBeTruthy();

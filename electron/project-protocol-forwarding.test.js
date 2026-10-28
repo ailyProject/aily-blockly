@@ -35,6 +35,7 @@ async function runReady(product, locked, url) {
   const calls = { quit: 0, env: 0, window: 0, handled: [] };
   const context = {
     process: { argv: ['product.exe', url], env: { AILY_BUILD_PRODUCT: product } },
+    repairBootstrap: null,
     app: { quit: () => calls.quit++ }, gotTheLock: locked,
     isSupportedProtocolUrl: value => isProductProtocolUrl(product, value), getBuildProduct: () => product,
     require: name => { assert.equal(name, './project-url-import'); return projectImport; },
@@ -55,6 +56,7 @@ function runProtocol(product, importUrl) {
   let ready;
   const context = {
     console: quiet, URL, URLSearchParams, path, os,
+    repairBootstrap: null,
     cloudProjectOpenQueue: createCloudProjectOpenQueue(() => false, noop),
     process: { env: { AILY_7ZA_PATH: path.join(__dirname, '7za.exe') } },
     app: { getPath: name => { assert.equal(name, 'documents'); return path.join(os.tmpdir(), 'documents'); }, isReady: () => true },

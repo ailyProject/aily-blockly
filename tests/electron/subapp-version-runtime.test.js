@@ -5,8 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { createHash } = require('node:crypto');
-const { execFileSync, fork } = require('node:child_process');
-const { createSubappManager, packagePathFor, readInstalledState } = require('../../electron/subapp-manager');
+const { fork } = require('node:child_process');
+const { createSubappManager, packagePathFor, readInstalledState, runNpm } = require('../../electron/subapp-manager');
 
 const packageName = '@aily-project/subapp-version-smoke';
 const id = 'version-smoke';
@@ -83,9 +83,9 @@ test('real npm archive, bundled dependency and install script coexist with a run
     fs.writeFileSync(path.join(rootDir, 'package.json'), manifest);
     fs.writeFileSync(path.join(rootDir, 'package-lock.json'), lock);
     writePackage(source, '2.0.0');
-    const packed = JSON.parse(execFileSync('npm', [
+    const packed = JSON.parse((await runNpm([
       'pack', '--json', '--ignore-scripts', '--cache', path.join(temporary, 'pack-cache'),
-    ], { cwd: source, encoding: 'utf8', timeout: 20000 }));
+    ], { cwd: source, env: { ...process.env, AILY_CHILD_PATH: '' }, npmTimeoutMs: 20000 })).stdout);
     const archive = fs.readFileSync(path.join(source, packed[0].filename));
     server = http.createServer((_request, response) => {
       response.writeHead(200, { 'content-length': archive.length });

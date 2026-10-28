@@ -9,7 +9,11 @@ const gzip = promisify(require('node:zlib').gzip);
 const protocol = require('./protocol');
 const inputManifest = require('./input-manifest');
 const { captureSnapshot, captureIdentity } = require('./snapshot');
+const ciResources = require('./ci-resource-preparation');
 const { collectCloudArtifacts, removeOwnedDirectory } = require('./artifact-store');
+const { artifactUploadInfo: getArtifactUploadInfo } = require('./uploader');
+const { cloudUploadRequirements } = require('./cloud-recipe-upload');
+const { validateCloudRecipePlan } = require('./cloud-recipe-contract');
 const childRoot = process.env.AILY_CHILD_PATH || path.resolve(__dirname, '..', '..', 'child');
 const { confirmBuildSource } = require(path.join(childRoot, 'scripts/build-source-capture'));
 const { acquireBuildWorkspace } = require(path.join(childRoot, 'scripts/build-workspace-lease'));
@@ -43,6 +47,56 @@ function clientInputMetrics(value) {
   return Object.fromEntries(CLIENT_INPUT_METRICS.filter(key => Number.isFinite(value?.[key]) && value[key] >= 0 && value[key] <= Number.MAX_SAFE_INTEGER)
     .map(key => [key, value[key]]));
 }
+function negotiatedUploadPlan(capabilities, action = 'compile') {
+  if (action === 'compile' && Array.isArray(capabilities?.uploadPlans) && capabilities.uploadPlans.includes('cloud-upload-v1')) return 'cloud-upload-v1';
+  return undefined;
+}
+function matchesUploadPlan(uploadPlan, manifest) {
+  if (manifest.action !== 'compile') return true;
+  if (uploadPlan === 'cloud-upload-v1') return manifest.flashPlan?.schemaVersion === 1
+    && manifest.flashPlan.protocol === 'cloud-recipe' && manifest.flashPlan.uploaderId === 'windows-sdk';
+  return !['local-sdk','cloud-recipe'].includes(manifest.flashPlan?.protocol);
+}
+function targetProfileDigest(profile) {
+  const value = profile?.digest || profile?.profileDigest;
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
+    && (profile.digest === undefined || profile.profileDigest === undefined || profile.digest === profile.profileDigest) ? value : undefined;
+}
+function targetSelectionCandidates(caps, catalog, reference, action) {
+  const selection = caps?.targetSelection;
+  if (selection?.version !== 1 || selection.policy !== 'priority-idle-v1'
+      || !Number.isSafeInteger(selection.maxCandidates) || selection.maxCandidates < 1) return undefined;
+  const candidates = new Map(), referenceDigest = targetProfileDigest(reference);
+  if (!referenceDigest || typeof reference.fqbn !== 'string' || !reference.fqbn
+      || !reference.metadata || typeof reference.metadata !== 'object' || Array.isArray(reference.metadata)) return undefined;
+  const compatible = profile => targetProfileDigest(profile) && profile.runner === 'aily-builder'
+    && profile.metadata?.fixture !== true && profile.capabilities?.[action] === true
+    && ['boardModule', 'boardVersion', 'boardDigest', 'fqbn', 'runner'].every(key => profile[key] === reference[key])
+    && protocol.canonicalJson(profile.metadata) === protocol.canonicalJson(reference.metadata);
+  if (!compatible(reference)) return undefined;
+  candidates.set(referenceDigest, reference);
+  for (const profile of catalog.profiles || []) {
+    if (candidates.size >= Math.min(64, selection.maxCandidates)) break;
+    if (compatible(profile)) candidates.set(targetProfileDigest(profile), profile);
+  }
+  return candidates;
+}
+function acceptCreatedJob(record, created) {
+  if (typeof created?.jobId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(created.jobId)) {
+    throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid task identity.');
+  }
+  if (record.jobId && record.jobId !== created.jobId) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway changed an idempotent task identity.');
+  // Retain a valid task id even if its selected profile is invalid so cleanup can cancel it.
+  record.jobId = created.jobId;
+  if (record.postBody?.targetSelection === 'priority-idle-v1') {
+    const profile = record.targetCandidates?.get(created.profileDigest);
+    if (!profile || (record.selectedProfileDigest && record.selectedProfileDigest !== created.profileDigest)) {
+      throw protocol.error('TARGET_UNSUPPORTED', 'Gateway selected an unverified compiler profile.');
+    }
+    record.selectedProfileDigest = created.profileDigest;
+    record.profile = profile;
+  }
+}
 function trustedGateway(settings, caps) {
   if (caps?.protocolVersion !== 1 || typeof caps.publicKey !== 'string' || !caps.publicKey.trim()) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway cloud build protocol is unsupported.');
   const connection = gatewayUrl(settings.gatewayUrl);
@@ -62,6 +116,40 @@ function supportedRequest(input) {
       || (input.config?.recordProjectDelivery !== undefined && input.config.recordProjectDelivery !== false) || input.graph !== undefined || input.config?.graph !== undefined
       || (input.graphSemanticRevision !== undefined && input.graphSemanticRevision !== '')
       || (input.config?.graphSemanticRevision !== undefined && input.config.graphSemanticRevision !== '')) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Cloud graph and project delivery are not supported.');
+}
+function closedInputObject(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype
+    && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+function negotiatedInputChunkBytes(capabilities) {
+  const chunked = capabilities.inputTransport?.chunkedBlobs;
+  if (chunked === undefined) return undefined;
+  if (chunked && Number.isSafeInteger(chunked.version) && chunked.version > 1) return undefined;
+  if (!closedInputObject(chunked, ['version', 'maxChunkBytes']) || chunked.version !== 1
+      || !Number.isSafeInteger(chunked.maxChunkBytes) || chunked.maxChunkBytes < 64 * 1024 || chunked.maxChunkBytes > 1024 * 1024) {
+    throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid chunked input capability.');
+  }
+  return chunked.maxChunkBytes;
+}
+function decodeInputBlob(file) {
+  const bytes = Buffer.from(file.dataBase64, 'base64');
+  if (bytes.length !== file.sizeBytes || protocol.sha256(bytes) !== file.sha256) {
+    throw protocol.error('INPUT_HASH_MISMATCH', 'Input blob differs from its manifest.');
+  }
+  return bytes;
+}
+function inputBlobTimeoutMs(endpoint, wireBytes, ordinary) {
+  if (!/^\/api\/v1\/build\/inputs\/uploads\/[A-Za-z0-9_-]{1,128}\/blobs$/u.test(endpoint)) return ordinary;
+  // The receiver's ordinary body deadline is 120s. Allow the actual compressed
+  // payload 256 KiB/s, while keeping a shorter 110s ceiling and no POST retries.
+  return Math.min(110000, ordinary + Math.ceil(wireBytes / (256 * 1024)) * 1000);
+}
+function artifactDownloadTimeoutMs(sizeBytes, ordinary) {
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0 || sizeBytes > protocol.MAX_BYTES)
+    throw protocol.error('ARTIFACT_INVALID', 'Artifact exceeds its byte budget.');
+  // importResult verifies the signed inventory before this bounded download.
+  return Math.min(600000, ordinary + Math.ceil(sizeBytes / (256 * 1024)) * 1000);
 }
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -90,6 +178,7 @@ class CloudBuildBroker {
     this.fetch = options.fetch || globalThis.fetch;
     this.getOwner = options.getOwner || (() => ({ generation: 1 }));
     this.querySource = options.querySource;
+    this.getAppDataPath = options.getAppDataPath || (() => process.env.AILY_APPDATA_PATH);
     this.acquirePowerSaveBlocker = options.acquirePowerSaveBlocker;
     this.pollIntervalMs = options.pollIntervalMs || 3000;
     // 优先使用网关长轮询及时更新；不支持时，运行任务每秒查询、排队任务每三秒查询。
@@ -161,7 +250,9 @@ class CloudBuildBroker {
       if (compressed.length < Buffer.byteLength(payload)) { payload = compressed; headers['Content-Encoding'] = 'gzip'; }
     }
     signal?.throwIfAborted();
-    const timeout = AbortSignal.timeout(Math.min(this.requestTimeoutMs, bodyOptions.timeoutMs || this.requestTimeoutMs));
+    const ordinaryTimeout = Math.min(this.requestTimeoutMs, bodyOptions.timeoutMs || this.requestTimeoutMs);
+    const timeout = AbortSignal.timeout(body === undefined ? ordinaryTimeout
+      : inputBlobTimeoutMs(endpoint, Buffer.byteLength(payload), ordinaryTimeout));
     let response;
     try { response = await this.fetchAuthorized(settings, resolved, { method: body === undefined ? 'GET' : 'POST', headers,
       body: payload, credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
@@ -233,6 +324,8 @@ class CloudBuildBroker {
     metrics.fileCount = snapshot.files.length; metrics.blobCount = unique.size; metrics.libraryCount = snapshot.libraries.length;
     const supported = caps.inputTransport?.version === 2 && caps.inputTransport.manifestFirst === true
       && caps.inputTransport.libraryContentKey === 'sha256-relative-tree-v1';
+    const advertisedChunkBytes = negotiatedInputChunkBytes(caps);
+    const chunkBytes = supported ? advertisedChunkBytes : undefined;
     record.inputTransportVersion = supported ? 2 : 1;
     if (!supported) {
       const started = performance.now();
@@ -243,7 +336,7 @@ class CloudBuildBroker {
       } finally { metrics.blobUploadMs += performance.now() - started; }
     }
     const prepareStarted = performance.now();
-    const manifest = inputManifest.toManifest(snapshot);
+    const manifest = inputManifest.toManifest(snapshot, record.inputLimits);
     metrics.manifestPrepareMs += performance.now() - prepareStarted;
     const uploadedHashes = record.uploadedInputHashes ||= new Set();
     const validateIdentity = value => {
@@ -267,10 +360,11 @@ class CloudBuildBroker {
       }
       if (!safeId(resolved.uploadId) || !files.length) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid input upload session.');
       const batches = []; let batch = [], batchBytes = 0;
+      const batchLimit = chunkBytes || 8 * 1024 * 1024;
       for (const file of files) {
-        if (batch.length && batchBytes + file.sizeBytes > 8 * 1024 * 1024) { batches.push(batch); batch = []; batchBytes = 0; }
+        if (batch.length && batchBytes + file.sizeBytes > batchLimit) { batches.push(batch); batch = []; batchBytes = 0; }
         batch.push(file); batchBytes += file.sizeBytes;
-        if (batchBytes >= 8 * 1024 * 1024) { batches.push(batch); batch = []; batchBytes = 0; }
+        if (batchBytes >= batchLimit) { batches.push(batch); batch = []; batchBytes = 0; }
       }
       if (batch.length) batches.push(batch);
       const group = new AbortController(), signal = AbortSignal.any([record.controller.signal, group.signal]);
@@ -281,7 +375,27 @@ class CloudBuildBroker {
         while (cursor < batches.length && !signal.aborted) {
           const selected = batches[cursor++];
           try {
-            await this.request(record.settings, `/api/v1/build/inputs/uploads/${resolved.uploadId}/blobs`, { files: selected }, signal, bodyOptions);
+            const endpoint = `/api/v1/build/inputs/uploads/${resolved.uploadId}/blobs`;
+            if (chunkBytes && selected.length === 1 && selected[0].sizeBytes > chunkBytes) {
+              const file = selected[0], bytes = decodeInputBlob(file);
+              for (let offset = 0; offset < bytes.length;) {
+                signal.throwIfAborted();
+                const end = Math.min(offset + chunkBytes, bytes.length);
+                const answer = validateIdentity(await this.request(record.settings, endpoint, { chunk: {
+                  sha256: file.sha256, sizeBytes: file.sizeBytes, offset, dataBase64: bytes.subarray(offset, end).toString('base64')
+                } }, signal, bodyOptions));
+                if (!closedInputObject(answer, ['inputDigest', 'chunk'])
+                    || !closedInputObject(answer.chunk, ['sha256', 'sizeBytes', 'nextOffset', 'complete'])
+                    || answer.chunk.sha256 !== file.sha256 || answer.chunk.sizeBytes !== file.sizeBytes
+                    || answer.chunk.nextOffset !== end || answer.chunk.complete !== (end === bytes.length)) {
+                  throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway acknowledged a different input chunk.');
+                }
+                offset = end;
+              }
+            } else {
+              if (chunkBytes) for (const file of selected) decodeInputBlob(file);
+              await this.request(record.settings, endpoint, { files: selected }, signal, bodyOptions);
+            }
             for (const file of selected) { uploadedHashes.add(file.sha256); metrics.uploadedBytes += file.sizeBytes; completedBytes += file.sizeBytes; completedFiles++; }
             this.progress(record, { stage: 'uploading', progress: Math.floor(100 * (missingBytes ? completedBytes / missingBytes : completedFiles / files.length)) });
           } catch (error) { failure ||= error; group.abort(failure); }
@@ -392,7 +506,7 @@ class CloudBuildBroker {
     if (record.snapshot) {
       const identityStarted = performance.now();
       let identity;
-      try { identity = captureIdentity(config, record.profile); }
+      try { identity = ciResources.overlaySnapshot(captureIdentity(config, record.profile), record.ciPreparation, { identityOnly: true, limits: record.inputLimits }); }
       finally { if (record.inputMetrics) record.inputMetrics.identityMs += performance.now() - identityStarted; }
       if (identity.inputDigest !== record.snapshot.inputDigest) throw protocol.error('BUILD_SOURCE_STALE', 'Project source, libraries, macros or board options changed.');
     }
@@ -406,6 +520,34 @@ class CloudBuildBroker {
   progress(record, event) {
     if (!record.controller.signal.aborted && this.requests.get(record.requestId) === record) record.onProgress?.({ requestId: record.requestId, jobId: record.jobId,
       ...event });
+  }
+  completeCIToolPreparation(sender, input) {
+    const record = this.requests.get(input.requestId), pending = record?.ciToolPreparation;
+    if (!record || record.sender !== sender || !pending || pending.nonce !== input.nonce) return false;
+    if (this.owner(sender).generation !== record.generation) return false;
+    pending.settle(input.error ? protocol.error('CI_RESOURCE_PREPARATION_FAILED', String(input.error).slice(0, 4096)) : undefined);
+    return true;
+  }
+  async ensureCITool(record) {
+    const requirements = ciResources.requirements(record.config, this.getAppDataPath(), { linkedNumberPlayback: true });
+    if (!requirements.some(tool => !tool.installed)) return;
+    await new Promise((resolve, reject) => {
+      const nonce = crypto.randomUUID(), signal = record.controller.signal;
+      const finish = error => {
+        signal.removeEventListener('abort', abort);
+        if (record.ciToolPreparation?.nonce === nonce) delete record.ciToolPreparation;
+        if (error) reject(error); else resolve();
+      };
+      const abort = () => finish(signal.reason || abortFault());
+      record.ciToolPreparation = { nonce, settle: finish };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      else this.progress(record, { stage: 'ci-tools-required', nonce, requirements });
+    });
+    await this.assertCurrent(record);
+    if (ciResources.requirements(record.config, this.getAppDataPath(), { linkedNumberPlayback: true }).some(tool => !tool.installed)) {
+      throw protocol.error('CI_RESOURCE_PREPARATION_FAILED', 'The exact CI resource tool was not installed.');
+    }
   }
   async run(sender, input, onProgress) {
     supportedRequest(input);
@@ -438,27 +580,51 @@ class CloudBuildBroker {
       const boardRoot = path.join(root, 'node_modules', record.config.boardModule);
       const boardPackage = JSON.parse(fs.readFileSync(path.join(boardRoot, 'package.json'), 'utf8'));
       const identity = protocol.boardDigest(boardPackage, JSON.parse(fs.readFileSync(path.join(boardRoot, 'board.json'), 'utf8')));
+      const requiresCICapability = (input.action || 'compile') === 'compile' && ciResources.requiresPreparedCapability(boardPackage);
       const discovery = new AbortController(), discoverySignal = AbortSignal.any([record.controller.signal, discovery.signal]);
       let caps, catalog;
       try {
         [caps, catalog] = await Promise.all([this.capabilities(record.settings, discoverySignal),
-          this.targets(record.settings, discoverySignal, input.profileDigest, {
+          this.targets(record.settings, discoverySignal, undefined, {
             boardModule: record.config.boardModule, boardVersion: boardPackage.version, boardDigest: identity,
           })]);
       } catch (error) { discovery.abort(error); throw error; }
       record.publicKey = trustedGateway(record.settings, caps);
+      // Respect a stricter advertised budget; older gateways retain their 128 MiB input default.
+      const advertisedLimits = protocol.inputLimits(caps.limits === undefined ? { maxInputBytes: protocol.MAX_BYTES } : caps.limits);
+      const largeInputs = caps.inputTransport?.version === 2 && caps.inputTransport.manifestFirst === true
+        && caps.inputTransport.libraryContentKey === 'sha256-relative-tree-v1' && caps.inputTransport.binaryBlobs === true;
+      record.inputLimits = { ...advertisedLimits,
+        maxInputBytes: Math.min(advertisedLimits.maxInputBytes, largeInputs ? protocol.MAX_INPUT_BYTES : protocol.MAX_BYTES) };
+      record.uploadPlan = negotiatedUploadPlan(caps, input.action || 'compile');
       record.profile = catalog.profiles?.find(profile => (profile.digest || profile.profileDigest) === input.profileDigest
         && profile.boardModule === record.config.boardModule && profile.boardVersion === boardPackage.version && profile.boardDigest === identity && profile.runner === 'aily-builder'
-        && profile.metadata?.fixture !== true && (input.action === 'analysis' || profile.capabilities?.compile === true));
+        && profile.metadata?.fixture !== true && (input.action === 'analysis' || profile.capabilities?.compile === true)
+        && (!requiresCICapability || profile.capabilities?.ciPreparedResourcesV1 === true));
       if (!record.profile) throw protocol.error('TARGET_UNSUPPORTED', 'No matching verified Arduino compiler node is available.');
       if (input.action === 'analysis' && record.profile.capabilities?.analysis !== true) throw protocol.error('PROTOCOL_UNSUPPORTED', 'This compiler profile does not support cloud preprocessing yet.');
+      record.targetCandidates = targetSelectionCandidates(caps, catalog, record.profile, input.action || 'compile');
+      if (requiresCICapability && record.targetCandidates) record.targetCandidates = new Map(
+        [...record.targetCandidates].filter(([, profile]) => profile.capabilities?.ciPreparedResourcesV1 === true));
       this.progress(record, { stage: 'capturing', progress: 0 });
       const captureStarted = performance.now();
-      try { record.snapshot = captureSnapshot(record.config, record.profile, { onEncode: metrics => {
+      let captured;
+      try { captured = captureSnapshot(record.config, record.profile, { limits: record.inputLimits, onEncode: metrics => {
         record.inputMetrics.encodingMs += metrics.durationMs; record.inputMetrics.encodedFiles++;
       } }); }
       finally { record.inputMetrics.captureMs += performance.now() - captureStarted; }
+      if ((input.action || 'compile') === 'compile') {
+        record.ciPreparation = await ciResources.prepare(record.config, captured, record.profile, {
+          appDataPath: this.getAppDataPath(), signal: record.controller.signal, limits: record.inputLimits,
+          assertCurrent: () => this.assertCurrent(record),
+          onOutput: (log, stream) => this.progress(record, { stage: 'preparing', log, stream }),
+        });
+        if (record.ciPreparation && record.targetCandidates) record.targetCandidates = new Map(
+          [...record.targetCandidates].filter(([, profile]) => profile.capabilities?.ciPreparedResourcesV1 === true));
+      }
+      record.snapshot = ciResources.overlaySnapshot(captured, record.ciPreparation, { limits: record.inputLimits });
       await this.assertCurrent(record);
+      ciAttempt: for (let ciPass = 0; ciPass < 2; ciPass++) {
       if (previous) {
         const reused = await this.reuseCompletedResult(record, previous, input.action || 'compile');
         if (reused) return reused;
@@ -467,8 +633,10 @@ class CloudBuildBroker {
       this.progress(record, { stage: 'uploading', progress: 0 });
       const uploaded = await this.uploadSnapshot(record, caps);
       if (uploaded.inputDigest !== record.snapshot.inputDigest) throw protocol.error('INPUT_DIGEST_MISMATCH', 'Gateway sealed different build inputs.');
-      record.postBody = { requestId, snapshotId: uploaded.snapshotId, profileDigest: record.profile.digest || record.profile.profileDigest,
-        action: input.action || 'compile', clientInputMetrics: clientInputMetrics(record.inputMetrics) };
+      record.postBody = { requestId: record.submissionRequestId || requestId, snapshotId: uploaded.snapshotId, profileDigest: record.profile.digest || record.profile.profileDigest,
+        action: input.action || 'compile', clientInputMetrics: clientInputMetrics(record.inputMetrics),
+        ...(record.uploadPlan ? { uploadPlan: record.uploadPlan } : {}),
+        ...(record.targetCandidates ? { targetSelection: 'priority-idle-v1', candidateProfileDigests: [...record.targetCandidates.keys()] } : {}) };
       let created;
       for (let repair = 0; ; repair++) {
         record.posted = true;
@@ -486,8 +654,7 @@ class CloudBuildBroker {
           if (replenished.snapshotId !== record.postBody.snapshotId) throw protocol.error('INPUT_DIGEST_MISMATCH', 'Gateway changed an idempotent input identity.');
         }
       }
-      record.jobId = created.jobId;
-      if (typeof record.jobId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(record.jobId)) throw protocol.error('PROTOCOL_UNSUPPORTED', 'Gateway returned an invalid task identity.');
+      acceptCreatedJob(record, created);
       record.snapshot = { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion };
       this.progress(record, { stage: 'queued', progress: 0 });
       let lastSeq = 0;
@@ -551,28 +718,73 @@ class CloudBuildBroker {
             } while (!record.controller.signal.aborted && lastSeq > previousSeq
               && (!Number.isSafeInteger(status.lastSeq) || lastSeq < status.lastSeq));
           }
+          if (status.status === 'failed' && status.error?.code === 'CI_RESOURCES_REQUIRED' && ciPass === 0
+              && !record.ciPreparation && (input.action || 'compile') === 'compile'
+              && record.profile.capabilities?.ciPreparedResourcesV1 === true) {
+            await this.assertCurrent(record);
+            await this.ensureCITool(record);
+            const raw = captureSnapshot(record.config, record.profile, { limits: record.inputLimits });
+            const prepared = await ciResources.prepare(record.config, raw, record.profile, {
+              appDataPath: this.getAppDataPath(), signal: record.controller.signal, limits: record.inputLimits,
+              linkedNumberPlayback: true, assertCurrent: () => this.assertCurrent(record),
+              onOutput: (log, stream) => this.progress(record, { stage: 'preparing', log, stream }),
+            });
+            if (!prepared) throw protocol.error('CI_RESOURCE_UNSUPPORTED', 'The linked CI resource request does not match this source and SDK.');
+            record.ciPreparation = prepared;
+            record.snapshot = ciResources.overlaySnapshot(raw, prepared, { limits: record.inputLimits });
+            await this.assertCurrent(record);
+            this.progress(record, { stage: 'preparing', previousJobId: record.jobId });
+            record.previousCIJobId = record.jobId;
+            record.jobId = undefined; record.posted = false; record.postBody = undefined;
+            record.selectedProfileDigest = undefined;
+            record.submissionRequestId = 'ci-' + crypto.randomUUID();
+            if (record.targetCandidates) record.targetCandidates = new Map([...record.targetCandidates]
+              .filter(([, profile]) => profile.capabilities?.ciPreparedResourcesV1 === true));
+            continue ciAttempt;
+          }
           throw protocol.error(status.error?.code || 'COMPILE_ERROR', status.error?.message || 'Cloud compilation failed.');
         }
         if (status.status === 'succeeded') break;
       }
       await this.assertCurrent(record);
       this.progress(record, { stage: 'downloading', progress: 0 });
-      const result = await this.request(record.settings, `/api/v1/build/jobs/${record.jobId}/result`, undefined, record.controller.signal);
+      const result = await this.fetchCompletedResult(record);
       await this.importResult(record, result);
       this.progress(record, { stage: 'complete', progress: 100 });
       return { success: true, state: 'done', text: 'Cloud compilation complete.', jobId: record.jobId, inputDigest: record.snapshot.inputDigest,
         artifactPath: this.active.get(root)?.directory };
+      }
     } catch (error) {
+      if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
       await this.cancelRemote(record).catch(() => {});
+      if (error.cleanupConfirmed === false) throw error;
       throw record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }
       catch { /* 防休眠清理异常不能覆盖编译结果或原始错误。 */ }
       record.logsController.abort();
-      if (this.requests.get(requestId) === record) this.requests.delete(requestId);
+      if (this.requests.get(requestId) === record && !record.cleanupBlocked) this.requests.delete(requestId);
       releasePrevious?.();
       this.collectArtifacts(root);
+    }
+  }
+  async fetchCompletedResult(record) {
+    // A lost result GET must not discard a successful task. Retry only its
+    // transport, retaining source/owner/deadline checks and signed import below.
+    for (let attempt = 0; ; attempt++) {
+      await this.assertCurrent(record);
+      let result;
+      try {
+        result = await this.request(record.settings, `/api/v1/build/jobs/${record.jobId}/result`, undefined, record.controller.signal);
+      } catch (error) {
+        if (record.controller.signal.aborted || attempt >= 2 || error.httpStatus !== undefined
+            || !['GATEWAY_UNREACHABLE', 'GATEWAY_TIMEOUT'].includes(error.code)) throw error;
+        await wait(this.artifactRetryDelayMs * 2 ** attempt, record.controller.signal);
+        continue;
+      }
+      await this.assertCurrent(record);
+      return result;
     }
   }
   async reuseCompletedResult(record, previous, action) {
@@ -583,6 +795,7 @@ class CloudBuildBroker {
         || previous.gatewayUrl !== gatewayUrl(record.settings.gatewayUrl).url
         || previous.publicKey.trim() !== record.publicKey.trim()
         || previous.manifest.action !== action
+        || previous.uploadPlan !== record.uploadPlan || !matchesUploadPlan(record.uploadPlan, previous.manifest)
         || previous.manifest.profileDigest !== (record.profile.digest || record.profile.profileDigest)
         || previous.snapshot.inputDigest !== record.snapshot.inputDigest) return null;
     let lease;
@@ -603,7 +816,8 @@ class CloudBuildBroker {
     } catch { return null; } // Missing/corrupt/unavailable output falls back to a real build.
     finally { lease?.release(); }
     this.active.set(record.root, { ...previous, config: retainedBuildConfig(record.config), settings: record.settings,
-      activationId: record.activationId, controller: new AbortController(), profile: record.profile });
+      activationId: record.activationId, controller: new AbortController(), profile: record.profile,
+      ciPreparation: record.ciPreparation, inputLimits: record.inputLimits });
     this.progress(record, { stage: 'complete', progress: 100, reused: true });
     // This is the original completed job, not a newly executed cloud task.
     return { success: true, state: 'done', reused: true, text: 'Reused verified cloud build result.',
@@ -623,7 +837,11 @@ class CloudBuildBroker {
       const cleanup = (async () => {
         if (!record.jobId && record.posted && record.postBody) {
           const created = await this.request(record.settings, '/api/v1/build/jobs', record.postBody, controller.signal);
-          record.jobId = created.jobId;
+          try { acceptCreatedJob(record, created); }
+          catch (error) {
+            if (record.jobId) await this.request(record.settings, `/api/v1/build/jobs/${record.jobId}/cancel`, {}, controller.signal);
+            throw error;
+          }
         }
         if (record.jobId) return this.request(record.settings, `/api/v1/build/jobs/${record.jobId}/cancel`, {}, controller.signal);
       })();
@@ -650,6 +868,10 @@ class CloudBuildBroker {
         || manifest.fixture === true || !Array.isArray(manifest.artifacts) || !manifest.artifacts.length || manifest.artifacts.length > 128) {
       throw protocol.error('ARTIFACT_INVALID', 'Cloud result does not match this build request.');
     }
+    if (!matchesUploadPlan(record.uploadPlan, manifest)) {
+      throw protocol.error('ARTIFACT_INVALID', 'Cloud upload plan differs from the negotiated build request.');
+    }
+    if (record.uploadPlan === 'cloud-upload-v1') validateCloudRecipePlan(manifest.flashPlan,manifest.artifacts,{profileDigest:manifest.profileDigest,fqbn:record.profile.fqbn});
     // 下载前核验完整签名清单及引用，禁止冲突路径、额外文件和跨来源下载。
     if (!Array.isArray(result.artifacts) || result.artifacts.length !== manifest.artifacts.length) throw protocol.error('ARTIFACT_INVALID', 'Invalid artifact download inventory.');
     const references = new Map();
@@ -665,7 +887,7 @@ class CloudBuildBroker {
       if (seen.has(normalized) || ['aily-cloud-result.json', 'aily-cloud-import.json'].includes(normalized.split('/')[0])
           || typeof artifact.artifactId !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/u.test(artifact.artifactId) || ids.has(artifact.artifactId)
           || typeof artifact.role !== 'string' || !artifact.role.length || artifact.role.length > 256 || /[\x00-\x1f]/u.test(artifact.role)
-          || !Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 1 || (total += artifact.sizeBytes) > 64 * 1024 * 1024
+          || !Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0 || (artifact.sizeBytes === 0 && artifact.role !== 'upload-resource') || (total += artifact.sizeBytes) > protocol.MAX_BYTES
           || !/^[a-f0-9]{64}$/u.test(artifact.sha256)) throw protocol.error('ARTIFACT_INVALID', 'Invalid cloud artifact inventory.');
       seen.add(normalized); ids.add(artifact.artifactId);
       const downloadable = references.get(artifact.artifactId);
@@ -739,6 +961,7 @@ class CloudBuildBroker {
         const config = retainedBuildConfig(record.config);
         this.active.set(record.root, { root: record.root, sender: record.sender, generation: record.generation, activationId: record.activationId,
           config, settings: record.settings, controller: new AbortController(), profile: record.profile, publicKey: record.publicKey,
+          uploadPlan: record.uploadPlan, ciPreparation: record.ciPreparation, inputLimits: record.inputLimits,
           gatewayUrl: gatewayUrl(record.settings.gatewayUrl).url,
           snapshot: { inputDigest: record.snapshot.inputDigest, boardDigest: record.snapshot.boardDigest, boardVersion: record.snapshot.boardVersion },
           directory: published, manifest, signature: result.signature });
@@ -754,7 +977,7 @@ class CloudBuildBroker {
   async downloadArtifact(record, artifact, url, groupSignal, onBytes) {
     const shared = AbortSignal.any([record.controller.signal, groupSignal]);
     for (let attempt = 0; ; attempt++) {
-      const timeout = AbortSignal.timeout(this.requestTimeoutMs), signal = AbortSignal.any([shared, timeout]);
+      const timeout = AbortSignal.timeout(artifactDownloadTimeoutMs(artifact.sizeBytes, this.requestTimeoutMs)), signal = AbortSignal.any([shared, timeout]);
       try {
         signal.throwIfAborted();
         const response = await this.fetchAuthorized(record.settings, url, { credentials: 'omit', redirect: 'error', signal });
@@ -814,6 +1037,10 @@ class CloudBuildBroker {
     if (!record || record.sender !== sender || config.code !== record.config.code || config.boardModule !== record.config.boardModule
         || (profileDigest !== undefined && profileDigest !== record.manifest.profileDigest)) return false;
     try {
+      const capabilities = await this.capabilities(record.settings, record.controller.signal);
+      if (trustedGateway(record.settings, capabilities).trim() !== record.publicKey.trim()
+          || negotiatedUploadPlan(capabilities, record.manifest.action) !== record.uploadPlan
+          || !matchesUploadPlan(record.uploadPlan, record.manifest)) return false;
       if (protocol.canonicalJson(config.sourceCapture?.workspace || null) !== protocol.canonicalJson(record.config.sourceCapture?.workspace || null)) return false;
       if (!await this.artifactPath(sender, root, config)) return false;
       protocol.verifyManifest(record.manifest, record.signature, record.publicKey);
@@ -824,6 +1051,30 @@ class CloudBuildBroker {
       }
       return true;
     } catch { return false; }
+  }
+  async artifactUploadInfo(sender, projectPath) {
+    this.owner(sender);
+    const root = fs.realpathSync(projectPath), record = this.active.get(root);
+    if (!record || record.sender !== sender || !await this.reusable(sender, record.config) || this.active.get(root) !== record) {
+      throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+    }
+    if (record.manifest.flashPlan?.protocol === 'cloud-recipe') return cloudUploadRequirements(record);
+    const info = getArtifactUploadInfo(record);
+    const boardRoot = path.join(root, 'node_modules', ...record.manifest.boardModule.split('/'));
+    const boardPackage = JSON.parse(fs.readFileSync(path.join(boardRoot, 'package.json'), 'utf8'));
+    const board = JSON.parse(fs.readFileSync(path.join(boardRoot, 'board.json'), 'utf8'));
+    if (protocol.boardDigest(boardPackage, board) !== record.manifest.boardDigest) {
+      throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact board dependencies changed.');
+    }
+    // Npm 包版本与实际工具目录版本可能不同（如 avrdude 6.3.0 / 6.3.0-arduino17）。
+    // 仅从签名 boardDigest 绑定的板卡包提取精确安装版本，不猜测或使用目标缓存。
+    const packageName = { avrdude: '@aily-project/tool-avrdude', esptool_py: '@aily-project/tool-esptool_py' }[info.toolId];
+    const packageVersion = boardPackage.boardDependencies?.[packageName];
+    if (typeof packageVersion !== 'string' || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u.test(packageVersion)) {
+      throw protocol.error('UPLOAD_UNSUPPORTED', 'Cloud firmware board package does not pin its local uploader package. Compile the project again.');
+    }
+    // 只暴露已验签产物使用的固定工具身份；不向渲染层传递命令、路径或完整清单。
+    return { ...info, packageVersion };
   }
   async withCurrentArtifact(sender, projectPath, consume) {
     const owner = this.owner(sender), root = fs.realpathSync(projectPath), record = this.active.get(root);
@@ -843,6 +1094,25 @@ class CloudBuildBroker {
       try { workspaceLease.release(); } finally { releaseArtifact?.(); }
     }
   }
+  async acquireCurrentArtifact(sender, projectPath) {
+    const owner = this.owner(sender), root = fs.realpathSync(projectPath), record = this.active.get(root);
+    if (!record || record.sender !== sender || record.generation !== owner.generation) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+    const workspaceLease = this.acquireArtifactLease(record);
+    let releaseArtifact;
+    try {
+      releaseArtifact = this.protectArtifact(record);
+      if (!await this.reusable(sender, record.config)) throw protocol.error('BUILD_SOURCE_STALE', 'Cloud artifact is not current.');
+      const identity = ciResources.overlaySnapshot(captureIdentity(record.config, record.profile), record.ciPreparation, { identityOnly: true, limits: record.inputLimits });
+      let released = false;
+      return { record, identity, assertCurrent: () => this.assertCurrent(record), markDelegated: () => workspaceLease.markDelegated(), release: () => {
+        if (released) return; released = true;
+        try { workspaceLease.release(); } finally { releaseArtifact?.(); }
+      } };
+    } catch (error) {
+      try { workspaceLease.release(); } finally { releaseArtifact?.(); }
+      throw error;
+    }
+  }
   invalidate(projectPath, sender) {
     try {
       const root = fs.realpathSync(projectPath), generation = sender ? this.owner(sender).generation : undefined;
@@ -850,7 +1120,7 @@ class CloudBuildBroker {
       const active = this.active.get(root);
       if (active && matches(active)) { active.controller.abort(abortFault()); this.active.delete(root); }
       for (const record of this.requests.values()) if (matches(record)) {
-        record.controller.abort(abortFault()); this.requests.delete(record.requestId); void this.cancelRemote(record).catch(() => {});
+        record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); void this.cancelRemote(record).catch(() => {});
       }
       this.collectArtifacts(root);
     } catch { /* 项目已不存在或页面已失效，无需继续撤销。 */ }
@@ -862,7 +1132,7 @@ class CloudBuildBroker {
     }
     for (const record of this.requests.values()) if (record.sender === sender && record.generation === generation) {
       roots.add(record.root); record.controller.abort(protocol.error('BUILD_OWNER_EXPIRED', 'Build owner changed.'));
-      this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
+      if (!record.cleanupBlocked) this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
     }
     for (const root of roots) this.collectArtifacts(root);
     return Promise.allSettled(cancelled);
@@ -873,10 +1143,10 @@ class CloudBuildBroker {
     this.active.clear();
     for (const record of this.requests.values()) {
       roots.add(record.root);
-      record.controller.abort(abortFault()); this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
+      record.controller.abort(abortFault()); if (!record.cleanupBlocked) this.requests.delete(record.requestId); cancelled.push(this.cancelRemote(record));
     }
     for (const root of roots) this.collectArtifacts(root);
     return Promise.allSettled(cancelled);
   }
 }
-module.exports = { CloudBuildBroker };
+module.exports = { CloudBuildBroker, inputBlobTimeoutMs, artifactDownloadTimeoutMs };

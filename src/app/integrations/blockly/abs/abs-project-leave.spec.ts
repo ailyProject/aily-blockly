@@ -4,7 +4,7 @@ import { HeaderComponent } from '../../../main-window/components/header/header.c
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
 
 function projectFixture(overrides: Record<string, unknown>) {
-  const project: any = Object.assign(Object.create(ProjectService.prototype), overrides);
+  const project: any = Object.assign(Object.create(ProjectService.prototype), { configService: { getCompileSettingsKey: () => 'local' } }, overrides);
   Object.defineProperty(project, 'currentProjectPath', { value: '/original', writable: true });
   project.getProjectDependencySession();
   return project;
@@ -89,6 +89,7 @@ describe('save-before-leaving confirmation', () => {
 describe('domain save completion and project ownership', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/original');
     service.stateSubject = new BehaviorSubject('loaded');
     service.getProjectMode = () => 'coder';
@@ -140,7 +141,7 @@ describe('shared save-as menu', () => {
     const view: any = Object.create(HeaderComponent.prototype);
     let select: (path: string) => void;
     view.selectSaveAsFolder = jasmine.createSpy('folder').and.callFake(() => new Promise<string>(resolve => { select = resolve; }));
-    view.projectService = projectFixture({ getProjectMode: () => mode,
+    view.projectService = projectFixture({ getSaveAsBlockMessage: () => undefined, getProjectMode: () => mode,
       saveAs: jasmine.createSpy('saveAs').and.rejectWith(new Error('copy failed')) });
     view.message = { error: jasmine.createSpy('error') };
     const first = view.process({ action: 'project-save-as' });
@@ -157,7 +158,7 @@ describe('shared save-as menu', () => {
     const view: any = Object.create(HeaderComponent.prototype);
     let select!: (path: string) => void;
     view.selectSaveAsFolder = () => new Promise<string>(resolve => { select = resolve; });
-    view.projectService = projectFixture({ saveAs: jasmine.createSpy('saveAs') });
+    view.projectService = projectFixture({ getSaveAsBlockMessage: () => undefined, saveAs: jasmine.createSpy('saveAs') });
     view.message = { error: jasmine.createSpy('error') };
     const pending = view.process({ action: 'project-save-as' });
     replaceSession(view.projectService); select('/copy'); await pending;

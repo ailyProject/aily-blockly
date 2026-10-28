@@ -16,6 +16,7 @@ import { NzResizableModule, type NzResizeEvent } from 'ng-zorro-antd/resizable';
 import { BehaviorSubject, switchMap } from 'rxjs';
 
 import { MainUiAutomationService } from '@integration/automation/public-api';
+import { ToolI18nService } from '@core/preferences/public-api';
 import {
   SubappActivityService,
   type SubappActivity,
@@ -41,6 +42,7 @@ export class SubappActivityDockComponent {
 
   private readonly activityService = inject(SubappActivityService);
   private readonly mainUiAutomation = inject(MainUiAutomationService);
+  private readonly toolI18n = inject(ToolI18nService);
   private readonly sessionIdSubject = new BehaviorSubject<string>('');
   private lastReportedExpanded: boolean | null = null;
 
@@ -57,13 +59,19 @@ export class SubappActivityDockComponent {
 
   constructor() {
     effect(() => {
-      const expanded = this.expandedActivities().length > 0;
+      const activities = this.expandedActivities();
+      for (const activity of activities) void this.toolI18n.load(activity.toolId);
+      const expanded = activities.length > 0;
       if (expanded === this.lastReportedExpanded) {
         return;
       }
       this.lastReportedExpanded = expanded;
       this.expandedChange.emit(expanded);
     });
+  }
+
+  activityTitle(activity: SubappActivity): string {
+    return getChildToolConfig(activity.toolId)?.titleKey || activity.title;
   }
 
   @HostBinding('class.is-open')
@@ -105,30 +113,30 @@ export class SubappActivityDockComponent {
   runtimeLabel(activity: SubappActivity): string {
     switch (activity.runtimeState) {
       case 'ready':
-        return 'Runtime ready';
+        return 'SUBAPP_DOCK.RUNTIME_READY';
       case 'starting':
-        return 'Runtime starting';
+        return 'SUBAPP_DOCK.RUNTIME_STARTING';
       case 'error':
-        return 'Runtime error';
+        return 'SUBAPP_DOCK.RUNTIME_ERROR';
       case 'stopped':
-        return 'Runtime stopped';
+        return 'SUBAPP_DOCK.RUNTIME_STOPPED';
       default:
-        return 'Runtime status unknown';
+        return 'SUBAPP_DOCK.RUNTIME_UNKNOWN';
     }
   }
 
   invocationLabel(activity: SubappActivity): string {
     switch (activity.invocationState) {
       case 'running':
-        return 'Agent running';
+        return 'SUBAPP_DOCK.INVOCATION_RUNNING';
       case 'succeeded':
-        return 'Last call succeeded';
+        return 'SUBAPP_DOCK.INVOCATION_SUCCEEDED';
       case 'failed':
-        return 'Last call failed';
+        return 'SUBAPP_DOCK.INVOCATION_FAILED';
       case 'cancelled':
-        return 'Last call cancelled';
+        return 'SUBAPP_DOCK.INVOCATION_CANCELLED';
       default:
-        return 'No active call';
+        return 'SUBAPP_DOCK.INVOCATION_IDLE';
     }
   }
 }

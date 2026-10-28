@@ -7,6 +7,8 @@ export interface CloudBuildProgressEvent {
   attempt?: number;
   log?: string;
   stream?: string;
+  nonce?: string;
+  requirements?: Array<{ name: string; version: string; installed: boolean }>;
 }
 
 interface CloudBuildProgressCallbacks {
@@ -15,6 +17,7 @@ interface CloudBuildProgressCallbacks {
   progress: (event: CloudBuildProgressEvent) => void;
   /** 注册本次任务的切换动作；返回 false 表示任务已结束或不再属于当前调用。 */
   localSwitch?: (requestSwitch: () => boolean) => void;
+  prepareTool?: (tool: { name: string; version: string }) => Promise<void>;
 }
 
 export const CLOUD_BUILD_LOCAL_REQUESTED = 'CLOUD_BUILD_LOCAL_REQUESTED';
@@ -29,7 +32,9 @@ interface CloudBuildRunResult {
 }
 
 interface CloudBuildProgressBridge {
+  preparationRequirements?: (request: { requestId: string; [option: string]: unknown }) => Promise<Array<{ name: string; version: string; installed: boolean }>>;
   run: (request: { requestId: string; [option: string]: unknown }) => Promise<CloudBuildRunResult>;
+  completeCIToolPreparation?: (request: { requestId: string; nonce: string; error?: string }) => Promise<unknown>;
   cancel: (request: { requestId: string }) => unknown;
   onProgress: (listener: (event: CloudBuildProgressEvent) => void) => (() => void) | void;
 }
@@ -148,6 +153,7 @@ export async function runCloudBuildWithProgress(
   if (typeof bridge?.run !== 'function' || typeof bridge?.cancel !== 'function' || typeof bridge?.onProgress !== 'function') {
     throw new Error('Cloud build bridge is unavailable; restart the desktop application.');
   }
+  let toolPreparation: Promise<void> | undefined;
   let switching = false;
   let settled = false;
   let cancellation: Promise<{ error?: unknown }> | undefined;
@@ -159,11 +165,38 @@ export async function runCloudBuildWithProgress(
   try {
     unsubscribe = bridge.onProgress(event => {
       if (event?.requestId === request.requestId && !switching && callbacks.isCurrent()) {
+        if (event.stage === 'ci-tools-required' && event.nonce && !toolPreparation) {
+          toolPreparation = (async () => {
+            let error: string | undefined;
+            try {
+              if (!callbacks.prepareTool || !bridge.completeCIToolPreparation || !Array.isArray(event.requirements)) throw new Error('CI resource tool preparation is unavailable.');
+              for (const tool of event.requirements) {
+                if (switching || !callbacks.isCurrent()) throw new Error('Cloud build source changed.');
+                if (!tool.installed) await callbacks.prepareTool(tool);
+              }
+            } catch (failure) { error = failure?.message || String(failure); }
+            if (bridge.completeCIToolPreparation) await bridge.completeCIToolPreparation({ requestId: request.requestId, nonce: event.nonce!, error });
+            else await bridge.cancel({ requestId: request.requestId });
+          })();
+          toolPreparation.catch(() => {});
+          return;
+        }
         if (typeof event.log === 'string' && event.log) logs.push(event.log);
         buffer.push(event);
       }
     });
-    const running = bridge.run(request);
+    const running = (async () => {
+      const requirements = await bridge.preparationRequirements?.(request) || [];
+      for (const tool of requirements) {
+        if (switching || !callbacks.isCurrent()) throw Object.assign(new Error('Cloud build source changed.'), { code: 'BUILD_SOURCE_STALE' });
+        if (!tool.installed) {
+          if (!callbacks.prepareTool) throw new Error('Cloud resource tool preparation is unavailable.');
+          await callbacks.prepareTool(tool);
+        }
+      }
+      if (switching || !callbacks.isCurrent()) throw Object.assign(new Error('Cloud build source changed.'), { code: 'BUILD_SOURCE_STALE' });
+      return bridge.run(request);
+    })();
     callbacks.localSwitch?.(() => {
       if (settled || switching || !callbacks.isCurrent()) return false;
       switching = true;
@@ -179,6 +212,7 @@ export async function runCloudBuildWithProgress(
       // 等云请求释放工作区以及取消回执，两者完成前绝不能启动本地编译。
       const cancelled = await cancellation;
       if (cancelled?.error) throw cancelled.error;
+      if ((failure as { cleanupConfirmed?: boolean } | undefined)?.cleanupConfirmed === false) throw failure;
       if (callbacks.isCurrent()) throw Object.assign(new Error('Continue this build locally.'), { code: CLOUD_BUILD_LOCAL_REQUESTED });
       throw failure || Object.assign(new Error('Cloud build was cancelled or replaced.'), { code: 'CANCELLED' });
     }
@@ -198,6 +232,7 @@ export async function runCloudBuildWithProgress(
   } finally {
     settled = true;
     await cancellation;
+    await toolPreparation?.catch(() => {});
     try { if (typeof unsubscribe === 'function') unsubscribe(); }
     finally { buffer.dispose(); }
   }

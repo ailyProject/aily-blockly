@@ -1,4 +1,6 @@
-/** Data-only diagnostics shared by the isolated runtime and tool boundary. No Blockly dependency. */
+import { isReservedAbsWorkspaceCode, trustedAbsWorkspaceFailure } from './abs-workspace-availability';
+
+/** Data-only diagnostics shared by the isolated runtime and tool boundary. No Blockly runtime dependency. */
 export interface AbsDiagnostic {
   blockType?: string;
   parentBlockType?: string;
@@ -15,7 +17,47 @@ export interface AbsDiagnostic {
   identity?: AbsIdentityDiagnostic;
   resource?: AbsResourceDiagnostic;
   capacity?: { phase: string; resource: string; actual: number; limit: number };
+  nativeTiming?: AbsNativeTiming;
   truncated?: boolean;
+}
+
+/** Bounded aggregate observations only: no source, field values or file paths. */
+export interface AbsNativeUiTiming {
+  callbacks: number;
+  pending: number;
+  snapshots: number;
+  callbackMs: number;
+  snapshotMs: number;
+}
+export interface AbsNativeTiming {
+  elapsedMs: number;
+  lastObservationAgeMs: number;
+  realmElapsedMs?: number;
+  completedPhases: Array<{ phase: string; elapsedMs: number }>;
+  ui?: AbsNativeUiTiming;
+}
+
+export function boundedAbsNativeUiTiming(value: unknown): AbsNativeUiTiming | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, unknown>;
+  const count = (key: string) => Number.isSafeInteger(input[key]) && (input[key] as number) >= 0 && (input[key] as number) <= 1000000;
+  const time = (key: string) => typeof input[key] === 'number' && Number.isFinite(input[key]) && (input[key] as number) >= 0 && (input[key] as number) <= Number.MAX_SAFE_INTEGER;
+  if (!['callbacks', 'pending', 'snapshots'].every(count) || !['callbackMs', 'snapshotMs'].every(time)) return undefined;
+  return { callbacks: input['callbacks'] as number, pending: input['pending'] as number, snapshots: input['snapshots'] as number,
+    callbackMs: input['callbackMs'] as number, snapshotMs: input['snapshotMs'] as number };
+}
+
+function boundedNativeTiming(value: unknown): AbsNativeTiming | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, any>;
+  const time = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+  if (!time(input['elapsedMs']) || !time(input['lastObservationAgeMs']) || !Array.isArray(input['completedPhases'])) return undefined;
+  const completedPhases = input['completedPhases'].slice(0, 11).filter((entry: any) => entry
+    && typeof entry.phase === 'string' && /^[a-z-]{1,40}$/.test(entry.phase) && time(entry.elapsedMs))
+    .map((entry: any) => ({ phase: entry.phase, elapsedMs: entry.elapsedMs }));
+  const ui = boundedAbsNativeUiTiming(input['ui']);
+  return { elapsedMs: input['elapsedMs'], lastObservationAgeMs: input['lastObservationAgeMs'], completedPhases,
+    ...(time(input['realmElapsedMs']) ? { realmElapsedMs: input['realmElapsedMs'] } : {}), ...(ui ? { ui } : {}) };
 }
 
 /** Host runtime asset evidence, never response bodies or URL credentials. */
@@ -57,11 +99,15 @@ export interface AbsFailure {
 
 /** Allowlist and bounds apply even to errors thrown by third-party library callbacks. */
 export function serializeAbsFailure(error: unknown): AbsFailure {
+  const workspaceFailure = trustedAbsWorkspaceFailure(error);
+  if (workspaceFailure) return workspaceFailure;
   const value = error && typeof error === 'object' ? error as Record<string, any> : {};
-  const code = typeof value['code'] === 'string' && /^ABS_[A-Z0-9_]{1,80}$/.test(value['code'])
+  const reserved = isReservedAbsWorkspaceCode(value['code']);
+  const code = !reserved && typeof value['code'] === 'string' && /^ABS_[A-Z0-9_]{1,80}$/.test(value['code'])
     ? value['code'] : 'ABS_GENERATION_FAILED';
   const message = (typeof value['message'] === 'string' ? value['message'] : String(error)).slice(0, 2000);
   const result: AbsFailure = { code, message };
+  if (reserved) return result;
   const range = value['range'];
   if (range && Number.isSafeInteger(range.start) && Number.isSafeInteger(range.end) && range.start >= 0 && range.end >= range.start) {
     result.range = { start: range.start, end: range.end };
@@ -69,6 +115,8 @@ export function serializeAbsFailure(error: unknown): AbsFailure {
   const input = value['diagnostic'];
   if (!input || typeof input !== 'object' || Array.isArray(input)) return result;
   const diagnostic: AbsDiagnostic = {};
+  const nativeTiming = boundedNativeTiming(input.nativeTiming);
+  if (nativeTiming) diagnostic.nativeTiming = nativeTiming;
   const capacity = input.capacity;
   if (capacity && typeof capacity.phase === 'string' && /^[a-z-]{1,40}$/.test(capacity.phase)
     && typeof capacity.resource === 'string' && /^[a-zA-Z]{1,40}$/.test(capacity.resource)

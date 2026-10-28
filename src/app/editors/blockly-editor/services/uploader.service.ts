@@ -1,4 +1,5 @@
 import { Injectable, inject } from "@angular/core";
+import { Observable } from 'rxjs';
 import { TranslateService } from '@ngx-translate/core';
 import { ProjectService } from "@domain/project/public-api";
 import {
@@ -86,6 +87,7 @@ export class _UploaderService {
   private coderBuildActive = false;
   // 这是云产物的本地烧录请求号；串口与烧录子进程始终由本机主进程管理。
   private activeCloudUploadId: string | null = null;
+  private cloudUploadFirmwarePath: string | null = null;
   // 覆盖编译、工具准备及本机烧录的整个云产物上传流程，取消前半程也必须等旧流程退出。
   private cloudUploadInProgress = false;
   private uploadPromiseReject: any = null; // 保存 Promise 的 reject 函数
@@ -311,9 +313,13 @@ export class _UploaderService {
     this.cancelled = false;
     this.uploadCompleted = false;
     this.processExitCode = null; // 重置进程退出码
+    this.streamId = null;
+    this['shouldKillImmediately'] = false;
     this.uploadInProgress = true; // 立即设置为true，使取消功能生效
     let resourceRecovery: UploadRecoveryPolicy | undefined;
     let backendOperation: ReturnType<ProjectService['beginBuildBackendOperation']> | undefined;
+    let cloudLocalUpload: any;
+    let disposeCloudInvalidation: (() => void) | undefined;
 
     return new Promise<UploadActionState>(async (resolve, reject) => {
       // 保存 reject 函数，以便 cancel() 方法可以立即中断
@@ -358,9 +364,6 @@ export class _UploaderService {
         // 提前捕获串口号，避免 build 期间设备重新插拔导致端口变化的竞态条件
         const capturedSerialPort = this.serialService.currentPort;
         const capturedPortInfo = this.serialService.currentPortInfo;
-        if (cloud && capturedPortInfo?.type && capturedPortInfo.type !== 'serial') {
-          throw new Error('Cloud compilation currently supports local serial upload with avrdude or esptool.');
-        }
         if (!capturedSerialPort) {
           this.uploadInProgress = false;
           const message = this.uploadT('SELECT_PORT_MESSAGE');
@@ -528,8 +531,23 @@ export class _UploaderService {
 
         if (cloud) {
           assertContext();
-          buildPath = await this.projectService.getBuildPath();
-          await this.prepareCloudUploader(assertContext);
+          const uploadMode = await this.prepareCloudUploader(assertContext);
+          if (uploadMode === 'cloud-recipe') {
+            const requestId = `cloud-local-upload-${crypto.randomUUID()}`;
+            this.activeCloudUploadId = requestId;
+            cloudLocalUpload = await window['cloudBuild'].prepareArtifactUpload({ requestId, projectPath });
+            assertContext();
+            buildPath = cloudLocalUpload.buildPath;
+            const primary = cloudLocalUpload.uploadArtifactInventory?.primary;
+            this.cloudUploadFirmwarePath = typeof primary === 'string' && /\.bin$/i.test(primary)
+              ? window['path'].join(buildPath, primary) : null;
+            disposeCloudInvalidation = window['cloudBuild'].onProgress((event: any) => {
+              if (event?.requestId === requestId && event.stage === 'upload-invalidated' && !this.cancelled) this.cancel();
+            });
+          } else {
+            if (capturedPortInfo?.type && capturedPortInfo.type !== 'serial') throw new Error('This older cloud result requires a physical serial upload. Recompile to receive its cloud-resolved Windows upload configuration.');
+            buildPath = await this.projectService.getBuildPath();
+          }
           assertContext();
           // 下载烧录工具后再次核对源码身份；主进程在真正烧录前还会检查签名与文件内容。
           if (!await window['cloudBuild'].artifactPath({ projectPath })) throw new Error('BUILD_SOURCE_STALE: Cloud firmware is no longer current.');
@@ -569,16 +587,24 @@ export class _UploaderService {
         this._builderService.isUploading = true;
         if (!cloud) this.cloudUploadInProgress = false;
 
-        if (cloud) {
+        if (cloud && !cloudLocalUpload) {
           assertContext();
           const result = await this.uploadCloudResult(projectPath, capturedSerialPort, assertContext);
           this.uploadPromiseReject = null;
           resolve(result);
           return;
         }
+        if (cloudLocalUpload) {
+          await window['cloudBuild'].assertArtifactUpload({ requestId: cloudLocalUpload.requestId });
+          assertContext();
+        }
 
         if (capturedPortInfo?.type === 'ble') {
           try {
+            if(cloudLocalUpload){
+              await window['cloudBuild'].beginArtifactUploadRoute({requestId:cloudLocalUpload.requestId,transport:'ble'});
+              assertContext();
+            }
             const result = await this.uploadByBle(buildPath, capturedPortInfo, boardJson?.name);
             this.uploadPromiseReject = null;
             resolve(result);
@@ -633,50 +659,53 @@ export class _UploaderService {
 
         // 准备上传配置
         const currentProjectPath = this.projectService.currentProjectPath;
-        const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
-          ? window['path'].join(currentProjectPath, 'sketch')
-          : window['path'].join(currentProjectPath, '.temp');
-        if (!window['fs'].existsSync(tempPath)) {
-          window['fs'].mkdirSync(tempPath, { recursive: true });
-        }
-
         // 获取当前选中的 STM32.BOARD (pnum) 选项，用于 probe-rs download 参数
         const pnum = this.projectService.currentBoardPinConfig?.board || null;
+        let configFilePath: string;
+        let uploadScriptPath: string;
+        if (!cloudLocalUpload) {
+          const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
+            ? window['path'].join(currentProjectPath, 'sketch')
+            : window['path'].join(currentProjectPath, '.temp');
+          if (!window['fs'].existsSync(tempPath)) {
+            window['fs'].mkdirSync(tempPath, { recursive: true });
+          }
 
-        const uploadConfig = {
-          currentProjectPath,
-          buildPath,
-          boardModule,
-          appDataPath: window['path'].getAppDataPath(),
-          serialPort: capturedSerialPort,
-          portType: capturedPortInfo?.type || 'serial',
-          portText: capturedPortInfo?.text || '',
-          probeSerial: capturedPortInfo?.probeSerial || '',
-          probeVidPid: capturedPortInfo?.probeVidPid || '',
-          uploadParam: cleanParam, // 传递清理后的上传参数
-          use_1200bps_touch,
-          wait_for_upload,
-          pnum
-        };
+          const uploadConfig = {
+            currentProjectPath,
+            buildPath,
+            boardModule,
+            appDataPath: window['path'].getAppDataPath(),
+            serialPort: capturedSerialPort,
+            portType: capturedPortInfo?.type || 'serial',
+            portText: capturedPortInfo?.text || '',
+            probeSerial: capturedPortInfo?.probeSerial || '',
+            probeVidPid: capturedPortInfo?.probeVidPid || '',
+            uploadParam: cleanParam, // 传递清理后的上传参数
+            use_1200bps_touch,
+            wait_for_upload,
+            pnum
+          };
 
-        const configFilePath = window['path'].join(tempPath, 'upload-config.json');
-        try {
-          await window['fs'].writeFileSync(configFilePath, JSON.stringify(uploadConfig, null, 2));
-        } catch (err) {
-          this.uploadInProgress = false; // 重置上传状态
-          this._builderService.isUploading = false;
-          const message = this.uploadT('CONFIG_WRITE_FAILED_WITH_MESSAGE', { message: err.message || err });
-          this.handleUploadError(message);
-          this.workflowService.finishUpload(false, 'Config write failed');
-          reject({ state: 'error', text: this.uploadT('CONFIG_WRITE_FAILED') });
-          return;
+          configFilePath = window['path'].join(tempPath, 'upload-config.json');
+          try {
+            await window['fs'].writeFileSync(configFilePath, JSON.stringify(uploadConfig, null, 2));
+          } catch (err) {
+            this.uploadInProgress = false; // 重置上传状态
+            this._builderService.isUploading = false;
+            const message = this.uploadT('CONFIG_WRITE_FAILED_WITH_MESSAGE', { message: err.message || err });
+            this.handleUploadError(message);
+            this.workflowService.finishUpload(false, 'Config write failed');
+            reject({ state: 'error', text: this.uploadT('CONFIG_WRITE_FAILED') });
+            return;
+          }
+
+          // 运行上传脚本（1200bps_touch 和 wait_for_upload 预处理已移至 upload.js）
+          uploadScriptPath = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'upload.js');
+          const uploadCmd = `node "${uploadScriptPath}" "${configFilePath}"`;
+
+          console.log("Final upload cmd: ", uploadCmd);
         }
-
-        // 运行上传脚本（1200bps_touch 和 wait_for_upload 预处理已移至 upload.js）
-        const uploadScriptPath = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'upload.js');
-        const uploadCmd = `node "${uploadScriptPath}" "${configFilePath}"`;
-
-        console.log("Final upload cmd: ", uploadCmd);
 
         const title = this.uploadT('UPLOADING_TITLE');
         const completeTitle = this.uploadT('COMPLETE_TITLE');
@@ -748,12 +777,15 @@ export class _UploaderService {
           return;
         }
 
-        this.cmdService.spawn(
+        (cloudLocalUpload ? this.createCloudLocalUploadStream(cloudLocalUpload.requestId, {
+          serialPort: capturedSerialPort, portType: capturedPortInfo?.type || 'serial', portText: capturedPortInfo?.text || '',
+          probeSerial: capturedPortInfo?.probeSerial || '', probeVidPid: capturedPortInfo?.probeVidPid || '', pnum,
+        }) : this.cmdService.spawn(
           'node',
           [uploadScriptPath, configFilePath],
           { shellProfile: false, cwd: currentProjectPath },
           false,
-        ).subscribe({
+        )).subscribe({
           next: async (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -797,7 +829,7 @@ export class _UploaderService {
             // 如果已被取消且需要立即杀死，现在立即杀死进程
             if (this.cancelled && this['shouldKillImmediately'] && this.streamId) {
               console.log("取消标志已设置，立即杀死上传进程:", this.streamId);
-              this.cmdService.kill(this.streamId);
+              if(!this.streamId.startsWith('cloud:'))this.cmdService.kill(this.streamId);
               this['shouldKillImmediately'] = false;
               return; // 不再处理任何数据
             }
@@ -1161,7 +1193,11 @@ export class _UploaderService {
           ...(resourceRecovery ? { resourceRecovery } : {}),
         });
       }
-    }).finally(() => {
+    }).finally(async () => {
+      disposeCloudInvalidation?.();
+      if (cloudLocalUpload) await window['cloudBuild'].finishArtifactUpload({ requestId: cloudLocalUpload.requestId }).catch(() => undefined);
+      this.activeCloudUploadId = null;
+      this.cloudUploadFirmwarePath = null;
       backendOperation?.release();
       // 云流程取消后仍等待所有异步准备和本机烧录退出，期间拒绝下一轮上传，避免旧回调清掉新状态。
       if (this.cloudUploadInProgress) {
@@ -1173,29 +1209,61 @@ export class _UploaderService {
     });
   }
 
-  /** 云编译不需要本机 SDK，只在烧录时按已注册目标的版本声明补齐轻量烧录工具。 */
-  private async prepareCloudUploader(assertContext: () => void): Promise<void> {
+  /** 云端已经展开 Windows 烧录配置，本机只准备配方实际需要的烧录工具。 */
+  private async prepareCloudUploader(assertContext: () => void): Promise<'cloud-recipe' | 'legacy'> {
     assertContext();
-    const profile = await this.projectService.getCloudBoardProfile();
+    const bridge = window['cloudBuild'];
+    if (!bridge?.artifactUploadInfo) throw new Error('Cloud upload metadata bridge is unavailable. Restart the application after updating.');
+    const info = await bridge.artifactUploadInfo({ projectPath: this.projectService.currentProjectPath });
     assertContext();
-    const dependencies = await this.projectService.getBoardDependencies();
+    if (info?.protocol === 'cloud-recipe') {
+      if (!Array.isArray(info.requirements)) throw new Error('The cloud firmware has no uploader tool inventory.');
+      for (const dependency of info.requirements) {
+        if (dependency.kind !== 'tool'
+            || !/^@aily-project\/tool-[A-Za-z0-9_.-]+$/.test(dependency.name || '')
+            || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/.test(dependency.version || '')) throw new Error('Invalid exact uploader tool dependency.');
+        assertContext();
+        if (!dependency.installed) {
+          await this.npmService.installCloudUploadTool({ name: dependency.name, version: dependency.version });
+        }
+        assertContext();
+      }
+      return 'cloud-recipe';
+    }
+    const tools: Record<string, { protocol: string; uploaderId: string; name: string }> = {
+      avrdude: { protocol: 'avrdude', uploaderId: 'avrdude', name: '@aily-project/tool-avrdude' },
+      esptool_py: { protocol: 'esptool', uploaderId: 'esptool', name: '@aily-project/tool-esptool_py' },
+    };
+    const tool = tools[info?.toolId];
+    if (!tool || tool.protocol !== info.protocol || tool.uploaderId !== info.uploaderId) {
+      throw new Error('This cloud firmware does not declare a supported local serial uploader. Compile the project again.');
+    }
+    const version = info.toolVersion, packageVersion = info.packageVersion;
+    if ([version, packageVersion].some(value => typeof value !== 'string'
+        || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/.test(value))) {
+      throw new Error('Invalid exact local uploader version in cloud firmware.');
+    }
     assertContext();
     const toolsPath = await window['env'].get('AILY_TOOLS_PATH');
     assertContext();
-    const tools: Array<[string, string]> = [['avrdude', '@aily-project/tool-avrdude'], ['esptool_py', '@aily-project/tool-esptool_py']];
-    let supported = false;
-    for (const [id, name] of tools) {
-      const runtimeVersion = profile['toolVersions']?.[id];
-      if (!runtimeVersion || !dependencies[name]) continue;
-      supported = true;
-      const version = String(dependencies[name]);
-      if (!/^[~^]?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)
-          || !/^[A-Za-z0-9.+_-]+$/.test(runtimeVersion)) throw new Error('Invalid local uploader version.');
-      const directory = window['path'].join(toolsPath, `${id}@${runtimeVersion}`);
-      if (!window['fs'].existsSync(directory)) await this.npmService.installTool({ name, version });
-      assertContext();
-    }
-    if (!supported) throw new Error('This cloud target has no declared local avrdude or esptool uploader.');
+    const directory = window['path'].join(toolsPath, `${info.toolId}@${version}`);
+    if (!window['fs'].existsSync(directory)) await this.npmService.installCloudUploadTool({ name: tool.name, version: packageVersion });
+    assertContext();
+    if (!window['fs'].existsSync(directory)) throw new Error(`The installed ${info.toolId}@${version} package did not provide its local uploader. Reinstall this tool before uploading.`);
+    return 'legacy';
+  }
+
+  private createCloudLocalUploadStream(requestId: string, device: any): Observable<CmdOutput> {
+    return new Observable<CmdOutput>(subscriber => {
+      const bridge = window['cloudBuild'];
+      const dispose = bridge.onProgress((event: any) => {
+        if (event?.requestId !== requestId || event.stage !== 'upload-output') return;
+        subscriber.next({ ...event.output, streamId: `cloud:${requestId}` });
+      });
+      Promise.resolve(bridge.runArtifactUpload({ requestId, ...device })).then(
+        () => subscriber.complete(), error => subscriber.error(error));
+      return () => dispose();
+    });
   }
 
   /** 使用主进程已校验的云产物在本机烧录，保留现有设备占用、取消和通知生命周期。 */
@@ -1316,38 +1384,42 @@ export class _UploaderService {
     this.logNetworkOtaUpload(this.networkT('LOG_FIRMWARE_SIZE', { size: this.formatBytes(firmwareSize) }));
 
     const currentProjectPath = this.projectService.currentProjectPath;
-    const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
-      ? window['path'].join(currentProjectPath, 'sketch')
-      : window['path'].join(currentProjectPath, '.temp');
-    if (!window['fs'].existsSync(tempPath)) {
-      window['fs'].mkdirSync(tempPath, { recursive: true });
+    const cloudUploadId = this.cloudUploadInProgress ? this.activeCloudUploadId : null;
+    let uploadCmd: string;
+    if (!cloudUploadId) {
+      const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
+        ? window['path'].join(currentProjectPath, 'sketch')
+        : window['path'].join(currentProjectPath, '.temp');
+      if (!window['fs'].existsSync(tempPath)) {
+        window['fs'].mkdirSync(tempPath, { recursive: true });
+      }
+
+      const uploadConfig = {
+        firmwarePath,
+        host: target.host,
+        port: target.port,
+        username: target.username,
+        password: target.password,
+        uploadPath: target.uploadPath,
+        ssl: !!target.ssl,
+        timeoutMs: target.timeoutMs || 60000,
+      };
+
+      const configFilePath = window['path'].join(tempPath, 'network-ota-upload-config.json');
+      try {
+        await window['fs'].writeFileSync(configFilePath, JSON.stringify(uploadConfig, null, 2));
+      } catch (err) {
+        this.uploadInProgress = false;
+        this._builderService.isUploading = false;
+        const message = this.uploadT('CONFIG_WRITE_FAILED_WITH_MESSAGE', { message: err.message || err });
+        this.handleUploadError(message);
+        this.workflowService.finishUpload(false, 'WiFi OTA config write failed');
+        throw { state: 'error', text: this.uploadT('CONFIG_WRITE_FAILED') };
+      }
+
+      const uploadScriptPath = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'network-ota-upload.js');
+      uploadCmd = `node "${uploadScriptPath}" "${configFilePath}"`;
     }
-
-    const uploadConfig = {
-      firmwarePath,
-      host: target.host,
-      port: target.port,
-      username: target.username,
-      password: target.password,
-      uploadPath: target.uploadPath,
-      ssl: !!target.ssl,
-      timeoutMs: target.timeoutMs || 60000,
-    };
-
-    const configFilePath = window['path'].join(tempPath, 'network-ota-upload-config.json');
-    try {
-      await window['fs'].writeFileSync(configFilePath, JSON.stringify(uploadConfig, null, 2));
-    } catch (err) {
-      this.uploadInProgress = false;
-      this._builderService.isUploading = false;
-      const message = this.uploadT('CONFIG_WRITE_FAILED_WITH_MESSAGE', { message: err.message || err });
-      this.handleUploadError(message);
-      this.workflowService.finishUpload(false, 'WiFi OTA config write failed');
-      throw { state: 'error', text: this.uploadT('CONFIG_WRITE_FAILED') };
-    }
-
-    const uploadScriptPath = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'network-ota-upload.js');
-    const uploadCmd = `node "${uploadScriptPath}" "${configFilePath}"`;
     const title = this.networkT('UPLOADING_TITLE');
     let lastProgress = 0;
     let errorText = '';
@@ -1427,7 +1499,9 @@ export class _UploaderService {
           return;
         }
 
-        this.cmdService.run(uploadCmd, currentProjectPath, false, false).subscribe({
+      (cloudUploadId
+        ? this.createCloudLocalUploadStream(cloudUploadId,{portType:'network-ota',networkTarget:target})
+        : this.cmdService.run(uploadCmd, currentProjectPath, false, false)).subscribe({
           next: (output: CmdOutput) => {
             this.streamId = output.streamId;
 
@@ -1455,7 +1529,7 @@ export class _UploaderService {
             }
 
             if (this.cancelled && this['shouldKillImmediately'] && this.streamId) {
-              this.cmdService.kill(this.streamId);
+              if(!this.streamId.startsWith('cloud:'))this.cmdService.kill(this.streamId);
               this['shouldKillImmediately'] = false;
               return;
             }
@@ -1545,6 +1619,7 @@ export class _UploaderService {
 
   private resolveOtaFirmwareFile(buildPath: string, mode: 'ble' | 'network-ota'): string {
     try {
+      if (this.cloudUploadFirmwarePath) return this.cloudUploadFirmwarePath;
       return this.uploaderBleService.findFirmwareFile(buildPath);
     } catch (error) {
       const message = error?.message || String(error);
@@ -1783,6 +1858,9 @@ export class _UploaderService {
       if (this.activeCloudUploadId) {
         const requestId = this.activeCloudUploadId;
         void Promise.resolve().then(() => window['cloudBuild'].cancelUpload({ requestId })).catch(() => undefined);
+        this.uploaderBleService.cancel();
+        if (this.streamId && !this.streamId.startsWith('cloud:')) this.cmdService.kill(this.streamId);
+        else if (!this.streamId) this['shouldKillImmediately'] = true;
       } else if (this.workflowService.currentState === ProcessState.BUILDING) {
         if (this.coderBuildActive) this.hostBuilderService.cancel();
         else this._builderService.cancel();

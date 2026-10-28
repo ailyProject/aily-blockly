@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 // 统一快照格式、路径限制、摘要和结果验签，保证本地与网关计算的是同一份输入。
 const MAX_FILES = 4096;
 const MAX_BYTES = 128 * 1024 * 1024;
+const MAX_INPUT_BYTES = 512 * 1024 * 1024;
 const error = (code, message) => Object.assign(new Error(message), { code });
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -33,13 +34,23 @@ function snapshotBody(snapshot) {
 }
 const snapshotDigest = snapshot => sha256(canonicalJson(snapshotBody(snapshot)));
 // 捕获阶段已读取并哈希实际文件；此处验证清单与身份，避免重复读取和编码源码。
-function validateSnapshot(snapshot) {
+function inputLimits(limits = {}) {
+  if (!limits || typeof limits !== 'object' || Array.isArray(limits)) throw error('INVALID_INPUT_LIMITS', 'Invalid cloud input limits.');
+  const ceilings = { maxFiles: MAX_FILES, maxInputBytes: MAX_INPUT_BYTES, maxFileBytes: MAX_BYTES };
+  return Object.fromEntries(Object.entries(ceilings).map(([key, ceiling]) => {
+    const value = Object.hasOwn(limits, key) ? limits[key] : ceiling;
+    if (!Number.isSafeInteger(value) || value < 1) throw error('INVALID_INPUT_LIMITS', 'Invalid cloud input limit: ' + key);
+    return [key, Math.min(value, ceiling)];
+  }));
+}
+function validateSnapshot(snapshot, limits = {}) {
+  const budget = inputLimits(limits);
   if (!snapshot || snapshot.schemaVersion !== 1 || snapshot.kind !== 'aily-cloud-build-input'
       || !['blockly', 'coder'].includes(snapshot.mode)
       || !/^@[^/\\]+\/(?:board|coder)-[A-Za-z0-9_.-]+$/u.test(snapshot.boardModule || '')
       || typeof snapshot.boardVersion !== 'string' || snapshot.boardVersion.length > 100
       || !/^[a-f0-9]{64}$/u.test(snapshot.boardDigest || '')
-      || !Array.isArray(snapshot.files) || !snapshot.files.length || snapshot.files.length > MAX_FILES) {
+      || !Array.isArray(snapshot.files) || !snapshot.files.length || snapshot.files.length > budget.maxFiles) {
     throw error('INVALID_INPUT', 'Invalid cloud build snapshot.');
   }
   validateRelativePath(snapshot.entry);
@@ -60,13 +71,13 @@ function validateSnapshot(snapshot) {
   let sizeBytes = 0;
   for (const file of snapshot.files) {
     validateRelativePath(file?.path);
-    if (!Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0 || file.sizeBytes > MAX_BYTES
+    if (!Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0 || file.sizeBytes > budget.maxFileBytes
         || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(file.sha256)) throw error('INVALID_INPUT', 'Invalid build file identity.');
     const key = file.path.toLowerCase();
     if (seen.has(key)) throw error('UNSAFE_PATH', 'Duplicate build file path.');
     seen.add(key);
     sizeBytes += file.sizeBytes;
-    if (sizeBytes > MAX_BYTES) throw error('INPUT_TOO_LARGE', 'Build input exceeds its byte budget.');
+    if (sizeBytes > budget.maxInputBytes) throw error('INPUT_TOO_LARGE', 'Build input exceeds its byte budget.');
   }
   if (!snapshot.files.some(file => file.path === snapshot.entry)) throw error('INVALID_INPUT', 'Build entry is missing.');
   for (const library of snapshot.libraries) {
@@ -88,5 +99,5 @@ function verifyManifest(manifest, signature, publicKey) {
   return true;
 }
 
-module.exports = { MAX_FILES, MAX_BYTES, error, canonicalJson, sha256, validateRelativePath,
+module.exports = { MAX_FILES, MAX_BYTES, MAX_INPUT_BYTES, inputLimits, error, canonicalJson, sha256, validateRelativePath,
   snapshotBody, snapshotDigest, validateSnapshot, boardDigest, verifyManifest };

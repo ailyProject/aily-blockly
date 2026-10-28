@@ -23,5 +23,7 @@ export interface NoticeOptions {
   onRetry?: () => void;
   /** 当前云编译任务切换为本地编译，继续原调用。 */
   onSwitchToLocal?: () => void;
+  /** 云编译失败后由用户发起一次本地重试，不修改全局偏好。 */
+  onRetryLocally?: () => void;
   onSwitchToCloud?: () => void;
 }

@@ -178,20 +178,24 @@ describe('prepared Blockly save boundary', () => {
     it('still saves editable ABI when generation fails, without attempting a second generation', async () => {
       editor.prepareProjectCode.and.resolveTo({ code: null, artifacts: null, blockCodeMapText: null, error: 'unfinished code', revision: editor.captureProjectSnapshot().revision });
       (service as any).publishPreparedCode.and.callThrough();
-      await service.save('D:/project');
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, error: 'unfinished code' }));
       expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
       expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
     });
     it('reports required build recovery after saving ABI, without losing the committed document', async () => {
       (service as any).publishPreparedCode.and.rejectWith(new Error('BUILD_WORKSPACE_RECOVERY_REQUIRED: Restart the computer, then reopen.'));
-      await expectAsync(service.save('D:/project')).toBeRejectedWithError(/Project file saved, but generated code could not be updated.*Restart the computer/);
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED',
+        error: jasmine.stringMatching(/Project file saved, but generated code could not be updated.*Restart the computer/) }));
       expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
       expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
       expect(editor.isWorkspaceEditBlocked()).toBeFalse();
     });
-    it('keeps ordinary build contention nonfatal after the ABI commit', async () => {
+    it('reports ordinary build contention as partial without denying the ABI commit', async () => {
       (service as any).publishPreparedCode.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: compilation in progress'));
-      await expectAsync(service.save('D:/project')).toBeResolved();
+      expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
+        generatedCodePublished: false, partial: true }));
       expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
       expect(editor.isWorkspaceEditBlocked()).toBeFalse();
     });

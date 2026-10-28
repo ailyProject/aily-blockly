@@ -59,6 +59,37 @@ test('publishes the approved A path and an active manifest with relative locator
   assert.equal(store.readSelection(root, { id: ENTRY.id, package: ENTRY.package }).packagePath, prepared.packagePath);
 });
 
+test('retained replacement rolls back even when post-rename inspection throws before returning a prepared package', t => {
+  const { root } = fixture(t);
+  const original = prepare(root, ENTRY, { marker: 'old' });
+  store.activate(root, ENTRY, original, { mode: 'pinned' });
+  const candidate = store.createCandidate(root, ENTRY);
+  writePackage(candidate.source, ENTRY, 'new');
+  const transaction = {};
+  const rename = fs.renameSync, read = fs.readFileSync;
+  let replaced = false;
+  fs.renameSync = (from, to, ...args) => {
+    const result = rename(from, to, ...args);
+    if (from === candidate.project) replaced = true;
+    return result;
+  };
+  fs.readFileSync = (file, ...args) => {
+    if (replaced && file === path.join(original.project, 'ready.json')) {
+      replaced = false;
+      throw Object.assign(new Error('post-rename inspection fixture'), { code: 'EIO' });
+    }
+    return read(file, ...args);
+  };
+  try {
+    assert.throws(() => store.publishCandidate(root, ENTRY, candidate, {
+      replace: true, retainPrevious: true, distribution: DIST, replacementTransaction: transaction,
+    }), /post-rename inspection fixture/);
+  } finally { fs.renameSync = rename; fs.readFileSync = read; }
+  transaction.rollback(); // idempotent: must not move the restored old package again.
+  assert.equal(fs.readFileSync(path.join(original.packagePath, 'marker.txt'), 'utf8'), 'old');
+  assert.equal(store.readActiveManifest(root, ENTRY).mode, 'pinned');
+});
+
 test('keeps versions side by side and falls back to the verified previous version', (t) => {
   const { root } = fixture(t);
   const oldEntry = { ...ENTRY, version: '0.1.32' };

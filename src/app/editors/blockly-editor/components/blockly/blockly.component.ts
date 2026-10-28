@@ -48,6 +48,7 @@ const BLOCKLY_LOCALES: Record<SupportedLanguageCode, any> = {
 // } from './plugins/continuous-toolbox/src/index.js';
 import './plugins/toolbox-search/src/index';
 import './blockly-native-registrations';
+import { installBlocklyWorkspaceDelete } from '../../utils/blockly-workspace-delete';
 import { registerProjectBlockPaster } from '../../services/blockly-copy-identities';
 import { batchBlocklyDragRenders } from '../../utils/blockly-drag-render-batch';
 import { bindBlocklyPointerBoundary } from '../../utils/blockly-pointer-boundary';
@@ -261,6 +262,8 @@ class ExternalToolboxDeleteArea extends Blockly.DeleteArea {
     return new Blockly.utils.Rect(rect.top, rect.bottom, rect.left, rect.right);
   }
 }
+
+installBlocklyWorkspaceDelete();
 
 @Component({
   selector: 'blockly-main',
@@ -984,7 +987,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
               selectedBlockId,
             );
           }
-          this.blocklyService.selectedBlockSubject.next(selectedBlockId);
+          this.blocklyService.updateSelectedBlockFromEvent(event);
           queueMicrotask(() => {
             this.blocklyService.syncSelectedBlocksFromWorkspace();
             this.codeViewerIpcService.publishSelection(

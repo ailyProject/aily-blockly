@@ -1,11 +1,14 @@
 import { Injectable } from '@angular/core';
 import { ActionService } from '@core/app-shell/public-api';
-import { ProjectService } from '@domain/project/public-api';
+import { ProjectService, type ProjectCopySnapshot } from '@domain/project/public-api';
 import { CoderBuildInfoService } from '@domain/build/public-api';
 
 export interface CodeEditorProPersistenceBridge {
   saveAll(): Promise<{ ok: boolean; message?: string }>;
   hasUnsavedChanges(): Promise<boolean>;
+  captureCopy?(): Promise<{ token: string; files: Array<{ path: string; bytes: Uint8Array }> }>;
+  checkCopy?(token: string): Promise<void>;
+  completeCopy?(token: string): Promise<void>;
 }
 
 @Injectable({
@@ -74,6 +77,38 @@ export class CodeEditorProProjectService {
   async saveAllOpenProjects(): Promise<{ ok: true }> {
     await Promise.all([...this.persistenceBridges.keys()].map(path => this.saveAll(path)));
     return { ok: true };
+  }
+
+  async prepareCopy(path: string): Promise<ProjectCopySnapshot> {
+    const bridge = this.persistenceBridges.get(this.key(path));
+    if (!bridge?.captureCopy || !bridge.checkCopy) throw new Error('另存为需要更新后的 Coder 编辑器，请更新编辑器后重试。');
+    const captured = await bridge.captureCopy();
+    const assertCurrent = async () => {
+      if (this.persistenceBridges.get(this.key(path)) !== bridge) throw new Error('Coder 编辑器已切换，请重新执行另存为。');
+      await bridge.checkCopy!(captured.token);
+    };
+    await assertCurrent();
+    return {
+      assertCurrent, release: () => undefined,
+      complete: async () => { await bridge.completeCopy?.(captured.token); },
+      write: async target => {
+        const paths = window['path'], fs = window['fs'];
+        const root = await fs.realpathAsync(target);
+        for (const file of captured.files) {
+          const relative = paths.relative(path, file.path);
+          const inside = (value: string) => !!value && !paths.isAbsolute(value) && value !== '..' && !/^\.\.[/\\]/.test(value);
+          if (!inside(relative)) throw new Error(`未保存文件不在当前项目内，请先处理该文件：${file.path}`);
+          const destination = paths.join(target, relative);
+          // cp preserves symlinks. Never follow one back into A while applying dirty buffers.
+          const physical = fs.existsSync(destination) ? await fs.realpathAsync(destination)
+            : paths.join(await fs.realpathAsync(paths.dirname(destination)), paths.basename(destination));
+          if (!inside(paths.relative(root, physical))) throw new Error(`另存为文件指向项目外部：${relative}`);
+          await assertCurrent();
+          fs.writeFileSync(destination, file.bytes);
+        }
+        await assertCurrent();
+      },
+    };
   }
 
   /** Missing/unmounted editors are unknown, never implicitly clean. No save. */

@@ -408,6 +408,18 @@ ngx-simplebar {
   }
 }
 
+.cloud-build-alpha {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  color: var(--aily-color-primary-alt);
+  font-size: 10px;
+  line-height: 16px;
+  vertical-align: 1px;
+}
+
 .cloud-build-switch {
   display: inline-flex;
 

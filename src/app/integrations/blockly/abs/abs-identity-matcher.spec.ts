@@ -85,11 +85,41 @@ arduino_loop()
 
   for (const state of [
     { data: 'opaque' }, { icons: { comment: { text: 'keep' } } }, { editable: false },
+    { collapsed: true }, { inline: true }, { inline: false },
     { customFutureState: { value: 1 } }, { inputs: { X: { block: num('visible'), shadow: num('fallback', 9) } } },
   ]) it('does not rebuild ambiguous non-reconstructible state: ' + Object.keys(state)[0], async () => {
     const base = await project([{ type: 'step', id: 'a', ...state }, { type: 'step', id: 'b' }]);
     await expectAsync(reconcileAbs(base, source('step(VALUE=1)\nstep(VALUE=2)\nstep(VALUE=3)')))
       .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_IDENTITY_AMBIGUOUS' }));
+  });
+
+  for (const state of [{ collapsed: true }, { inline: true }, { inline: false }]) {
+    it('preserves explicit layout through proven call-token edits: ' + JSON.stringify(state), async () => {
+      const base = await project([{ type: 'root', id: 'root', deletable: false, inputs: { BODY: { block: {
+        type: 'draw', id: 'a', ...state, inputs: { X: { block: num('x1', 1) } }, next: { block: {
+          type: 'draw', id: 'b', inputs: { X: { block: num('x2', 2) } },
+        } },
+      } } } }]);
+      const at = base.abs.indexOf('NUM=1') + 4, second = base.abs.indexOf('NUM=2') + 4;
+      const end = base.abs.indexOf('\n# @project-state:');
+      const edits = [{ start: at, end: at + 1, text: '3' }, { start: second, end: second + 1, text: '4' },
+        { start: end, end, text: '\n                draw(X=math_number(NUM=5))' }];
+      let after = base.abs;
+      for (const edit of [...edits].reverse()) after = after.slice(0, edit.start) + edit.text + after.slice(edit.end);
+      const result = await reconcileAbs(base, after, { sourceEdits: [edits] });
+      const blocks = indexAbsAbi(result.workspace), retained = blocks.get('a')!;
+      expect(result.retained).toEqual(jasmine.arrayContaining(['a', 'x1', 'b', 'x2']));
+      for (const [key, value] of Object.entries(state)) expect(retained[key]).toBe(value);
+      expect(retained.inputs!['X'].block!.fields!['NUM']).toBe(3);
+      expect([...blocks.values()].filter(block => block.type === 'draw').length).toBe(3);
+    });
+  }
+
+  it('keeps reconstructible collapsed=false on the ordinary fresh-identity fallback', async () => {
+    const base = await project([{ type: 'step', id: 'a', collapsed: false }, { type: 'step', id: 'b' }]);
+    const result = await reconcileAbs(base, source('step(VALUE=1)\nstep(VALUE=2)\nstep(VALUE=3)'));
+    expect(result.removed).toEqual(['a', 'b']);
+    expect(result.added.length).toBe(3);
   });
 
   it('checks hidden descendants even when their owner cannot be matched', async () => {

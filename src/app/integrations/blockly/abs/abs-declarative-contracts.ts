@@ -123,6 +123,8 @@ export function captureAbsDeclarativeContracts(snapshot: DeclarativeBlockSnapsho
       if (base && recipe) return prepareAbsStructuralShape(base, recipe, extraState);
       if (base && fieldShape.length) {
         const rules = resolveAbsFieldShapeAnchors(json!, base, fieldShape);
+        // A recognized shape mechanism does not prove an opaque serializer.
+        // Decline without changing it; native preparation owns that instance.
         return rules ? prepareAbsFieldShape(base, rules, fields, extraState) : undefined;
       }
       return base;

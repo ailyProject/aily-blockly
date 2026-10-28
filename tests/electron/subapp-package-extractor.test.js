@@ -14,6 +14,18 @@ function fixture(t) {
   return { archive: path.join(root, 'package.tgz'), output: path.join(root, '输出 source') };
 }
 
+test('worker cancellation waits for termination before its staging directory can be removed', async t => {
+  const f = fixture(t);
+  fs.writeFileSync(f.archive, npmTarball({ 'package.json': '{}', 'large.bin': Buffer.alloc(16 * 1024 * 1024, 1) }));
+  const controller = new AbortController();
+  const operation = extractNpmTarballInBackground(f.archive, f.output, { signal: controller.signal });
+  controller.abort(Object.assign(new Error('cancel extraction'), { code: 'SUBAPP_CANCELLED' }));
+  await assert.rejects(operation, { code: 'SUBAPP_CANCELLED' });
+  fs.rmSync(f.output, { recursive: true, force: true });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(fs.existsSync(f.output), false, 'terminated worker must not recreate removed staging');
+});
+
 test('extracts an npm package root without invoking npm and keeps executable modes', (t) => {
   const f = fixture(t);
   fs.writeFileSync(f.archive, npmTarball({

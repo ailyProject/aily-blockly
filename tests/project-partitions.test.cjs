@@ -32,6 +32,7 @@ function fixture(t, { cloud = false, coder = false, flash = '4M' } = {}) {
   const profile = { runner: 'aily-builder', boardModule, boardVersion: '1.0.0', boardDigest: protocol.boardDigest(boardPkg, board), metadata: { boardOptions: { PartitionScheme: {}, FlashSize: {} } } };
   const project = { currentProjectPath: root, currentBoardConfig: board,
     isCloudBuild: () => cloud, getPackageJson: async () => structuredClone(pkg), isAilyCodeProject: () => coder,
+    getEffectivePackageText: () => JSON.stringify(pkg),
     getBoardFile: async () => fs.existsSync(path.join(boardRoot, 'partitions.csv')) ? path.join(boardRoot, 'partitions.csv') : null,
     getBoardConfigMenu: async () => [{ key: 'PartitionScheme', children: [{ data: 'default' }, { data: 'custom', check: true }] }],
     getSdkPath: async () => path.join(root, 'sdk'), getBoardBuildProperties: async () => ({ 'build.partitions': 'default', 'build.flash_size': flash }),
@@ -92,4 +93,63 @@ test('Coder uses actual entry sibling and cloud snapshot preserves the same byte
   assert.equal(fs.existsSync(path.join(f.root, 'src/partitions.csv')), false);
   const item = f.snapshot().files.find(file => file.path === 'sketch/src/partitions.csv');
   assert.equal(Buffer.from(item.dataBase64, 'base64').toString(), fs.readFileSync(f.file, 'utf8'));
+});
+
+for (const cloud of [false, true]) test(`${cloud ? 'cloud' : 'local'} accepts stable unsaved library edits without saving the manifest`, async t => {
+  const f = fixture(t, { cloud });
+  const { LibraryDependencies } = require('../electron/library-dependencies');
+  const libraries = new LibraryDependencies({ run: async () => ({ manifest: {
+    ...f.pkg, dependencies: { ...f.pkg.dependencies, '@aily-project/lib-esp32-wifiprov': '1.0.0' },
+  } }) });
+  await libraries.mutate(f.root, { action: 'install', packages: ['@aily-project/lib-esp32-wifiprov'] });
+  const saved = fs.readFileSync(path.join(f.root, 'package.json'), 'utf8');
+  f.project.getPackageJson = async () => libraries.status(f.root).manifest;
+  f.project.getEffectivePackageText = () => JSON.stringify(libraries.status(f.root).manifest);
+  assert.equal(libraries.status(f.root).dirty, true);
+  assert.equal((await f.prepare()).created, true);
+  assert.equal(fs.readFileSync(path.join(f.root, 'package.json'), 'utf8'), saved);
+  assert.equal(libraries.status(f.root).dirty, true, 'Build preparation must not save/discard library edits');
+});
+
+test('rejects disk drift while awaiting the initial effective manifest, before any partition write', async t => {
+  const f = fixture(t);
+  f.project.getPackageJson = async () => {
+    const old = structuredClone(f.pkg);
+    f.pkg.dependencies['@aily-project/lib-external'] = '2.0.0'; f.manifest();
+    return old;
+  };
+  await assert.rejects(f.prepare, /BUILD_SOURCE_STALE/);
+  assert.equal(fs.existsSync(f.file), false);
+});
+
+test('rejects a later unsaved configuration edit even when the saved manifest did not change', async t => {
+  const f = fixture(t), pending = structuredClone(f.pkg);
+  f.project.getPackageJson = async () => structuredClone(pending);
+  f.project.getEffectivePackageText = () => JSON.stringify(pending);
+  f.project.getBoardFile = async () => { pending.projectConfig.FlashSize = '8M'; return null; };
+  await assert.rejects(f.prepare, /BUILD_SOURCE_STALE/);
+  assert.equal(fs.existsSync(f.file), false);
+});
+
+test('does not treat manifest key ordering or build result metadata as a configuration edit', async t => {
+  const f = fixture(t);
+  f.pkg.dependencies['@aily-project/lib-existing'] = '1.0.0'; f.manifest();
+  f.project.getBoardFile = async () => {
+    f.write(path.join(f.root, 'package.json'), JSON.stringify({ buildInfo: { state: 'success' },
+      ...f.pkg, dependencies: Object.fromEntries(Object.entries(f.pkg.dependencies).reverse()) }));
+    return null;
+  };
+  assert.equal((await f.prepare()).created, true);
+});
+
+test('uses unsaved partition settings while preserving the independently saved configuration', async t => {
+  const f = fixture(t), pending = structuredClone(f.pkg);
+  pending.projectConfig.FlashSize = '8M';
+  const saved = fs.readFileSync(path.join(f.root, 'package.json'), 'utf8');
+  f.project.getPackageJson = async () => structuredClone(pending);
+  f.project.getEffectivePackageText = () => JSON.stringify(pending);
+  f.project.getBoardBuildProperties = async () => ({ 'build.flash_size': '8M' });
+  assert.equal((await f.prepare()).created, true);
+  assert.deepEqual(validatePartitions(parsePartitionCsv(fs.readFileSync(f.file, 'utf8')).rows, 8 * 1024 * 1024).errors, []);
+  assert.equal(fs.readFileSync(path.join(f.root, 'package.json'), 'utf8'), saved);
 });

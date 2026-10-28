@@ -89,20 +89,6 @@ export function canonicalCloudJson(value: any): string {
   return JSON.stringify(canonicalize(value));
 }
 
-/** 优先比较目标固件的兼容性，避免把不同宿主机的编译器可执行文件误判为不兼容。 */
-export function compatibleCloudResources(candidate: CloudBoardProfile, reference: CloudBoardProfile): boolean {
-  const left = candidate['resourceIdentity'], right = reference['resourceIdentity'];
-  if (left === undefined && right === undefined) return true;
-  const valid = (value: any) => value?.schemaVersion === 1 && value.kind === 'native-resource-lock-v1'
-    && typeof value.digest === 'string' && /^[a-f0-9]{64}$/.test(value.digest);
-  if (!valid(left) || !valid(right)) return false;
-  const one = left.targetCompatibility, two = right.targetCompatibility;
-  const target = (value: any) => value?.policy === 'esp32s3-gcc14-sdk-runtime-v1'
-    && typeof value.digest === 'string' && /^[a-f0-9]{64}$/.test(value.digest);
-  if (target(one) && target(two)) return one.digest === two.digest;
-  return canonicalCloudJson(left) === canonicalCloudJson(right);
-}
-
 /** 菜单、构建属性共用同一默认值顺序，用户已保存的选项拥有最高优先级。 */
 export function getCloudBoardOptions(profile: CloudBoardProfile, selected: Record<string, any> = {}): Record<string, any> {
   return { ...Object.fromEntries(Object.entries(profile.metadata.boardOptions).map(([key, value]) => [key, value.default])),
@@ -117,10 +103,18 @@ export function getCloudBoardProfileFreeSlots(profile: CloudBoardProfile): numbe
   return Number.isFinite(profile?.['availability']?.freeSlots) ? Math.max(0, profile['availability'].freeSlots) : 0;
 }
 
-/** 只筛选精确板包身份；跨主机分流还必须维持相同编译契约，每个任务仍锁定精确目标摘要。 */
+/** 网关按物理服务器统计空闲节点；槽位只判断能否接收任务，不参与优先级排序。 */
+function hasCloudBoardProfileIdleNode(profile: CloudBoardProfile): boolean {
+  return Number.isFinite(profile?.['availability']?.idleNodes) && profile['availability'].idleNodes > 0;
+}
+
+function getCloudBoardProfilePriority(profile: CloudBoardProfile): number {
+  return Number.isFinite(profile?.['availability']?.priority) ? profile['availability'].priority : Number.MAX_SAFE_INTEGER;
+}
+
+/** 只筛选精确板包身份；先选空闲服务器，再按服务端优先级选择，每个任务仍锁定精确目标摘要。 */
 export function selectCloudBoardProfile(
   profiles: unknown, board: Pick<CloudBoardProfile, 'boardModule' | 'boardVersion' | 'boardDigest'>,
-  profileDigest?: string, compatibleWith?: CloudBoardProfile,
 ): CloudBoardProfile | undefined {
   const record = (value: any) => value && typeof value === 'object' && !Array.isArray(value);
   const matches = (candidate: any): candidate is CloudBoardProfile => candidate
@@ -133,19 +127,11 @@ export function selectCloudBoardProfile(
     && Object.values(candidate.metadata.boardOptions).every((declaration: any) =>
       record(declaration) && record(declaration.values) && typeof declaration.default === 'string'
       && Object.prototype.hasOwnProperty.call(declaration.values, declaration.default));
-  const compatible = (candidate: CloudBoardProfile, reference: CloudBoardProfile) =>
-    candidate.boardModule === reference.boardModule && candidate.boardVersion === reference.boardVersion
-    && candidate.boardDigest === reference.boardDigest && candidate.fqbn === reference.fqbn && candidate['runner'] === reference['runner']
-    && typeof reference['builderVersion'] === 'string' && reference['builderVersion'].length > 0
-    && candidate['builderVersion'] === reference['builderVersion']
-    && record(reference['toolVersions']) && Object.keys(reference['toolVersions']).length > 0
-    && canonicalCloudJson(candidate['toolVersions']) === canonicalCloudJson(reference['toolVersions'])
-    && compatibleCloudResources(candidate, reference) && canonicalCloudJson(candidate.metadata) === canonicalCloudJson(reference.metadata);
   return (Array.isArray(profiles) ? profiles : []).filter(matches)
-    .filter(candidate => (!profileDigest || candidate.profileDigest === profileDigest)
-      && (!compatibleWith || compatible(candidate, compatibleWith)))
     .sort((left, right) => Number(isCloudBoardProfileOnline(right)) - Number(isCloudBoardProfileOnline(left))
-      || getCloudBoardProfileFreeSlots(right) - getCloudBoardProfileFreeSlots(left))[0];
+      || Number(getCloudBoardProfileFreeSlots(right) > 0) - Number(getCloudBoardProfileFreeSlots(left) > 0)
+      || Number(hasCloudBoardProfileIdleNode(right)) - Number(hasCloudBoardProfileIdleNode(left))
+      || getCloudBoardProfilePriority(left) - getCloudBoardProfilePriority(right))[0];
 }
 
 /** 将网关的开发板元数据还原成 boards.txt 的平面键，复用现有开发板选项逻辑。 */

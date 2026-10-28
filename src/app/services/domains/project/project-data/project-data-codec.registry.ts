@@ -2,6 +2,7 @@ import {
   AilyDataLogicalType,
   ProjectDataError,
 } from './project-data.types';
+import { isPlainProjectJsonObject } from '../project-json-object';
 
 export interface ProjectDataCodec<TValue = unknown> {
   readonly id: string;
@@ -182,9 +183,7 @@ export function canonicalJsonStringify(value: unknown): string {
       if (active.has(current)) {
         throw new ProjectDataError('corrupt', `Circular JSON object at ${location()}.`);
       }
-      const prototype = Object.getPrototypeOf(current);
-      // Blockly serializers also produce data-only dictionaries with no prototype.
-      if (prototype !== null && prototype !== Object.prototype) {
+      if (!isPlainProjectJsonObject(current)) {
         throw new ProjectDataError('corrupt', `Unsupported JSON object at ${location()}.`);
       }
       active.add(current);

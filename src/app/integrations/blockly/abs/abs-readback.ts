@@ -3,6 +3,7 @@ import { cloneBlocklyJson } from '@domain/project/project-document/public-api';
 import { absJson } from './abs-json';
 import { indexAbsAbi } from './abs-abi-index';
 import { AbsAbiBlock, AbsAbiWorkspace, AbsSyncError } from './abs-state';
+import { normalizeAbsCommentPlacement } from './abs-comment-state';
 
 export interface AbsReadbackOptions {
   fieldDefinition?: (type: string, field: string, id: string) => AbsFieldDefinition | undefined;
@@ -91,6 +92,7 @@ function prepareReadback(expected: AbsAbiWorkspace, options: AbsReadbackOptions)
   const expectedVariableIds = [...expectedVariables.keys()].sort();
   const attributes = (value: AbsAbiBlock, original: AbsAbiBlock) => {
     const { fields, inputs, next, ...attributes } = value;
+    normalizeAbsCommentPlacement(attributes, original);
     const root = expectedOwners.get(original.id) === null;
     if (!root) { delete attributes['x']; delete attributes['y']; }
     if (root) for (const key of ['x', 'y']) if (typeof attributes[key] === 'number') attributes[key] = Math.round(attributes[key] as number);
