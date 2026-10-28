@@ -14,6 +14,10 @@ const fail = message => {
         { code: 'SIMULATION_UPLOAD_STALE' });
 };
 
+const unsupported = message => {
+    throw Object.assign(new Error(`SIMULATION_UPLOAD_UNSUPPORTED: ${message}`), { code: 'SIMULATION_UPLOAD_UNSUPPORTED' });
+};
+
 function readFile(root, relative, limit) {
     if (typeof relative !== 'string' || !relative || relative.includes('\\') || path.isAbsolute(relative)
         || relative.split('/').some(part => !part || part === '.' || part === '..')) fail('Invalid Artifact file path.');
@@ -108,7 +112,7 @@ function resolveVerifiedFirmware(artifact, directory, pattern) {
     const expression = new RegExp('^' + pattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
     const matches = artifact.files.filter(file => expression.test(path.basename(file.path)));
 
-    if (matches.length !== 1) fail(`Firmware selection is missing or ambiguous: ${pattern}.`);
+    if (matches.length !== 1) unsupported(`Firmware selection is missing or ambiguous: ${pattern}.`);
 
     return path.join(directory, matches[0].path);
 }
@@ -126,13 +130,13 @@ function assertVerifiedFirmwareArguments(artifact, directory, args) {
                 .replace(/^--[^=]+=/, '').replace(/:[a-z]$/i, '');
 
             if (!/\.(?:bin|hex|elf|eep|img|uf2)$/i.test(filename)) continue;
-            if (!allowed.has(path.resolve(directory, filename))) fail('Upload recipe references firmware outside the verified Artifact.');
+            if (!allowed.has(path.resolve(directory, filename))) unsupported('Upload recipe references firmware outside the verified Artifact.');
 
             found = true;
         }
     }
 
-    if (!found) fail('Upload recipe does not expose a verified firmware path.');
+    if (!found) unsupported('Upload recipe does not expose a verified firmware path.');
 }
 
 module.exports = { verifyUploadArtifact, resolveVerifiedFirmware, assertVerifiedFirmwareArguments };
