@@ -14,6 +14,8 @@ export * from './project-data/project-data-policy';
 export * from './project-data/project-data-runtime';
 export * from './project-data/project-data-store';
 export * from './project-data/project-data.types';
+export { normalizeProjectDataDocument, isDeferredProjectDataNormalization,
+  type ProjectDataNormalizationStore, type DeferredProjectDataNormalization } from './project-data/project-data-normalization';
 export * from './project-debug-configuration.service';
 export * from './operations/project-creation-workflow';
 export * from './project-root-path';

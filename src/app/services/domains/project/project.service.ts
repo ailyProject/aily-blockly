@@ -30,7 +30,7 @@ import { ProjectDataStore } from './project-data/project-data-store';
 import {
   ExternalProjectDataImportResult,
 } from './project-data/project-data-legacy-import';
-import { normalizeProjectDataDocument } from './project-data/project-data-normalization';
+import { normalizeProjectDataDocument, type DeferredProjectDataNormalization } from './project-data/project-data-normalization';
 import { ProjectDataError } from './project-data/project-data.types';
 import {
   isBoardCompatibleWithProjectMode,
@@ -1315,7 +1315,7 @@ export class ProjectService {
       }
 
       if (templateDirectory === 'template') {
-        await this.initializeProjectDataSchema(projectPath);
+        await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       }
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
         coderTemplate: isCoderTemplate,
@@ -1349,7 +1349,7 @@ export class ProjectService {
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
       this.importProjectDirectory(templatePath, projectPath);
 
-      await this.initializeProjectDataSchema(projectPath);
+      await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
       const created = await this.finishProjectCreation(projectPath, options);
       if (created) this.metrics.record('project_created');
@@ -1373,7 +1373,8 @@ export class ProjectService {
    * project. Known legacy inline payloads are migrated once at this copy
    * boundary.
    */
-  async initializeProjectDataSchema(projectPath: string, assertCurrent: () => void = () => {}, fieldUpdates?: ProjectBlockFieldUpdates): Promise<void> {
+  async initializeProjectDataSchema(projectPath: string, assertCurrent: () => void = () => {}, fieldUpdates?: ProjectBlockFieldUpdates,
+    options: { deferToLoad?: true } = {}): Promise<void | { status: 'DEFERRED'; code: string; project: string }> {
     assertCurrent();
     const abiPath = window['path'].join(projectPath, 'project.abi');
     if (!window['fs'].existsSync(abiPath)) {
@@ -1386,6 +1387,16 @@ export class ProjectService {
     const result = await normalizeProjectDataDocument({ projectPath, document: abi, fieldUpdates, originalContent, materialize: false },
       this.createProjectDataStore(projectPath), assertCurrent);
     this.reportProjectDataNormalization(projectPath, result);
+    if (result.deferredNormalization) {
+      const deferred = { status: 'DEFERRED' as const, code: 'PROJECT_DATA_NORMALIZATION_DEFERRED', project: projectPath };
+      // A creation/import caller may explicitly hand an unchanged saved source
+      // to the real loader. Requested example field edits cannot be silently lost.
+      if (options.deferToLoad && (!fieldUpdates || Object.keys(fieldUpdates).length === 0)) return deferred;
+      throw Object.assign(new Error('Project Data was prepared but the original ABI/ABS generation was retained. '
+        + 'Open this exact project for verified load normalization, or inspect it with project_recover and use its preserving repair or independent fork. '
+        + 'Requested field changes were not saved; do not delete maps/locks or report initialization as committed.'), deferred,
+        { recovery: { tool: 'project_recover', arguments: { action: 'inspect', project: projectPath }, retryInstallation: false } });
+    }
   }
 
   /**
@@ -1399,6 +1410,7 @@ export class ProjectService {
     originalContent?: string,
     assertCurrent: () => void = () => {},
     onPublished?: (text: string) => void,
+    onDeferredNormalization?: (normalization: DeferredProjectDataNormalization) => void,
   ): Promise<Record<string, unknown>> {
     const session = projectDataRuntime.getSessionToken();
     const currentPath = this.currentProjectPath;
@@ -1430,6 +1442,7 @@ export class ProjectService {
       if (repair?.project === projectPath) repair.transitions.push(transition);
     }
     if (result.persistedText !== undefined) onPublished?.(result.persistedText);
+    if (result.deferredNormalization) onDeferredNormalization?.(result.deferredNormalization);
     return result.document;
   }
 

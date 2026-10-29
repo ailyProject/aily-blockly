@@ -1,12 +1,25 @@
 import { canonicalProjectJsonStringify, cloneProjectJson } from '@domain/project/project-document/public-api';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { assertAbsReadback } from '../../../integrations/blockly/abs/abs-readback';
+import { sameAbsProgram } from '../../../integrations/blockly/abs/abs-program-state';
 import type { AbsAbiBlock, AbsAbiWorkspace } from '../../../integrations/blockly/abs/abs-state';
 import { BlocklyProjectDocument, composeBlocklyPage } from './blockly-project-model';
 
 const same = (a: unknown, b: unknown) => a === undefined || b === undefined
   ? a === b : canonicalProjectJsonStringify(a) === canonicalProjectJsonStringify(b);
 type RuntimeView = (workspace: AbsAbiWorkspace) => AbsAbiWorkspace;
+
+/** Read-only disk admission. A presentation-only rewrite must not remove the
+ * Save choice on exit, but it is never a new clean checkpoint. No normalizer,
+ * resource resolution or current-canvas equality can excuse external code. */
+function sameSavedDiskProgram(before: string, after: string): boolean {
+  try {
+    const baseline = JSON.parse(before), disk = JSON.parse(after);
+    return baseline?.schemaVersion === 3 && disk?.schemaVersion === 3
+      && Array.isArray(baseline.pages) && Array.isArray(disk.pages)
+      ? sameAbsProgram(baseline, disk) : same(baseline, disk);
+  } catch { return false; }
+}
 
 /** A newly introduced variable field may create its default model when an old
  * archive omitted that field. Accept only models referenced by those omitted
@@ -99,7 +112,9 @@ export class BlocklyProjectCleanState {
     if (this.failure) throw this.failure;
     if (!this.accepted) return undefined;
     if (!this.matches(scope)) throw new Error('Project runtime changed; save or reload before checking unsaved state.');
-    if (disk !== this.accepted.disk) throw new Error('project.abi changed outside this editor; review or reload the project before closing.');
+    if (disk !== this.accepted.disk && !sameSavedDiskProgram(this.accepted.disk, disk)) {
+      throw new Error('project.abi changed outside this editor; review or reload the project before closing.');
+    }
     return !same(document, this.accepted.document);
   }
 

@@ -89,7 +89,8 @@ export class SubappAgentBridgeService implements OnDestroy {
   private readonly channels = new Map<string, SubappRpcChannel>();
   private readonly ownerRequests = new SubappOwnerRequests();
   private readonly ownerGuard = new SubappOwnerGuard();
-  private readonly ownerLeases = new SubappAgentOwnerLeases(lease => this.releaseSession(lease.ownerLeaseId, lease.sessionId));
+  private readonly ownerLeases = new SubappAgentOwnerLeases(lease => this.releaseSession(lease.ownerLeaseId, lease.sessionId),
+    Date.now, id => this.ownerRequests.pendingCount(id));
 
   constructor(
     private readonly childToolProcessService: ChildToolProcessService,
@@ -298,6 +299,12 @@ export class SubappAgentBridgeService implements OnDestroy {
     const ownerLeaseId = String(input['ownerLeaseId'] || '');
     const sessionId = String(input['sessionId'] || '').trim();
     try {
+      if (action === 'inspect' || action === 'recover') {
+        if (input['version'] !== 1) throw new SubappRpcError('Owner recovery protocol version 1 is required.', 'SUBAPP_OWNER_PROTOCOL_REQUIRED');
+        const result = action === 'inspect' ? this.ownerLeases.inspect(ownerLeaseId, sessionId)
+          : this.ownerLeases.recover(ownerLeaseId, sessionId, String(input['recoveryRequestId'] || ''));
+        return { ok: true, ...result, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
+      }
       if (action === 'release') return await this.ownerLeases.release(ownerLeaseId, sessionId);
       if (action === 'cancel') {
         const requestId = String(input['requestId'] || '');

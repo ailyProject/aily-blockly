@@ -1,6 +1,12 @@
 /** Request cancellation is independent of shared Runtime/process ownership. */
 export class SubappOwnerRequests {
   private readonly owners = new Map<string, Map<AbortController, { requestId: string; done: Promise<string | undefined>; join: boolean }>>();
+  private readonly retiring = new Map<string, Set<Map<AbortController, { requestId: string; done: Promise<string | undefined>; join: boolean }>>>();
+
+  pendingCount(owner: string): number {
+    return (this.owners.get(owner)?.size ?? 0)
+      + [...(this.retiring.get(owner) ?? [])].reduce((count, requests) => count + requests.size, 0);
+  }
 
   start(owner: string, external?: AbortSignal, requestId = ''): { signal: AbortSignal; waitForCleanup(): void; finish(cleanupError?: string): void } {
     const controller = new AbortController();
@@ -22,6 +28,11 @@ export class SubappOwnerRequests {
         external?.removeEventListener('abort', abort);
         requests.delete(controller);
         if (!requests.size && this.owners.get(owner) === requests) this.owners.delete(owner);
+        if (!requests.size) {
+          const retired = this.retiring.get(owner);
+          retired?.delete(requests);
+          if (!retired?.size) this.retiring.delete(owner);
+        }
         finished(cleanupError);
       },
     };
@@ -30,6 +41,11 @@ export class SubappOwnerRequests {
   async release(owner: string): Promise<string[]> {
     const requests = this.owners.get(owner);
     this.owners.delete(owner);
+    if (requests?.size) {
+      let retired = this.retiring.get(owner);
+      if (!retired) this.retiring.set(owner, retired = new Set());
+      retired.add(requests);
+    }
     for (const controller of requests?.keys() || []) controller.abort();
     const errors = await Promise.all([...(requests?.values() || [])].filter(request => request.join).map(request => request.done));
     return errors.filter((error): error is string => typeof error === 'string');

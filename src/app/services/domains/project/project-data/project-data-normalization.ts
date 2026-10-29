@@ -7,9 +7,31 @@ import { ProjectBlockFieldUpdates, updateProjectBlockFields } from '../project-b
 import { migrateLegacyBlockFieldValues } from '../legacy-block-field-values';
 import { migrateLegacyBlockShapeValues } from '../legacy-block-shape-values';
 import { migrateLegacyBlockTypes } from '../legacy-block-types';
+import { canonicalProjectJsonStringify } from '../project-document-json';
 
 export interface ProjectDataNormalizationStore extends ProjectDataImportStore {
   resolve<T>(ref: AilyDataRef): Promise<T>;
+}
+
+export interface DeferredProjectDataNormalization {
+  readonly mode: 'load' | 'other';
+  readonly projectPath: string;
+  readonly originalContent: string;
+  readonly persistedText: string;
+}
+const deferredNormalizations = new WeakSet<object>();
+
+/** Internal prepared data, not a wire capability or permission to replace ABI. */
+export function isDeferredProjectDataNormalization(value: unknown): value is DeferredProjectDataNormalization {
+  return !!value && typeof value === 'object' && deferredNormalizations.has(value);
+}
+
+class AbsNormalizationDeferred extends Error {}
+
+function hasAbsIdentityContext(projectPath: string, files: ProjectFilePublicationPort): boolean | undefined {
+  const exists = (files as ProjectFilePublicationPort & { existsSync?: (path: string) => boolean }).existsSync;
+  if (typeof exists !== 'function') return undefined;
+  return ['project.abs.map.json', '.aily/abs-sync'].some(name => exists.call(files, `${projectPath}/${name}`));
 }
 
 /** Prepare and validate before publication. Never changes the active runtime or workspace. */
@@ -21,6 +43,8 @@ export async function normalizeProjectDataDocument(
   assertCurrent();
   // Snapshot options now; ensureExternalProjectDataDocument clones the document before awaiting.
   const { projectPath, originalContent, materialize, fieldUpdates } = input;
+  const loadOnly = originalContent !== undefined && materialize && fieldUpdates === undefined
+    && canonicalProjectJsonStringify(input.document) === canonicalProjectJsonStringify(JSON.parse(originalContent));
   const identities = migrateLegacyShadowIdentities(input.document);
   const legacyFields = migrateLegacyBlockFieldValues(identities.document);
   const legacyShapes = migrateLegacyBlockShapeValues(legacyFields.document);
@@ -68,19 +92,43 @@ export async function normalizeProjectDataDocument(
   }) : migration.document;
   assertCurrent();
   let publication: ProjectFileWriteResult | undefined;
+  let deferredNormalization: DeferredProjectDataNormalization | undefined;
   // Candidate field edits also need publication, even when the schema/payloads are already normalized.
   const changed = updated.changed || migration.documentChanged || identities.changes.length > 0
     || legacyFields.changes.length > 0 || legacyShapes.changes.length > 0 || legacyTypes.changes.length > 0;
-  const persistedText = originalContent === undefined ? undefined : changed ? JSON.stringify(migration.document) : originalContent;
+  let persistedText = originalContent === undefined ? undefined : changed ? JSON.stringify(migration.document) : originalContent;
   if (originalContent !== undefined) {
     // Even an unchanged document must still match the bytes read for this load.
     // Exact no-op publication takes the lock/CAS path without rewriting the file.
-    publication = await publishProjectText(projectPath, 'project.abi', persistedText!,
-      originalContent, check, files, changed ? { backup: 'project-data', ...(identities.changes.length ? { migrateLegacyShadowIds: true as const } : {}) } : {});
+    const defer = () => {
+      deferredNormalization = Object.freeze({ mode: loadOnly ? 'load' : 'other', projectPath, originalContent, persistedText: persistedText! });
+      deferredNormalizations.add(deferredNormalization);
+      // The native loader acknowledges the actual old bytes, not an unpublished candidate.
+      persistedText = originalContent;
+    };
+    if (changed && hasAbsIdentityContext(projectPath, files) !== false) defer();
+    else {
+      const publicationGuard = () => {
+        check();
+        // Repeated synchronously inside the host's shared publication lock.
+        // Another process may have created an ABS generation during resource I/O.
+        if (changed && hasAbsIdentityContext(projectPath, files) !== false) throw new AbsNormalizationDeferred();
+      };
+      try {
+        publication = await publishProjectText(projectPath, 'project.abi', persistedText!,
+          originalContent, publicationGuard, files,
+          changed ? { backup: 'project-data', ...(identities.changes.length ? { migrateLegacyShadowIds: true as const } : {}) } : {});
+      } catch (error) {
+        // Only a confirmed precommit guard rejection is deferrable. Unknown
+        // acknowledgements and actual disk conflicts retain their normal errors.
+        if (!(error instanceof AbsNormalizationDeferred)) throw error;
+        defer();
+      }
+    }
   }
   // A confirmed old-context commit stays committed, but its load result is not reusable.
   assertCurrent();
-  return { document: restored, persistedText, migration, publication, identityMigration: identities.changes,
+  return { document: restored, persistedText, migration, publication, deferredNormalization, identityMigration: identities.changes,
     legacyFieldMigration: legacyFields.changes, legacyShapeMigration: legacyShapes.changes,
     legacyTypeMigration: legacyTypes.changes };
 }

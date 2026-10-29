@@ -57,6 +57,9 @@ import { assertAbsReadback } from './abs-readback';
 import { describeAbsDerivedOutputs, type AbsDerivedOutputs } from './abs-derived-outputs';
 import { AbsJournalReopenAdmission, type AbsJournalReopenObservation } from './abs-journal-reopen';
 import { AbsRepairDerivedReports } from './abs-repair-derived';
+import { canSaveAbsWorkspace, sameAbsSavedProgram } from './abs-save-semantics';
+import { deferredAbsLoadNormalization, matchesAbsLoadNormalizationReadback, verifyAbsLoadNormalization,
+  type AbsLoadNormalizationInput, type AbsLoadNormalizationOutcome } from './abs-load-normalization';
 
 type AbsExportOptions = { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string;
   reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean; save?: boolean };
@@ -119,6 +122,106 @@ export class AbsWorkspaceSyncService {
     });
     this.project.setAbsSaveAsHandler?.(path => this.captureSaveAsSnapshot(path));
     this.project.setAbsRecoveryCopyHandler?.(path => this.captureRecoveryCopySnapshot(path));
+    this.project.setAbsLoadNormalizationHandler?.(input => this.publishLoadedNormalization(input));
+  }
+
+  /** Trusted open-path continuation, after native readback and release of the
+   * load lease. Normalization is not an ABS edit and never consumes a draft.
+   * The old saved recipe and all mirrors are archived before the same save
+   * journal publishes a new generation under the ordinary FIFO/editor lease. */
+  publishLoadedNormalization(input: AbsLoadNormalizationInput): Promise<AbsLoadNormalizationOutcome> {
+    input.assertCurrent();
+    if (input.projectPath !== this.project.currentProjectPath) {
+      return Promise.resolve(deferredAbsLoadNormalization(input.projectPath, 'ABS_CONTEXT_STALE'));
+    }
+    return this.run(async (context, lease, store) => {
+      const assertContext = () => { context.assertCurrent(); input.assertCurrent(); lease.assertCurrent(); };
+      const quarantineCurrent = (reason: string) => {
+        if (!context.isCurrent()) return;
+        try { assertContext(); } catch { return; }
+        lease.quarantine(reason);
+      };
+      assertContext();
+      if (!await verifyAbsLoadNormalization(store, input, context.scope)) {
+        return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_DEFERRED');
+      }
+      const snapshot = this.editor.captureProjectSnapshot(lease);
+      if (!matchesAbsLoadNormalizationReadback(input, snapshot)) {
+        return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+      }
+      const guard = () => {
+        assertContext();
+        const current = this.editor.captureProjectSnapshot(lease);
+        if (!matchesAbsLoadNormalizationReadback(input, current)) {
+          throw new AbsSyncError('ABS_LOAD_NORMALIZATION_READBACK_CHANGED', 'Native load state changed before normalization publication.');
+        }
+        assertContext(); return current;
+      };
+      let prepared: PreparedBlocklySave, projection: AbsProjection, generation: string;
+      try {
+        prepared = await this.project.prepareSave(snapshot.document, guard);
+        if (!await sameAbsSavedProgram(JSON.parse(prepared.abiText), JSON.parse(input.persistedText), {
+          normalize: value => this.editor.normalizeProjectAbi(value),
+          resolve: ref => projectDataRuntime.resolve(ref), assertCurrent: guard,
+        })) return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+        const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions, assertContext);
+        const compact = await this.compactDocument(snapshot.document, runtime.contracts, guard);
+        generation = crypto.randomUUID();
+        projection = await this.projection(compact, runtime.contracts, prepared.abiText, context.scope, guard, generation);
+        const token = await hashAbsText(absJson({ kind: 'load-normalization',
+          originalContent: input.originalContent, persistedText: input.persistedText, expected: input.expected }));
+        await this.assertDisk(store, input.expected.disk, guard);
+        const archive = await store.archiveRepair(generation, input.expected.disk, input.expected.pointerHash,
+          absJson(snapshot.document), token, guard);
+        await store.stage({ projection, mode: 'import', abi: prepared.abiText,
+          inputAbs: input.expected.disk.abs, inputMap: input.expected.disk.map, expected: input.expected.disk,
+          recoveryArchive: { key: archive.key, hash: archive.hash } }, input.expected.pointerHash);
+      } catch (error) {
+        if ((error as any)?.code === 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED') {
+          return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+        }
+        throw error;
+      }
+      let publication: AbsPublishResult;
+      let abiWriteAttempted = false;
+      try {
+        publication = await store.commit(generation, guard, async (text, expectedHash, storage) => {
+          guard();
+          abiWriteAttempted = true;
+          if (text !== prepared.abiText || !await storage.replace('project.abi', expectedHash, text)) {
+            throw new AbsSyncError('ABS_ABI_COMMIT_CONFLICT', 'Project ABI changed during load normalization.');
+          }
+        });
+      } catch (error) {
+        // Pre-ABI admission failures cannot have saved anything. Once a write
+        // was attempted, a lost host acknowledgement must retain protection.
+        // Confirmed NOT_COMMITTED outcomes are returned normally below.
+        if (!abiWriteAttempted) {
+          if ((error as any)?.code === 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED') {
+            return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+          }
+          throw error;
+        }
+        quarantineCurrent('Load normalization outcome is unknown; inspect the retained journal before writing.');
+        throw new AbsSyncError('ABS_LOAD_NORMALIZATION_OUTCOME_UNKNOWN', `Load normalization acknowledgement is unknown: ${String(error)}`,
+          undefined, [], { hint: 'Keep the source and migration archive. Call project_recover action=inspect once; recover only the offered pending journal or already committed generation. Do not repeat normalization, delete locks or apply an old draft.' });
+      }
+      if (publication.status !== 'COMMITTED') {
+        if (publication.abiSaved) quarantineCurrent('Normalized ABI committed; recover its pending generation before writing.');
+        return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_INCOMPLETE');
+      }
+      try {
+        guard();
+        // This open-path acknowledgement intentionally does not generate C++, run
+        // library save hooks or republish manifests as a side effect of migration.
+        this.project.rememberLoadedProject(context.path, prepared.abiText, snapshot.document, lease);
+        this.editor.publishAbsContext(projection, guard().revision, assertContext);
+      } catch (error) {
+        quarantineCurrent('Normalization committed but native acknowledgement changed; inspect before writing.');
+        throw error;
+      }
+      return { status: 'COMMITTED', abiText: prepared.abiText, generation };
+    });
   }
 
   private captureRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
@@ -332,7 +435,8 @@ export class AbsWorkspaceSyncService {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Saved ABI changed before export.');
       }
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
-      const committed = inspection ? inspection.committed?.projection : options.save ? (await store.inspectCommitted())?.projection : await store.loadCommitted();
+      const savedCommit = !inspection && options.save ? await store.inspectCommitted() : null;
+      const committed = inspection ? inspection.committed?.projection : options.save ? savedCommit?.projection : await store.loadCommitted();
       if (input && (committed?.map.generation ?? null) !== input.generation) {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed after state-operation preflight.');
       }
@@ -353,10 +457,15 @@ export class AbsWorkspaceSyncService {
       if (committed) {
         const diskHash = expected.abi === null ? null : await hashAbsText(absJson(JSON.parse(expected.abi)));
         if (diskHash !== committed.map.savedAbiHash) {
-          // Match inspection's program comparison: view/layout changes are not
-          // competing edits. Full disk hashes still guard publication below.
+          // Compare D with the actual saved ABI B, not only with edited canvas W.
+          // A layout-only D drift is not a competing edit. Recipe verification
+          // and the unchanged raw three-file CAS retain publication authority.
           prepared = await this.project.prepareSave(snapshot.document, assertCurrent);
-          if (expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
+          const savedAbi = await store.readDerivedAbi(committed.map.generation);
+          if (!await canSaveAbsWorkspace(savedAbi, expected.abi, prepared.abiText, {
+            normalize: value => this.editor.normalizeProjectAbi(value),
+            resolve: ref => projectDataRuntime.resolve(ref), assertCurrent,
+          })) {
             throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'Saved ABI and workspace diverged; reconcile the external edit before exporting a new generation.', undefined, undefined,
               { hint: 'Call project_recover action=inspect once for disk/canvas comparison. Do not retry save/export/apply or refresh without a token; preserve both versions until the intended source is established.' });
           }
@@ -416,7 +525,7 @@ export class AbsWorkspaceSyncService {
       await store.stage({ projection, mode: prepared ? 'import' : 'export', inputAbs: expected.abs ?? projection.abs, abi: prepared?.abiText ?? null, expected,
         ...(inspection ? { inputMap: expected.map } : {}),
         ...(options.preserveDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
-        input?.generation === null ? null : inspection?.committed?.pointerHash);
+        input?.generation === null ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
       const archived = options.preserveDraft || input?.generation === null && expected.abs !== null
         ? await store.readArchivedDraft(projection.map.generation) : undefined;
       const draftArchive = archived ? { generation: archived.generation, baseGeneration: archived.baseGeneration,
@@ -1362,7 +1471,7 @@ export class AbsWorkspaceSyncService {
   }
 
   private async projection(document: BlocklyProjectDocument, contracts: AbsProjectionContracts, abi: string | null,
-    scope: AbsProjection['map']['scope'], assertCurrent: () => void, generation = crypto.randomUUID()) {
+    scope: AbsProjection['map']['scope'], assertCurrent: () => void, generation: string = crypto.randomUUID()) {
     const projection = await createAbsProjection(composeBlocklyPage(document, scope.pageId), { document, contracts,
       generation, baselineRef: absBaselineKey(generation), scope,
       savedAbiHash: abi === null ? null : await hashAbsText(absJson(JSON.parse(abi))) });

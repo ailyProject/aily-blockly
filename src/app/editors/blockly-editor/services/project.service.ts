@@ -20,6 +20,7 @@ import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave, ProjectSaveDataRuntime } from './prepared-project-save';
 import type { BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
+import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
 
 
 @Injectable({
@@ -221,10 +222,25 @@ export class _ProjectService {
   private absSaveHandler?: (path: string) => Promise<ProjectSaveOutcome>;
   private absSaveAsHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
   private absRecoveryCopyHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
+  private absLoadNormalizationHandler?: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>;
 
   setAbsSaveHandler(handler: (path: string) => Promise<ProjectSaveOutcome>): void { this.absSaveHandler = handler; }
   setAbsSaveAsHandler(handler: (path: string) => Promise<BlocklySaveAsSnapshot>): void { this.absSaveAsHandler = handler; }
   setAbsRecoveryCopyHandler(handler: (path: string) => Promise<BlocklySaveAsSnapshot>): void { this.absRecoveryCopyHandler = handler; }
+  setAbsLoadNormalizationHandler(handler: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>): void {
+    this.absLoadNormalizationHandler = handler;
+  }
+
+  publishLoadedNormalization(input: AbsLoadNormalizationInput): Promise<AbsLoadNormalizationOutcome> {
+    input.assertCurrent();
+    if (input.projectPath !== this.currentProjectPath || !this.absLoadNormalizationHandler) {
+      return Promise.resolve({ status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_UNAVAILABLE', recovery: {
+        tool: 'project_recover', arguments: { action: 'inspect', project: input.projectPath },
+        guidance: 'The original files were retained; inspect this exact project and use its verified preserving repair or independent fork. No load-normalization writer is available.',
+      } });
+    }
+    return this.absLoadNormalizationHandler(input);
+  }
 
   captureRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
     if (path !== this.currentProjectPath || !this.absRecoveryCopyHandler) {
