@@ -26,7 +26,7 @@ function writeRecord(file, record) {
 }
 function codeIdentity(execPath, appPath) {
   // Fixed first-party protocol boundary, not a dependency/source-tree scan.
-  const inputs = ['package.json', 'electron/main.js', 'electron/preload.js', 'renderer/index.html',
+  const inputs = ['package.json', 'electron/main.js', 'electron/preload.js', 'electron/os-integration-policy.js', 'renderer/index.html',
     'electron/project-repair-environment.js', 'electron/project-repair-lineage.js', 'electron/project-repair-commit.js', 'electron/project-repair-normalization.js',
     'electron/project-recovery-receipts.js', 'electron/project-repair-handoff.js', 'electron/project-repair-primary.js',
     'electron/project-file-access.js', 'electron/project-lock.js', 'electron/project-copy-admission.js', 'electron/project-copy-source.js', 'electron/child-script-path.js', 'child/scripts/native-file-lock.js',

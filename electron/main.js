@@ -26,7 +26,13 @@ const { routeLiveOperationProject } = require('./live-operation-project-routing'
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
+const { resolveOsIntegrationPolicy } = require('./os-integration-policy');
 const repairBootstrap = readRepairBootstrap(process.env.AILY_REPAIR_BOOTSTRAP, { execPath: process.execPath, appPath: app.getAppPath() });
+const osIntegrationPolicy = resolveOsIntegrationPolicy({
+  e2e: process.env.AILY_E2E === '1',
+  repairBootstrap: !!repairBootstrap,
+  platform: process.platform,
+});
 let repairEnvironmentController;
 let repairContinuationController;
 let repairBootstrapStarted = false;
@@ -428,7 +434,7 @@ if (shouldUseMultiInstance()) {
   }
 }
 
-for (const protocol of repairBootstrap ? [] : PROTOCOLS) {
+for (const protocol of osIntegrationPolicy.registerProtocols ? PROTOCOLS : []) {
   app.removeAsDefaultProtocolClient(protocol);
 }
 
@@ -473,7 +479,7 @@ if (serve) {
 }
 
 // 注册协议处理
-for (const protocol of repairBootstrap ? [] : PROTOCOLS) {
+for (const protocol of osIntegrationPolicy.registerProtocols ? PROTOCOLS : []) {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(protocol, process.execPath, createDevelopmentProtocolArgs({
@@ -3195,7 +3201,7 @@ app.on("ready", async () => {
   if (isDarwin && app.dock) {
     setupDarwinDockMenu();
   }
-  if (isWin32 && !repairBootstrap) {
+  if (osIntegrationPolicy.registerWindowsUserTasks) {
     setupWindowsJumpListTasks();
   }
 

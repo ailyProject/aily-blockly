@@ -2,6 +2,7 @@
   "name": "aily-blockly-tests",
   "private": true,
   "scripts": {
+    "test:os-integration-policy": "cd .. && node --test tests/electron/os-integration-policy.test.cjs",
     "test:subapp-owner-quit": "cd .. && node --test --test-concurrency=1 tests/electron/subapp-owner-supervisor.test.js tests/electron/subapp-lifecycle-rpc.test.js tests/electron/subapp-agent-owner-lifecycle.test.js tests/electron/application-quit.test.js tests/electron/child-tool-session-shutdown.test.js tests/electron/app-shutdown.test.js",
     "test:subapp-owner-ble": "cd .. && node tests/electron/subapp-owner-supervisor.ble.electron.cjs",
     "test:subapp-dock-i18n": "cd .. && node --test tests/subapp-dock-i18n.test.cjs tests/subapp-activity-titles.test.cjs tests/tool-i18n-generations.test.cjs",
