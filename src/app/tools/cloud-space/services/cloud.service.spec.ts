@@ -1,4 +1,4 @@
-import { of } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { CloudService } from './cloud.service';
 
 describe('CloudService Coder category isolation', () => {
@@ -107,5 +107,58 @@ describe('CloudService Coder category isolation', () => {
     } finally {
       Object.assign(window, previous);
     }
+  });
+});
+
+describe('CloudService downloaded ABI-only archives', () => {
+  let previous: any, service: CloudService, files: Map<string, any>, directories: Set<string>;
+  let includeMap: boolean;
+  const temp = '/isolated-cloud-download', extracted = temp + '/extracted';
+  const abi = '{"blocks":{"languageVersion":0,"blocks":[]}}';
+  const map = '{"generation":"foreign-source"}\r\n';
+
+  beforeEach(() => {
+    previous = { fs: window['fs'], path: window['path'], platform: window['platform'] };
+    files = new Map(); directories = new Set([temp]); includeMap = true;
+    window['path'] = { join: (...parts: string[]) => parts.join('/') };
+    window['platform'] = { isWindows: false };
+    window['fs'] = {
+      existsSync: path => files.has(path) || directories.has(path),
+      lstatSync: path => ({ _isFile: files.has(path), _isDirectory: directories.has(path), _isSymbolicLink: false }),
+      statSync: path => ({ size: files.get(path)?.length ?? 0 }),
+      readFileSync: path => files.get(path),
+      writeFileSync: (path, content) => files.set(path, content),
+      readDirSync: path => [...files.keys()].filter(name => name.startsWith(path + '/'))
+        .map(name => ({ name: name.slice(path.length + 1), _isDirectory: false })),
+      mkdirSync: path => directories.add(path),
+      renameSync: (source, target) => { files.set(target, files.get(source)); files.delete(source); },
+      unlinkSync: path => files.delete(path),
+    };
+    const command = { run: jasmine.createSpy('extract').and.callFake(() => {
+      files.set(extracted + '/package.json', '{"name":"downloaded"}');
+      files.set(extracted + '/project.abi', abi);
+      if (includeMap) files.set(extracted + '/project.abs.map.json', map);
+      return of({ type: 'close', code: 0 });
+    }) };
+    service = new CloudService({} as any, command as any, { getZa7Path: async () => '7zz' } as any, {} as any, {} as any);
+    spyOn<any>(service, 'createTempDirectory').and.resolveTo(temp);
+    spyOn(service, 'downloadProject').and.returnValue(of(new Blob(['archive'])));
+  });
+  afterEach(() => Object.assign(window, previous));
+
+  it('preserves a legacy map before returning the downloaded project to either cloud import caller', async () => {
+    expect(await firstValueFrom(service.openProjectArchive('cloud-id'))).toBe(extracted);
+    expect(service.downloadProject).toHaveBeenCalledOnceWith('cloud-id');
+    expect(files.get(extracted + '/project.abi')).toBe(abi);
+    expect(files.has(extracted + '/project.abs.map.json')).toBeFalse();
+    const backups = [...files.keys()].filter(name => name.includes('/.cloud-import-backup/'));
+    expect(backups.length).toBe(1); expect(files.get(backups[0])).toBe(map);
+  });
+
+  it('returns a current ABI-only cloud package without creating recovery files', async () => {
+    includeMap = false;
+    expect(await firstValueFrom(service.openProjectArchive('new-cloud-id'))).toBe(extracted);
+    expect(files.get(extracted + '/project.abi')).toBe(abi);
+    expect([...directories].some(name => name.includes('.cloud-import-backup'))).toBeFalse();
   });
 });

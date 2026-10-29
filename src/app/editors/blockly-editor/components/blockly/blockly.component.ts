@@ -426,6 +426,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     theme: DarkTheme,
     renderer: 'thrasos',
     trashcan: true,
+    // 始终加载音效资源，运行时用 setMuted 切换，保证静音启动后仍能直接开启。
+    sounds: true,
     grid: {
       spacing: 20, // 网格间距为20像素
       length: 2, // 网格点的大小
@@ -493,10 +495,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         this.updateFlyoutPinButton();
       });
 
-    // 订阅配置重载，实时应用 flyoutAutoClose 等 blockly 配置
+    // 订阅配置重载，实时应用 Blockly 操作配置。
     this.configService.configReloaded$
       .pipe(takeUntil(this.destroy$))
-      .subscribe(() => this.applyFlyoutAutoClose());
+      .subscribe(() => {
+        this.applyFlyoutAutoClose();
+        this.applyBlocklySounds();
+      });
 
     // 监听主题变化，动态切换 Blockly 主题与网格颜色
     effect(() => {
@@ -839,6 +844,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       applyWindowsBlocklyScrollbarThickness(this.platformService.isWindows());
       this.ngZone.runOutsideAngular(() => {
         this.workspace = Blockly.inject(this.workspacePaneComponent.blocklyHostElement, this.options);
+        this.applyBlocklySounds();
         this.releasePointerBoundary = bindBlocklyPointerBoundary(this.workspace);
         this.releaseDragRenderBatch = batchBlocklyDragRenders(this.workspace);
         this.workspace.setViewportRendering(this.configData.blockly.viewportRendering !== false);
@@ -1282,6 +1288,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private blocklyThemeForMode(mode: ThemeMode) {
     return mode === 'light' ? LightTheme : DarkTheme;
+  }
+
+  /** 操作音效不影响音频素材预览或工程中的声音。 */
+  private applyBlocklySounds(): void {
+    const muted = this.configData?.blockly?.sounds === false;
+    this.workspace?.getAudioManager().setMuted(muted);
+    this.workspace?.getFlyout()?.getWorkspace().getAudioManager().setMuted(muted);
   }
 
   /** 根据配置应用 flyout 自动关闭，支持初始化及配置重载时实时生效 */

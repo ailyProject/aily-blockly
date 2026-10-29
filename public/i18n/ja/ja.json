@@ -380,6 +380,7 @@
             "UI_THEME": "UIテーマ",
             "BLOCKLY_THEME": "Blocklyテーマ",
             "BLOCKLY_MINIMAP": "Blocklyミニマップ",
+            "BLOCKLY_SOUNDS": "操作音",
             "FLYOUT_AUTO_CLOSE": "ツールボックスを自動的に閉じる",
             "COMPILATION_OPTIONS": "コンパイルオプション",
             "REGION": "サービスリージョン",

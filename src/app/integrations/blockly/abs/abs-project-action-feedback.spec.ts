@@ -1,4 +1,5 @@
 import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { NgZone } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ActionService } from '@core/app-shell/public-api';
 import { ProjectService } from '@domain/project/public-api';
@@ -17,7 +18,7 @@ describe('real unsaved-state Action feedback boundary', () => {
     project.hasUnsavedChanges = () => adapter.hasUnsavedBlocklyChanges();
     const dialog = new Subject<any>();
     const view: any = Object.assign(Object.create(HeaderComponent.prototype), {
-      projectService: project, message: { error: jasmine.createSpy('error') },
+      projectService: project, ngZone: new NgZone({}), message: { error: jasmine.createSpy('error') },
       uiService: { closePartitionManagerBeforeQuit: jasmine.createSpy('partitionClose').and.resolveTo(true) },
       modal: { create: jasmine.createSpy('dialog').and.returnValue({ afterClose: dialog }) },
     });
@@ -88,6 +89,54 @@ describe('real unsaved-state Action feedback boundary', () => {
       expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('native-close', true);
       stop();
     } finally { window['iWindow'] = original; }
+  }));
+
+  it('creates the dialog inside Angular even when requested from an external callback', fakeAsync(() => {
+    const { actions, view, dialog, confirm } = fixture();
+    const stop = actions.listen('project-check-unsaved', () => { throw new Error('missing manifest'); });
+    view.modal.create.and.callFake(() => {
+      expect(NgZone.isInAngularZone()).toBeTrue();
+      return { afterClose: dialog };
+    });
+    const settled = jasmine.createSpy('settled');
+    view.ngZone.runOutsideAngular(() => confirm().then(settled)); flushMicrotasks();
+    dialog.next({ result: 'cancel' }); flushMicrotasks();
+    expect(settled).toHaveBeenCalledOnceWith(false);
+    expect(view.unsaveDialogOpen).toBeFalse();
+    expect(view.projectService.discardAllLibraryChanges).not.toHaveBeenCalled();
+    stop();
+  }));
+
+  for (const replaced of [false, true]) it(`native skip survives failed dependency recovery and checks ownership (replaced=${replaced})`, fakeAsync(() => {
+    const { actions, view, project, dialog } = fixture();
+    const original = window['iWindow'];
+    window['iWindow'] = { confirmClose: jasmine.createSpy('confirm') };
+    spyOn(console, 'warn');
+    const stop = actions.listen('project-check-unsaved', () => { throw new Error('missing manifest'); });
+    project.discardAllLibraryChanges.and.callFake(async () => {
+      if (replaced) project.currentProjectPath = '/replacement';
+      throw new Error('ENOENT package.json');
+    });
+    try {
+      view.confirmWindowClose({ requestId: 'native-close' }); flushMicrotasks();
+      dialog.next({ result: 'continue' }); flushMicrotasks();
+      expect(project.discardAllLibraryChanges).toHaveBeenCalledOnceWith({ quitting: true });
+      expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('native-close', !replaced);
+      expect(view.message.error).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalled();
+    } finally { stop(); window['iWindow'] = original; }
+  }));
+
+  it('still blocks a project-only close when dependency recovery fails', fakeAsync(() => {
+    const { actions, view, project, dialog, confirm } = fixture();
+    const stop = actions.listen('project-check-unsaved', () => { throw new Error('missing manifest'); });
+    project.discardAllLibraryChanges.and.rejectWith(new Error('ENOENT package.json'));
+    const settled = jasmine.createSpy('settled'); confirm().then(settled); flushMicrotasks();
+    dialog.next({ result: 'continue' }); flushMicrotasks();
+    expect(settled).toHaveBeenCalledOnceWith(false);
+    expect(project.discardAllLibraryChanges).toHaveBeenCalledOnceWith({ quitting: false });
+    expect(view.message.error).toHaveBeenCalledWith('ENOENT package.json');
+    stop();
   }));
 
   it('accepts an explicit clean reply without a save dialog', fakeAsync(() => {

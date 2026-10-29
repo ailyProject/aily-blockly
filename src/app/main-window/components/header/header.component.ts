@@ -1597,7 +1597,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     let allowed = false;
     try {
       if (await this.uiService.closePartitionManagerBeforeQuit()) {
-        allowed = await this.checkUnsavedChanges('close');
+        allowed = await this.checkUnsavedChanges('close', { quitting: true });
       }
     }
     catch (error) { this.message.error(`无法确认保存状态：${error instanceof Error ? error.message : String(error)}`); }
@@ -1749,7 +1749,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
   }
 
-  async checkUnsavedChanges(action: 'close' | 'open' | 'new'): Promise<boolean> {
+  async checkUnsavedChanges(action: 'close' | 'open' | 'new', { quitting = false }: { quitting?: boolean } = {}): Promise<boolean> {
     const path = this.projectService.currentProjectPath;
     // Coder activation retains each iframe, including its unsaved editor buffers.
     if (action !== 'close' && this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return true;
@@ -1771,7 +1771,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
       return false;
     }
 
-    return new Promise<boolean>((resolve) => {
+    // Electron IPC callbacks and their async replies can arrive outside Angular.
+    // Attach the modal and its animation/close listeners in the UI zone.
+    return this.ngZone.run(() => new Promise<boolean>((resolve) => {
       // 标记弹窗已打开
       this.unsaveDialogOpen = true;
 
@@ -1823,11 +1825,18 @@ export class HeaderComponent implements OnInit, OnDestroy {
             break;
           case 'continue':
             try {
-              await this.projectService.discardAllLibraryChanges();
+              await this.projectService.discardAllLibraryChanges({ quitting });
               resolve(unchanged());
             } catch (error) {
-              this.message.error(error instanceof Error ? error.message : String(error));
-              resolve(false);
+              if (quitting) {
+                // The user explicitly chose to discard. A damaged project must
+                // not veto application shutdown by failing dependency recovery.
+                console.warn('退出时未能恢复全部库依赖：', error);
+                resolve(unchanged());
+              } else {
+                this.message.error(error instanceof Error ? error.message : String(error));
+                resolve(false);
+              }
             }
             break;
           case 'cancel':
@@ -1837,7 +1846,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
             break;
         }
       });
-    });
+    }));
   }
 
   showInRouter(menuItem: IMenuItem) {

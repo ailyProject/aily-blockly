@@ -82,6 +82,7 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(command).toContain('"-x!sketch/target-compile.json"');
     expect(command).toContain('"-x!sketch/compile-preprocess-*.json"');
     expect(command).toContain('"-xr!.build"');
+    expect(command).toContain('"-x!project.abs.map.json"');
   });
 
   it('treats a manifest-declared Coder project with a leftover invalid ABI as Coder', async () => {
@@ -106,14 +107,14 @@ describe('CloudSpace project packaging and sync mode isolation', () => {
     expect(component.cmdService.runAsync).not.toHaveBeenCalled();
   });
 
-  it('retains Blockly ABI/ABS resource validation and the original archive command', async () => {
+  it('validates Blockly resources while excluding both local ABS files from the archive', async () => {
     useBlockly();
     files.set(`${root}/project.abs`, 'field: "@json:{\\"resource\\":1}"');
     expect(await component.packageProject(root)).toBe(`${root}/project.7z`);
     expect(flush).toHaveBeenCalledTimes(1);
     expect(validate).toHaveBeenCalledOnceWith([{ blocks: {} }, { resource: 1 }]);
     expect(component.cmdService.runAsync).toHaveBeenCalledOnceWith(
-      `7zz a -t7z -mx=9 "${root}/project.7z" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs"`,
+      `7zz a -t7z -mx=9 "${root}/project.7z" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`,
       root, false,
     );
   });

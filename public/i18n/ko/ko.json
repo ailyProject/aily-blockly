@@ -380,6 +380,7 @@
             "UI_THEME": "인터페이스 테마",
             "BLOCKLY_THEME": "Blockly 테마",
             "BLOCKLY_MINIMAP": "Blockly 미니맵",
+            "BLOCKLY_SOUNDS": "조작 효과음",
             "FLYOUT_AUTO_CLOSE": "도구 상자 자동 닫기",
             "COMPILATION_OPTIONS": "컴파일 옵션",
             "REGION": "서비스 지역",
