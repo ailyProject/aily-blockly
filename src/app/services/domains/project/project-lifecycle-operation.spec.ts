@@ -3,6 +3,42 @@ import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
+describe('library discard before application quit', () => {
+  function fixture() {
+    const service: any = Object.create(ProjectService.prototype);
+    Object.defineProperty(service, 'currentProjectPath', { value: '/broken' });
+    Object.defineProperty(service, 'coderProjects', { value: [{ path: '/healthy' }, { path: '/healthy' }] });
+    service.libraryChanges = new Map([['/broken', {}]]);
+    service.normalizeProjectPath = (path: string) => path;
+    service.getProjectMode = () => 'blockly';
+    service.getBlocklyProjectLoadStatus = () => ({ ready: true });
+    service.rebuildBlocklyRuntimeAfterLibraryChange = jasmine.createSpy('rebuild').and.resolveTo();
+    service.discardLibraryChanges = jasmine.createSpy('discard').and.callFake(async (path: string) => {
+      if (path === '/broken') throw new Error('ENOENT package.json');
+    });
+    return service;
+  }
+  it('attempts every open project once and reports failures to the quit decision', async () => {
+    const service = fixture();
+    await expectAsync(service.discardAllLibraryChanges({ quitting: true })).toBeRejectedWithError(AggregateError);
+    expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken'], ['/healthy']]);
+    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+  });
+  it('does not rebuild the editor that is about to quit after successful recovery', async () => {
+    const service = fixture(); service.discardLibraryChanges.and.resolveTo();
+    await service.discardAllLibraryChanges({ quitting: true });
+    expect(service.discardLibraryChanges).toHaveBeenCalledTimes(2);
+    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+    await service.discardAllLibraryChanges();
+    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).toHaveBeenCalledTimes(1);
+  });
+  it('keeps project switching strict when dependency recovery fails', async () => {
+    const service = fixture();
+    await expectAsync(service.discardAllLibraryChanges()).toBeRejectedWithError('ENOENT package.json');
+    expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken']]);
+  });
+});
+
 describe('dirty checks after a rejected Blockly open', () => {
   function fixture(mode: string | null, status: { ready: boolean; error?: string }) {
     const service: any = Object.create(ProjectService.prototype);

@@ -1,4 +1,5 @@
 import { BehaviorSubject, Subject } from 'rxjs';
+import { NgZone } from '@angular/core';
 import { ProjectService } from '@domain/project/public-api';
 import { HeaderComponent } from '../../../main-window/components/header/header.component';
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
@@ -26,6 +27,7 @@ describe('save-before-leaving confirmation', () => {
         save: jasmine.createSpy('save').and.resolveTo({ success: true }) });
       const view: any = Object.create(entry === 'header' ? HeaderComponent.prototype : ProjectNewComponent.prototype);
       view.projectService = project;
+      view.ngZone = new NgZone({});
       view.isOnEditorRoute = () => true;
       view.message = { error: jasmine.createSpy('error') };
       view.modal = view.nzModal = { create: jasmine.createSpy('dialog').and.returnValue({ afterClose: dialog }) };

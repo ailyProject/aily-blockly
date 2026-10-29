@@ -247,12 +247,19 @@ export class ProjectService {
     this.libraryChangesChanged?.next();
   }
 
-  async discardAllLibraryChanges(): Promise<void> {
+  async discardAllLibraryChanges({ quitting = false }: { quitting?: boolean } = {}): Promise<void> {
     const refresh = this.libraryChanges.has(this.normalizeProjectPath(this.currentProjectPath));
+    const errors: unknown[] = [];
     for (const path of new Set([this.currentProjectPath, ...this.coderProjects.map(project => project.path)].filter(Boolean))) {
-      await this.discardLibraryChanges(path);
+      try { await this.discardLibraryChanges(path); }
+      catch (error) {
+        if (!quitting) throw error;
+        // Still restore other open projects when one manifest is unavailable.
+        errors.push(error);
+      }
     }
-    if (refresh && this.getProjectMode(this.currentProjectPath) === 'blockly'
+    if (errors.length) throw new AggregateError(errors, '退出时部分项目的库依赖未能恢复');
+    if (!quitting && refresh && this.getProjectMode(this.currentProjectPath) === 'blockly'
       && this.getBlocklyProjectLoadStatus(this.currentProjectPath).ready) await this.rebuildBlocklyRuntimeAfterLibraryChange();
   }
 
