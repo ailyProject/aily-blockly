@@ -50,7 +50,10 @@ function captureProjectSources(config) {
     // Product-owned logs and history objects change while Agent/build work runs;
     // they are derived metadata, not compiler sources. All other project paths
     // remain guarded, including arbitrary root headers and Coder local libraries.
-    const excluded = relative => ['.git', '.temp', '.build', '.log', '.workspace-history', 'node_modules', '.aily/build'].some(name => relative === name || relative.startsWith(name + '/'))
+    // The permanent native lock anchor is coordination, not source. Reading it
+    // through a second Windows handle conflicts with our own held byte lock.
+    const excluded = relative => relative === '.aily/build-workspace.guard'
+        || ['.git', '.temp', '.build', '.log', '.workspace-history', 'node_modules', '.aily/build'].some(name => relative === name || relative.startsWith(name + '/'))
         || (coder && /^sketch\/(?:preprocess\.json|target-compile\.json|library-cache\.json|compile-preprocess-[^/]+\.json)$/.test(relative));
     const visit = (filename, relative, depth = 0, exclusions = true) => {
         if (exclusions && excluded(relative)) return;

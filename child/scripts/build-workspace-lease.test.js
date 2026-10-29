@@ -119,12 +119,30 @@ test('real competing processes never acquire the same workspace together', async
 
 test('an exited owner is not automatically reclaimed while untracked compiler descendants could survive', t => {
     const f = fixture(t);
-    const result = spawnSync(process.execPath, ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');process.exit(0);`, modulePath, f.project],
+    const result = spawnSync(process.execPath, ['-e', `const owner=require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');owner.builderEnvironment('compile');process.exit(0);`, modulePath, f.project],
         { windowsHide: true, encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, result.stderr);
     const bytes = fs.readFileSync(f.lock);
+    assert.equal(JSON.parse(bytes).delegated, true);
     assert.throws(() => acquireBuildWorkspace(f.project, 'compile'), /BUILD_WORKSPACE_RECOVERY_REQUIRED/);
     assert.deepEqual(fs.readFileSync(f.lock), bytes);
+});
+
+test('an exited native owner without a persisted delegation can be reclaimed', t => {
+    const f = fixture(t);
+    const result = spawnSync(process.execPath, ['-e', `require(process.argv[1]).acquireBuildWorkspace(process.argv[2],'compile');process.exit(0);`, modulePath, f.project],
+        { windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.status, 0, result.stderr);
+    const previous = JSON.parse(fs.readFileSync(f.lock));
+    assert.equal(previous.nativeLeaseVersion, 1);
+    assert.equal(previous.delegationVersion, 1);
+    assert.equal(previous.delegated, false);
+    const owner = acquireBuildWorkspace(f.project, 'compile');
+    try {
+        owner.assertOwned();
+        assert.notEqual(owner.buildId, previous.token);
+    } finally { owner.release(); }
+    assert.equal(fs.existsSync(f.lock), false);
 });
 
 test('confirmed cancellation only releases the marker belonging to that registered supervisor', t => {

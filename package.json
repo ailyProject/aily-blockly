@@ -208,6 +208,7 @@
     "dragselect": "^2.7.4",
     "esptool-js": "^0.6.0",
     "fancy-ansi": "^0.1.3",
+    "fs-native-extensions": "1.5.1",
     "iconv-lite": "^0.7.0",
     "install": "^0.13.0",
     "js-base64": "^3.7.8",
