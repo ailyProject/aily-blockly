@@ -5,6 +5,7 @@ import { AbsAbiBlock, AbsAbiWorkspace, AbsSyntaxNode, AbsSyncError } from './abs
 import { hashAbsText, indexAbsSyntax } from './abs-identity-map';
 import { prepareAbsVariableCreations, AbsVariableCreation } from './abs-variable-intents';
 import { absModelRecovery, availableAbsModelName } from './abs-model-guidance';
+import { ordinaryDeclarationNameProblem } from './abs-declaration-name';
 
 /** The static planner and native bootstrap must derive model IDs from the same document identity. */
 export async function absDeclarationRequestId(generation: string, source: string): Promise<string> {
@@ -43,9 +44,13 @@ export function prepareAbsDeclarationIntents(
     const owner = head.parent ? byPath.get(head.parent) : undefined;
     const before = previous(node), token = node.fields[effect.nameField];
     const name = token?.value ?? before?.fields?.[effect.nameField];
-    if (token?.reference || typeof name !== 'string' || !before && !/^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(name)) {
+    if (token?.reference || typeof name !== 'string') {
       fail('ABS_DECLARATION_INVALID', 'A new ordinary declaration requires an explicit identifier name as text.');
     }
+    const nameProblem = !before && ordinaryDeclarationNameProblem(name as string);
+    if (nameProblem) throw new AbsSyncError('ABS_DECLARATION_INVALID',
+      'A new ordinary declaration requires a non-keyword C++ identifier (Unicode letters are supported).', node, [],
+      { blockType: node.type, field: effect.nameField, phase: 'declaration-planning', reason: nameProblem });
     if (before && name !== before.fields?.[effect.nameField]) {
       fail('ABS_DECLARATION_RENAME_REQUIRES_HOST', 'Changing a declaration name requires an explicit model rename, not another model.');
     }
@@ -59,12 +64,13 @@ export function prepareAbsDeclarationIntents(
     const key = (name as string).toLowerCase();
     if (declarations.has(key)) fail('ABS_DECLARATION_DUPLICATE', `Duplicate storage declaration ${JSON.stringify(name)}.`);
     declarations.add(key);
-    const models = variables.filter(model => typeof model.name === 'string' && model.name.toLowerCase() === key);
-    if (models.length) {
-      if (models.length !== 1 || models[0].name !== name || (models[0].type ?? '') !== effect.nativeType) {
-        const reason = models.some(model => (model.type ?? '') !== effect.nativeType) ? 'type-conflict' : 'identity-conflict';
+    const named = variables.filter(model => typeof model.name === 'string' && model.name.toLowerCase() === key);
+    const models = named.filter(model => (model.type ?? '') === effect.nativeType);
+    if (named.length) {
+      if (models.length !== 1 || models[0].name !== name) {
+        const reason = !models.length ? 'type-conflict' : 'identity-conflict';
         throw new AbsSyncError('ABS_DECLARATION_MODEL_CONFLICT', `Declaration ${JSON.stringify(name)} conflicts with an existing native model.`, node, [], {
-          blockType: node.type, modelName: name as string, expectedTypes: [effect.nativeType], actualTypes: models.map(model => model.type ?? ''),
+          blockType: node.type, modelName: name as string, expectedTypes: [effect.nativeType], actualTypes: named.map(model => model.type ?? ''),
           reason, hint: absModelRecovery(reason), availableName: availableAbsModelName(name as string, variables.map(model => model.name)),
         });
       }

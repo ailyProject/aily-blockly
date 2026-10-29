@@ -1,5 +1,5 @@
 import { captureProjectDiskRecovery, inspectProjectDiskRecovery } from '@domain/project/public-api';
-import { inspectFailedProjectLoad } from './project-load-recovery';
+import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
 describe('failed-load recovery source isolation', () => {
@@ -154,5 +154,36 @@ describe('failed-load recovery source isolation', () => {
       const blocked = await bridge.execute({ operation: 'abs_recovery', params: request });
       expect(blocked.reason).toBe('abs_apply_in_progress');
     } finally { window['path'] = priorPath; }
+  });
+
+  for (const action of ['open', 'reload'] as const) for (const throws of [false, true]) {
+    it(`routes ${action} ${throws ? 'exception' : 'rejection'} through preserving inspection without offline ABI edits`, async () => {
+      const before = [...files];
+      const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
+      bridge.configService = { init: async () => {}, getPreferredChatAgentRuntimeMode: () => 'blockly' };
+      bridge.electronService = { exists: () => true, pathJoin: (...parts) => parts.join('/') };
+      const open = jasmine.createSpy('open').and.callFake(async () => {
+        if (throws) throw new Error('Specific library load failure');
+        return false;
+      });
+      const close = jasmine.createSpy('close');
+      bridge.projectService = { currentProjectPath: source, getProjectMode: () => 'blockly',
+        projectOpen: open, close, getBlocklyProjectLoadStatus: () => loadStatus };
+      const result = await (action === 'open' ? bridge.executeProjectOpen(source) : bridge.executeProjectReload());
+      expect(result.ok).toBeFalse(); expect(result.reason).toBe('project_load_failed');
+      expect(result.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'inspect' } });
+      expect(result.guidance).toContain('Do not save a partial canvas');
+      expect(result.guidance).not.toMatch(/离线修复|offline repair/);
+      expect(close).not.toHaveBeenCalled(); expect(open).toHaveBeenCalledTimes(1);
+      expect([...files]).toEqual(before); expect(writes).toEqual([]);
+    });
+  }
+
+  it('does not mistake a pending/cancelled navigation or Coder failure for Blockly recovery authority', () => {
+    for (const status of [{ ready: false, state: 'loading' }, { ready: false, state: 'closed' }, { ready: true, state: 'loaded' }]) {
+      expect(projectLoadFailureGuidance(source, status).nextAction).toEqual({ tool: 'app_info', input: {} });
+    }
+    expect(projectLoadFailureGuidance(source, loadStatus, false).nextAction).toEqual({ tool: 'app_info', input: {} });
+    expect(writes).toEqual([]);
   });
 });

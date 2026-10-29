@@ -30,7 +30,7 @@ import { runProjectBuild } from '../../../integrations/blockly/project-build-ope
 import { ProjectBuildReceipts, readProjectBuildRequest } from './project-build-receipts';
 import { forkClosedProject, forkProject } from './project-fork-operation';
 import { ProjectForkReceipts, readProjectForkRequest } from './project-fork-receipts';
-import { inspectFailedProjectLoad } from './project-load-recovery';
+import { inspectFailedProjectLoad, projectLoadFailureGuidance } from './project-load-recovery';
 import { projectViewRecoveryFailure } from './project-view-recovery';
 import { importProjectMedia } from '../../../integrations/blockly/project-media-import';
 import { getBoardConfig, setBoardConfig } from '../../../integrations/blockly/board-config-operation';
@@ -1302,6 +1302,7 @@ export class BlocklyLiveOperationBridgeService {
           reason: loadStatus.error ? 'project_load_failed' : 'project_open_rejected',
           message: loadStatus.error || `项目未完成加载（state=${loadStatus.state}）`,
           loadStatus,
+          ...projectLoadFailureGuidance(requestedProject, loadStatus, developmentMode === 'blockly'),
         };
       }
       return {
@@ -1327,7 +1328,7 @@ export class BlocklyLiveOperationBridgeService {
         reason: 'project_load_failed',
         message: error instanceof Error ? error.message : String(error),
         loadStatus,
-        guidance: '请先关闭项目，在离线状态修复 project.abs/project.abi 或依赖，再重新打开；不要在失败的半初始化工作区继续保存或导入。',
+        ...projectLoadFailureGuidance(requestedProject, loadStatus, developmentMode === 'blockly'),
       };
     }
   }
@@ -1354,7 +1355,7 @@ export class BlocklyLiveOperationBridgeService {
       operation: 'project_close',
       project: closed === true ? null : projectPath,
       ...(closed === true ? {} : { reason: 'project_close_rejected' }),
-      message: closed === true ? '项目已关闭，可安全进行离线修复' : '项目关闭被拒绝',
+      message: closed === true ? '项目已关闭' : '项目关闭被拒绝',
       previousLoadStatus: loadStatus,
     };
   }
@@ -1384,6 +1385,7 @@ export class BlocklyLiveOperationBridgeService {
           reason: loadStatus.error ? 'project_load_failed' : 'project_reload_rejected',
           message: loadStatus.error || `项目从磁盘重新加载失败（state=${loadStatus.state}）`,
           loadStatus,
+          ...projectLoadFailureGuidance(projectPath, loadStatus, this.projectService.getProjectMode(projectPath) === 'blockly'),
         };
       }
       return {
@@ -1402,7 +1404,7 @@ export class BlocklyLiveOperationBridgeService {
         reason: 'project_load_failed',
         message: error instanceof Error ? error.message : String(error),
         loadStatus,
-        guidance: '请关闭项目后离线修复，再重新打开；不要在失败的半初始化工作区继续保存或重复导入。',
+        ...projectLoadFailureGuidance(projectPath, loadStatus, this.projectService.getProjectMode(projectPath) === 'blockly'),
       };
     }
   }

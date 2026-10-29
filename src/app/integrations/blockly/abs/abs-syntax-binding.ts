@@ -52,6 +52,8 @@ export function* walkAbsRawSyntax(roots: readonly AbsRawNode[], disabled = false
  */
 export interface AbsInstanceBinding extends AbsSyntaxOptions {
   field?: (name: string, token: AbsFieldToken) => void;
+  /** Field parameters are complete; settle selectors before statement sections. */
+  fieldsComplete?: () => void;
   input?: (name: string, child: AbsSyntaxNode | null) => void;
 }
 
@@ -143,6 +145,7 @@ export function bindAbsSyntax(raw: readonly AbsRawNode[], options: AbsSyntaxOpti
         binding?.field?.(name, parameter.token!);
       }
     }
+    binding?.fieldsComplete?.();
     for (const section of raw.sections) {
       if (section.name === undefined) {
         const slots = order()?.filter(argument => argument.kind === 'statementInput');

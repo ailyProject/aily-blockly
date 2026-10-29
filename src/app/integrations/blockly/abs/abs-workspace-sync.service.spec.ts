@@ -1203,6 +1203,77 @@ describe('v2 actual workspace generation coordinator', () => {
     return replay;
   };
 
+  it('keeps explicit initializer evidence identical across reconciliation binds and reuses only committed model IDs', async () => {
+    const replay = enableNative();
+    const definition = { type: 'native_selected_init', message0: '%1 %2', args0: [
+      { type: 'field_variable', name: 'OWNER', variableTypes: ['Sensor'], defaultType: 'Sensor' },
+      { type: 'field_variable', name: 'INPUT', variableTypes: ['Sample'], defaultType: 'Sample' },
+    ], previousStatement: null, nextStatement: null };
+    declare(definition);
+    replay.steps.push({ kind: 'definitions', definitions: [definition] }, { kind: 'script', label: 'explicit-selected-models', source: `
+      ${modelSource}
+      Arduino.modelDeclarations = { native_selected_init: { version: 1, scope: 'workspace', fields: { OWNER: 'Sensor', INPUT: 'Sample' } } };
+      Arduino.forBlock.native_selected_init = block => {
+        registerVariableToBlockly(block.getField('OWNER').getVariable().name, 'Sensor');
+        registerVariableToBlockly(block.getField('INPUT').getVariable().name, 'Sample');
+        return '';
+      };
+    ` });
+    const validate = async (source: string) => {
+      const committed = (await new AbsBaselineStore(port, scope).loadCommitted())!;
+      const { generationEvidence } = await import('./abs-generation-protocol');
+      return service.validateGeneration(source, { version: 2, requestId: crypto.randomUUID(),
+        base: (await generationEvidence(committed, disk.get('project.abi') ?? null)).binding,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } });
+    };
+    const base = await baseline(), before = absJson(nativeState()), files = [...disk];
+    const source = base.source + '\nnative_selected_init($sensor, $reading)';
+    const validation = await validate(source);
+    expect(validation.preparedModels!.map(model => model.name).sort()).toEqual(['reading', 'sensor']);
+    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect((await service.applyGeneration(source, base.generation, {}, validation)).publication.status).toBe('COMMITTED');
+    const committedModels = nativeState()['variables'] as Array<{ id: string; name: string; type: string }>;
+    expect(new Set(committedModels.map(model => model.id)))
+      .toEqual(new Set(validation.preparedModels!.map(model => model.id)));
+    editor.restoreProjectWorkspaceSnapshot(JSON.parse(disk.get('project.abi')!));
+    expect(nativeState()['variables']).toEqual(committedModels);
+    const second = await baseline(), next = second.source + '\nnative_selected_init($second, $reading)';
+    const more = await validate(next);
+    expect(more.preparedModels!.map(model => model.name)).toEqual(['second']);
+    expect((await service.applyGeneration(next, second.generation, {}, more)).publication.status).toBe('COMMITTED');
+    for (const model of committedModels) expect(nativeState()['variables']).toContain(jasmine.objectContaining(model));
+    expect(roots().isDeletable()).toBeFalse(); expect(roots().data).toBe('opaque');
+  });
+
+  for (const reverse of [false, true]) it('reuses typed identities internally without presenting them as fresh receipt allocations: ' + reverse, async () => {
+    enableObjectModels();
+    const variables = [{ id: 'existing-func', name: 'sensor', type: 'FUNC' },
+      { id: 'existing-sensor', name: 'sensor', type: 'Sensor' },
+      { id: 'existing-other', name: 'sensor', type: 'Other' },
+      { id: 'shared-page-model', name: 'shared', type: 'Shared' }];
+    if (reverse) variables.reverse();
+    for (const model of variables) editor.workspace.getVariableMap().createVariable(model.name, model.type, model.id);
+    const base = await baseline(), before = absJson(nativeState()), files = [...disk];
+    const source = base.source + '\ntest_object_read($sensor)\ntest_object_init("sensor", Sensor)\ntest_object_init("sensor", Other)';
+    const committed = (await new AbsBaselineStore(port, scope).loadCommitted())!;
+    const { generationEvidence } = await import('./abs-generation-protocol');
+    const request = { version: 2 as const, requestId: crypto.randomUUID(), base: (await generationEvidence(committed, disk.get('project.abi') ?? null)).binding,
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } };
+    const validation = await service.validateGeneration(source, request);
+    expect(validation.preparedModels).toBeUndefined(); expect(validation.preparedVariables).toBeUndefined();
+    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    const forged = { ...validation, preparedModels: [{ start: source.indexOf('test_object_init'), blockType: 'test_object_init',
+      id: 'existing-sensor', name: 'sensor', type: 'Sensor' }] };
+    await expectAsync(service.applyGeneration(source, base.generation, {}, forged))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CHANGED' }));
+    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect((await service.applyGeneration(source, base.generation, {}, validation)).publication.status).toBe('COMMITTED');
+    expect(nativeState()['variables']).toEqual(variables);
+    expect(JSON.parse(disk.get('project.abi')!).sharedModel.variables).toEqual(variables);
+    expect(roots().isDeletable()).toBeFalse(); expect(roots().data).toBe('opaque');
+    expect(JSON.parse(disk.get('project.abi')!).pages.find(page => page.id === 'other').custom).toEqual({ preserved: true });
+  });
+
   it('validates/applies native initializer models atomically, verifies receipt replay and preserves identities after reopen', async () => {
     enableObjectModels(); const base = await baseline(), before = absJson(nativeState()), files = [...disk];
     const source = base.source + '\ntest_object_read($sensor)\ntest_object_init("sensor", Sensor)';

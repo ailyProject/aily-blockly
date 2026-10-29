@@ -1,6 +1,6 @@
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { CompileService } from './compile.service';
-import { NpmService } from '../dependencies/npm.service';
+import { NpmService } from '../dependencies/public-api';
 import { of, Subject } from 'rxjs';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 

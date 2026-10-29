@@ -2,6 +2,7 @@ import type * as Blockly from 'blockly';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import type { AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
 import { nativeLoopVariable } from './blockly-native-loop-model';
+import { captureNativeInitializerContracts } from './blockly-native-model-initializers';
 
 /** Libraries expose the same registration protocol globally or on Arduino. */
 export function hasNativeModelRegistrationHelper(realm: any, generator: Blockly.Generator): boolean {
@@ -56,11 +57,22 @@ export function withNativeModelRegistrations<T>(realm: any, generator: Blockly.G
 /** Verify actual complete generation reproduces every prepared producer effect.
  * The ABI already owns all identities; registration must not create more models. */
 export function verifyNativeModelRegistrations<T>(realm: any, generator: Blockly.Generator,
-  expected: Array<AbsNativeModelDeclaration & { ownerId: string }>, action: () => T): T {
+  expected: Array<AbsNativeModelDeclaration & { ownerId: string }>, workspace: Blockly.Workspace, action: () => T): T {
   const seen = new Set<string>();
+  const active = workspace.getAllBlocks(false).filter(block => {
+    for (let current: Blockly.Block | null = block; current; current = current.getSurroundParent()) if (!current.isEnabled()) return false;
+    return true;
+  });
+  const contracts = captureNativeInitializerContracts(generator, active.map(block => block.type));
   const result = withNativeModelRegistrations(realm, generator, (block, name, type) => {
-    const effect = expected.find(item => item.name.toLowerCase() === String(name).toLowerCase());
-    if (!effect) return;
+    const named = expected.filter(item => item.name.toLowerCase() === String(name).toLowerCase());
+    const effect = named.find(item => item.type === type);
+    if (!effect) {
+      if (named.some(item => item.ownerId === block.id)) {
+        throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Complete generation changed a prepared initializer model type.');
+      }
+      return; // A different retained initializer may register its own existing typed model.
+    }
     // An ordinary declaration can reuse a lexical counter. Its registration
     // must agree with the model; the loop visit below proves the owning identity.
     if (effect.kind === 'loop') {
@@ -70,6 +82,9 @@ export function verifyNativeModelRegistrations<T>(realm: any, generator: Blockly
       return;
     }
     if (effect.ownerId !== block.id || effect.blockType !== block.type || effect.name !== name || effect.type !== type) {
+      const owner = workspace.getBlockById(effect.ownerId);
+      if (owner && effect.name === name && effect.type === type
+        && contracts.shares(owner, name, type, effect.id) && contracts.shares(block, name, type, effect.id)) return;
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Complete generation changed native model declaration ownership or type.');
     }
     seen.add(effect.id);
@@ -83,6 +98,7 @@ export function verifyNativeModelRegistrations<T>(realm: any, generator: Blockly
     }
     seen.add(effect.id);
   });
+  contracts.assertCurrent();
   if (expected.some(item => !seen.has(item.id))) {
     throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Complete generation did not reproduce a prepared initializer. Keep its active, connected declaration in the candidate.');
   }

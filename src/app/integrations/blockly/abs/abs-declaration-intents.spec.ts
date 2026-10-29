@@ -32,6 +32,18 @@ describe('ordinary declarations prepare native models once', () => {
     expect(captureAbsVariableDeclarations(snapshot, () => undefined)('declare')).toBeUndefined();
     expect(captureAbsVariableDeclarations(snapshot, type => type === 'declare' ? { ...shapes.get(type)!, fields: {} } : shapes.get(type))('declare')).toBeUndefined();
   });
+  it('supports new Chinese identifiers and direct variable references without changing the ABS syntax', async () => {
+    const base = await project(), before = absJson(base);
+    const text = source.replaceAll('counter', '当前温度');
+    const result = await reconcileAbsDraft(base, text, options);
+    expect(result.workspace['variables']).toEqual([jasmine.objectContaining({ name: '当前温度', type: '' })]);
+    expect(absJson(base)).toBe(before);
+  });
+  it('rejects new language keywords and invalid identifiers without creating models', async () => {
+    for (const name of ['while', 'class', 'nullptr', '2counter', 'counter-name', 'counter name', 'temperature🔥']) {
+      await reject(await project(), source.split('\n    assign')[0].replaceAll('counter', name), 'ABS_DECLARATION_INVALID');
+    }
+  });
   it('prepares stable empty-type models before forward references, without mutating the baseline', async () => {
     const base = await project(), before = absJson(base);
     const text = '# ABS Schema: 2\nglobal()\n    assign($counter, $counter)\n    declare("counter", int, number(7))';
@@ -63,6 +75,18 @@ describe('ordinary declarations prepare native models once', () => {
     const result = await reconcileAbsDraft(await project(workspace), source, options);
     expect(result.workspace['variables']).toEqual(workspace.variables);
   });
+  for (const reverse of [false, true]) it('reuses an existing ordinary identity beside a same-name function: ' + reverse, async () => {
+    const variables = [{ id: 'function', name: 'counter', type: 'FUNC', sharedPage: 'other' },
+      { id: 'ordinary', name: 'counter', type: '', opaque: true }];
+    if (reverse) variables.reverse();
+    const workspace = { blocks: { blocks: [] }, variables };
+    const declared = await reconcileAbsDraft(await project(workspace), source.split('\n    assign')[0], options);
+    expect(declared.workspace['variables']).toEqual(variables);
+    const base = await project(declared.workspace, declared.contracts);
+    const changed = await reconcileAbsDraft(base, base.abs.replace('number(7)', 'number(9)'), options);
+    expect(changed.workspace['variables']).toEqual(variables);
+    expect(changed.added).toEqual([]); expect(changed.removed).toEqual([]);
+  });
   it('preserves an existing special declaration name during an unrelated value edit', async () => {
     const draft = await reconcileAbsDraft(await project(), source.split('\n    assign')[0], options);
     draft.workspace.blocks.blocks[0].inputs!['BODY'].block!.fields!['VAR'] = '已有变量';
@@ -75,7 +99,7 @@ describe('ordinary declarations prepare native models once', () => {
   it('rejects duplicates, case/type ambiguity, implicit renames and missing retained models', async () => {
     await reject(await project(), source + '\n    declare("counter", int, number(8))', 'ABS_DECLARATION_DUPLICATE');
     for (const models of [[{ name: 'Counter', type: '', id: 'one' }], [{ name: 'counter', type: 'Number', id: 'one' }],
-      [{ name: 'counter', type: '', id: 'one' }, { name: 'counter', type: 'Number', id: 'two' }]]) {
+      [{ name: 'counter', type: '', id: 'one' }, { name: 'Counter', type: '', id: 'two' }]]) {
       await reject(await project({ blocks: { blocks: [] }, variables: models }), source, 'ABS_DECLARATION_MODEL_CONFLICT');
     }
     const draft = await reconcileAbsDraft(await project(), source, options), base = await project(draft.workspace, draft.contracts);

@@ -19,7 +19,7 @@ import { createNativeCandidateGraphics } from './blockly-native-graphics';
 import type { NativeCandidateProgress } from './blockly-native-progress';
 import { NativeCandidateProgressReporter } from './blockly-native-observation';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
-import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { beginNativeFieldDependencies } from './blockly-native-field-dependencies';
 import { registerCustomFunctionContract, captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import { decodeNativeCandidateRequest, encodeNativeCandidateResult, type NativeCandidateWireRequest } from './blockly-native-transfer';
@@ -42,6 +42,7 @@ export function installNativeCandidateRealm(): void {
     const progress: NativeCandidateProgress = reporter.progress;
     const errors: Error[] = [];
     let workspace: any;
+    let construction: ReturnType<typeof beginNativeFieldDependencies> | undefined;
     let phase = 'initialization';
     let registering = true;
     let replayStep = 0;
@@ -189,15 +190,24 @@ export function installNativeCandidateRealm(): void {
       if (!request.verify) models.load();
       const execution = new NativeCandidateWorkspace(native, workspace, observer, assertClean, models, request.creations, declarations);
       progress('binding');
-      const binding = request.abs !== undefined ? withNativeFieldDependencies(native, workspace, () => bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
+      if (!request.verify) {
+        // Hosted calls have no native instance in discovery; explicit block info
+        // is likewise only a fragment. Neither may announce a complete project
+        // to library cleanup listeners while retaining its full model table.
+        const completeTopology = request.abs !== undefined && !request.hostCalls?.length;
+        construction = beginNativeFieldDependencies(native, workspace, uiTasks, 'settled', completeTopology);
+      }
+      const binding = request.abs !== undefined ? bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
         request.modelRequestId && generator
-          ? { generator, requestId: request.modelRequestId, retainedCalls: request.retainedModelCalls, retainedIds: request.retainedModelIds } : undefined), uiTasks) : undefined;
+          ? { generator, requestId: request.modelRequestId, retainedCalls: request.retainedModelCalls, retainedIds: request.retainedModelIds } : undefined) : undefined;
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
+        construction!.prepare();
         captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);
         progress('views');
         execution.initializeViews();
         await comments.drain();
+        construction!.finish(); construction!.dispose(); construction = undefined;
         progress('ui');
         uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
       }
@@ -213,6 +223,6 @@ export function installNativeCandidateRealm(): void {
     } catch (error) {
       try { workspace?.dispose(); } catch { /* The entire independent Realm is discarded by the host. */ }
       send({ ok: false, error: serializeAbsFailure(error) });
-    } finally { tasks.dispose(); uiTasks.dispose(); port.close(); }
+    } finally { construction?.dispose(); tasks.dispose(); uiTasks.dispose(); port.close(); }
   });
 }

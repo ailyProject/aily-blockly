@@ -5,7 +5,7 @@ import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
-import { NpmService } from '../../../services/domains/dependencies/npm.service';
+import { NpmService } from '../../../services/domains/dependencies/public-api';
 
 describe('Blockly compile and upload handoff', () => {
   let originalFs: any, originalPath: any, originalBuilder: any;
