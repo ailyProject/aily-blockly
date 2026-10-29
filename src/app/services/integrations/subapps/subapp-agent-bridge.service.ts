@@ -212,6 +212,10 @@ export class SubappAgentBridgeService implements OnDestroy {
           : ['failed', 'error'].includes(nativeOutcome || '') ? 'failed'
           : response['ok'] === true ? 'succeeded' : 'failed',
         runtimeState: nativeBatch ? 'stopped' : 'ready',
+        ...(resolved.config.id === 'mqtt-debugger' && ['mqtt_session_open', 'mqtt_session_acquire'].includes(tool)
+          ? { openedResourceSessionId: String(this.record(result)['sessionId'] || '') } : {}),
+        ...(resolved.config.id === 'mqtt-debugger' && tool === 'mqtt_session_close' && this.record(result)['cleanupPending'] !== true
+          ? { closedResourceSessionId: String(params['sessionId'] || '') } : {}),
         ...(response['ok'] === true ? {} : { error: String(response['error'] || 'Subapp result rejected') }),
       });
       return response;
