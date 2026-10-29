@@ -5,6 +5,18 @@ import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 export interface FailedProjectLoadStatus { ready: boolean; state: string; error?: string }
 interface VerifiedSavedRecoveryTarget { project: string; sourceProject: string; abiHash: string; recoveryArchive: string }
 
+/** Navigation failure is not authority to alter a partial canvas or its files. */
+export function projectLoadFailureGuidance(project: string, status: FailedProjectLoadStatus, blockly = true) {
+  const failed = blockly && !status.ready && (!!status.error || ['failed', 'error'].includes(status.state));
+  return failed ? {
+    nextAction: { tool: 'project_recover', input: { project, action: 'inspect' } },
+    guidance: 'Inspect this failed load with project_recover(action="inspect") and follow the verified recovery or managed dependency route it returns. Preserve the source, partial view, ABS draft, map and protection. Do not save a partial canvas, close/reload in a loop, edit ABI/map or ask the user to repair internal files. An already independent target must not be forked again.',
+  } : {
+    nextAction: { tool: 'app_info', input: {} },
+    guidance: 'Observe the current host and navigation outcome before another action. A rejected, pending or cancelled navigation is not permission to modify source state, close another view, delete locks or force recovery.',
+  };
+}
+
 /** A failed-load inspection does not read generation/private state or serialize
  * an incomplete canvas. It only offers a disk-primary copy of observed bytes. */
 export async function inspectFailedProjectLoad(project: string, loadStatus: FailedProjectLoadStatus,
