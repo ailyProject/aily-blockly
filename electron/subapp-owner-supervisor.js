@@ -14,9 +14,14 @@ class SubappOwnerSupervisor {
         this.pending = new Map();
         this.recoveries = new Set();
         this.processLeases = processLeases;
+        this.shuttingDown = false;
+        this.shutdownPending = null;
     }
 
     connect(contents) {
+        if (this.shuttingDown) {
+            throw Object.assign(new Error('Subapp owner host is shutting down'), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+        }
         if (!contents || contents.isDestroyed()) throw new Error('Subapp owner renderer is unavailable');
         let state = this.renderers.get(contents.id);
         if (!state) {
@@ -192,6 +197,22 @@ class SubappOwnerSupervisor {
 
     async idle() {
         while (this.pending.size || this.recoveries.size) await Promise.all([...this.pending.values(), ...this.recoveries]);
+    }
+
+    /** End renderer authority and drain owners while their Runtime endpoints are
+     * still alive. Process termination remains the host's subsequent fallback. */
+    shutdown() {
+        if (this.shutdownPending) return this.shutdownPending;
+        this.shuttingDown = true;
+        // invalidate fences each document synchronously, including in-flight
+        // acquisition. Reuse its bounded retries and execution-first cleanup.
+        const draining = [...this.renderers.keys()].map(rendererId => this.invalidate(rendererId));
+        this.shutdownPending = Promise.all(draining).then(() => this.idle()).then(() => {
+            let remainingBindings = 0;
+            for (const state of this.renderers.values()) remainingBindings += state.bindings.size;
+            return { ok: remainingBindings === 0, remainingBindings };
+        });
+        return this.shutdownPending;
     }
 }
 

@@ -83,6 +83,7 @@ interface ActiveInvocation {
   invocationId: string;
   subscriptionIds: Set<string>;
   eventsArmed: boolean;
+  eventQueue: Promise<void>;
   pendingEvents: Array<{
     subscriptionId: string;
     event: SubappHostProviderRecord;
@@ -406,6 +407,7 @@ export class SubappHostProviderDispatcher {
       invocationId,
       subscriptionIds: new Set(),
       eventsArmed: false,
+      eventQueue: Promise.resolve(),
       pendingEvents: [],
       pendingEventBytes: 0,
       timer: null,
@@ -463,14 +465,16 @@ export class SubappHostProviderDispatcher {
       active.eventsArmed = true;
       const pendingEvents = active.pendingEvents.splice(0);
       active.pendingEventBytes = 0;
-      for (const pending of pendingEvents) {
-        if (!active.subscriptionIds.has(pending.subscriptionId)) continue;
-        await this.publishInvocationEvent(
+      // Queue the whole replay before yielding. Live events must join behind
+      // it, including a terminal build failure arriving during an IPC send.
+      await Promise.all(pendingEvents.map(pending => {
+        if (!active.subscriptionIds.has(pending.subscriptionId)) return false;
+        return this.publishInvocationEvent(
           active,
           pending.subscriptionId,
           pending.event,
         );
-      }
+      }));
     } catch {
       if (!this.isActiveInvocation(active)) return;
       const code = controller.signal.aborted ? 'cancelled' : 'operation-failed';
@@ -582,13 +586,20 @@ export class SubappHostProviderDispatcher {
     ) {
       return false;
     }
-    await this.sendForGeneration(active.generation, {
-      type: SUBAPP_HOST_PROVIDER_MESSAGE_TYPES.event,
-      version: SUBAPP_HOST_PROVIDER_TRANSPORT_VERSION,
-      subscriptionId,
-      event,
+    const operation = active.eventQueue.then(async () => {
+      if (!this.isActiveInvocation(active)
+        || active.controller.signal.aborted
+        || this.activeSubscriptions.get(subscriptionId) !== active) return false;
+      await this.sendForGeneration(active.generation, {
+        type: SUBAPP_HOST_PROVIDER_MESSAGE_TYPES.event,
+        version: SUBAPP_HOST_PROVIDER_TRANSPORT_VERSION,
+        subscriptionId,
+        event,
+      });
+      return true;
     });
-    return true;
+    active.eventQueue = operation.then(() => undefined, () => undefined);
+    return await operation;
   }
 
   private async startArtifactTransfer(

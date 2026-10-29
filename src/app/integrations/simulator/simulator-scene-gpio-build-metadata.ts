@@ -1,4 +1,4 @@
-import { inferArduinoHardwareHints } from '@aily-project/simulator-host-sdk';
+import { inferArduinoGpioConfigurations, inferArduinoHardwareHints } from '@aily-project/simulator-host-sdk';
 import type { ProjectHardwareIntentHintV1 } from '@aily-project/simulator-protocol/scene';
 
 export interface SimulatorSceneGpioBuildMetadata {
@@ -28,38 +28,48 @@ export function createSimulatorSceneGpioBuildMetadata(
   const endpoints = collectSceneGpioEndpoints(document);
   const directions = new Map<string, 'input' | 'output'>();
   const pulls = new Map<string, 'up' | 'down'>();
-  const configuredPulls = new Map<string, 'up' | 'down' | 'none'>();
   const configuredEndpoints = new Set<string>();
-  const configuration = inferArduinoHardwareHints(sourceText, 'gpio-configuration');
+  const configurations = new Map<string, ReturnType<typeof inferArduinoGpioConfigurations>>();
+  for (const configuration of inferArduinoGpioConfigurations(sourceText)) {
+    const endpoint = endpoints.get(normalizePinAlias(configuration.pin));
+    if (!endpoint) continue;
+    const values = configurations.get(endpoint) ?? [];
+    values.push(configuration);
+    configurations.set(endpoint, values);
+    configuredEndpoints.add(endpoint);
+  }
+  for (const [endpoint, values] of configurations) {
+    const modes = new Set(values.map(value => value.direction));
+    const pullModes = new Set(values.map(value => value.pull));
+    // A program can legitimately change pin mode. Only publish invariant facts;
+    // omission lets the common electrical network use actual native pad state.
+    // In particular, never choose the first/last call as an initial direction.
+    if (modes.size !== 1 || modes.has(null)) continue;
+    const direction = values[0]!.direction!;
+    directions.set(endpoint, direction);
+    if (direction === 'input' && pullModes.size === 1) {
+      const pull = values[0]!.pull;
+      if (pull === 'up' || pull === 'down') pulls.set(endpoint, pull);
+    }
+  }
   const usage = inferArduinoHardwareHints(sourceText);
-  for (const [explicit, hints] of [[true, configuration], [false, usage]] as const) {
-    for (const hint of hints) {
-      const direction = gpioDirection(hint);
-      if (!direction) continue;
-      for (const pin of hint.pins) {
-        const endpoint = endpoints.get(normalizePinAlias(pin));
-        if (!endpoint) continue;
-        // Reading an output (or writing an input) does not configure its mode.
-        if (!explicit && configuredEndpoints.has(endpoint)) continue;
-        const previous = directions.get(endpoint);
-        if (previous && previous !== direction) {
-          throw new Error(
-            `Firmware GPIO direction is ambiguous for Scene endpoint ${endpoint}.`,
-          );
-        }
-        directions.set(endpoint, direction);
-        if (explicit) configuredEndpoints.add(endpoint);
-        if (explicit && direction === 'input'
-          && (hint.pull === 'up' || hint.pull === 'down' || hint.pull === 'none')) {
-          const previousPull = configuredPulls.get(endpoint);
-          if (previousPull !== undefined && previousPull !== hint.pull) {
-            throw new Error(`Firmware GPIO pull is ambiguous for Scene endpoint ${endpoint}.`);
-          }
-          configuredPulls.set(endpoint, hint.pull);
-        }
-        if (direction === 'input' && (hint.pull === 'up' || hint.pull === 'down')) {
-          pulls.set(endpoint, hint.pull);
-        }
+  for (const hint of usage) {
+    const direction = gpioDirection(hint);
+    if (!direction) continue;
+    for (const pin of hint.pins) {
+      const endpoint = endpoints.get(normalizePinAlias(pin));
+      if (!endpoint) continue;
+      // Reading an output (or writing an input) does not configure its mode.
+      if (configuredEndpoints.has(endpoint)) continue;
+      const previous = directions.get(endpoint);
+      if (previous && previous !== direction) {
+        throw new Error(
+          `Firmware GPIO direction is ambiguous for Scene endpoint ${endpoint}.`,
+        );
+      }
+      directions.set(endpoint, direction);
+      if (direction === 'input' && (hint.pull === 'up' || hint.pull === 'down')) {
+        pulls.set(endpoint, hint.pull);
       }
     }
   }

@@ -94,7 +94,7 @@
         <app-child-tool-native-observer [toolId]="resolvedToolId" (ready)="frameLoaded = true" (failed)="onNativeObserverError($event)" />
       }
       @if (isBrowserExecution && browserSurfaceVisible) {
-        <app-child-tool-browser-surface [toolId]="resolvedToolId" [active]="active"
+        <app-child-tool-browser-surface [toolId]="resolvedToolId" [active]="active" [workspace]="browserSurfaceWorkspace"
           (ready)="onBrowserSurfaceReady($event)" (failed)="onBrowserSurfaceFailed($event)" />
       }
       @if (iframeSrc) {

@@ -177,6 +177,72 @@ test('routes invocations to each adapter without importing product payloads', as
   await dispatcher.close();
 });
 
+test('keeps a live build failure behind the complete buffered progress replay', async () => {
+  const { SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types, SubappHostProviderDispatcher } = await dispatcherModulePromise;
+  const fixture = createFixtureAdapters();
+  let publish;
+  fixture.adapters.find(adapter => adapter.provider === 'build').handleInvocation = async (value, context) => {
+    publish = context.publishEvent;
+    for (let sequence = 1; sequence <= 4; sequence++) {
+      await publish('subscription-replay', { sequence, stage: 'compiling' });
+    }
+    return { result: successResult(value), subscriptionIds: ['subscription-replay'] };
+  };
+  const dispatcher = new SubappHostProviderDispatcher({ hostInstanceId: 'host-replay', adapters: fixture.adapters });
+  const transport = new FakeTransport();
+  const send = transport.send.bind(transport);
+  let release;
+  const firstDelivery = new Promise(resolve => { release = resolve; });
+  transport.send = async message => {
+    await send(message);
+    if (message.type === types.event && message.event.sequence === 1) await firstDelivery;
+  };
+  dispatcher.bindTransport(transport);
+  try {
+    await transport.receive({ type: types.invocation, version: 1,
+      invocation: invocation('replay-build', 'build', 'build.progress.subscribe') });
+    await transport.waitFor(message => message.type === types.event && message.event.sequence === 1);
+    const terminal = publish('subscription-replay', { sequence: 5, stage: 'failed', errorCode: 'compile-failed' });
+    await flushAsync();
+    release();
+    assert.equal(await terminal, true);
+    await transport.waitFor(message => message.type === types.event && message.event.sequence === 4);
+    assert.deepEqual(transport.sent.filter(message => message.type === types.event).map(message => message.event.sequence), [1, 2, 3, 4, 5]);
+  } finally { release(); await dispatcher.close(); }
+});
+
+test('cancellation discards replay and live events queued behind an in-flight delivery', async () => {
+  const { SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types, SubappHostProviderDispatcher } = await dispatcherModulePromise;
+  const fixture = createFixtureAdapters();
+  let publish;
+  fixture.adapters.find(adapter => adapter.provider === 'build').handleInvocation = async (value, context) => {
+    publish = context.publishEvent;
+    for (const sequence of [1, 2]) await publish('subscription-cancel', { sequence });
+    return { result: successResult(value), subscriptionIds: ['subscription-cancel'] };
+  };
+  const dispatcher = new SubappHostProviderDispatcher({ hostInstanceId: 'host-cancel-replay', adapters: fixture.adapters });
+  const transport = new FakeTransport();
+  const send = transport.send.bind(transport);
+  let release;
+  const delivery = new Promise(resolve => { release = resolve; });
+  transport.send = async message => {
+    await send(message);
+    if (message.type === types.event && message.event.sequence === 1) await delivery;
+  };
+  dispatcher.bindTransport(transport);
+  try {
+    await transport.receive({ type: types.invocation, version: 1,
+      invocation: invocation('cancel-replay', 'build', 'build.progress.subscribe') });
+    await transport.waitFor(message => message.type === types.event);
+    const terminal = publish('subscription-cancel', { sequence: 3, stage: 'failed' });
+    await transport.receive({ type: types.cancel, version: 1, invocationId: 'cancel-replay' });
+    release();
+    assert.equal(await terminal, false);
+    assert.deepEqual(transport.sent.filter(message => message.type === types.event).map(message => message.event.sequence), [1]);
+    assert.equal(dispatcher.snapshot().activeSubscriptions, 0);
+  } finally { release(); await dispatcher.close(); }
+});
+
 test('keeps subscription events routed and cancellation aborts the exact invocation', async () => {
   const {
     SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types,

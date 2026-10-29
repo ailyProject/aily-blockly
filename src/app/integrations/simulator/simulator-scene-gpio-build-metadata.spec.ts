@@ -134,12 +134,11 @@ describe('Simulator Scene GPIO build metadata', () => {
     ).directions).toEqual({ 'xiao_esp32s3.pin_3': 'output' });
   });
 
-  it('rejects conflicting explicit firmware directions for one Scene endpoint', () => {
-    expect(() => createSimulatorSceneGpioBuildMetadata(
+  it('defers sequential direction changes to native pad state', () => {
+    expect(createSimulatorSceneGpioBuildMetadata(
       sceneHead().descriptor.document,
-      'pinMode(3, INPUT); pinMode(D2, OUTPUT);',
-      graphSemanticRevision,
-    )).toThrowError(/direction is ambiguous/u);
+      'pinMode(3, INPUT); pinMode(D2, OUTPUT);', graphSemanticRevision,
+    )).toEqual({ directions: {}, pulls: {} });
   });
 
   it('coalesces repeated contacts only through their same declared physical pad', () => {
@@ -151,19 +150,20 @@ describe('Simulator Scene GPIO build metadata', () => {
     expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document, 'pinMode(D2, INPUT_PULLUP);', graphSemanticRevision)).toEqual(expected);
   });
 
-  it('keeps direction conflicts visible after same-pad contact coalescing', () => {
-    expect(() => createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
-      'pinMode(3, INPUT); pinMode(D2, OUTPUT);', graphSemanticRevision)).toThrowError(/direction is ambiguous/u);
+  it('coalesces dynamic directions on the same physical pad', () => {
+    expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
+      'pinMode(3, INPUT); pinMode(D2, OUTPUT);', graphSemanticRevision)).toEqual({ directions: {}, pulls: {} });
   });
 
-  it('rejects conflicting explicit pulls on one physical pad in either source order', () => {
+  it('omits changing pulls on one physical pad in either source order', () => {
     for (const [first, second] of [
       ['INPUT_PULLUP', 'INPUT_PULLDOWN'], ['INPUT_PULLDOWN', 'INPUT_PULLUP'],
       ['INPUT_PULLUP', 'INPUT'], ['INPUT', 'INPUT_PULLUP'],
       ['INPUT_PULLDOWN', 'INPUT'], ['INPUT', 'INPUT_PULLDOWN'],
     ]) {
-      expect(() => createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
-        `pinMode(3, ${first}); pinMode(D2, ${second});`, graphSemanticRevision)).toThrowError(/pull is ambiguous/u);
+      expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document,
+        `pinMode(3, ${first}); pinMode(D2, ${second});`, graphSemanticRevision))
+        .toEqual({ directions: { 'xiao_esp32s3.pin_3': 'input' }, pulls: {} });
     }
   });
 
@@ -223,4 +223,27 @@ describe('Simulator Scene GPIO build metadata', () => {
     expect(createSimulatorSceneGpioBuildMetadata(head.descriptor.document,
       'analogRead(A6);', graphSemanticRevision).directions).toEqual({});
   });
+  it('never turns runtime mode expressions or open drain into fixed directions/pulls', () => {
+    for (const mode of ['desiredMode', 'condition ? INPUT_PULLUP : INPUT_PULLDOWN', 'chooseMode(flag)', 'OUTPUT_OPEN_DRAIN']) {
+      for (const source of [
+        `pinMode(D2, INPUT_PULLUP); pinMode(3, ${mode}); digitalWrite(D2, 1);`,
+        `pinMode(3, ${mode}); pinMode(D2, INPUT_PULLUP); digitalRead(D2);`,
+      ]) expect(createSimulatorSceneGpioBuildMetadata(duplicatedContact().descriptor.document, source, graphSemanticRevision))
+        .toEqual({ directions: {}, pulls: {} });
+    }
+  });
+
+  it('keeps unknown usage conflicts and Scene identity validation strict', () => {
+    expect(() => createSimulatorSceneGpioBuildMetadata(sceneHead().descriptor.document,
+      'digitalRead(D2); digitalWrite(D2, 1);', graphSemanticRevision)).toThrowError(/direction is ambiguous/);
+    expect(() => createSimulatorSceneGpioBuildMetadata(sceneHead().descriptor.document,
+      'pinMode(D2, mode);', 'invalid')).toThrowError(/graph revision/);
+  });
+
+  it('keeps a separate pad static when another pad changes mode', () => {
+    expect(createSimulatorSceneGpioBuildMetadata(sceneHead().descriptor.document,
+      'pinMode(D2, INPUT); pinMode(D2, OUTPUT); pinMode(D3, INPUT_PULLUP);', graphSemanticRevision))
+      .toEqual({ directions: { 'xiao_esp32s3.pin_4': 'input' }, pulls: { 'xiao_esp32s3.pin_4': 'up' } });
+  });
+
 });

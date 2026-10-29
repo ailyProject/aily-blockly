@@ -170,6 +170,63 @@ test('concurrent release and crash join the same in-flight cleanup', async () =>
     assert.equal(h.calls.length, 1);
 });
 
+test('shutdown fences all renderers, joins release acknowledgements and rejects new owners', async () => {
+    const held = Promise.withResolvers();
+    const h = harness(() => held.promise);
+    await h.supervisor.track(h.renderer, h.binding());
+    const other = contents(2);
+    const generation = h.supervisor.connect(other).generation;
+    await h.supervisor.track(other, { ...h.binding('owner-b'), generation });
+    const guard = h.supervisor.createOwnerGuard(h.renderer, h.binding());
+    const releasing = h.supervisor.release(h.renderer, h.binding());
+    const closing = h.supervisor.shutdown();
+    assert.equal(h.supervisor.shutdown(), closing);
+    assert.throws(() => h.supervisor.connect(contents(3)), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+    assert.throws(guard, { code: 'SUBAPP_RENDERER_EXPIRED' });
+    await assert.rejects(h.supervisor.track(h.renderer, h.binding()), { code: 'SUBAPP_RENDERER_EXPIRED' });
+    let finished = false;
+    closing.then(() => { finished = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(finished, false);
+    assert.deepEqual(h.calls.map(call => call.ownerSessionId).sort(), ['owner-a', 'owner-b']);
+    held.resolve();
+    assert.equal((await releasing).ok, true);
+    assert.deepEqual(await closing, { ok: true, remainingBindings: 0 });
+    assert.deepEqual(h.errors, []);
+    h.renderer.emit('destroyed'); other.emit('destroyed');
+    await h.supervisor.idle();
+    assert.equal(h.calls.length, 2);
+});
+
+test('shutdown waits for an acquiring lease, revokes it and preserves failed owner cleanup', async () => {
+    const fs = require('node:fs');
+    const held = Promise.withResolvers();
+    const h = harness(async binding => {
+        if (binding.method === 'fixture.lease') await held.promise;
+        else {
+            assert.equal(fs.existsSync(binding.processLease.leaseFile), false);
+            throw new Error('release not acknowledged');
+        }
+    });
+    h.runtime.hostInfo.runtimeConfig.agent.lifecycle.ownerLease = { method: 'fixture.lease' };
+    const tracking = h.supervisor.track(h.renderer, h.binding());
+    const expired = assert.rejects(tracking);
+    await new Promise(resolve => setImmediate(resolve));
+    const leaseFile = h.calls[0].params.leaseFile;
+    const closing = h.supervisor.shutdown();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fs.existsSync(leaseFile), false);
+    assert.equal(h.calls.length, 1);
+    held.resolve();
+    await expired;
+    assert.deepEqual(await closing, { ok: false, remainingBindings: 1 });
+    assert.equal(h.calls.filter(call => call.method === 'fixture.release').length, 3);
+    assert.equal(h.errors.length, 1);
+    assert.equal(h.supervisor.renderers.get(1).bindings.size, 1);
+    assert.equal(h.supervisor.pending.size, 0);
+    assert.equal(h.supervisor.recoveries.size, 0);
+});
+
 test('failed normal cleanup remains eligible for bounded crash retries', async () => {
     let attempts = 0;
     const h = harness(async () => { if (++attempts < 3) throw new Error('offline'); });

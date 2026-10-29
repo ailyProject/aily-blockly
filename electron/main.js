@@ -771,6 +771,7 @@ const {
   nativeSubappRegistry,
   browserExecutionRegistry,
   beginWindowShutdown,
+  shutdownSubappOwners,
 } = require("./window");
 const { createApplicationQuitCoordinator } = require('./application-quit');
 const { registerNpmHandlers, killAllNpmProcesses, killOwnerProjectNpmProcesses, getActiveNpmProcesses, beginNpmShutdown } = require("./npm");
@@ -3140,7 +3141,21 @@ async function cleanupRegisteredChildProcesses() {
   beginNpmShutdown();
   beginAuthCredentialsShutdown();
 
-  // Drain registered Runtime owners before the generic command-tree fallback.
+  // Owner release still needs the live Runtime endpoint. Fence and join it
+  // before stopping Runtime processes, including a renderer's late disposal.
+  try {
+    const owners = await shutdownSubappOwners();
+    console.info('[PROC_TRACE][APP_OWNER_CLEANUP_RESULT]', {
+      ok: owners.ok, remainingBindings: owners.remainingBindings,
+    });
+    if (!owners.ok) console.warn('[PROC_TRACE][APP_OWNER_CLEANUP_UNCONFIRMED]', {
+      remainingBindings: owners.remainingBindings,
+    });
+  } catch (error) {
+    console.warn('[PROC_TRACE][APP_OWNER_CLEANUP_ERROR]', error?.code || 'cleanup-failed');
+  }
+
+  // Drain registered Runtime processes before the generic command-tree fallback.
   // Unregistered startup streams and unsuccessful stops remain in Cmd ownership.
   try {
     await stopAllChildToolSessions();

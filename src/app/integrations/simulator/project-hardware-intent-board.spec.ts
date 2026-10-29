@@ -28,6 +28,33 @@ describe('Project hardware Board identity', () => {
       .toBeUndefined();
   });
 
+  it('keeps the H2 compiler board distinct from classic ESP32 when no MCU field is declared', () => {
+    const result = resolveProjectHardwareIntentBoard({ type: 'esp32:esp32:esp32h2', core: 'esp32:esp32' }, {});
+    expect(result.mcu).toBe('esp32h2');
+    expect(result.boardId).toBe('esp32h2');
+  });
+
+  it('keeps C5 and existing ESP compiler boards distinct from the classic fallback', () => {
+    for (const mcu of ['esp32c5', 'esp32h2', 'esp32c3', 'esp32c6', 'esp32s3', 'esp32s2', 'esp32']) {
+      const fqbn = `esp32:esp32:${mcu}`;
+      expect(resolveProjectHardwareIntentBoard({ type: fqbn, core: 'esp32:esp32' }, {}))
+        .toEqual({ fqbn, boardId: mcu, architecture: 'esp32', mcu });
+    }
+  });
+
+  it('preserves C5 declarations, resolved compiler markers and upload-command evidence', () => {
+    const c5 = { type: 'esp32:esp32:esp32c5', core: 'esp32:esp32' };
+    expect(resolveProjectHardwareIntentBoard({ ...c5, mcu: 'ESP32C5' }, {}).mcu).toBe('esp32c5');
+    expect(resolveProjectHardwareIntentBoard(c5, {}, undefined,
+      { boardId: 'esp32c5', mcu: 'esp32c5' }).mcu).toBe('esp32c5');
+    for (const command of ['linkUploadParam', 'uploadParam']) {
+      expect(resolveProjectHardwareIntentBoard({ type: 'vendor:esp32:logical', core: 'vendor:esp32',
+        [command]: 'esptool --chip esp32c5 write-flash firmware.bin' }, {}).mcu).toBe('esp32c5');
+    }
+    expect(() => resolveProjectHardwareIntentBoard({ ...c5, mcu: 'esp32c5' }, {}, undefined,
+      { boardId: 'esp32c5', mcu: 'esp32c6' })).toThrowError(/MCU conflicts/u);
+  });
+
   it('preserves explicit physical variant identity within a shared compiler board', () => {
     const name = '@aily-project/board-stm32f103c8';
     const result = resolveProjectHardwareIntentBoard({ type: 'STMicroelectronics:stm32:GenF1', core: 'STMicroelectronics:stm32', mcu: 'stm32f103c8' },

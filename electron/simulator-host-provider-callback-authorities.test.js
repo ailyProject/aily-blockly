@@ -351,7 +351,7 @@ test('Project callbacks keep the frozen real head bytes and storage revision thr
   const goldenBytes = await fs.readFile(path.resolve(__dirname,
     '../../aily-simulator/packages/simulator-protocol/test/fixtures/project-scene-head-v1-real.json'));
   assert.equal(goldenBytes.length, 64912);
-  assert.equal(sha256(goldenBytes), 'f97214a72a2ed43a854a88dd9f930341c5d8e7d45db9b7a18898a647404650fb');
+  assert.equal(sha256(goldenBytes), '64c675abc4090bd9493470e715f0f7b1d75c476f268fd68a146b96a02a3d5158');
   const golden = JSON.parse(goldenBytes.toString('utf8'));
   const scope = { projectIdentity: golden.descriptor.projectIdentity, sceneId: golden.descriptor.sceneId };
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-project-head-golden-'));
@@ -705,7 +705,7 @@ test('Build callbacks acknowledge, stream ordered progress, and deliver the grap
   authority.close();
 });
 
-for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution forwards ${reason} and waits for the visible main Agent before compiling the exact Scene revision`, async () => {
+for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution routes ${reason} through its required reconciliation before compiling the exact Scene revision`, async () => {
   const {
     BlocklySimulatorBuildExecutionPort,
     createEmptySceneEditorDocumentV2,
@@ -770,14 +770,12 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     },
     new AbortController().signal,
   );
-  await waitFor(() => agentRequests.length === 1);
-  assert.equal(builderCalls.length, 0);
-  assert.equal(agentRequests[0].reason, reason);
-
-  completeMainAgent(mainAgentSceneChangeResult(rebuild, {
-    outcome: 'completed',
-    agentRunId: 'agent-run-main',
-  }));
+  if (reason === 'graph-semantic-changed') {
+    await waitFor(() => agentRequests.length === 1);
+    assert.equal(builderCalls.length, 0);
+    assert.equal(agentRequests[0].reason, reason);
+    completeMainAgent(mainAgentSceneChangeResult(rebuild, { outcome: 'completed', agentRunId: 'agent-run-main' }));
+  } else assert.equal(agentRequests.length, 0, 'Source-only builds must not require account-backed Agent execution.');
   assert.equal(await completion, artifact);
   assert.equal(builderCalls.length, 1);
   assert.deepEqual(builderCalls[0], {
@@ -1104,7 +1102,7 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
   await waitFor(() => events.some(event => event.payload.stage === 'completed'));
 
   assert.deepEqual(calls, [
-    ['reconcile', rebuild.requestId, document.graphSemanticRevision],
+    ...(reason === 'graph-semantic-changed' ? [['reconcile', rebuild.requestId, document.graphSemanticRevision]] : []),
     ['build', rebuild.requestId, document.graphSemanticRevision],
   ]);
   const completed = events.find(event => event.payload.stage === 'completed');
@@ -2229,6 +2227,7 @@ async function loadHostProductService({ digest, onComposition }) {
     },
     './simulator-blockly-editor-callback-authority': { SimulatorBlocklyEditorCallbackAuthority: CallbackAuthority },
     './simulator-entitlement-callback-authority': { SimulatorEntitlementCallbackAuthority: CallbackAuthority },
+    './simulator-current-project-scope': { captureSimulatorProjectReadAuthority() { throw new Error('Not used by this workspace-source fixture'); } },
     './simulator-electron-project-artifact-file-port': { createSimulatorElectronProjectArtifactFilePort: () => ({}) },
   };
   const module = { exports: {} };

@@ -162,6 +162,10 @@ function beginWindowShutdown() {
     }
 }
 
+function shutdownSubappOwners() {
+    return subappOwnerSupervisor.shutdown();
+}
+
 /**
  * 与正式子窗口一致的 webPreferences，用于预热池与即用窗口�?
  */
@@ -2344,6 +2348,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 module.exports = {
     beginWindowShutdown,
+    shutdownSubappOwners,
     registerWindowHandlers,
     stopAllChildToolSessions,
     forceStopChildToolByCatalogId,

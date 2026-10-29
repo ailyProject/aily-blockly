@@ -10,6 +10,7 @@ import { SubappBrowserSurfaceService, type SubappBrowserSurfaceGeometry, type Su
 export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() toolId = '';
   @Input() active = true;
+  @Input() workspace: string | null = null;
   @Output() readonly ready = new EventEmitter<ChildToolHostInfo>();
   @Output() readonly failed = new EventEmitter<string>();
   ownerSessionId = '';
@@ -22,6 +23,7 @@ export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChange
   private initialized = false;
   private destroyed = false;
   private lastGeometry = '';
+  private geometryRetries = 0;
   private mountVersion = 0;
   private mounting: Promise<void> = Promise.resolve();
   private readonly schedule = () => {
@@ -41,7 +43,7 @@ export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChange
 
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.initialized) return;
-    if (changes['toolId']) void this.mount(); else this.schedule();
+    if (changes['toolId'] || changes['workspace']) void this.mount(); else this.schedule();
   }
 
   ngOnDestroy(): void {
@@ -85,8 +87,16 @@ export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChange
     if (!this.handle || this.destroyed) return;
     const geometry = this.geometry(), identity = JSON.stringify(geometry);
     if (identity === this.lastGeometry) return;
-    try { await this.handle.update(geometry); this.lastGeometry = identity; }
-    catch (error) { if (!this.destroyed) this.failed.emit(this.error(error)); }
+    try { await this.handle.update(geometry); this.lastGeometry = identity; this.geometryRetries = 0; }
+    catch (error) {
+      if (this.destroyed) return;
+      // Main may have resized before Chromium publishes its new CSS viewport.
+      // Keep Main's strict bounds check; retry with freshly measured geometry.
+      if (this.error(error).includes('Embedded View bounds exceed its owner viewport') && this.geometryRetries++ < 3) {
+        this.schedule(); return;
+      }
+      this.failed.emit(this.error(error));
+    }
   }
 
   private error(error: unknown): string { return error instanceof Error ? error.message : String(error); }

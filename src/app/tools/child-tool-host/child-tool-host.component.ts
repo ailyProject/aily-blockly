@@ -473,7 +473,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       catch (error) { this.closing = false; return { ok: false, message: this.stringifyHostMessageValue(error) || 'Browser View cleanup remains unconfirmed.' }; }
     }
 
-    const canClose = await this.notifyChildBeforeClose('close', options.strict === true);
+    // Browser Surface close already joins its original View, Node and Worker ACKs.
+    // That document has no legacy iframe/Penpal beforeClose endpoint.
+    const canClose = this.isBrowserExecution || await this.notifyChildBeforeClose('close', options.strict === true);
     if (!canClose) {
       this.closing = false;
       return { ok: false, message: '子应用拒绝关闭，可能存在未完成操作。' };
@@ -2587,6 +2589,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   /** Detached compact surfaces reuse the outer Host's Main-owned projection. */
+  get browserSurfaceWorkspace(): string | null { return this.resolveHostWorkspace(); }
+
   get surfaceHostWorkspace(): string | null | undefined {
     return this.isStandalone ? this.standaloneWorkspace ?? null : undefined;
   }

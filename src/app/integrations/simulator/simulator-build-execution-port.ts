@@ -67,7 +67,7 @@ type SimulatorBuildErrorCode =
   | 'cancelled';
 
 /**
- * Product-owned Scene -> visible main Agent -> Builder -> Artifact orchestration.
+ * Product-owned Scene -> optional circuit reconciliation -> Builder -> Artifact orchestration.
  *
  * The port is bound to one active Blockly Project and returns only a Host SDK
  * Artifact descriptor. It never imports or controls Simulator Runtime state.
@@ -135,40 +135,45 @@ implements SimulatorBuildExecutionPort {
     observer.report('resolving', 100);
     this.requireActiveBlocklyProject();
 
-    const mainAgentRequest: SimulatorMainAgentSceneChangeRequest = {
-      schemaVersion: 1,
-      kind: 'aily-simulator-main-agent-scene-change-request',
-      requestId: request.requestId,
-      projectIdentity: request.projectIdentity,
-      sceneId: request.sceneId,
-      reason: request.reason,
-      graphSemanticRevision: request.sceneRevision,
-      sceneDocument: structuredClone(request.sceneDocument),
-    };
     observer.report('generating', 250);
-    let mainAgentReceipt;
-    try {
-      mainAgentReceipt = await this.mainAgent.execute(
-        mainAgentRequest,
-        signal,
-      );
-    } catch (error) {
-      throw mappedError(error, signal, 'generation-failed');
-    }
-    throwIfAborted(signal);
-    this.requireActiveBlocklyProject();
-    if (
-      mainAgentReceipt.requestId !== request.requestId
-      || mainAgentReceipt.projectIdentity !== request.projectIdentity
-      || mainAgentReceipt.sceneId !== request.sceneId
-      || mainAgentReceipt.graphSemanticRevision !== request.sceneRevision
-      || mainAgentReceipt.outcome !== 'completed'
-      || !mainAgentReceipt.agentRunId
-    ) {
-      throw buildError(
-        'generation-failed',
-        'Simulator main Agent returned a mismatched completion receipt.',
-      );
+    // A source-only rebuild already has the same Scene semantics. Regenerate
+    // Blockly code through the normal Builder; only circuit changes need the
+    // visible main Agent to reconcile the user's program.
+    if (request.reason === 'graph-semantic-changed') {
+      const mainAgentRequest: SimulatorMainAgentSceneChangeRequest = {
+        schemaVersion: 1,
+        kind: 'aily-simulator-main-agent-scene-change-request',
+        requestId: request.requestId,
+        projectIdentity: request.projectIdentity,
+        sceneId: request.sceneId,
+        reason: request.reason,
+        graphSemanticRevision: request.sceneRevision,
+        sceneDocument: structuredClone(request.sceneDocument),
+      };
+      let mainAgentReceipt;
+      try {
+        mainAgentReceipt = await this.mainAgent.execute(
+          mainAgentRequest,
+          signal,
+        );
+      } catch (error) {
+        throw mappedError(error, signal, 'generation-failed');
+      }
+      throwIfAborted(signal);
+      this.requireActiveBlocklyProject();
+      if (
+        mainAgentReceipt.requestId !== request.requestId
+        || mainAgentReceipt.projectIdentity !== request.projectIdentity
+        || mainAgentReceipt.sceneId !== request.sceneId
+        || mainAgentReceipt.graphSemanticRevision !== request.sceneRevision
+        || mainAgentReceipt.outcome !== 'completed'
+        || !mainAgentReceipt.agentRunId
+      ) {
+        throw buildError(
+          'generation-failed',
+          'Simulator main Agent returned a mismatched completion receipt.',
+        );
+      }
     }
 
     observer.report('compiling', 500);
@@ -208,6 +213,7 @@ implements SimulatorBuildExecutionPort {
       request.projectIdentity !== this.projectIdentity
       || (request.reason !== 'graph-semantic-changed'
         && request.reason !== 'workspace-source-rebuild')
+      || (request.reason === 'workspace-source-rebuild' && request.baseSceneRevision !== request.sceneRevision)
       || request.sceneId !== this.sceneId
       || request.sceneDocument.sceneId !== this.sceneId
       || request.sceneRevision
