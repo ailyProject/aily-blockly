@@ -2,6 +2,7 @@
   "name": "aily-blockly-e2e",
   "private": true,
   "scripts": {
+    "test:cloud-space-save": "cd .. && node e2e/electron/cloud-space-save.acceptance.mjs",
     "test:unsaved-close": "cd .. && cross-env AILY_E2E_DEV_URL=http://localhost:4200 playwright test -c e2e/unsaved-close.config.ts",
     "test:chat-attachments": "cd .. && node ./e2e/scripts/run-chat-attachments.mjs",
     "test": "cd .. && node ./e2e/scripts/run-e2e.mjs test",

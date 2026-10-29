@@ -411,13 +411,14 @@ export class CloudSpaceComponent {
     // -x!package-lock.json: 排除 package-lock.json
     // -x!project.7z: 排除自身
     // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
-    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs"`;
+    // Cloud projects reopen from ABI; ABS identity maps belong to the source's local baseline.
+    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`;
     if (isCoder) {
       // 保留 sketch 源码、本地库和 .aily-component-library.json 来源记录。
       // 只排除本机状态和可重建缓存，Blockly 仍使用上面的原始打包规则。
       const exclusions = [
         '-x!node_modules', '-x!package-lock.json', '-x!project.7z',
-        '-x!project.abi', '-x!project.abi.backup', '-x!project.abs',
+        '-x!project.abi', '-x!project.abi.backup', '-x!project.abs', '-x!project.abs.map.json',
         '-xr!.git', '-xr!.aily', '-xr!.temp', '-xr!.build', '-xr!.cache', '-xr!.pio',
         '-xr!.DS_Store', '-xr!.env*',
         '-x!sketch/preprocess.json', '-x!sketch/library-cache.json',
