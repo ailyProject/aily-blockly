@@ -1,5 +1,6 @@
 import { createProjectDataMarker, materializeGenericProjectDataValues, type AilyDataRef } from '@domain/project/public-api';
 import { sameAbsProgram } from './abs-program-state';
+import { absJson } from './abs-json';
 
 export interface AbsSaveComparisonPort {
   normalize(value: unknown): unknown;
@@ -11,6 +12,17 @@ export interface AbsSaveComparisonPort {
  * saved ABI recipe. Only the existing, explicit layout exclusions are ignored;
  * identities, order, ownership, hidden state and unknown serializers stay exact. */
 export async function sameAbsSavedProgram(a: unknown, b: unknown, port: AbsSaveComparisonPort): Promise<boolean> {
+  return compareSavedRepresentations(a, b, port, sameAbsProgram);
+}
+
+/** Completion acknowledgement includes presentation: later user panning or
+ * layout edits must not become clean merely by observing an older commit. */
+export async function sameAbsSavedState(a: unknown, b: unknown, port: AbsSaveComparisonPort): Promise<boolean> {
+  return compareSavedRepresentations(a, b, port, (left, right) => absJson(left) === absJson(right));
+}
+
+async function compareSavedRepresentations(a: unknown, b: unknown, port: AbsSaveComparisonPort,
+  same: (a: unknown, b: unknown) => boolean): Promise<boolean> {
   port.assertCurrent();
   const normalize = (value: unknown) => {
     // Native normalization also repairs malformed page/schema discriminators.
@@ -28,7 +40,7 @@ export async function sameAbsSavedProgram(a: unknown, b: unknown, port: AbsSaveC
   };
   const left = normalize(a), right = normalize(b);
   port.assertCurrent();
-  if (sameAbsProgram(left, right)) return true;
+  if (same(left, right)) return true;
   const materialize = (value: unknown) => materializeGenericProjectDataValues(value, {
     resolve: async <T>(ref: AilyDataRef) => {
       port.assertCurrent();
@@ -40,7 +52,7 @@ export async function sameAbsSavedProgram(a: unknown, b: unknown, port: AbsSaveC
   const materializedLeft = await materialize(left);
   const materializedRight = await materialize(right);
   port.assertCurrent();
-  return sameAbsProgram(materializedLeft, materializedRight);
+  return same(materializedLeft, materializedRight);
 }
 
 /** B is the verified saved-ABI recipe, D the exact disk observation and W the

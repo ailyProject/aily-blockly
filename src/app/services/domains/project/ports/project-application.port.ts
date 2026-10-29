@@ -1,6 +1,7 @@
 import { InjectionToken } from '@angular/core';
 import type { BlocklySaveAsSnapshot, ProjectSaveOutcome } from '../project-save-outcome';
 import type { ProjectRecoveryFragment } from '../project-disk-recovery';
+import type { ProjectConflictChoice, ProjectConflictOffer, ProjectConflictResolution } from '../project-conflict';
 
 export interface ProjectFooterState {
   state: string;
@@ -45,6 +46,8 @@ export interface ProjectApplicationPort {
   hasRunningAi(): boolean;
   prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
+  inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
+  resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;
   captureBlocklySaveAsSnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
   captureBlocklyRecoveryCopySnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */

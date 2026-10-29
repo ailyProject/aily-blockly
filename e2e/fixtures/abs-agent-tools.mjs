@@ -260,6 +260,25 @@ export async function createRecoveredAgentHarness(options) {
       messages: () => structuredClone(session.agent.state.messages),
       historyEntries: () => structuredClone(sessionManager.getEntries().filter(entry => entry.type === 'custom')),
       sessionSnapshot: () => structuredClone([sessionManager.getHeader(), ...sessionManager.getEntries()]),
+      async beginTurn(prompt) {
+        assert.equal(disposed, false)
+        assert.equal(streamingActive, false, 'Direct-tool lifecycle must not overlap a provider prompt')
+        assert.equal(activeCall, undefined)
+        assert.equal(history.hasActiveTurn, false, 'Settle the preceding real turn first')
+        assert.equal(typeof prompt, 'string')
+        // Use the SDK's actual dedicated turn-start dispatcher. A direct
+        // history.begin() would bypass per-turn extension state (including the
+        // cached settlement promise and the normal host ABS preflight).
+        await session.extensionRunner.emitInput(prompt, undefined, 'rpc')
+        const started = await session.extensionRunner.emitBeforeAgentStart(prompt, undefined, {
+          cwd: sourceProject, customPrompt: session.systemPrompt, selectedTools: session.agent.state.tools.map(tool => tool.name),
+          contextFiles: [], skills: []
+        })
+        assert.deepEqual(errors, [], 'Actual turn-start hooks must complete cleanly')
+        assert.equal(history.hasActiveTurn, true)
+        return { actualSdkBeforeAgentStart: true, actualProviderPrompt: false, messages: structuredClone(started.messages),
+          projectControl: structuredClone(services.contextCache.currentControl('blockly-abi-check')) }
+      },
       async settle() {
         // Exercise the real extension lifecycle, not a script replacement for
         // history publication or the SDK's successful-turn boundary.

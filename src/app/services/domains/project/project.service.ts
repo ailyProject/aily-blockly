@@ -65,6 +65,8 @@ import {
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
 import { projectSaveOutcomeError, type ProjectSaveOutcome, type ProjectSaveAsOutcome, type ProjectRecoveryCopyOptions } from './project-save-outcome';
+import { isProjectConflictChoice, isProjectConflictOffer, isProjectConflictResolution,
+  type ProjectConflictChoice, type ProjectConflictOffer, type ProjectConflictResolution } from './project-conflict';
 import { captureProjectCopyLibraries } from './project-copy-libraries';
 import { withProjectCopySourceLock } from './project-copy-source-lock';
 import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
@@ -2011,7 +2013,8 @@ export class ProjectService {
       if (result?.projectSaved !== undefined) outcome = { projectSaved: result.projectSaved,
         generatedCodePublished: result.generatedCodePublished, partial: result.partial,
         ...(result.code ? { code: result.code } : {}) };
-      if (result?.success !== true) throw new Error(result?.error || '编辑器未确认保存成功');
+      if (result?.success !== true) throw Object.assign(new Error(result?.error || '编辑器未确认保存成功'),
+        typeof result?.code === 'string' ? { code: result.code } : {});
       // Saving an inactive Coder tab is valid. Its acknowledgement must not
       // change a replacement project's status or read that project's manifest.
       if (current()) {
@@ -2026,8 +2029,50 @@ export class ProjectService {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('项目保存失败:', message);
       if (current()) this.stateSubject.next(outcome.projectSaved ? 'saved' : 'error');
-      return { ...outcome, success: false, error: message, path };
+      return { ...outcome, success: false, error: message, path,
+        ...(typeof (error as { code?: unknown })?.code === 'string' ? { code: (error as { code: string }).code } : {}) };
     }
+  }
+
+  /** UI and Agent callers share the same application-owned, token-bound resolver. */
+  async inspectSaveConflict(path = this.currentProjectPath): Promise<ProjectConflictOffer | undefined> {
+    const unchanged = this.captureCurrentProjectGuard();
+    this.assertSaveConflictScope(path, unchanged);
+    if (!this.application.inspectBlocklyConflict) return undefined;
+    const offer = await this.application.inspectBlocklyConflict(path);
+    this.assertSaveConflictScope(path, unchanged);
+    if (!isProjectConflictOffer(offer, path)) throw Object.assign(new Error('保存冲突检查未返回当前项目的有效凭据。'),
+      { code: 'PROJECT_CONFLICT_INVALID' });
+    return Object.freeze({ project: offer.project, token: offer.token });
+  }
+
+  async resolveSaveConflict(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution> {
+    const unchanged = this.captureCurrentProjectGuard();
+    this.assertSaveConflictScope(path, unchanged);
+    if (!isProjectConflictChoice(choice) || !isProjectConflictOffer({ project: path, token }, path)) {
+      throw Object.assign(new Error('保存冲突选择或凭据无效，请重新检查当前项目。'), { code: 'PROJECT_CONFLICT_INVALID' });
+    }
+    if (!this.application.resolveBlocklyConflict) throw Object.assign(new Error('当前宿主不支持受保护的保存冲突处理。'),
+      { code: 'PROJECT_CONFLICT_UNAVAILABLE' });
+    this.stateSubject.next('saving');
+    try {
+      const result = await this.application.resolveBlocklyConflict(path, choice, token);
+      this.assertSaveConflictScope(path, unchanged);
+      if (!isProjectConflictResolution(result, path, choice)) throw Object.assign(new Error('保存冲突处理结果未经确认，原数据与恢复记录已保留。'),
+        { code: 'PROJECT_CONFLICT_UNCONFIRMED' });
+      if (!result.projectSaved || result.partial) throw projectSaveOutcomeError(result);
+      this.stateSubject.next('saved');
+      return result;
+    } catch (error) {
+      if (unchanged() && path === this.currentProjectPath) this.stateSubject.next('error');
+      throw error;
+    }
+  }
+
+  private assertSaveConflictScope(path: string, unchanged: () => boolean): void {
+    if (!path || path !== this.currentProjectPath || !unchanged() || this.getProjectMode(path) !== 'blockly'
+      || this.isProjectOpening) throw Object.assign(new Error('项目或加载会话已变化，未执行保存冲突处理。'),
+        { code: 'PROJECT_CONFLICT_CONTEXT_CHANGED' });
   }
 
 

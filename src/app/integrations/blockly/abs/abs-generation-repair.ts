@@ -9,6 +9,7 @@ export interface AbsRecoveryArchive {
   hash: string;
   files: Record<'abi' | 'abs' | 'map' | 'committed' | 'baseline', { hash: string | null; bytes: number }>;
   draft: { hash: string | null; bytes: number };
+  resolution?: { token: string; choice: 'keep_view' | 'replace_view'; inputAbiHash: string };
 }
 
 /** A repair grants authority to rebuild derivatives, never to accept an old AI candidate. */

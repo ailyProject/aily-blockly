@@ -33,7 +33,7 @@ export class AbsGenerationToolsService {
   }
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
-    activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>) {
+    activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string) {
     let applyStarted = false;
     try {
       const { abs, absPath, ...wire } = input;
@@ -61,6 +61,19 @@ export class AbsGenerationToolsService {
           return { ...reply, ok: true };
         }
         if (params['action'] === 'inspect') return { ...reply, ok: true, ...await this.sync.inspectGeneration(), requiresReload: false };
+        if (params['action'] === 'resolve' && ['keep_view', 'replace_view'].includes(params['choice'])
+          && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])
+          && (params['observe'] === undefined || typeof params['observe'] === 'boolean')
+          && params['authority'] === undefined && params['generation'] === undefined) {
+          const result = await this.sync.resolveViewConflict(params['choice'], params['token'], params['observe'] === true);
+          const ok = result.publication.status === 'COMMITTED' && !result.requiresReload && !!result.evidence && !!result.recoveryArchive;
+          return { ...reply, ...result, ok, project: result.evidence?.binding.scope.projectKey ?? requestedProject,
+            receipt: { ...reply.receipt, token: params['token'], choice: params['choice'],
+              ...(params['observe'] === true ? { observe: true } : {}),
+              source: { kind: params['choice'] === 'keep_view' ? 'workspace' : 'saved-abi', abiHash: result.inputAbiHash },
+              inputAbiHash: result.inputAbiHash, output: result.evidence, recoveryArchive: result.recoveryArchive,
+              candidateApplied: false } };
+        }
         if (params['action'] === 'reopen' && typeof params['generation'] === 'string'
           && /^[A-Za-z0-9_-]{1,96}$/.test(params['generation']) && typeof params['token'] === 'string'
           && /^sha256:[a-f0-9]{64}$/.test(params['token'])) {
@@ -140,6 +153,14 @@ export class AbsGenerationToolsService {
     } catch (error) {
       const failure = serializeAbsFailure(error);
       return { ok: false, operation, ...failure,
+        ...(operation === 'abs_recovery' && input['action'] === 'resolve' ? {
+          ...(requestedProject ? { project: requestedProject } : {}),
+          publication: { status: error instanceof AbsApplicationFailure && input['observe'] !== true ? 'NOT_COMMITTED' : 'UNKNOWN' },
+          ...(error instanceof AbsApplicationFailure ? { application: { status: error.applicationStatus } } : {}),
+          receipt: { version: 2, requestId: input['requestId'], action: 'resolve', token: input['token'], choice: input['choice'],
+            ...(input['observe'] === true ? { observe: true } : {}) },
+          requiresReload: false, observation: { resultKnown: error instanceof AbsApplicationFailure, operationCancelled: false },
+        } : {}),
         ...(operation === 'abs_recovery' && ['ABS_REPAIR_OUTCOME_UNKNOWN', 'ABS_JOURNAL_REOPEN_UNKNOWN'].includes(failure.code) ? {
           publication: { status: 'UNKNOWN' }, requiresReload: false,
           observation: { resultKnown: false, operationCancelled: false },

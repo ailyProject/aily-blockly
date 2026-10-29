@@ -7,7 +7,8 @@ import { ChangeDetectorRef, Component, ElementRef, isDevMode, NgZone, OnDestroy,
 import { HEADER_BTNS, HEADER_BTNS_LINUX, HEADER_MENU, IMenuItem } from '../../../configs/menu.config';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { FormsModule } from '@angular/forms';
-import { ProjectService, RECENT_PROJECTS_STORAGE_LIMIT } from '@domain/project/public-api';
+import { ProjectService, RECENT_PROJECTS_STORAGE_LIMIT, isProjectSaveConflict,
+  type ProjectConflictChoice } from '@domain/project/public-api';
 import { UiService, UpdateService } from '@core/app-shell/public-api';
 import { BuilderService, ProbeRsService } from '@domain/build/public-api';
 import {
@@ -698,7 +699,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (item.action === 'recent-project-open') {
       await this.onHeaderMenuSubItemClick(item);
     } else {
-      await this.process(item);
+      const outcome = (await this.process(item, null, 'ai')) || undefined;
+      if (item.action === 'project-save') return {
+        ok: outcome?.success === true, operation: 'main_menu_execute', itemId, action: item.action,
+        ...(outcome || {}), message: outcome?.success === true ? '项目已保存。' : outcome?.error || '编辑器未确认保存成功。',
+      };
     }
     return {
       ok: true,
@@ -1259,6 +1264,78 @@ export class HeaderComponent implements OnInit, OnDestroy {
   updateSubscription: any = null;
   private workspaceImageExporting = false;
   private projectSavingAs = false;
+  private projectSavingFromUi = false;
+  private projectConflictResolving = false;
+
+  /** The UI chooses a conflict strategy; ordinary Agent saves never open a modal. */
+  private async saveProjectFromUi(path = this.projectService.currentProjectPath, timeoutMs = 5000): Promise<boolean> {
+    if (this.projectSavingFromUi || this.projectConflictResolving || this.unsaveDialogOpen) return false;
+    const unchanged = this.projectService.captureCurrentProjectGuard();
+    this.projectSavingFromUi = true;
+    try {
+      const saved = await this.projectService.save(path, timeoutMs);
+      if (!unchanged()) return false;
+      if (saved?.success === true) return true;
+      const resolved = await this.resolveSaveConflictFromUi(path, saved);
+      if (resolved !== undefined) return resolved && unchanged();
+      this.message.error(saved?.error || '编辑器未确认保存成功');
+      return false;
+    } catch (error) {
+      if (!unchanged()) return false;
+      const resolved = await this.resolveSaveConflictFromUi(path, error);
+      if (resolved !== undefined) return resolved && unchanged();
+      this.message.error(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally { this.projectSavingFromUi = false; }
+  }
+
+  private async resolveSaveConflictFromUi(path: string, failure: unknown): Promise<boolean | undefined> {
+    if (!isProjectSaveConflict(failure) || this.projectService.getProjectMode(path) !== 'blockly') return undefined;
+    if (this.projectConflictResolving || this.unsaveDialogOpen) return false;
+    const unchanged = this.projectService.captureCurrentProjectGuard();
+    let ownsOpenDialog = false;
+    this.projectConflictResolving = true;
+    try {
+      const offer = await this.projectService.inspectSaveConflict(path);
+      if (!unchanged()) return false;
+      if (!offer) throw new Error('当前项目未提供安全的保存冲突处理，请保留当前视图和原项目。');
+      const choice = await this.ngZone.run(() => new Promise<ProjectConflictChoice | undefined>(resolve => {
+        this.unsaveDialogOpen = true;
+        ownsOpenDialog = true;
+        const modal = this.modal.create({
+          nzTitle: null, nzFooter: null, nzClosable: false, nzMaskClosable: false,
+          nzBodyStyle: { padding: '0' }, nzWidth: 'min(560px, calc(100vw - 32px))',
+          nzContent: UnsaveDialogComponent,
+          nzData: {
+            title: '保存版本冲突',
+            text: '当前视图与已保存版本存在冲突。处理前会保留原数据，请选择如何保存。',
+            detail: '保留当前视图会保存现有积木，不刷新；使用最新版本会加载经验证的项目状态，替换当前视图。',
+            buttons: [
+              { text: 'UNSAVE_DIALOG.CANCEL', type: 'default', action: 'cancel' },
+              { text: '保留当前视图并保存', type: 'primary', action: 'keep_view' },
+              { text: '使用最新版本并刷新', type: 'default', action: 'replace_view' },
+            ],
+          },
+        });
+        modal.afterClose.subscribe(result => {
+          this.unsaveDialogOpen = false;
+          ownsOpenDialog = false;
+          resolve(result?.result === 'keep_view' || result?.result === 'replace_view' ? result.result : undefined);
+        });
+      }));
+      if (!choice || !unchanged()) return false;
+      const resolved = await this.projectService.resolveSaveConflict(path, choice, offer.token);
+      if (!unchanged() || resolved.projectSaved !== true || resolved.partial) return false;
+      this.message.success?.(choice === 'keep_view' ? '已保留当前视图并保存。' : '已使用最新版本刷新并保存。');
+      return true;
+    } catch (error) {
+      if (unchanged()) this.message.error(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      if (ownsOpenDialog) this.unsaveDialogOpen = false;
+      this.projectConflictResolving = false;
+    }
+  }
 
   private async saveProjectAs(): Promise<void> {
     if (this.projectSavingAs) return;
@@ -1316,7 +1393,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
         await this.addCoderProjects();
         break;
       case 'project-save':
-        this.projectService.save();
+        if (source === 'ai' || this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return this.projectService.save();
+        else await this.saveProjectFromUi();
         break;
       case 'project-save-as':
         await this.saveProjectAs();
@@ -1753,12 +1831,16 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const path = this.projectService.currentProjectPath;
     // Coder activation retains each iframe, including its unsaved editor buffers.
     if (action !== 'close' && this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return true;
+    if (this.projectSavingFromUi || this.projectConflictResolving) return false;
     const unchanged = this.projectService.captureCurrentProjectGuard();
     let checkError: string | undefined;
     // 检查项目是否有未保存的更改
     try {
       if (!await this.projectService.hasUnsavedChanges()) return unchanged();
     } catch (error) {
+      if (isProjectSaveConflict(error) && this.projectService.getProjectMode(path) === 'blockly') {
+        return (await this.resolveSaveConflictFromUi(path, error)) === true && unchanged();
+      }
       checkError = (error instanceof Error ? error.message : String(error)) || '编辑器未返回有效保存状态。';
       if (action !== 'close') {
         this.message.error(`无法确认保存状态：${checkError}`);
@@ -1814,8 +1896,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
             try {
               if (this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') await this.coderPersistence.saveAllOpenProjects();
               else {
-                const saved = await this.projectService.save(path, 15_000);
-                if (saved?.success !== true) throw new Error(saved?.error || '编辑器未确认保存成功');
+                resolve(await this.saveProjectFromUi(path, 15_000) && unchanged());
+                return;
               }
               resolve(unchanged());
             } catch (error) {

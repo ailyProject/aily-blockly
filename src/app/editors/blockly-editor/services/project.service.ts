@@ -13,7 +13,8 @@ import {
   type ProjectSaveOutcome,
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts,
+  type GeneratedSourcePublicationOptions, type GeneratedSourcePublicationReceipt } from './generated-code-artifacts';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
@@ -22,6 +23,10 @@ import type { BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
 import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
 
+const actionFailure = (error: unknown): { error: string; code?: string } => {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return { error: error instanceof Error ? error.message : String(error), ...(typeof code === 'string' ? { code } : {}) };
+};
 
 @Injectable({
   providedIn: 'root'
@@ -60,9 +65,19 @@ export class _ProjectService {
       this.blocklyService.aiWriting$,
     ).subscribe(() => this.blocklyService.projectDirtyState?.invalidate()));
 
-    this.actionService.listen('project-save', action => this.save(action.payload.path), 'project-save-handler');
-    this.actionService.listen('project-check-unsaved', async () =>
-      ({ hasUnsavedChanges: await this.hasUnsavedChanges() }), 'project-check-unsaved-handler');
+    this.actionService.listen('project-save', async action => {
+      try { return await this.save(action.payload.path); }
+      catch (error) {
+        return { projectSaved: false, generatedCodePublished: false, partial: false,
+          ...actionFailure(error) };
+      }
+    }, 'project-save-handler');
+    this.actionService.listen('project-check-unsaved', async () => {
+      try { return { hasUnsavedChanges: await this.hasUnsavedChanges() }; }
+      catch (error) {
+        return actionFailure(error);
+      }
+    }, 'project-check-unsaved-handler');
   }
 
   destroy() {
@@ -331,7 +346,8 @@ export class _ProjectService {
   }
 
   /** Acknowledge the committed snapshot before publishing fallible derived outputs. */
-  async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+  async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void,
+    options: GeneratedSourcePublicationOptions = {}): Promise<GeneratedSourcePublicationReceipt | void> {
     assertCurrent();
     if (path !== this.currentProjectPath || window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== prepared.abiText) {
       throw new Error('Cannot acknowledge a stale project save.');
@@ -341,7 +357,7 @@ export class _ProjectService {
     this.blocklyService.projectDirtyState?.remember(JSON.parse(prepared.documentText));
     if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
     this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
-    await this.publishPreparedCode(path, generated, assertCurrent);
+    return this.publishPreparedCode(path, generated, assertCurrent, options);
   }
 
   private captureSaveContext(path: string) {
@@ -387,7 +403,8 @@ export class _ProjectService {
   }
 
   /** Post-commit work consumes immutable code/artifacts; never calls a Generator. */
-  private async publishPreparedCode(path: string, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+  private async publishPreparedCode(path: string, generated: PreparedBlocklyCode | null, assertCurrent: () => void,
+    options: GeneratedSourcePublicationOptions = {}) {
     if (!generated || generated.code === null) {
       if (generated?.error) console.warn('Project ABI is saved; code generation failed:', generated.error);
       return;
@@ -401,14 +418,15 @@ export class _ProjectService {
     // Publish its sketch and headers together, as startup/build already do;
     // otherwise a successful ABS save leaves the on-disk sketch one edit behind.
     // Other generators have null artifacts and must not write Python into .ino.
-    await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts,
-      generated.artifacts === null ? undefined : generated.code);
+    const publication = await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts,
+      generated.artifacts === null ? undefined : generated.code, options);
     assertCurrent();
     if (this.electronService?.calculateHash) {
       const codeHash = await this.electronService.calculateHash(generated.code);
       assertCurrent();
       patchBuildMetadata(path, { codeHash });
     }
+    return publication;
   }
 
 }

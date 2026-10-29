@@ -417,3 +417,41 @@ describe('project check feedback is fail-closed for all editors', () => {
     expect(wizard.nzModal.create).not.toHaveBeenCalled(); expect(wizard.message.error).toHaveBeenCalled();
   });
 });
+
+describe('editor project action typed failure feedback', () => {
+  let service: _ProjectService, handlers: Map<string, (action?: any) => Promise<any>>;
+  beforeEach(() => {
+    handlers = new Map();
+    service = new _ProjectService({ projectPageHydrated: new Subject() } as any, {
+      listen: (name, callback) => handlers.set(name, callback), unlisten: () => undefined,
+    } as any, {} as any);
+    service.init();
+  });
+  afterEach(() => service.destroy());
+
+  it('retains typed save and dirty-check errors without fabricating success or a dirty boolean', async () => {
+    const error = Object.assign(new Error('A structured external conflict'), { code: 'ABS_DUAL_EDIT_CONFLICT' });
+    spyOn(service, 'save').and.rejectWith(error); spyOn(service, 'hasUnsavedChanges').and.rejectWith(error);
+    expect(await handlers.get('project-save')!({ payload: { path: 'D:/owned' } })).toEqual({
+      projectSaved: false, generatedCodePublished: false, partial: false, error: error.message, code: error.code });
+    expect(await handlers.get('project-check-unsaved')!()).toEqual({ error: error.message, code: error.code });
+  });
+
+  it('does not infer a typed conflict from an untyped message or a non-string code', async () => {
+    const save = spyOn(service, 'save'), check = spyOn(service, 'hasUnsavedChanges');
+    for (const error of [new Error('ABS_DUAL_EDIT_CONFLICT: only a message'), Object.assign(new Error('unknown'), { code: 3 })]) {
+      save.and.rejectWith(error); check.and.rejectWith(error);
+      const saveResult = await handlers.get('project-save')!({ payload: { path: 'D:/owned' } });
+      const checkResult = await handlers.get('project-check-unsaved')!();
+      expect(Object.hasOwn(saveResult, 'code')).toBeFalse(); expect(Object.hasOwn(checkResult, 'code')).toBeFalse();
+      expect(Object.hasOwn(checkResult, 'hasUnsavedChanges')).toBeFalse();
+    }
+  });
+
+  it('preserves successful save and boolean feedback unchanged', async () => {
+    const result = { projectSaved: true, generatedCodePublished: true, partial: false };
+    spyOn(service, 'save').and.resolveTo(result); spyOn(service, 'hasUnsavedChanges').and.resolveTo(false);
+    expect(await handlers.get('project-save')!({ payload: { path: 'D:/owned' } })).toBe(result);
+    expect(await handlers.get('project-check-unsaved')!()).toEqual({ hasUnsavedChanges: false });
+  });
+});

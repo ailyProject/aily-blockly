@@ -502,7 +502,7 @@ export class BlocklyLiveOperationBridgeService {
       case 'abs_recovery':
         return { project: this.projectService.currentProjectPath,
           ...await this.absGenerationTools.execute('abs_recovery', payload.params || {}, undefined, undefined,
-            (path, assertCurrent) => this.projectService.reopenRecoveredBlocklyProject(path, assertCurrent)) };
+            (path, assertCurrent) => this.projectService.reopenRecoveredBlocklyProject(path, assertCurrent), this.projectService.currentProjectPath) };
       case 'abs_compose':
       case 'abs_precheck':
         return this.absGenerationTools.authoring(payload.operation, payload.params || {});

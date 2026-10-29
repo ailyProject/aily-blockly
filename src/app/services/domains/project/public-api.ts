@@ -22,6 +22,7 @@ export * from './project-root-path';
 export * from './project-view-ownership';
 export * from './project-package-name';
 export * from './project-save-outcome';
+export * from './project-conflict';
 export { captureProjectDiskRecovery, inspectProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
 export * from './project-mode';
 export * from './project-document-json';

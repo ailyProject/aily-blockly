@@ -113,7 +113,8 @@ export class BlocklyProjectCleanState {
     if (!this.accepted) return undefined;
     if (!this.matches(scope)) throw new Error('Project runtime changed; save or reload before checking unsaved state.');
     if (disk !== this.accepted.disk && !sameSavedDiskProgram(this.accepted.disk, disk)) {
-      throw new Error('project.abi changed outside this editor; review or reload the project before closing.');
+      throw Object.assign(new Error('project.abi changed outside this editor; review or reload the project before closing.'),
+        { code: 'ABS_SAVED_ABI_CHANGED' });
     }
     return !same(document, this.accepted.document);
   }
