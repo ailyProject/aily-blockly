@@ -2918,6 +2918,10 @@ describe('v2 actual workspace generation coordinator', () => {
       action: 'repair', authority: 'workspace', token: diagnosis.diagnostics.repair?.token ?? 'sha256:' + '0'.repeat(64) });
     expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
     expect(result.publication?.status).toBe('COMMITTED');
+    expect(result.appliedRevision).toBeUndefined();
+    expect(result.receipt?.appliedRevision).toBeUndefined();
+    expect(result.candidateApplied).not.toBeTrue();
+    expect(result.receipt?.candidateApplied).not.toBeTrue();
     expect(result.evidence?.binding.scope.projectKey).toBe('D:/copied-project');
     if (!result.recoveryArchive) return;
     const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
@@ -2928,6 +2932,10 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(source);
     expect((await inspect(tools)).diagnostics.status).toBe('ready');
     expect(roots().getFieldValue('TEXT')).toBe('before');
+    expect(result.abs).not.toBe(source);
+    expect(disk.get('project.abs')).toBe(result.abs);
+    expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(result.abs));
+    expect(restored.draft.abs).not.toBe(result.abs);
   });
 
   it('reuses a completed repair after a lost reply without rewriting the original archive', async () => {
@@ -2939,6 +2947,11 @@ describe('v2 actual workspace generation coordinator', () => {
     const before = [...disk], again: any = await tools.execute('abs_recovery', request());
     expect(again.ok).withContext(JSON.stringify(again)).toBeTrue(); expect(again.reused).toBeTrue();
     expect(again.publication.generation).toBe(first.publication.generation); expect([...disk]).toEqual(before);
+    expect(again.appliedRevision).toBeUndefined(); expect(again.receipt?.appliedRevision).toBeUndefined();
+    expect(again.candidateApplied).not.toBeTrue(); expect(again.receipt?.candidateApplied).not.toBeTrue();
+    const candidate: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'read_repair', generation: again.publication.generation });
+    expect(candidate.draft.abs).toBe(source); expect(roots().getFieldValue('TEXT')).toBe('before');
   });
 
   it('classifies an internally lost repair acknowledgement as unknown and permits verified observation', async () => {
@@ -2954,6 +2967,8 @@ describe('v2 actual workspace generation coordinator', () => {
     const before = [...disk], observed: any = await tools.execute('abs_recovery', request());
     expect(observed.ok).withContext(JSON.stringify(observed)).toBeTrue(); expect(observed.reused).toBeTrue();
     expect([...disk]).toEqual(before);
+    expect(observed.appliedRevision).toBeUndefined(); expect(observed.candidateApplied).not.toBeTrue();
+    expect(roots().getFieldValue('TEXT')).toBe('before');
   });
 
   it('does not replace any mirror if original-input archival fails', async () => {

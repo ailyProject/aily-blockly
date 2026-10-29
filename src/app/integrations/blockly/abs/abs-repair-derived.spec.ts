@@ -62,6 +62,7 @@ describe('repair source commits and derived output observations', () => {
       prepareCode.and.resolveTo(generated);
       const { result } = await repair();
       expect(result.publication.status).toBe('COMMITTED'); expect(result.requiresReload).toBeFalse();
+      expect(result.appliedRevision).toBeUndefined();
       expect(result.derivedOutputs?.published).toBeFalse(); expect(result.derivedOutputs?.code).toBe('PROJECT_CODE_GENERATION_FAILED');
       expect(result.warnings.length).toBe(1);
     });
@@ -84,6 +85,7 @@ describe('repair source commits and derived output observations', () => {
   it('observes a successful completion without calling the output publisher twice', async () => {
     const first = await repair(), repeated = await service.repairGeneration(first.token, 'workspace');
     expect(first.result.derivedOutputs).toEqual({ published: true }); expect(repeated.derivedOutputs).toEqual(first.result.derivedOutputs);
+    expect(first.result.appliedRevision).toBeUndefined(); expect(repeated.appliedRevision).toBeUndefined();
     expect(publisher).toHaveBeenCalledTimes(1); expect(prepareCode).toHaveBeenCalledTimes(1);
   });
   it('reports unknown artifact publication after coordinator restart instead of fabricating success', async () => {

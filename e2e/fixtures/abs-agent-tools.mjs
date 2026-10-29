@@ -85,7 +85,16 @@ export async function createRecoveredAgentHarness(options) {
     } }
   assert.ok(!options.sessionSnapshot || !options.initialEntries?.length,
     'Resume the actual session snapshot or seed entries, never merge unrelated sessions')
-  const sessionManager = sdk.SessionManager.inMemory(sourceProject, undefined, options.sessionSnapshot)
+  assert.ok(!options.createStreaming || !options.sessionSnapshot,
+    'A streaming acceptance starts its own native persistent session, never a patched in-memory session')
+  const persistentManager = options.createStreaming
+    ? (await mod('session-manager/windowed-session-manager')).WindowedSessionManager : undefined
+  const sessionManager = persistentManager
+    ? persistentManager.create(sourceProject, path.join(profileRoot, 'sessions'))
+    : sdk.SessionManager.inMemory(sourceProject, undefined, options.sessionSnapshot)
+  // Optional product-provider session for transport/Agent-loop acceptance. The
+  // normal direct-tool harness still has no provider and never starts a turn.
+  const streaming = await options.createStreaming?.({ sdk, load, mod, services, sessionManager })
   for (const entry of options.initialEntries ?? []) {
     assert.equal(entry.type, 'custom', 'Only existing extension state is seeded; never inject a user message')
     sessionManager.appendCustomEntry(entry.customType, entry.data)
@@ -102,6 +111,7 @@ export async function createRecoveredAgentHarness(options) {
   })
   let permissionService, toolEvents = 0, resultEvents = 0, permissionPrompts = 0, session
   let activeCall, currentPrompt
+  let streamingActive = false, promptRuns = 0
   const errors = [], calls = [], permissionDecisions = []
   // Normal RPC approval seam, not a permission-service or policy override.
   // The caller must explicitly authorize an exact scoped request; default No.
@@ -126,25 +136,48 @@ export async function createRecoveredAgentHarness(options) {
     stage('offline-model-runtime')
     const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({}), modelsPath: null,
       refreshOnCreate: false, allowModelNetwork: false })
-    const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } })
+    const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: streaming
+      ? { enabled: true, maxRetries: 2, baseDelayMs: 1 } : { enabled: false } })
     const loader = new sdk.DefaultResourceLoader({ cwd: sourceProject, agentDir: profileRoot, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [createPermissionModeExtension(services),
+      ...(streaming?.systemPrompt ? { systemPrompt: streaming.systemPrompt } : {}),
+      extensionFactories: [
+        ...(streaming ? [{ name: 'isolated-streaming-call-boundary', factory(pi) {
+          // Registered before the real permission gate so its normal UI seam
+          // approves exactly the SDK call currently being reviewed, not a path
+          // guessed from a later tool. This fixture emits one tool per step.
+          pi.on('tool_call', event => {
+            if (!streamingActive) return
+            assert.equal(activeCall, undefined, 'Streaming fixture requires sequential actual tools')
+            activeCall = { name: event.toolName, input: event.input, id: event.toolCallId }
+            currentPrompt = undefined
+          })
+        } }, ...(streaming.extensionFactories ?? [])] : []),
+        createPermissionModeExtension(services),
         { name: 'pi-permission-system', factory: permissionSystem }, createAilyBlocklyExtension(services),
         createWorkspaceHistoryExtension(services),
         { name: 'isolated-agent-tool-observer', factory(pi) {
           pi.events.on('permissions:ready', event => { permissionService = event.service })
           pi.events.on('permissions:ui_prompt', prompt => { permissionPrompts++; currentPrompt = prompt })
           pi.on('tool_call', () => { toolEvents++ })
-          pi.on('tool_result', () => { resultEvents++ })
+          pi.on('tool_result', async event => {
+            resultEvents++
+            if (!streamingActive) return
+            assert.equal(activeCall?.name, event.toolName)
+            calls.push({ name: event.toolName, isError: event.isError === true,
+              ...(typeof event.input?.path === 'string' ? { path: event.input.path } : {}) })
+            try { await streaming.onToolResult?.(event) }
+            finally { activeCall = undefined; currentPrompt = undefined }
+          })
         } }]
     })
     stage('resources')
     await loader.reload()
     stage('sdk-session')
-    const created = await sdk.createAgentSession({ cwd: sourceProject, agentDir: profileRoot, resourceLoader: loader,
+    const createSession = streaming?.createSession ?? sdk.createAgentSession
+    const created = await createSession({ cwd: sourceProject, agentDir: profileRoot, resourceLoader: loader,
       settingsManager, modelRuntime, sessionManager, noTools: 'builtin', customTools: coreTools,
-      model: { id: 'isolated-no-llm', name: 'isolated-no-llm', api: 'openai-responses', provider: 'fixture',
+      model: streaming?.model ?? { id: 'isolated-no-llm', name: 'isolated-no-llm', api: 'openai-responses', provider: 'fixture',
         baseUrl: 'https://unused.invalid', reasoning: false, input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 128 } })
     session = created.session
@@ -205,6 +238,26 @@ export async function createRecoveredAgentHarness(options) {
       return outcome
     }
     return { call, binding, history, guard, registry, permissionMode,
+      async prompt(text) {
+        assert.ok(streaming, 'A real provider fixture is required to run the Agent loop')
+        assert.equal(disposed, false)
+        assert.equal(activeCall, undefined)
+        assert.equal(streamingActive, false)
+        // Manual fixture preparation (e.g. the real abs_export) owns a history
+        // turn too. Complete it through its real extension lifecycle before the
+        // SDK's before_agent_start begins the actual user turn.
+        if (history.hasActiveTurn) await session.extensionRunner.emit({ type: 'agent_settled', messages: [] })
+        assert.equal(history.hasActiveTurn, false)
+        streamingActive = true
+        promptRuns++
+        try {
+          await session.prompt(text)
+          await session.waitForIdle?.()
+          assert.deepEqual(errors, [], 'Actual provider and tool hooks must remain clean')
+          assert.equal(activeCall, undefined, 'Every streaming call must have its real result')
+        } finally { streamingActive = false }
+      },
+      messages: () => structuredClone(session.agent.state.messages),
       historyEntries: () => structuredClone(sessionManager.getEntries().filter(entry => entry.type === 'custom')),
       sessionSnapshot: () => structuredClone([sessionManager.getHeader(), ...sessionManager.getEntries()]),
       async settle() {
@@ -225,6 +278,7 @@ export async function createRecoveredAgentHarness(options) {
         actualPermissionSystem: true, permissionMode: permissionMode.current,
         permissionScope: permissionService.getRuntimeState(), associatedProjects: binding.associatedProjectRoots,
         toolEvents, resultEvents, permissionPrompts, permissionDecisions: [...permissionDecisions], calls: [...calls], llmInvoked: false,
+        ...(streaming ? { actualProviderSession: true, promptRuns } : {}),
         sessionUserMessages: sessionManager.getEntries().filter(entry => entry.type === 'message' && entry.message.role === 'user').length }),
       async dispose() {
         if (disposed) return
