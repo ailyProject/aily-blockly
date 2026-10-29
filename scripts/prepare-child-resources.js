@@ -6,6 +6,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { baseUrl, getChildResources, getPlatformResources } = require('../electron/child-resources');
+const { planChildNodeDependencies, materializeChildNodeDependencies } = require('./child-node-dependencies');
 
 const pendingCaches = new Map();
 
@@ -147,6 +148,7 @@ async function prepareChildResources({
   includeCoder = false,
   development = false,
 } = {}) {
+  const nodeDependencies = await planChildNodeDependencies({ workspaceRoot, platform, arch });
   const resources = getChildResources({ platform, arch, includeCoder });
   const platformResources = getPlatformResources(platform, arch);
   const rawFiles = new Set([platformResources['7zip'].file, platformResources.ripgrep.file]);
@@ -168,6 +170,7 @@ async function prepareChildResources({
   }));
   const failure = results.find(result => result.status === 'rejected');
   if (failure) throw failure.reason;
+  await materializeChildNodeDependencies(nodeDependencies, { destination });
 }
 
 async function main(args) {
