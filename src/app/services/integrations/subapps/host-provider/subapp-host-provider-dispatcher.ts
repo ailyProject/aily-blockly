@@ -92,6 +92,7 @@ interface ActiveInvocation {
   pendingEventBytes: number;
   timer: ReturnType<typeof setTimeout> | null;
   completed: boolean;
+  buildTerminalTraced: boolean;
 }
 
 interface ActiveArtifactTransfer {
@@ -412,6 +413,7 @@ export class SubappHostProviderDispatcher {
       pendingEventBytes: 0,
       timer: null,
       completed: false,
+      buildTerminalTraced: false,
     };
     this.activeInvocations.set(invocationId, active);
     const delay = deadlineUnixMs - this.requireNow();
@@ -590,12 +592,21 @@ export class SubappHostProviderDispatcher {
       if (!this.isActiveInvocation(active)
         || active.controller.signal.aborted
         || this.activeSubscriptions.get(subscriptionId) !== active) return false;
-      await this.sendForGeneration(active.generation, {
-        type: SUBAPP_HOST_PROVIDER_MESSAGE_TYPES.event,
-        version: SUBAPP_HOST_PROVIDER_TRANSPORT_VERSION,
-        subscriptionId,
-        event,
-      });
+      const trace = !active.buildTerminalTraced ? terminalBuildTrace(event) : null;
+      if (trace) active.buildTerminalTraced = true;
+      trace?.('send-started');
+      try {
+        await this.sendForGeneration(active.generation, {
+          type: SUBAPP_HOST_PROVIDER_MESSAGE_TYPES.event,
+          version: SUBAPP_HOST_PROVIDER_TRANSPORT_VERSION,
+          subscriptionId,
+          event,
+        });
+        trace?.('send-returned');
+      } catch (error) {
+        trace?.('send-failed');
+        throw error;
+      }
       return true;
     });
     active.eventQueue = operation.then(() => undefined, () => undefined);
@@ -856,6 +867,24 @@ export class SubappHostProviderDispatcher {
     }
     return value;
   }
+}
+
+function terminalBuildTrace(event: SubappHostProviderRecord): ((stage: string) => void) | null {
+  const payload = asRecord(event['payload']);
+  if (event['provider'] !== 'build' || !payload
+    || !['completed', 'failed', 'cancelled'].includes(String(payload['stage']))
+    || typeof payload['requestId'] !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(payload['requestId'])) return null;
+  const requestId = payload['requestId'], terminalStage = payload['stage'], startedAt = Date.now();
+  return stage => {
+    try {
+      console.info('[SubappHostProvider][Build]', JSON.stringify({
+        event: 'subapp-host-build-terminal', requestId, terminalStage, stage,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        errorCode: stage === 'send-failed' ? 'operation-failed' : null,
+      }));
+    } catch { /* Transport ownership is independent of diagnostics. */ }
+  };
 }
 
 function validateAdapter(

@@ -38,6 +38,8 @@ const ALLOWED_TRANSITIONS = new Map<
 const DEFAULT_MAX_JOBS = 32;
 
 export interface SimulatorBuildExecutionObserver {
+  diagnostic?(stage: 'agent-resolved' | 'builder-started' | 'builder-resolved'
+    | 'artifact-read-started' | 'artifact-read-resolved'): void;
   report(
     stage: Exclude<
       SimulatorSubappHostBuildProgressStage,
@@ -109,6 +111,7 @@ interface BuildJob {
   terminal: boolean;
   execution: Promise<void> | null;
   releaseExecutionSlot(): void;
+  diagnostic(stage: string, errorCode?: string | null, artifactId?: string): void;
 }
 
 /**
@@ -255,9 +258,11 @@ export class SimulatorBuildCallbackAuthority {
       terminal: false,
       execution: null,
       releaseExecutionSlot,
+      diagnostic: createBuildDiagnostic(request.requestId),
     };
     this.jobs.set(request.requestId, job);
     this.activeRequestId = request.requestId;
+    job.diagnostic('accepted');
     this.publishProgress(job, 'queued', 0, null, null);
     // Install the original Promise before execution can synchronously throw
     // or reenter an owner close. Its slot outlives any terminal observation.
@@ -318,6 +323,7 @@ export class SimulatorBuildCallbackAuthority {
       const artifact = await this.execution.reconcileAndBuild(
         structuredClone(job.request),
         {
+          diagnostic: stage => job.diagnostic(stage),
           report: (stage, progressPermille) => {
             if (job.controller.signal.aborted || job.terminal) return;
             this.publishProgress(
@@ -437,6 +443,7 @@ export class SimulatorBuildCallbackAuthority {
     };
     job.progress.push(entry);
     if (TERMINAL_STAGES.has(stage)) job.terminal = true;
+    if (job.terminal) job.diagnostic(`terminal-${stage}`, errorCode, artifact?.artifact.artifactId);
     try {
       for (const listener of [...job.listeners]) {
         if (listener.signal.aborted) {
@@ -449,6 +456,7 @@ export class SimulatorBuildCallbackAuthority {
           // A failed transport owns only its listener. It cannot change the
           // build outcome or prevent peers from receiving the original event.
           this.releaseListener(job, listener);
+          job.diagnostic('listener-failed', 'operation-failed');
         }
       }
     } finally {
@@ -484,6 +492,26 @@ export class SimulatorBuildCallbackAuthority {
       this.jobs.delete(removable[0]);
     }
   }
+}
+
+/** Fixed-size metadata only; diagnostics must never affect the original job. */
+function createBuildDiagnostic(requestId: string): BuildJob['diagnostic'] {
+  const startedAt = Date.now();
+  const allowedStages = new Set(['accepted', 'agent-resolved', 'builder-started', 'builder-resolved',
+    'artifact-read-started', 'artifact-read-resolved', 'terminal-completed', 'terminal-failed',
+    'terminal-cancelled', 'listener-failed']);
+  let remaining = 12;
+  return (stage, errorCode = null, artifactId) => {
+    if (!allowedStages.has(stage) || remaining-- <= 0
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) return;
+    try {
+      console.info('[SimulatorHost][Build]', JSON.stringify({
+        event: 'simulator-host-build', requestId, stage,
+        elapsedMs: Math.max(0, Date.now() - startedAt), errorCode,
+        ...(artifactId && /^[a-f0-9]{64}$/.test(artifactId) ? { artifactId } : {}),
+      }));
+    } catch { /* Observing a job does not own its outcome. */ }
+  };
 }
 
 function rebuildAck(

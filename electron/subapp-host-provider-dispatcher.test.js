@@ -243,6 +243,27 @@ test('cancellation discards replay and live events queued behind an in-flight de
   } finally { release(); await dispatcher.close(); }
 });
 
+test('terminal Build transport diagnostics distinguish a rejected send without exposing its body', async t => {
+  const { SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types, SubappHostProviderDispatcher } = await dispatcherModulePromise;
+  const fixture = createFixtureAdapters(), transport = new FakeTransport(), logs = [], originalInfo = console.info;
+  console.info = (_prefix, value) => logs.push(JSON.parse(value));
+  t.after(() => { console.info = originalInfo; });
+  const dispatcher = new SubappHostProviderDispatcher({ hostInstanceId: 'host-diagnostics', adapters: fixture.adapters });
+  t.after(() => dispatcher.close());
+  dispatcher.bindTransport(transport);
+  await transport.receive({ type: types.invocation, version: 1,
+    invocation: invocation('diagnostic-subscription', 'build', 'build.progress.subscribe') });
+  await transport.waitFor(message => message.type === types.event);
+  transport.send = async () => { throw new Error('private transport address and token'); };
+  await assert.rejects(fixture.publishByInvocation.get('diagnostic-subscription')('subscription-build-1', {
+    provider: 'build', payload: { requestId: 'diagnostic-request', stage: 'completed', source: 'private-source' },
+  }));
+  assert.deepEqual(logs.map(value => value.stage), ['send-started', 'send-failed']);
+  assert.equal(logs.at(-1).errorCode, 'operation-failed');
+  assert(!JSON.stringify(logs).includes('private'));
+  assert.equal(dispatcher.snapshot().activeArtifactTransfers, 0);
+});
+
 test('keeps subscription events routed and cancellation aborts the exact invocation', async () => {
   const {
     SUBAPP_HOST_PROVIDER_MESSAGE_TYPES: types,

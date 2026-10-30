@@ -174,6 +174,7 @@ implements SimulatorBuildExecutionPort {
           'Simulator main Agent returned a mismatched completion receipt.',
         );
       }
+      observer.diagnostic?.('agent-resolved');
     }
 
     observer.report('compiling', 500);
@@ -184,6 +185,7 @@ implements SimulatorBuildExecutionPort {
       if (sceneDocument.graphSemanticRevision !== request.sceneRevision || sceneDocument.sceneId !== request.sceneId) {
         throw new Error('Simulator Scene changed before compilation.');
       }
+      observer.diagnostic?.('builder-started');
       await this.builder.build({
         requestId: request.requestId,
         projectRoot: this.projectRoot,
@@ -191,6 +193,7 @@ implements SimulatorBuildExecutionPort {
         graphSemanticRevision: request.sceneRevision,
         sceneDocument,
       }, signal);
+      observer.diagnostic?.('builder-resolved');
     } catch (error) {
       throw mappedError(error, signal, 'compile-failed');
     }
@@ -199,10 +202,13 @@ implements SimulatorBuildExecutionPort {
 
     observer.report('staging', 900);
     try {
-      return await this.artifacts.readLatest(
+      observer.diagnostic?.('artifact-read-started');
+      const artifact = await this.artifacts.readLatest(
         this.projectIdentity,
         signal,
       );
+      observer.diagnostic?.('artifact-read-resolved');
+      return artifact;
     } catch (error) {
       throw mappedError(error, signal, 'artifact-staging-failed');
     }

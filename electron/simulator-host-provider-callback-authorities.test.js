@@ -1024,6 +1024,58 @@ test('Build progress listener throwing before terminal does not change a success
   assert.equal(authority.snapshot().activeSubscriptions, 0);
 });
 
+test('Build diagnostics retain the actual staging failure without logging error bodies or changing job cleanup', async t => {
+  const { SimulatorBuildCallbackAuthority, BlocklySimulatorBuildExecutionPort, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const logs = [], originalInfo = console.info;
+  console.info = (_prefix, value) => logs.push(JSON.parse(value));
+  t.after(() => { console.info = originalInfo; });
+  const execution = new BlocklySimulatorBuildExecutionPort({
+    projectRoot: '/private/project-source', projectIdentity, sceneId,
+    activeProject: activeBlocklyProject('/private/project-source'), readCompileScene: async () => document,
+    mainAgent: { async execute() { return mainAgentSceneChangeResult(rebuildRequest(document),
+      { outcome: 'completed', agentRunId: 'agent-run-main' }); } },
+    builder: { async build() {} },
+    artifacts: { async readLatest() { throw new Error('secret-token and private source text'); } },
+  });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, progress = [];
+  authority.callbacks.requestArtifact(request, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), value => progress.push(value), signal);
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.deepEqual(logs.map(value => value.stage), ['accepted', 'agent-resolved', 'builder-started',
+    'builder-resolved', 'artifact-read-started', 'terminal-failed']);
+  assert.equal(logs.at(-1).errorCode, 'artifact-staging-failed');
+  assert.equal(progress.at(-1).stage, 'failed');
+  assert.equal(progress.at(-1).errorCode, 'artifact-staging-failed');
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+  assert(!JSON.stringify(logs).includes('secret-token'));
+  assert(!JSON.stringify(logs).includes('/private/'));
+  assert(logs.every(value => Object.keys(value).sort().join(',') === 'elapsedMs,errorCode,event,requestId,stage'));
+});
+
+test('a failing diagnostic sink cannot change the real Build outcome or retain the execution slot', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), originalInfo = console.info;
+  console.info = () => { throw new Error('diagnostic output unavailable'); };
+  t.after(() => { console.info = originalInfo; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer) {
+      observer.report('compiling', 500);
+      for (let i = 0; i < 40; i++) observer.diagnostic('builder-resolved');
+      return artifactDescriptorFixture(Buffer.from('real-build'), document.graphSemanticRevision);
+    },
+  } });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, progress = [];
+  authority.callbacks.requestArtifact(request, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), value => progress.push(value), signal);
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(progress.at(-1).stage, 'completed');
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+});
+
 for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution routes ${reason} through its required reconciliation before compiling the exact Scene revision`, async () => {
   const {
     BlocklySimulatorBuildExecutionPort,
