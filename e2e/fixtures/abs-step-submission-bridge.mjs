@@ -16,12 +16,14 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * real model usage or billing evidence.
  */
 export async function createAbsStepSubmissionBridge({ interactionId, failAfterToolId, nextTool,
-  finalText = 'Isolated ABS edit, recovery, apply and compile completed.' }) {
+  finalText = 'Isolated ABS edit, recovery, apply and compile completed.', liveRecovery }) {
   assert.match(interactionId, /^[a-zA-Z0-9_-]{1,128}$/)
   assert.equal(typeof nextTool, 'function')
   assert.equal(typeof finalText, 'string')
+  if (liveRecovery) assert.ok(Number.isSafeInteger(liveRecovery.durationMs) && liveRecovery.durationMs > 0
+    && liveRecovery.durationMs <= 40_000, 'Bound the live recovery fixture duration')
   const operations = new Map(), requests = [], failures = []
-  let droppedStep, createCount = 0
+  let droppedStep, createCount = 0, interruptCount = 0
   const lease = step => `isolated-step-lease-${step}`
   const base = `/api/v3/interactions/${interactionId}`
   const operation = step => `${interactionId}:${step}`
@@ -48,6 +50,51 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
       'x-aily-operation-id': operation(value.step), 'x-aily-operation-step': String(value.step) })
     response.end(value.frames.filter(event => event.seq > after).map(event => `data: ${JSON.stringify(event)}\n\n`).join(''))
   }
+  // One accepted model operation stays alive across two broken transports.
+  // Frames are appended as live progress occurs, not fabricated as an already
+  // completed replay. No tool is executable until its original tail is sent.
+  const streamLiveRecovery = (response, value, after) => {
+    assert.ok(after >= 0 && after <= value.frames.length)
+    if (value.eventReads === 1) {
+      assert.equal(after, 0)
+      value.liveStartedAt = Date.now()
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store',
+        'x-aily-operation-id': operation(value.step), 'x-aily-operation-step': String(value.step) })
+      response.flushHeaders()
+      for (const event of value.frames) response.write(`data: ${JSON.stringify(event)}\n\n`)
+      const timer = setInterval(() => {
+        if (response.destroyed) return
+        const event = frame(value.step, value.frames.length + 1, 'thinking_delta', { text: ' live reasoning progress' })
+        value.frames.push(event)
+        value.liveThinkingEvents = (value.liveThinkingEvents ?? 0) + 1
+        response.write(`data: ${JSON.stringify(event)}\n\n`)
+        if (Date.now() - value.liveStartedAt >= liveRecovery.durationMs) {
+          value.liveDurationMs = Date.now() - value.liveStartedAt
+          value.secondDisconnectAt = new Date().toISOString()
+          value.secondDisconnectSequence = event.seq
+          value.livePhase = 'second-disconnect'
+          clearInterval(timer)
+          response.destroy()
+        }
+      }, 100)
+      response.once('close', () => {
+        clearInterval(timer)
+        if (value.livePhase === 'thinking') value.earlyClientDisconnect = true
+      })
+      return
+    }
+    assert.equal(value.eventReads, 2, 'The second transport failure must resume once, not loop')
+    assert.equal(value.livePhase, 'second-disconnect')
+    assert.ok(after > 1, 'Resume the exact consumed cursor, not from the original tool step')
+    value.secondResumeAfter = after
+    value.frames.push(frame(value.step, value.frames.length + 1, 'thinking_delta', { text: ' resumed original operation' }))
+    for (const original of value.pendingFrames) {
+      value.frames.push({ ...original, seq: value.frames.length + 1, sequence: value.frames.length + 1 })
+    }
+    delete value.pendingFrames
+    value.livePhase = 'completed'
+    stream(response, value, after)
+  }
   const json = (response, value, status = 200) => {
     const body = JSON.stringify(value)
     response.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'cache-control': 'no-store' })
@@ -64,6 +111,7 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
     requests.push({ method: request.method, path: url.pathname, query: url.search, receivedAt: new Date().toISOString() })
     try {
       if (request.method === 'POST') {
+        if (url.pathname.endsWith('/interrupt')) interruptCount++
         let size = 0
         const chunks = []
         for await (const chunk of request) {
@@ -106,6 +154,11 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
           droppedStep = step
           assert.equal(response.headersSent, false, 'Inject ACK loss before any headers or SSE chunks exist')
           value.headersLost = true
+          if (liveRecovery) {
+            value.pendingFrames = value.frames.slice(1)
+            value.frames = value.frames.slice(0, 1)
+            value.livePhase = 'thinking'
+          }
           request.socket.destroy()
           return
         }
@@ -117,22 +170,27 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
       assert.ok(match, 'Only authenticated same-operation observations are available')
       const step = Number(match[1]), value = operations.get(step)
       assert.ok(value && step === droppedStep && value.headersLost)
-      requireSubmission(request.headers, value, true)
+      if (!liveRecovery || value.eventReads === 0) requireSubmission(request.headers, value, true)
       if (match[2] === 'state') {
         value.stateReads++
         const receipt = { version: 1, submissionId: value.submissionId, requestSha256: value.requestSha256,
           originalLeaseSha256: value.originalLeaseSha256, stepIndex: step, operationId: operation(step),
           accepted: true, interactionId }
         assert.deepEqual(Object.keys(receipt).sort(), submissionKeys)
-        json(response, { interactionId, operationId: operation(step), operationStepIndex: step, stepIndex: step + 1,
-          status: value.tool ? 'waiting_tool_results' : 'completed', pendingKind: value.tool ? 'tool_results' : 'none',
-          lastSequence: value.frames.length, streamState: 'terminal',
+        const running = liveRecovery && value.livePhase !== 'completed'
+        json(response, { interactionId, operationId: operation(step), operationStepIndex: step, stepIndex: running ? step : step + 1,
+          status: running ? 'running' : value.tool ? 'waiting_tool_results' : 'completed',
+          pendingKind: running ? 'none' : value.tool ? 'tool_results' : 'none',
+          lastSequence: value.frames.length, streamState: running ? 'open' : 'terminal',
           recovery: { reason: null, canonicalOnly: true, responseComplete: false }, stepSubmission: receipt })
       } else {
         assert.ok(value.stateReads > 0, 'Read-only receipt proof must precede event subscription')
-        assert.equal(url.searchParams.get('after'), '0')
         value.eventReads++
-        stream(response, value, 0)
+        if (liveRecovery) streamLiveRecovery(response, value, Number(url.searchParams.get('after')))
+        else {
+          assert.equal(url.searchParams.get('after'), '0')
+          stream(response, value, 0)
+        }
       }
     } catch (error) {
       failures.push({ path: url.pathname, message: error.message })
@@ -142,9 +200,9 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   return { origin: `http://127.0.0.1:${server.address().port}`,
-    snapshot: () => ({ llmInvoked: false, localHttpSse: true, syntheticUsage: true, createCount, droppedStep,
+    snapshot: () => ({ llmInvoked: false, localHttpSse: true, syntheticUsage: true, createCount, droppedStep, interruptCount,
       requests: structuredClone(requests), failures: structuredClone(failures),
-      operations: [...operations.values()].map(({ frames, tool, ...value }) => ({ ...value, toolName: tool?.name,
+      operations: [...operations.values()].map(({ frames, pendingFrames: _pending, tool, ...value }) => ({ ...value, toolName: tool?.name,
         toolCallId: tool?.id, frameCount: frames.length })) }),
     async close() {
       const done = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
