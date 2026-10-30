@@ -65,6 +65,7 @@ export async function createRecoveredAgentHarness(options) {
       ['blockly/tools/registrars/abs/index', 'registerAbsTools'],
       ['blockly/tools/registrars/project/project-recover', 'registerProjectRecover'],
       ['blockly/tools/registrars/project/project-build', 'registerProjectBuild'],
+      ['blockly/tools/registrars/project/project-save', 'registerProjectSave'],
       ['blockly/tools/registrars/project/blocks-set-state', 'registerBlocksSetState'],
       ['blockly/tools/registrars/library/project-status', 'registerProjectStatus'],
       ['blockly/tools/registrars/app-window/app-info', 'registerAppInfo'],

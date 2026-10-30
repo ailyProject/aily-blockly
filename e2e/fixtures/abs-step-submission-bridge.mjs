@@ -15,9 +15,11 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * integration-tested by Services. Never interpret these synthetic counters as
  * real model usage or billing evidence.
  */
-export async function createAbsStepSubmissionBridge({ interactionId, failAfterToolId, nextTool }) {
+export async function createAbsStepSubmissionBridge({ interactionId, failAfterToolId, nextTool,
+  finalText = 'Isolated ABS edit, recovery, apply and compile completed.' }) {
   assert.match(interactionId, /^[a-zA-Z0-9_-]{1,128}$/)
   assert.equal(typeof nextTool, 'function')
+  assert.equal(typeof finalText, 'string')
   const operations = new Map(), requests = [], failures = []
   let droppedStep, createCount = 0
   const lease = step => `isolated-step-lease-${step}`
@@ -31,7 +33,7 @@ export async function createAbsStepSubmissionBridge({ interactionId, failAfterTo
     const frames = [frame(step, 1, 'turn_begin')]
     if (tool) frames.push(frame(step, 2, 'tool_call_begin', { toolCallId: tool.id, toolName: tool.name, input: tool.arguments }),
       frame(step, 3, 'tool_call_end', { toolCallId: tool.id }))
-    else frames.push(frame(step, 2, 'markdown_delta', { text: 'Isolated ABS edit, recovery, apply and compile completed.' }))
+    else frames.push(frame(step, 2, 'markdown_delta', { text: finalText }))
     frames.push(frame(step, frames.length + 1, 'usage', { usage: { prompt_tokens: 1, completion_tokens: 1 } }))
     frames.push(frame(step, frames.length + 1, 'turn_end', { stepIndex: step + 1,
       continuation: { nextStepIndex: step + 1, lease: lease(step + 1), status: tool ? 'waiting_tool_results' : 'completed',
