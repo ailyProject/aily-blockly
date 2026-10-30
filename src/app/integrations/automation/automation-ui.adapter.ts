@@ -17,12 +17,16 @@ export class AutomationUiAdapter implements AutomationUiPort {
     return this.uiService.topTool;
   }
 
-  openToolEmbedded(toolId: string): boolean {
-    return this.uiService.openToolEmbedded(toolId);
+  openToolEmbedded(toolId: string, presentationId?: string): boolean {
+    return presentationId ? this.uiService.openToolEmbedded(toolId, presentationId) : this.uiService.openToolEmbedded(toolId);
   }
 
   openToolWindow(toolId: string, options?: Omit<AutomationWindowOptions, 'path'>): boolean {
     return this.uiService.openToolWindow(toolId, options);
+  }
+
+  completeToolPresentationClose(toolId: string, presentationId: string): void {
+    this.uiService.completeToolPresentationClose(toolId, presentationId);
   }
 
   openWindow(options: AutomationWindowOptions): void {

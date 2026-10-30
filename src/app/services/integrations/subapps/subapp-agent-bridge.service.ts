@@ -22,6 +22,7 @@ import { SubappOwnerRequests } from './models/subapp-owner-requests';
 import { SubappAgentOwnerLeases } from './models/subapp-agent-owner-leases';
 import { sendSubappLifecycleRequest } from './models/subapp-lifecycle-request';
 import { SubappOwnerGuard } from './models/subapp-owner-guard';
+import { SUBAPP_BROWSER_PRESENTATION, SubappBrowserPresentationService } from './subapp-browser-presentation.service';
 import { invokeNativeSubappAgent } from './models/subapp-native-agent';
 import { ChildAppHostRegistryService } from './child-app-host-registry.service';
 import { getChildToolPresentationPlatform, type SubappRegisteredAgentContext } from './models/subapp-registered-agent';
@@ -107,6 +108,8 @@ export class SubappAgentBridgeService implements OnDestroy {
     private readonly presentationOverrides: Readonly<Record<string, 'native' | 'web'>> = Object.freeze({}),
     @Inject(CHILD_TOOL_WEB_PRESENTATIONS)
     private readonly webPresentations: Readonly<Record<string, ChildToolWebPresentation>> = Object.freeze({}),
+    @Optional() @Inject(SubappBrowserPresentationService)
+    private readonly browserPresentations: SubappBrowserPresentationService | null = null,
   ) {}
 
   private resolveAgentPlatform(toolId: string): 'native' | 'web' {
@@ -362,6 +365,7 @@ export class SubappAgentBridgeService implements OnDestroy {
     const sessionId = String(input['sessionId'] || '').trim();
     try {
       if (action === 'release') return await this.ownerLeases.release(ownerLeaseId, sessionId);
+      if (action === 'present') return await this.presentOwner(input, ownerLeaseId, sessionId);
       if (action === 'cancel') {
         const requestId = String(input['requestId'] || '');
         this.ownerLeases.cancel(ownerLeaseId, sessionId, requestId);
@@ -377,6 +381,42 @@ export class SubappAgentBridgeService implements OnDestroy {
     }
   }
 
+  private async presentOwner(input: Record<string, unknown>, ownerLeaseId: string, sessionId: string): Promise<Record<string, unknown>> {
+    const toolId = String(input['toolId'] || '').trim();
+    const validate = () => {
+      this.ownerLeases.require(ownerLeaseId, sessionId);
+      if (!this.channels.get(toolId)?.sessionIds.has(ownerLeaseId)) {
+        throw new SubappRpcError('The Agent owner has not acquired this Subapp', 'SUBAPP_OWNER_TOOL_REQUIRED');
+      }
+    };
+    validate();
+    const config = getChildToolConfig(toolId);
+    if (!config?.runtime?.browserExecution || !config.ui?.surfaces?.['full']?.entry || !this.browserPresentations) {
+      throw new SubappRpcError('This Subapp has no Agent Browser presentation', 'SUBAPP_OWNER_PRESENTATION_UNAVAILABLE');
+    }
+    if (input['mode'] !== undefined && input['mode'] !== 'embedded') {
+      throw new SubappRpcError('Agent Browser presentation requires embedded mode', 'SUBAPP_OWNER_PRESENTATION_MODE');
+    }
+    const ticket = this.browserPresentations.prepare(toolId, ownerLeaseId, validate);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        (async () => {
+          const opened = await this.automation.openChildApp({ toolId, mode: 'embedded', [SUBAPP_BROWSER_PRESENTATION]: ticket.id });
+          if (opened['ok'] !== true) throw new Error(String(opened['message'] || opened['error'] || 'Agent Browser presentation was not opened'));
+          return await ticket.ready;
+        })(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Agent Browser presentation startup timed out')), 15000); }),
+      ]);
+      validate();
+      return { ok: true, toolId, mode: 'embedded', ...result };
+    } catch (error) {
+      try { await this.browserPresentations.cancel(ticket.id, error); }
+      catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Agent Browser presentation failed; View cleanup remains unconfirmed'); }
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
   async releaseSession(sessionId: string, activitySessionId = sessionId): Promise<Record<string, unknown>> {
     const normalizedSessionId = String(sessionId || '').trim();
     if (!normalizedSessionId) {
@@ -387,6 +427,15 @@ export class SubappAgentBridgeService implements OnDestroy {
     const retainedTools: string[] = [];
     const cleanupErrors: Array<{ toolId: string; error: string }> = [];
     const pendingInvocations = this.ownerRequests.release(normalizedSessionId);
+    try { await this.browserPresentations?.closeOwner(normalizedSessionId); }
+    catch (error) {
+      // Keep original channel/owner bindings intact until its View ACKs. The
+      // lease authority retains this failed release for an explicit retry.
+      await pendingInvocations;
+      return { ok: false, sessionId: normalizedSessionId, releasedTools,
+        retainedTools: [...this.channels.values()].filter(channel => channel.sessionIds.has(normalizedSessionId)).map(channel => channel.toolId),
+        cleanupErrors: [{ toolId: 'browser-presentation', error: error instanceof Error ? error.message : String(error) }] };
+    }
     const cleanups: Promise<unknown>[] = [];
     for (const [toolId, channel] of [...this.channels.entries()]) {
       if (!channel.sessionIds.delete(normalizedSessionId)) continue;

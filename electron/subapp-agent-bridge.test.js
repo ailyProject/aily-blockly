@@ -742,6 +742,7 @@ async function loadBridgeModule() {
             ? [
                 'export function Injectable() { return target => target; }',
                 'export function Inject() { return () => undefined; }',
+                'export function Optional() { return () => undefined; }',
                 'export class InjectionToken { constructor(description) { this.description = description; } }'
               ].join('\n')
             : 'export class StubService {}',

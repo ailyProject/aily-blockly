@@ -1,7 +1,8 @@
-import { Injectable } from '@angular/core';
+import { Inject, Injectable, Optional } from '@angular/core';
 import { getChildToolConfig } from '../../../configs/tool.config';
 import { ChildToolProcessService, type ChildToolHostInfo } from './child-tool-process.service';
 import { SubappOwnerGuard } from './models/subapp-owner-guard';
+import { SubappBrowserPresentationService, type SubappBrowserPresentationClaim } from './subapp-browser-presentation.service';
 
 export interface SubappBrowserSurfaceBounds { x: number; y: number; width: number; height: number; }
 export interface SubappBrowserSurfaceGeometry { bounds: SubappBrowserSurfaceBounds; visible: boolean; }
@@ -15,6 +16,7 @@ export interface SubappBrowserSurfaceHandle {
   close(): Promise<Record<string, unknown>>;
 }
 interface SurfaceRecord {
+  id: string; presentation?: SubappBrowserPresentationClaim;
   toolId: string; ownerSessionId: string; processAcquired: boolean; ownerTracked: boolean;
   runtimeId?: string; connectionId?: string; viewClosed: boolean; ownerReleased: boolean; closing: boolean;
   starting: Promise<SubappBrowserSurfaceReady>; updating: Promise<void>; cleanup?: Promise<Record<string, unknown>>;
@@ -28,21 +30,27 @@ export class SubappBrowserSurfaceService {
   private readonly guard = new SubappOwnerGuard();
   private readonly surfaces = new Map<string, SurfaceRecord>();
 
-  constructor(private readonly processService: ChildToolProcessService) {}
+  constructor(private readonly processService: ChildToolProcessService,
+    @Optional() @Inject(SubappBrowserPresentationService)
+    private readonly presentations: SubappBrowserPresentationService | null = null) {}
 
-  open(toolId: string, geometry: SubappBrowserSurfaceGeometry): SubappBrowserSurfaceHandle {
+  open(toolId: string, geometry: SubappBrowserSurfaceGeometry, presentationId = ''): SubappBrowserSurfaceHandle {
     const config = getChildToolConfig(toolId);
     if (!config?.runtime?.browserExecution || !config.ui?.surfaces?.['full']?.entry) {
       throw new Error('The Subapp does not declare a full Browser execution surface');
     }
-    const ownerSessionId = `ui-${crypto.randomUUID()}`;
-    const record: SurfaceRecord = { toolId, ownerSessionId, processAcquired: false, ownerTracked: false,
+    if (presentationId && !this.presentations) throw new Error('Browser presentation authority is unavailable');
+    const record: SurfaceRecord = { id: crypto.randomUUID(), toolId, ownerSessionId: '', processAcquired: false, ownerTracked: false,
       closing: false, viewClosed: false, ownerReleased: false, starting: undefined!, updating: Promise.resolve() };
-    this.surfaces.set(ownerSessionId, record);
-    const current = () => { if (record.closing) throw new Error('Browser surface closed during startup'); };
+    record.presentation = this.presentations?.claim(toolId, presentationId, () => this.close(record));
+    const ownerSessionId = record.ownerSessionId = record.presentation?.ownerSessionId || `ui-${crypto.randomUUID()}`;
+    this.surfaces.set(record.id, record);
+    const current = () => { if (record.closing) throw new Error('Browser surface closed during startup'); record.presentation?.validate(); };
     record.starting = Promise.resolve().then(async () => {
       current(); const hostInfo = await this.processService.acquire(toolId); record.processAcquired = true; current();
-      record.ownerTracked = true; await this.guard.track(toolId, ownerSessionId); current();
+      if (!record.presentation?.ownerSessionId) {
+        record.ownerTracked = true; await this.guard.track(toolId, ownerSessionId); current();
+      }
       const bound = await this.guard.browserExecution(toolId, ownerSessionId);
       record.runtimeId = bound.browserExecution.endpoint.runtimeId; current();
       const view = await this.guard.browserView('openView', toolId, ownerSessionId, {
@@ -54,7 +62,11 @@ export class SubappBrowserSurfaceService {
       record.connectionId = view['connectionId']; current();
       return { hostInfo, ownerSessionId, runtimeId: record.runtimeId, connectionId: record.connectionId };
     });
-    const ready = record.starting.catch(async error => {
+    const ready = record.starting.then(result => {
+      record.presentation?.ready({ ownerSessionId, runtimeId: result.runtimeId, connectionId: result.connectionId });
+      return result;
+    }).catch(async error => {
+      record.presentation?.failed(error);
       try { await this.close(record); } catch (cleanupError) {
         throw new AggregateError([error, cleanupError], 'Browser surface startup and cleanup remain unconfirmed');
       }
@@ -66,8 +78,8 @@ export class SubappBrowserSurfaceService {
 
   /** Explicit recovery keeps the original owner/Runtime identities. */
   retryClose(ownerSessionId: string): Promise<Record<string, unknown>> {
-    const record = this.surfaces.get(ownerSessionId);
-    return record ? this.close(record) : Promise.resolve({ released: true });
+    const records = [...this.surfaces.values()].filter(record => record.ownerSessionId === ownerSessionId);
+    return Promise.all(records.map(record => this.close(record))).then(receipts => receipts[0] || { released: true });
   }
 
   private update(record: SurfaceRecord, geometry: SubappBrowserSurfaceGeometry): Promise<void> {
@@ -75,6 +87,7 @@ export class SubappBrowserSurfaceService {
     const pending = record.updating.catch(() => undefined).then(async () => {
       if (record.closing) return;
       await record.starting; if (record.closing) return;
+      record.presentation?.validate();
       const result = await this.guard.browserView('updateView', record.toolId, record.ownerSessionId, {
         runtimeId: record.runtimeId, connectionId: record.connectionId, ...geometry,
       });
@@ -112,7 +125,8 @@ export class SubappBrowserSurfaceService {
         record.ownerReleased = true;
       }
       if (record.processAcquired) { await this.processService.release(record.toolId); record.processAcquired = false; }
-      if (this.surfaces.get(record.ownerSessionId) === record) this.surfaces.delete(record.ownerSessionId);
+      await record.presentation?.released();
+      if (this.surfaces.get(record.id) === record) this.surfaces.delete(record.id);
       record.receipt = receipt;
       return receipt;
     }).finally(() => { if (record.cleanup === pending) record.cleanup = undefined; });

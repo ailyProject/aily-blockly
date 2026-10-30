@@ -20,11 +20,11 @@ function fixture(options = {}) {
       return { success: options.bindSuccess !== false,
         negotiationRequest: { type: 'negotiate', requestId: 'runtime-request' } };
     },
-    async unbindMessageController(input) { calls.push(['unbind', input.streamId]); },
+    async unbindMessageController(input) { calls.push(['unbind', input.streamId]); if (options.unbindFailures) { options.unbindFailures--; throw Error('unbind failed'); } return Object.hasOwn(options,'unbindResult')?options.unbindResult:{success:true}; },
     async sendMessage(input) { calls.push(['send', input.streamId, input.message]); return { success: true }; },
   };
   const registry = {
-    hasRegistration: toolId => toolId === 'simulator',
+    hasRegistration: toolId => (options.tools ?? ['simulator']).includes(toolId),
     async open(context) {
       calls.push(['open', context.hostInstanceId]);
       if (options.beforeOpen) await options.beforeOpen();
@@ -33,7 +33,8 @@ function fixture(options = {}) {
         void context.transport.send({ type: message.type === 'negotiate' ? 'catalog' : 'accepted' });
       });
       return { async close() {
-        calls.push(['close']);
+        calls.push(['close', context.toolId]);
+        if (options.closeGates?.has(context.toolId)) await options.closeGates.get(context.toolId);
         if (options.closeFailure) throw new Error('fixture close failure');
         await context.transport.send({ type: 'catalog', catalog: null });
         unbind();
@@ -137,12 +138,58 @@ test('binding refusal fails closed and never opens product callbacks', async () 
   await controller.close();
 });
 
-test('cleanup failure still removes controller and stream binding', async () => {
-  const { controller, calls } = fixture({ closeFailure: true });
+test('failed cleanup retains its exact binding, fences ingress and permits close retry', async () => {
+  const options = { closeFailure: true }, { controller, calls } = fixture(options);
   await controller.update('project-a', [runtime()]);
-  await controller.close();
+  await assert.rejects(controller.close());
+  assert.equal(controller.snapshot().length, 1); assert.equal(controller.snapshot()[0].ready, false);
+  controller.receive({toolId:'simulator',streamId:'stream-1',message:{type:'late-build'}});
+  assert(!calls.some(c=>c[0]==='received'&&c[1]==='late-build'));
+  assert(!calls.some(c=>c[0]==='unbind'));
+  options.closeFailure=false; await controller.close();
   assert.deepEqual(controller.snapshot(), []);
-  assert.ok(calls.some(call => call[0] === 'unbind'));
+  assert.equal(calls.filter(c=>c[0]==='close').length,2); assert.equal(calls.filter(c=>c[0]==='unbind').length,1);
+});
+
+test('failed scope cleanup does not poison the update tail or reactivate the old binding', async()=>{
+  const options={closeFailure:true},f=fixture(options); await f.controller.update('a',[runtime()]);
+  await assert.rejects(f.controller.update('b',[runtime()])); assert.equal(f.controller.snapshot()[0].ready,false);
+  options.closeFailure=false; await f.controller.update('b',[runtime()]);
+  assert.equal(f.controller.snapshot()[0].scope,'b'); assert.equal(f.controller.snapshot()[0].ready,true); await f.controller.close();
+});
+
+test('unbind failure retains cleanup authority without repeating a successful product close',async()=>{
+  const options={unbindFailures:1},f=fixture(options); await f.controller.update('a',[runtime()]);
+  await assert.rejects(f.controller.close()); assert.equal(f.controller.snapshot().length,1);
+  await f.controller.close(); assert.deepEqual(f.controller.snapshot(),[]);
+  assert.equal(f.calls.filter(c=>c[0]==='close').length,1);assert.equal(f.calls.filter(c=>c[0]==='unbind').length,2);
+});
+
+for(const reason of ['not-found','stale-session','stale-binding'])test('exact original binding absence permits retirement: '+reason,async()=>{
+  const f=fixture({unbindResult:{success:false,reason}});await f.controller.update('a',[runtime()]);await f.controller.close();assert.deepEqual(f.controller.snapshot(),[]);
+});
+for(const [name,result]of [['unauthorized',{success:false,reason:'message-controller-not-authorized'}],['unknown',{success:false,reason:'unknown'}],['missing',undefined],['null',null],['malformed',{}],['nonboolean',{success:'true'}]])test('unconfirmed unbind retains exact cleanup for retry: '+name,async()=>{
+  const options={unbindResult:result},f=fixture(options);await f.controller.update('a',[runtime()]);await assert.rejects(f.controller.close(),/cleanup remains unconfirmed/);
+  assert.equal(f.controller.snapshot().length,1);assert.equal(f.controller.snapshot()[0].ready,false);
+  options.unbindResult={success:true};await f.controller.close();assert.deepEqual(f.controller.snapshot(),[]);assert.equal(f.calls.filter(c=>c[0]==='close').length,1);
+});
+
+test('one pending product close does not block another tool cleanup',async()=>{
+  let finish;const gate=new Promise(r=>finish=r),f=fixture({tools:['simulator','other'],closeGates:new Map([['simulator',gate]])});
+  await f.controller.update('a',[runtime(),{...runtime('other-stream'),toolId:'other'}]);
+  const close=f.controller.close();
+  try{for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));assert(f.calls.some(c=>c[0]==='unbind'&&c[1]==='other-stream'));}
+  finally{finish();await close;}
+});
+
+test('close can retire another tool while an earlier scope reconciliation is still draining',async()=>{
+  let finish;const gate=new Promise(r=>finish=r),f=fixture({tools:['simulator','other'],closeGates:new Map([['simulator',gate]])});
+  const other={...runtime('other-stream'),toolId:'other'};
+  await f.controller.update('a',[runtime(),other]);
+  const update=f.controller.update('a',[other]);for(let i=0;i<3;i++)await new Promise(r=>setImmediate(r));
+  const close=f.controller.close();
+  try{for(let i=0;i<6;i++)await new Promise(r=>setImmediate(r));assert(f.calls.some(c=>c[0]==='unbind'&&c[1]==='other-stream'));}
+  finally{finish();await Promise.all([update,close]);}
 });
 
 test('unregistered, stopped and no-message-port tools preserve their existing lifecycle', async () => {

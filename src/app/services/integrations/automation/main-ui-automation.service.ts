@@ -1,9 +1,10 @@
-import { Inject, Injectable } from '@angular/core';
+import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 
 import { getChildToolConfig, getChildToolConfigs, type ChildToolConfig } from '../../../configs/tool.config';
 import { ChildAppHostRegistryService, type ChildAppHostAction } from '@integration/subapps/public-api';
 import { UiAutomationRegistryService } from './ui-automation-registry.service';
+import { SUBAPP_BROWSER_PRESENTATION, SubappBrowserPresentationService } from '../subapps/subapp-browser-presentation.service';
 import {
   AUTOMATION_UI_PORT,
   type AutomationUiPort,
@@ -71,6 +72,8 @@ export class MainUiAutomationService {
     @Inject(AUTOMATION_UI_PORT)
     private readonly ui: AutomationUiPort,
     private readonly translate: TranslateService,
+    @Optional() @Inject(SubappBrowserPresentationService)
+    private readonly browserPresentations: SubappBrowserPresentationService | null = null,
   ) {
     this.childHostRegistry.ensureInitialized();
   }
@@ -223,12 +226,23 @@ export class MainUiAutomationService {
 
     const routePath = this.routePath(config);
     const windowState = await this.readWindowState(routePath);
+    const presentationId = Reflect.get(params, SUBAPP_BROWSER_PRESENTATION) as string | undefined;
+    if (presentationId && (mode !== 'embedded' || windowState.open || this.ui.openToolList.includes(toolId))) {
+      return { ok: false, message: 'Close the current Subapp View before presenting an Agent owner' };
+    }
+    if (presentationId) {
+      if (!this.browserPresentations || !this.ui.completeToolPresentationClose) {
+        return { ok: false, message: 'Agent Browser presentation mount lifecycle is unavailable' };
+      }
+      this.browserPresentations.registerMount(toolId, presentationId,
+        () => this.ui.completeToolPresentationClose!(toolId, presentationId));
+    }
     if (mode === 'embedded') {
       if (windowState.open) {
         const moved = await this.sendHostCommand(routePath, toolId, 'embed');
         if (moved['ok'] !== true) return moved;
       }
-      const visible = this.ui.openToolEmbedded(toolId);
+      const visible = presentationId ? this.ui.openToolEmbedded(toolId, presentationId) : this.ui.openToolEmbedded(toolId);
       if (!visible) {
         return {
           ok: false,

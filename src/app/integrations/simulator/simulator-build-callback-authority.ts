@@ -65,6 +65,28 @@ export interface SimulatorBuildCallbackAuthorityOptions {
   sceneId?: string;
   execution: SimulatorBuildExecutionPort;
   maxJobs?: number;
+  /** The owning Host composition supplies one shared slot across its scopes. */
+  executionSlot?: SimulatorBuildExecutionSlot;
+}
+
+export interface SimulatorBuildExecutionSlot {
+  tryAcquire(): (() => void) | null;
+}
+
+export function createSimulatorBuildExecutionSlot(): SimulatorBuildExecutionSlot {
+  let occupied = false;
+  return Object.freeze({
+    tryAcquire() {
+      if (occupied) return null;
+      occupied = true;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        occupied = false;
+      };
+    },
+  });
 }
 
 interface ProgressEntry {
@@ -85,6 +107,8 @@ interface BuildJob {
   progress: ProgressEntry[];
   listeners: Set<ProgressListener>;
   terminal: boolean;
+  execution: Promise<void> | null;
+  releaseExecutionSlot(): void;
 }
 
 /**
@@ -101,10 +125,12 @@ export class SimulatorBuildCallbackAuthority {
   >;
 
   private readonly execution: SimulatorBuildExecutionPort;
+  private readonly executionSlot: SimulatorBuildExecutionSlot;
   private readonly maxJobs: number;
   private readonly jobs = new Map<string, BuildJob>();
   private activeRequestId: string | null = null;
   private closed = false;
+  private closing: Promise<void> | null = null;
 
   constructor(options: SimulatorBuildCallbackAuthorityOptions) {
     this.projectIdentity = requirePortableIdentifier(
@@ -119,6 +145,7 @@ export class SimulatorBuildCallbackAuthority {
       throw new TypeError('Build execution port is invalid.');
     }
     this.execution = options.execution;
+    this.executionSlot = options.executionSlot ?? createSimulatorBuildExecutionSlot();
     this.maxJobs = requireIntegerInRange(
       options.maxJobs ?? DEFAULT_MAX_JOBS,
       1,
@@ -156,8 +183,8 @@ export class SimulatorBuildCallbackAuthority {
     });
   }
 
-  close(): void {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
     for (const job of this.jobs.values()) {
       if (!job.terminal) {
@@ -166,7 +193,10 @@ export class SimulatorBuildCallbackAuthority {
       }
       this.releaseListeners(job);
     }
-    this.activeRequestId = null;
+    // Publishing cancellation fences results; it does not prove an Agent or
+    // Builder that ignored abort has actually finished its original work.
+    this.closing = Promise.all([...this.jobs.values()].map(job => job.execution)).then(() => undefined);
+    return this.closing;
   }
 
   private requestArtifact(
@@ -195,6 +225,9 @@ export class SimulatorBuildCallbackAuthority {
       if (!remembered.terminal || currentStage(remembered) === 'completed') {
         return rebuildAck(request, 'accepted', null);
       }
+      if (remembered.execution) {
+        return rebuildAck(request, 'conflict', 'request-superseded');
+      }
       // A failed or cancelled immutable build may be retried with the same
       // request identity. Replace only its terminal job; completed results
       // remain idempotent and conflicting payloads remain rejected above.
@@ -202,12 +235,17 @@ export class SimulatorBuildCallbackAuthority {
     }
     if (this.activeRequestId) {
       const active = this.jobs.get(this.activeRequestId);
-      if (active && !active.terminal) {
-        active.controller.abort();
-        this.publishTerminal(active, 'cancelled', 0, 'cancelled');
+      if (active) {
+        // A different request cannot supersede physical work by cancelling
+        // its observation. The caller may explicitly retry after it settles.
+        return rebuildAck(request, 'conflict', 'request-superseded');
       }
     }
     this.pruneJobs();
+    const releaseExecutionSlot = this.executionSlot.tryAcquire();
+    if (!releaseExecutionSlot) {
+      return rebuildAck(request, 'conflict', 'request-superseded');
+    }
     const job: BuildJob = {
       request: structuredClone(request),
       requestDigest,
@@ -215,11 +253,15 @@ export class SimulatorBuildCallbackAuthority {
       progress: [],
       listeners: new Set(),
       terminal: false,
+      execution: null,
+      releaseExecutionSlot,
     };
     this.jobs.set(request.requestId, job);
     this.activeRequestId = request.requestId;
     this.publishProgress(job, 'queued', 0, null, null);
-    void this.runJob(job);
+    // Install the original Promise before execution can synchronously throw
+    // or reenter an owner close. Its slot outlives any terminal observation.
+    job.execution = Promise.resolve().then(() => this.runJob(job));
     return rebuildAck(request, 'accepted', null);
   }
 
@@ -249,10 +291,17 @@ export class SimulatorBuildCallbackAuthority {
     };
     job.listeners.add(listener);
     signal.addEventListener('abort', listener.abort, { once: true });
-    for (const entry of job.progress) {
-      if (entry.sequence > acceptedFromSequence && !signal.aborted) {
-        publish(structuredClone(entry.payload));
+    try {
+      for (const entry of job.progress) {
+        if (entry.sequence > acceptedFromSequence && !signal.aborted) {
+          publish(structuredClone(entry.payload));
+        }
       }
+    } catch (error) {
+      // Replay failed before subscription admission completed. Report that
+      // failure to the caller without retaining an unreachable listener.
+      this.releaseListener(job, listener);
+      throw error;
     }
     if (job.terminal) {
       queueMicrotask(() => this.releaseListener(job, listener));
@@ -265,6 +314,7 @@ export class SimulatorBuildCallbackAuthority {
 
   private async runJob(job: BuildJob): Promise<void> {
     try {
+      if (this.closed || job.controller.signal.aborted) return;
       const artifact = await this.execution.reconcileAndBuild(
         structuredClone(job.request),
         {
@@ -320,12 +370,14 @@ export class SimulatorBuildCallbackAuthority {
         errorCode,
       );
     } finally {
+      job.execution = null;
       if (
         this.activeRequestId === job.request.requestId
         && this.jobs.get(job.request.requestId) === job
       ) {
         this.activeRequestId = null;
       }
+      job.releaseExecutionSlot();
     }
   }
 
@@ -385,15 +437,24 @@ export class SimulatorBuildCallbackAuthority {
     };
     job.progress.push(entry);
     if (TERMINAL_STAGES.has(stage)) job.terminal = true;
-    for (const listener of [...job.listeners]) {
-      if (listener.signal.aborted) {
-        this.releaseListener(job, listener);
-        continue;
+    try {
+      for (const listener of [...job.listeners]) {
+        if (listener.signal.aborted) {
+          this.releaseListener(job, listener);
+          continue;
+        }
+        const progress = structuredClone(payload);
+        try { listener.publish(progress); }
+        catch {
+          // A failed transport owns only its listener. It cannot change the
+          // build outcome or prevent peers from receiving the original event.
+          this.releaseListener(job, listener);
+        }
       }
-      listener.publish(structuredClone(payload));
-    }
-    if (job.terminal) {
-      queueMicrotask(() => this.releaseListeners(job));
+    } finally {
+      if (job.terminal) {
+        queueMicrotask(() => this.releaseListeners(job));
+      }
     }
   }
 
@@ -416,7 +477,7 @@ export class SimulatorBuildCallbackAuthority {
   private pruneJobs(): void {
     while (this.jobs.size >= this.maxJobs) {
       const removable = [...this.jobs.entries()]
-        .find(([, job]) => job.terminal && job.listeners.size === 0);
+        .find(([, job]) => job.terminal && !job.execution && job.listeners.size === 0);
       if (!removable) {
         throw new SimulatorHostProviderOperationError('operation-failed');
       }

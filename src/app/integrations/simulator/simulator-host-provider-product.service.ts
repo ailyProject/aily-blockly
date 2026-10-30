@@ -23,6 +23,7 @@ import {
   type SubappHostProviderProductSession,
 } from '@integration/subapps/public-api';
 import { SimulatorBuildProductComposition } from './simulator-build-product-composition';
+import { createSimulatorBuildExecutionSlot } from './simulator-build-callback-authority';
 import {
   SimulatorBlocklyEditorCallbackAuthority,
 } from './simulator-blockly-editor-callback-authority';
@@ -47,6 +48,7 @@ const SIMULATOR_PROVIDER_MESSAGE_BUDGET = 4 * 1024 * 1024 + 16 * 1024;
  */
 @Injectable({ providedIn: 'root' })
 export class SimulatorHostProviderProductService {
+  private readonly buildExecutionSlot = createSimulatorBuildExecutionSlot();
   private unregister: (() => void) | null = null;
 
   constructor(
@@ -89,7 +91,7 @@ export class SimulatorHostProviderProductService {
     const activationSignal = AbortSignal.any([captured.signal, lifetime.signal, ...(signal ? [signal] : [])]);
     let closeRequested = false, closed = false, closing: Promise<void> | null = null;
     const pending = new Set<Promise<unknown>>();
-    const cleanup = new Set<() => void>();
+    const cleanup = new Set<() => void | Promise<void>>();
     const requireCurrent = () => {
       activationSignal.throwIfAborted();
       if (closeRequested) throw new SimulatorHostProviderOperationError('cancelled');
@@ -122,7 +124,7 @@ export class SimulatorHostProviderProductService {
       const original = Promise.resolve().then(async () => {
         const failures: unknown[] = [];
         for (const release of [...cleanup]) {
-          try { release(); cleanup.delete(release); } catch (error) { failures.push(error); }
+          try { await release(); cleanup.delete(release); } catch (error) { failures.push(error); }
         }
         // Abort is an intent, not proof that an ignored file operation settled.
         // A composite callback may reject before a sibling file operation.
@@ -186,6 +188,7 @@ export class SimulatorHostProviderProductService {
         },
       });
       const composition = new SimulatorBuildProductComposition({
+        buildExecutionSlot: this.buildExecutionSlot,
         projectRoot,
         projectIdentity,
         workspaceIdentity,

@@ -69,9 +69,9 @@ function fixture(t, options = {}) {
   const api = {
     onStateChanged: listen(stateListeners), onMessage: listen(messageListeners),
     onHostShutdown: listen(shutdownListeners),
-    list: () => listGate ? listGate.promise : Promise.resolve(runtimes),
+    list: () => { calls.push(['list']); return listGate ? listGate.promise : Promise.resolve(runtimes); },
     async bindMessageController(input) { calls.push(['bind', input.toolId, input.streamId]); return { success: true }; },
-    async unbindMessageController(input) { calls.push(['unbind', input.toolId, input.streamId]); },
+    async unbindMessageController(input) { calls.push(['unbind', input.toolId, input.streamId]); return {success:true}; },
     async sendMessage(input) { calls.push(['send', input.toolId, input.message.type]); return { success: true }; },
   };
   const registry = {
@@ -83,7 +83,7 @@ function fixture(t, options = {}) {
       if (gates.has(root)) await gates.get(root).promise;
       if (options.failOpenRoots?.includes(root)) throw new Error('fixture Provider open failure');
       const remove = context.transport.onMessage(() => undefined);
-      return { async close() { closedRoots.push(root); remove(); } };
+      return { async close() { closedRoots.push(root); if(options.closeGate)await options.closeGate.promise;if(options.closeFailures){options.closeFailures--;throw Error('fixture close failure');} remove(); } };
     },
   };
   globalThis.window = { electronAPI: { childToolSession: api } };
@@ -104,6 +104,7 @@ function fixture(t, options = {}) {
   service.start();
   return {
     service, project, calls, openedRoots, closedRoots, baseEvents, projectionEvents,
+    shutdown(){for(const listener of shutdownListeners)listener();},
     begin(root) { opening = true; loadedRoot = ''; paths.next(root); stateSubject.next('loading'); openingChanged.next(); },
     markLoaded(root = paths.value) { loadedRoot = root; stateSubject.next('loaded'); },
     settleOpen() { opening = false; openingChanged.next(); },
@@ -130,6 +131,29 @@ test('loading and loaded-before-exact-task-clear remain null, then B publishes w
   assert.equal(f.service.readyBaseWorkspace, '/b');
   assert.equal(f.baseEvents.at(-1), '/b');
   assert.equal(f.projectionEvents.at(-1), '/b');
+});
+
+test('failed stop retains controller for retry and cannot be bypassed by start',async t=>{
+  const options={closeFailures:1},f=fixture(t,options);await settled(()=>f.service.readyBaseWorkspace==='/a');
+  await assert.rejects(f.service.stop());assert.equal(f.service.readyBaseWorkspace,null);
+  const count=f.calls.filter(c=>c[0]==='list').length;f.service.start();await turn();assert.equal(f.calls.filter(c=>c[0]==='list').length,count);
+  await f.service.stop();assert.equal(f.closedRoots.length,2);
+  f.service.start();await settled(()=>f.service.readReadyWorkspace('simulator')==='/a');
+});
+
+test('pending stop fences discovery and start until original product cleanup settles',async t=>{
+  const closeGate=deferred(),f=fixture(t,{closeGate});await settled(()=>f.service.readyBaseWorkspace==='/a');
+  const stop=f.service.stop();
+  try{await turn();const count=f.calls.filter(c=>c[0]==='list').length;
+  f.service.start();f.ready('/b');await turn();assert.equal(f.service.readyBaseWorkspace,null);assert.equal(f.calls.filter(c=>c[0]==='list').length,count);}
+  finally{closeGate.resolve();await stop;}
+  closeGate.resolve();await stop;f.service.start();await settled(()=>f.service.readReadyWorkspace('simulator')==='/b');
+});
+
+test('shutdown observes failed async cleanup and preserves the original retry',async t=>{
+  const options={closeFailures:1},f=fixture(t,options);await settled(()=>f.service.readyBaseWorkspace==='/a');
+  f.shutdown();await turn();await turn();assert.equal(f.service.readyBaseWorkspace,null);
+  await f.service.stop();assert.equal(f.closedRoots.length,2);
 });
 
 test('registered Provider opening keeps both base and tool projection null until the real controller settles', async t => {

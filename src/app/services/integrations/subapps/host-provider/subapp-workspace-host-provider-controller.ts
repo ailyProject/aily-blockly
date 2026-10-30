@@ -28,6 +28,10 @@ interface Binding {
   readonly bindingId: string;
   readonly pending: SubappHostProviderRecord[];
   overflowed: boolean;
+  closing: boolean;
+  sessionClosed: boolean;
+  cleanup: Promise<void> | null;
+  initialized: Promise<void>;
   session: SubappHostProviderProductSession | null;
   listener: ((message: SubappHostProviderRecord) => void) | null;
 }
@@ -55,7 +59,7 @@ export class SubappWorkspaceHostProviderController {
     if (this.closed) return this.tail;
     this.scope = scope;
     this.runtimes = runtimes.map(runtime => ({ ...runtime }));
-    this.tail = this.tail.then(() => this.reconcile());
+    this.tail = this.tail.catch(() => undefined).then(() => this.reconcile());
     return this.tail;
   }
 
@@ -76,8 +80,13 @@ export class SubappWorkspaceHostProviderController {
 
   close(): Promise<void> {
     this.closed = true;
-    this.tail = this.tail.then(async () => {
-      for (const binding of [...this.bindings.values()]) await this.release(binding);
+    for (const binding of this.bindings.values()) binding.closing = true;
+    // Each binding joins its own opening/cleanup. One retained product must
+    // not postpone another tool's independently confirmed release.
+    const cleanup = this.releaseAll([...this.bindings.values()]);
+    this.tail = this.tail.catch(() => undefined).then(async () => {
+      const failures = await cleanup;
+      if (failures.length) throw new AggregateError(failures, 'Workspace Provider cleanup remains unconfirmed.');
     });
     return this.tail;
   }
@@ -89,19 +98,20 @@ export class SubappWorkspaceHostProviderController {
   }
 
   private matches(binding: Binding): boolean {
-    return !binding.overflowed && binding.scope === this.scope && this.desired().some(runtime =>
+    return !binding.closing && !binding.overflowed && binding.scope === this.scope && this.desired().some(runtime =>
       runtime.toolId === binding.runtime.toolId && runtime.streamId === binding.runtime.streamId);
   }
 
   private async reconcile(): Promise<void> {
-    for (const binding of [...this.bindings.values()]) {
-      if (!this.matches(binding)) await this.release(binding);
-    }
+    const failures = await this.releaseAll([...this.bindings.values()].filter(binding => !this.matches(binding)));
     for (const runtime of this.desired()) {
+      if (this.closed) break;
       if (this.bindings.has(runtime.toolId)) continue;
+      let initialized!: () => void;
       const binding: Binding = {
         runtime, scope: this.scope, bindingId: `${this.options.instanceId}:${++this.sequence}`,
-        pending: [], overflowed: false, session: null, listener: null,
+        pending: [], overflowed: false, closing: false, sessionClosed: false, cleanup: null, session: null, listener: null,
+        initialized: new Promise<void>(resolve => { initialized = resolve; }),
       };
       this.bindings.set(runtime.toolId, binding);
       try {
@@ -110,8 +120,7 @@ export class SubappWorkspaceHostProviderController {
         });
         if (!result.success) throw new Error('Host Provider controller binding was rejected.');
         if (result.negotiationRequest) binding.pending.push(result.negotiationRequest);
-        if (!this.matches(binding)) { await this.release(binding); continue; }
-        binding.session = await this.options.registry.open({
+        if (this.matches(binding)) binding.session = await this.options.registry.open({
           toolId: runtime.toolId, hostInstanceId: this.options.instanceId,
           transport: {
             onMessage: listener => {
@@ -126,6 +135,7 @@ export class SubappWorkspaceHostProviderController {
               return () => { if (binding.listener === listener) binding.listener = null; };
             },
             send: async message => {
+              if (this.bindings.get(runtime.toolId) !== binding) throw new Error('Workspace Provider binding is retired.');
               const sent = await this.options.port.sendMessage({
                 toolId: runtime.toolId, streamId: runtime.streamId,
                 bindingId: binding.bindingId, message,
@@ -134,28 +144,49 @@ export class SubappWorkspaceHostProviderController {
             },
           },
         });
-        if (!binding.session || !this.matches(binding)) await this.release(binding);
       } catch {
-        await this.release(binding);
         this.options.onError?.(runtime.toolId);
+      } finally { initialized(); }
+      if (!binding.session || !this.matches(binding)) {
+        try { await this.release(binding); } catch (error) { failures.push(error); }
       }
     }
+    if (failures.length) throw new AggregateError(failures, 'Workspace Provider cleanup remains unconfirmed.');
   }
 
-  private async release(binding: Binding): Promise<void> {
-    if (this.bindings.get(binding.runtime.toolId) !== binding) return;
-    try { await binding.session?.close(); }
-    catch { this.options.onError?.(binding.runtime.toolId); }
-    finally {
-      binding.listener = null;
-      binding.pending.length = 0;
-      this.bindings.delete(binding.runtime.toolId);
-      try {
-        await this.options.port.unbindMessageController({
-          toolId: binding.runtime.toolId, streamId: binding.runtime.streamId,
-          bindingId: binding.bindingId,
-        });
-      } catch { this.options.onError?.(binding.runtime.toolId); }
-    }
+  private async releaseAll(bindings: readonly Binding[]): Promise<unknown[]> {
+    const results = await Promise.allSettled(bindings.map(binding => this.release(binding)));
+    return results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+  }
+
+  private release(binding: Binding): Promise<void> {
+    if (this.bindings.get(binding.runtime.toolId) !== binding) return Promise.resolve();
+    if (binding.cleanup) return binding.cleanup;
+    binding.closing = true;
+    binding.listener = null;
+    binding.pending.length = 0;
+    const cleanup = Promise.resolve().then(async () => {
+      await binding.initialized;
+      if (!binding.sessionClosed) {
+        await binding.session?.close();
+        binding.sessionClosed = true;
+      }
+      const result = await this.options.port.unbindMessageController({
+        toolId: binding.runtime.toolId, streamId: binding.runtime.streamId,
+        bindingId: binding.bindingId,
+      });
+      const ack = result && typeof result === 'object' && !Array.isArray(result)
+        ? result as Record<string, unknown> : null;
+      const originalBindingAbsent = ack?.['success'] === false
+        && typeof ack['reason'] === 'string'
+        && ['not-found', 'stale-session', 'stale-binding'].includes(ack['reason']);
+      if (ack?.['success'] !== true && !originalBindingAbsent) {
+        throw new Error('Workspace Provider unbind remains unconfirmed.');
+      }
+      if (this.bindings.get(binding.runtime.toolId) === binding) this.bindings.delete(binding.runtime.toolId);
+    }).catch(error => { this.options.onError?.(binding.runtime.toolId); throw error; })
+      .finally(() => { if (binding.cleanup === cleanup) binding.cleanup = null; });
+    binding.cleanup = cleanup;
+    return cleanup;
   }
 }

@@ -108,6 +108,7 @@ interface ChatResourcePickerRequest {
 export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   @Input() toolId = '';
   @Input() active = true;
+  @Input() presentationId = '';
 
   currentUrl = '';
   resolvedToolId = '';
@@ -146,6 +147,13 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private readonly hostContextId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   private hostContextVersion = 0;
   private beforeCloseTask: Promise<boolean> | null = null;
+  private settledCloseForDestroy: {
+    toolId: string;
+    presentationId: string;
+    connection: Connection | null;
+    remoteWindow: Window | null;
+    remoteApi: unknown;
+  } | null = null;
   private restartTask: Promise<Record<string, unknown>> | null = null;
   private runtimeRecoveryScheduled = false;
   private runtimeRecoveryRequestTimes: number[] = [];
@@ -455,17 +463,35 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.pendingExternalInputSignals.length = 0;
     const releaseToolId = this.acquired ? this.resolvedToolId : '';
     this.acquired = false;
+    const closeDecision = this.settledCloseForDestroy;
+    const closeAlreadySettled = !!closeDecision
+      && closeDecision.toolId === this.resolvedToolId
+      && closeDecision.presentationId === this.presentationId
+      && closeDecision.connection === this.penpalConnection
+      && closeDecision.remoteWindow === this.penpalRemoteWindow
+      && closeDecision.remoteApi === this.remoteApi;
+    this.settledCloseForDestroy = null;
     const finishDestroy = async () => {
       this.destroyPenpalConnection();
       if (releaseToolId) {
         await this.processService.release(releaseToolId);
       }
     };
-    void this.notifyChildBeforeClose('close').then(finishDestroy, finishDestroy);
+    if (closeAlreadySettled) void finishDestroy();
+    else void this.notifyChildBeforeClose('close').then(finishDestroy, finishDestroy);
   }
 
   async close(options: ChildAppLifecycleOptions = {}): Promise<Record<string, unknown>> {
     if (this.closing) return { ok: false, message: '子应用正在关闭' };
+    const closingToolId = this.resolvedToolId, closingPresentationId = this.presentationId;
+    const closeDecision = {
+      toolId: closingToolId,
+      presentationId: closingPresentationId,
+      connection: this.penpalConnection,
+      remoteWindow: this.penpalRemoteWindow,
+      remoteApi: this.remoteApi,
+    };
+    this.settledCloseForDestroy = null;
     this.closing = true;
 
     if (this.isBrowserExecution) {
@@ -487,16 +513,21 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     }
 
     if (this.isStandalone) {
+      this.settledCloseForDestroy = closeDecision;
       window['iWindow']?.close?.();
       return { ok: true, toolId: this.resolvedToolId, action: 'close', mode: 'window' };
     }
 
-    if (this.resolvedToolId) {
-      this.uiService.completeToolClose(this.resolvedToolId);
+    if (closingToolId) {
+      // Keep the settled policy decision for this document's destruction only.
+      // A non-strict timeout may allow close, but remains an error in its log.
+      this.settledCloseForDestroy = closeDecision;
+      if (closingPresentationId) this.uiService.completeToolPresentationClose(closingToolId, closingPresentationId);
+      else this.uiService.completeToolClose(closingToolId);
     } else {
       this.closing = false;
     }
-    return { ok: true, toolId: this.resolvedToolId, action: 'close', mode: 'embedded' };
+    return { ok: true, toolId: closingToolId, action: 'close', mode: 'embedded' };
   }
 
   restart(): Promise<Record<string, unknown>> {
@@ -663,6 +694,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   async detach(options: ChildAppWindowPlacement = {}): Promise<Record<string, unknown>> {
+    if (this.presentationId) return { ok: false, errorCode: 'SUBAPP_OWNER_PRESENTATION_MODE',
+      message: 'Agent Browser Views support embedded presentation only.' };
     if (!this.config) return { ok: false, message: '子应用配置未就绪' };
     if (this.isStandalone) {
       return { ok: true, toolId: this.resolvedToolId, action: 'detach', message: '子应用已经处于独立窗口模式。' };
@@ -1461,6 +1494,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private destroyPenpalConnection(): void {
+    this.settledCloseForDestroy = null;
     this.clearChildReadyTimer();
     this.setAilyChatOperationActive(false);
     void this.closeNativeWebviewSurface();

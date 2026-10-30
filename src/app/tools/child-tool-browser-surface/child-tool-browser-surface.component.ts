@@ -10,6 +10,7 @@ import { SubappBrowserSurfaceService, type SubappBrowserSurfaceGeometry, type Su
 export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() toolId = '';
   @Input() active = true;
+  @Input() presentationId = '';
   @Input() workspace: string | null = null;
   @Output() readonly ready = new EventEmitter<ChildToolHostInfo>();
   @Output() readonly failed = new EventEmitter<string>();
@@ -43,7 +44,7 @@ export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChange
 
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.initialized) return;
-    if (changes['toolId'] || changes['workspace']) void this.mount(); else this.schedule();
+    if (changes['toolId'] || changes['workspace'] || changes['presentationId']) void this.mount(); else this.schedule();
   }
 
   ngOnDestroy(): void {
@@ -64,7 +65,7 @@ export class ChildToolBrowserSurfaceComponent implements AfterViewInit, OnChange
       try {
         if (this.handle) await this.close();
         if (this.destroyed || version !== this.mountVersion) return;
-        const handle = this.surfaces.open(this.toolId, this.geometry()); this.handle = handle;
+        const handle = this.surfaces.open(this.toolId, this.geometry(), this.presentationId); this.handle = handle;
         this.ownerSessionId = handle.ownerSessionId;
         const result = await handle.ready;
         if (this.destroyed || this.handle !== handle || version !== this.mountVersion) return;

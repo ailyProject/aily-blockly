@@ -705,6 +705,325 @@ test('Build callbacks acknowledge, stream ordered progress, and deliver the grap
   authority.close();
 });
 
+test('Build owned execution rejects another request until its actual completion settles', async () => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const request = rebuildRequest(document);
+  const replacement = { ...request, requestId: `rebuild-v1-${'8'.repeat(64)}` };
+  const pending = [];
+  let calls = 0;
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId,
+    execution: { async reconcileAndBuild() {
+      calls++;
+      await new Promise(resolve => pending.push(resolve));
+      throw new Error('Original execution genuinely settled as failed');
+    } },
+  });
+  const signal = new AbortController().signal;
+  try {
+    assert.equal((await authority.callbacks.requestArtifact(request, signal)).status, 'accepted');
+    await waitFor(() => calls === 1);
+    assert.equal((await authority.callbacks.requestArtifact(request, signal)).status, 'accepted', 'Original immutable request stays idempotent.');
+    const refused = await authority.callbacks.requestArtifact(replacement, signal);
+    assert.equal(refused.status, 'conflict', 'A terminal/cancel intent must not free an unsettled work slot.');
+    assert.equal(refused.errorCode, 'request-superseded');
+    assert.equal(calls, 1);
+    pending.shift()();
+    await waitFor(() => authority.snapshot().activeRequestId === null);
+    assert.equal((await authority.callbacks.requestArtifact(replacement, signal)).status, 'accepted', 'Explicit retry can start after actual failure completion.');
+    await waitFor(() => calls === 2);
+  } finally {
+    const closing = authority.close();
+    for (const resolve of pending.splice(0)) resolve();
+    await closing;
+  }
+});
+
+test('Build owner close joins original execution that ignores abort before confirming release', async () => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  let settle;
+  let actualWorkStarted = false;
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId,
+    execution: { async reconcileAndBuild() {
+      actualWorkStarted = true;
+      await new Promise(resolve => { settle = resolve; });
+      throw new Error('Controlled original work now actually ended');
+    } },
+  });
+  try {
+    await authority.callbacks.requestArtifact(rebuildRequest(document), new AbortController().signal);
+    await waitFor(() => actualWorkStarted);
+    let confirmed = false;
+    const closing = Promise.resolve(authority.close()).then(() => { confirmed = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(confirmed, false, 'Abort intent/published cancellation is not original work completion.');
+    settle();
+    await closing;
+    assert.equal(confirmed, true);
+  } finally {
+    settle?.();
+    await authority.close();
+  }
+});
+
+test('Build shared Main slot protects different product compositions until original close actually settles', async () => {
+  const { SimulatorBuildProductComposition, createSimulatorBuildExecutionSlot, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const request = rebuildRequest(document), other = { ...request, requestId: `rebuild-v1-${'9'.repeat(64)}` };
+  const slot = createSimulatorBuildExecutionSlot(), pending = [];
+  let agentCalls = 0;
+  const create = () => new SimulatorBuildProductComposition({ projectRoot: 'project', projectIdentity, workspaceIdentity, sceneId,
+    files: nodeFilePort(), activeProject: activeBlocklyProject('project'), buildExecutionSlot: slot,
+    mainAgent: { async execute() { agentCalls++; await new Promise(resolve => pending.push(resolve)); throw new Error('Actual original turn failed'); } },
+    builderService: { async buildActiveBlocklyProject() { assert.fail('Failed Agent cannot reach Builder.'); }, cancelActiveBlocklyProjectBuild() {} },
+  });
+  const first = create(), second = create(), signal = new AbortController().signal;
+  try {
+    assert.equal((await first.buildCallbacks.requestArtifact(request, signal)).status, 'accepted');
+    await waitFor(() => agentCalls === 1);
+    let closed = false;
+    const closing = first.close().then(() => { closed = true; });
+    const refused = await second.buildCallbacks.requestArtifact(other, signal);
+    assert.equal(refused.status, 'conflict'); assert.equal(refused.errorCode, 'request-superseded');
+    assert.equal(agentCalls, 1); assert.equal(closed, false);
+    assert.equal(first.snapshot().project.closed, false, 'Artifact authority remains valid until original work settles.');
+    pending.shift()(); await closing;
+    assert.equal(first.snapshot().project.closed, true);
+    assert.equal((await second.buildCallbacks.requestArtifact(other, signal)).status, 'accepted');
+    await waitFor(() => agentCalls === 2);
+  } finally {
+    const closing = [first.close(), second.close()];
+    for (const resolve of pending.splice(0)) resolve();
+    await Promise.all(closing);
+  }
+});
+
+test('Build dispatch fence prevents same-tick close from starting work and synchronous throws release the actual slot', async () => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), signal = new AbortController().signal;
+  let calls = 0;
+  const create = () => new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    reconcileAndBuild() { calls++; throw new Error('Synchronous actual execution failure'); },
+  } });
+  const closedBeforeDispatch = create();
+  closedBeforeDispatch.callbacks.requestArtifact(rebuildRequest(document), signal);
+  await closedBeforeDispatch.close(); assert.equal(calls, 0);
+  const authority = create();
+  try {
+    const request = rebuildRequest(document);
+    await authority.callbacks.requestArtifact(request, signal);
+    await waitFor(() => calls === 1 && authority.snapshot().activeRequestId === null);
+    assert.equal((await authority.callbacks.requestArtifact(request, signal)).status, 'accepted');
+    await waitFor(() => calls === 2 && authority.snapshot().activeRequestId === null);
+  } finally { await authority.close(); }
+});
+
+test('Simulator code-sync retains its original terminal obligation after abort, timeout, and malformed messages', async () => {
+  const fixture = await createCodeSyncFixture();
+  const abort = new AbortController();
+  let settled = false;
+  const original = fixture.service.requestCodeSync('first', 'first', [], abort.signal)
+    .then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+  try {
+    await waitFor(() => fixture.sent.length === 1);
+    abort.abort(new Error('original owner requested cancellation'));
+    fixture.timers[0].callback();
+    fixture.emit(0, { type: 'event', event: { type: 'session-created', sessionId: 'late-cancelled-turn' } });
+    for (const value of [{ type: 'unknown' }, { type: 'response' },
+      { type: 'response', result: { accepted: true, state: 'running' } },
+      { type: 'response', result: { accepted: 'false', state: 'settled' } }]) fixture.emit(0, value);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false); assert.equal(fixture.releases, 0); assert.equal(fixture.listeners.size, 1);
+    assert.equal(fixture.openedSessions.length, 0, 'Keeping a terminal listener must not reopen a cancelled presentation.');
+    await assert.rejects(fixture.service.requestCodeSync('second'), /still owns its original work/);
+    assert.equal(fixture.sent.length, 1); assert.equal(fixture.acquires, 1);
+    fixture.emit(0, { type: 'response', result: { accepted: true, state: 'settled', sessionId: 'original' } });
+    assert.match((await original).error.message, /取消|cancellation/);
+    assert.equal(fixture.releases, 1); assert.equal(fixture.listeners.size, 0);
+    const retry = fixture.service.requestCodeSync('explicit retry');
+    await waitFor(() => fixture.sent.length === 2);
+    fixture.emit(1, { type: 'response', result: { accepted: true, state: 'settled', sessionId: 'retry' } });
+    assert.equal((await retry).sessionId, 'retry'); assert.equal(fixture.releases, 2);
+  } finally {
+    fixture.emit(0, { type: 'response', result: { accepted: false, error: 'actual original terminal' } });
+    await original;
+  }
+});
+
+for (const dispatch of ['async-reject', 'sync-throw']) test(`Simulator code-sync quarantines ${dispatch} until exact real response`, async () => {
+  const fixture = await createCodeSyncFixture({ dispatch });
+  let settled = false;
+  const original = fixture.service.requestCodeSync('original').then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+  try {
+    await waitFor(() => fixture.sent.length === 1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false); assert.equal(fixture.releases, 0); assert.equal(fixture.listeners.size, 1);
+    await assert.rejects(fixture.service.requestCodeSync('second'), /still owns its original work/);
+    fixture.emit(0, { type: 'response', result: { accepted: false, error: 'actual terminal rejection' } });
+    assert.match((await original).error.message, /unknown dispatch acknowledgement/);
+    assert.equal(fixture.releases, 1); assert.equal(fixture.listeners.size, 0);
+  } finally {
+    fixture.emit(0, { type: 'response', result: { accepted: false, error: 'actual terminal rejection' } });
+    await original;
+  }
+});
+
+test('Simulator code-sync releases only proven pre-send failure and genuine original failed/rejected responses', async () => {
+  const fixture = await createCodeSyncFixture({ acquireFailureOnce: true });
+  await assert.rejects(fixture.service.requestCodeSync('not sent'), /controlled acquire failure/);
+  assert.equal(fixture.sent.length, 0); assert.equal(fixture.releases, 0);
+  for (const result of [{ accepted: false, error: 'normal admission refusal' },
+    { accepted: true, state: 'failed', error: 'normal failed turn' },
+    { accepted: true, state: 'rejected', error: 'normal rejected turn' }]) {
+    const before = fixture.sent.length;
+    const operation = fixture.service.requestCodeSync('explicit retry').then(value => ({ value }), error => ({ error }));
+    await waitFor(() => fixture.sent.length === before + 1);
+    fixture.emit(before, { type: 'response', result });
+    assert.match((await operation).error.message, /normal/);
+  }
+  assert.equal(fixture.releases, 3); assert.equal(fixture.listeners.size, 0);
+});
+
+test('Build progress listener throwing at completion cannot block other listeners, cleanup or late replay', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const artifact = artifactDescriptorFixture(Buffer.from('listener-complete'), document.graphSemanticRevision);
+  let releaseBuild, builds = 0;
+  const gate = new Promise(resolve => { releaseBuild = resolve; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer) {
+      builds++; observer.report('compiling', 500); await gate; return artifact;
+    },
+  } });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [], late = [];
+  authority.callbacks.requestArtifact(request, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
+    if (progress.stage === 'completed') throw new Error('closed first transport');
+  }, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+  releaseBuild();
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(healthy.at(-1).stage, 'completed');
+  assert.equal(healthy.at(-1).artifact.artifact.artifactId, artifact.artifact.artifactId);
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => late.push(progress), signal);
+  assert.equal(late.at(-1).stage, 'completed');
+  await waitFor(() => authority.snapshot().activeSubscriptions === 0);
+  assert.equal(authority.callbacks.requestArtifact(request, signal).status, 'accepted');
+  assert.equal(builds, 1, 'Completed request remains idempotent after a delivery failure.');
+});
+
+test('Build progress replay failure releases its listener and remains an actual subscription failure', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const artifact = artifactDescriptorFixture(Buffer.from('listener-replay'), document.graphSemanticRevision);
+  let releaseBuild;
+  const gate = new Promise(resolve => { releaseBuild = resolve; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer) { observer.report('compiling', 500); await gate; return artifact; },
+  } });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [];
+  authority.callbacks.requestArtifact(request, signal);
+  assert.throws(() => authority.callbacks.subscribeProgress(progressSubscription(request), () => {
+    throw new Error('replay transport failed');
+  }, signal), /replay transport failed/);
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+  releaseBuild();
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(healthy.at(-1).stage, 'completed');
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+});
+
+test('Build progress listener throwing at failure cannot turn the execution error into success or block peers', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  let releaseBuild;
+  const gate = new Promise(resolve => { releaseBuild = resolve; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer) {
+      observer.report('compiling', 500); await gate;
+      throw Object.assign(new Error('actual compiler failure'), { simulatorBuildErrorCode: 'compile-failed' });
+    },
+  } });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [];
+  authority.callbacks.requestArtifact(request, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
+    if (progress.stage === 'failed') throw new Error('first failure transport closed');
+  }, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+  releaseBuild();
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(healthy.at(-1).stage, 'failed');
+  assert.equal(healthy.at(-1).errorCode, 'compile-failed');
+  assert.equal(healthy.at(-1).artifact, null);
+  assert(!healthy.some(progress => progress.stage === 'completed'));
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+});
+
+test('Build progress listener throwing during owner cancellation cannot interrupt remaining cleanup', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const artifact = artifactDescriptorFixture(Buffer.from('listener-cancel'), document.graphSemanticRevision);
+  let releaseBuild, executionSignal;
+  const gate = new Promise(resolve => { releaseBuild = resolve; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer, signal) {
+      executionSignal = signal; observer.report('compiling', 500); await gate; return artifact;
+    },
+  } });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [];
+  authority.callbacks.requestArtifact(request, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
+    if (progress.stage === 'cancelled') throw new Error('cancel transport closed');
+  }, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+  await waitFor(() => executionSignal !== undefined);
+  let closing;
+  assert.doesNotThrow(() => { closing = authority.close(); });
+  assert.equal(executionSignal.aborted, true);
+  assert.equal(healthy.at(-1).stage, 'cancelled');
+  assert.equal(healthy.at(-1).errorCode, 'cancelled');
+  assert.equal(healthy.at(-1).artifact, null);
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+  assert.equal(authority.snapshot().activeRequestId, request.requestId);
+  releaseBuild();
+  await closing;
+  assert.equal(authority.snapshot().activeRequestId, null);
+  assert.equal(healthy.filter(progress => progress.stage === 'cancelled').length, 1);
+  assert(!healthy.some(progress => progress.stage === 'completed'));
+});
+
+test('Build progress listener throwing before terminal does not change a successful build outcome', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId);
+  const artifact = artifactDescriptorFixture(Buffer.from('listener-progress'), document.graphSemanticRevision);
+  let releaseBuild;
+  const gate = new Promise(resolve => { releaseBuild = resolve; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer) {
+      observer.report('resolving', 100); await gate; observer.report('compiling', 500); return artifact;
+    },
+  } });
+  t.after(() => authority.close());
+  const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [];
+  authority.callbacks.requestArtifact(request, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
+    if (progress.stage === 'compiling') throw new Error('progress transport closed');
+  }, signal);
+  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+  releaseBuild();
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(healthy.at(-1).stage, 'completed');
+  assert(!healthy.some(progress => progress.stage === 'failed'));
+  assert.equal(authority.snapshot().activeSubscriptions, 0);
+});
+
 for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) test(`Blockly Build execution routes ${reason} through its required reconciliation before compiling the exact Scene revision`, async () => {
   const {
     BlocklySimulatorBuildExecutionPort,
@@ -1081,10 +1400,10 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
     ),
     createEventId: () => `provider-event-v1-${'e'.repeat(64)}`,
   });
-  t.after(() => {
+  t.after(async () => {
     buildAdapter.close();
     projectAdapter.close();
-    composition.close();
+    await composition.close();
   });
 
   const ack = await buildAdapter.handleInvocation(providerInvocation(
@@ -1123,7 +1442,7 @@ for (const reason of ['graph-semantic-changed', 'workspace-source-rebuild']) tes
   );
   assert.equal(JSON.stringify(artifactRead).includes(root), false);
 
-  composition.close();
+  await composition.close();
   assert.equal(composition.snapshot().closed, true);
   assert.equal(composition.snapshot().project.activeArtifactReferences, 0);
   assert.equal(composition.snapshot().build.activeSubscriptions, 0);
@@ -1221,10 +1540,10 @@ test('a failed normal Builder keeps the previous Artifact and the same immutable
     ),
     createEventId: () => `provider-event-v1-${'6'.repeat(64)}`,
   });
-  t.after(() => {
+  t.after(async () => {
     buildAdapter.close();
     projectAdapter.close();
-    composition.close();
+    await composition.close();
   });
 
   const ack = await buildAdapter.handleInvocation(providerInvocation(
@@ -1420,7 +1739,7 @@ test('closing product composition cancels the pending main Agent before Builder 
     progressSubscription(rebuild),
   ));
   await waitFor(() => mainAgentStarted);
-  composition.close();
+  await composition.close();
   await waitFor(() => events.some(event => event.payload.stage === 'cancelled'));
 
   assert.equal(mainAgentAborted, true);
@@ -2225,6 +2544,9 @@ async function loadHostProductService({ digest, onComposition }) {
         close() {}
       },
     },
+    './simulator-build-callback-authority': {
+      createSimulatorBuildExecutionSlot: (await integrationModulePromise).createSimulatorBuildExecutionSlot,
+    },
     './simulator-blockly-editor-callback-authority': { SimulatorBlocklyEditorCallbackAuthority: CallbackAuthority },
     './simulator-entitlement-callback-authority': { SimulatorEntitlementCallbackAuthority: CallbackAuthority },
     './simulator-current-project-scope': { captureSimulatorProjectReadAuthority() { throw new Error('Not used by this workspace-source fixture'); } },
@@ -2241,4 +2563,42 @@ async function loadHostProductService({ digest, onComposition }) {
     },
   }, { filename, timeout: 10_000 });
   return module.exports.SimulatorHostProviderProductService;
+}
+
+async function createCodeSyncFixture(options = {}) {
+  const filename = path.resolve(__dirname, '../src/app/services/integrations/simulator/aily-chat-demand-session.service.ts');
+  const transformed = await esbuild.transform(await fs.readFile(filename, 'utf8'), {
+    loader: 'ts', format: 'cjs', target: 'node22', tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+  });
+  const timers = [], listeners = new Set(), sent = [], openedSessions = [];
+  const counts = { acquires: 0, releases: 0 };
+  const { BehaviorSubject } = require('rxjs');
+  const projectPath = new BehaviorSubject('/controlled/project');
+  const process = {
+    async acquire() { counts.acquires++; if (options.acquireFailureOnce) { options.acquireFailureOnce = false; throw new Error('controlled acquire failure'); } },
+    async release() { counts.releases++; },
+    onMessage(_tool, listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    sendMessage(_tool, message) {
+      sent.push(message);
+      if (options.dispatch === 'sync-throw') throw new Error('unknown dispatch acknowledgement');
+      if (options.dispatch === 'async-reject') return Promise.reject(new Error('unknown dispatch acknowledgement'));
+      return Promise.resolve();
+    },
+  };
+  const module = { exports: {} };
+  const imports = {
+    '@angular/core': { Injectable: () => value => value },
+    '@integration/subapps/public-api': { DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID: 'aily-chat' },
+    rxjs: { BehaviorSubject },
+  };
+  vm.runInNewContext(transformed.code, { module, exports: module.exports, crypto: crypto.webcrypto, console,
+    setTimeout(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeout(timer) { timer.cleared = true; },
+    require(specifier) { assert(Object.hasOwn(imports, specifier), 'Unexpected demand dependency: ' + specifier); return imports[specifier]; },
+  }, { filename, timeout: 10_000 });
+  const service = new module.exports.AilyChatDemandSessionService({ currentProjectPath: projectPath.value, currentProjectPath$: projectPath }, process,
+    { async openAilyChatSession(sessionId) { openedSessions.push(sessionId); return true; } });
+  return { service, timers, listeners, sent, openedSessions, get acquires() { return counts.acquires; }, get releases() { return counts.releases; },
+    emit(index, value) { const requestId = sent[index]?.requestId; if (requestId) for (const listener of [...listeners]) listener({ channel: 'aily-chat-demand-session-v1', requestId, ...value }); },
+  };
 }

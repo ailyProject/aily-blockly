@@ -150,9 +150,18 @@ function readSubWindowMinimumSize(win) {
 
 /** Set only after the user accepts quit; a cancelled request must leave subapps alive. */
 let applicationIsQuitting = false;
-function beginWindowShutdown() {
-    if (applicationIsQuitting) return;
+let rendererShutdownNotified = false;
+function beginWindowShutdown({ notifyRenderers = true } = {}) {
     applicationIsQuitting = true;
+    if (notifyRenderers) notifyWindowShutdown();
+}
+
+/** Owner finalizers still need the original Renderer providers to ACK their
+ * final clear. Notify those providers only after the owner drain has settled. */
+function notifyWindowShutdown() {
+    applicationIsQuitting = true;
+    if (rendererShutdownNotified) return;
+    rendererShutdownNotified = true;
     // Notify every renderer in this host before main.js terminates its child processes.
     for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
@@ -2348,6 +2357,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
 
 module.exports = {
     beginWindowShutdown,
+    notifyWindowShutdown,
     shutdownSubappOwners,
     registerWindowHandlers,
     stopAllChildToolSessions,

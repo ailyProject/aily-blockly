@@ -11,6 +11,8 @@ import {
 @Injectable({ providedIn: 'root' })
 export class SubappWorkspaceHostProviderService implements OnDestroy {
   private controller: SubappWorkspaceHostProviderController | null = null;
+  private stopping = false;
+  private stopTask: Promise<void> | null = null;
   private subscriptions = new Subscription();
   private readonly removeListeners: Array<() => void> = [];
   private runtimes: readonly WorkspaceProviderRuntime[] = [];
@@ -24,6 +26,7 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
   readonly readyWorkspaceChanges$ = this.readyWorkspaceChangesSubject.asObservable();
 
   get readyBaseWorkspace(): string | null {
+    if (this.stopping) return null;
     const workspace = this.readyBaseWorkspaceSubject.value;
     return workspace === this.readLoadedWorkspace() ? workspace : null;
   }
@@ -42,7 +45,7 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
   ) {}
 
   start(): void {
-    if (this.controller) return;
+    if (this.controller || this.stopping || this.stopTask) return;
     const api = (window as any).electronAPI?.childToolSession;
     if (!api?.bindMessageController || !api?.onStateChanged || !api?.onMessage) return;
     const controller = this.controller = new SubappWorkspaceHostProviderController({
@@ -52,7 +55,7 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
     });
     this.removeListeners.push(api.onMessage((event: Parameters<typeof controller.receive>[0]) => controller.receive(event)));
     this.removeListeners.push(api.onStateChanged((runtimes: WorkspaceProviderRuntime[]) => {
-      if (this.controller !== controller) return;
+      if (this.controller !== controller || this.stopping) return;
       this.discoveryRevision++;
       this.runtimes = runtimes;
       this.refresh();
@@ -64,15 +67,17 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
     ).subscribe(() => this.refresh()));
     const discoveryRevision = this.discoveryRevision;
     void api.list().then((runtimes: WorkspaceProviderRuntime[]) => {
-      if (this.controller !== controller || this.discoveryRevision !== discoveryRevision) return;
+      if (this.controller !== controller || this.stopping || this.discoveryRevision !== discoveryRevision) return;
       this.runtimes = runtimes;
       this.refresh();
     }).catch(() => console.warn('[SubappHostProvider] runtime discovery failed'));
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopTask) return this.stopTask;
     const controller = this.controller;
-    this.controller = null;
+    this.stopping = true;
+    this.discoveryRevision++;
     this.readinessRevision++;
     this.readinessKey = '';
     this.readyBaseWorkspaceSubject.next(null);
@@ -81,14 +86,22 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
     for (const remove of this.removeListeners.splice(0)) remove();
     this.runtimes = [];
     this.publishProjectionChange();
-    await controller?.close();
+    const task = Promise.resolve().then(() => controller?.close()).then(() => {
+      if (this.controller === controller) this.controller = null;
+      this.stopping = false;
+    }).finally(() => { if (this.stopTask === task) this.stopTask = null; });
+    this.stopTask = task;
+    // Shutdown/destroy may not await stop. Observe its rejection without
+    // discarding the controller or turning unconfirmed cleanup into success.
+    void task.catch(error => console.warn('[SubappHostProvider] workspace cleanup remains unconfirmed', error));
+    return task;
   }
 
   ngOnDestroy(): void { void this.stop(); }
 
   private refresh(): void {
     const controller = this.controller;
-    if (!controller) return;
+    if (!controller || this.stopping) return;
     const root = this.project.currentProjectPath;
     const workspace = this.readLoadedWorkspace();
     const scope = workspace && !this.project.isAilyCodeProject(workspace) ? workspace : null;
@@ -102,7 +115,7 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
     const update = controller.update(scope, this.runtimes);
     this.publishProjectionChange();
     void update.then(() => {
-      if (this.controller !== controller || this.readinessRevision !== revision
+      if (this.controller !== controller || this.stopping || this.readinessRevision !== revision
         || this.readLoadedWorkspace() !== workspace) return;
       const providersReady = this.runtimes.filter(runtime => this.isRegisteredRuntime(runtime))
         .every(runtime => this.isProviderReady(runtime.toolId, scope));

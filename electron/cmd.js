@@ -9,6 +9,7 @@ const { killRegisteredProcessTree } = require('./process-tree');
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
 const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor');
 const { observeChildProcessTerminal } = require('./child-process-terminal');
+const { createSimulatorOwnerCleanupDiagnostics } = require('./simulator-owner-cleanup-diagnostics');
 let commandShutdown = false;
 const {
   normalizeProcessMessage,
@@ -870,6 +871,12 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
       });
       const process = result.process;
+      const ownerCleanupDiagnostics = createSimulatorOwnerCleanupDiagnostics({
+        enabled: options.env?.AILY_CHILD_TOOL_ID === 'simulator'
+          && options.messagePort?.transport === 'node-ipc-v1'
+          && /^child_tool_simulator_[A-Za-z0-9_]+$/.test(streamId),
+        write: value => console.warn(JSON.stringify(value)),
+      });
       if (delivery) {
         process.on('message', message => {
           try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }
@@ -898,6 +905,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
 
       // 监听错误输出
       process.stderr.on('data', (data) => {
+        ownerCleanupDiagnostics.push(data);
         const output = data.toString();
 
         if (result.shouldLogOutput) {
@@ -914,6 +922,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       // Reuse this command's sole physical observer for delivery and Renderer.
       // A missing close event is never recreated for legacy consumers.
       result.onTerminal(terminal => {
+        ownerCleanupDiagnostics.close();
         const { code, signal } = terminal;
         console.log(`[CMD][${streamId}] ${terminal.kind}, code: ${code}, signal: ${signal}`);
 

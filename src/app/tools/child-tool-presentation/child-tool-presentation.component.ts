@@ -17,6 +17,7 @@ import {
 export class ChildToolPresentationComponent implements OnChanges, OnDestroy {
   @Input() toolId = '';
   @Input() active = true;
+  @Input() presentationId = '';
 
   component: Type<unknown> | null = null;
   inputs: Record<string, unknown> = {};
@@ -36,13 +37,14 @@ export class ChildToolPresentationComponent implements OnChanges, OnDestroy {
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['toolId']) this.select();
-    else if (changes['active']) this.updateInputs();
+    else if (changes['active'] || changes['presentationId']) this.updateInputs();
   }
 
   ngOnDestroy(): void { this.destroyed = true; this.generation++; }
 
   private updateInputs(): void {
-    this.inputs = this.selectedPlatform() === 'native' ? { toolId: this.toolId, active: this.active }
+    this.inputs = this.selectedPlatform() === 'native' ? { toolId: this.toolId, active: this.active,
+      ...(this.presentationId ? { presentationId: this.presentationId } : {}) }
       : this.presentation?.inputs?.({ toolId: this.toolId, active: this.active }) ?? {};
   }
 

@@ -16,7 +16,7 @@ const loaded = esbuild.build({
     build.onResolve({ filter: /^@angular\/core$/ }, () => ({ path: 'angular', namespace: 'unit' }));
     build.onResolve({ filter: /\/child-tool-process\.service$/ }, () => ({ path: 'process', namespace: 'unit' }));
     build.onLoad({ filter: /.*/, namespace: 'unit' }, args => ({ contents: args.path === 'angular'
-      ? 'export const Injectable = () => target => target;'
+      ? 'export const Injectable = () => target => target; export const Optional = () => () => {}; export const Inject = () => () => {};'
       : 'export class ChildToolProcessService {}', loader: 'js' }));
   } }],
 }).then(result => { const module = { exports: {} };

@@ -771,6 +771,7 @@ const {
   nativeSubappRegistry,
   browserExecutionRegistry,
   beginWindowShutdown,
+  notifyWindowShutdown,
   shutdownSubappOwners,
 } = require("./window");
 const { createApplicationQuitCoordinator } = require('./application-quit');
@@ -3128,7 +3129,9 @@ app.on("window-all-closed", () => {
 });
 
 async function cleanupRegisteredChildProcesses() {
-  beginWindowShutdown();
+  // Fence new windows immediately; keep existing workspace/editor callbacks
+  // alive until their original owners have received actual final-clear ACKs.
+  beginWindowShutdown({ notifyRenderers: false });
   try { cliBridge?.close(); } catch (error) { console.warn('CLI bridge shutdown:', error); }
   console.info('[PROC_TRACE][APP_CLEANUP_START]', {
     cmd: getActiveCmdProcesses(),
@@ -3154,6 +3157,7 @@ async function cleanupRegisteredChildProcesses() {
   } catch (error) {
     console.warn('[PROC_TRACE][APP_OWNER_CLEANUP_ERROR]', error?.code || 'cleanup-failed');
   }
+  notifyWindowShutdown();
 
   // Drain registered Runtime processes before the generic command-tree fallback.
   // Unregistered startup streams and unsuccessful stops remain in Cmd ownership.

@@ -97,6 +97,9 @@ interface DemandSessionEvent {
 
 @Injectable({ providedIn: 'root' })
 export class AilyChatDemandSessionService {
+  // Shared across all Simulator product scopes in this Main. A cancelled
+  // observer cannot admit another turn while its original turn is unconfirmed.
+  private codeSyncOwned = false;
   private readonly diagramGenerationStateSubject =
     new BehaviorSubject<DiagramGenerationState>(EMPTY_DIAGRAM_GENERATION_STATE);
 
@@ -177,7 +180,6 @@ export class AilyChatDemandSessionService {
     throwIfAborted(signal);
     const cwd = this.projectService.currentProjectPath;
     if (!cwd) throw new Error('请先打开项目');
-
     const requestId = crypto.randomUUID();
     const diagramKind = this.toDiagramGenerationKind(request.kind);
     if (diagramKind) {
@@ -188,6 +190,12 @@ export class AilyChatDemandSessionService {
         throw new Error('框架图正在生成，请等待当前任务结束');
       }
       this.beginDiagramGeneration(diagramKind, requestId, cwd);
+    }
+
+    const ownsCodeSync = request.kind === 'code-sync';
+    if (ownsCodeSync) {
+      if (this.codeSyncOwned) throw new Error('Simulator code synchronization still owns its original work.');
+      this.codeSyncOwned = true;
     }
 
     let runtimeAcquired = false;
@@ -214,7 +222,11 @@ export class AilyChatDemandSessionService {
       return result;
     } finally {
       if (diagramKind) this.endDiagramGeneration(diagramKind, requestId);
-      if (runtimeAcquired) await this.childToolProcess.release(AILY_CHAT_TOOL_ID);
+      try {
+        if (runtimeAcquired) await this.childToolProcess.release(AILY_CHAT_TOOL_ID);
+      } finally {
+        if (ownsCodeSync) this.codeSyncOwned = false;
+      }
     }
   }
 
@@ -237,6 +249,9 @@ export class AilyChatDemandSessionService {
 
     return new Promise((resolve, reject) => {
       let settled = false;
+      const retainOriginalCompletion = request.kind === 'code-sync';
+      let dispatched = false;
+      let unconfirmedError: Error | null = null;
       let timeout: ReturnType<typeof setTimeout>;
       const finish = (callback: () => void) => {
         if (settled) return;
@@ -246,7 +261,10 @@ export class AilyChatDemandSessionService {
         signal?.removeEventListener('abort', onAbort);
         callback();
       };
-      const onAbort = () => finish(() => reject(abortReason(signal)));
+      const onAbort = () => {
+        if (retainOriginalCompletion && dispatched) return;
+        finish(() => reject(abortReason(signal)));
+      };
       const removeListener = this.childToolProcess.onMessage(
         AILY_CHAT_TOOL_ID,
         message => {
@@ -259,6 +277,7 @@ export class AilyChatDemandSessionService {
           }
 
           if (response.type === 'event') {
+            if (retainOriginalCompletion && (signal?.aborted || unconfirmedError)) return;
             const sessionId = response.event?.type === 'session-created'
               ? String(response.event.sessionId || '').trim()
               : '';
@@ -278,14 +297,31 @@ export class AilyChatDemandSessionService {
             return;
           }
 
+          if (response.type !== 'response') return;
+          const result = response.result;
+          if (retainOriginalCompletion && (!result || typeof result !== 'object'
+            || (result.accepted !== false && !(result.accepted === true
+              && ['settled', 'rejected', 'failed'].includes(result.state ?? ''))))) return;
           finish(() => {
+            // The Host run response is sent after the original turn settles.
+            // Aborting only this wait must not free its work slot or Runtime
+            // reference while that independent turn may still be running.
+            if (retainOriginalCompletion && (signal?.aborted || unconfirmedError)) {
+              reject(signal?.aborted ? abortReason(signal) : unconfirmedError);
+              return;
+            }
             if (response.result) resolve(response.result);
             else reject(new Error('Aily Chat Runtime 未返回需求会话结果'));
           });
         },
       );
       timeout = setTimeout(() => {
-        finish(() => reject(new Error('Aily Chat 需求会话执行超时')));
+        const error = new Error('Aily Chat 需求会话执行超时');
+        if (retainOriginalCompletion && dispatched) {
+          unconfirmedError ??= error;
+          return;
+        }
+        finish(() => reject(error));
       }, DEMAND_SESSION_TIMEOUT_MS);
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) {
@@ -293,7 +329,19 @@ export class AilyChatDemandSessionService {
         return;
       }
 
-      void this.childToolProcess.sendMessage(AILY_CHAT_TOOL_ID, {
+      const failedDispatch = (error: unknown) => {
+        if (retainOriginalCompletion) {
+          // A failed transport acknowledgement is not proof the Runtime did
+          // not accept the request. Keep the exact listener and reference in
+          // quarantine until its original response; owner close stays joined.
+          unconfirmedError ??= error instanceof Error ? error : new Error(String(error));
+          return;
+        }
+        finish(() => reject(error));
+      };
+      dispatched = true;
+      try {
+        void Promise.resolve(this.childToolProcess.sendMessage(AILY_CHAT_TOOL_ID, {
         channel: AILY_CHAT_DEMAND_SESSION_CHANNEL,
         type: 'request',
         requestId,
@@ -305,7 +353,8 @@ export class AilyChatDemandSessionService {
         mode: request.mode,
         revealSession,
         resources: request.resources || [],
-      }).catch(error => finish(() => reject(error)));
+        })).catch(failedDispatch);
+      } catch (error) { failedDispatch(error); }
     });
   }
 

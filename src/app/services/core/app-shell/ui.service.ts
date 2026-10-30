@@ -42,6 +42,8 @@ export class UiService {
 
   // 用来记录当前已打开的工具
   openToolList: string[] = [];
+  /** Opaque mount grants, never owner or execution descriptors. */
+  readonly toolPresentationIds: Record<string, string> = {};
 
   openWindowPathList: string[] = [];
 
@@ -384,19 +386,23 @@ export class UiService {
    * to focus a detached child window. Host automation has already resolved
    * the requested presentation mode before calling this method.
    */
-  openToolEmbedded(name: string): boolean {
+  openToolEmbedded(name: string, presentationId?: string): boolean {
     if (getChildToolConfig(name)?.app?.extension === true) return false;
     if (this.requestLoginForProtectedTool(name)) {
       return false;
     }
-    this.openToolInMainWindow(name);
+    this.openToolInMainWindow(name, presentationId);
     return this.topTool === name;
   }
 
-  private openToolInMainWindow(name: string) {
+  private openToolInMainWindow(name: string, presentationId?: string) {
     if (getChildToolConfig(name)?.app?.extension === true) return;
     if (!name || this.requestLoginForProtectedTool(name)) {
       return;
+    }
+    if (!this.openToolList.includes(name)) {
+      if (presentationId) this.toolPresentationIds[name] = presentationId;
+      else delete this.toolPresentationIds[name];
     }
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.openToolList.push(name);
@@ -521,9 +527,17 @@ export class UiService {
 
   /** Complete a close after the child lifecycle guard has already settled. */
   completeToolClose(name: string): void {
+    delete this.toolPresentationIds[name];
     if (!this.openToolList.includes(name)) return;
     this.openToolList = this.openToolList.filter((e) => e !== name);
     this.actionSubject.next({ action: 'close', type: 'tool', data: name });
+  }
+
+  /** A retired Agent View may remove only its own exact mount. A delayed old
+   * close cannot remove a newer grant or an independently opened UI View. */
+  completeToolPresentationClose(name: string, presentationId: string): void {
+    if (!presentationId || this.toolPresentationIds[name] !== presentationId) return;
+    this.completeToolClose(name);
   }
 
   getOpenAuthRequiredToolIds(): string[] {

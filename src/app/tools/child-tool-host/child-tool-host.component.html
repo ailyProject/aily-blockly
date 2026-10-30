@@ -13,7 +13,7 @@
   <ng-container *ngTemplateOutlet="contentTpl"></ng-container>
 </app-sub-window>
 } @else {
-<app-tool-container [title]="titleKey | translate" [path]="routePath"
+<app-tool-container [title]="titleKey | translate" [path]="presentationId ? '' : routePath"
   (openWindowEvent)="detach()" (closeEvent)="close()">
   <ng-container header-title-prefix>
     <ng-container *ngTemplateOutlet="hostStatusTpl"></ng-container>
@@ -94,7 +94,7 @@
         <app-child-tool-native-observer [toolId]="resolvedToolId" (ready)="frameLoaded = true" (failed)="onNativeObserverError($event)" />
       }
       @if (isBrowserExecution && browserSurfaceVisible) {
-        <app-child-tool-browser-surface [toolId]="resolvedToolId" [active]="active" [workspace]="browserSurfaceWorkspace"
+      <app-child-tool-browser-surface [toolId]="resolvedToolId" [active]="active" [workspace]="browserSurfaceWorkspace" [presentationId]="presentationId"
           (ready)="onBrowserSurfaceReady($event)" (failed)="onBrowserSurfaceFailed($event)" />
       }
       @if (iframeSrc) {

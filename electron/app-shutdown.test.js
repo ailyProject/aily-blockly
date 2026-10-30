@@ -38,7 +38,8 @@ function host(overrides = {}) {
     app, console: { info() {}, warn: (...args) => warnings.push(args) },
     ipcMain: new EventEmitter(), mainWindow: null, createApplicationQuitCoordinator,
     isCurrentRendererGenerationReady: () => false,
-    beginWindowShutdown: () => calls.push('notify-windows'), cliBridge: { close: () => calls.push('stop-cli') },
+    beginWindowShutdown: options => { assert.equal(options.notifyRenderers, false); calls.push('fence-windows'); },
+    notifyWindowShutdown: () => calls.push('notify-windows'), cliBridge: { close: () => calls.push('stop-cli') },
     beginCommandShutdown: () => calls.push('block-commands'),
     beginNpmShutdown: () => calls.push('block-npm'),
     beginAuthCredentialsShutdown: () => calls.push('block-auth'),
@@ -66,11 +67,44 @@ test('quit blocks new commands and installers before stopping registered process
   const h = host();
   assert.equal(h.begin(), true);
   await settle();
-  assert.deepEqual(h.calls, ['notify-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth',
-    'stop-subapp-owners', 'stop-child-tools', 'stop-commands', 'stop-npm', 'release-auth']);
+  assert.deepEqual(h.calls, ['fence-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth',
+    'stop-subapp-owners', 'notify-windows', 'stop-child-tools', 'stop-commands', 'stop-npm', 'release-auth']);
   assert.equal(h.completed, true);
   assert.equal(h.quits, 1);
   assert.equal(h.begin(), false);
+});
+
+test('quit keeps the original Renderer providers alive until their held owner finalizer acknowledges', async () => {
+  const entered = Promise.withResolvers(), ack = Promise.withResolvers();
+  let providerAlive = true;
+  const h = host({
+    notifyWindowShutdown: () => { providerAlive = false; },
+    shutdownSubappOwners: async () => {
+      assert.equal(providerAlive, true); entered.resolve(); await ack.promise;
+      assert.equal(providerAlive, true); return { ok: true, remainingBindings: 0 };
+    },
+    stopAllChildToolSessions: async () => { assert.equal(providerAlive, false); },
+  });
+  h.begin(); await entered.promise;
+  assert.equal(h.quits, 0); assert.equal(providerAlive, true);
+  assert.deepEqual(h.calls, ['fence-windows', 'stop-cli', 'block-commands', 'block-npm', 'block-auth']);
+  ack.resolve(); await settle(); assert.equal(providerAlive, false); assert.equal(h.quits, 1);
+});
+
+test('window shutdown fences allocation immediately and notifies existing renderers once in its separate drain phase', () => {
+  const windowSource = source('window.js'), sent = [];
+  const declarations = ['applicationIsQuitting', 'rendererShutdownNotified'].map(name => select(windowSource,
+    node => ts.isVariableStatement(node) && node.declarationList.declarations.some(value => value.name.getText(windowSource) === name)));
+  const functions = ['beginWindowShutdown', 'notifyWindowShutdown'].map(name => select(windowSource,
+    node => ts.isFunctionDeclaration(node) && node.name?.text === name));
+  const context = vm.createContext({ console: { warn() {} }, BrowserWindow: { getAllWindows: () => [{
+    isDestroyed: () => false, webContents: { isDestroyed: () => false, send: name => sent.push(name) },
+  }] } });
+  vm.runInContext([...declarations, ...functions].join('\n'), context);
+  vm.runInContext('beginWindowShutdown({notifyRenderers:false})', context);
+  assert.equal(vm.runInContext('applicationIsQuitting', context), true); assert.deepEqual(sent, []);
+  vm.runInContext('notifyWindowShutdown(); beginWindowShutdown(); notifyWindowShutdown()', context);
+  assert.deepEqual(sent, ['child-tool-host-shutdown']);
 });
 
 test('duplicate quit shares cleanup and waits for registered process cleanup', async () => {

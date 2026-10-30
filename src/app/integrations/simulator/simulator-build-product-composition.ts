@@ -34,6 +34,7 @@ export interface SimulatorBuildProductCompositionOptions {
   mainAgent: SimulatorMainAgentSceneChangePort;
   builderService: SimulatorBlocklyBuilderServicePort;
   maxBuildJobs?: SimulatorBuildCallbackAuthorityOptions['maxJobs'];
+  buildExecutionSlot?: SimulatorBuildCallbackAuthorityOptions['executionSlot'];
   artifactReferenceTtlMs?: number;
   maxArtifactReferences?: number;
   now?: () => number;
@@ -75,6 +76,7 @@ export class SimulatorBuildProductComposition {
   private readonly projectAuthority: SimulatorProjectArtifactCallbackAuthority;
   private readonly buildAuthority: SimulatorBuildCallbackAuthority;
   private closed = false;
+  private closing: Promise<void> | null = null;
 
   captureArtifactReadValidity(descriptor: SimulatorSubappHostArtifactDescriptorV1): Readonly<{ requireCurrent(): void }> {
     return this.projectAuthority.captureArtifactReadValidity(descriptor);
@@ -137,6 +139,7 @@ export class SimulatorBuildProductComposition {
       projectIdentity: options.projectIdentity,
       sceneId: options.sceneId,
       execution,
+      ...(options.buildExecutionSlot ? { executionSlot: options.buildExecutionSlot } : {}),
       ...(options.maxBuildJobs === undefined
         ? {}
         : { maxJobs: options.maxBuildJobs }),
@@ -153,12 +156,14 @@ export class SimulatorBuildProductComposition {
     });
   }
 
-  close(): void {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
     // Cancel Build first so no execution can mint a new Artifact reference
     // after Project authority starts closing.
-    this.buildAuthority.close();
-    this.projectAuthority.close();
+    const original = this.buildAuthority.close().then(() => { this.projectAuthority.close(); })
+      .finally(() => { if (this.closing === original) this.closing = null; });
+    this.closing = original;
+    return original;
   }
 }
