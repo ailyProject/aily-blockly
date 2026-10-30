@@ -203,7 +203,7 @@ test('Agent repair refuses managed development/next generations without download
   const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
   const candidate = versions.createCandidate(f.rootDir, f.entry);
   writeRunnablePackage(candidate.source, f.entry.version);
-  const prepared = versions.publishCandidate(f.rootDir, f.entry, candidate, { installMode: 'next' });
+  const prepared = await versions.publishCandidate(f.rootDir, f.entry, candidate, { installMode: 'next' });
   versions.activate(f.rootDir, f.entry, prepared, { mode: 'pinned' });
   await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_DEVELOPMENT_LINK' });
   assert.equal(f.downloads.length, 0);
@@ -247,7 +247,7 @@ test('Agent repair preserves a concurrent active-selection change rather than ro
   const externalEntry = { ...f.entry, version: '0.1.34' };
   const candidate = versions.createCandidate(f.rootDir, externalEntry);
   writeRunnablePackage(candidate.source, externalEntry.version);
-  const external = versions.publishCandidate(f.rootDir, externalEntry, candidate);
+  const external = await versions.publishCandidate(f.rootDir, externalEntry, candidate);
   const manager = createSubappManager({ ...f.managerOptions, downloadFile: async (_url, target) => {
     fs.writeFileSync(target, f.archive);
     versions.activate(f.rootDir, externalEntry, external);
@@ -645,11 +645,11 @@ test('background preparation reports separate download and extraction progress',
   assert.equal(events.at(-1).percent, 100);
 });
 
-test('auto mode uses a newer normal B, while a managed development link always wins', (t) => {
+test('auto mode uses a newer normal B, while a managed development link always wins', async (t) => {
   const f = fixture(t, { version: '1.0.0' });
   const candidate = versions.createCandidate(f.rootDir, f.entry);
   writeRunnablePackage(candidate.source, '1.0.0');
-  const prepared = versions.publishCandidate(f.rootDir, f.entry, candidate, { distribution: f.entry.dist });
+  const prepared = await versions.publishCandidate(f.rootDir, f.entry, candidate, { distribution: f.entry.dist });
   versions.activate(f.rootDir, f.entry, prepared);
   const legacy = packagePathFor(f.rootDir, PACKAGE);
   writeRunnablePackage(legacy, '2.0.0');
@@ -666,11 +666,11 @@ test('auto mode uses a newer normal B, while a managed development link always w
   assert.equal(selected.config.env.AILY_SUBAPP_SOURCE, 'development');
 });
 
-test('uses a pinned version-dev generation as the active development package', (t) => {
+test('uses a pinned version-dev generation as the active development package', async (t) => {
   const f = fixture(t, { version: '1.0.0' });
   const releaseCandidate = versions.createCandidate(f.rootDir, f.entry);
   writeRunnablePackage(releaseCandidate.source, '1.0.0');
-  const release = versions.publishCandidate(f.rootDir, f.entry, releaseCandidate, {
+  const release = await versions.publishCandidate(f.rootDir, f.entry, releaseCandidate, {
     distribution: f.entry.dist,
   });
   versions.activate(f.rootDir, f.entry, release);
@@ -678,7 +678,7 @@ test('uses a pinned version-dev generation as the active development package', (
   const devEntry = { ...f.entry, version: '1.0.0-dev' };
   const devCandidate = versions.createCandidate(f.rootDir, devEntry);
   writeRunnablePackage(devCandidate.source, '1.0.0-dev');
-  const development = versions.publishCandidate(f.rootDir, devEntry, devCandidate, {
+  const development = await versions.publishCandidate(f.rootDir, devEntry, devCandidate, {
     distribution: null,
     installMode: 'development',
   });
@@ -698,7 +698,7 @@ test('keeps a pinned version-next package on the production runtime path and loc
   const nextEntry = { ...f.entry, version: '1.0.0-next' };
   const nextCandidate = versions.createCandidate(f.rootDir, nextEntry);
   writeRunnablePackage(nextCandidate.source, nextEntry.version);
-  const next = versions.publishCandidate(f.rootDir, nextEntry, nextCandidate, {
+  const next = await versions.publishCandidate(f.rootDir, nextEntry, nextCandidate, {
     distribution: null,
     installMode: 'next',
   });
@@ -1151,4 +1151,58 @@ test('the shipped Coder fallback installs from its verified bundle in a responsi
     rootDir, 'store', 'subapp-aily-coder-editor', bundle.entry.version, 'source',
   ));
   assert.ok(heartbeats > 2);
+});
+
+test('a transient Windows rename lock still publishes and activates the latest version', async (t) => {
+  const f = fixture(t, { managerOptions: { sleep: async () => {}, renameAttempts: 4 } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const legacyBytes = fs.readFileSync(path.join(legacy, 'package.json'));
+  const rename = fs.renameSync;
+  let denied = 2;
+  fs.renameSync = (from, to, ...args) => {
+    if (denied > 0 && String(from).includes(`${path.sep}.staging-`) && path.basename(String(to)) === '0.1.33') {
+      denied -= 1;
+      throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), { code: 'EPERM' });
+    }
+    return rename.call(fs, from, to, ...args);
+  };
+  try {
+    await f.manager.update({ id: ID });
+  } finally {
+    fs.renameSync = rename;
+  }
+  const installed = readInstalledState(f.rootDir, f.entry);
+  assert.equal(denied, 0);
+  assert.equal(installed.installedVersion, '0.1.33');
+  assert.equal(installed.packagePath, path.join(f.rootDir, 'store', 'subapp-aily-chat', '0.1.33', 'source'));
+  assert.deepEqual(fs.readFileSync(path.join(legacy, 'package.json')), legacyBytes);
+});
+
+test('a rename that cannot be recovered reports update failure and keeps the previous version', async (t) => {
+  const f = fixture(t, { managerOptions: { sleep: async () => {}, renameAttempts: 1 } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to, ...args) => {
+    if (String(from).includes(`${path.sep}.staging-`) && path.basename(String(to)) === '0.1.33') {
+      throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), { code: 'EPERM' });
+    }
+    return rename.call(fs, from, to, ...args);
+  };
+  try {
+    await assert.rejects(f.manager.update({ id: ID }), (error) => {
+      assert.equal(error.code, 'SUBAPP_VERSION_PUBLISH_BUSY');
+      assert.match(error.message, /更新失败/);
+      assert.match(error.message, /0\.1\.32/);
+      assert.match(error.message, /仍可继续使用/);
+      return true;
+    });
+  } finally {
+    fs.renameSync = rename;
+  }
+  const installed = readInstalledState(f.rootDir, f.entry);
+  assert.equal(installed.installedVersion, '0.1.32');
+  assert.equal(installed.packagePath, legacy);
+  assert.equal(fs.existsSync(path.join(f.rootDir, 'store', 'subapp-aily-chat', 'active.json')), false);
 });

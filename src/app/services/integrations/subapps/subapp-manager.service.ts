@@ -312,6 +312,7 @@ export class SubappManagerService implements OnDestroy {
         }
       }, 400);
     } catch (error) {
+      const presentable = this.presentableError(error);
       const failedProgress: SubappInstallProgress = {
         id,
         action: progressAction,
@@ -320,11 +321,11 @@ export class SubappManagerService implements OnDestroy {
           && this.progressSubject.value.action === progressAction
           ? (this.progressSubject.value.percent || 0)
           : 0,
-        error: this.errorMessage(error),
+        error: presentable.message,
       };
       this.progressSubject.next(failedProgress);
       await this.load('cache-first', this.currentLocale(), false);
-      throw error;
+      throw presentable;
     }
   }
 
@@ -438,7 +439,23 @@ export class SubappManagerService implements OnDestroy {
     return this.translate.currentLang || this.translate.defaultLang || 'en';
   }
 
+  private presentableError(error: unknown): Error & { code?: string; requiresForceClose?: boolean } {
+    const source = error instanceof Error ? error : new Error(String(error || 'Unknown subapp manager error'));
+    const message = source.message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
+    const extra = source as Error & { code?: string; requiresForceClose?: boolean; keepsPreviousVersion?: boolean };
+    if (message === source.message) return source as Error & { code?: string; requiresForceClose?: boolean };
+    const wrapped = new Error(message) as Error & {
+      code?: string;
+      requiresForceClose?: boolean;
+      keepsPreviousVersion?: boolean;
+    };
+    if (extra.code) wrapped.code = extra.code;
+    if (extra.requiresForceClose) wrapped.requiresForceClose = true;
+    if (extra.keepsPreviousVersion) wrapped.keepsPreviousVersion = true;
+    return wrapped;
+  }
+
   private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error || 'Unknown subapp manager error');
+    return this.presentableError(error).message;
   }
 }

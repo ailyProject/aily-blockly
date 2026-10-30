@@ -1570,6 +1570,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
   let candidate;
   let published = false;
   let processClosed;
+  let failure;
   try {
     release = await waitForUpdateLock(lockRoot, options);
     options.signal.throwIfAborted();
@@ -1633,26 +1634,32 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
       throw new Error(`Subapp was uninstalled while preparing: ${entry.id}`);
     }
     await options.beforePublish?.(candidate.source);
-    const prepared = versions.publishCandidate(rootDir, entry, candidate, {
+    const prepared = await versions.publishCandidate(rootDir, entry, candidate, {
       distribution,
       integrity: bundle?.integrity || distribution?.integrity,
       installMode: portability.portable ? 'portable' : 'legacy-npm',
       replace: options.reinstall === true,
       retainPrevious: options.retainPrevious === true,
       replacementTransaction: options.replacementTransaction,
+      renameAttempts: options.renameAttempts,
+      sleep: options.sleep,
     });
     published = true;
     tracker?.setExtract(100);
     return prepared;
   } catch (error) {
     processClosed = error.processClosed;
-    throw error;
+    failure = error;
   } finally {
     // Published generations are immutable, including when progress delivery throws.
+    // A cleanup failure must not replace the publish error the caller reports.
+    let cleanupError;
     try {
       if (candidate && !published && !processClosed) {
         await fs.promises.rm(candidate.project, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       }
+    } catch (error) {
+      cleanupError = error;
     } finally {
       parentSignal?.removeEventListener('abort', abort);
       controllers.delete(controller);
@@ -1670,7 +1677,11 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
         }).catch(error => console.warn('[subapp-manager] deferred npm cleanup failed:', error.message));
       } else release?.();
     }
+    if (failure && cleanupError) {
+      failure.message += `\n暂存目录清理失败: ${cleanupError.message}`;
+    }
   }
+  if (failure) throw failure;
 }
 
 async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
@@ -1704,12 +1715,18 @@ async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, optio
     return record;
   } catch (error) {
     if (error.code === 'SUBAPP_CANCELLED') throw error;
+    const reported = explainKeptVersion(
+      'download-update',
+      installedState.installed ? installedState.installedVersion : null,
+      false,
+      error,
+    );
     writeJsonAtomic(updateStatePath(updateRootDir, entry.id, entry.version), {
       schemaVersion: UPDATE_SCHEMA_VERSION, id: entry.id, packageName: entry.package,
       version: entry.version, state: 'failed', phase: 'download', entry,
-      failedAt: new Date().toISOString(), error: error.message || String(error),
+      failedAt: new Date().toISOString(), error: reported.message || String(reported),
     });
-    throw error;
+    throw reported;
   }
 }
 
@@ -1774,6 +1791,19 @@ function formatBusyCancelledError(packagePath) {
   );
   error.code = 'EBUSY_CANCELLED';
   return error;
+}
+
+function explainKeptVersion(action, previousVersion, switched, error) {
+  if (!error || switched || !previousVersion) return error;
+  if (!['install', 'update', 'install-update', 'download-update'].includes(action)) return error;
+  if (error.code === 'SUBAPP_CANCELLED' || error.code === 'EBUSY_CANCELLED' || error.code === 'EBUSY') return error;
+  if (error.requiresForceClose === true) return error;
+  if (String(error.message || '').includes('仍可继续使用')) return error;
+  const wrapped = new Error(`更新失败，当前版本 ${previousVersion} 仍可继续使用。\n${error.message}`);
+  wrapped.code = error.code || 'SUBAPP_UPDATE_FAILED';
+  wrapped.cause = error;
+  wrapped.keepsPreviousVersion = true;
+  return wrapped;
 }
 
 function formatBusyNeedsForceError(packagePath, holders = [], cause) {
@@ -2752,6 +2782,8 @@ function createSubappManager(options = {}) {
       };
 
       let releaseLock = null;
+      let previousInstalledVersion = null;
+      let switched = false;
       try {
         if (action === 'uninstall') {
           const downloads = [...backgroundDownloads.entries()]
@@ -2760,6 +2792,7 @@ function createSubappManager(options = {}) {
           await Promise.all(downloads);
         }
         const installed = readInstalledState(rootDir, entry);
+        previousInstalledVersion = installed.installed ? installed.installedVersion : null;
 
         if (action !== 'uninstall'
           && (installed.development || installed.localNext || index.dev === true)) {
@@ -2782,7 +2815,13 @@ function createSubappManager(options = {}) {
           const downloading = backgroundDownloads.get(updateKey(entry));
           if (downloading) await downloading;
           if (action === 'install-update') {
-            prepared = readPreparedVersion(rootDir, entry);
+            try {
+              prepared = readPreparedVersion(rootDir, entry);
+            } catch (error) {
+              // A damaged downloaded generation is rebuilt. The selected version stays until publish succeeds.
+              console.warn('[subapp-manager] prepared version will be published again:', error.message);
+              prepared = null;
+            }
             if (!prepared) {
               const record = readUpdateRecord(updateRootDir, entry);
               if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
@@ -2830,12 +2869,15 @@ function createSubappManager(options = {}) {
           && (current.development || current.localNext)) {
           throw new Error('Local subapps cannot be changed');
         }
+        if (!prepared) throw new Error(`Subapp package was not published: ${entry.id}`);
         if (!current.installed || !semver.valid(current.installedVersion)
           || semver.gte(targetEntry.version, current.installedVersion)) {
           versions.activate(rootDir, targetEntry, prepared);
+          switched = true;
         }
         progressTracker.complete();
       } catch (error) {
+        const reported = explainKeptVersion(action, previousInstalledVersion, switched, error);
         if (typeof onProgress === 'function') {
           onProgress({
             id,
@@ -2844,10 +2886,10 @@ function createSubappManager(options = {}) {
             percent: progressTracker.percent,
             downloadProgress: 0,
             extractProgress: 0,
-            error: error.message || String(error),
+            error: reported.message || String(reported),
           });
         }
-        throw error;
+        throw reported;
       } finally {
         releaseLock?.();
         updateOperations.delete(updateKey(entry));
@@ -2957,7 +2999,7 @@ function createSubappManager(options = {}) {
           previousPackagePreserved: true };
       } catch (error) {
         // The launch lock remains held while the exact old directory is restored.
-        transaction.rollback?.();
+        await transaction.rollback?.();
         if (activationAttempted && activeBytes() !== originalActive) {
           if (originalActive === null) fs.rmSync(activeFile(), { force: true });
           else writeJsonAtomic(activeFile(), JSON.parse(originalActive));
