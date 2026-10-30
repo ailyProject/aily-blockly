@@ -1,5 +1,7 @@
 # Git交付记录：Simulator Host 经典 G0 配对改动
 
+> P19更新：C3/C6/H2选定产品矩阵已完成；见文末P19节。以下P18未通过状态保留为当时记录。
+
 2026-10-30。本记录随独立分支提交，供配对review与后续合并使用。
 
 Host保留原owner/presentation/binding与实际Agent/Builder工作责任，按真实终态结算同步及退出。经典G0配对验收通过；当前C3/C6/H2新包的首次同步和显示模型仍待补验。
@@ -54,3 +56,15 @@ Host保留原owner/presentation/binding与实际Agent/Builder工作责任，按�
 本次交付与补验台账：`/Volumes/data/aily-work/test-results/aily-simulator/git-delivery-p18/final-delivery-ledger-a01.json`，SHA `62b8d8d7b7bc85bfbe9343dbc72e59bea5fa9d6672aac44cfb5d12cbc7402b77`；包括三次失败报告、独立Artifact合同、只读诊断、实际AX/截图、清理与原工作树保留证明的文件身份。
 
 原Simulator/Blockly工作树296/17个已记录修改文件及Git状态逐项复核未变，原分支/HEAD保留。所有备份、构建包、测试项目、脚本、原始报告、日志、图片与本机运行数据继续留在`/Volumes/data/aily-work/`，不纳入源码仓库。登录信息复用原位置；未复制或提交凭据、私钥、本机收据或ROM。未覆盖历史验收，未执行reset/clean、强制推送或合并。
+
+## P19后继：C3/C6/H2选定产品矩阵已验收（2026-10-30）
+
+本段更新P18之后的状态；上文原失败结论按当时记录保留。当前冻结集成版八工程、24阶段全部通过，含正常Blockly/主Agent/Builder/12成员Artifact、实际Subapp器件/物理UART、复位、停止重启和公开资源释放。独立审查462项、810原始响应，16次Capture null ACK及8份Session/owner释放确认。最终三个Main批次共366个已观察身份全部退休，资源服务/共享锁和四个辅助进程完成收尾。
+
+本轮产品提交为Simulator `0a618a1d5e42ecddaf0defd5efedf9a0053e73a4` 与Blockly `29dbd461b40ba7e51ef03d96780d7790f4938b6b`。Simulator只更新共享显示fixture的INVON及独立24×16视觉命令，保留原tcns3×2协议，正式测试3/3；Blockly只增有界构建诊断及测试，定向61/61和scoped类型检查通过。Core/Session/端口registry及器件模型/View算法未改，未证明P18首次同步根因已修复。
+
+受验sourceTree为 `159701576617997f88dddbf421bb9d28cffcf56f9787799009c701d4711c4cb9`。最终八项目账本SHA为 `69f205ee1aa910d72a13c098f5d39be0e1629c74087764f286df40b90d236cff`，退出账本SHA为 `d1de134d6399350ad99433483950bd82314fd75ae74c49defaeca68d969cf799`，位于 `/Volumes/data/aily-work/test-results/aily-simulator/risc-acceptance-p19/final-eight-a01/`。
+
+本轮限选定产品矩阵；gdb=false、C0/T0、baseline unverified与历史长时/全组合未验边界保留，其他芯片继续暂停。原296/17项工作树改动和原P4/S31未提交方案保持。精确推送HEAD另存同任务根 `final-git-delivery-a01.json`。
+
+完整记录见配对Simulator仓库 `docs/ESP32_RISCV_P19_ACCEPTANCE_20261030.md`。
