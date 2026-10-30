@@ -21,9 +21,11 @@ const logger = {
 
 function formatFatalError(error) {
     if (!error) return 'Unknown error';
+
     if (error instanceof Error) {
         return error.stack || error.message;
     }
+
     return String(error);
 }
 
@@ -38,36 +40,56 @@ function exitWithFatalError(error) {
 function writeProjectInputDifference(error) {
     if (error?.code !== 'PROJECT_INPUTS_CHANGED' || !error.projectInputDifferences
         || typeof error.projectInputDiagnosticRoot !== 'string') return;
+
     let temporary, stillOwned;
+
     try {
         const root = error.projectInputDiagnosticRoot;
         const rootIdentity = fs.lstatSync(root);
+
         if (!rootIdentity.isDirectory() || rootIdentity.isSymbolicLink() || fs.realpathSync(root) !== root) return;
+
         const directory = path.join(root, '.build'), identity = fs.lstatSync(directory);
+
         if (!identity.isDirectory() || identity.isSymbolicLink() || fs.realpathSync(directory) !== directory) return;
+
         stillOwned = () => {
             const currentRoot = fs.lstatSync(root), current = fs.lstatSync(directory);
+
             return currentRoot.isDirectory() && !currentRoot.isSymbolicLink()
                 && rootIdentity.dev === currentRoot.dev && rootIdentity.ino === currentRoot.ino
                 && fs.realpathSync(root) === root && current.isDirectory() && !current.isSymbolicLink()
                 && identity.dev === current.dev && identity.ino === current.ino
                 && fs.realpathSync(directory) === directory;
         };
+
         const destination = path.join(directory, 'aily-project-input-difference.json');
+
         const safeDestination = () => {
             if (!fs.existsSync(destination)) return true;
+
             const existing = fs.lstatSync(destination);
+
             return existing.isFile() && !existing.isSymbolicLink() && existing.nlink === 1;
         };
+
         if (!safeDestination()) return;
+
         const text = JSON.stringify(error.projectInputDifferences, null, 2) + '\n';
+
         if (Buffer.byteLength(text) > 32 * 1024) return;
+
         temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
+
         fs.writeFileSync(temporary, text, { flag: 'wx' });
+
         if (!stillOwned() || !safeDestination()) return;
+
         fs.renameSync(temporary, destination);
+
         temporary = undefined;
     } catch { /* Preserve the original error even when finite diagnostics fail. */ }
+
     finally {
         if (temporary) { try { if (stillOwned?.()) fs.unlinkSync(temporary); } catch { /* Best effort for this owned temporary only. */ } }
     }
@@ -87,12 +109,14 @@ process.on('unhandledRejection', (reason) => {
 
 async function main() {
     const configPath = process.argv[2];
+
     if (!configPath) {
         logger.error('Usage: node compile.js <config-path>');
         process.exit(1);
     }
 
     let config;
+
     try {
         config = readBuildRequest(configPath);
     } catch (error) {
@@ -114,50 +138,65 @@ async function main() {
     }
 
     let workspace;
+
     try {
         workspace = acquireBuildWorkspace(currentProjectPath, 'compile');
+
         confirmBuildSource(config);
         invalidateBuildDelivery(currentProjectPath);
+
         const projectSnapshot = config.recordProjectDelivery === true ? captureProjectSources(config) : null;
         // 1. 路径准备（Coder 编译入口见 package.json.entry，产物输出到 .aily/build/<framework>）
         const isAilyCode = ailyCodeProject.isAilyCodeProjectRoot(currentProjectPath);
+
         if (!isAilyCode) invalidateBlocklyUploadState(currentProjectPath);
+
         const tempPath = isAilyCode
             ? ailyCodeProject.resolveCompileWorkspacePath(currentProjectPath)
             : path.join(currentProjectPath, '.temp');
+
         const buildPath = path.join(currentProjectPath, '.build');
+
         const blockSourceMapPath = path.join(
             buildPath,
             'aily-block-source-map.json'
         );
+
         const builderCompileReportPath = path.join(
             buildPath,
             'aily-builder-compile-report.json'
         );
+
         const sketchPath = isAilyCode ? tempPath : path.join(tempPath, 'sketch');
         const sketchFilePath = path.join(sketchPath, 'sketch.ino');
+
         const compileSourcePath = isAilyCode
             ? ailyCodeProject.resolveCompileSourcePath(currentProjectPath)
             : sketchFilePath;
+
         const preprocessCachePath = isAilyCode
             ? ailyCodeProject.resolvePreprocessResultPath(currentProjectPath)
             : path.join(tempPath, 'preprocess.json');
+
         let frameworkOutputDir = null;
+
         if (isAilyCode) {
             frameworkOutputDir = ailyCodeProject.resolveFrameworkBuildDir(currentProjectPath);
         }
 
         // Preprocessing exclusively owns source preparation; do not duplicate it here.
         mkdirp(tempPath);
-
         // Never let a previous build's Blockly mapping survive a source change.
         // The Builder independently verifies all source metadata before adding
         // this file to the simulation Artifact.
         fs.rmSync(blockSourceMapPath, { force: true });
         fs.rmSync(builderCompileReportPath, { force: true });
+
         if (!isAilyCode && Array.isArray(config.blockSourceMappings)) {
             mkdirp(buildPath);
+
             const sourceBytes = Buffer.from(code, 'utf8');
+
             const sourceMap = {
                 schemaVersion: 1,
                 kind: 'aily-block-source-map',
@@ -173,6 +212,7 @@ async function main() {
                     config.blockSourceMappings
                 )
             };
+
             fs.writeFileSync(
                 blockSourceMapPath,
                 `${JSON.stringify(sourceMap, null, 2)}\n`,
@@ -190,10 +230,11 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
+
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config, 'before-target-compile');
+
         const librarySnapshot = projectSnapshot ? readLibraryProjections(config) : undefined;
         const uploadInputs = !isAilyCode ? captureBlocklyUploadInputs(config) : null;
-
         // 3. 读取板子信息获取boardType
         const boardModulePath = path.join(currentProjectPath, 'node_modules', boardModule);
         const boardJsonPath = path.join(boardModulePath, 'board.json');
@@ -201,10 +242,11 @@ async function main() {
         if (!fs.existsSync(boardJsonPath)) {
             throw new Error(`未找到板子配置文件: ${boardJsonPath}`);
         }
-        const boardJson = JSON.parse(fs.readFileSync(boardJsonPath, 'utf8'));
 
+        const boardJson = JSON.parse(fs.readFileSync(boardJsonPath, 'utf8'));
         // 4. 获取编译命令中的boardType
         let compilerParam = boardJson.compilerParam;
+
         if (!compilerParam) {
             throw new Error('未找到编译命令(compilerParam)');
         }
@@ -216,6 +258,7 @@ async function main() {
             if (compilerParamList[i] === '-b' || compilerParamList[i] === '--board') {
                 if (i + 1 < compilerParamList.length) {
                     boardType = compilerParamList[i + 1];
+
                     break;
                 }
             }
@@ -233,35 +276,50 @@ async function main() {
             '--build-path', `"${buildPath}"`,
             '--preprocess-result', `"${preprocessCachePath}"`,
         ];
+
         const builderCommand = 'aily-builder';
         const simulatorArtifactRequested = config.graphSemanticRevision !== undefined;
+        const simulatorDebugRequested = simulatorArtifactRequested || config.simulationDebug === true;
         const capabilities = readBuilderCapabilities(builderCommand);
-        if (projectSnapshot && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
+        const recordBuildInputs = projectSnapshot !== null || config.recordBuildInputs === true;
+
+        if (recordBuildInputs && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
             throw new Error('Current Builder cannot record build-graph facts with workspace ownership; upgrade it before requesting project delivery.');
         }
+
         if (simulatorArtifactRequested && (!capabilities.artifact || !capabilities.graph || !capabilities.debug)) {
             throw new Error('Current Builder does not support Scene-bound simulation debug artifacts; upgrade it before simulating.');
         }
+
+        if (simulatorDebugRequested && (!capabilities.artifact || !capabilities.debug)) {
+            throw new Error('Current Builder does not support headless simulation debug artifacts; upgrade it before simulating.');
+        }
+
         if (capabilities.artifact) {
             args.push(
                 '--emit-artifact-manifest',
                 `"${path.join(buildPath, 'aily-artifact-manifest.json')}"`
             );
+
+            if (simulatorDebugRequested) args.push('--simulation-debug');
+
             if (simulatorArtifactRequested) {
-                args.push('--simulation-debug');
                 if (!/^[a-f0-9]{64}$/.test(config.graphSemanticRevision)) {
                     throw new Error('graphSemanticRevision 必须是小写 SHA-256。');
                 }
+
                 if (!capabilities.graph) {
                     throw new Error(
                         '当前 aily-builder 不支持 Scene graph provenance，'
                         + '不能生成可替换的仿真 Artifact。'
                     );
                 }
+
                 args.push(
                     '--graph-semantic-revision',
                     config.graphSemanticRevision
                 );
+
                 if (config.sourceDocumentSchemaVersion !== undefined) {
                     if (
                         config.sourceDocumentSchemaVersion !== 1
@@ -271,19 +329,23 @@ async function main() {
                             'sourceDocumentSchemaVersion 必须是 1 或 2。'
                         );
                     }
+
                     args.push(
                         '--scene-document-schema-version',
                         String(config.sourceDocumentSchemaVersion)
                     );
                 }
+
                 for (const [configKey, option] of [
                     ['sceneGpioDirectionsPath', '--scene-gpio-directions'],
                     ['sceneGpioPullsPath', '--scene-gpio-pulls']
                 ]) {
                     const metadataPath = config[configKey];
+
                     if (metadataPath === undefined) {
                         continue;
                     }
+
                     if (
                         typeof metadataPath !== 'string'
                         || metadataPath.trim().length === 0
@@ -291,11 +353,14 @@ async function main() {
                     ) {
                         throw new Error(`${configKey} must be an absolute path.`);
                     }
+
                     args.push(option, `"${metadataPath}"`);
                 }
             }
         }
-        if (projectSnapshot) args.push('--record-build-inputs', '--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
+
+        if (recordBuildInputs) args.push('--record-build-inputs');
+        if (projectSnapshot) args.push('--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
 
         if (!projectSnapshot && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
             args.push('--generate-archive-cloud-cache');
@@ -319,30 +384,42 @@ async function main() {
         logger.log(`执行编译: ${builderCommand} ${args.join(' ')}`);
 
         const startedAt = new Date();
+
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
+
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
+
         const { exitCode, signal, spawnError, output } = attempt;
+
         args = attempt.args;
+
         workspace.assertBuilderIdle();
+
         let deliveryError = null;
+
         try {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);
+
                     await reportBuildDelivery(config, receipt);
                 }
+
                 if (!isAilyCode) publishBlocklyUploadState(config, uploadInputs);
             }
         } catch (error) {
             deliveryError = error;
+
             invalidateBuildDelivery(currentProjectPath);
             output.push(`\n[BUILD_DELIVERY_ERROR] ${formatFatalError(error)}\n`);
         }
+
         writeBuilderCompileReport(
             builderCompileReportPath,
             buildBuilderCompileReport({
@@ -360,9 +437,11 @@ async function main() {
                 output: output.join('')
             })
         );
+
         if (spawnError || deliveryError) {
             throw spawnError || deliveryError;
         }
+
         if (signal) {
             throw new Error(`编译进程被信号终止: ${signal}`);
         }
@@ -372,10 +451,10 @@ async function main() {
         }
 
         logger.log('编译完成');
-
     } catch (error) {
         writeProjectInputDifference(error);
         logger.error(`[ERROR] ${error.message}`);
+
         process.exitCode = 1;
     } finally {
         // Only the acquiring host releases, after preprocess/compiler close and
@@ -397,24 +476,30 @@ function buildBuilderCompileReport({
     output
 }) {
     const completedAt = new Date();
+
     const normalizedOutput = output.replace(
         /\u001b\[[0-9;]*m/g,
         ''
     );
+
     const cacheLines = normalizedOutput
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter((line) => line.includes('[ARCHIVE_CLOUD_CACHE]'))
         .slice(-200);
+
     const restoreMatch = normalizedOutput.match(
         /\[ARCHIVE_CLOUD_CACHE\]\s+local hits=(\d+)\s+remote hits=(\d+)\s+misses=(\d+)/
     );
+
     const storeMatch = normalizedOutput.match(
         /\[ARCHIVE_CLOUD_CACHE\]\s+stored archives=(\d+)\s+skipped=(\d+)\s+size=([^\r\n]+)/
     );
+
     const scheduledMatch = normalizedOutput.match(
         /\[ARCHIVE_CLOUD_CACHE\]\s+scheduled remote downloads=(\d+)/
     );
+
     return {
         schemaVersion: 1,
         kind: 'aily-builder-compile-report',
@@ -452,12 +537,15 @@ function buildBuilderCompileReport({
 function writeBuilderCompileReport(filePath, report) {
     try {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
         const temporaryPath = `${filePath}.${process.pid}.tmp`;
+
         fs.writeFileSync(
             temporaryPath,
             `${JSON.stringify(report, null, 2)}\n`,
             'utf8'
         );
+
         fs.rmSync(filePath, { force: true });
         fs.renameSync(temporaryPath, filePath);
     } catch (error) {
@@ -480,6 +568,7 @@ function normalizeBlockSourceMappings(value) {
         ))
         .map((mapping) => {
             const ranges = normalizeBlockSourceRanges(mapping.ranges);
+
             return {
                 blockId: mapping.blockId,
                 ...(mapping.executionRole === 'statement'
@@ -507,6 +596,7 @@ function normalizeBlockSourceMappings(value) {
 
 function normalizeBlockSourceRanges(value) {
     if (!Array.isArray(value)) return [];
+
     return value
         .filter((range) => (
             range

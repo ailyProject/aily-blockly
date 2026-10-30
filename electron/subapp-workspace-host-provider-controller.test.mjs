@@ -26,7 +26,7 @@ function fixture(options = {}) {
   const registry = {
     hasRegistration: toolId => (options.tools ?? ['simulator']).includes(toolId),
     async open(context) {
-      calls.push(['open', context.hostInstanceId]);
+      calls.push(['open', context.hostInstanceId, context.runtimePackagePath]);
       if (options.beforeOpen) await options.beforeOpen();
       const unbind = context.transport.onMessage(message => {
         calls.push(['received', message.type]);
@@ -55,6 +55,20 @@ test('passive workspace binding survives Agent owner removal with the same live 
   assert.equal(calls.filter(call => call[0] === 'open').length, 1);
   assert.equal(calls.filter(call => call[0] === 'received' && call[1] === 'build').length, 1);
   assert.equal(controller.snapshot()[0].ready, true);
+  await controller.close();
+});
+
+test('workspace callbacks use the selected Runtime package while passive consumers share the binding', async () => {
+  const { controller, calls } = fixture();
+  const selected = { ...runtime(), hostInfo: { packagePath: '/installed/simulator/version-a' } };
+  await controller.update('project-a', [selected]);
+  await controller.update('project-a', [{ ...selected, refCount: 2 }]);
+  assert.deepEqual(calls.filter(call => call[0] === 'open').map(call => call[2]), ['/installed/simulator/version-a']);
+  await controller.update('project-a', [{ ...runtime('stream-2'), hostInfo: { packagePath: '/installed/simulator/version-b' } }]);
+  assert.deepEqual(calls.filter(call => call[0] === 'open').map(call => call[2]), [
+    '/installed/simulator/version-a', '/installed/simulator/version-b',
+  ]);
+  assert.equal(calls.filter(call => call[0] === 'close').length, 1);
   await controller.close();
 });
 

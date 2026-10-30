@@ -11,7 +11,8 @@ const base = path.join(__dirname, '../src/app/integrations/simulator');
 const dataModule = file => import('data:text/javascript;base64,' + Buffer.from(
   stripTypeScriptTypes(fs.readFileSync(file, 'utf8'), { mode: 'transform' })).toString('base64'));
 const subject = dataModule(path.join(base, 'blockly-simulator-web-publication.ts'));
-const timing = dataModule('D:/codes/aily-simulator-unified/packages/simulator-gateway/src/artifact-read-timing.ts');
+const simulatorRoot = process.env.AILY_SIMULATOR_SOURCE_ROOT || path.resolve(__dirname, '../../aily-simulator');
+const timing = dataModule(path.join(simulatorRoot, 'packages/simulator-gateway/src/artifact-read-timing.ts'));
 const origin = 'https://timing.example.test';
 const rows = async count => {
   const value = structuredClone((await timing).createArtifactReadTiming().snapshot());
@@ -102,6 +103,7 @@ withLocation('original failed close retains the same timing caller until origina
 
 test('actual application source forwards only the bounded original publication timing projection', async () => {
   const project = (await subject).projectBlocklyArtifactReadTiming;
+  const prewarm = await dataModule(path.join(base, 'blockly-simulator-web-prewarm.ts'));
   const javascript = ts.transpileModule(fs.readFileSync(path.join(base, 'simulator-web-app.providers.ts'), 'utf8'),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const destroy = Symbol('DestroyRef'), exports = {};
@@ -110,6 +112,7 @@ test('actual application source forwards only the bounded original publication t
       assert.equal(token, destroy); return { onDestroy() {} }; } };
     if (name === './simulator-web-product.providers') return { provideSimulatorWebProduct: factory => factory };
     if (name === './blockly-simulator-web-publication') return { projectBlocklyArtifactReadTiming: project };
+    if (name === './blockly-simulator-web-prewarm') return prewarm;
     if (name === './simulator-web-product.source') return { createSimulatorWebProductSource() { throw Error('Unexpected business read.'); } };
     if (name === './simulator-web-project-activation') return { createSimulatorWebProjectActivationReader() { throw Error('Unexpected activation read.'); } };
     if (name === './simulator-web-project-activation.providers') return { SIMULATOR_WEB_PROJECT_ACTIVATION: Symbol('activation') };

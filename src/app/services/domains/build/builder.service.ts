@@ -2,11 +2,13 @@ import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import { Inject, Injectable, Optional } from '@angular/core';
 import { firstValueFrom, Subject } from 'rxjs';
 import { ProjectService, CODER_EXECUTION_PORT, type CoderExecutionPort } from '@domain/project/public-api';
+
 import {
   CmdService,
   CrossPlatformCmdService,
   ElectronService,
 } from '@core/platform/public-api';
+
 import { CompileService } from './compile.service';
 import { persistBuildResult, type BuildCheckpoint, type BuildResultSnapshot } from './build-result-snapshot';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
@@ -28,8 +30,8 @@ export interface ActiveBlocklyProjectBuildInput {
 @Injectable({
   providedIn: 'root'
 })
-export class BuilderService {
 
+export class BuilderService {
   /** 编译流程结束（成功/失败/取消）后广播；订阅者用于刷新依赖产物路径的视图（如内嵌 Coder 的 main.hex）。 */
   readonly buildFinishedSubject = new Subject<BuildFinishedEvent>();
 
@@ -67,13 +69,17 @@ export class BuilderService {
   /*
    * 开始编译
    */
-  async build(projectPath?: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source'] } = {}) {
+  async build(projectPath?: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; simulationDebug?: boolean } = {}) {
     const targetPath = projectPath || this.projectService.currentProjectPath;
+
     if (this.coderExecution && this.projectService.isAilyCodeProject(targetPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
+
     const finish = this.projectService.beginCoderOperation('build', targetPath);
+
     try {
       if (projectPath || this.projectService.isAilyCodeProject(targetPath)) return await this.buildFromProjectPath(targetPath, options);
-      return await this.buildCurrentBlocklyProject({ source: options.source });
+
+      return await this.buildCurrentBlocklyProject({ source: options.source, simulationDebug: options.simulationDebug });
     } finally {
       finish();
     }
@@ -86,10 +92,13 @@ export class BuilderService {
    */
   async buildActiveBlocklyProject(input: ActiveBlocklyProjectBuildInput) {
     const projectPath = String(input?.projectPath || '').trim();
+
     const graphSemanticRevision = String(
       input?.graphSemanticRevision || '',
     );
+
     const requestId = String(input?.requestId || '');
+
     if (
       !projectPath
       || !/^[a-f0-9]{64}$/.test(graphSemanticRevision)
@@ -100,6 +109,7 @@ export class BuilderService {
     ) {
       throw new Error('Active Blockly Project Build input is invalid.');
     }
+
     if (
       this.projectService.isProjectOpening
       || !this.isSameProjectPath(
@@ -111,6 +121,7 @@ export class BuilderService {
     ) {
       throw new Error('The requested Blockly Project is not active.');
     }
+
     return this.buildCurrentBlocklyProject({
       source: 'ai',
       graphSemanticRevision,
@@ -123,23 +134,34 @@ export class BuilderService {
   private async buildCurrentBlocklyProject(
     payload: {
       source?: BuildResultSnapshot['source'];
+      simulationDebug?: boolean;
       graphSemanticRevision?: string;
       sceneDocument?: SceneEditorDocumentV2;
+
       sourceDocumentSchemaVersion?: 1 | 2;
       requestId?: string;
     },
   ) {
     const projectPath = this.projectService.currentProjectPath;
+
+    if (payload.simulationDebug && !this.actionService.hasListener('builder-compile-begin')) {
+      throw new Error('Headless simulation build requires the active Blockly editor to be ready.');
+    }
+
     let checkpoint: BuildCheckpoint | undefined;
+
     try {
       await this.persistActiveCoderProjectBeforeBuild(
         projectPath,
       );
+
       // Pro / code-editor-pro 路由下 Blockly 未挂载，compile-begin 无监听者会一直等反馈；
       // Coder 工程改为直接走磁盘源码 + 同一套 preprocess/compile 脚本。
       let feedback: any;
+
       if (!this.actionService.hasListener('builder-compile-begin')) {
         const r = await this.compileService.runCompileFromDisk({ projectPath });
+
         feedback = {
           success: true,
           data: { success: r.success, result: r.result },
@@ -155,7 +177,9 @@ export class BuilderService {
       // listener handler 内部 catch 了编译错误，所以 feedback.success 总是 true
       // 需要检查 data.success 来判断编译是否真正成功
       checkpoint = feedback?.data?.checkpoint;
+
       const buildResult = feedback?.data?.result;
+
       const buildSuccess = feedback?.success !== false
         && feedback?.data?.success !== false
         && !!buildResult
@@ -172,22 +196,29 @@ export class BuilderService {
         error.text = buildResult?.text || feedback?.error || '编译失败';
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildResult = buildResult;
+
         if (buildResult?.errorCode === 'build-cancelled') {
           error.errorCode = 'build-cancelled';
         }
+
         throw error;
       }
 
       if (checkpoint?.startedAt) persistBuildResult(projectPath, true, buildResult, undefined, checkpoint, payload.source);
+
       this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
+
       return buildResult;
     } catch (error: any) {
       // console.error('编译失败:', error);
       if (!this.electronService.isWindowFocused()) {
         this.electronService.notify('编译', error?.text || error?.message || '编译失败');
       }
+
       if (checkpoint?.startedAt) persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
+
       this.buildFinishedSubject.next({ projectPath, success: false, result: error?.buildResult, error });
+
       throw error;
     }
   }
@@ -197,26 +228,34 @@ export class BuilderService {
       .replace(/\\/g, '/')
       .replace(/\/+$/u, '')
       .toLowerCase();
+
     return normalize(left) === normalize(right);
   }
 
   private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source'] } = {}) {
     await this.persistActiveCoderProjectBeforeBuild(projectPath);
+
     const compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
     const buildResult = compileResult.result;
+
     if (!compileResult.success || buildResult?.state === 'error') {
       const error: any = new Error(buildResult?.text || 'Build failed');
       error.state = buildResult?.state || 'error';
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
       error.buildResult = buildResult;
+
       if (!options.preprocessOnly) persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
+
       this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
+
       throw error;
     }
 
     if (!options.preprocessOnly) persistBuildResult(projectPath, true, buildResult, undefined, undefined, options.source);
+
     this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
+
     return buildResult;
   }
 
@@ -242,6 +281,7 @@ export class BuilderService {
         15_000,
       ),
     );
+
     if (feedback?.success !== true) {
       throw new Error(
         feedback?.error
@@ -255,8 +295,11 @@ export class BuilderService {
    */
   cancel(projectPath = this.projectService.currentProjectPath) {
     if (this.coderExecution && this.projectService.isAilyCodeProject(projectPath) && !this.projectService.isCoderProjectContext) { this.coderExecution.cancel(projectPath, 'build'); return; }
+
     this.compileService.cancel();
+
     if (this.projectService.isCoderProjectContext) return;
+
     this.actionService.dispatch('compile-cancel', {}, result => {
       if (result.success) {
       } else {
@@ -268,6 +311,7 @@ export class BuilderService {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) {
       return;
     }
+
     this.actionService.dispatch('compile-cancel', { requestId }, result => {
       if (!result.success) {
         console.warn('Scoped Blockly Build cancellation was rejected.', result);
@@ -282,6 +326,7 @@ export class BuilderService {
    */
   triggerPreprocess(reason: string = 'manual') {
     console.log(`触发预编译操作，原因: ${reason}`);
+
     this.actionService.dispatch('preprocess-trigger', { reason }, result => {
       if (result.success) {
         console.log('预编译触发成功');
@@ -299,6 +344,7 @@ export class BuilderService {
     const buildPath = this.electronService.pathJoin(projectPath, '.build');
     const isAilyCode = this.projectService.isAilyCodeProject(projectPath);
     const librariesPath = this.electronService.pathJoin(projectPath, '.temp', 'libraries');
+
     const libraryCachePath = this.electronService.pathJoin(
       projectPath,
       isAilyCode ? 'sketch' : '.temp',
@@ -324,8 +370,10 @@ export class BuilderService {
         isAilyCode ? 'sketch' : '.temp',
         'preprocess.json',
       );
+
       if (window['fs'].existsSync(preprocessResultPath)) {
         console.log('清除 Coder 预处理结果:', preprocessResultPath);
+
         await this.crossPlatformCmdService.removeItem(
           preprocessResultPath,
           false,
@@ -342,6 +390,7 @@ export class BuilderService {
     try {
       const tempPath = projectPath + '/.temp';
       const buildPath = this.electronService.pathJoin(projectPath, '.build');
+
       console.log('编译缓存路径:', buildPath);
       await this.crossPlatformCmdService.removeItem(buildPath, true, true);
 
@@ -354,11 +403,14 @@ export class BuilderService {
           'upload-config.json',
         ]) {
           const generatedPath = this.electronService.pathJoin(projectPath, 'sketch', fileName);
+
           if (window['fs'].existsSync(generatedPath)) {
             await this.crossPlatformCmdService.removeItem(generatedPath, false, true);
           }
         }
+
         console.log('Coder 编译缓存已清除，sketch/src 与 sketch/libraries 已保留');
+
         return;
       }
 
@@ -369,9 +421,11 @@ export class BuilderService {
       } else {
         console.log('.temp文件夹不存在，无需删除');
       }
+
       console.log('编译缓存清除完成');
     } catch (error) {
       console.log('清除编译缓存时发生错误:', error);
+
       // 不抛出异常，只记录日志
     }
   }

@@ -1049,6 +1049,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private hostAutomationStatus(): Record<string, unknown> {
     return {
+      activeChatSessionId: this.isAilyChatTool() ? this.ailyChatSessionId || null : null,
       status: this.hostStatus,
       frameLoaded: this.frameLoaded,
       penpalState: this.penpalState,

@@ -2,12 +2,14 @@ import type {
   SubappHostProviderProductOpenContext,
   SubappHostProviderProductSession,
 } from './subapp-host-provider-product-registry.service';
+
 import type { SubappHostProviderRecord } from './subapp-host-provider-dispatcher';
 
 export interface WorkspaceProviderRuntime {
   toolId: string;
   streamId: string;
   running: boolean;
+  hostInfo?: { packagePath?: string } | null;
   messagePort?: { maxMessageBytes?: number } | null;
 }
 
@@ -16,7 +18,9 @@ export interface WorkspaceProviderControllerPort {
     success: boolean;
     negotiationRequest?: SubappHostProviderRecord | null;
   }>;
+
   unbindMessageController(input: { toolId: string; streamId: string; bindingId: string }): Promise<unknown>;
+
   sendMessage(input: {
     toolId: string; streamId: string; bindingId: string; message: SubappHostProviderRecord;
   }): Promise<{ success: boolean }>;
@@ -27,12 +31,14 @@ interface Binding {
   readonly scope: string | null;
   readonly bindingId: string;
   readonly pending: SubappHostProviderRecord[];
+
   overflowed: boolean;
   closing: boolean;
   sessionClosed: boolean;
   cleanup: Promise<void> | null;
   initialized: Promise<void>;
   session: SubappHostProviderProductSession | null;
+
   listener: ((message: SubappHostProviderRecord) => void) | null;
 }
 
@@ -47,16 +53,20 @@ export class SubappWorkspaceHostProviderController {
 
   constructor(private readonly options: {
     port: WorkspaceProviderControllerPort;
+
     registry: {
       hasRegistration(toolId: string): boolean;
       open(context: SubappHostProviderProductOpenContext): Promise<SubappHostProviderProductSession | null>;
     };
+
     instanceId: string;
+
     onError?: (toolId: string) => void;
   }) {}
 
   update(scope: string | null, runtimes: readonly WorkspaceProviderRuntime[]): Promise<void> {
     if (this.closed) return this.tail;
+
     this.scope = scope;
     this.runtimes = runtimes.map(runtime => ({ ...runtime }));
     this.tail = this.tail.catch(() => undefined).then(() => this.reconcile());
@@ -65,7 +75,9 @@ export class SubappWorkspaceHostProviderController {
 
   receive(event: { toolId: string; streamId: string; message: SubappHostProviderRecord }): void {
     const binding = this.bindings.get(event.toolId);
+
     if (!binding || binding.runtime.streamId !== event.streamId || !this.matches(binding)) return;
+
     if (binding.listener) binding.listener(event.message);
     else if (binding.pending.length < 8) binding.pending.push(event.message);
     else { binding.overflowed = true; binding.pending.length = 0; }
@@ -88,6 +100,7 @@ export class SubappWorkspaceHostProviderController {
       const failures = await cleanup;
       if (failures.length) throw new AggregateError(failures, 'Workspace Provider cleanup remains unconfirmed.');
     });
+
     return this.tail;
   }
 
@@ -113,25 +126,33 @@ export class SubappWorkspaceHostProviderController {
         pending: [], overflowed: false, closing: false, sessionClosed: false, cleanup: null, session: null, listener: null,
         initialized: new Promise<void>(resolve => { initialized = resolve; }),
       };
+
       this.bindings.set(runtime.toolId, binding);
+
       try {
         const result = await this.options.port.bindMessageController({
           toolId: runtime.toolId, streamId: runtime.streamId, bindingId: binding.bindingId,
         });
+
         if (!result.success) throw new Error('Host Provider controller binding was rejected.');
         if (result.negotiationRequest) binding.pending.push(result.negotiationRequest);
         if (this.matches(binding)) binding.session = await this.options.registry.open({
           toolId: runtime.toolId, hostInstanceId: this.options.instanceId,
+          ...(runtime.hostInfo?.packagePath ? { runtimePackagePath: runtime.hostInfo.packagePath } : {}),
           transport: {
             onMessage: listener => {
               binding.listener = listener;
+
               queueMicrotask(() => {
                 if (binding.listener !== listener || !this.matches(binding)) {
                   binding.pending.length = 0;
+
                   return;
                 }
+
                 for (const message of binding.pending.splice(0)) listener(message);
               });
+
               return () => { if (binding.listener === listener) binding.listener = null; };
             },
             send: async message => {
@@ -140,6 +161,7 @@ export class SubappWorkspaceHostProviderController {
                 toolId: runtime.toolId, streamId: runtime.streamId,
                 bindingId: binding.bindingId, message,
               });
+
               if (!sent.success) throw new Error('Host Provider controller transport was rejected.');
             },
           },

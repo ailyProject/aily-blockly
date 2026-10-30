@@ -30,6 +30,31 @@ test('foreign owners, wrong handles and unsupervised launch shapes cannot mint a
     await assert.rejects(f.api.query(f.sender, { projectPath: f.root, handle: 'copied-from-another-host' }), /No matching/);
 });
 
+test('bound upload returns the exact observed request and Artifact, without claiming simulation acceptance', async t => {
+    const f = fixture(t), handle = await f.api.begin(f.sender, f.options);
+    f.publish(handle); handle.onExit(0, null, false);
+    const result = await f.api.query(f.sender, { projectPath: f.root, expectedArtifactId: 'a'.repeat(64) });
+    assert.equal(result.status, 'source-current');
+    assert.equal(result.currentProjectAcceptance, false);
+    assert.deepEqual(result.verifiedBuild, {
+        artifactId: 'a'.repeat(64), manifestSha256: result.manifestSha256,
+        buildRequestPath: f.request, requestDigest: require('node:crypto').createHash('sha256')
+            .update(fs.readFileSync(f.request)).digest('hex'),
+    });
+});
+
+for (const drift of ['requested-artifact', 'request-bytes', 'firmware-bytes']) {
+    test(`bound upload refuses ${drift} drift before an uploader receives authority`, async t => {
+        const f = fixture(t), handle = await f.api.begin(f.sender, f.options);
+        f.publish(handle); handle.onExit(0, null, false);
+        if (drift === 'request-bytes') fs.appendFileSync(f.request, ' ');
+        if (drift === 'firmware-bytes') f.put('.build/firmware.bin', 'different firmware');
+        await assert.rejects(f.api.query(f.sender, { projectPath: f.root,
+            expectedArtifactId: (drift === 'requested-artifact' ? 'b' : 'a').repeat(64) }),
+        /differs from the verified simulation|Build request changed|Firmware changed/);
+    });
+}
+
 for (const binding of [undefined, 'f'.repeat(64)]) test(`missing/wrong input record process binding cannot mint authority: ${binding === undefined ? 'missing' : 'wrong'}`, async t => {
     const f = fixture(t), handle = await f.api.begin(f.sender, f.options);
     f.publish(handle, { inputRecordSha256: binding }); handle.onExit(0, null, false);

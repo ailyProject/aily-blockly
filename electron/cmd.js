@@ -11,6 +11,7 @@ const { createBuildWorkspaceSupervisor } = require('./build-workspace-supervisor
 const { observeChildProcessTerminal } = require('./child-process-terminal');
 const { createSimulatorOwnerCleanupDiagnostics } = require('./simulator-owner-cleanup-diagnostics');
 let commandShutdown = false;
+
 const {
   normalizeProcessMessage,
   normalizeProcessMessagePortConfig,
@@ -389,6 +390,7 @@ class CommandManager {
   // 执行命令并返回流式数据
   executeCommand(options) {
     if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
+
     let {
       command,
       args = [],
@@ -398,7 +400,9 @@ class CommandManager {
       shellProfile = true,
       messagePort: rawMessagePort,
     } = options;
+
     if (this.processes.has(streamId)) throw new Error('Command stream is already registered.');
+
     const messagePort = normalizeProcessMessagePortConfig(rawMessagePort);
     // 根据平台选择正确的 shell
     let shell;
@@ -496,8 +500,10 @@ class CommandManager {
     const childStdio = messagePort
       ? ['pipe', 'pipe', 'pipe', 'ipc']
       : ['pipe', 'pipe', 'pipe'];
+
     const buildWorkspace = createBuildWorkspaceSupervisor(options.buildWorkspace);
     const commandEnv = buildCommandEnv({ ...env, ...buildWorkspace?.environment });
+
     const child = isWin32NpmFamily
       ? spawn(fullCommand, {
           cwd: cwd || process.cwd(),
@@ -515,6 +521,7 @@ class CommandManager {
         });
 
     const startedAt = Date.now();
+
     const entry = {
       process: child,
       command,
@@ -539,20 +546,25 @@ class CommandManager {
     entry.terminalObservation = observeChildProcessTerminal(child, terminal => {
       const { code, signal } = terminal;
       entry.terminal = terminal;
+
       // During cancellation, wait for the tree result before forgetting the
       // command. Interrupted build markers still require confirmed cleanup.
       const safeExit = !child.pid || (Number.isInteger(code) && !signal);
+
       entry.completedNormally = safeExit;
+
       if (entry.terminationConfirmed || (!entry.stopRequested && !entry.terminationUnconfirmed
           && (!entry.projectSessionId || safeExit) && (!entry.buildWorkspace
           || (safeExit && entry.buildWorkspace.canReleaseResources())))) {
         entry.terminationConfirmed = true;
+
         this.releaseCommandResources(streamId, entry);
       } else {
         console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
           streamId, pid: child.pid, reason: entry.stopRequested ? 'termination-pending' : 'termination-unconfirmed',
         });
       }
+
       for (const listener of this.processExitListeners) {
         try {
           listener({ streamId, pid: child.pid, code, signal, expected: entry.stopRequested, terminal });
@@ -560,8 +572,11 @@ class CommandManager {
           console.warn('[PROC_TRACE][CMD_EXIT_LISTENER_ERROR]', { streamId, error: String(error) });
         }
       }
+
       const listeners = [...entry.terminalListeners];
+
       entry.terminalListeners.clear();
+
       for (const listener of listeners) {
         try { listener(terminal); }
         catch (error) { console.warn('[PROC_TRACE][CMD_TERMINAL_LISTENER_ERROR]', { streamId, error: String(error) }); }
@@ -615,6 +630,7 @@ class CommandManager {
         if (typeof listener !== 'function') throw new TypeError('Command terminal listener is required');
         if (entry.terminal) listener(entry.terminal);
         else entry.terminalListeners.add(listener);
+
         return () => entry.terminalListeners.delete(listener);
       },
       shouldLogOutput
@@ -624,19 +640,25 @@ class CommandManager {
   // 终止进程
   async killProcess(streamId) {
     const pending = this.pendingCommands.get(streamId);
+
     if (pending) {
       pending.cancelled = true;
+
       return true;
     }
+
     const entry = this.processes.get(streamId);
+
     // A normal close may have already finished between the caller's snapshot
     // and this request. Cleanup is idempotent.
     if (!entry) return true;
     if (entry.stopPromise) return entry.stopPromise;
+
     // Interrupted protected builds may stay registered after parent close.
     // That PID may now belong to someone else; only explicit recovery can
     // resolve unconfirmed ownership. Confirmed stops may retry file cleanup.
     if (entry.terminal && !entry.terminationConfirmed) return false;
+
     if (entry.process) {
       console.info('[PROC_TRACE][CMD_KILL]', {
         streamId,
@@ -646,39 +668,50 @@ class CommandManager {
       });
 
       entry.stopRequested = true;
+
       entry.stopPromise = (async () => {
         try {
           if (!entry.terminationConfirmed) {
             const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`);
+
             // A failed taskkill can race a supervised build's normal finish.
             // Its own marker cleanup confirms completion; parent close alone
             // cannot establish that installer/compiler descendants stopped.
             const completedBuild = entry.terminal && entry.completedNormally
               && entry.buildWorkspace?.canReleaseResources();
+
             if (!stopped && !completedBuild) {
               if (entry.projectSessionId) entry.terminationUnconfirmed = true;
+
               console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
                 streamId, pid: entry.process.pid, reason: 'termination-failed',
               });
+
               return false;
             }
+
             entry.terminationConfirmed = true;
             entry.workspaceCleanupPending = !!entry.buildWorkspace;
           }
+
           this.releaseCommandResources(streamId, entry);
+
           return true;
         } catch (error) {
           console.warn('[PROC_TRACE][CMD_RESOURCE_RETAINED]', {
             streamId, pid: entry.process.pid, reason: 'cleanup-failed', error: error.message,
           });
+
           return false;
         } finally {
           if (!entry.terminationConfirmed) {
             entry.stopRequested = false;
+
             if (entry.terminal && !entry.buildWorkspace && !entry.projectSessionId) this.releaseCommandResources(streamId, entry);
           }
         }
       })().finally(() => { entry.stopPromise = undefined; });
+
       return entry.stopPromise;
     }
 
@@ -689,20 +722,25 @@ class CommandManager {
     if (entry.workspaceCleanupPending) {
       try {
         entry.buildWorkspace.releaseAfterTermination(true);
+
         entry.workspaceCleanupPending = !entry.buildWorkspace.canReleaseResources();
       } catch (error) {
         console.warn('[BUILD_WORKSPACE] Stopped command cleanup pending:', error.message);
       }
     }
+
     if (!entry.workspaceCleanupPending) {
       clearTimeout(entry.cleanupTimer);
+
       if (this.processes.get(streamId) === entry) this.processes.delete(streamId);
     } else if (!entry.cleanupTimer && (entry.cleanupAttempts || 0) < 3) {
       entry.cleanupTimer = setTimeout(() => {
         entry.cleanupTimer = undefined;
         entry.cleanupAttempts = (entry.cleanupAttempts || 0) + 1;
+
         this.releaseCommandResources(streamId, entry);
       }, 250);
+
       entry.cleanupTimer.unref?.();
     }
   }
@@ -816,15 +854,20 @@ class CommandManager {
     const entries = [...this.processes, ...this.pendingCommands];
 
     console.info('[PROC_TRACE][CMD_KILL_ALL]', { count: entries.length, processes: this.getActiveProcessSummaries() });
+
     const stopped = await Promise.all(entries.map(([streamId]) => this.killProcess(streamId)));
+
     return stopped.every(Boolean);
   }
 
   async killOwnerProjectProcesses(owner, projectPath, projectSessionId) {
     if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath)) return false;
+
     const entries = [...this.processes, ...this.pendingCommands]
       .filter(([, entry]) => matchesProjectTask(entry, owner, projectPath, projectSessionId));
+
     const stopped = await Promise.all(entries.map(([streamId]) => this.killProcess(streamId)));
+
     return stopped.every(Boolean);
   }
 
@@ -848,28 +891,49 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
     const streamId = options.streamId || `cmd_${Date.now()}_${Math.random()}`;
     const senderWindow = event.sender; // 获取发送请求的窗口
     let delivery;
+
     const pending = { ownerWebContents: senderWindow, cwd: options.cwd || process.cwd(),
       buildWorkspacePath: options.buildWorkspace, projectPath: options.projectPath,
       projectSessionId: options.projectSessionId, cancelled: false };
 
     try {
       if (commandShutdown) throw new Error('COMMAND_SHUTDOWN_IN_PROGRESS');
+
       assertProjectTaskActive(senderWindow, options);
+
       if (commandManager.pendingCommands.has(streamId) || commandManager.processes.has(streamId)) {
         throw new Error('Command stream is already registered.');
       }
+
       commandManager.pendingCommands.set(streamId, pending);
-      if (options.buildWorkspace) buildDeliveryAuthority?.invalidate(options.buildWorkspace);
+
+      if (options.expectedArtifactId !== undefined) {
+        if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame || !options.buildWorkspace) {
+          throw new Error('SIMULATION_UPLOAD_STALE: Verified build authority is unavailable.');
+        }
+
+        const verified = await buildDeliveryAuthority.query(senderWindow, {
+          projectPath: options.buildWorkspace, expectedArtifactId: options.expectedArtifactId,
+        });
+
+        if (verified.status !== 'source-current') throw new Error('SIMULATION_UPLOAD_STALE: Rebuild and rerun simulation.');
+      } else if (options.buildWorkspace) buildDeliveryAuthority?.invalidate(options.buildWorkspace);
+
       if (options.buildDeliveryRequest !== undefined) {
         if (!buildDeliveryAuthority || event.senderFrame !== senderWindow.mainFrame) throw new Error('Build delivery authority unavailable; restart the host.');
+
         delivery = await buildDeliveryAuthority.begin(senderWindow, options);
       }
+
       if (pending.cancelled) throw new Error('COMMAND_CANCELLED_BEFORE_LAUNCH');
       if (senderWindow.isDestroyed()) throw new Error('Command owner was destroyed before launch.');
+
       assertProjectTaskActive(senderWindow, options);
+
       const result = commandManager.executeCommand({ ...options, streamId, ownerWebContents: senderWindow,
         ...(delivery ? { messagePort: { transport: 'node-ipc-v1', maxMessageBytes: 4096 } } : {}),
       });
+
       const process = result.process;
       const ownerCleanupDiagnostics = createSimulatorOwnerCleanupDiagnostics({
         enabled: options.env?.AILY_CHILD_TOOL_ID === 'simulator'
@@ -882,9 +946,11 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
           try { delivery.onMessage(normalizeProcessMessage(message, 4096).message); }
           catch { delivery.abandon(); }
         });
+
         result.onTerminal(({ code, signal }) => delivery.onExit(code, signal,
           result.stopRequested || commandManager.getProcess(streamId) !== undefined));
       }
+
       // console.log(options);
       // 监听标准输出
       process.stdout.on('data', (data) => {
@@ -924,6 +990,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       result.onTerminal(terminal => {
         ownerCleanupDiagnostics.close();
         const { code, signal } = terminal;
+
         console.log(`[CMD][${streamId}] ${terminal.kind}, code: ${code}, signal: ${signal}`);
 
         console.info('[PROC_TRACE][CMD_TERMINAL]', {
@@ -977,6 +1044,7 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       };
     } catch (error) {
       delivery?.abandon();
+
       const formattedError = formatSpawnError(error);
 
       console.error('[PROC_TRACE][CMD_START_ERROR]', {

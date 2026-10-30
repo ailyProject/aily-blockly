@@ -8,7 +8,8 @@ const base = path.join(__dirname, '../src/app/integrations/simulator');
 const load = file => import('data:text/javascript;base64,' + Buffer.from(
   stripTypeScriptTypes(fs.readFileSync(file, 'utf8'), { mode: 'transform' })).toString('base64'));
 const subject = load(path.join(base, 'blockly-simulator-web-publication.ts'));
-const helper = load('D:/codes/aily-simulator-unified/packages/simulator-gateway/src/host-callback-handshake-timing.ts');
+const simulatorRoot = process.env.AILY_SIMULATOR_SOURCE_ROOT || path.resolve(__dirname, '../../aily-simulator');
+const helper = load(path.join(simulatorRoot, 'packages/simulator-gateway/src/host-callback-handshake-timing.ts'));
 const origin = 'https://handshake.example.test';
 const phases = ['caller.context-before', 'caller.descriptor', 'caller.context-after',
   'open.context-before', 'open.descriptor-refresh', 'open.context-after', 'caller.close-join'];
@@ -91,6 +92,7 @@ located('new pending close timing does not retire an original caller before its 
 });
 test('actual application projection forwards new handshake rows without business read or private fields', async () => {
   const project = (await subject).projectBlocklyArtifactReadTiming;
+  const prewarm = await load(path.join(base, 'blockly-simulator-web-prewarm.ts'));
   const javascript = ts.transpileModule(fs.readFileSync(path.join(base, 'simulator-web-app.providers.ts'), 'utf8'),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const destroy = Symbol('DestroyRef'), exports = {};
@@ -98,6 +100,7 @@ test('actual application projection forwards new handshake rows without business
     if (name === '@angular/core') return { DestroyRef: destroy, InjectionToken: class {}, inject(token) { assert.equal(token, destroy); return { onDestroy() {} }; } };
     if (name === './simulator-web-product.providers') return { provideSimulatorWebProduct: factory => factory };
     if (name === './blockly-simulator-web-publication') return { projectBlocklyArtifactReadTiming: project };
+    if (name === './blockly-simulator-web-prewarm') return prewarm;
     if (name === './simulator-web-product.source') return { createSimulatorWebProductSource() { throw Error('Unexpected read.'); } };
     if (name === './simulator-web-project-activation') return { createSimulatorWebProjectActivationReader() { throw Error('Unexpected activation.'); } };
     if (name === './simulator-web-project-activation.providers') return { SIMULATOR_WEB_PROJECT_ACTIVATION: Symbol('activation') };

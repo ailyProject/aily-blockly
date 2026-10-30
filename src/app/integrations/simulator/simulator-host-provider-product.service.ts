@@ -1,4 +1,9 @@
 import { Injectable, NgZone } from '@angular/core';
+import { lastValueFrom } from 'rxjs';
+import { CmdService } from '@core/platform/public-api';
+import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
+import { SimulatorBoardDemonstrationProvider } from './simulator-board-demonstration-provider';
+
 import {
   SimulatorHostProviderOperationError,
   SimulatorProjectHostProviderAdapter,
@@ -61,6 +66,8 @@ export class SimulatorHostProviderProductService {
     private readonly blockly: BlocklyService,
     private readonly projectDebug: ProjectDebugConfigurationService,
     private readonly ngZone: NgZone,
+    private readonly demandSessions: AilyChatDemandSessionService,
+    private readonly commands: CmdService,
   ) {}
 
   ensureRegistered(): void {
@@ -73,16 +80,68 @@ export class SimulatorHostProviderProductService {
   private async open(
     context: SubappHostProviderProductOpenContext,
   ): Promise<SubappHostProviderProductSession> {
-    const scope = await this.openCurrentProjectScope();
+    const scope = await this.openCurrentProjectScope(undefined, context.runtimePackagePath);
     return scope
       ? bindProviderSession(context, scope.adapters as readonly SubappHostProviderAdapter[], () => scope.close())
       : bindProviderSession(context, [], () => undefined);
   }
 
+  /** Build the active code once before opening the Simulator, through Blockly's normal Builder. */
+  async prepareCurrentProjectForSimulation(signal?: AbortSignal): Promise<void> {
+    const scope = await this.openCurrentProjectScope(signal);
+
+    if (!scope) throw new Error('请先打开一个 Blockly 项目。');
+
+    const current = AbortSignal.any([scope.activation.signal, ...(signal ? [signal] : [])]);
+    const requestId = `simulator-open-${crypto.randomUUID()}`;
+    const cancel = () => this.builder.cancelActiveBlocklyProjectBuild(requestId);
+
+    current.addEventListener('abort', cancel, { once: true });
+
+    try {
+      scope.requireCurrent();
+
+      const scene = await scope.callbacks.readScene({
+        projectIdentity: scope.projectIdentity,
+        sceneId: scope.sceneId,
+      }, current);
+
+      if (scene.kind !== 'aily-project-scene-network-descriptor') {
+        throw new Error('当前项目还没有电路场景，请先生成电路连线。');
+      }
+
+      await this.builder.buildActiveBlocklyProject({
+        projectPath: scope.activation.path,
+        graphSemanticRevision: scene.document.graphSemanticRevision,
+        sceneDocument: scene.document,
+        requestId,
+      });
+
+      scope.requireCurrent();
+
+      const context = await scope.callbacks.readContext({ projectIdentity: scope.projectIdentity }, current);
+
+      if (!context.activeArtifactRevision) throw new Error('Builder 未生成当前项目的仿真固件。');
+
+      await scope.callbacks.readArtifact({
+        projectIdentity: scope.projectIdentity,
+        artifactRevision: context.activeArtifactRevision,
+      }, current);
+
+      scope.requireCurrent();
+    } finally {
+      current.removeEventListener('abort', cancel);
+      await scope.close();
+    }
+  }
+
   /** The normal Browser caller borrows the same product construction as the
    * Native registration. No Runtime, project table or replacement owner is
    * created here; a same-path reload ends the original captured session. */
-  async openCurrentProjectScope(signal?: AbortSignal): Promise<SimulatorCurrentProjectScope | null> {
+  async openCurrentProjectScope(
+    signal?: AbortSignal,
+    runtimePackagePath?: string,
+  ): Promise<SimulatorCurrentProjectScope | null> {
     signal?.throwIfAborted();
     const captured = this.project.captureCurrentProjectActivation();
     const projectRoot = this.readActiveBlocklyProjectRoot();
@@ -220,6 +279,85 @@ export class SimulatorHostProviderProductService {
         },
       });
       cleanup.add(() => composition.close());
+      const demonstrations = new SimulatorBoardDemonstrationProvider({ projectIdentity, projectRoot, workspaceIdentity, files,
+        compile: async (board, graph, signal, program) => {
+          const streamId = `board-demo-${crypto.randomUUID()}`;
+          const script = window['path'].join(window['path'].getAilyChildPath(), 'scripts', 'compile-board-demonstration.js');
+          let releasing: Promise<void> | null = null;
+          const release = (): Promise<void> => {
+            if (releasing) return releasing;
+            const original = Promise.resolve().then(() => this.commands.kill(streamId)).then(stopped => {
+              if (stopped !== true) throw new Error('Board demonstration process cleanup remains unconfirmed.');
+              cleanup.delete(release);
+            }).finally(() => { if (releasing === original) releasing = null; });
+            releasing = original;
+            return original;
+          };
+          cleanup.add(release);
+          const cancel = () => { void release().catch(() => { /* Retain this original stream for cleanup retry. */ }); };
+          let failed = false;
+          let failure: unknown;
+
+          signal.addEventListener('abort', cancel, { once: true });
+
+          try {
+            const result = await lastValueFrom(this.commands.spawn('node', [script, board.path, board.demoPath, window['path'].getAppDataPath(), graph, ...(program ? [program] : [])],
+              { streamId, signal }, true));
+
+            signal.throwIfAborted();
+
+            if (result.type !== 'close' || result.code !== 0) throw new Error(result.stderr || 'Board demonstration compilation failed.');
+
+            const line = result.stdout?.split(/\r?\n/).findLast(line => line.startsWith('AILY_DEMO_BUILD '));
+            const built = line && JSON.parse(line.slice('AILY_DEMO_BUILD '.length));
+
+            if (typeof built?.root !== 'string') throw new Error('Board demonstration compilation returned no Artifact directory.');
+
+            return built.root;
+          } catch (error) {
+            failed = true;
+            failure = error;
+            throw error;
+          } finally {
+            signal.removeEventListener('abort', cancel);
+            try { await release(); }
+            catch (cleanupError) {
+              if (failed) throw new AggregateError([failure, cleanupError], 'Board demonstration compilation and cleanup failed.');
+              throw cleanupError;
+            }
+          }
+        },
+        assertCurrent: () => {
+          if (!activeProject.readActiveBinding()) throw new SimulatorHostProviderOperationError('conflict');
+        },
+        readBoard: async signal => {
+          const path = await this.project.getBoardPackagePath();
+          const manifest = await this.project.getBoardPackageJson();
+
+          if (!activeProject.readActiveBinding() || (this.project.getRuntimeBoardModule()
+            && this.project.getRuntimeBoardModule() !== manifest.name)) throw new SimulatorHostProviderOperationError('conflict');
+
+          const packagePath = runtimePackagePath;
+
+          if (!packagePath) throw new SimulatorHostProviderOperationError('operation-failed', 'Simulator resources are unavailable.');
+
+          const assets = files.join(packagePath, 'assets');
+
+          const index = JSON.parse(new TextDecoder('utf-8', { fatal: true })
+            .decode(await files.readFile(files.join(assets, 'demo-index.json'), signal)));
+
+          const id = index[manifest.name];
+
+          if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) {
+            throw new SimulatorHostProviderOperationError('operation-failed', 'This board has no demonstration resources.');
+          }
+
+          return { id, path, demoPath: files.join(assets, id, 'demo'), name: manifest.name, version: manifest.version };
+        },
+      });
+
+      cleanup.add(() => demonstrations.close());
+
       const editor = new SimulatorBlocklyEditorCallbackAuthority({
         projectRoot,
         projectIdentity,
@@ -267,11 +405,33 @@ export class SimulatorHostProviderProductService {
         this.project.projectActivation$.subscribe(ended);
       cleanup.add(() => projectActivationSubscription.unsubscribe());
       const callbacks = Object.freeze<SimulatorProjectHostProviderAdapterOptions>({
+        requestBoardDemonstrationCode: (request, current) => run(current, async signal => {
+          const source = await demonstrations.read({ projectIdentity: request.projectIdentity, lessonId: request.lessonId }, signal);
+          const lesson = source.script.lessons.find(item => item.id === request.lessonId);
+
+          if (!lesson || source.boardPackageName !== request.boardPackageName || source.revision !== request.expectedRevision
+            || source.sourceCode !== request.sourceCode || !activeProject.readActiveBinding()) {
+            throw new SimulatorHostProviderOperationError('conflict');
+          }
+
+          const result = await this.demandSessions.sendLessonCode(projectRoot,
+            `请根据「${source.script.title} / ${lesson.title}」的示例，把对应功能添加到当前项目代码中。先读取当前代码，保留已有功能，按当前开发板的引脚和库配置合并初始化与循环逻辑。不要整段覆盖项目代码，也不要修改课程示例文件。\n\n课程说明：${lesson.explanation}\n\n参考程序已作为资源附在本条消息中。`,
+            `添加课程功能：${lesson.title}`, [{ type: 'file', name: 'demo.ino', content: source.sourceCode }], signal);
+
+          if (!result.sessionId) throw new SimulatorHostProviderOperationError('operation-failed');
+
+          return { projectIdentity: request.projectIdentity, lessonId: lesson.id, sessionId: result.sessionId };
+        }),
+        compileBoardDemonstration: (request, current) => run(current, signal => demonstrations.compile(request, signal)),
+        readBoardDemonstration: (request, current) => run(current, signal => demonstrations.read(request, signal)),
+        writeBoardDemonstration: (request, current) => run(current, signal => demonstrations.write(request, signal)),
         readContext: (request, current) => run(current, bound => composition.projectCallbacks.readContext(request, bound)),
         readScene: (request, current) => run(current, bound => composition.projectCallbacks.readScene(request, bound)),
         writeScene: (request, current) => run(current, bound => composition.projectCallbacks.writeScene(request, bound)),
         readArtifact: (request, current) => run(current, bound => composition.projectCallbacks.readArtifact(request, bound)),
-        readArtifactChunk: (request, current) => run(current, bound => composition.projectCallbacks.readArtifactChunk(request, bound)),
+        readArtifactChunk: (request, current) => run(current, bound => demonstrations.hasArtifactReference(request.artifactReference)
+          ? demonstrations.readArtifactChunk(request, bound)
+          : composition.projectCallbacks.readArtifactChunk(request, bound)),
         readHardwareIntent: (request, current) => run(current, bound => this.hardwareIntent.resolve(request, bound)),
         readDebugConfiguration: (request, current) => run(current, bound => this.readProjectDebugConfiguration({
           request, signal: bound, projectRoot, projectIdentity, composition, activeProject,

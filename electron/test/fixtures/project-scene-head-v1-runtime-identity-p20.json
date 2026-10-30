@@ -1,0 +1,2278 @@
+{
+  "schemaVersion": 1,
+  "kind": "aily-blockly-simulator-project-scene-head",
+  "commitId": "scene-commit-v1-p20-current-canonical",
+  "descriptor": {
+    "schemaVersion": 1,
+    "kind": "aily-project-scene-network-descriptor",
+    "projectIdentity": "project-v1-d36ac4480d728f6fa6fb19e0af72541948c2b5b8d59f1bec43807d4be39af268",
+    "sceneId": "main",
+    "storageRevision": "9fba5aef96d7a6faa1696cd046903bf0e9f10bf439f81dac5fb2e0bf50cfa387",
+    "document": {
+      "schemaVersion": 2,
+      "kind": "aily-scene-editor-document",
+      "sceneId": "main",
+      "visualRevision": "09771c763d2ed25e0a63642c1e361fa8e691dd8fbebb5752883098440658a9f0",
+      "graphSemanticRevision": "7698b0e652ee93a08374b0d39ce4771b7f0c491648a8efe69e5cb59cff10b39a",
+      "componentConfigs": {
+        "xiao_esp32s3_1": {
+          "id": "component_1771340537742",
+          "name": "XIAO ESP32-S3",
+          "pins": [
+            {
+              "id": "pin_1",
+              "x": 10.3,
+              "y": 32.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 25.8,
+              "functions": [
+                {
+                  "name": "D0",
+                  "type": "digital"
+                },
+                {
+                  "name": "A0",
+                  "type": "analog"
+                },
+                {
+                  "name": "GPIO1",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH1",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_2",
+              "x": 10.3,
+              "y": 52.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 45.8,
+              "functions": [
+                {
+                  "name": "D1",
+                  "type": "digital"
+                },
+                {
+                  "name": "A1",
+                  "type": "analog"
+                },
+                {
+                  "name": "CS",
+                  "type": "spi"
+                },
+                {
+                  "name": "SS",
+                  "type": "spi"
+                },
+                {
+                  "name": "CS1",
+                  "type": "spi"
+                },
+                {
+                  "name": "GPIO2",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH2",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_3",
+              "x": 10.3,
+              "y": 72.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 65.8,
+              "functions": [
+                {
+                  "name": "D2",
+                  "type": "digital"
+                },
+                {
+                  "name": "A2",
+                  "type": "analog"
+                },
+                {
+                  "name": "CS",
+                  "type": "spi"
+                },
+                {
+                  "name": "SS",
+                  "type": "spi"
+                },
+                {
+                  "name": "CS2",
+                  "type": "spi"
+                },
+                {
+                  "name": "GPIO3",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH3",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_4",
+              "x": 10.3,
+              "y": 92.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 85.8,
+              "functions": [
+                {
+                  "name": "D3",
+                  "type": "digital"
+                },
+                {
+                  "name": "A3",
+                  "type": "analog"
+                },
+                {
+                  "name": "CS",
+                  "type": "spi"
+                },
+                {
+                  "name": "SS",
+                  "type": "spi"
+                },
+                {
+                  "name": "CS0",
+                  "type": "spi"
+                },
+                {
+                  "name": "GPIO4",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH4",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_5",
+              "x": 10.3,
+              "y": 112.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 105.8,
+              "functions": [
+                {
+                  "name": "D4",
+                  "type": "digital"
+                },
+                {
+                  "name": "A4",
+                  "type": "analog"
+                },
+                {
+                  "name": "SDA",
+                  "type": "i2c"
+                },
+                {
+                  "name": "GPIO5",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH5",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_6",
+              "x": 10.3,
+              "y": 132.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 125.8,
+              "functions": [
+                {
+                  "name": "D5",
+                  "type": "digital"
+                },
+                {
+                  "name": "A5",
+                  "type": "analog"
+                },
+                {
+                  "name": "SCL",
+                  "type": "i2c"
+                },
+                {
+                  "name": "GPIO6",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH6",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_7",
+              "x": 10.3,
+              "y": 152.8,
+              "layout": "horizontal",
+              "labelX": -20.2,
+              "labelY": 145.8,
+              "functions": [
+                {
+                  "name": "D6",
+                  "type": "digital"
+                },
+                {
+                  "name": "TX",
+                  "type": "uart"
+                },
+                {
+                  "name": "GPIO43",
+                  "type": "gpio"
+                }
+              ]
+            },
+            {
+              "id": "pin_8",
+              "x": 129.4,
+              "y": 32.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 25.8,
+              "functions": [
+                {
+                  "name": "5V",
+                  "type": "power"
+                }
+              ]
+            },
+            {
+              "id": "pin_9",
+              "x": 129.4,
+              "y": 52.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 45.8,
+              "functions": [
+                {
+                  "name": "GND",
+                  "type": "gnd"
+                }
+              ]
+            },
+            {
+              "id": "pin_10",
+              "x": 129.4,
+              "y": 72.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 65.8,
+              "functions": [
+                {
+                  "name": "3V3",
+                  "type": "power"
+                }
+              ]
+            },
+            {
+              "id": "pin_11",
+              "x": 129.4,
+              "y": 92.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 85.8,
+              "functions": [
+                {
+                  "name": "D10",
+                  "type": "digital"
+                },
+                {
+                  "name": "A10",
+                  "type": "analog"
+                },
+                {
+                  "name": "MOSI",
+                  "type": "spi"
+                },
+                {
+                  "name": "GPIO9",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH9",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_12",
+              "x": 129.4,
+              "y": 112.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 105.8,
+              "functions": [
+                {
+                  "name": "D9",
+                  "type": "digital"
+                },
+                {
+                  "name": "A9",
+                  "type": "analog"
+                },
+                {
+                  "name": "MISO",
+                  "type": "spi"
+                },
+                {
+                  "name": "GPIO8",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH8",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_13",
+              "x": 129.4,
+              "y": 132.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 125.8,
+              "functions": [
+                {
+                  "name": "D8",
+                  "type": "digital"
+                },
+                {
+                  "name": "A8",
+                  "type": "analog"
+                },
+                {
+                  "name": "SCK",
+                  "type": "spi"
+                },
+                {
+                  "name": "GPIO7",
+                  "type": "gpio"
+                },
+                {
+                  "name": "TOUCH7",
+                  "type": "touch"
+                }
+              ]
+            },
+            {
+              "id": "pin_14",
+              "x": 129.4,
+              "y": 152.8,
+              "layout": "horizontal",
+              "labelX": 156.4,
+              "labelY": 145.8,
+              "functions": [
+                {
+                  "name": "D7",
+                  "type": "digital"
+                },
+                {
+                  "name": "RX",
+                  "type": "uart"
+                },
+                {
+                  "name": "GPIO44",
+                  "type": "gpio"
+                }
+              ]
+            }
+          ],
+          "width": 144,
+          "height": 176,
+          "images": [
+            {
+              "id": "body",
+              "url": "/appearance/v1/xiao-esp32s3-pinmap.webp",
+              "x": 0.8,
+              "y": -3.5,
+              "width": 139.4,
+              "height": 176.1,
+              "appearanceLayer": "background"
+            }
+          ],
+          "functionTypes": [
+            {
+              "type": "power",
+              "color": "#EF4444",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "gnd",
+              "color": "#000000",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "digital",
+              "color": "#3B82F6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "analog",
+              "color": "#10B981",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "uart",
+              "color": "#F59E0B",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "i2c",
+              "color": "#8B5CF6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "spi",
+              "color": "#EC4899",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "pwm",
+              "color": "#FCD34D",
+              "textColor": "#000000"
+            },
+            {
+              "type": "gpio",
+              "color": "#E6D200",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "touch",
+              "color": "#F98062",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "other",
+              "color": "#9CA3AF",
+              "textColor": "#FFFFFF"
+            }
+          ],
+          "appearance": {
+            "schemaVersion": 1,
+            "source": "pinmap",
+            "id": "aily.appearance.xiao-esp32s3",
+            "version": "1.0.0",
+            "overflow": "visible",
+            "slots": []
+          },
+          "ailySceneEditorProjection": {
+            "schemaVersion": 1,
+            "kind": "aily-scene-editor-component-projection",
+            "semanticConfig": {
+              "id": "component_1771340537742",
+              "name": "XIAO ESP32-S3",
+              "pins": [
+                {
+                  "id": "pin_1",
+                  "functions": [
+                    {
+                      "name": "D0",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A0",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "GPIO1",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH1",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_2",
+                  "functions": [
+                    {
+                      "name": "D1",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A1",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "CS",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "SS",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "CS1",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "GPIO2",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH2",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_3",
+                  "functions": [
+                    {
+                      "name": "D2",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A2",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "CS",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "SS",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "CS2",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "GPIO3",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH3",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_4",
+                  "functions": [
+                    {
+                      "name": "D3",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A3",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "CS",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "SS",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "CS0",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "GPIO4",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH4",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_5",
+                  "functions": [
+                    {
+                      "name": "D4",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A4",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "SDA",
+                      "type": "i2c"
+                    },
+                    {
+                      "name": "GPIO5",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH5",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_6",
+                  "functions": [
+                    {
+                      "name": "D5",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A5",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "SCL",
+                      "type": "i2c"
+                    },
+                    {
+                      "name": "GPIO6",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH6",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_7",
+                  "functions": [
+                    {
+                      "name": "D6",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "TX",
+                      "type": "uart"
+                    },
+                    {
+                      "name": "GPIO43",
+                      "type": "gpio"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_8",
+                  "functions": [
+                    {
+                      "name": "5V",
+                      "type": "power"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_9",
+                  "functions": [
+                    {
+                      "name": "GND",
+                      "type": "gnd"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_10",
+                  "functions": [
+                    {
+                      "name": "3V3",
+                      "type": "power"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_11",
+                  "functions": [
+                    {
+                      "name": "D10",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A10",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "MOSI",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "GPIO9",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH9",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_12",
+                  "functions": [
+                    {
+                      "name": "D9",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A9",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "MISO",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "GPIO8",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH8",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_13",
+                  "functions": [
+                    {
+                      "name": "D8",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A8",
+                      "type": "analog"
+                    },
+                    {
+                      "name": "SCK",
+                      "type": "spi"
+                    },
+                    {
+                      "name": "GPIO7",
+                      "type": "gpio"
+                    },
+                    {
+                      "name": "TOUCH7",
+                      "type": "touch"
+                    }
+                  ]
+                },
+                {
+                  "id": "pin_14",
+                  "functions": [
+                    {
+                      "name": "D7",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "RX",
+                      "type": "uart"
+                    },
+                    {
+                      "name": "GPIO44",
+                      "type": "gpio"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "resistor_1": {
+          "id": "component_core_io_resistor",
+          "name": "Resistor",
+          "pins": [
+            {
+              "id": "terminal_a",
+              "x": 8,
+              "y": 28,
+              "layout": "horizontal",
+              "labelX": 14,
+              "labelY": 10,
+              "functions": [
+                {
+                  "name": "A(IO)",
+                  "type": "digital"
+                },
+                {
+                  "name": "A(3V3)",
+                  "type": "power"
+                },
+                {
+                  "name": "A(GND)",
+                  "type": "gnd"
+                }
+              ]
+            },
+            {
+              "id": "terminal_b",
+              "x": 120,
+              "y": 28,
+              "layout": "horizontal",
+              "labelX": 114,
+              "labelY": 10,
+              "functions": [
+                {
+                  "name": "B(IO)",
+                  "type": "digital"
+                },
+                {
+                  "name": "B(3V3)",
+                  "type": "power"
+                },
+                {
+                  "name": "B(GND)",
+                  "type": "gnd"
+                }
+              ]
+            }
+          ],
+          "simulationProperties": {
+            "resistanceOhms": 220
+          },
+          "width": 128,
+          "height": 56,
+          "images": [
+            {
+              "id": "body",
+              "url": "/appearance/v1/resistor-body.svg",
+              "version": "v1",
+              "x": 64,
+              "y": 28,
+              "width": 128,
+              "height": 56,
+              "appearanceLayer": "background"
+            }
+          ],
+          "functionTypes": [
+            {
+              "type": "power",
+              "color": "#EF4444",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "gnd",
+              "color": "#000000",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "digital",
+              "color": "#3B82F6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "analog",
+              "color": "#10B981",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "uart",
+              "color": "#F59E0B",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "i2c",
+              "color": "#8B5CF6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "spi",
+              "color": "#EC4899",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "pwm",
+              "color": "#FCD34D",
+              "textColor": "#000000"
+            },
+            {
+              "type": "gpio",
+              "color": "#E6D200",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "touch",
+              "color": "#F98062",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "other",
+              "color": "#9CA3AF",
+              "textColor": "#FFFFFF"
+            }
+          ],
+          "appearance": {
+            "schemaVersion": 1,
+            "source": "pinmap",
+            "id": "aily.appearance.resistor",
+            "version": "1.0.0",
+            "overflow": "visible",
+            "slots": []
+          },
+          "ailySceneEditorProjection": {
+            "schemaVersion": 1,
+            "kind": "aily-scene-editor-component-projection",
+            "semanticConfig": {
+              "id": "component_core_io_resistor",
+              "name": "Resistor",
+              "pins": [
+                {
+                  "id": "terminal_a",
+                  "functions": [
+                    {
+                      "name": "A(IO)",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A(3V3)",
+                      "type": "power"
+                    },
+                    {
+                      "name": "A(GND)",
+                      "type": "gnd"
+                    }
+                  ]
+                },
+                {
+                  "id": "terminal_b",
+                  "functions": [
+                    {
+                      "name": "B(IO)",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "B(3V3)",
+                      "type": "power"
+                    },
+                    {
+                      "name": "B(GND)",
+                      "type": "gnd"
+                    }
+                  ]
+                }
+              ],
+              "simulationProperties": {
+                "resistanceOhms": 220
+              }
+            }
+          }
+        },
+        "led_1": {
+          "id": "component_core_io_led",
+          "name": "LED",
+          "pins": [
+            {
+              "id": "anode",
+              "x": 30,
+              "y": 104,
+              "layout": "horizontal",
+              "labelX": 18,
+              "labelY": 86,
+              "functions": [
+                {
+                  "name": "A(IO)",
+                  "type": "digital"
+                },
+                {
+                  "name": "A(3V3)",
+                  "type": "power"
+                }
+              ]
+            },
+            {
+              "id": "cathode",
+              "x": 66,
+              "y": 104,
+              "layout": "horizontal",
+              "labelX": 78,
+              "labelY": 86,
+              "functions": [
+                {
+                  "name": "C(IO)",
+                  "type": "digital"
+                },
+                {
+                  "name": "C(GND)",
+                  "type": "gnd"
+                }
+              ]
+            }
+          ],
+          "width": 96,
+          "height": 112,
+          "images": [
+            {
+              "id": "body",
+              "url": "/appearance/v1/gpio-led-body.svg",
+              "version": "v1",
+              "x": 48,
+              "y": 56,
+              "width": 96,
+              "height": 112,
+              "appearanceLayer": "background"
+            },
+            {
+              "id": "bezel",
+              "url": "/appearance/v1/gpio-led-bezel.svg",
+              "version": "v1",
+              "x": 48,
+              "y": 56,
+              "width": 96,
+              "height": 112,
+              "appearanceLayer": "foreground"
+            }
+          ],
+          "functionTypes": [
+            {
+              "type": "power",
+              "color": "#EF4444",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "gnd",
+              "color": "#000000",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "digital",
+              "color": "#3B82F6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "analog",
+              "color": "#10B981",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "uart",
+              "color": "#F59E0B",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "i2c",
+              "color": "#8B5CF6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "spi",
+              "color": "#EC4899",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "pwm",
+              "color": "#FCD34D",
+              "textColor": "#000000"
+            },
+            {
+              "type": "gpio",
+              "color": "#E6D200",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "touch",
+              "color": "#F98062",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "other",
+              "color": "#9CA3AF",
+              "textColor": "#FFFFFF"
+            }
+          ],
+          "appearance": {
+            "schemaVersion": 1,
+            "source": "pinmap",
+            "id": "aily.appearance.gpio-led",
+            "version": "2.0.0",
+            "overflow": "visible",
+            "slots": [
+              {
+                "id": "emitter",
+                "role": "led-emitter",
+                "layer": "dynamic",
+                "x": 28,
+                "y": 18,
+                "width": 40,
+                "height": 40,
+                "shape": "circle",
+                "clip": false
+              }
+            ]
+          },
+          "ailySceneEditorProjection": {
+            "schemaVersion": 1,
+            "kind": "aily-scene-editor-component-projection",
+            "semanticConfig": {
+              "id": "component_core_io_led",
+              "name": "LED",
+              "pins": [
+                {
+                  "id": "anode",
+                  "functions": [
+                    {
+                      "name": "A(IO)",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A(3V3)",
+                      "type": "power"
+                    }
+                  ]
+                },
+                {
+                  "id": "cathode",
+                  "functions": [
+                    {
+                      "name": "C(IO)",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "C(GND)",
+                      "type": "gnd"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "button_1": {
+          "id": "component_core_io_button",
+          "name": "Push Button",
+          "pins": [
+            {
+              "id": "terminal_a",
+              "x": 32,
+              "y": 96,
+              "layout": "horizontal",
+              "labelX": 20,
+              "labelY": 78,
+              "functions": [
+                {
+                  "name": "A(IO)",
+                  "type": "digital"
+                },
+                {
+                  "name": "A(3V3)",
+                  "type": "power"
+                },
+                {
+                  "name": "A(GND)",
+                  "type": "gnd"
+                }
+              ]
+            },
+            {
+              "id": "terminal_b",
+              "x": 80,
+              "y": 96,
+              "layout": "horizontal",
+              "labelX": 92,
+              "labelY": 78,
+              "functions": [
+                {
+                  "name": "B(IO)",
+                  "type": "digital"
+                },
+                {
+                  "name": "B(3V3)",
+                  "type": "power"
+                },
+                {
+                  "name": "B(GND)",
+                  "type": "gnd"
+                }
+              ]
+            }
+          ],
+          "width": 112,
+          "height": 104,
+          "images": [
+            {
+              "id": "body",
+              "url": "/appearance/v1/gpio-button-body.svg",
+              "version": "v1",
+              "x": 56,
+              "y": 52,
+              "width": 112,
+              "height": 104,
+              "appearanceLayer": "background"
+            },
+            {
+              "id": "bezel",
+              "url": "/appearance/v1/gpio-button-bezel.svg",
+              "version": "v1",
+              "x": 56,
+              "y": 52,
+              "width": 112,
+              "height": 104,
+              "appearanceLayer": "foreground"
+            }
+          ],
+          "functionTypes": [
+            {
+              "type": "power",
+              "color": "#EF4444",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "gnd",
+              "color": "#000000",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "digital",
+              "color": "#3B82F6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "analog",
+              "color": "#10B981",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "uart",
+              "color": "#F59E0B",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "i2c",
+              "color": "#8B5CF6",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "spi",
+              "color": "#EC4899",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "pwm",
+              "color": "#FCD34D",
+              "textColor": "#000000"
+            },
+            {
+              "type": "gpio",
+              "color": "#E6D200",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "touch",
+              "color": "#F98062",
+              "textColor": "#FFFFFF"
+            },
+            {
+              "type": "other",
+              "color": "#9CA3AF",
+              "textColor": "#FFFFFF"
+            }
+          ],
+          "appearance": {
+            "schemaVersion": 1,
+            "source": "pinmap",
+            "id": "aily.appearance.gpio-button",
+            "version": "2.0.0",
+            "overflow": "visible",
+            "slots": [
+              {
+                "id": "cap",
+                "role": "button-cap",
+                "layer": "dynamic",
+                "x": 31,
+                "y": 17,
+                "width": 50,
+                "height": 50,
+                "shape": "circle",
+                "clip": true
+              },
+              {
+                "id": "hit-area",
+                "role": "button-hit-area",
+                "layer": "interaction",
+                "x": 22,
+                "y": 8,
+                "width": 68,
+                "height": 68,
+                "shape": "circle",
+                "clip": false
+              }
+            ]
+          },
+          "ailySceneEditorProjection": {
+            "schemaVersion": 1,
+            "kind": "aily-scene-editor-component-projection",
+            "semanticConfig": {
+              "id": "component_core_io_button",
+              "name": "Push Button",
+              "pins": [
+                {
+                  "id": "terminal_a",
+                  "functions": [
+                    {
+                      "name": "A(IO)",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "A(3V3)",
+                      "type": "power"
+                    },
+                    {
+                      "name": "A(GND)",
+                      "type": "gnd"
+                    }
+                  ]
+                },
+                {
+                  "id": "terminal_b",
+                  "functions": [
+                    {
+                      "name": "B(IO)",
+                      "type": "digital"
+                    },
+                    {
+                      "name": "B(3V3)",
+                      "type": "power"
+                    },
+                    {
+                      "name": "B(GND)",
+                      "type": "gnd"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "components": [
+        {
+          "instanceId": "xiao_esp32s3_1",
+          "componentId": "component_1771340537742",
+          "componentName": "XIAO ESP32-S3",
+          "configFile": "xiao_esp32s3_config.json",
+          "pinmapId": "boards:xiao-esp32s3:seeed",
+          "componentType": "hardware",
+          "placement": {
+            "x": 320,
+            "y": 80,
+            "scale": 1
+          },
+          "extensions": {
+            "ailySimulatorCatalog": {
+              "schemaVersion": 1,
+              "catalogId": "aily.component.xiao-esp32s3",
+              "catalogRevision": "2076e3c900c5be522297079ccb0c6b20a81d9bd2e3ceee078e70ca71c70ed849",
+              "appearance": {
+                "id": "aily.appearance.xiao-esp32s3",
+                "version": "1.0.0"
+              }
+            },
+            "ailySimulatorComponentPackage": {
+              "schemaVersion": 1,
+              "packageId": "aily.component-package.xiao-esp32s3",
+              "version": "1.0.0",
+              "runtimeSha256": "4b19e4d16e35cc69d11fe6719b1f2d263447a13bd01bb23f0af1313f97e09535",
+              "sceneRecipe": {
+                "id": "aily.scene-recipe.xiao-esp32s3",
+                "version": "1.0.0"
+              }
+            },
+            "ailyProjectRequirements": {
+              "schemaVersion": 1,
+              "board": {
+                "packageName": "@aily-project/board-xiao_esp32s3",
+                "version": "3.3.1",
+                "options": {
+                  "CDCOnBoot": "cdc"
+                }
+              },
+              "libraries": []
+            }
+          }
+        },
+        {
+          "instanceId": "resistor_1",
+          "componentId": "component_core_io_resistor",
+          "componentName": "Resistor",
+          "pinmapId": "lib-core-io:resistor:generic",
+          "componentType": "hardware",
+          "placement": {
+            "x": 560,
+            "y": 240,
+            "scale": 1
+          },
+          "extensions": {
+            "simulationProperties": {
+              "resistanceOhms": 220
+            },
+            "ailySimulatorCatalog": {
+              "schemaVersion": 1,
+              "catalogId": "aily.component.resistor",
+              "catalogRevision": "2076e3c900c5be522297079ccb0c6b20a81d9bd2e3ceee078e70ca71c70ed849",
+              "appearance": {
+                "id": "aily.appearance.resistor",
+                "version": "1.0.0"
+              }
+            },
+            "ailySimulatorComponentPackage": {
+              "schemaVersion": 1,
+              "packageId": "aily.component-package.resistor",
+              "version": "1.0.0",
+              "runtimeSha256": "0cac591c2c1a83a3a29647c52cea62fba75bf496556d6f2cf8117c288868ae47",
+              "sceneRecipe": {
+                "id": "aily.scene-recipe.resistor",
+                "version": "1.0.0"
+              }
+            }
+          }
+        },
+        {
+          "instanceId": "led_1",
+          "componentId": "component_core_io_led",
+          "componentName": "LED",
+          "pinmapId": "lib-core-io:led:generic",
+          "componentType": "hardware",
+          "placement": {
+            "x": 820,
+            "y": 400,
+            "scale": 1
+          },
+          "extensions": {
+            "ailySimulatorCatalog": {
+              "schemaVersion": 1,
+              "catalogId": "aily.component.gpio-led",
+              "catalogRevision": "2076e3c900c5be522297079ccb0c6b20a81d9bd2e3ceee078e70ca71c70ed849",
+              "appearance": {
+                "id": "aily.appearance.gpio-led",
+                "version": "2.0.0"
+              }
+            },
+            "ailySimulatorComponentPackage": {
+              "schemaVersion": 1,
+              "packageId": "aily.component-package.gpio-led",
+              "version": "1.0.0",
+              "runtimeSha256": "23037f40ee7598a480e2ce3a0e382f1d1d8c0057e932cd28366cd43bc649fd7e",
+              "sceneRecipe": {
+                "id": "aily.scene-recipe.gpio-led",
+                "version": "1.0.0"
+              }
+            },
+            "ailyProjectRequirements": {
+              "schemaVersion": 1,
+              "board": null,
+              "libraries": [
+                {
+                  "packageName": "@aily-project/lib-core-io",
+                  "version": "1.0.0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "instanceId": "button_1",
+          "componentId": "component_core_io_button",
+          "componentName": "Push Button",
+          "pinmapId": "lib-core-io:button:generic",
+          "componentType": "hardware",
+          "placement": {
+            "x": 80,
+            "y": 560,
+            "scale": 1
+          },
+          "extensions": {
+            "simulationProperties": {
+              "activeHigh": false,
+              "releaseWhenInactive": true
+            },
+            "ailySimulatorCatalog": {
+              "schemaVersion": 1,
+              "catalogId": "aily.component.gpio-button",
+              "catalogRevision": "2076e3c900c5be522297079ccb0c6b20a81d9bd2e3ceee078e70ca71c70ed849",
+              "appearance": {
+                "id": "aily.appearance.gpio-button",
+                "version": "2.0.0"
+              }
+            },
+            "ailySimulatorComponentPackage": {
+              "schemaVersion": 1,
+              "packageId": "aily.component-package.gpio-button",
+              "version": "1.0.0",
+              "runtimeSha256": "f9126faf376d15b53057399e00fabb0e62b3eff072c6f1aed6c0bcbd831aef28",
+              "sceneRecipe": {
+                "id": "aily.scene-recipe.gpio-button",
+                "version": "1.0.0"
+              }
+            },
+            "ailyProjectRequirements": {
+              "schemaVersion": 1,
+              "board": null,
+              "libraries": [
+                {
+                  "packageName": "@aily-project/lib-core-io",
+                  "version": "1.0.0"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "terminals": [
+        {
+          "terminalId": "terminal/button_1/terminal_a",
+          "instanceId": "button_1",
+          "pinId": "terminal_a",
+          "selectedFunction": "A(IO)",
+          "extensions": {}
+        },
+        {
+          "terminalId": "terminal/button_1/terminal_b",
+          "instanceId": "button_1",
+          "pinId": "terminal_b",
+          "selectedFunction": "B(GND)",
+          "extensions": {}
+        },
+        {
+          "terminalId": "terminal/led_1/anode",
+          "instanceId": "led_1",
+          "pinId": "anode",
+          "selectedFunction": "A(IO)",
+          "extensions": {}
+        },
+        {
+          "terminalId": "terminal/led_1/cathode",
+          "instanceId": "led_1",
+          "pinId": "cathode",
+          "selectedFunction": "C(GND)",
+          "extensions": {}
+        },
+        {
+          "terminalId": "terminal/resistor_1/terminal_a",
+          "instanceId": "resistor_1",
+          "pinId": "terminal_a",
+          "selectedFunction": "A(IO)",
+          "extensions": {}
+        },
+        {
+          "terminalId": "terminal/resistor_1/terminal_b",
+          "instanceId": "resistor_1",
+          "pinId": "terminal_b",
+          "selectedFunction": "B(IO)",
+          "extensions": {}
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_1",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_1",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO1",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "1"
+              },
+              "arduinoAliases": [
+                "D0",
+                "A0"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "0"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-1"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "1"
+                }
+              ],
+              "alternateFunctions": []
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_10",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_10",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "3V3",
+              "gpio": null,
+              "arduinoAliases": [],
+              "adcChannels": [],
+              "pwmChannels": [],
+              "touchChannels": [],
+              "alternateFunctions": []
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_11",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_11",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO9",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "9"
+              },
+              "arduinoAliases": [
+                "D10",
+                "A10"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "8"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-9"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "9"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "MOSI",
+                  "peripheralId": "spi0",
+                  "signal": "mosi"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_12",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_12",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO8",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "8"
+              },
+              "arduinoAliases": [
+                "D9",
+                "A9"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "7"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-8"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "8"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "MISO",
+                  "peripheralId": "spi0",
+                  "signal": "miso"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_13",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_13",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO7",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "7"
+              },
+              "arduinoAliases": [
+                "D8",
+                "A8"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "6"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-7"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "7"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "SCK",
+                  "peripheralId": "spi0",
+                  "signal": "sck"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_14",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_14",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO44",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "44"
+              },
+              "arduinoAliases": [
+                "D7"
+              ],
+              "adcChannels": [],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-44"
+                }
+              ],
+              "touchChannels": [],
+              "alternateFunctions": [
+                {
+                  "name": "RX",
+                  "peripheralId": "uart1",
+                  "signal": "rx"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_2",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_2",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO2",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "2"
+              },
+              "arduinoAliases": [
+                "D1",
+                "A1"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "1"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-2"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "2"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "CS1",
+                  "peripheralId": "spi0",
+                  "signal": "cs1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_3",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_3",
+          "selectedFunction": "GPIO3",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO3",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "3"
+              },
+              "arduinoAliases": [
+                "D2",
+                "A2"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "2"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-3"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "3"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "CS2",
+                  "peripheralId": "spi0",
+                  "signal": "cs2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_4",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_4",
+          "selectedFunction": "GPIO4",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO4",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "4"
+              },
+              "arduinoAliases": [
+                "D3",
+                "A3"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "3"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-4"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "4"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "CS0",
+                  "peripheralId": "spi0",
+                  "signal": "cs0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_5",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_5",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO5",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "5"
+              },
+              "arduinoAliases": [
+                "D4",
+                "A4"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "4"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-5"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "5"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "SDA",
+                  "peripheralId": "i2c0",
+                  "signal": "sda"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_6",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_6",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO6",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "6"
+              },
+              "arduinoAliases": [
+                "D5",
+                "A5"
+              ],
+              "adcChannels": [
+                {
+                  "controllerId": "adc1",
+                  "channel": "5"
+                }
+              ],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-6"
+                }
+              ],
+              "touchChannels": [
+                {
+                  "controllerId": "touch",
+                  "channel": "6"
+                }
+              ],
+              "alternateFunctions": [
+                {
+                  "name": "SCL",
+                  "peripheralId": "i2c0",
+                  "signal": "scl"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_7",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_7",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GPIO43",
+              "gpio": {
+                "controllerId": "gpio",
+                "channel": "43"
+              },
+              "arduinoAliases": [
+                "D6"
+              ],
+              "adcChannels": [],
+              "pwmChannels": [
+                {
+                  "controllerId": "ledc",
+                  "channel": "gpio-43"
+                }
+              ],
+              "touchChannels": [],
+              "alternateFunctions": [
+                {
+                  "name": "TX",
+                  "peripheralId": "uart1",
+                  "signal": "tx"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_8",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_8",
+          "selectedFunction": "",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "5V",
+              "gpio": null,
+              "arduinoAliases": [],
+              "adcChannels": [],
+              "pwmChannels": [],
+              "touchChannels": [],
+              "alternateFunctions": []
+            }
+          }
+        },
+        {
+          "terminalId": "terminal/xiao_esp32s3_1/pin_9",
+          "instanceId": "xiao_esp32s3_1",
+          "pinId": "pin_9",
+          "selectedFunction": "GND",
+          "extensions": {
+            "ailyComponentPinSemantic": {
+              "schemaVersion": 1,
+              "physicalPin": "GND",
+              "gpio": null,
+              "arduinoAliases": [],
+              "adcChannels": [],
+              "pwmChannels": [],
+              "touchChannels": [],
+              "alternateFunctions": []
+            }
+          }
+        }
+      ],
+      "wireSegments": [
+        {
+          "segmentId": "segment:1924532a85be4fa76663b9880a6c9aa861a59f6ccd4de1db4d23104a2a9e514b",
+          "from": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/resistor_1/terminal_b",
+            "function": "B(IO)",
+            "extensions": {}
+          },
+          "to": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/led_1/anode",
+            "function": "A(IO)",
+            "extensions": {}
+          },
+          "signalType": "gpio",
+          "presentation": {
+            "label": "net_resistor_led_anode",
+            "color": "#3B82F6",
+            "vertices": []
+          },
+          "extensions": {}
+        },
+        {
+          "segmentId": "segment:9c633b461d4fd020da86bc4e40c3e976b79e8e538cefc4c15819adb120deffeb",
+          "from": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/xiao_esp32s3_1/pin_4",
+            "function": "GPIO4",
+            "extensions": {}
+          },
+          "to": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/button_1/terminal_a",
+            "function": "A(IO)",
+            "extensions": {}
+          },
+          "signalType": "gpio",
+          "presentation": {
+            "label": "net_gpio4_button",
+            "color": "#3B82F6",
+            "vertices": []
+          },
+          "extensions": {}
+        },
+        {
+          "segmentId": "segment:a96cc381910e9661002e7fb7b8340ead1f1b7bd3e63dd9f167475f7926a0132c",
+          "from": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/xiao_esp32s3_1/pin_9",
+            "function": "GND",
+            "extensions": {}
+          },
+          "to": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/led_1/cathode",
+            "function": "C(GND)",
+            "extensions": {}
+          },
+          "signalType": "ground",
+          "presentation": {
+            "label": "net_gnd",
+            "color": "#111827",
+            "vertices": []
+          },
+          "extensions": {}
+        },
+        {
+          "segmentId": "segment:b15ccccdffd1df56baeb31f49ace49b7239ca65f1e3e1b8f049095055a4a5a1b",
+          "from": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/xiao_esp32s3_1/pin_3",
+            "function": "GPIO3",
+            "extensions": {}
+          },
+          "to": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/resistor_1/terminal_a",
+            "function": "A(IO)",
+            "extensions": {}
+          },
+          "signalType": "gpio",
+          "presentation": {
+            "label": "net_gpio3_resistor",
+            "color": "#3B82F6",
+            "vertices": []
+          },
+          "extensions": {}
+        },
+        {
+          "segmentId": "segment:e7263e64481da833f2a3ec80e26f00fe606c8176d8d983c9910cf5c15cbf795f",
+          "from": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/led_1/cathode",
+            "function": "C(GND)",
+            "extensions": {}
+          },
+          "to": {
+            "kind": "component-terminal",
+            "terminalId": "terminal/button_1/terminal_b",
+            "function": "B(GND)",
+            "extensions": {}
+          },
+          "signalType": "ground",
+          "presentation": {
+            "label": "",
+            "color": "#111827",
+            "vertices": []
+          },
+          "extensions": {}
+        }
+      ],
+      "junctions": [],
+      "danglingTerminals": [],
+      "nets": [
+        {
+          "netId": "net-segment-1924532a85be4fa76663b9880a6c9aa861a59f6ccd4de1db4d23104a2a9e514b",
+          "signalKind": "gpio",
+          "segmentIds": [
+            "segment:1924532a85be4fa76663b9880a6c9aa861a59f6ccd4de1db4d23104a2a9e514b"
+          ],
+          "terminalIds": [
+            "terminal/led_1/anode",
+            "terminal/resistor_1/terminal_b"
+          ],
+          "junctionIds": [],
+          "danglingTerminalIds": [],
+          "extensions": {}
+        },
+        {
+          "netId": "net-segment-9c633b461d4fd020da86bc4e40c3e976b79e8e538cefc4c15819adb120deffeb",
+          "signalKind": "gpio",
+          "segmentIds": [
+            "segment:9c633b461d4fd020da86bc4e40c3e976b79e8e538cefc4c15819adb120deffeb"
+          ],
+          "terminalIds": [
+            "terminal/button_1/terminal_a",
+            "terminal/xiao_esp32s3_1/pin_4"
+          ],
+          "junctionIds": [],
+          "danglingTerminalIds": [],
+          "extensions": {}
+        },
+        {
+          "netId": "net-segment-a96cc381910e9661002e7fb7b8340ead1f1b7bd3e63dd9f167475f7926a0132c",
+          "signalKind": "ground",
+          "segmentIds": [
+            "segment:a96cc381910e9661002e7fb7b8340ead1f1b7bd3e63dd9f167475f7926a0132c",
+            "segment:e7263e64481da833f2a3ec80e26f00fe606c8176d8d983c9910cf5c15cbf795f"
+          ],
+          "terminalIds": [
+            "terminal/button_1/terminal_b",
+            "terminal/led_1/cathode",
+            "terminal/xiao_esp32s3_1/pin_9"
+          ],
+          "junctionIds": [],
+          "danglingTerminalIds": [],
+          "extensions": {}
+        },
+        {
+          "netId": "net-segment-b15ccccdffd1df56baeb31f49ace49b7239ca65f1e3e1b8f049095055a4a5a1b",
+          "signalKind": "gpio",
+          "segmentIds": [
+            "segment:b15ccccdffd1df56baeb31f49ace49b7239ca65f1e3e1b8f049095055a4a5a1b"
+          ],
+          "terminalIds": [
+            "terminal/resistor_1/terminal_a",
+            "terminal/xiao_esp32s3_1/pin_3"
+          ],
+          "junctionIds": [],
+          "danglingTerminalIds": [],
+          "extensions": {}
+        }
+      ],
+      "busGroups": [],
+      "presentation": {},
+      "extensions": {}
+    },
+    "runtimeAttachment": null,
+    "artifactAlignment": "detached"
+  }
+}

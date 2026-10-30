@@ -124,7 +124,10 @@ class SubappNodeControlBroker {
                 void this.close(record, frame.requestId).catch(() => {}); return;
             }
             if (frame.type !== TYPES.request || !exact(frame, [...identityKeys, 'timeoutMs', 'payload'])
-                || !Number.isInteger(frame.timeoutMs) || frame.timeoutMs < 100 || frame.timeoutMs > 30000
+                || !Number.isInteger(frame.timeoutMs) || frame.timeoutMs < 100 || frame.timeoutMs > ((frame.payload?.operation === 'runtime'
+                    && ['start', 'recover'].includes(frame.payload.action))
+                    || (frame.payload?.operation === 'demonstration'
+                    && ['prepare', 'command'].includes(frame.payload.request?.operation)) ? 300000 : 30000)
                 || !frame.payload || Object.getPrototypeOf(frame.payload) !== Object.prototype) throw new Error('Invalid Node control request');
             if (record.seen.has(frame.requestId) || record.controls.has(frame.requestId)) throw new Error('Repeated Node control request identity');
             if (record.pending.size >= 16 || this.pendingCount >= 64 || this.pendingBytes + Buffer.byteLength(JSON.stringify(frame)) > 16 * MAX_BYTES || record.seen.size >= 65536) {

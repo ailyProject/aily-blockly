@@ -1,6 +1,5 @@
 import { Inject, Injectable, Optional } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
-
 import { getChildToolConfig, getChildToolConfigs, type ChildToolConfig } from '../../../configs/tool.config';
 import { ChildAppHostRegistryService, type ChildAppHostAction } from '@integration/subapps/public-api';
 import { UiAutomationRegistryService } from './ui-automation-registry.service';
@@ -11,6 +10,7 @@ import {
 } from './ports/automation-ui.port';
 
 export type ChildAppOpenMode = 'embedded' | 'window';
+
 export type ChildAppControlAction =
   | 'prepareUpdate'
   | 'restart'
@@ -39,6 +39,7 @@ interface ChildToolSessionState {
   running?: boolean;
   pid?: number;
   durationMs?: number;
+
   hostInfo?: {
     url?: string;
     port?: number;
@@ -50,6 +51,7 @@ interface ChildAppWindowState {
   open?: boolean;
   visible?: boolean;
   focused?: boolean;
+
   minimized?: boolean;
   maximized?: boolean;
   fullScreen?: boolean;
@@ -86,9 +88,11 @@ export class MainUiAutomationService {
 
   async executeMainMenu(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const itemId = this.stringParam(params, 'itemId');
+
     if (!itemId) {
       return { ok: false, message: '缺少菜单项 itemId；请先调用 main_menu_list 获取可执行 ID。' };
     }
+
     return this.menuRegistry.executeMenu('header', itemId, { confirm: params['confirm'] === true });
   }
 
@@ -105,9 +109,11 @@ export class MainUiAutomationService {
       .filter(item => includeUnavailable || item['available'] !== false)
       .filter(item => {
         if (!query) return true;
+
         return [item['id'], item['title'], item['description']]
           .some(value => String(value || '').toLowerCase().includes(query));
       });
+
     const items = allItems.slice(offset, offset + limit);
     const hasMore = offset + items.length < allItems.length;
 
@@ -128,6 +134,7 @@ export class MainUiAutomationService {
   async getChildApp(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
     const config = getChildToolConfig(toolId);
+
     if (!toolId || !config) {
       return {
         ok: false,
@@ -136,12 +143,15 @@ export class MainUiAutomationService {
           : '缺少子应用 toolId。请先调用 child_app_list 获取有效 ID。',
       };
     }
+
     return { ok: true, app: await this.describeChildApp(config, await this.readChildToolSessions()) };
   }
 
   async isChildAppWindowOpen(toolId: string): Promise<boolean> {
     const config = getChildToolConfig(String(toolId || '').trim());
+
     if (!config) return false;
+
     return (await this.readWindowState(this.routePath(config))).open === true;
   }
 
@@ -151,19 +161,28 @@ export class MainUiAutomationService {
   ): Promise<Record<string, unknown>> {
     const toolId = String(toolIdValue || '').trim();
     const config = getChildToolConfig(toolId);
+
     if (!config) return { ok: false, toolId, message: `未找到子应用: ${toolId || '(空)'}` };
 
     const effectiveTimeoutMs = Math.max(100, Math.min(
       180_000,
       Math.round(timeoutMs ?? config.startupTimeoutMs ?? 15_000),
     ));
+
     const deadline = Date.now() + effectiveTimeoutMs;
     let lastStatus: Record<string, unknown> | null = null;
+
     while (Date.now() < deadline) {
       lastStatus = await this.readChildAppHostStatus(config);
-      if (lastStatus?.['status'] === 'ready') {
+      const webProduct = lastStatus?.['product'] as Record<string, unknown> | undefined;
+
+      const webReady = lastStatus?.['status'] === 'web' && lastStatus['closing'] !== true
+        && webProduct?.['state'] === 'mounted';
+
+      if (lastStatus?.['status'] === 'ready' || webReady) {
         return { ok: true, toolId, host: lastStatus };
       }
+
       if (lastStatus?.['status'] === 'error') {
         return {
           ok: false,
@@ -172,6 +191,7 @@ export class MainUiAutomationService {
           message: String(lastStatus['error'] || `${toolId} 子应用宿主启动失败。`),
         };
       }
+
       await delay(100);
     }
 
@@ -187,17 +207,21 @@ export class MainUiAutomationService {
     const toolId = this.stringParam(params, 'toolId');
     const mode = (this.stringParam(params, 'mode') || 'embedded') as ChildAppOpenMode;
     const config = getChildToolConfig(toolId);
+
     if (!toolId || !config) {
       return { ok: false, message: `未找到子应用: ${toolId || '(空)'}` };
     }
+
     if (mode !== 'embedded' && mode !== 'window') {
       return { ok: false, message: `不支持的打开模式: ${mode}；可用 embedded 或 window。` };
     }
+
     if (config.app?.extension === true) {
       return this.extensionUiUnavailable(config);
     }
 
     const hasPlacement = ['x', 'y', 'width', 'height', 'displayId'].some(key => params[key] !== undefined);
+
     const placement = {
       ...(this.optionalNumber(params, 'x') !== undefined ? { x: this.optionalNumber(params, 'x') } : {}),
       ...(this.optionalNumber(params, 'y') !== undefined ? { y: this.optionalNumber(params, 'y') } : {}),
@@ -208,13 +232,17 @@ export class MainUiAutomationService {
       clampToWorkArea: params['clampToWorkArea'] !== false,
       applyInitialBounds: hasPlacement,
     };
+
     if (mode === 'embedded' && hasPlacement) {
       return { ok: false, message: '位置和尺寸参数只适用于 mode="window" 的独立子应用窗口。' };
     }
+
     if (mode === 'window' && params['displayId'] !== undefined) {
       const environment = await this.readWindowEnvironment();
+
       const displayExists = (environment.displays || [])
         .some(display => String(display['id']) === String(params['displayId']));
+
       if (!displayExists) {
         return {
           ok: false,
@@ -240,6 +268,7 @@ export class MainUiAutomationService {
     if (mode === 'embedded') {
       if (windowState.open) {
         const moved = await this.sendHostCommand(routePath, toolId, 'embed');
+
         if (moved['ok'] !== true) return moved;
       }
       const visible = presentationId ? this.ui.openToolEmbedded(toolId, presentationId) : this.ui.openToolEmbedded(toolId);
@@ -254,6 +283,7 @@ export class MainUiAutomationService {
       }
     } else if (this.ui.openToolList.includes(toolId)) {
       const detached = await this.childHostRegistry.control(toolId, 'detach', placement);
+
       if (detached['ok'] !== true) return detached;
     } else {
       if (!this.ui.openToolWindow(toolId, { title: this.titleOf(config), ...placement })) {
@@ -277,6 +307,7 @@ export class MainUiAutomationService {
     const toolId = this.stringParam(params, 'toolId');
     const action = this.stringParam(params, 'action') as ChildAppControlAction;
     const config = getChildToolConfig(toolId);
+
     if (!toolId || !config) {
       return { ok: false, message: `未找到子应用: ${toolId || '(空)'}` };
     }
@@ -284,9 +315,11 @@ export class MainUiAutomationService {
     const supported: ChildAppControlAction[] = [
       'prepareUpdate', 'restart', 'maximize', 'unmaximize', 'minimize', 'restore', 'focus', 'detach', 'embed', 'close',
     ];
+
     if (!supported.includes(action)) {
       return { ok: false, message: `不支持的子应用动作: ${action || '(空)'}`, supportedActions: supported };
     }
+
     if (config.app?.extension === true && action !== 'close' && action !== 'prepareUpdate') {
       return this.extensionUiUnavailable(config);
     }
@@ -298,27 +331,32 @@ export class MainUiAutomationService {
     if (action === 'detach') {
       if (embedded) return this.childHostRegistry.control(toolId, 'detach');
       if (windowState.open) return this.controlWindow(routePath, 'focus', toolId);
+
       return this.openChildApp({ toolId, mode: 'window' });
     }
 
     if (action === 'embed') {
       if (windowState.open) return this.sendHostCommand(routePath, toolId, 'embed');
       if (embedded) return { ok: true, toolId, action, message: '子应用已经处于内嵌模式。' };
+
       return this.openChildApp({ toolId, mode: 'embedded' });
     }
 
     if (action === 'prepareUpdate' || action === 'restart' || action === 'close') {
       const hostAction = action as ChildAppHostAction;
+
       if (embedded && this.childHostRegistry.has(toolId)) {
         return this.childHostRegistry.control(toolId, hostAction, {
           strictLifecycle: params['strictLifecycle'] === true,
         });
       }
+
       if (windowState.open) {
         return this.sendHostCommand(routePath, toolId, hostAction, {
           strictLifecycle: params['strictLifecycle'] === true,
         });
       }
+
       return {
         ok: false,
         message: `子应用 ${toolId} 当前没有打开的界面；请先 child_app_open。`,
@@ -331,6 +369,7 @@ export class MainUiAutomationService {
         message: `动作 ${action} 只适用于独立子应用窗口；请先执行 detach 或以 mode="window" 打开。`,
       };
     }
+
     return this.controlWindow(routePath, action, toolId);
   }
 
@@ -338,8 +377,10 @@ export class MainUiAutomationService {
     const environment = await this.readWindowEnvironment();
     const configs = Object.values(getChildToolConfigs());
     const configByPath = new Map(configs.map(config => [this.routePath(config), config]));
+
     const windows = (environment.windows || []).flatMap(windowState => {
       const config = configByPath.get(String(windowState.path || ''));
+
       return config ? [{
         toolId: config.id,
         title: this.titleOf(config),
@@ -347,6 +388,7 @@ export class MainUiAutomationService {
         ...windowState,
       }] : [];
     });
+
     return {
       ok: environment.success !== false,
       displayCount: environment.displays?.length || 0,
@@ -361,11 +403,14 @@ export class MainUiAutomationService {
   async setChildAppWindowBounds(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const toolId = this.stringParam(params, 'toolId');
     const config = getChildToolConfig(toolId);
+
     if (!toolId || !config) {
       return { ok: false, message: `未找到子应用: ${toolId || '(空)'}；请先调用 child_app_window_list。` };
     }
+
     const routePath = this.routePath(config);
     const windowState = await this.readWindowState(routePath);
+
     if (!windowState.open) {
       return { ok: false, message: `子应用 ${toolId} 没有独立窗口；请先用 child_app_open(mode="window") 或 detach。` };
     }
@@ -383,8 +428,10 @@ export class MainUiAutomationService {
         clampToWorkArea: params['clampToWorkArea'] !== false,
         focus: params['focus'] === true,
       });
+
       return result?.success
         ? { ok: true, toolId, operation: 'child_app_window_set_bounds', window: result.state, requested: result.requested }
+
         : {
             ok: false,
             toolId,
@@ -398,10 +445,13 @@ export class MainUiAutomationService {
 
   async arrangeChildAppWindows(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const configById = new Map(Object.values(getChildToolConfigs()).map(config => [config.id, config]));
+
     const requestedToolIds = Array.isArray(params['toolIds'])
       ? [...new Set(params['toolIds'].map(value => String(value || '').trim()).filter(Boolean))]
       : [];
+
     const invalidToolIds = requestedToolIds.filter(toolId => !configById.has(toolId));
+
     if (invalidToolIds.length > 0) {
       return {
         ok: false,
@@ -412,13 +462,17 @@ export class MainUiAutomationService {
 
     const environment = await this.readWindowEnvironment();
     const openPaths = new Set((environment.windows || []).map(item => String(item.path || '')));
+
     const toolIds = requestedToolIds.length > 0
       ? requestedToolIds
       : [...configById.values()].filter(config => openPaths.has(this.routePath(config))).map(config => config.id);
+
     if (toolIds.length === 0) {
       return { ok: false, message: '当前没有独立子应用窗口；请先以 window 模式打开或 detach。' };
     }
+
     const closedToolIds = toolIds.filter(toolId => !openPaths.has(this.routePath(configById.get(toolId)!)));
+
     if (closedToolIds.length > 0) {
       return {
         ok: false,
@@ -428,6 +482,7 @@ export class MainUiAutomationService {
     }
 
     const layout = (this.stringParam(params, 'layout') || 'auto') as ChildAppWindowLayout;
+
     try {
       const result = await (window as any)['subWindow']?.arrange?.({
         paths: toolIds.map(toolId => this.routePath(configById.get(toolId)!)),
@@ -443,6 +498,7 @@ export class MainUiAutomationService {
         ...(this.optionalNumber(params, 'mainRatio') !== undefined ? { mainRatio: this.optionalNumber(params, 'mainRatio') } : {}),
         focus: params['focus'] !== false,
       });
+
       if (!result?.success) {
         return {
           ok: false,
@@ -450,7 +506,9 @@ export class MainUiAutomationService {
           ...(result?.availableDisplays ? { availableDisplays: result.availableDisplays } : {}),
         };
       }
+
       const toolIdByPath = new Map(toolIds.map(toolId => [this.routePath(configById.get(toolId)!), toolId]));
+
       return {
         ok: true,
         operation: 'child_app_window_arrange',
@@ -478,10 +536,13 @@ export class MainUiAutomationService {
     const embedded = this.ui.openToolList.includes(config.id);
     const session = sessions.find(candidate => candidate.toolId === config.id);
     let hostStatus = embedded ? this.childHostRegistry.getStatus(config.id) : null;
+
     if (!hostStatus && windowState.open) {
       const statusResult = await this.sendHostCommand(routePath, config.id, 'status');
+
       hostStatus = statusResult['ok'] === true ? statusResult : null;
     }
+
     const mode = embedded && windowState.open
       ? 'embedded_and_window'
       : embedded
@@ -540,6 +601,7 @@ export class MainUiAutomationService {
   private async readChildToolSessions(): Promise<ChildToolSessionState[]> {
     try {
       const sessions = await (window as any)['childToolSession']?.list?.();
+
       return Array.isArray(sessions) ? sessions as ChildToolSessionState[] : [];
     } catch {
       return [];
@@ -549,6 +611,7 @@ export class MainUiAutomationService {
   private async readWindowState(routePath: string): Promise<ChildAppWindowState> {
     try {
       const state = await (window as any)['subWindow']?.getState?.(routePath);
+
       return state && typeof state === 'object' ? state as ChildAppWindowState : { open: false };
     } catch {
       return { open: false };
@@ -558,6 +621,7 @@ export class MainUiAutomationService {
   private async readWindowEnvironment(): Promise<ChildAppWindowEnvironment> {
     try {
       const state = await (window as any)['subWindow']?.list?.();
+
       return state && typeof state === 'object'
         ? state as ChildAppWindowEnvironment
         : { success: false, displays: [], windows: [] };
@@ -572,9 +636,11 @@ export class MainUiAutomationService {
     const embeddedStatus = this.ui.openToolList.includes(config.id)
       ? this.childHostRegistry.getStatus(config.id)
       : null;
+
     if (embeddedStatus) return embeddedStatus;
 
     const routePath = this.routePath(config);
+
     // Electron is the authority for detached Child Hosts. Query that host
     // directly: the renderer-side window-state projection can lag behind a
     // newly opened window and must not turn an already-ready host into a
@@ -585,6 +651,7 @@ export class MainUiAutomationService {
       'status',
       { timeoutMs: 1_000 },
     );
+
     return detachedStatus['ok'] === true ? detachedStatus : null;
   }
 
@@ -595,9 +662,11 @@ export class MainUiAutomationService {
   ): Promise<Record<string, unknown>> {
     try {
       const result = await (window as any)['subWindow']?.control?.(routePath, action);
+
       if (result?.success) {
         return { ok: true, toolId, action, window: result.state || null };
       }
+
       return { ok: false, message: result?.error || `独立窗口动作失败: ${action}`, toolId, action };
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error), toolId, action };
@@ -618,6 +687,7 @@ export class MainUiAutomationService {
           ? { strictLifecycle: options.strictLifecycle }
           : {}),
       }, options.timeoutMs);
+
       return result && typeof result === 'object'
         ? result as Record<string, unknown>
         : { ok: false, message: `子应用宿主未返回有效结果: ${toolId}` };
@@ -636,16 +706,20 @@ export class MainUiAutomationService {
 
   private descriptionOf(config: ChildToolConfig): string {
     const key = config.app?.description || `${config.namespace}.DESCRIPTION`;
+
     return this.translate.instant(key);
   }
 
   private sanitizeLocalUrl(value: unknown): string | null {
     if (typeof value !== 'string' || !value) return null;
+
     try {
       const parsed = new URL(value);
+
       for (const key of [...parsed.searchParams.keys()]) {
         if (/token|secret|key/i.test(key)) parsed.searchParams.set(key, '<redacted>');
       }
+
       return parsed.toString();
     } catch {
       return value.replace(/([?&](?:token|secret|key)=)[^&]+/gi, '$1<redacted>');
@@ -664,11 +738,13 @@ export class MainUiAutomationService {
     max: number,
   ): number {
     const value = Number(params[key]);
+
     return Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
   }
 
   private optionalNumber(params: Record<string, unknown>, key: string): number | undefined {
     const value = Number(params[key]);
+
     return Number.isFinite(value) ? value : undefined;
   }
 }

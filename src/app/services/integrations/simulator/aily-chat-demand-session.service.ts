@@ -16,7 +16,8 @@ export type AilyChatDemandSessionKind =
   | 'architecture'
   | 'project-scene'
   | 'block-explain'
-  | 'code-sync';
+  | 'code-sync'
+  | 'lesson-code';
 
 export type DiagramGenerationKind = Extract<
   AilyChatDemandSessionKind,
@@ -52,13 +53,15 @@ export interface AilyChatDemandSessionRequest {
   mode: 'agent' | 'ask';
   revealSession?: boolean;
   resources?: AilyChatDemandResource[];
+  projectPath?: string;
+  preferredSessionId?: string;
 }
 
 export interface AilyChatDemandSessionResult {
   accepted: boolean;
   reason?: 'project-scene-agent-running';
   sessionId?: string;
-  state?: 'settled' | 'rejected' | 'failed';
+  state?: 'accepted' | 'settled' | 'rejected' | 'failed';
   error?: string;
 }
 
@@ -173,12 +176,28 @@ export class AilyChatDemandSessionService {
     }, signal);
   }
 
+  sendLessonCode(
+    projectPath: string,
+    prompt: string,
+    title: string,
+    resources: AilyChatDemandResource[],
+    signal?: AbortSignal,
+  ): Promise<AilyChatDemandSessionResult> {
+    return this.runDemandSession({
+      kind: 'lesson-code', title: title.slice(0, 160), prompt, mode: 'agent', revealSession: true,
+      resources, projectPath, preferredSessionId: this.uiService.getActiveAilyChatSessionId(),
+    }, signal);
+  }
+
   async runDemandSession(
     request: AilyChatDemandSessionRequest,
     signal?: AbortSignal,
   ): Promise<AilyChatDemandSessionResult> {
     throwIfAborted(signal);
-    const cwd = this.projectService.currentProjectPath;
+    const cwd = request.projectPath ?? this.projectService.currentProjectPath;
+    if (request.projectPath && !this.isSameProjectPath(cwd, this.projectService.currentProjectPath)) {
+      throw new Error('当前项目已切换，请重新打开演示');
+    }
     if (!cwd) throw new Error('请先打开项目');
     const requestId = crypto.randomUUID();
     const diagramKind = this.toDiagramGenerationKind(request.kind);
@@ -203,6 +222,10 @@ export class AilyChatDemandSessionService {
       await this.childToolProcess.acquire(AILY_CHAT_TOOL_ID);
       runtimeAcquired = true;
       throwIfAborted(signal);
+
+      if (request.projectPath && !this.isSameProjectPath(cwd, this.projectService.currentProjectPath)) {
+        throw new Error('当前项目已切换，请重新打开演示');
+      }
       const result = await this.requestDemandSession(
         cwd,
         request,
@@ -214,6 +237,11 @@ export class AilyChatDemandSessionService {
         result.accepted === false
         && result.reason === 'project-scene-agent-running'
       ) {
+        return result;
+      }
+      if (request.kind === 'lesson-code' && result.accepted === true && result.state === 'accepted' && result.sessionId) {
+        await this.uiService.openAilyChatSession(result.sessionId);
+
         return result;
       }
       if (result.accepted !== true || result.state !== 'settled') {
@@ -284,7 +312,7 @@ export class AilyChatDemandSessionService {
             if (sessionId && diagramKind) {
               this.attachDiagramSession(diagramKind, requestId, sessionId);
             }
-            if (sessionId && revealSession) {
+            if (sessionId && revealSession && request.kind !== 'lesson-code') {
               void this.uiService.openAilyChatSession(sessionId).then(
                 opened => {
                   if (!opened) {
@@ -348,6 +376,7 @@ export class AilyChatDemandSessionService {
         action: 'demand-session.run',
         kind: request.kind,
         cwd,
+        ...(request.preferredSessionId ? { preferredSessionId: request.preferredSessionId } : {}),
         title: request.title.trim(),
         prompt: request.prompt.trim(),
         mode: request.mode,

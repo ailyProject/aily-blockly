@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const ts = require('D:/codes/aily-blockly/node_modules/typescript');
+const ts = require('typescript');
 
 const sourcePath = path.join(__dirname, '../src/app/integrations/simulator/simulator-host-provider-product.service.ts');
 const text = fs.readFileSync(sourcePath, 'utf8');
