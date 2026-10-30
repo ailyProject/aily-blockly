@@ -336,29 +336,33 @@ async function publishCandidate(rootDir, entry, candidate, options = {}) {
   const locator = {
     version: entry.version, path: relativePath, ...(integrity ? { integrity } : {}),
   };
+  const inspectPrepared = () => {
+    const prepared = inspectVersion(rootDir, entry, locator);
+    options.validatePrepared?.(prepared);
+    return prepared;
+  };
   let replacementBackup;
   let movedNew = false;
   const restoreOptions = { ...options, wrapFailure: false };
-  if (options.replacementTransaction) {
-    options.replacementTransaction.rollback = async () => {
-      if (replacementBackup && fs.existsSync(replacementBackup)) {
-        if (fs.existsSync(destination)) {
-          await renameDirectory(destination, path.join(parent, `.failed-repair-${randomUUID()}`), restoreOptions);
-        }
-        await renameDirectory(replacementBackup, destination, restoreOptions);
-        replacementBackup = undefined;
-      } else if (movedNew && fs.existsSync(destination)) {
+  const rollback = async () => {
+    if (replacementBackup && fs.existsSync(replacementBackup)) {
+      if (fs.existsSync(destination)) {
         await renameDirectory(destination, path.join(parent, `.failed-repair-${randomUUID()}`), restoreOptions);
       }
-      movedNew = false;
-    };
-  }
+      await renameDirectory(replacementBackup, destination, restoreOptions);
+      replacementBackup = undefined;
+    } else if (movedNew && fs.existsSync(destination)) {
+      await renameDirectory(destination, path.join(parent, `.failed-repair-${randomUUID()}`), restoreOptions);
+    }
+    movedNew = false;
+  };
+  if (options.replacementTransaction) options.replacementTransaction.rollback = rollback;
 
   // A different version stays where it is. This publish only moves the new
   // generation, and the caller switches active.json after this function returns.
   if (fs.existsSync(destination) && !options.replace) {
     try {
-      const existing = inspectVersion(rootDir, entry, locator);
+      const existing = inspectPrepared();
       discardStaging(candidate);
       return existing;
     } catch (inspectError) {
@@ -368,11 +372,10 @@ async function publishCandidate(rootDir, entry, candidate, options = {}) {
   } else if (fs.existsSync(destination)) {
     const replaced = path.join(parent, `.replaced-${entry.version}-${randomUUID()}`);
     await renameDirectory(destination, replaced, options);
-    if (options.retainPrevious) replacementBackup = replaced;
+    replacementBackup = replaced;
     try {
       await renameDirectory(candidate.project, destination, options);
       movedNew = true;
-      if (!options.retainPrevious) discardStaging({ project: replaced });
     } catch (error) {
       if (!fs.existsSync(destination) && fs.existsSync(replaced)) {
         try {
@@ -393,19 +396,21 @@ async function publishCandidate(rootDir, entry, candidate, options = {}) {
       movedNew = true;
     } catch (error) {
       if (!error.destinationExists || options.replace) throw error;
-      const existing = inspectVersion(rootDir, entry, locator);
+      const existing = inspectPrepared();
       discardStaging(candidate);
       return existing;
     }
   }
 
   try {
-    const prepared = inspectVersion(rootDir, entry, locator);
+    const prepared = inspectPrepared();
+    if (replacementBackup && !options.retainPrevious) {
+      discardStaging({ project: replacementBackup });
+      replacementBackup = undefined;
+    }
     return replacementBackup ? { ...prepared, replacementBackup } : prepared;
   } catch (error) {
-    if (typeof options.replacementTransaction?.rollback === 'function') {
-      await options.replacementTransaction.rollback();
-    }
+    await rollback();
     throw error;
   }
 }

@@ -1410,13 +1410,23 @@ function readUpdateRecord(updateRootDir, entry) {
   }
 }
 
-function verifyStagedAssets(updateRootDir, record) {
+function verifyStagedAssets(updateRootDir, record, rootDir = null) {
   const paths = stagedManifestPaths(updateRootDir, record.id, record.version);
   if (!record.distribution) {
     throw new Error('Staged update metadata is incomplete');
   }
   const distribution = validateDistribution(record.distribution, record.id);
+  // Version-store preparations keep the verified archive beside source, not in
+  // the legacy update cache. Rebuild damaged entries locally before activation.
+  if (rootDir && record.versionStore === true && !fs.existsSync(paths.package)) {
+    const preparedRoot = versions.versionRoot(rootDir, {
+      id: record.id, package: record.packageName, version: record.version,
+    }, { optional: true });
+    if (preparedRoot) paths.package = path.join(preparedRoot, UPDATE_PACKAGE_FILE);
+  }
   if (!fs.existsSync(paths.package)) throw new Error('Staged update package is missing');
+  const stat = fs.lstatSync(paths.package);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Staged update package is not a regular file');
   return paths;
 }
 
@@ -1460,7 +1470,7 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
     };
   }
   try {
-    verifyStagedAssets(updateRootDir, record);
+    verifyStagedAssets(updateRootDir, record, rootDir);
     if (record.state === 'failed') {
       return {
         state: 'failed',
@@ -1643,6 +1653,7 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
       replacementTransaction: options.replacementTransaction,
       renameAttempts: options.renameAttempts,
       sleep: options.sleep,
+      validatePrepared: prepared => validatePreparedPackage(prepared.packagePath, entry),
     });
     published = true;
     tracker?.setExtract(100);
@@ -1700,7 +1711,7 @@ async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, optio
     // Accept tarballs downloaded by old hosts, without depending on the old shared npm cache.
     if (existing) {
       try {
-        const paths = verifyStagedAssets(updateRootDir, existing);
+        const paths = verifyStagedAssets(updateRootDir, existing, rootDir);
         stagedOptions = { ...options, tarballPath: paths.package, distribution: existing.distribution };
       } catch { /* Re-download an incomplete legacy cache. */ }
     }
@@ -2378,7 +2389,7 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
   if (!prepared) {
     const record = readUpdateRecord(updateRootDir, entry);
     if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
-    const paths = verifyStagedAssets(updateRootDir, record);
+    const paths = verifyStagedAssets(updateRootDir, record, rootDir);
     prepared = await prepareVersionPackage(rootDir, entry, npmRunner, {
       ...options, tarballPath: paths.package, distribution: record.distribution,
     });
@@ -2825,7 +2836,7 @@ function createSubappManager(options = {}) {
             if (!prepared) {
               const record = readUpdateRecord(updateRootDir, entry);
               if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
-              const staged = verifyStagedAssets(updateRootDir, record);
+              const staged = verifyStagedAssets(updateRootDir, record, rootDir);
               prepared = await prepareVersionPackage(rootDir, entry, options.runNpm || runNpm, {
                 ...mutationOptions, tarballPath: staged.package, distribution: record.distribution,
               });
@@ -2845,6 +2856,18 @@ function createSubappManager(options = {}) {
             }
             prepared = await prepareVersionPackage(rootDir, targetEntry, options.runNpm || runNpm, {
               ...mutationOptions, reinstall: action === 'reinstall', bundledCoderFallback: bundle,
+              ...(action === 'reinstall' ? { beforePublish: async source => {
+                await mutationOptions.beforePublish?.(source);
+                // Package lock -> selection lock, matching repair/uninstall. Keep
+                // launches out until the replacement (or rollback) is complete.
+                releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+                assertNotUninstalling(requestedId, entry);
+                const current = readInstalledState(rootDir, entry);
+                if (current.development || current.localNext) throw new Error('Local subapps cannot be changed');
+                // A launch may have completed during download. Do not stop holders
+                // while owning their launch lock; leave the selected files intact.
+                await ensureVersionReplacementIsIdle(rootDir, targetEntry, { ...mutationOptions, forceClose: false });
+              } } : {}),
             });
           }
         }
@@ -2859,7 +2882,7 @@ function createSubappManager(options = {}) {
           return list({ locale: payload.locale || 'en' });
         }
         assertNotUninstalling(requestedId, entry);
-        releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+        if (!releaseLock) releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
         assertNotUninstalling(requestedId, entry);
         // A local dev/next selection may have been added for this app while
         // downloading; other local apps must not block this install.
@@ -2872,6 +2895,7 @@ function createSubappManager(options = {}) {
         if (!prepared) throw new Error(`Subapp package was not published: ${entry.id}`);
         if (!current.installed || !semver.valid(current.installedVersion)
           || semver.gte(targetEntry.version, current.installedVersion)) {
+          validatePreparedPackage(prepared.packagePath, targetEntry);
           versions.activate(rootDir, targetEntry, prepared);
           switched = true;
         }
