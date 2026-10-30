@@ -2,6 +2,7 @@ import { parse } from 'acorn';
 import type { NativeCandidateRequest } from './blockly-native-candidate-protocol';
 import { hasUniqueAbsArguments } from '../../../integrations/blockly/abs/abs-argument-identity';
 import { assertNativeBudget } from './blockly-native-budget';
+import { assertNativeRequestCapacity } from './blockly-native-request-capacity';
 
 /** Validate the synchronous replay subset without rewriting library source. */
 export function assertSynchronousNativeCandidate(request: NativeCandidateRequest): void {
@@ -21,7 +22,7 @@ export function assertSynchronousNativeCandidate(request: NativeCandidateRequest
     assertNativeBudget('variables', request.retainedModelIds.length, 'request');
   }
   if (!Array.isArray(request.steps) || !Array.isArray(request.blocks)) throw new Error('Native candidate requires steps and blocks arrays.');
-  assertNativeBudget('requestCharacters', JSON.stringify(request).length, 'request');
+  assertNativeRequestCapacity(request);
   for (const [key, resource] of [['blocks', 'blocks'], ['identities', 'identities'], ['variables', 'variables'],
     ['creations', 'defaultCreations'], ['hostCalls', 'hostCalls'], ['values', 'resources']] as const) {
     if (Array.isArray(request[key])) assertNativeBudget(resource, request[key]!.length, 'request');

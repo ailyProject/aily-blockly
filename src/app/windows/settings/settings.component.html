@@ -131,6 +131,11 @@
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_MINIMAP' | translate }}:</div>
                 <nz-switch [(ngModel)]="configData.blockly.minimap"></nz-switch>
               </div>
+              <div class="item">
+                <div><label for="blockly-sounds-enabled">{{ 'SETTINGS.FIELDS.BLOCKLY_SOUNDS' | translate }}:</label></div>
+                <nz-switch nzId="blockly-sounds-enabled" [ngModel]="configData.blockly.sounds !== false"
+                  (ngModelChange)="configData.blockly.sounds = $event"></nz-switch>
+              </div>
               <!-- <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.FLYOUT_AUTO_CLOSE' | translate }}:</div>
                 <nz-switch [(ngModel)]="configData.blockly.flyoutAutoClose" [ngModelOptions]="{standalone: true}"

@@ -333,6 +333,21 @@ describe('prepared project code boundary', () => {
     } finally { window['builder'] = oldBuilder; }
   });
 
+  it('requires the source archive capability and returns its receipt for an explicit preserving publication', async () => {
+    const oldBuilder = window['builder'], receipt = { changed: true, sourceArchive: { version: 1 as const,
+      manifest: '.aily/generated-source-archives/id/manifest.json', hash: `sha256:${'a'.repeat(64)}`, fileCount: 1, bytes: 3 } };
+    const publish = jasmine.createSpy('publish').and.returnValue(receipt);
+    window['builder'] = { publishArduinoGeneratedCode: publish };
+    try {
+      await expectAsync(writePreparedArduinoGeneratedArtifacts('D:/project', [], 'prepared sketch', { preserveSuperseded: true }))
+        .toBeRejectedWithError(/preservation bridge unavailable/);
+      expect(publish).not.toHaveBeenCalled();
+      window['builder'].generatedSourceArchiveVersion = 1;
+      expect(await writePreparedArduinoGeneratedArtifacts('D:/project', [], 'prepared sketch', { preserveSuperseded: true })).toBe(receipt);
+      expect(publish).toHaveBeenCalledOnceWith('D:/project', { artifacts: [], sketchCode: 'prepared sketch', preserveSuperseded: true });
+    } finally { window['builder'] = oldBuilder; }
+  });
+
   it('recognizes a busy build lease without treating other publication failures as retryable', () => {
     expect(isBuildWorkspaceBusyError(Object.assign(new Error('BUILD_WORKSPACE_BUSY: busy'), { code: 'BUILD_WORKSPACE_BUSY' }))).toBeTrue();
     expect(isBuildWorkspaceBusyError(new Error('BUILD_WORKSPACE_BUSY: Another host build/preprocess owns this project.'))).toBeTrue();

@@ -44,10 +44,10 @@ function fixture(t) {
     fs.mkdirSync(path.join(packageRoot, 'assets'), { recursive: true });
     return packageRoot;
   }
-  function installVersion() {
+  async function installVersion() {
     const candidate = versions.createCandidate(installRoot, entry);
     writeRuntime(candidate.source, entry.version);
-    const prepared = versions.publishCandidate(installRoot, entry, candidate, { distribution: null });
+    const prepared = await versions.publishCandidate(installRoot, entry, candidate, { distribution: null });
     versions.activate(installRoot, entry, prepared);
     return prepared.packagePath;
   }
@@ -60,10 +60,10 @@ function fixture(t) {
   return { root, installRoot, entry, legacyRoot, writeRuntime, installVersion, resolve };
 }
 
-test('simulator resolves the selected immutable package under a custom npm prefix', t => {
+test('simulator resolves the selected immutable package under a custom npm prefix', async t => {
   const f = fixture(t);
   f.writeRuntime(f.legacyRoot, '1.0.0');
-  const selected = f.installVersion();
+  const selected = await f.installVersion();
   const runtime = f.resolve();
   assert.equal(runtime.simulatorRoot, selected);
   assert.equal(runtime.productionEntry, path.join(selected, 'service.js'));
@@ -76,17 +76,17 @@ test('simulator continues to resolve legacy npm installations', t => {
   assert.equal(f.resolve().simulatorRoot, f.legacyRoot);
 });
 
-test('simulator does not resurrect a legacy package after versioned uninstall', t => {
+test('simulator does not resurrect a legacy package after versioned uninstall', async t => {
   const f = fixture(t);
   f.writeRuntime(f.legacyRoot, '1.0.0');
-  f.installVersion();
+  await f.installVersion();
   versions.beginUninstall(f.installRoot, f.entry);
   assert.throws(f.resolve, /Simulator Subapp is not installed/);
 });
 
-test('simulator retains explicit development runtime overrides', t => {
+test('simulator retains explicit development runtime overrides', async t => {
   const f = fixture(t);
-  f.installVersion();
+  await f.installVersion();
   const development = f.writeRuntime(path.join(f.root, 'dev runtime'), '2.0.0-dev.1');
   process.env.AILY_SIMULATOR_SUBAPP_ROOT = development;
   assert.equal(f.resolve().simulatorRoot, development);

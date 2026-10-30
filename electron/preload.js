@@ -14,7 +14,7 @@ const { createSafeStorageBridge } = require("./safe-storage-bridge");
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
-const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload } = require('./build-workspace-publication');
+const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, GENERATED_SOURCE_ARCHIVE_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
@@ -553,6 +553,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   builder: {
+    generatedSourceArchiveVersion: GENERATED_SOURCE_ARCHIVE_VERSION,
     publishArduinoGeneratedCode,
     patchBuildMetadata,
     captureBuildSource,

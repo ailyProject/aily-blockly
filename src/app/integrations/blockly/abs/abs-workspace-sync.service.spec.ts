@@ -12,7 +12,8 @@ import { composeBlocklyPage, replaceBlocklyPageWorkspace } from '../../../editor
 import { BlocklyProjectRevision } from '../../../editors/blockly-editor/services/blockly-project-revision';
 import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { _ProjectService } from '../../../editors/blockly-editor/services/project.service';
-import { createAilyProjectDataValue, materializeGenericProjectDataValues, projectDataRuntime } from '@domain/project/public-api';
+import { createAilyProjectDataValue, createProjectDataMarker, materializeGenericProjectDataValues, normalizeProjectDataDocument, projectDataRuntime } from '@domain/project/public-api';
+import { bindAbsLoadNormalizationReadback, prepareAbsLoadNormalization } from './abs-load-normalization';
 import { SerialOperationQueue } from '@shared/public-api';
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { NATIVE_CANDIDATE_LIMITS } from '../../../editors/blockly-editor/services/blockly-native-budget';
@@ -100,9 +101,16 @@ describe('v2 actual workspace generation coordinator', () => {
       } finally { held = false; }
     }) };
     window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (_path, assertCurrent) => {
-      assertCurrent();
-      return { read: port.read, withLock: operation => port.withLock(locked => new Promise((resolve, reject) => {
-        operation(locked, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })));
+      expect(assertCurrent()).withContext('Native storage callbacks must be synchronous and return void').toBeUndefined();
+      const guardedRead = async key => { assertCurrent(); const value = await port.read(key); assertCurrent(); return value; };
+      return { read: guardedRead, withLock: operation => port.withLock(locked => new Promise((resolve, reject) => {
+        assertCurrent();
+        operation({
+          read: async key => { assertCurrent(); const value = await locked.read(key); assertCurrent(); return value; },
+          replace: async (key, expected, content) => {
+            assertCurrent(); const value = await locked.replace(key, expected, content); assertCurrent(); return value;
+          },
+        }, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })));
       })) };
     } };
     gate = new BlocklyWorkspaceEditGate(); const queue = new SerialOperationQueue(); const revisions = new BlocklyProjectRevision();
@@ -124,6 +132,16 @@ describe('v2 actual workspace generation coordinator', () => {
         return { document: current, revision: revisions.observe(current) };
       },
       getProjectAbiForSave: snapshot => snapshot,
+      normalizeProjectAbi: snapshot => snapshot,
+      normalizeProjectAbiForLoad: snapshot => snapshot,
+      getWorkspaceLoadReadbackView: state => state,
+      loadProjectDocument: (snapshot, _clone, owner) => {
+        gate.assertAvailable(owner); document = JSON.parse(absJson(snapshot));
+        const state = composeBlocklyPage(document, document.activePageId);
+        const definitions = editor.captureDeclarativeBlockDefinitions();
+        withNativeStateLoading(Blockly, editor.workspace, state,
+          () => Blockly.serialization.workspaces.load(state, editor.workspace), block => nativeFieldOrder(block, definitions));
+      },
       setViewState: viewState => { document.pages[0].viewState = viewState; },
       mutateOtherPage: () => { document.pages[1].custom.preserved = false; },
       switchPage: id => {
@@ -154,7 +172,8 @@ describe('v2 actual workspace generation coordinator', () => {
     });
     spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     spyOn(projectDataRuntime, 'prepareValue').and.resolveTo();
-    spyOn(projectDataRuntime, 'getStore').and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true, issues: [] }) } as any);
+    spyOn(projectDataRuntime, 'getStore').and.returnValue({ collectReferences: () => [], validateReferences: async () => ({ valid: true, issues: [] }),
+      flushPending: async () => {}, put: request => projectDataRuntime.put(request), resolve: ref => projectDataRuntime.resolve(ref) } as any);
     spyOn(projectDataRuntime, 'put').and.callFake(async request => {
       const id = await hashAbsText(request.codec + ':' + absJson(request.value));
       const size = new TextEncoder().encode(typeof request.value === 'string' ? request.value : absJson(request.value)).length;
@@ -191,6 +210,139 @@ describe('v2 actual workspace generation coordinator', () => {
     const validation = await service.validateGeneration(source, request);
     return service.applyGeneration(source, request.base.generation, {}, validation);
   };
+
+  for (const choice of ['keep_view', 'replace_view'] as const) {
+    it(`resolves a true disk/view conflict using ${choice}, archiving both versions before replacement`, async () => {
+      await baseline();
+      const source = JSON.parse(disk.get('project.abi')!);
+      source.pages[0].content.blocks.blocks[0].fields.TEXT = 'external';
+      const external = JSON.stringify(source); disk.set('project.abi', external);
+      roots().setFieldValue('local', 'TEXT');
+      const before = editor.captureProjectSnapshot().document;
+      const originalMap = disk.get('project.abs.map.json'), originalAbs = disk.get('project.abs');
+      const offer = await service.inspectViewConflict();
+      const result = await service.resolveViewConflict(choice, offer.token);
+      expect(result.publication.status).toBe('COMMITTED'); expect(result.requiresReload).toBeFalse();
+      expect(result.refreshed).toBe(choice === 'replace_view');
+      expect(roots().getFieldValue('TEXT')).toBe(choice === 'replace_view' ? 'external' : 'local');
+      const saved = JSON.parse(disk.get('project.abi')!);
+      expect(saved.pages[0].content.blocks.blocks[0].fields.TEXT).toBe(choice === 'replace_view' ? 'external' : 'local');
+      expect(saved.pages[1]).toEqual(source.pages[1]); expect(roots().isDeletable()).toBeFalse();
+      const archive = JSON.parse(disk.get(result.recoveryArchive!.key)!);
+      expect(archive.disk.abi).toBe(external); expect(archive.disk.abs).toBe(originalAbs);
+      expect(archive.disk.map).toBe(originalMap); expect(JSON.parse(archive.workspace)).toEqual(before);
+      expect(project.publishPreparedSaveOutputs).toHaveBeenCalledWith(scope.projectKey, jasmine.anything(), jasmine.anything(),
+        jasmine.any(Function), { preserveSuperseded: true });
+    });
+  }
+
+  for (const change of ['disk', 'field', 'viewport', 'pointer']) it(`rejects a stale view choice after ${change} changes`, async () => {
+    await baseline();
+    const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source));
+    const offer = await service.inspectViewConflict();
+    if (change === 'disk') disk.set('project.abi', disk.get('project.abi')! + ' ');
+    if (change === 'field') roots().setFieldValue('new edit', 'TEXT');
+    if (change === 'viewport') editor.setViewState({ scale: 2, scrollX: 9, scrollY: 3 });
+    if (change === 'pointer') disk.set('committed.json', disk.get('committed.json')! + ' ');
+    const files = [...disk], view = editor.captureProjectSnapshot().document;
+    await expectAsync(service.resolveViewConflict('replace_view', offer.token)).toBeRejected();
+    expect([...disk]).toEqual(files); expect(editor.captureProjectSnapshot().document).toEqual(view);
+  });
+
+  for (const choice of ['keep_view', 'replace_view'] as const) it(`preserves a viewport change during ${choice} archival instead of consuming the old offer`, async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source)); const offer = await service.inspectViewConflict(), files = [...disk];
+    const archive = AbsBaselineStore.prototype.archiveRepair;
+    spyOn(AbsBaselineStore.prototype, 'archiveRepair').and.callFake(function (...args) {
+      editor.setViewState({ scale: 1.8, scrollX: 26, scrollY: 44 });
+      return archive.apply(this, args);
+    });
+    await expectAsync(service.resolveViewConflict(choice, offer.token)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_VIEW_CONFLICT_STALE' }));
+    expect([...disk]).toEqual(files);
+    expect(editor.captureProjectSnapshot().document.pages[0].viewState).toEqual({ scale: 1.8, scrollX: 26, scrollY: 44 });
+  });
+
+  it('does not change either version when conflict archival fails', async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source)); roots().setFieldValue('local', 'TEXT');
+    const offer = await service.inspectViewConflict(), files = [...disk], view = editor.captureProjectSnapshot().document;
+    failWrite = 'recoveries/*';
+    await expectAsync(service.resolveViewConflict('replace_view', offer.token)).toBeRejected();
+    expect([...disk]).toEqual(files); expect(editor.captureProjectSnapshot().document).toEqual(view);
+  });
+
+  it('restores the whole previous view if accepting the saved source fails before commit', async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source)); roots().setFieldValue('local', 'TEXT');
+    const offer = await service.inspectViewConflict(), files = { abi: disk.get('project.abi'), abs: disk.get('project.abs'), map: disk.get('project.abs.map.json') };
+    const view = editor.captureProjectSnapshot().document;
+    editor.prepareProjectCode.and.rejectWith(new Error('generation failed'));
+    await expectAsync(service.resolveViewConflict('replace_view', offer.token)).toBeRejectedWith(jasmine.objectContaining({
+      message: 'generation failed', applicationStatus: 'ROLLED_BACK',
+    }));
+    expect(editor.captureProjectSnapshot().document).toEqual(view);
+    expect(disk.get('project.abi')).toBe(files.abi); expect(disk.get('project.abs')).toBe(files.abs); expect(disk.get('project.abs.map.json')).toBe(files.map);
+    expect(() => gate.assertAvailable()).not.toThrow();
+  });
+
+  it('can explicitly accept the saved project active page without rebinding an old candidate', async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!);
+    source.activePageId = 'other'; source.openedPageIds = ['main', 'other'];
+    disk.set('project.abi', JSON.stringify(source));
+    const offer = await service.inspectViewConflict();
+    const result = await service.resolveViewConflict('replace_view', offer.token);
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(editor.getActivePageId()).toBe('other'); expect(result.evidence!.binding.scope.pageId).toBe('other');
+    expect(JSON.parse(disk.get('project.abi')!).pages[0]).toEqual(source.pages[0]);
+  });
+
+  for (const choice of ['keep_view', 'replace_view'] as const) it(`observes completed ${choice} after lost reply/restart without replaying native work`, async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source)); roots().setFieldValue('local', 'TEXT');
+    const offer = await service.inspectViewConflict(); loseCommitReply = true;
+    await expectAsync(service.resolveViewConflict(choice, offer.token)).toBeRejected();
+    loseCommitReply = false;
+    expect(() => gate.assertAvailable()).not.toThrow();
+    service = new AbsWorkspaceSyncService(editor, project);
+    const known = await service.inspectGeneration();
+    expect((known as any).completedResolution.token).toBe(offer.token);
+    const files = [...disk], before = editor.captureProjectSnapshot().document;
+    const remember = spyOn(project, 'rememberLoadedProject').and.stub();
+    editor.prepareProjectCode.and.throwError('Observation must not generate');
+    const result = await service.resolveViewConflict(choice, offer.token, true);
+    expect(result.publication.status).toBe('COMMITTED'); expect(result.refreshed).toBe(choice === 'replace_view');
+    expect(result.derivedOutputs?.published).toBeFalse(); // New host cannot invent the old output observation.
+    expect([...disk]).toEqual(files); expect(editor.captureProjectSnapshot().document).toEqual(before);
+    expect(remember).toHaveBeenCalledTimes(1);
+    editor.setViewState({ scale: 2, scrollX: 10, scrollY: 5 });
+    await expectAsync(service.resolveViewConflict(choice, offer.token, true)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_VIEW_RESOLUTION_UNOBSERVED' }));
+    expect(remember).toHaveBeenCalledTimes(1); expect([...disk]).toEqual(files);
+  });
+
+  it('never uses observation mode to execute a not-yet-committed conflict choice', async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source)); const offer = await service.inspectViewConflict(), files = [...disk];
+    await expectAsync(service.resolveViewConflict('keep_view', offer.token, true)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_VIEW_RESOLUTION_UNOBSERVED' }));
+    expect([...disk]).toEqual(files);
+  });
+
+  it('does not acknowledge a viewport settling after the full completed-state comparison', async () => {
+    await baseline(); const source = JSON.parse(disk.get('project.abi')!); source.metadata = 'external';
+    disk.set('project.abi', JSON.stringify(source));
+    const offer = await service.inspectViewConflict(); await service.resolveViewConflict('keep_view', offer.token);
+    const files = [...disk], remember = spyOn(project, 'rememberLoadedProject').and.stub();
+    const read = port.read; let abiReads = 0;
+    spyOn(port, 'read').and.callFake(async key => {
+      const result = await read(key);
+      // inspectAbsGeneration reads the input and verifies it a second time.
+      // The next ABI observation is assertDisk, after full saved-state equality.
+      if (key === 'project.abi' && ++abiReads === 3) editor.setViewState({ scale: 1.7, scrollX: 22, scrollY: 33 });
+      return result;
+    });
+    await expectAsync(service.resolveViewConflict('keep_view', offer.token, true)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_VIEW_RESOLUTION_OBSERVATION_STALE' }));
+    expect(remember).not.toHaveBeenCalled(); expect([...disk]).toEqual(files);
+  });
 
   it('Save As commits a new destination generation without saving or acknowledging the source', async () => {
     await baseline();
@@ -1202,6 +1354,77 @@ describe('v2 actual workspace generation coordinator', () => {
     replay.steps.push({ kind: 'definitions', definitions: modelDefinitions }, { kind: 'script', source: modelSource, label: 'generic-object-models' });
     return replay;
   };
+
+  it('keeps explicit initializer evidence identical across reconciliation binds and reuses only committed model IDs', async () => {
+    const replay = enableNative();
+    const definition = { type: 'native_selected_init', message0: '%1 %2', args0: [
+      { type: 'field_variable', name: 'OWNER', variableTypes: ['Sensor'], defaultType: 'Sensor' },
+      { type: 'field_variable', name: 'INPUT', variableTypes: ['Sample'], defaultType: 'Sample' },
+    ], previousStatement: null, nextStatement: null };
+    declare(definition);
+    replay.steps.push({ kind: 'definitions', definitions: [definition] }, { kind: 'script', label: 'explicit-selected-models', source: `
+      ${modelSource}
+      Arduino.modelDeclarations = { native_selected_init: { version: 1, scope: 'workspace', fields: { OWNER: 'Sensor', INPUT: 'Sample' } } };
+      Arduino.forBlock.native_selected_init = block => {
+        registerVariableToBlockly(block.getField('OWNER').getVariable().name, 'Sensor');
+        registerVariableToBlockly(block.getField('INPUT').getVariable().name, 'Sample');
+        return '';
+      };
+    ` });
+    const validate = async (source: string) => {
+      const committed = (await new AbsBaselineStore(port, scope).loadCommitted())!;
+      const { generationEvidence } = await import('./abs-generation-protocol');
+      return service.validateGeneration(source, { version: 2, requestId: crypto.randomUUID(),
+        base: (await generationEvidence(committed, disk.get('project.abi') ?? null)).binding,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } });
+    };
+    const base = await baseline(), before = absJson(nativeState()), files = [...disk];
+    const source = base.source + '\nnative_selected_init($sensor, $reading)';
+    const validation = await validate(source);
+    expect(validation.preparedModels!.map(model => model.name).sort()).toEqual(['reading', 'sensor']);
+    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect((await service.applyGeneration(source, base.generation, {}, validation)).publication.status).toBe('COMMITTED');
+    const committedModels = nativeState()['variables'] as Array<{ id: string; name: string; type: string }>;
+    expect(new Set(committedModels.map(model => model.id)))
+      .toEqual(new Set(validation.preparedModels!.map(model => model.id)));
+    editor.restoreProjectWorkspaceSnapshot(JSON.parse(disk.get('project.abi')!));
+    expect(nativeState()['variables']).toEqual(committedModels);
+    const second = await baseline(), next = second.source + '\nnative_selected_init($second, $reading)';
+    const more = await validate(next);
+    expect(more.preparedModels!.map(model => model.name)).toEqual(['second']);
+    expect((await service.applyGeneration(next, second.generation, {}, more)).publication.status).toBe('COMMITTED');
+    for (const model of committedModels) expect(nativeState()['variables']).toContain(jasmine.objectContaining(model));
+    expect(roots().isDeletable()).toBeFalse(); expect(roots().data).toBe('opaque');
+  });
+
+  for (const reverse of [false, true]) it('reuses typed identities internally without presenting them as fresh receipt allocations: ' + reverse, async () => {
+    enableObjectModels();
+    const variables = [{ id: 'existing-func', name: 'sensor', type: 'FUNC' },
+      { id: 'existing-sensor', name: 'sensor', type: 'Sensor' },
+      { id: 'existing-other', name: 'sensor', type: 'Other' },
+      { id: 'shared-page-model', name: 'shared', type: 'Shared' }];
+    if (reverse) variables.reverse();
+    for (const model of variables) editor.workspace.getVariableMap().createVariable(model.name, model.type, model.id);
+    const base = await baseline(), before = absJson(nativeState()), files = [...disk];
+    const source = base.source + '\ntest_object_read($sensor)\ntest_object_init("sensor", Sensor)\ntest_object_init("sensor", Other)';
+    const committed = (await new AbsBaselineStore(port, scope).loadCommitted())!;
+    const { generationEvidence } = await import('./abs-generation-protocol');
+    const request = { version: 2 as const, requestId: crypto.randomUUID(), base: (await generationEvidence(committed, disk.get('project.abi') ?? null)).binding,
+      candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } };
+    const validation = await service.validateGeneration(source, request);
+    expect(validation.preparedModels).toBeUndefined(); expect(validation.preparedVariables).toBeUndefined();
+    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    const forged = { ...validation, preparedModels: [{ start: source.indexOf('test_object_init'), blockType: 'test_object_init',
+      id: 'existing-sensor', name: 'sensor', type: 'Sensor' }] };
+    await expectAsync(service.applyGeneration(source, base.generation, {}, forged))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CHANGED' }));
+    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect((await service.applyGeneration(source, base.generation, {}, validation)).publication.status).toBe('COMMITTED');
+    expect(nativeState()['variables']).toEqual(variables);
+    expect(JSON.parse(disk.get('project.abi')!).sharedModel.variables).toEqual(variables);
+    expect(roots().isDeletable()).toBeFalse(); expect(roots().data).toBe('opaque');
+    expect(JSON.parse(disk.get('project.abi')!).pages.find(page => page.id === 'other').custom).toEqual({ preserved: true });
+  });
 
   it('validates/applies native initializer models atomically, verifies receipt replay and preserves identities after reopen', async () => {
     enableObjectModels(); const base = await baseline(), before = absJson(nativeState()), files = [...disk];
@@ -2847,6 +3070,10 @@ describe('v2 actual workspace generation coordinator', () => {
       action: 'repair', authority: 'workspace', token: diagnosis.diagnostics.repair?.token ?? 'sha256:' + '0'.repeat(64) });
     expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
     expect(result.publication?.status).toBe('COMMITTED');
+    expect(result.appliedRevision).toBeUndefined();
+    expect(result.receipt?.appliedRevision).toBeUndefined();
+    expect(result.candidateApplied).not.toBeTrue();
+    expect(result.receipt?.candidateApplied).not.toBeTrue();
     expect(result.evidence?.binding.scope.projectKey).toBe('D:/copied-project');
     if (!result.recoveryArchive) return;
     const archive = JSON.parse(disk.get(result.recoveryArchive.key)!);
@@ -2857,6 +3084,10 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(restored.ok).toBeTrue(); expect(restored.draft.abs).toBe(source);
     expect((await inspect(tools)).diagnostics.status).toBe('ready');
     expect(roots().getFieldValue('TEXT')).toBe('before');
+    expect(result.abs).not.toBe(source);
+    expect(disk.get('project.abs')).toBe(result.abs);
+    expect(result.receipt.output.binding.absHash).toBe(await hashAbsText(result.abs));
+    expect(restored.draft.abs).not.toBe(result.abs);
   });
 
   it('reuses a completed repair after a lost reply without rewriting the original archive', async () => {
@@ -2868,6 +3099,11 @@ describe('v2 actual workspace generation coordinator', () => {
     const before = [...disk], again: any = await tools.execute('abs_recovery', request());
     expect(again.ok).withContext(JSON.stringify(again)).toBeTrue(); expect(again.reused).toBeTrue();
     expect(again.publication.generation).toBe(first.publication.generation); expect([...disk]).toEqual(before);
+    expect(again.appliedRevision).toBeUndefined(); expect(again.receipt?.appliedRevision).toBeUndefined();
+    expect(again.candidateApplied).not.toBeTrue(); expect(again.receipt?.candidateApplied).not.toBeTrue();
+    const candidate: any = await tools.execute('abs_recovery', { version: 2, requestId: crypto.randomUUID(),
+      action: 'read_repair', generation: again.publication.generation });
+    expect(candidate.draft.abs).toBe(source); expect(roots().getFieldValue('TEXT')).toBe('before');
   });
 
   it('classifies an internally lost repair acknowledgement as unknown and permits verified observation', async () => {
@@ -2883,6 +3119,8 @@ describe('v2 actual workspace generation coordinator', () => {
     const before = [...disk], observed: any = await tools.execute('abs_recovery', request());
     expect(observed.ok).withContext(JSON.stringify(observed)).toBeTrue(); expect(observed.reused).toBeTrue();
     expect([...disk]).toEqual(before);
+    expect(observed.appliedRevision).toBeUndefined(); expect(observed.candidateApplied).not.toBeTrue();
+    expect(roots().getFieldValue('TEXT')).toBe('before');
   });
 
   it('does not replace any mirror if original-input archival fails', async () => {
@@ -3073,6 +3311,233 @@ describe('v2 actual workspace generation coordinator', () => {
     const result = await service.exportGeneration();
     expect(result.publication.status).toBe('COMMITTED'); expect(result.publication.generation).not.toBe(base.generation);
     expect(disk.get('project.abi')).toBe(prepared.abiText); expect(disk.get('project.abs')).toContain('normally saved');
+  });
+
+  for (const drift of ['viewport', 'root-layout']) it(`saves local code after ${drift}-only disk drift against the saved recipe`, async () => {
+    const base = await baseline(), original = JSON.parse(disk.get('project.abi')!);
+    const before = absJson(original.pages[0].content.blocks.blocks[0]);
+    if (drift === 'viewport') original.pages[0].viewState = { scale: 1.25, scrollX: 100, scrollY: -30 };
+    else original.pages[0].content.blocks.blocks[0].x += 200;
+    disk.set('project.abi', JSON.stringify(original, null, 2));
+    roots().setFieldValue('saved local edit', 'TEXT');
+    const result = await service.exportGeneration({ save: true });
+    expect(result.publication.status).toBe('COMMITTED');
+    expect(result.publication.generation).not.toBe(base.generation);
+    const after = JSON.parse(disk.get('project.abi')!);
+    const retained = after.pages[0].content.blocks.blocks[0];
+    const old = JSON.parse(before);
+    expect(retained.id).toBe(old.id); expect(retained.data).toBe(old.data);
+    expect(retained.deletable).toBeFalse(); expect(retained.movable).toBeFalse();
+    expect(retained.inputs).toEqual(old.inputs); expect(retained.fields.TEXT).toBe('saved local edit');
+    expect((await new AbsBaselineStore(port, scope).readDerivedAbi(result.publication.generation))).toBe(disk.get('project.abi'));
+    expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a true external ABI edit and local edit without publishing any save acknowledgement', async () => {
+    await baseline();
+    const external = JSON.parse(disk.get('project.abi')!);
+    external.pages[0].content.blocks.blocks[0].fields.TEXT = 'external edit';
+    disk.set('project.abi', JSON.stringify(external));
+    roots().setFieldValue('local edit', 'TEXT');
+    const before = [...disk];
+    await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DUAL_EDIT_CONFLICT' }));
+    expect([...disk]).toEqual(before); expect(roots().getFieldValue('TEXT')).toBe('local edit');
+    expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('compares against the saved recipe marker rather than substituting compact ABS state', async () => {
+    editor.getProjectAbiForSave = document => ({ ...document, $ailyProjectData: { schemaVersion: 1, retained: 'recipe' } });
+    const base = await baseline(), store = new AbsBaselineStore(port, scope);
+    expect((await store.loadCommitted())!.document['$ailyProjectData']).toBeUndefined();
+    const saved = JSON.parse((await store.readDerivedAbi(base.generation))!);
+    expect(saved.$ailyProjectData.retained).toBe('recipe');
+    saved.pages[0].viewState = { scale: 1, scrollX: 50, scrollY: -20 };
+    disk.set('project.abi', JSON.stringify(saved)); roots().setFieldValue('local edit', 'TEXT');
+    expect((await service.exportGeneration({ save: true })).publication.status).toBe('COMMITTED');
+    expect(JSON.parse(disk.get('project.abi')!).$ailyProjectData).toEqual(saved.$ailyProjectData);
+  });
+
+  it('saves an existing old bare-writer marker upgrade without treating it as competing code', async () => {
+    await baseline();
+    const upgraded = { ...JSON.parse(disk.get('project.abi')!), $ailyProjectData: createProjectDataMarker() };
+    disk.set('project.abi', JSON.stringify(upgraded));
+    editor.getProjectAbiForSave = document => ({ ...document, $ailyProjectData: createProjectDataMarker() });
+    roots().setFieldValue('local edit after upgrade', 'TEXT');
+    expect((await service.exportGeneration({ save: true })).publication.status).toBe('COMMITTED');
+    expect(JSON.parse(disk.get('project.abi')!).$ailyProjectData).toEqual(createProjectDataMarker());
+    expect(disk.get('project.abs')).toContain('local edit after upgrade');
+  });
+
+  it('does not accept a missing resource while comparing an external representation change', async () => {
+    await baseline(); const changed = JSON.parse(disk.get('project.abi')!);
+    changed.pages[0].content.blocks.blocks[0].fields.TEXT = createAilyProjectDataValue({ $ailyData: {
+      schemaVersion: 1, id: `sha256:${'0'.repeat(64)}`, codec: 'utf8-v1', logicalType: 'text',
+      storage: 'raw-v1', rawLength: 6, storedLength: 6 } });
+    disk.set('project.abi', JSON.stringify(changed)); roots().setFieldValue('local edit', 'TEXT');
+    const before = [...disk];
+    await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWithError('missing resource');
+    expect([...disk]).toEqual(before); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('retains byte CAS when disk changes after the layout-only comparison', async () => {
+    await baseline();
+    const layout = JSON.parse(disk.get('project.abi')!); layout.pages[0].viewState = { scale: 2, scrollX: 0, scrollY: 0 };
+    disk.set('project.abi', JSON.stringify(layout)); roots().setFieldValue('local edit', 'TEXT');
+    editor.prepareProjectCode.and.callFake(async (_guard, owner) => {
+      disk.set('project.abi', '{"newExternalWriter":true}');
+      return { revision: editor.captureProjectSnapshot(owner).revision, code: '', artifacts: null, blockCodeMapText: null };
+    });
+    await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DISK_CONFLICT' }));
+    expect(disk.get('project.abi')).toBe('{"newExternalWriter":true}');
+    expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('does not adopt a changed committed pointer during an otherwise safe normal save', async () => {
+    await baseline(); roots().setFieldValue('local edit', 'TEXT');
+    const oldPointer = disk.get('committed.json')!;
+    editor.prepareProjectCode.and.callFake(async (_guard, owner) => {
+      disk.set('committed.json', JSON.stringify(JSON.parse(oldPointer), null, 2));
+      return { revision: editor.captureProjectSnapshot(owner).revision, code: '', artifacts: null, blockCodeMapText: null };
+    });
+    await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_STALE' }));
+    expect(disk.get('committed.json')).toBe(JSON.stringify(JSON.parse(oldPointer), null, 2));
+    expect(disk.has('prepared.json')).toBeFalse(); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  const prepareLoadedNormalization = async () => {
+    const originalContent = disk.get('project.abi')!;
+    const normalized = await normalizeProjectDataDocument({ projectPath: scope.projectKey,
+      document: JSON.parse(originalContent), originalContent, materialize: true }, {
+      put: request => projectDataRuntime.put(request), flushPending: () => projectDataRuntime.flushPending(),
+      collectReferences: () => [], validateReferences: async () => ({ valid: true, issues: [] }),
+      resolve: ref => projectDataRuntime.resolve(ref),
+    }, () => undefined, { existsSync: () => true } as any);
+    expect(normalized.deferredNormalization).toBeDefined();
+    expect(disk.get('project.abi')).toBe(originalContent);
+    const preparation = await prepareAbsLoadNormalization(scope.projectKey, normalized.deferredNormalization!, port, () => undefined);
+    expect(preparation.input).toBeDefined();
+    editor.restoreProjectWorkspaceSnapshot(normalized.document);
+    expect(bindAbsLoadNormalizationReadback(preparation.input!, editor.captureProjectSnapshot())).toBeTrue();
+    spyOn(project, 'rememberLoadedProject');
+    editor.prepareProjectCode.calls.reset(); editor.publishAbsContext.calls.reset();
+    return { input: preparation.input!, document: normalized.document, originalContent };
+  };
+
+  it('publishes a native-readback load normalization through the journal and retains every original source', async () => {
+    roots().setDisabledReason(true, 'MANUALLY_DISABLED'); roots().setCollapsed(true);
+    const base = await baseline(), before = [...disk];
+    const normalized = await prepareLoadedNormalization();
+    const result = await project.publishLoadedNormalization(normalized.input);
+    expect(result.status).toBe('COMMITTED');
+    if (result.status !== 'COMMITTED') return;
+    expect(result.generation).not.toBe(base.generation); expect(result.abiText).toBe(disk.get('project.abi'));
+    const store = new AbsBaselineStore(port, scope), archive = await store.inspectRepair(result.generation);
+    expect(archive.archive.disk).toEqual(normalized.input.expected.disk);
+    expect(archive.archive.disk.abi).toBe(normalized.originalContent);
+    expect(archive.archive.committed.pointer).toBe(new Map(before).get('committed.json'));
+    expect(archive.archive.committed.baseline).toBe(new Map(before).get(absBaselineKey(base.generation)));
+    expect(disk.get(absBaselineKey(base.generation))).toBe(new Map(before).get(absBaselineKey(base.generation)));
+    expect(await store.readDerivedAbi(result.generation)).toBe(result.abiText);
+    const root = JSON.parse(result.abiText).pages[0].content.blocks.blocks[0];
+    const original = JSON.parse(normalized.originalContent).pages[0].content.blocks.blocks[0];
+    expect(root).toEqual(original); expect(root.collapsed).toBeTrue(); expect(root.deletable).toBeFalse();
+    expect(project.rememberLoadedProject).toHaveBeenCalledTimes(1);
+    expect(editor.publishAbsContext).toHaveBeenCalledTimes(1);
+    expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+    expect(await store.inspectPending()).toBeNull(); expect(gate.blocked).toBeFalse();
+    roots().setFieldValue('after migrated load', 'TEXT');
+    expect((await service.exportGeneration({ save: true })).publication.status).toBe('COMMITTED');
+    expect(disk.get('project.abs')).toContain('after migrated load');
+  });
+
+  for (const conflict of ['draft', 'pending', 'disk', 'canvas', 'layout', 'viewport']) it(`retains ${conflict} appearing after normalization preparation`, async () => {
+    await baseline(); const normalized = await prepareLoadedNormalization();
+    if (conflict === 'draft') disk.set('project.abs', disk.get('project.abs')! + '\n# unapplied intent\n');
+    if (conflict === 'pending') disk.set('prepared.json', disk.get('committed.json')!);
+    if (conflict === 'disk') disk.set('project.abi', '{"newExternalWriter":true}');
+    if (conflict === 'canvas') roots().setFieldValue('new local edit', 'TEXT');
+    if (conflict === 'layout') roots().moveBy(25, 10);
+    if (conflict === 'viewport') editor.setViewState({ scale: 1.5, scrollX: 25, scrollY: 0 });
+    const before = [...disk];
+    const result = await project.publishLoadedNormalization(normalized.input);
+    expect(result.status).toBe('DEFERRED');
+    if (result.status === 'DEFERRED') expect(result.recovery).toEqual(jasmine.objectContaining({
+      tool: 'project_recover', arguments: { action: 'inspect', project: scope.projectKey } }));
+    expect([...disk]).toEqual(before); expect(project.rememberLoadedProject).not.toHaveBeenCalled();
+    expect(editor.publishAbsContext).not.toHaveBeenCalled(); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    if (conflict === 'canvas') expect(roots().getFieldValue('TEXT')).toBe('new local edit');
+  });
+
+  it('defers a viewport edit during asynchronous normalization preparation instead of acknowledging it as saved', async () => {
+    await baseline(); const normalized = await prepareLoadedNormalization(), before = [...disk];
+    const prepare = project.prepareSave.bind(project);
+    spyOn(project, 'prepareSave').and.callFake(async (...args) => {
+      const result = await prepare(...args); editor.setViewState({ scale: 1.25, scrollX: 150, scrollY: 0 }); return result;
+    });
+    expect((await project.publishLoadedNormalization(normalized.input)).status).toBe('DEFERRED');
+    expect([...disk]).toEqual(before); expect(project.rememberLoadedProject).not.toHaveBeenCalled();
+    expect(editor.captureProjectSnapshot().document.pages[0].viewState.scrollX).toBe(150);
+    expect(gate.blocked).toBeFalse();
+  });
+
+  it('defers a viewport change between staging and the real pre-journal commit guard', async () => {
+    await baseline(); const normalized = await prepareLoadedNormalization();
+    const originalMirrors = { abi: disk.get('project.abi'), abs: disk.get('project.abs'),
+      map: disk.get('project.abs.map.json'), pointer: disk.get('committed.json') };
+    const withLock: AbsSyncStoragePort['withLock'] = port.withLock.bind(port);
+    let archived = false, changed = false;
+    spyOn(port, 'withLock').and.callFake(async <T>(operation: (storage: AbsSyncStorageAccess) => Promise<T>): Promise<T> => {
+      const result = await withLock(operation);
+      if ((result as any)?.key?.startsWith('recoveries/')) archived = true;
+      else if (archived && !changed && result === undefined) {
+        // The actual stage lock has exited. Commit still performs its real
+        // async baseline/archive/disk reads before asserting native state.
+        changed = true; editor.setViewState({ scale: 1.25, scrollX: 175, scrollY: 0 });
+      }
+      return result;
+    });
+    const result = await project.publishLoadedNormalization(normalized.input);
+    expect(changed).toBeTrue(); expect(result.status).toBe('DEFERRED');
+    if (result.status === 'DEFERRED') expect(result.code).toBe('ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+    expect({ abi: disk.get('project.abi'), abs: disk.get('project.abs'),
+      map: disk.get('project.abs.map.json'), pointer: disk.get('committed.json') }).toEqual(originalMirrors);
+    expect(disk.has('prepared.json')).toBeFalse();
+    expect(editor.captureProjectSnapshot().document.pages[0].viewState.scrollX).toBe(175);
+    expect(project.rememberLoadedProject).not.toHaveBeenCalled(); expect(editor.publishAbsContext).not.toHaveBeenCalled();
+    expect(gate.blocked).toBeFalse();
+  });
+
+  it('retains the source and journal when load normalization commits ABI but its ABS mirror fails', async () => {
+    await baseline(); const normalized = await prepareLoadedNormalization(); failWrite = 'project.abs';
+    const result = await project.publishLoadedNormalization(normalized.input);
+    expect(result.status).toBe('DEFERRED'); expect(gate.blocked).toBeTrue();
+    expect(project.rememberLoadedProject).not.toHaveBeenCalled(); expect(editor.publishAbsContext).not.toHaveBeenCalled();
+    const store = new AbsBaselineStore(port, scope), pending = (await store.inspectPending())!;
+    expect(pending.abiSaved).toBeTrue();
+    expect((await store.inspectRepair(pending.generation)).archive.disk.abi).toBe(normalized.originalContent);
+    failWrite = undefined;
+    expect((await store.recover(() => undefined))!.status).toBe('COMMITTED');
+    expect(gate.blocked).toBeTrue(); // Disk repair is not a forged native reload acknowledgement.
+  });
+
+  it('does not quarantine a confirmed pre-ABI normalization failure', async () => {
+    await baseline(); const normalized = await prepareLoadedNormalization(); failWrite = 'project.abi';
+    expect((await project.publishLoadedNormalization(normalized.input)).status).toBe('DEFERRED');
+    expect(disk.get('project.abi')).toBe(normalized.originalContent); expect(gate.blocked).toBeFalse();
+    expect((await new AbsBaselineStore(port, scope).inspectPending())!.status).toBe('NOT_COMMITTED');
+    expect(project.rememberLoadedProject).not.toHaveBeenCalled();
+  });
+
+  it('reports a lost normalization commit receipt without repeating the load or fabricating clean state', async () => {
+    await baseline(); const normalized = await prepareLoadedNormalization(); loseCommitReply = true;
+    await expectAsync(project.publishLoadedNormalization(normalized.input))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_LOAD_NORMALIZATION_OUTCOME_UNKNOWN' }));
+    expect(project.rememberLoadedProject).not.toHaveBeenCalled(); expect(editor.publishAbsContext).not.toHaveBeenCalled();
+    const store = new AbsBaselineStore(port, scope), committed = (await store.loadCommitted())!;
+    expect(committed.map.generation).not.toBe(normalized.input.expected.generation);
+    expect((await store.inspectRepair(committed.map.generation)).archive.disk.abi).toBe(normalized.originalContent);
+    expect(await store.inspectPending()).toBeNull(); expect(gate.blocked).toBeTrue();
+    expect(editor.prepareProjectCode).not.toHaveBeenCalled();
   });
 
   it('rejects deletion of any protected type and new/dynamic shapes before native load', async () => {

@@ -19,6 +19,7 @@ function extractNpmTarballInBackground(tarballPath, destination, options = {}) {
       },
     });
     let settled = false;
+    let completed = null;
     const finish = (operation, value) => {
       if (settled) return;
       settled = true;
@@ -45,7 +46,9 @@ function extractNpmTarballInBackground(tarballPath, destination, options = {}) {
         return;
       }
       if (message?.type === 'complete') {
-        finish(resolve, message.result);
+        // Wait until the worker exits so extracted files are closed before the
+        // staging directory is renamed. Windows denies that rename while a handle remains.
+        completed = message.result;
         return;
       }
       if (message?.type === 'error') {
@@ -58,7 +61,9 @@ function extractNpmTarballInBackground(tarballPath, destination, options = {}) {
     });
     worker.once('error', error => finish(reject, error));
     worker.once('exit', code => {
-      if (!settled && !terminating) finish(reject, new Error(`Subapp package worker exited before completion (${code})`));
+      if (terminating || settled) return;
+      if (completed) finish(resolve, completed);
+      else finish(reject, new Error(`Subapp package worker exited before completion (${code})`));
     });
   });
 }

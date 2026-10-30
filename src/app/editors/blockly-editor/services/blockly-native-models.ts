@@ -3,7 +3,8 @@ import type { NativeVariableState } from './blockly-native-candidate-protocol';
 import { assertAbsReadback } from '../../../integrations/blockly/abs/abs-readback';
 import { AbsSymbols } from '../../../integrations/blockly/abs/abs-symbols';
 import type { AbsFieldDefinition, AbsFieldToken } from '../../../integrations/blockly/abs/abs-field-values';
-import { adoptAbsNativeModels, type AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
+import { adoptAbsNativeModels, assertAbsNativeModelDeclarations, type AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
+import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 
 /** Exact owned inputs, extended only by an observed initializer registration. */
 export class NativeCandidateModels {
@@ -24,7 +25,12 @@ export class NativeCandidateModels {
 
   declare(start: number, blockType: string, name: string, type: string, requestId: string): AbsNativeModelDeclaration {
     this.assertCurrent();
-    const existing = this.expected.find(model => model.name.toLowerCase() === String(name).toLowerCase());
+    assertAbsNativeModelDeclarations([{ start, blockType, name, type, id: `abs-model:${requestId}:${start}:${this.expected.length}` }]);
+    const matches = this.expected.filter(model => model.name.toLowerCase() === String(name).toLowerCase() && (model.type ?? '') === type);
+    if (matches.length > 1) {
+      throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', 'Initializer name and type match multiple existing identities. Preserve the existing model identities.');
+    }
+    const existing = matches[0];
     const declaration = { start, blockType, name, type, id: existing?.id ?? `abs-model:${requestId}:${start}:${this.expected.length}` };
     const state = { blocks: { blocks: [] }, variables: this.expected };
     adoptAbsNativeModels(state, [declaration]);

@@ -19,6 +19,7 @@ import { MainUiAutomationService } from '@integration/automation/public-api';
 import { ToolI18nService } from '@core/preferences/public-api';
 import {
   SubappActivityService,
+  hasDockEmbeddedViewControl,
   type SubappActivity,
 } from '@integration/subapps/public-api';
 import { ChildToolSurfaceHostComponent } from '../../tools/child-tool-surface-host/child-tool-surface-host.component';
@@ -33,6 +34,7 @@ import { getChildToolConfig } from '../../configs/tool.config';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SubappActivityDockComponent {
+  readonly hasEmbeddedViewControl = hasDockEmbeddedViewControl;
   readonly minWidth = 280;
   isNativeObserver(toolId: string): boolean { return getChildToolConfig(toolId)?.runtime?.observer === true; }
   readonly maxWidth = 480;
@@ -103,10 +105,10 @@ export class SubappActivityDockComponent {
     this.dockWidth = Math.max(this.minWidth, Math.min(this.maxWidth, Math.round(event.width)));
   }
 
-  async openFull(activity: SubappActivity): Promise<void> {
+  async openFull(activity: SubappActivity, mode: 'embedded' | 'window' = 'embedded'): Promise<void> {
     await this.mainUiAutomation.openChildApp({
       toolId: activity.toolId,
-      mode: 'embedded',
+      mode,
     });
   }
 

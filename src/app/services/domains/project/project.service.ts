@@ -30,7 +30,7 @@ import { ProjectDataStore } from './project-data/project-data-store';
 import {
   ExternalProjectDataImportResult,
 } from './project-data/project-data-legacy-import';
-import { normalizeProjectDataDocument } from './project-data/project-data-normalization';
+import { normalizeProjectDataDocument, type DeferredProjectDataNormalization } from './project-data/project-data-normalization';
 import { ProjectDataError } from './project-data/project-data.types';
 import {
   isBoardCompatibleWithProjectMode,
@@ -65,6 +65,8 @@ import {
 import { detectProjectMode, getProjectApplicationName, type ProjectMode } from './project-mode';
 import { deriveProjectPackageName } from './project-package-name';
 import { projectSaveOutcomeError, type ProjectSaveOutcome, type ProjectSaveAsOutcome, type ProjectRecoveryCopyOptions } from './project-save-outcome';
+import { isProjectConflictChoice, isProjectConflictOffer, isProjectConflictResolution,
+  type ProjectConflictChoice, type ProjectConflictOffer, type ProjectConflictResolution } from './project-conflict';
 import { captureProjectCopyLibraries } from './project-copy-libraries';
 import { withProjectCopySourceLock } from './project-copy-source-lock';
 import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
@@ -247,12 +249,19 @@ export class ProjectService {
     this.libraryChangesChanged?.next();
   }
 
-  async discardAllLibraryChanges(): Promise<void> {
+  async discardAllLibraryChanges({ quitting = false }: { quitting?: boolean } = {}): Promise<void> {
     const refresh = this.libraryChanges.has(this.normalizeProjectPath(this.currentProjectPath));
+    const errors: unknown[] = [];
     for (const path of new Set([this.currentProjectPath, ...this.coderProjects.map(project => project.path)].filter(Boolean))) {
-      await this.discardLibraryChanges(path);
+      try { await this.discardLibraryChanges(path); }
+      catch (error) {
+        if (!quitting) throw error;
+        // Still restore other open projects when one manifest is unavailable.
+        errors.push(error);
+      }
     }
-    if (refresh && this.getProjectMode(this.currentProjectPath) === 'blockly'
+    if (errors.length) throw new AggregateError(errors, '退出时部分项目的库依赖未能恢复');
+    if (!quitting && refresh && this.getProjectMode(this.currentProjectPath) === 'blockly'
       && this.getBlocklyProjectLoadStatus(this.currentProjectPath).ready) await this.rebuildBlocklyRuntimeAfterLibraryChange();
   }
 
@@ -1308,7 +1317,7 @@ export class ProjectService {
       }
 
       if (templateDirectory === 'template') {
-        await this.initializeProjectDataSchema(projectPath);
+        await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       }
       this.updateNewProjectPackageJson(projectPath, newProjectData, {
         coderTemplate: isCoderTemplate,
@@ -1342,7 +1351,7 @@ export class ProjectService {
       this.application.updateFooterState({ state: 'doing', text: this.translate.instant('PROJECT.CREATING_PROJECT') });
       this.importProjectDirectory(templatePath, projectPath);
 
-      await this.initializeProjectDataSchema(projectPath);
+      await this.initializeProjectDataSchema(projectPath, undefined, undefined, { deferToLoad: true });
       this.updateNewProjectPackageJson(projectPath, newProjectData, { removeCloudId: true });
       const created = await this.finishProjectCreation(projectPath, options);
       if (created) this.metrics.record('project_created');
@@ -1366,7 +1375,8 @@ export class ProjectService {
    * project. Known legacy inline payloads are migrated once at this copy
    * boundary.
    */
-  async initializeProjectDataSchema(projectPath: string, assertCurrent: () => void = () => {}, fieldUpdates?: ProjectBlockFieldUpdates): Promise<void> {
+  async initializeProjectDataSchema(projectPath: string, assertCurrent: () => void = () => {}, fieldUpdates?: ProjectBlockFieldUpdates,
+    options: { deferToLoad?: true } = {}): Promise<void | { status: 'DEFERRED'; code: string; project: string }> {
     assertCurrent();
     const abiPath = window['path'].join(projectPath, 'project.abi');
     if (!window['fs'].existsSync(abiPath)) {
@@ -1379,6 +1389,16 @@ export class ProjectService {
     const result = await normalizeProjectDataDocument({ projectPath, document: abi, fieldUpdates, originalContent, materialize: false },
       this.createProjectDataStore(projectPath), assertCurrent);
     this.reportProjectDataNormalization(projectPath, result);
+    if (result.deferredNormalization) {
+      const deferred = { status: 'DEFERRED' as const, code: 'PROJECT_DATA_NORMALIZATION_DEFERRED', project: projectPath };
+      // A creation/import caller may explicitly hand an unchanged saved source
+      // to the real loader. Requested example field edits cannot be silently lost.
+      if (options.deferToLoad && (!fieldUpdates || Object.keys(fieldUpdates).length === 0)) return deferred;
+      throw Object.assign(new Error('Project Data was prepared but the original ABI/ABS generation was retained. '
+        + 'Open this exact project for verified load normalization, or inspect it with project_recover and use its preserving repair or independent fork. '
+        + 'Requested field changes were not saved; do not delete maps/locks or report initialization as committed.'), deferred,
+        { recovery: { tool: 'project_recover', arguments: { action: 'inspect', project: projectPath }, retryInstallation: false } });
+    }
   }
 
   /**
@@ -1392,6 +1412,7 @@ export class ProjectService {
     originalContent?: string,
     assertCurrent: () => void = () => {},
     onPublished?: (text: string) => void,
+    onDeferredNormalization?: (normalization: DeferredProjectDataNormalization) => void,
   ): Promise<Record<string, unknown>> {
     const session = projectDataRuntime.getSessionToken();
     const currentPath = this.currentProjectPath;
@@ -1423,6 +1444,7 @@ export class ProjectService {
       if (repair?.project === projectPath) repair.transitions.push(transition);
     }
     if (result.persistedText !== undefined) onPublished?.(result.persistedText);
+    if (result.deferredNormalization) onDeferredNormalization?.(result.deferredNormalization);
     return result.document;
   }
 
@@ -1991,7 +2013,8 @@ export class ProjectService {
       if (result?.projectSaved !== undefined) outcome = { projectSaved: result.projectSaved,
         generatedCodePublished: result.generatedCodePublished, partial: result.partial,
         ...(result.code ? { code: result.code } : {}) };
-      if (result?.success !== true) throw new Error(result?.error || '编辑器未确认保存成功');
+      if (result?.success !== true) throw Object.assign(new Error(result?.error || '编辑器未确认保存成功'),
+        typeof result?.code === 'string' ? { code: result.code } : {});
       // Saving an inactive Coder tab is valid. Its acknowledgement must not
       // change a replacement project's status or read that project's manifest.
       if (current()) {
@@ -2006,8 +2029,50 @@ export class ProjectService {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('项目保存失败:', message);
       if (current()) this.stateSubject.next(outcome.projectSaved ? 'saved' : 'error');
-      return { ...outcome, success: false, error: message, path };
+      return { ...outcome, success: false, error: message, path,
+        ...(typeof (error as { code?: unknown })?.code === 'string' ? { code: (error as { code: string }).code } : {}) };
     }
+  }
+
+  /** UI and Agent callers share the same application-owned, token-bound resolver. */
+  async inspectSaveConflict(path = this.currentProjectPath): Promise<ProjectConflictOffer | undefined> {
+    const unchanged = this.captureCurrentProjectGuard();
+    this.assertSaveConflictScope(path, unchanged);
+    if (!this.application.inspectBlocklyConflict) return undefined;
+    const offer = await this.application.inspectBlocklyConflict(path);
+    this.assertSaveConflictScope(path, unchanged);
+    if (!isProjectConflictOffer(offer, path)) throw Object.assign(new Error('保存冲突检查未返回当前项目的有效凭据。'),
+      { code: 'PROJECT_CONFLICT_INVALID' });
+    return Object.freeze({ project: offer.project, token: offer.token });
+  }
+
+  async resolveSaveConflict(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution> {
+    const unchanged = this.captureCurrentProjectGuard();
+    this.assertSaveConflictScope(path, unchanged);
+    if (!isProjectConflictChoice(choice) || !isProjectConflictOffer({ project: path, token }, path)) {
+      throw Object.assign(new Error('保存冲突选择或凭据无效，请重新检查当前项目。'), { code: 'PROJECT_CONFLICT_INVALID' });
+    }
+    if (!this.application.resolveBlocklyConflict) throw Object.assign(new Error('当前宿主不支持受保护的保存冲突处理。'),
+      { code: 'PROJECT_CONFLICT_UNAVAILABLE' });
+    this.stateSubject.next('saving');
+    try {
+      const result = await this.application.resolveBlocklyConflict(path, choice, token);
+      this.assertSaveConflictScope(path, unchanged);
+      if (!isProjectConflictResolution(result, path, choice)) throw Object.assign(new Error('保存冲突处理结果未经确认，原数据与恢复记录已保留。'),
+        { code: 'PROJECT_CONFLICT_UNCONFIRMED' });
+      if (!result.projectSaved || result.partial) throw projectSaveOutcomeError(result);
+      this.stateSubject.next('saved');
+      return result;
+    } catch (error) {
+      if (unchanged() && path === this.currentProjectPath) this.stateSubject.next('error');
+      throw error;
+    }
+  }
+
+  private assertSaveConflictScope(path: string, unchanged: () => boolean): void {
+    if (!path || path !== this.currentProjectPath || !unchanged() || this.getProjectMode(path) !== 'blockly'
+      || this.isProjectOpening) throw Object.assign(new Error('项目或加载会话已变化，未执行保存冲突处理。'),
+        { code: 'PROJECT_CONFLICT_CONTEXT_CHANGED' });
   }
 
 

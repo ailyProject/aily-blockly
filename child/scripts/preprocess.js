@@ -813,14 +813,45 @@ async function processLibrary(lib, librariesPath, currentProjectPath, za7Path, d
 }
 
 function extractLibrarySourceArchive(za7Path, sourceZipPath, sourcePath) {
-    const extractPath = path.join(path.dirname(sourcePath), `.src-extract-${process.pid}-${Date.now()}`);
+    // Windows can read a linked package while mkdir below its junction fails.
+    // Keep the logical inputs bound, but create and publish within the same
+    // canonical package directory instead of traversing the alias for writes.
+    const packagePath = path.dirname(sourcePath);
+    const physicalPackagePath = fs.realpathSync(packagePath);
+    const physicalArchivePath = fs.realpathSync(sourceZipPath);
+    const packageIdentity = fs.statSync(physicalPackagePath, { bigint: true });
+    const archiveIdentity = fs.statSync(physicalArchivePath, { bigint: true });
+    const sameFile = (before, after) => before.dev === after.dev && before.ino === after.ino;
+    const assertInputsUnchanged = () => {
+        const currentPackage = fs.statSync(physicalPackagePath, { bigint: true });
+        const currentArchive = fs.statSync(physicalArchivePath, { bigint: true });
+        if (fs.realpathSync(packagePath) !== physicalPackagePath
+            || fs.realpathSync(sourceZipPath) !== physicalArchivePath
+            || !sameFile(packageIdentity, currentPackage)
+            || !sameFile(archiveIdentity, currentArchive)
+            || archiveIdentity.size !== currentArchive.size
+            || archiveIdentity.mtimeNs !== currentArchive.mtimeNs
+            || archiveIdentity.ctimeNs !== currentArchive.ctimeNs) {
+            throw new Error('Library package inputs changed during source extraction.');
+        }
+    };
+    const physicalSourcePath = path.join(physicalPackagePath, path.basename(sourcePath));
+    const extractPath = fs.mkdtempSync(path.join(physicalPackagePath, '.src-extract-'));
+    const extractIdentity = fs.lstatSync(extractPath, { bigint: true });
 
     try {
-        mkdirp(extractPath);
-        execFileSync(za7Path, ['x', sourceZipPath, `-o${extractPath}`, '-y']);
-        normalizeExtractedSourceDirectory(extractPath, sourcePath);
+        assertInputsUnchanged();
+        execFileSync(za7Path, ['x', physicalArchivePath, `-o${extractPath}`, '-y']);
+        assertInputsUnchanged();
+        // A concurrent producer owns a newly appeared src; never remove it.
+        if (fs.existsSync(physicalSourcePath)) {
+            throw new Error('Library source destination appeared during archive extraction.');
+        }
+        normalizeExtractedSourceDirectory(extractPath, physicalSourcePath);
     } finally {
-        rm(extractPath);
+        // Cleanup only this extraction directory, not a rebound alias/entry.
+        if (fs.existsSync(extractPath)
+            && sameFile(extractIdentity, fs.lstatSync(extractPath, { bigint: true }))) rm(extractPath);
     }
 }
 
@@ -832,7 +863,7 @@ function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
         : extractPath;
 
     if (fs.existsSync(sourcePath)) {
-        rm(sourcePath);
+        throw new Error('Library source destination appeared during archive extraction.');
     }
 
     fs.renameSync(extractedSourcePath, sourcePath);

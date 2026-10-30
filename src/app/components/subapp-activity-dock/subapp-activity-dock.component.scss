@@ -188,6 +188,11 @@
     color: var(--aily-text-primary);
     background: var(--aily-bg-tertiary);
   }
+
+  &:focus-visible {
+    outline: 2px solid var(--aily-color-primary);
+    outline-offset: 1px;
+  }
 }
 
 .subapp-card-status {

@@ -22,6 +22,7 @@ import {
 import {
   ChildAppHostRegistryService,
   resolveChildCloseDecision,
+  hasDockEmbeddedViewControl,
   type ChildAppWindowPlacement,
   ChildToolProcessService,
   type ChildToolHostInfo,
@@ -65,6 +66,8 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectSubscription: Subscription | null = null;
+  private activitySubscription: Subscription | null = null;
+  private resourceSessionId: string | null = null;
   private unregisterHostController: (() => void) | null = null;
   private penpalConnection: Connection | null = null;
   private remoteApi: any = null;
@@ -103,6 +106,14 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     this.projectSubscription = this.projectService.currentProjectPath$.subscribe(() => {
       if (this.initialized) this.syncHostContext(true);
     });
+    this.activitySubscription = this.activityService.activities$.subscribe(() => {
+      const target = this.toolId === 'mqtt-debugger'
+        ? this.activityService.getActivity(this.sessionId, this.toolId)?.resourceSessionId || null : null;
+      if (target !== this.resourceSessionId) {
+        this.resourceSessionId = target;
+        this.syncHostContext();
+      }
+    });
     this.bindTool();
   }
 
@@ -114,7 +125,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       return;
     }
 
-    if ((changes['placement'] || changes['active']) && this.active) {
+    if ((changes['sessionId'] || changes['placement'] || changes['active']) && this.active) {
       this.syncHostContext(true);
     }
   }
@@ -129,6 +140,8 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
     this.themeSubscription = null;
     this.projectSubscription?.unsubscribe();
     this.projectSubscription = null;
+    this.activitySubscription?.unsubscribe();
+    this.activitySubscription = null;
     this.unregisterHostController?.();
     this.unregisterHostController = null;
     this.destroyConnection();
@@ -358,10 +371,13 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
       placement: this.placement || 'chat-dock',
       density: 'compact',
       interactive: surfaceConfig?.interactive !== false,
+      ...(this.toolId === 'mqtt-debugger' && this.placement === 'chat-dock'
+        ? { mqttSessionId: this.activityService.getActivity(this.sessionId, this.toolId)?.resourceSessionId || null } : {}),
       capabilities: {
         snapshotRefresh: true,
         userInteractionNotifications: true,
         compactSurface: true,
+        dockOpenEmbedded: this.placement === 'chat-dock' && hasDockEmbeddedViewControl(this.toolId),
         runtimeControl: false,
       },
     };

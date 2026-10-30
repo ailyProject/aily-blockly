@@ -131,11 +131,17 @@ describe('independent recovery view handoff', () => {
   });
   it('records only actual typed Project Data CAS transitions during initial repair loading, including a later missing-library failure', async () => {
     const f = domain(), before = '{"blocks":{"blocks":[]}}';
+    const archive = f.outcome.recoveryArchive, archiveText = '{"retained":"source proof"}';
+    const disk = new Map([[`${target}/project.abi`, before], [`${source}/project.abi`, before], [archive, archiveText]]);
     f.service.createProjectDataStore = () => ({ put: async () => { throw new Error('No payload was expected.'); },
       flushPending: async () => {}, collectReferences: () => [], validateReferences: async () => ({ valid: true, issues: [] }) });
-    Object.assign(window['fs'], { projectFilePublicationVersion: 2,
-      replaceProjectText: jasmine.createSpy('actualPublication').and.callFake(async request => ({ status: 'COMMITTED',
-        hash: `sha256:${await sha256Hex(request.content)}`, backupHash: request.expectedHash })) });
+    Object.assign(window['fs'], { existsSync: path => disk.has(path), readFileSync: path => disk.get(path), projectFilePublicationVersion: 2,
+      replaceProjectText: jasmine.createSpy('actualPublication').and.callFake(async request => {
+        const path = `${request.projectPath}/${request.fileName}`, original = disk.get(path)!;
+        if (`sha256:${await sha256Hex(original)}` !== request.expectedHash) return { status: 'CONFLICT' };
+        disk.set(path, request.content);
+        return { status: 'COMMITTED', hash: `sha256:${await sha256Hex(request.content)}`, backupHash: request.expectedHash };
+      }) });
     f.service.projectOpen.and.callFake(async () => {
       await f.service.ensureProjectDataSchemaForLoad(target, JSON.parse(before), before);
       return false;
@@ -145,6 +151,30 @@ describe('independent recovery view handoff', () => {
     expect(result.normalizationTransitions[0]).toEqual(jasmine.objectContaining({ kind: 'project-data-normalization',
       beforeAbiHash: `sha256:${await sha256Hex(before)}`, changes: jasmine.objectContaining({ schemaMarker: 1 }),
       publication: jasmine.objectContaining({ status: 'COMMITTED', backupHash: `sha256:${await sha256Hex(before)}` }) }));
+    expect(result.loadStatus.error).toBe('Missing library');
+    expect(f.service.independentRepairNormalization).toBeUndefined();
+    expect(window['fs'].replaceProjectText).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(disk.get(`${target}/project.abi`)!).$ailyProjectData).toBeDefined();
+    expect(disk.get(`${source}/project.abi`)).toBe(before); expect(disk.get(archive)).toBe(archiveText);
+  });
+  it('does not invent a repair normalization transition when filesystem inspection cannot prove ABI-only context', async () => {
+    const f = domain(), before = '{"blocks":{"blocks":[]}}';
+    let deferred: any, acknowledged: string | undefined;
+    f.service.createProjectDataStore = () => ({ put: async () => { throw new Error('No payload was expected.'); },
+      flushPending: async () => {}, collectReferences: () => [], validateReferences: async () => ({ valid: true, issues: [] }) });
+    Object.assign(window['fs'], { projectFilePublicationVersion: 2, replaceProjectText: jasmine.createSpy('mustNotPublish') });
+    f.service.projectOpen.and.callFake(async () => {
+      await f.service.ensureProjectDataSchemaForLoad(target, JSON.parse(before), before, () => {},
+        text => { acknowledged = text; }, receipt => { deferred = receipt; });
+      return false;
+    });
+    const result = await f.service.openIndependentRepairTarget();
+    expect(result.normalizationTransitions).toEqual([]);
+    expect(window['fs'].replaceProjectText).not.toHaveBeenCalled();
+    expect(f.service.recoveryTargets.advanceNormalization).not.toHaveBeenCalled();
+    expect(acknowledged).toBe(before);
+    expect(deferred).toEqual(jasmine.objectContaining({ mode: 'load', projectPath: target, originalContent: before }));
+    expect(JSON.parse(deferred.persistedText).$ailyProjectData).toBeDefined();
     expect(result.loadStatus.error).toBe('Missing library');
     expect(f.service.independentRepairNormalization).toBeUndefined();
   });

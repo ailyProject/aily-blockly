@@ -87,6 +87,81 @@ describe('project loaded-state admission and comparison', () => {
     expect(() => state.compare(['project', 2], 'disk', after)).toThrowError(/runtime changed/);
     state.clear(); expect(state.compare(['project', 2], 'disk', after)).toBeUndefined();
   });
+
+  for (const drift of ['format', 'root-layout', 'viewport', 'shared-root-layout']) {
+    it(`admits ${drift}-only disk drift without acknowledging current code or changing either checkpoint`, () => {
+      before.sharedModel.procedureBlocks.push({ type: 'procedures_defnoreturn', id: 'shared', x: 30, y: 60 });
+      after.sharedModel = structuredClone(before.sharedModel);
+      const originalDisk = JSON.stringify(before), acceptedDocument = structuredClone(after), changedDisk = structuredClone(before);
+      state.remember(['p'], originalDisk, acceptedDocument);
+      if (drift === 'root-layout') changedDisk.pages[0].content.blocks.blocks[0].x = 500;
+      if (drift === 'viewport') changedDisk.pages[0].viewState = { scale: 1.25, scrollX: 35, scrollY: -10 };
+      if (drift === 'shared-root-layout') changedDisk.sharedModel.procedureBlocks[0].y = 600;
+      const diskText = JSON.stringify(changedDisk, null, 2) + '\r\n';
+      expect(state.compare(['p'], diskText, acceptedDocument)).toBeFalse();
+      const edited = structuredClone(after); edited.pages[0].content.blocks.blocks[0].fields.TEST = 'local edit';
+      expect(state.compare(['p'], diskText, edited)).toBeTrue();
+      const layoutEdit = structuredClone(after); layoutEdit.pages[0].viewState = { scale: 1, scrollX: 75, scrollY: 0 };
+      expect(state.compare(['p'], diskText, layoutEdit)).toBeTrue();
+      expect((state as any).accepted.disk).toBe(originalDisk);
+      expect((state as any).accepted.document).toEqual(acceptedDocument);
+      expect(state.compare(['p'], originalDisk, acceptedDocument)).toBeFalse();
+      expect(state.compare(['p'], diskText, edited)).toBeTrue();
+    });
+  }
+
+  const externalChanges: Array<[string, (document: any) => void]> = [
+    ['field', d => d.pages[0].content.blocks.blocks[0].fields.TEST = 'external'],
+    ['metadata', d => d.extension = { changed: true }],
+    ['model', d => d.sharedModel.variables = [{ id: 'external-model', name: 'new' }]],
+    ['protection', d => d.pages[0].content.blocks.blocks[0].deletable = true],
+    ['collapsed', d => d.pages[0].content.blocks.blocks[0].collapsed = true],
+    ['disabled', d => d.pages[0].content.blocks.blocks[0].disabled = true],
+    ['extraState', d => d.pages[0].content.blocks.blocks[0].extraState = { hasElse: false }],
+    ['opaque data', d => d.pages[0].content.blocks.blocks[0].data = 'external'],
+    ['unknown viewport', d => d.pages[0].viewState = { extension: true }],
+    ['invalid coordinate', d => d.pages[0].content.blocks.blocks[0].x = 'not-layout'],
+    ['schema', d => d.schemaVersion = 999],
+    ['active page', d => d.activePageId = 'missing-page'],
+    ['tabs', d => d.openedPageIds = ['other']],
+    ['page owner', d => d.pages[1].content.blocks.blocks.push(d.pages[0].content.blocks.blocks.shift())],
+    ['root order', d => d.pages[0].content.blocks.blocks.reverse()],
+    ['marker extension', d => d.$ailyProjectData.extension = true],
+  ];
+  for (const [name, change] of externalChanges) it(`retains a true ${name} external conflict even when the canvas matches that disk`, () => {
+    before.pages[0].content.blocks.blocks.push({ type: 'math_number', id: 'second', fields: { NUM: 1 } });
+    const originalDisk = JSON.stringify(before), changedDisk = structuredClone(before);
+    state.remember(['p'], originalDisk, after); change(changedDisk);
+    expect(() => state.compare(['p'], JSON.stringify(changedDisk), changedDisk)).toThrowError(/outside/);
+    expect((state as any).accepted.disk).toBe(originalDisk);
+    expect(state.compare(['p'], originalDisk, after)).toBeFalse();
+  });
+
+  it('does not repair legacy or unknown schemas to excuse layout changes, or accept invalid JSON', () => {
+    for (const baseline of [{ blocks: before.pages[0].content.blocks }, { ...before, schemaVersion: 999 }]) {
+      const originalDisk = JSON.stringify(baseline), changed: any = structuredClone(baseline);
+      state.remember(['p'], originalDisk, after);
+      if (changed.pages) changed.pages[0].content.blocks.blocks[0].x = 500;
+      else changed.blocks.blocks[0].x = 500;
+      expect(() => state.compare(['p'], JSON.stringify(changed), after)).toThrowError(/outside/);
+      expect(state.compare(['p'], JSON.stringify(baseline, null, 2), after)).toBeFalse();
+      expect(() => state.compare(['p'], '{invalid', after)).toThrowError(/outside/);
+    }
+  });
+
+  it('keeps resource envelopes exact without resolving them during disk admission', () => {
+    const reference = createAilyProjectDataValue({ $ailyData: { schemaVersion: 1, id: `sha256:${'a'.repeat(64)}`,
+      codec: 'utf8-v1', logicalType: 'text', storage: 'raw-v1', rawLength: 7, storedLength: 7 } });
+    before.pages[0].content.blocks.blocks[0].fields.TEST = reference;
+    const originalDisk = JSON.stringify(before), changed: any = structuredClone(before);
+    state.remember(['p'], originalDisk, after);
+    changed.pages[0].content.blocks.blocks[0].x = 500;
+    const resolve = spyOn(projectDataRuntime, 'resolve').and.throwError('Must not resolve resources');
+    expect(state.compare(['p'], JSON.stringify(changed), after)).toBeFalse();
+    changed.pages[0].content.blocks.blocks[0].fields.TEST.$ailyProjectDataValue.ref.$ailyData.id = `sha256:${'b'.repeat(64)}`;
+    expect(() => state.compare(['p'], JSON.stringify(changed), after)).toThrowError(/outside/);
+    expect(resolve).not.toHaveBeenCalled();
+  });
   it('remembers a detached copy, and a failed load is not clean', () => {
     state.remember(['p'], 'disk', after); after.pages[0].title = 'edit';
     expect(state.compare(['p'], 'disk', after)).toBeTrue();
@@ -161,6 +236,22 @@ describe('editor unsaved-state resource and lifecycle boundary', () => {
     for (let n = 0; n < 3; n++) expect(await service.hasUnsavedChanges()).toBeFalse();
     document.pages[1].title = 'user edit'; expect(await service.hasUnsavedChanges()).toBeTrue();
     expect(projectDataRuntime.getPrepared).not.toHaveBeenCalled();
+  });
+
+  it('offers ordinary dirty saving for layout-only external drift but never ignores actual external code', async () => {
+    const originalDisk = disk;
+    service.rememberLoadedProject('D:/project', disk, structuredClone(document));
+    const layout = JSON.parse(disk); layout.pages[0].content.blocks.blocks[0].x = 500;
+    layout.pages[0].viewState = { scale: 1.25, scrollX: 50, scrollY: 0 };
+    disk = JSON.stringify(layout);
+    const resolve = spyOn(projectDataRuntime, 'resolve').and.throwError('Must not resolve unchanged resources');
+    expect(await service.hasUnsavedChanges()).toBeFalse();
+    document.pages[0].content.blocks.blocks[0].fields.TEST = 'local edit'; revision++;
+    expect(await service.hasUnsavedChanges()).toBeTrue();
+    disk = JSON.stringify(document); // D == W must not excuse a true semantic edit to B.
+    await expectAsync(service.hasUnsavedChanges()).toBeRejectedWithError(/outside/);
+    disk = originalDisk; expect(await service.hasUnsavedChanges()).toBeTrue();
+    expect(resolve).not.toHaveBeenCalled();
   });
   it('admits the load owner while keeping concurrent project reads blocked', () => {
     const gate = new BlocklyWorkspaceEditGate(), owner = gate.acquire();
@@ -324,5 +415,43 @@ describe('project check feedback is fail-closed for all editors', () => {
     wizard.message = { error: jasmine.createSpy('error') }; wizard.nzModal = { create: jasmine.createSpy('dialog') };
     expect(await wizard.confirmSwitchWithUnsavedIfNeeded()).toBeFalse();
     expect(wizard.nzModal.create).not.toHaveBeenCalled(); expect(wizard.message.error).toHaveBeenCalled();
+  });
+});
+
+describe('editor project action typed failure feedback', () => {
+  let service: _ProjectService, handlers: Map<string, (action?: any) => Promise<any>>;
+  beforeEach(() => {
+    handlers = new Map();
+    service = new _ProjectService({ projectPageHydrated: new Subject() } as any, {
+      listen: (name, callback) => handlers.set(name, callback), unlisten: () => undefined,
+    } as any, {} as any);
+    service.init();
+  });
+  afterEach(() => service.destroy());
+
+  it('retains typed save and dirty-check errors without fabricating success or a dirty boolean', async () => {
+    const error = Object.assign(new Error('A structured external conflict'), { code: 'ABS_DUAL_EDIT_CONFLICT' });
+    spyOn(service, 'save').and.rejectWith(error); spyOn(service, 'hasUnsavedChanges').and.rejectWith(error);
+    expect(await handlers.get('project-save')!({ payload: { path: 'D:/owned' } })).toEqual({
+      projectSaved: false, generatedCodePublished: false, partial: false, error: error.message, code: error.code });
+    expect(await handlers.get('project-check-unsaved')!()).toEqual({ error: error.message, code: error.code });
+  });
+
+  it('does not infer a typed conflict from an untyped message or a non-string code', async () => {
+    const save = spyOn(service, 'save'), check = spyOn(service, 'hasUnsavedChanges');
+    for (const error of [new Error('ABS_DUAL_EDIT_CONFLICT: only a message'), Object.assign(new Error('unknown'), { code: 3 })]) {
+      save.and.rejectWith(error); check.and.rejectWith(error);
+      const saveResult = await handlers.get('project-save')!({ payload: { path: 'D:/owned' } });
+      const checkResult = await handlers.get('project-check-unsaved')!();
+      expect(Object.hasOwn(saveResult, 'code')).toBeFalse(); expect(Object.hasOwn(checkResult, 'code')).toBeFalse();
+      expect(Object.hasOwn(checkResult, 'hasUnsavedChanges')).toBeFalse();
+    }
+  });
+
+  it('preserves successful save and boolean feedback unchanged', async () => {
+    const result = { projectSaved: true, generatedCodePublished: true, partial: false };
+    spyOn(service, 'save').and.resolveTo(result); spyOn(service, 'hasUnsavedChanges').and.resolveTo(false);
+    expect(await handlers.get('project-save')!({ payload: { path: 'D:/owned' } })).toBe(result);
+    expect(await handlers.get('project-check-unsaved')!()).toEqual({ hasUnsavedChanges: false });
   });
 });

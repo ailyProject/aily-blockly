@@ -19,7 +19,7 @@ import { assertAbsContractsCompatible } from './abs-contract-compatibility';
 import { inspectAbsDraft, canInspectAbsDraft, AbsDraftReadiness } from './abs-draft-readiness';
 import { orderAbsSharedRoots, retainAbsRootLayout, sameAbsProgram } from './abs-program-state';
 import { createAbsProjectSnapshotGuard } from './abs-project-snapshot-guard';
-import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey } from './abs-baseline-store';
+import { AbsBaselineStore, AbsDiskSnapshot, AbsPublishResult, absBaselineKey, type AbsViewResolutionRecord } from './abs-baseline-store';
 import { openAbsHostStorage } from './abs-host-storage';
 import { absJson, assertAbsBaselineContext, createAbsProjection, hashAbsText } from './abs-identity-map';
 import { AbsProjection, AbsProjectionContracts, AbsSyncError } from './abs-state';
@@ -57,6 +57,13 @@ import { assertAbsReadback } from './abs-readback';
 import { describeAbsDerivedOutputs, type AbsDerivedOutputs } from './abs-derived-outputs';
 import { AbsJournalReopenAdmission, type AbsJournalReopenObservation } from './abs-journal-reopen';
 import { AbsRepairDerivedReports } from './abs-repair-derived';
+import { canSaveAbsWorkspace, sameAbsSavedProgram, sameAbsSavedState } from './abs-save-semantics';
+import { deferredAbsLoadNormalization, matchesAbsLoadNormalizationReadback, verifyAbsLoadNormalization,
+  type AbsLoadNormalizationInput, type AbsLoadNormalizationOutcome } from './abs-load-normalization';
+import { describeAbsViewConflict, type AbsViewConflictChoice } from './abs-view-conflict';
+import { assertProjectLoadPreserved } from '../../../editors/blockly-editor/services/blockly-project-clean-state';
+import { normalizeProjectDataDocument } from '@domain/project/public-api';
+import { captureAbsNativeValues } from './abs-native-resources';
 
 type AbsExportOptions = { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string;
   reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean; save?: boolean };
@@ -119,6 +126,106 @@ export class AbsWorkspaceSyncService {
     });
     this.project.setAbsSaveAsHandler?.(path => this.captureSaveAsSnapshot(path));
     this.project.setAbsRecoveryCopyHandler?.(path => this.captureRecoveryCopySnapshot(path));
+    this.project.setAbsLoadNormalizationHandler?.(input => this.publishLoadedNormalization(input));
+  }
+
+  /** Trusted open-path continuation, after native readback and release of the
+   * load lease. Normalization is not an ABS edit and never consumes a draft.
+   * The old saved recipe and all mirrors are archived before the same save
+   * journal publishes a new generation under the ordinary FIFO/editor lease. */
+  publishLoadedNormalization(input: AbsLoadNormalizationInput): Promise<AbsLoadNormalizationOutcome> {
+    input.assertCurrent();
+    if (input.projectPath !== this.project.currentProjectPath) {
+      return Promise.resolve(deferredAbsLoadNormalization(input.projectPath, 'ABS_CONTEXT_STALE'));
+    }
+    return this.run(async (context, lease, store) => {
+      const assertContext = () => { context.assertCurrent(); input.assertCurrent(); lease.assertCurrent(); };
+      const quarantineCurrent = (reason: string) => {
+        if (!context.isCurrent()) return;
+        try { assertContext(); } catch { return; }
+        lease.quarantine(reason);
+      };
+      assertContext();
+      if (!await verifyAbsLoadNormalization(store, input, context.scope)) {
+        return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_DEFERRED');
+      }
+      const snapshot = this.editor.captureProjectSnapshot(lease);
+      if (!matchesAbsLoadNormalizationReadback(input, snapshot)) {
+        return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+      }
+      const guard = () => {
+        assertContext();
+        const current = this.editor.captureProjectSnapshot(lease);
+        if (!matchesAbsLoadNormalizationReadback(input, current)) {
+          throw new AbsSyncError('ABS_LOAD_NORMALIZATION_READBACK_CHANGED', 'Native load state changed before normalization publication.');
+        }
+        assertContext(); return current;
+      };
+      let prepared: PreparedBlocklySave, projection: AbsProjection, generation: string;
+      try {
+        prepared = await this.project.prepareSave(snapshot.document, guard);
+        if (!await sameAbsSavedProgram(JSON.parse(prepared.abiText), JSON.parse(input.persistedText), {
+          normalize: value => this.editor.normalizeProjectAbi(value),
+          resolve: ref => projectDataRuntime.resolve(ref), assertCurrent: guard,
+        })) return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+        const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions, assertContext);
+        const compact = await this.compactDocument(snapshot.document, runtime.contracts, guard);
+        generation = crypto.randomUUID();
+        projection = await this.projection(compact, runtime.contracts, prepared.abiText, context.scope, guard, generation);
+        const token = await hashAbsText(absJson({ kind: 'load-normalization',
+          originalContent: input.originalContent, persistedText: input.persistedText, expected: input.expected }));
+        await this.assertDisk(store, input.expected.disk, guard);
+        const archive = await store.archiveRepair(generation, input.expected.disk, input.expected.pointerHash,
+          absJson(snapshot.document), token, guard);
+        await store.stage({ projection, mode: 'import', abi: prepared.abiText,
+          inputAbs: input.expected.disk.abs, inputMap: input.expected.disk.map, expected: input.expected.disk,
+          recoveryArchive: { key: archive.key, hash: archive.hash } }, input.expected.pointerHash);
+      } catch (error) {
+        if ((error as any)?.code === 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED') {
+          return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+        }
+        throw error;
+      }
+      let publication: AbsPublishResult;
+      let abiWriteAttempted = false;
+      try {
+        publication = await store.commit(generation, guard, async (text, expectedHash, storage) => {
+          guard();
+          abiWriteAttempted = true;
+          if (text !== prepared.abiText || !await storage.replace('project.abi', expectedHash, text)) {
+            throw new AbsSyncError('ABS_ABI_COMMIT_CONFLICT', 'Project ABI changed during load normalization.');
+          }
+        });
+      } catch (error) {
+        // Pre-ABI admission failures cannot have saved anything. Once a write
+        // was attempted, a lost host acknowledgement must retain protection.
+        // Confirmed NOT_COMMITTED outcomes are returned normally below.
+        if (!abiWriteAttempted) {
+          if ((error as any)?.code === 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED') {
+            return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_READBACK_CHANGED');
+          }
+          throw error;
+        }
+        quarantineCurrent('Load normalization outcome is unknown; inspect the retained journal before writing.');
+        throw new AbsSyncError('ABS_LOAD_NORMALIZATION_OUTCOME_UNKNOWN', `Load normalization acknowledgement is unknown: ${String(error)}`,
+          undefined, [], { hint: 'Keep the source and migration archive. Call project_recover action=inspect once; recover only the offered pending journal or already committed generation. Do not repeat normalization, delete locks or apply an old draft.' });
+      }
+      if (publication.status !== 'COMMITTED') {
+        if (publication.abiSaved) quarantineCurrent('Normalized ABI committed; recover its pending generation before writing.');
+        return deferredAbsLoadNormalization(context.path, 'ABS_LOAD_NORMALIZATION_INCOMPLETE');
+      }
+      try {
+        guard();
+        // This open-path acknowledgement intentionally does not generate C++, run
+        // library save hooks or republish manifests as a side effect of migration.
+        this.project.rememberLoadedProject(context.path, prepared.abiText, snapshot.document, lease);
+        this.editor.publishAbsContext(projection, guard().revision, assertContext);
+      } catch (error) {
+        quarantineCurrent('Normalization committed but native acknowledgement changed; inspect before writing.');
+        throw error;
+      }
+      return { status: 'COMMITTED', abiText: prepared.abiText, generation };
+    });
   }
 
   private captureRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
@@ -332,7 +439,8 @@ export class AbsWorkspaceSyncService {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Saved ABI changed before export.');
       }
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
-      const committed = inspection ? inspection.committed?.projection : options.save ? (await store.inspectCommitted())?.projection : await store.loadCommitted();
+      const savedCommit = !inspection && options.save ? await store.inspectCommitted() : null;
+      const committed = inspection ? inspection.committed?.projection : options.save ? savedCommit?.projection : await store.loadCommitted();
       if (input && (committed?.map.generation ?? null) !== input.generation) {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed after state-operation preflight.');
       }
@@ -353,10 +461,15 @@ export class AbsWorkspaceSyncService {
       if (committed) {
         const diskHash = expected.abi === null ? null : await hashAbsText(absJson(JSON.parse(expected.abi)));
         if (diskHash !== committed.map.savedAbiHash) {
-          // Match inspection's program comparison: view/layout changes are not
-          // competing edits. Full disk hashes still guard publication below.
+          // Compare D with the actual saved ABI B, not only with edited canvas W.
+          // A layout-only D drift is not a competing edit. Recipe verification
+          // and the unchanged raw three-file CAS retain publication authority.
           prepared = await this.project.prepareSave(snapshot.document, assertCurrent);
-          if (expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
+          const savedAbi = await store.readDerivedAbi(committed.map.generation);
+          if (!await canSaveAbsWorkspace(savedAbi, expected.abi, prepared.abiText, {
+            normalize: value => this.editor.normalizeProjectAbi(value),
+            resolve: ref => projectDataRuntime.resolve(ref), assertCurrent,
+          })) {
             throw new AbsSyncError('ABS_DUAL_EDIT_CONFLICT', 'Saved ABI and workspace diverged; reconcile the external edit before exporting a new generation.', undefined, undefined,
               { hint: 'Call project_recover action=inspect once for disk/canvas comparison. Do not retry save/export/apply or refresh without a token; preserve both versions until the intended source is established.' });
           }
@@ -416,7 +529,7 @@ export class AbsWorkspaceSyncService {
       await store.stage({ projection, mode: prepared ? 'import' : 'export', inputAbs: expected.abs ?? projection.abs, abi: prepared?.abiText ?? null, expected,
         ...(inspection ? { inputMap: expected.map } : {}),
         ...(options.preserveDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
-        input?.generation === null ? null : inspection?.committed?.pointerHash);
+        input?.generation === null ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
       const archived = options.preserveDraft || input?.generation === null && expected.abs !== null
         ? await store.readArchivedDraft(projection.map.generation) : undefined;
       const draftArchive = archived ? { generation: archived.generation, baseGeneration: archived.baseGeneration,
@@ -1007,11 +1120,18 @@ export class AbsWorkspaceSyncService {
           () => { context.assertCurrent(); lease.assertCurrent(); });
         const diagnostics = await inspectAbsDraft(current, snapshot.document, runtime);
         diagnostics.repair = await describeAbsRepair({ ...current, diagnostics }, snapshot.document, runtime.contracts);
+        const conflictResolution = current.committed ? await describeAbsViewConflict({ project: context.path,
+          scope: context.scope, disk: current.disk, pointerHash: current.committed.pointerHash,
+          snapshot, contracts: runtime.contracts, repairToken: diagnostics.repair?.token }) : undefined;
+        const completed = await this.observeViewResolution(context, lease, store);
         await this.assertDisk(store, current.disk, assertCurrent);
         if ((await store.inspectCommitted())?.pointerHash !== current.committed?.pointerHash || await store.inspectPending()) {
           throw new AbsSyncError('ABS_BASELINE_STALE', 'Generation changed during draft inspection. Inspect again.');
         }
-        return { pending: current.pending, diagnostics };
+        return { pending: current.pending, diagnostics, ...(conflictResolution ? { conflictResolution } : {}),
+          ...(completed ? { completedResolution: { token: completed.resolution.token, choice: completed.choice,
+            inputAbiHash: completed.inputAbiHash, source: { kind: completed.choice === 'keep_view' ? 'workspace' : 'saved-abi', abiHash: completed.inputAbiHash },
+            output: completed.evidence, recoveryArchive: completed.recoveryArchive, candidateApplied: false } } : {}) };
       }, false);
     }
     return { pending: inspection.pending, diagnostics: inspection.diagnostics as typeof inspection.diagnostics & AbsDraftReadiness };
@@ -1025,10 +1145,17 @@ export class AbsWorkspaceSyncService {
   /** Explicit, archived derivative rebuild. Never parses the old draft as authority. */
   repairGeneration(token: string, authority: string): Promise<AbsWorkspaceSyncOutcome> {
     if (authority !== 'workspace') return Promise.reject(new AbsSyncError('ABS_REPAIR_AUTHORITY_INVALID', 'Repair requires authority=workspace.'));
-    return this.run(async (context, lease, store) => {
+    return this.run((context, lease, store) => this.repairInContext(context, lease, store, token));
+  }
+
+  private async repairInContext(context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease,
+    store: AbsBaselineStore, token: string, resolution?: AbsViewResolutionRecord, onCommit?: () => void,
+    assertInspectedView?: () => unknown): Promise<AbsWorkspaceSyncOutcome> {
       const inspection = await inspectAbsGeneration(store, context.scope);
+      assertInspectedView?.();
       let snapshot = this.editor.captureProjectSnapshot(lease);
-      let guard = this.atRevision(context.assertCurrent, lease, snapshot);
+      const initialGuard = this.atRevision(context.assertCurrent, lease, snapshot);
+      let guard = assertInspectedView ? () => { assertInspectedView(); return initialGuard(); } : initialGuard;
       let runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions,
         () => { context.assertCurrent(); lease.assertCurrent(); });
       // A lost reply must not turn a completed repair into another dead end.
@@ -1060,7 +1187,7 @@ export class AbsWorkspaceSyncService {
       if (!offer || token !== offer.token) throw new AbsSyncError('ABS_REPAIR_STALE', 'Repair token no longer matches the inspected inputs and canvas. Inspect again.');
       const generation = crypto.randomUUID();
       const archive = await store.archiveRepair(generation, inspection.disk, inspection.committed!.pointerHash,
-        absJson(snapshot.document), token, guard);
+        absJson(snapshot.document), resolution?.token ?? token, guard, resolution);
       guard();
       const generated = await this.withViewChecks(() => this.editor.prepareProjectCode(context.assertCurrent, lease));
       context.assertCurrent();
@@ -1079,6 +1206,7 @@ export class AbsWorkspaceSyncService {
         recoveryArchive: { key: archive.key, hash: archive.hash } }, inspection.committed!.pointerHash);
       let publication: AbsPublishResult;
       try {
+        onCommit?.();
         publication = await store.commit(generation, guard, async (text, expectedHash, storage) => {
           guard();
           if (text !== prepared.abiText || !await storage.replace('project.abi', expectedHash, text)) {
@@ -1096,15 +1224,221 @@ export class AbsWorkspaceSyncService {
       if (requiresReload) lease.quarantine('Repair ABI committed; finish the existing generation recovery before writing.');
       let derived = describeAbsDerivedOutputs(generated);
       if (publication.status === 'COMMITTED') {
-        try { await this.project.publishPreparedSaveOutputs(context.path, prepared, generated, () => { guard(); }); }
+        try {
+          const publication = await this.project.publishPreparedSaveOutputs(context.path, prepared, generated, () => { guard(); }, { preserveSuperseded: true });
+          if (publication && publication.sourceArchive && derived.output) derived.output.sourceArchive = publication.sourceArchive;
+        }
         catch (error) { derived = describeAbsDerivedOutputs(generated, { error }); }
         this.editor.publishAbsContext(projection, guard().revision, context.assertCurrent);
-        this.repairDerived.remember(token, evidence.binding, derived);
+        this.repairDerived.remember(resolution?.token ?? token, evidence.binding, derived);
       }
       return { publication, requiresReload, warnings: derived.warnings, derivedOutputs: derived.output, recoveryArchive: archive,
         inputAbiHash: inspection.disk.abi === null ? null : await hashAbsText(inspection.disk.abi),
         ...(publication.status === 'COMMITTED' ? { evidence, abs: projection.abs } : {}) };
-    });
+  }
+
+  async inspectViewConflict() {
+    const result = await this.inspectGeneration();
+    const offer = 'conflictResolution' in result ? result.conflictResolution : undefined;
+    if (!offer) throw new AbsSyncError('ABS_VIEW_CONFLICT_UNAVAILABLE', 'No verified view conflict is available. Inspect project recovery without changing source files.');
+    return offer;
+  }
+
+  /** Observation of one durable completed choice; never calls load, generate,
+   * publish outputs or replays a resolution after a missing acknowledgement. */
+  private async observeViewResolution(context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease,
+    store: AbsBaselineStore, expected?: { token: string; choice: AbsViewConflictChoice }) {
+    const inspection = await inspectAbsGeneration(store, context.scope);
+    if (!inspection.committed || inspection.pending || inspection.diagnostics.issues.length) return;
+    const projection = inspection.committed.projection;
+    let previous: Awaited<ReturnType<AbsBaselineStore['inspectRepair']>>;
+    try { previous = await store.inspectRepair(projection.map.generation); }
+    catch (error) { if ((error as any)?.code === 'ABS_RECOVERY_ARCHIVE_MISSING') return; throw error; }
+    const resolution = previous.archive.resolution as AbsViewResolutionRecord | undefined;
+    if (!resolution || !/^sha256:[a-f0-9]{64}$/.test(resolution.token) || resolution.token !== previous.archive.repairToken
+      || !['keep_view', 'replace_view'].includes(resolution.choice)
+      || resolution.inputAbiHash !== previous.recoveryArchive.files.abi.hash
+      || expected && (resolution.token !== expected.token || resolution.choice !== expected.choice)) return;
+    const snapshot = this.editor.captureProjectSnapshot(lease);
+    const guard = () => {
+      context.assertCurrent(); lease.assertCurrent();
+      const current = this.editor.captureProjectSnapshot(lease);
+      if (current.revision !== snapshot.revision || absJson(current.document) !== absJson(snapshot.document)) {
+        throw new AbsSyncError('ABS_VIEW_RESOLUTION_OBSERVATION_STALE', 'The view changed while the completed choice was being observed. No new edit was acknowledged.');
+      }
+      return current;
+    };
+    if (inspection.disk.abi === null || await hashAbsText(absJson(JSON.parse(inspection.disk.abi))) !== projection.map.savedAbiHash
+      || !await sameAbsSavedState(snapshot.document, projection.document, {
+        normalize: value => this.editor.normalizeProjectAbi(value), resolve: ref => projectDataRuntime.resolve(ref), assertCurrent: guard,
+      })) return;
+    await this.assertDisk(store, inspection.disk, guard);
+    if ((await store.inspectCommitted())?.pointerHash !== inspection.committed.pointerHash) return;
+    const evidence = await generationEvidence(projection, inspection.disk.abi), derived = this.repairDerived.observe(resolution.token, evidence.binding);
+    guard();
+    return { publication: { status: 'COMMITTED' as const, generation: projection.map.generation, abiSaved: true, absMirrored: true, mapPublished: true },
+      requiresReload: false, evidence, abs: projection.abs, recoveryArchive: previous.recoveryArchive,
+      inputAbiHash: resolution.inputAbiHash, choice: resolution.choice, refreshed: resolution.choice === 'replace_view',
+      resolution, projection, snapshot, guard, reused: true, derivedOutputs: derived.output, warnings: derived.warnings };
+  }
+
+  /** Shared by user save/exit and explicit Agent choices. No implicit candidate
+   * application, mtime selection, lock deletion or receipt-only rebase. */
+  resolveViewConflict(choice: AbsViewConflictChoice, token: string, observeOnly = false): Promise<AbsWorkspaceSyncOutcome & {
+    choice: AbsViewConflictChoice; refreshed: boolean;
+  }> {
+    if (!['keep_view', 'replace_view'].includes(choice) || !/^sha256:[a-f0-9]{64}$/.test(token)) {
+      return Promise.reject(new AbsSyncError('ABS_REQUEST_INVALID', 'Select keep_view or replace_view with the current conflict token.'));
+    }
+    return this.run(async (context, lease, store) => {
+      const observed = await this.observeViewResolution(context, lease, store, { token, choice });
+      if (observed) {
+        const { snapshot, guard } = observed;
+        const abi = await store.readDerivedAbi(observed.publication.generation);
+        guard();
+        if (abi === null) throw new AbsSyncError('ABS_ABI_DERIVATION_INVALID', 'Completed resolution has no verified saved recipe.');
+        this.project.rememberLoadedProject(context.path, abi, snapshot.document, lease);
+        this.withViewChecks(() => this.editor.publishAbsContext(observed.projection, snapshot.revision, () => { guard(); }));
+        const { projection: _projection, resolution: _resolution, snapshot: _snapshot, guard: _guard, ...result } = observed;
+        return result;
+      }
+      if (observeOnly) throw new AbsSyncError('ABS_VIEW_RESOLUTION_UNOBSERVED', 'This exact completed choice could not be verified. No resolution was replayed; keep the pending intent and inspect recovery.');
+      let admitted = false;
+      try {
+      const inspection = await inspectAbsGeneration(store, context.scope);
+      const before = this.editor.captureProjectSnapshot(lease);
+      const beforeText = absJson(before.document);
+      const guard = () => {
+        context.assertCurrent(); lease.assertCurrent();
+        const current = this.editor.captureProjectSnapshot(lease);
+        if (current.revision !== before.revision || absJson(current.document) !== beforeText) {
+          throw new AbsSyncError('ABS_VIEW_CONFLICT_STALE', 'The inspected view changed before resolution; no newer view may be replaced or acknowledged.');
+        }
+        return current;
+      };
+      const runtime = captureAbsWorkspaceState(context.workspace, guard, context.definitions);
+      const diagnostics = await inspectAbsDraft(inspection, before.document, runtime);
+      const repair = await describeAbsRepair({ ...inspection, diagnostics }, before.document, runtime.contracts);
+      const offer = inspection.committed && await describeAbsViewConflict({ project: context.path,
+        scope: context.scope, disk: inspection.disk, pointerHash: inspection.committed.pointerHash,
+        snapshot: before, contracts: runtime.contracts, repairToken: repair?.token });
+      guard();
+      if (!offer || token !== offer.token || !repair) throw new AbsSyncError('ABS_VIEW_CONFLICT_STALE', 'The files or view changed. Inspect once for a new conflict choice; no version was replaced.');
+      if (choice === 'keep_view') {
+        const outcome = await this.repairInContext(context, lease, store, repair.token,
+          { token, choice, inputAbiHash: offer.inputAbiHash }, () => { admitted = true; }, guard);
+        return { ...outcome, choice, refreshed: false };
+      }
+
+      const check = () => { context.assertCurrent(); lease.assertCurrent(); };
+      const normalized = await normalizeProjectDataDocument({ projectPath: context.path,
+        document: JSON.parse(inspection.disk.abi!), materialize: true }, projectDataRuntime.getStore(), guard);
+      const desired = this.editor.normalizeProjectAbiForLoad(normalized.document);
+      const desiredState = composeBlocklyPage(desired, desired.activePageId);
+      // Verify native loading/generation in the existing disposable realm first.
+      // The same exact readback check also applies to the active native load.
+      if (typeof this.editor.captureNativeReplay === 'function') {
+        const replay = this.editor.captureNativeReplay();
+        const { evaluateNativeCandidate } = await import('../../../editors/blockly-editor/services/blockly-native-candidate');
+        const verified = await evaluateNativeCandidate({ steps: replay.steps, graphics: replay.graphics, blocks: [],
+          values: await captureAbsNativeValues(desiredState, guard), verify: { state: desiredState, contracts: { fields: {} } } },
+          { assertCurrent: () => { guard(); replay.assertCurrent(); } });
+        assertAbsReadback(desiredState, normalizeAbsSerializedWorkspace(verified.state));
+      }
+      guard();
+      const generation = crypto.randomUUID();
+      // The capability spans an intentional native replacement. Before it, bind
+      // the inspected view; afterwards bind the verified new view. A permanent
+      // old-view guard would reject every legitimate refresh on the next IO.
+      let storageGuard: () => void = () => { guard(); };
+      const target = new AbsBaselineStore(await openAbsHostStorage(context.path, () => { storageGuard(); }),
+        { projectKey: context.path, pageId: desired.activePageId });
+      const archive = await target.archiveRepair(generation, inspection.disk, inspection.committed!.pointerHash,
+        absJson(before.document), token, guard, { token, choice, inputAbiHash: offer.inputAbiHash });
+      let mutated = false, commitStarted = false;
+      let sealed: { projection: AbsProjection; abi: string; guard: () => unknown } | undefined;
+      try {
+        await this.assertDisk(store, inspection.disk, guard);
+        mutated = true;
+        storageGuard = check;
+        this.withViewChecks(() => this.editor.loadProjectDocument(desired, true, lease));
+        check();
+        const loaded = this.editor.captureProjectSnapshot(lease);
+        assertProjectLoadPreserved(desired, loaded.document, state => this.editor.getWorkspaceLoadReadbackView(state));
+        const generated = await this.editor.prepareProjectCode(check, lease);
+        const applied = this.editor.captureProjectSnapshot(lease);
+        assertProjectLoadPreserved(desired, applied.document, state => this.editor.getWorkspaceLoadReadbackView(state));
+        if (generated && generated.revision !== applied.revision) throw new AbsSyncError('ABS_RUNTIME_CAPTURE_CHANGED', 'Source refresh changed during code preparation.');
+        const assertApplied = this.atRevision(check, lease, applied);
+        storageGuard = () => { assertApplied(); };
+        const captured = captureAbsWorkspaceState(context.workspace, assertApplied, context.definitions);
+        const prepared = await this.project.prepareSave(applied.document, assertApplied);
+        const compact = await this.compactDocument(applied.document, captured.contracts, assertApplied);
+        const scope = { projectKey: context.path, pageId: applied.document.activePageId };
+        const projection = await this.projection(compact, captured.contracts, prepared.abiText, scope, assertApplied, generation);
+        await this.assertDisk(target, inspection.disk, assertApplied);
+        await target.stage({ projection, mode: 'import', abi: prepared.abiText, inputAbs: inspection.disk.abs,
+          inputMap: inspection.disk.map, expected: inspection.disk,
+          recoveryArchive: { key: archive.key, hash: archive.hash } }, inspection.committed!.pointerHash);
+        sealed = { projection, abi: prepared.abiText, guard: assertApplied };
+        commitStarted = true; admitted = true;
+        const publication = await target.commit(generation, assertApplied, async (text, hash, storage) => {
+          assertApplied();
+          if (!await storage.replace('project.abi', hash, text)) throw new AbsSyncError('ABS_ABI_COMMIT_CONFLICT', 'Saved source changed during refresh.');
+        });
+        if (publication.status !== 'COMMITTED') {
+          if (publication.abiSaved) lease.quarantine('Source refresh committed ABI but needs journal completion.');
+          else {
+            this.withViewChecks(() => this.editor.loadProjectDocument(before.document, true, lease));
+            check(); assertProjectLoadPreserved(before.document, this.editor.captureProjectSnapshot(lease).document);
+          }
+          return { publication, requiresReload: publication.abiSaved, warnings: [], choice, refreshed: false, recoveryArchive: archive };
+        }
+        let derived = describeAbsDerivedOutputs(generated);
+        try {
+          const publication = await this.project.publishPreparedSaveOutputs(context.path, prepared, generated, () => { assertApplied(); }, { preserveSuperseded: true });
+          if (publication && publication.sourceArchive && derived.output) derived.output.sourceArchive = publication.sourceArchive;
+        }
+        catch (error) { derived = describeAbsDerivedOutputs(generated, { error }); }
+        this.withViewChecks(() => this.editor.publishAbsContext(projection, assertApplied().revision, check));
+        const evidence = await generationEvidence(projection, prepared.abiText);
+        this.repairDerived.remember(token, evidence.binding, derived);
+        return { publication, requiresReload: false, warnings: derived.warnings, derivedOutputs: derived.output,
+          evidence, abs: projection.abs,
+          recoveryArchive: archive, inputAbiHash: offer.inputAbiHash, choice, refreshed: true };
+      } catch (error) {
+        if (mutated && context.isCurrent()) {
+          if (commitStarted) {
+            let verifiedCommitted = false;
+            try {
+              const current = await target.inspectCommitted(), disk = await target.captureDisk(); sealed?.guard();
+              verifiedCommitted = !!sealed && current?.projection.map.generation === generation
+                && disk.abi === sealed.abi && disk.abs === sealed.projection.abs && disk.map === absJson(sealed.projection.map);
+            } catch { /* Unknown stays fenced, not a reason to replay the choice. */ }
+            if (!verifiedCommitted) lease.quarantine('Source refresh acknowledgement is uncertain; inspect the existing journal, never replay this choice.');
+          }
+          else {
+            try {
+              this.withViewChecks(() => this.editor.loadProjectDocument(before.document, true, lease));
+              check(); assertProjectLoadPreserved(before.document, this.editor.captureProjectSnapshot(lease).document);
+            } catch (rollbackError) {
+              lease.quarantine(`Source refresh rollback could not be verified: ${String(rollbackError)}`);
+              throw new AbsSyncError('ABS_ROLLBACK_FAILED', `Source refresh failed and preserved recovery requires inspection: ${String(error)}`);
+            }
+            throw new AbsApplicationFailure(error, 'ROLLED_BACK');
+          }
+        }
+        throw error;
+      } finally {
+        if (context.isCurrent()) { this.editor.markWorkspaceCodeDirty(); this.editor.requestWorkspaceVisualRefresh(); }
+      }
+      } catch (error) {
+        if (!admitted && !(error instanceof AbsApplicationFailure) && (error as any)?.code !== 'ABS_ROLLBACK_FAILED') {
+          throw new AbsApplicationFailure(error, 'NOT_STARTED');
+        }
+        throw error;
+      }
+    }, true, choice === 'replace_view');
   }
 
   async readRepair(generation: string) {
@@ -1301,8 +1635,8 @@ export class AbsWorkspaceSyncService {
     transaction.lease.release(); this.historyNavigation = undefined;
   }
 
-  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore) => Promise<T>, flush = true): Promise<T> {
-    const context = this.context(); // Before queueing, not when an old task eventually starts.
+  private run<T>(operation: (context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore) => Promise<T>, flush = true, allowPageChange = false): Promise<T> {
+    const context = this.context(allowPageChange); // Before queueing, not when an old task eventually starts.
     return this.editor.runProjectOperation(async () => {
       context.assertCurrent();
       const lease = this.editor.acquireWorkspaceEditLease();
@@ -1317,13 +1651,13 @@ export class AbsWorkspaceSyncService {
     });
   }
 
-  private context() {
+  private context(allowPageChange = false) {
     const path = this.project.currentProjectPath, pageId = this.editor.getActivePageId(), workspace = this.editor.workspace;
     const definitions = this.editor.captureDeclarativeBlockDefinitions();
     const generator = getActiveProjectGenerator(), runtimeRevision = getActiveProjectGeneratorRevision();
     const session = projectDataRuntime.getSessionToken();
     const isCurrent = () => !!path && !!workspace && path === this.project.currentProjectPath
-      && pageId === this.editor.getActivePageId() && workspace === this.editor.workspace
+      && (allowPageChange || pageId === this.editor.getActivePageId()) && workspace === this.editor.workspace
       && generator === getActiveProjectGenerator() && runtimeRevision === getActiveProjectGeneratorRevision()
       && session === projectDataRuntime.getSessionToken();
     const assertCurrent = () => {
@@ -1362,7 +1696,7 @@ export class AbsWorkspaceSyncService {
   }
 
   private async projection(document: BlocklyProjectDocument, contracts: AbsProjectionContracts, abi: string | null,
-    scope: AbsProjection['map']['scope'], assertCurrent: () => void, generation = crypto.randomUUID()) {
+    scope: AbsProjection['map']['scope'], assertCurrent: () => void, generation: string = crypto.randomUUID()) {
     const projection = await createAbsProjection(composeBlocklyPage(document, scope.pageId), { document, contracts,
       generation, baselineRef: absBaselineKey(generation), scope,
       savedAbiHash: abi === null ? null : await hashAbsText(absJson(JSON.parse(abi))) });

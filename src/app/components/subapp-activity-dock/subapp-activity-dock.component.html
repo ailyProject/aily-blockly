@@ -29,12 +29,24 @@
                   aria-hidden="true"></span>
               </span>
               <span class="subapp-card-title">{{ activityTitle(activity) | translate }}</span>
+              @if (hasEmbeddedViewControl(activity.toolId)) {
+                <button
+                  type="button"
+                  class="subapp-card-action"
+                  data-dock-action="open-embedded"
+                  [title]="'SUBAPP_DOCK.OPEN_EMBEDDED' | translate"
+                  [attr.aria-label]="'SUBAPP_DOCK.OPEN_EMBEDDED' | translate"
+                  (click)="openFull(activity, 'embedded')">
+                  <i class="fa-light fa-table-columns" aria-hidden="true"></i>
+                </button>
+              }
               <button
                 type="button"
                 class="subapp-card-action"
-                [title]="'SUBAPP_DOCK.OPEN_FULL' | translate"
-                [attr.aria-label]="'SUBAPP_DOCK.OPEN_FULL' | translate"
-                (click)="openFull(activity)">
+                [attr.data-dock-action]="hasEmbeddedViewControl(activity.toolId) ? 'open-window' : 'open-full'"
+                [title]="(hasEmbeddedViewControl(activity.toolId) ? 'SUBAPP_DOCK.OPEN_WINDOW' : 'SUBAPP_DOCK.OPEN_FULL') | translate"
+                [attr.aria-label]="(hasEmbeddedViewControl(activity.toolId) ? 'SUBAPP_DOCK.OPEN_WINDOW' : 'SUBAPP_DOCK.OPEN_FULL') | translate"
+                (click)="openFull(activity, hasEmbeddedViewControl(activity.toolId) ? 'window' : 'embedded')">
                 <i class="fa-light fa-arrow-up-right-from-square" aria-hidden="true"></i>
               </button>
               <button

@@ -7,6 +7,7 @@ import { API } from '../../../configs/api.config';
 import { CmdService, CmdOutput, PlatformService } from '@core/platform/public-api';
 import { AuthService } from '@core/auth/public-api';
 import { ConfigService } from '@core/preferences/public-api';
+import { preserveLegacyCloudProjectMap } from './legacy-cloud-project';
 
 declare global {
   interface Window {
@@ -449,6 +450,9 @@ export class CloudService {
       }
       
       // console.log('解压成功，文件数量:', extractedFiles.length);
+
+      // Normalize only fresh cloud downloads; local saves/imports keep their ABS protection.
+      preserveLegacyCloudProjectMap(extractPath);
 
       // 删除.7z文件，节省空间
       try {

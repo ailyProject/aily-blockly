@@ -1,10 +1,11 @@
 import type * as Blockly from 'blockly';
 import { AbsSyncError, type AbsSyntaxNode } from '../../../integrations/blockly/abs/abs-state';
-import type { AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
+import { absNativeModelKey, type AbsNativeModelDeclaration } from '../../../integrations/blockly/abs/abs-native-model-declarations';
 import type { NativeCandidateWorkspace } from './blockly-native-candidate-workspace';
 import { hasNativeModelRegistrationHelper, withNativeModelRegistrations } from './blockly-native-model-effects';
 import { nativeLoopVariable } from './blockly-native-loop-model';
 import { assertNativeBudget } from './blockly-native-budget';
+import { captureNativeModelInitializers } from './blockly-native-model-initializers';
 
 /** A bounded dependency worklist, not speculative full code generation. Invoke real
  * generators only for configured subtrees, before binding unresolved references.
@@ -21,10 +22,12 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     return false;
   };
   const declarations = new Map<string, AbsNativeModelDeclaration>();
-  const initializers = new Map<string, AbsNativeModelDeclaration>();
+  const initializers = new Map<string, { effect: AbsNativeModelDeclaration; shared: boolean }>();
   const retainedCalls = new Set(retained.retainedCalls), retainedIds = new Set(retained.retainedIds);
   const retainedNames = new Set<string>();
   const unchanged = (effect: AbsNativeModelDeclaration) => retainedCalls.has(effect.start) && retainedIds.has(effect.id);
+  // Capture reusable IDs before any candidate-owned loop/initializer creates models.
+  const explicit = captureNativeModelInitializers(execution, generator, blocks, disabled, retainedIds);
   // Only the explicit counter declaration may seed a missing loop model. A
   // later ordinary initializer can reuse that same model; the loop keeps its
   // producer because its source offset owns the deterministic model identity.
@@ -40,26 +43,37 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     // Discovery and identity-bound replay must produce identical evidence.
     const effect = execution.models.declare(node.start, block.type, String(token.value), '', requestId);
     if (unchanged(effect)) continue;
-    if (!declarations.has(effect.name.toLowerCase())) declarations.set(effect.name.toLowerCase(), { ...effect, kind: 'loop' });
+    const key = absNativeModelKey(effect.name, effect.type);
+    if (!declarations.has(key)) declarations.set(key, { ...effect, kind: 'loop' });
     assertNativeBudget('declarations', declarations.size, 'model-preparation');
   }
   let unresolved = resolveReferences();
   const effects = () => [...declarations.values()].sort((a, b) => a.start - b.start || a.name.localeCompare(b.name));
   // Without the library registration protocol only core lexical declarations
   // are preparable. Do not speculatively execute unrelated generators.
-  if (!hasNativeModelRegistrationHelper(window, generator)) return effects();
+  if (!hasNativeModelRegistrationHelper(window, generator)) {
+    if (explicit.size) throw new AbsSyncError('ABS_MODEL_INITIALIZER_INVALID', 'Installed model initializers require the real registration helper.');
+    return effects();
+  }
   // Once all references are bound there can be no unresolved descendant. Do not
   // repeatedly traverse complete input subtrees just to search an empty set.
   // With pending references, retain live topology reads: generators may change it.
   const ready = (block: Blockly.Block) => !unresolved.size || !unresolved.has(block)
     && block.inputList.every(input => !input.connection?.targetBlock()?.getDescendants(false).some(child => unresolved.has(child)));
-  withNativeModelRegistrations(window, generator, (block, name, type) => {
+  const register = (block: Blockly.Block, name: string, type: string) => {
     const node = nodes.get(block);
     if (!node || disabled(block)) throw new AbsSyncError('ABS_MODEL_DECLARATION_UNOWNED', `Only an active ABS initializer may prepare a model (${block.type}: ${!node ? 'missing-abs-owner' : 'disabled-initializer'}).`, node, [], { blockType: block.type, reason: !node ? 'missing-abs-owner' : 'disabled-initializer' });
+    // A declared variable-selector field can reuse an exact saved model without
+    // stealing its creation owner. Textbox producers keep the existing rule.
+    if (explicit.reuses(block, name, type)) { execution.models.assertCurrent(); return; }
     const effect = execution.models.declare(node.start, block.type, name, type, requestId);
-    const key = effect.name.toLowerCase(), previous = declarations.get(key);
-    const initializer = initializers.get(key);
+    const key = absNativeModelKey(effect.name, effect.type), previous = declarations.get(key);
+    const entry = initializers.get(key), initializer = entry?.effect;
+    const shared = explicit.shares(block, name, type);
     if (initializer && (initializer.start !== effect.start || initializer.type !== effect.type)) {
+      // Both producers must explicitly agree to share this exact model. The
+      // first producer alone retains identity allocation and final proof.
+      if (entry!.shared && shared && initializer.id === effect.id && initializer.name === effect.name) return;
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', `Multiple initializers declare ${JSON.stringify(name)}. Keep one declaration per object.`, node);
     }
     // Still execute and validate the real helper/type/identity, but do not turn
@@ -71,12 +85,17 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
     if (previous && previous.kind !== 'loop' && (previous.start !== effect.start || previous.type !== effect.type)) {
       throw new AbsSyncError('ABS_MODEL_DECLARATION_CONFLICT', `Multiple initializers declare ${JSON.stringify(name)}. Keep one declaration per object.`, node);
     }
-    initializers.set(key, effect);
+    initializers.set(key, { effect, shared });
     // A loop-created identity must retain its original producer in the receipt.
     // Ordinary registration may reuse it, but cannot relabel its source offset.
     if (previous?.kind !== 'loop') declarations.set(key, effect);
     assertNativeBudget('declarations', declarations.size, 'model-preparation');
-  }, () => {
+  };
+  // Only explicit installed producer contracts may break a self-selection
+  // dependency; normal registration and final ownership verification stay shared.
+  explicit.apply(register);
+  unresolved = resolveReferences();
+  withNativeModelRegistrations(window, generator, register, () => {
     // Generators and init may scan the whole workspace, not just this worklist.
     // A preserved parent may be absent here, so native topology alone cannot
     // expose its children's inherited inactivity. Mask the same complete set
@@ -105,5 +124,6 @@ export function prepareNativeModels(execution: NativeCandidateWorkspace, generat
       for (const block of masked) block.setDisabledReason(false, reason);
     }
   });
+  explicit.assertCurrent();
   return effects();
 }
