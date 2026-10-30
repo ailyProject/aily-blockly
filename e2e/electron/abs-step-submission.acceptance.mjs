@@ -16,6 +16,8 @@ const agentRoot = path.resolve(process.env.AILY_STEP_AGENT ?? '')
 const build = path.resolve(process.env.AILY_STEP_HOST_BUILD ?? '')
 const output = path.resolve(process.env.AILY_STEP_OUTPUT ?? '')
 const duplicateOwners = process.env.AILY_STEP_DUPLICATE_OWNERS === '1'
+const liveRecovery = process.env.AILY_STEP_LIVE_RECOVERY === '1'
+assert.ok(!liveRecovery || !duplicateOwners, 'Keep distinct fault fixtures independently attributable')
 const inside = (parent, file) => { const r = path.relative(parent, file); return r && r !== '..'
   && !r.startsWith('..' + path.sep) && !path.isAbsolute(r) }
 const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
@@ -67,7 +69,8 @@ const index = state => {
 const evidence = { ok: false, llmInvoked: false, realAilyProvider: true, actualSdkLoop: true, localHttpSse: true,
   realServiceCasOrBilling: false, realSdkCoreReadWriteEdit: true, project,
   hardwareUsed: false, simulatorUsed: false, userProjectsModified: false, dailyInstallReplaced: false,
-  ...(duplicateOwners ? { duplicateOwners: true, insertionLineEnding: 'lone-CR', expectedSavedLineEnding: 'LF' } : {}), tools: [] }
+  ...(duplicateOwners ? { duplicateOwners: true, insertionLineEnding: 'lone-CR', expectedSavedLineEnding: 'LF' } : {}),
+  ...(liveRecovery ? { liveRecovery: true, productionRecoveryBudgetMs: 30_000, requiredHealthyStreamMs: 32_000 } : {}), tools: [] }
 evidence.sourceSeed = { files: Object.keys(sourceBefore).length, sha256: sha(JSON.stringify(sourceBefore)) }
 let app, renderer, page, harness, bridge, hostPid, baseline, baselineBlocks, baselineDocument, exported, latestBuild, editResultSha256, observeProvenance
 const documentBlocks = document => index([document.pages.map(page => page.content), document.sharedModel.procedureBlocks])
@@ -131,7 +134,7 @@ try {
   const absPath = path.join(project, 'project.abs'), before = `step_before_${randomUUID().slice(0, 8)}`
   const after = before.replace('before', 'after'), plan = []
   bridge = await createAbsStepSubmissionBridge({ interactionId: 'itx_abs_steps_' + randomUUID().replaceAll('-', ''),
-    failAfterToolId: 'abs-edit-once', nextTool: async ({ step }) => {
+    failAfterToolId: 'abs-edit-once', ...(liveRecovery ? { liveRecovery: { durationMs: 32_000 } } : {}), nextTool: async ({ step }) => {
       if (step < plan.length) {
         if (duplicateOwners && plan[step].name === 'abs_validate') await observeProvenance('before-validate')
         return plan[step]
@@ -221,9 +224,23 @@ try {
       assert.equal(request.permissionMode, 'default')
       if (['read', 'write', 'edit'].includes(request.toolName)) return same(request.input?.path ?? '', absPath)
       return ['abs_export', 'abs_validate', 'abs_apply', 'app_reload', 'project_build', 'app_close',
-        ...(duplicateOwners ? ['project_recover'] : [])].includes(request.toolName)
+        ...(duplicateOwners || liveRecovery ? ['project_recover'] : [])].includes(request.toolName)
         && same(request.input?.project ?? '', project)
     } })
+  if (liveRecovery) {
+    const originalCanvas = await canvas()
+    const inspected = await call('project_recover', { project, action: 'inspect' })
+    assert.equal(inspected.ok, true)
+    if (inspected.diagnostics?.repair) {
+      const { token, authority } = inspected.diagnostics.repair
+      const repaired = await call('project_recover', { project, action: 'repair', token, authority })
+      assert.equal(repaired.ok, true)
+      assert.equal(repaired.publication.status, 'COMMITTED')
+      assert.equal(repaired.repairVerification.candidateApplied, false)
+      assert.deepEqual(await canvas(), originalCanvas, 'Preparation preserves the native project; it does not apply an ABS candidate')
+      evidence.preparationRecovery = { inspected: true, repaired: true, candidateApplied: false }
+    }
+  }
   if (duplicateOwners) {
     const loadedCanvas = await canvas()
     const inspected = await call('project_recover', { project, action: 'inspect' })
@@ -333,8 +350,21 @@ try {
   assert.equal(lost.acceptedToolResultSha256, editResultSha256, 'The accepted POST must carry the actual SDK edit result unchanged')
   assert.equal(lost.postCount, 1)
   assert.equal(lost.providerInvocations, 1)
-  assert.equal(lost.stateReads, 1)
-  assert.equal(lost.eventReads, 1)
+  if (liveRecovery) {
+    assert.equal(lost.stateReads, 2, 'Reuse submission-state proof, then freeze the watermark again after the second disconnect')
+    assert.equal(lost.eventReads, 2)
+    assert.equal(lost.earlyClientDisconnect, undefined, 'A healthy thinking stream must not be cancelled by a recovery timer')
+    assert.ok(lost.liveDurationMs >= evidence.requiredHealthyStreamMs)
+    assert.ok(lost.liveThinkingEvents > 250)
+    assert.equal(lost.livePhase, 'completed')
+    assert.ok(lost.secondResumeAfter > 1 && lost.secondResumeAfter <= lost.secondDisconnectSequence)
+    assert.equal(evidence.transport.interruptCount, 0, 'Connection recovery is not cancellation of the original operation')
+    for (const tool of plan) assert.equal(evidence.tools.filter(actual => actual.id === tool.id).length, 1,
+      'The real SDK must never execute an already completed tool twice')
+  } else {
+    assert.equal(lost.stateReads, 1)
+    assert.equal(lost.eventReads, 1)
+  }
   evidence.compiled = latestBuild
   const sketch = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'), 'utf8')
   assert.ok(sketch.includes(after))
