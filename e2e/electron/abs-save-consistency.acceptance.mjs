@@ -7,6 +7,8 @@ import { build as bundle } from 'esbuild'
 import { _electron } from '@playwright/test'
 import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { createRecoveredAgentHarness } from '../fixtures/abs-agent-tools.mjs'
+import { createAbsProviderSession } from '../fixtures/abs-provider-session.mjs'
+import { createAbsStepSubmissionBridge } from '../fixtures/abs-step-submission-bridge.mjs'
 
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const root = path.resolve(process.env.AILY_SAVE_TEST_ROOT ?? '')
@@ -239,16 +241,76 @@ async function assertGeneratedSourcesArchived(fault) {
   assert.deepEqual([...found].sort(), [...fault.originals.keys()].sort(), 'Every superseded generated source must be durably retained')
   return { manifests, exactOriginalBytesVerified: true, paths: [...found] }
 }
-async function startHarness() {
+async function startHarness({ createStreaming } = {}) {
   Object.assign(process.env, { AILY_LIBRARY_HOST_PID: String(hostPid), AILY_APPDATA_PATH: appData,
     PI_CODING_AGENT_DIR: profileRoot, HOME: home, USERPROFILE: home, PI_OFFLINE: '1', npm_config_offline: 'true', npm_config_audit: 'false' })
   return createRecoveredAgentHarness({ agentRoot, sourceProject: project, globalRoot: root, profileRoot, persistToolTranscript: true,
+    ...(createStreaming ? { createStreaming } : {}),
     permissionApproval(request) {
       if (['read', 'write', 'edit'].includes(request.toolName)) return typeof request.input?.path === 'string'
         && samePath(request.input.path, absPath)
       return samePath(request.input?.project ?? '', project)
-        && ['project_recover', 'abs_export', 'abs_validate', 'abs_apply'].includes(request.toolName)
+        && ['project_recover', 'project_save', 'abs_export', 'abs_validate', 'abs_apply'].includes(request.toolName)
     } })
+}
+async function actualSdkSaveOnlyCycle() {
+  const results = []
+  const structured = event => event.details?.result ?? JSON.parse(event.content.filter(value => value.type === 'text').map(value => value.text).join('\n'))
+  let beforeSave
+  const bridge = await createAbsStepSubmissionBridge({ interactionId: 'itx-isolated-save-only',
+    finalText: 'The current canvas is saved. No AI candidate was applied and no compilation was requested.',
+    nextTool: async ({ step }) => {
+      if (step === 0) return { id: 'inspect-save-conflict', name: 'project_recover', arguments: { project, action: 'inspect' } }
+      if (step === 1) return { id: 'resolve-save-conflict', name: 'project_recover', arguments: { project, action: 'resolve',
+        token: structured(results[0]).conflictResolution.token, choice: 'keep_view' } }
+      if (step === 2) return { id: 'save-current-canvas', name: 'project_save', arguments: { project } }
+      assert.equal(step, 3, 'Only inspect, explicit source choice and save are needed')
+    } })
+  try {
+    harness = await startHarness({ createStreaming: context => createAbsProviderSession(context, { apiBase: bridge.origin,
+      onToolResult: async event => {
+        assert.notEqual(event.isError, true)
+        results.push(event)
+        if (event.toolName === 'project_recover' && results.length === 2) beforeSave = await mirrors()
+      } }) })
+    const id = await editNumber(44)
+    await awaitUiIdle(true)
+    const external = JSON.parse(await fs.readFile(abiPath, 'utf8'))
+    findBlock(external, id).fields.NUM = 4401
+    const externalText = JSON.stringify(external)
+    await fs.writeFile(abiPath, externalText) // Explicit suite-owned external writer, never an Agent edit.
+    await harness.prompt('Save the current canvas without changing or applying any program. Preserve conflicting originals if source resolution is necessary.')
+    assert.deepEqual(results.map(event => event.toolName), ['project_recover', 'project_recover', 'project_save'])
+    const inspected = structured(results[0]), resolved = structured(results[1]), saved = structured(results[2])
+    assert.equal(inspected.conflictResolution?.inputAbiHash, 'sha256:' + sha(externalText))
+    assert.equal(resolved.ok, true)
+    assert.equal(resolved.publication?.status, 'COMMITTED')
+    assert.equal(resolved.resolutionVerification?.candidateApplied, false)
+    assert.equal(resolved.workspaceSaveVerification?.scope, 'current-canvas-save')
+    assert.equal(resolved.workspaceSaveVerification?.ok, true)
+    assert.equal(resolved.recoveryArchive?.files?.abi?.hash, 'sha256:' + sha(externalText))
+    assert.equal(saved.ok, true, 'An already committed current canvas must not require a no-op abs_apply')
+    assert.equal(saved.workspaceSaveVerification?.version, 1)
+    assert.equal(saved.workspaceSaveVerification?.scope, 'current-canvas-save')
+    assert.equal(saved.workspaceSaveVerification?.ok, true)
+    assert.equal(saved.workspaceSaveVerification?.candidateApplied, false)
+    await awaitUiIdle(false)
+    await assertSaved(id, 44)
+    assert.equal(await fs.readFile(abiPath, 'utf8'), beforeSave['project.abi'], 'Save-only must not alter program bytes')
+    const proof = harness.proof(), transport = bridge.snapshot()
+    assert.equal(proof.actualSdkSession, true)
+    assert.equal(proof.actualProviderSession, true)
+    assert.equal(proof.promptRuns, 1)
+    assert.equal(proof.sessionUserMessages, 1)
+    assert.equal(proof.calls.some(call => ['write', 'edit', 'abs_validate', 'abs_apply'].includes(call.name)), false)
+    assert.equal(harness.messages().filter(message => message.role === 'assistant').at(-1)?.stopReason, 'stop')
+    assert.equal(transport.createCount, 1)
+    assert.deepEqual(transport.failures, [])
+    assert.ok(transport.operations.every(value => value.postCount === 1))
+    await harness.dispose(); harness = undefined
+    return { actualSdkProof: proof, actualProviderPrompt: true, transport, saved, manualNumberPreserved: 44,
+      diskConflictOriginalArchived: 4401, noApplyOrProgramEdit: true, star: false }
+  } finally { await bridge.close() }
 }
 async function actualSdkManualCycle() {
   harness = await startHarness()
@@ -366,6 +428,7 @@ try {
   assert.equal((await snapshot()).star, false)
   Object.assign(evidence.loadMigration, { committedGeneration: map.generation, oldAbiAndMapAndPointerArchived: true,
     savedAbiHashVerified: true, star: false })
+  evidence.sdkSaveOnlyCycle = await actualSdkSaveOnlyCycle()
   evidence.sdkManualCycle = await actualSdkManualCycle()
 
   // A real external program conflict must present the two explicit strategies.
@@ -433,6 +496,27 @@ try {
   assert.equal(finalMap.savedAbiHash, 'sha256:' + sha(JSON.stringify(canonical(finalAbi))))
   assert.ok((await fs.readFile(absPath, 'utf8')).includes(evidence.sdkManualCycle.marker))
   evidence.nativeQuit = { saveAndContinueClosedOwnedHost: true, codeSaved: true }
+
+  // A quit with a genuine disk/canvas conflict must also remain recoverable,
+  // rather than leaving the user trapped behind a stale save failure.
+  await launch()
+  const quitId = await editNumber(43)
+  const quitExternal = JSON.parse(await fs.readFile(abiPath, 'utf8'))
+  findBlock(quitExternal, quitId).fields.NUM = 4301
+  const quitExternalText = JSON.stringify(quitExternal)
+  await fs.writeFile(abiPath, quitExternalText) // Owned semantic conflict; never mutate the source seed.
+  const conflictExited = app.waitForEvent('close', { timeout: 20000 })
+  await page.evaluate(() => window.ng.getComponent(document.querySelector('app-header')).close())
+  await chooseDialog('keep_view', ['cancel', 'keep_view', 'replace_view'], { closing: true })
+  await conflictExited
+  app = undefined
+  const quitAbi = JSON.parse(await fs.readFile(abiPath, 'utf8')), quitMap = JSON.parse(await fs.readFile(mapPath, 'utf8'))
+  const quitArchive = JSON.parse(await fs.readFile(path.join(project, '.aily/abs-sync/recoveries', `${quitMap.generation}.json`), 'utf8'))
+  assert.equal(Number(findBlock(quitAbi, quitId)?.fields?.NUM), 43)
+  assert.equal(quitArchive.disk.abi, quitExternalText)
+  assert.equal(quitMap.savedAbiHash, 'sha256:' + sha(JSON.stringify(canonical(quitAbi))))
+  evidence.nativeConflictQuit = { keepViewSavedAndClosedOwnedHost: true, nativeValueSaved: 43,
+    originalDiskValueArchived: 4301, archiveVerified: true }
   evidence.ok = true
 } catch (error) {
   evidence.failure = { message: error.message, stack: error.stack }; process.exitCode = 1

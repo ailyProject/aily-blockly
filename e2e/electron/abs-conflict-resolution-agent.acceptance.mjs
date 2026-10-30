@@ -112,12 +112,17 @@ try {
     permissionApproval(request) {
       if (['read', 'write', 'edit'].includes(request.toolName)) return request.toolName === 'read'
         ? allowedReads.has(request.input?.path) : same(request.input?.path ?? '', absPath)
-      return ['project_recover', 'abs_export', 'abs_validate', 'abs_apply', 'project_build', 'app_close'].includes(request.toolName)
+      return ['project_recover', 'project_save', 'abs_export', 'abs_validate', 'abs_apply', 'project_build', 'app_close'].includes(request.toolName)
         && same(request.input?.project ?? '', project)
     } })
   const initial = await call('project_recover', { project, action: 'inspect' }), repair = initial.diagnostics?.repair
   if (repair) assert.equal((await call('project_recover', { project, action: 'repair', token: repair.token, authority: repair.authority })).repairVerification?.ok, true)
   assert.equal((await call('abs_export', { project })).ok, true)
+  assert.equal(harness.guard.pending(project), undefined)
+  const ordinarySave = await call('project_save', { project })
+  assert.equal(ordinarySave.ok, true, 'An ordinary save with no pending AI intent must still use its normal route')
+  assert.equal(harness.guard.pending(project), undefined)
+  evidence.ordinarySaveSmoke = { ok: true, noPendingBeforeOrAfter: true, actualSdkTool: true }
   await harness.settle()
   evidence.turnStart = await harness.beginTurn('Resolve the explicit saved-ABI/canvas source conflict, preserve the pending print, then deliberately rebuild it on the fresh baseline, apply and compile. Never upload.')
   assert.equal(evidence.turnStart.actualSdkBeforeAgentStart, true)
@@ -160,8 +165,9 @@ try {
     const block = window.Blockly.getMainWorkspace().getAllBlocks(false).find(value => value.type === 'math_number' && !value.isShadow())
     if (!block) throw Error('Need an ordinary number block in the private C3 fixture')
     const previewToken = main.generatedArtifactRetryToken
-    block.setFieldValue('71', 'NUM')
-    return { id: block.id, previewToken }
+    const canvasValue = Number(block.getFieldValue('NUM')) === 71 ? 72 : 71
+    block.setFieldValue(String(canvasValue), 'NUM')
+    return { id: block.id, previewToken, canvasValue, diskValue: canvasValue + 1000 }
   })
   const numberId = edited.id
   await page.waitForFunction(previous => {
@@ -171,7 +177,7 @@ try {
   await page.waitForFunction(() => window.ng.getComponent(document.querySelector('app-header')).hasUnsavedProjectChanges)
   const external = JSON.parse(await fs.readFile(abiPath, 'utf8')), externalNumber = find(external, numberId)
   assert.ok(externalNumber)
-  externalNumber.fields.NUM = typeof externalNumber.fields.NUM === 'string' ? '70' : 70
+  externalNumber.fields.NUM = typeof externalNumber.fields.NUM === 'string' ? String(edited.diskValue) : edited.diskValue
   const externalText = JSON.stringify(external)
   await fs.writeFile(abiPath, externalText) // Owned external-writer fault only; Agent program edits use real SDK tools above/below.
   const failed = await call('abs_apply', { project, generation: exported.generation, absPath }, { expectError: true })
@@ -200,11 +206,32 @@ try {
   assert.equal(harness.guard.snapshot(project).concurrentEdit, undefined)
   assert.equal(harness.guard.snapshot(project).status, 'blocked', 'The requested print still requires tracked application')
   const selected = JSON.parse(await fs.readFile(abiPath, 'utf8'))
-  assert.equal(Number(find(selected, numberId)?.fields?.NUM), choice === 'keep_view' ? 71 : 70)
+  assert.equal(Number(find(selected, numberId)?.fields?.NUM), choice === 'keep_view' ? edited.canvasValue : edited.diskValue)
   allowedReads.add(resolved.candidateFile)
   const retained = await call('read', { path: resolved.candidateFile })
   assert.ok(JSON.stringify(retained).includes(marker))
   assert.equal(resolved.candidateArtifact.hash, failed.candidateArtifact.hash)
+  const protectedCandidate = harness.guard.snapshot(project).retainedCandidate
+  const beforeSave = await fs.readFile(abiPath)
+  const saved = await call('project_save', { project })
+  assert.equal(saved.ok, true, 'Saving the committed canvas must be independent of applying the retained candidate')
+  assert.equal(saved.workspaceSaveVerification?.version, 1)
+  assert.equal(saved.workspaceSaveVerification?.scope, 'current-canvas-save')
+  assert.equal(saved.workspaceSaveVerification?.ok, true)
+  assert.equal(saved.workspaceSaveVerification?.candidateApplied, false)
+  assert.equal(saved.workflowVerification?.status, 'blocked')
+  assert.deepEqual(await fs.readFile(abiPath), beforeSave)
+  assert.equal(harness.guard.snapshot(project).status, 'blocked', 'Saving the canvas must not verify the AI candidate')
+  const savedCandidate = harness.guard.snapshot(project).retainedCandidate
+  for (const key of ['path', 'hash', 'bytes', 'intentHash']) assert.deepEqual(savedCandidate[key], protectedCandidate[key], key)
+  assert.equal(savedCandidate.viewHash, saved.workspaceSaveVerification.binding.absHash,
+    'Read-only candidate lookup follows the saved canonical view without applying its retained intent')
+  const blockedBuild = await call('project_build', { project }, { expectError: true })
+  assert.equal(blockedBuild.reason, 'abs_apply_required')
+  // Upload protection is inspected locally: this suite never dispatches a hardware operation.
+  assert.equal(harness.guard.blockDependentOperation(project, 'project_upload')?.reason, 'abs_apply_required')
+  evidence.savedCanvasWithProtectedCandidate = { saved, candidateHash: protectedCandidate.hash,
+    buildBlocked: true, uploadGuardBlockedWithoutDispatch: true, abiUnchanged: true }
   await call('read', { path: absPath, limit: 30 })
   await call('write', { path: absPath, content: resolved.abs })
   const freshAnchor = resolved.abs.match(/^arduino_setup\(\)[^\r\n]*$/m)?.[0]
@@ -229,7 +256,8 @@ try {
   assert.equal(proof.actualPermissionSystem, true)
   await harness.settle()
   evidence.actualSdkSuccessfulTurnSettled = true
-  Object.assign(evidence, { ok: true, oldCandidateNotAppliedByResolution: true, selectedNumber: choice === 'keep_view' ? 71 : 70,
+  Object.assign(evidence, { ok: true, oldCandidateNotAppliedByResolution: true,
+    selectedNumber: choice === 'keep_view' ? edited.canvasValue : edited.diskValue,
     resolutionVerification: resolved.resolutionVerification, buildReceipt: compiled.buildReceipt, resolveCalls, proof })
   await call('app_close', { project })
 } catch (error) { evidence.failure = { message: error.message, stack: error.stack }; process.exitCode = 1 }
