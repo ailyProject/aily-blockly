@@ -3,6 +3,8 @@
     "LABEL": "하위 앱 활동 패널",
     "TITLE": "하위 앱",
     "OPEN_FULL": "전체 하위 앱 열기",
+    "OPEN_EMBEDDED": "메인 앱에 내장하여 열기",
+    "OPEN_WINDOW": "별도 창에서 열기",
     "COLLAPSE": "접기",
     "CALL_COUNT": "호출 횟수: {{count}}",
     "RUNTIME_READY": "런타임 준비 완료",

@@ -3,6 +3,8 @@
     "LABEL": "Panneau d’activité des sous-applications",
     "TITLE": "Sous-applications",
     "OPEN_FULL": "Ouvrir la sous-application complète",
+    "OPEN_EMBEDDED": "Ouvrir dans l’application principale",
+    "OPEN_WINDOW": "Ouvrir dans une fenêtre séparée",
     "COLLAPSE": "Réduire",
     "CALL_COUNT": "Appels : {{count}}",
     "RUNTIME_READY": "Environnement d’exécution prêt",

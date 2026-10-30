@@ -3,6 +3,8 @@
     "LABEL": "Subapp activity dock",
     "TITLE": "Subapps",
     "OPEN_FULL": "Open full subapp",
+    "OPEN_EMBEDDED": "Open embedded in main app",
+    "OPEN_WINDOW": "Open in separate window",
     "COLLAPSE": "Collapse",
     "CALL_COUNT": "Calls: {{count}}",
     "RUNTIME_READY": "Runtime ready",

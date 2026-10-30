@@ -3,6 +3,8 @@
     "LABEL": "Panel de actividad de subaplicaciones",
     "TITLE": "Subaplicaciones",
     "OPEN_FULL": "Abrir la subaplicación completa",
+    "OPEN_EMBEDDED": "Abrir integrado en la aplicación principal",
+    "OPEN_WINDOW": "Abrir en una ventana independiente",
     "COLLAPSE": "Contraer",
     "CALL_COUNT": "Llamadas: {{count}}",
     "RUNTIME_READY": "Entorno de ejecución listo",

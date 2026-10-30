@@ -3,6 +3,8 @@
     "LABEL": "子應用活動面板",
     "TITLE": "子應用",
     "OPEN_FULL": "開啟完整子應用",
+    "OPEN_EMBEDDED": "以內嵌模式開啟",
+    "OPEN_WINDOW": "在獨立視窗中開啟",
     "COLLAPSE": "收起",
     "CALL_COUNT": "調用次數：{{count}}",
     "RUNTIME_READY": "執行服務已就緒",

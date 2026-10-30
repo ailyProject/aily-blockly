@@ -3,6 +3,8 @@
     "LABEL": "子应用活动面板",
     "TITLE": "子应用",
     "OPEN_FULL": "打开完整子应用",
+    "OPEN_EMBEDDED": "以内嵌模式打开",
+    "OPEN_WINDOW": "在独立窗口中打开",
     "COLLAPSE": "收起",
     "CALL_COUNT": "调用次数：{{count}}",
     "RUNTIME_READY": "运行服务已就绪",

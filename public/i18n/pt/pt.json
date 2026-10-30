@@ -3,6 +3,8 @@
     "LABEL": "Painel de atividade de subaplicativos",
     "TITLE": "Subaplicativos",
     "OPEN_FULL": "Abrir o subaplicativo completo",
+    "OPEN_EMBEDDED": "Abrir integrado no aplicativo principal",
+    "OPEN_WINDOW": "Abrir em uma janela separada",
     "COLLAPSE": "Recolher",
     "CALL_COUNT": "Chamadas: {{count}}",
     "RUNTIME_READY": "Ambiente de execução pronto",

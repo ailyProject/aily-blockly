@@ -47,7 +47,7 @@ async function templateNodes(file = component + '.html') {
 }
 
 test('every host locale covers the Dock namespace and preserves count interpolation', () => {
-  const required = ['LABEL', 'TITLE', 'OPEN_FULL', 'COLLAPSE', 'CALL_COUNT', 'RUNTIME_READY', 'RUNTIME_STARTING', 'RUNTIME_ERROR', 'RUNTIME_STOPPED', 'RUNTIME_UNKNOWN', 'INVOCATION_RUNNING', 'INVOCATION_SUCCEEDED', 'INVOCATION_FAILED', 'INVOCATION_CANCELLED', 'INVOCATION_IDLE', 'WAITING_RUNTIME', 'LOADING_SURFACE', 'RUNTIME_NOT_RETAINED', 'SURFACE_ERROR', 'SURFACE_TITLE'].sort();
+  const required = ['LABEL', 'TITLE', 'OPEN_FULL', 'OPEN_EMBEDDED', 'OPEN_WINDOW', 'COLLAPSE', 'CALL_COUNT', 'RUNTIME_READY', 'RUNTIME_STARTING', 'RUNTIME_ERROR', 'RUNTIME_STOPPED', 'RUNTIME_UNKNOWN', 'INVOCATION_RUNNING', 'INVOCATION_SUCCEEDED', 'INVOCATION_FAILED', 'INVOCATION_CANCELLED', 'INVOCATION_IDLE', 'WAITING_RUNTIME', 'LOADING_SURFACE', 'RUNTIME_NOT_RETAINED', 'SURFACE_ERROR', 'SURFACE_TITLE'].sort();
   for (const [lang, dictionary] of Object.entries(dictionaries)) {
     assert.ok(dictionary, lang);
     assert.deepEqual(Object.keys(dictionary).sort(), required, lang);
@@ -83,13 +83,33 @@ test('the real Angular template translates text, tooltips, and icon button acces
   for (const name of ['runtimeLabel(activity)', 'invocationLabel(activity)', 'activityTitle(activity)']) {
     assert.ok(expressions.some(source => source.includes(name + ' | translate')), name);
   }
-  for (const key of ['OPEN_FULL', 'COLLAPSE']) {
+  for (const key of ['OPEN_EMBEDDED', 'COLLAPSE']) {
     const matches = nodes.filter(node => node.value?.ast?.constructor.name === 'BindingPipe' && node.value.ast.name === 'translate' && node.value.ast.exp.value === 'SUBAPP_DOCK.' + key);
     assert.deepEqual(matches.map(node => node.name).sort(), ['aria-label', 'title']);
   }
+  const windowLabels = nodes.filter(node => node.value?.ast?.constructor.name === 'BindingPipe'
+    && node.value.ast.name === 'translate' && node.value.source.includes('SUBAPP_DOCK.OPEN_WINDOW')
+    && node.value.source.includes('SUBAPP_DOCK.OPEN_FULL'));
+  assert.deepEqual(windowLabels.map(node => node.name).sort(), ['aria-label', 'title']);
   assert.ok(nodes.some(node => node.name === 'aria-label' && node.value?.ast?.exp?.value === 'SUBAPP_DOCK.LABEL'));
   const staticText = nodes.filter(node => typeof node.value === 'string').map(node => node.value.trim()).filter(Boolean);
   assert.deepEqual(staticText, ['·'], 'shell text must go through translation; activity/error data stays data-bound');
+});
+
+test('Dock launch actions select embedded or separate-window mode for the same debugger', async () => {
+  const dock = dockPrototype(), calls = [];
+  const owner = { mainUiAutomation: { openChildApp: async input => calls.push(input) } };
+  for (const toolId of ['serial-debugger', 'mqtt-debugger', 'network-debugger']) {
+    await dock.openFull.call(owner, { toolId }, 'embedded');
+    await dock.openFull.call(owner, { toolId }, 'window');
+  }
+  await dock.openFull.call(owner, { toolId: 'ffs-manager-child' });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ...['serial-debugger', 'mqtt-debugger', 'network-debugger'].flatMap(toolId => [
+      { toolId, mode: 'embedded' }, { toolId, mode: 'window' },
+    ]),
+    { toolId: 'ffs-manager-child', mode: 'embedded' },
+  ]);
 });
 
 test('call counts use one translated interpolation instead of English singular/plural fragments', async () => {

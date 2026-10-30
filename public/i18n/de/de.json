@@ -3,6 +3,8 @@
     "LABEL": "Aktivitätsbereich für Unteranwendungen",
     "TITLE": "Unteranwendungen",
     "OPEN_FULL": "Vollständige Unteranwendung öffnen",
+    "OPEN_EMBEDDED": "In der Hauptanwendung eingebettet öffnen",
+    "OPEN_WINDOW": "In separatem Fenster öffnen",
     "COLLAPSE": "Einklappen",
     "CALL_COUNT": "Aufrufe: {{count}}",
     "RUNTIME_READY": "Laufzeit bereit",
