@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const vm = require('node:vm');
 const { createHash } = require('node:crypto');
 const { createServer } = require('node:http');
 const { CONFIG_FILENAME, MAX_CONFIG_BYTES, bundledBrowserResourceConfigPath,
@@ -130,6 +131,35 @@ test('Main-only loopback opt-in reuses the same frozen selection and actual HTTP
     assert.equal((await fetch(new URL(f.source.entry, f.release.resourceBaseUrl))).status, 200);
 });
 
+test('window initialization admits exact loopback releases only in unpackaged --serve mode', t => {
+    const f = fixture(t);
+    f.release.resourceBaseUrl = `http://127.0.0.1:50075/releases/${f.release.releaseId}/`;
+    f.write({ ...emptyConfig(), releases: [f.release] });
+    const source = fs.readFileSync(path.join(__dirname, 'window.js'), 'utf8');
+    const boundary = source.indexOf("const { requestWindowAttention }");
+    assert.ok(boundary > 0);
+    const initialization = new vm.Script(source.slice(0, boundary) + '\nbrowserExecutionHost;');
+    const initialize = (isPackaged, argv) => initialization.runInNewContext({
+        process: { argv },
+        require(name) {
+            if (name === 'electron') return { app: { isPackaged } };
+            assert.equal(name, './subapp-browser-resource-config');
+            return { createConfiguredBrowserExecutionHost: options => createConfiguredBrowserExecutionHost({
+                ...options, configurationFilePath: f.filePath,
+            }) };
+        },
+    });
+    assert.doesNotThrow(() => initialize(false, ['electron', 'main.js', '--serve']));
+    for (const [isPackaged, argv] of [[true, ['electron', 'main.js', '--serve']],
+        [true, ['electron', 'main.js']], [false, ['electron', 'main.js']],
+        [false, ['electron', 'main.js', '--serve=true']]]) {
+        assert.throws(() => initialize(isPackaged, argv), /exact trusted version URL/);
+    }
+    f.release.resourceBaseUrl = f.release.resourceBaseUrl.replace('127.0.0.1', '192.168.1.1');
+    f.write({ ...emptyConfig(), releases: [f.release] });
+    assert.throws(() => initialize(false, ['electron', 'main.js', '--serve']), /exact trusted version URL/);
+});
+
 for (const variant of ['redirect', 'tamper', 'unavailable']) test(`configured actual HTTP ${variant} does not silently use installed assets`, async t => {
     const f = await httpFixture(t, (_req, res, input) => {
         if (variant === 'redirect') { res.writeHead(302, { location: '/other.html' }); res.end(); }
@@ -147,7 +177,7 @@ for (const variant of ['redirect', 'tamper', 'unavailable']) test(`configured ac
 test('Electron product uses the default fixed bundled configuration and ships its resource', () => {
     const windowSource = fs.readFileSync(path.join(__dirname, 'window.js'), 'utf8');
     assert.match(windowSource, /require\('\.\/subapp-browser-resource-config'\)/);
-    assert.match(windowSource, /createConfiguredBrowserExecutionHost\(\{ BrowserWindow, MessageChannelMain \}\)/);
+    assert.match(windowSource, /createConfiguredBrowserExecutionHost\(\{ BrowserWindow, MessageChannelMain,/);
     const configSource = fs.readFileSync(path.join(__dirname, 'subapp-browser-resource-config.js'), 'utf8');
     assert.doesNotMatch(configSource, /process\.env|ipcMain|localStorage|getPath\('userData'\)/);
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));

@@ -52,7 +52,11 @@ function createTrustedBrowserResourceServer({ source, resourceBaseUrl, releaseId
         if (!pins.has(relativeEntry(value))) throw new TypeError('Published Browser surface is absent from the selected release');
     }
     const resourcePaths = Object.freeze([...pins.keys()]);
-    const location = Object.freeze({ origin: base.origin, resourceBaseUrl: base.href, resourceIdentity: releaseId, resourcePaths });
+    // Only the already verified Main manifest supplies these pins. Runtime
+    // loaders use the same SHA in their cache-version query; no peer may choose it.
+    const resourceSha256 = Object.freeze(Object.fromEntries([...pins].map(([name, pin]) => [name, pin.sha256])));
+    const location = Object.freeze({ origin: base.origin, resourceBaseUrl: base.href, resourceIdentity: releaseId,
+        resourcePaths, resourceSha256 });
     let closed = false, starting, controller;
     return Object.freeze({
         start() {

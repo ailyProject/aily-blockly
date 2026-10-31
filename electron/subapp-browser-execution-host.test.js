@@ -113,6 +113,28 @@ test('only a selected package version, bounded local entry and matching HTML has
 const hostedResources = () => ({ origin: 'https://resources.example', resourceBaseUrl: 'https://resources.example/releases/r1/',
     resourceIdentity: 'r1', resourcePaths: ['execution.html', 'view.html', 'core.wasm'] });
 
+test('private signed Host delivery requires an actual Node ACK and exact current owner connection', async t => {
+    const h = harness(t), a = h.owner(), acquired = await h.host.acquire(a);
+    a.guard.processLeaseIdentity = () => ({ sessionId: a.leaseId, ownerPid: process.pid, leaseFile: '/controlled/owner-lease.json' });
+    const connection = await h.host.connectRuntime({ ...a, ...acquired });
+    const input = { ...a, ...acquired, connectionId: connection.connectionId,
+        response: { configuration: {}, lease: {}, revocations: {} } };
+    await assert.rejects(h.host.refreshRuntimeAuthorization(input), /acknowledged current Node owner/);
+    const gate = Promise.withResolvers();
+    const binding = h.host.bindNodeOwner({ ...a, ...acquired, bindingId: connection.connectionId,
+        bridge: { async bind(node) { await gate.promise; node.nodeBound = true; }, async released() {} } });
+    await assert.rejects(h.host.refreshRuntimeAuthorization(input), /acknowledged current Node owner/);
+    gate.resolve(); await binding;
+    assert.equal(await h.host.refreshRuntimeAuthorization(input), null);
+    const sent = h.lifecycle.filter(frame => frame.type === 'authorize'); assert.equal(sent.length, 1);
+    assert.equal(sent[0].connectionId, connection.connectionId);
+    await assert.rejects(h.host.refreshRuntimeAuthorization({ ...input, connectionId: randomUUID() }));
+    await assert.rejects(h.host.refreshRuntimeAuthorization({ ...input, ownerId: 999 }));
+    await assert.rejects(h.host.refreshRuntimeAuthorization({ ...input,
+        response: { ...input.response, lease: { oversized: 'x'.repeat(448 * 1024) } } }), /Invalid signed refresh/);
+    assert.equal(h.lifecycle.filter(frame => frame.type === 'authorize').length, 1);
+});
+
 test('Main-only resource location pins entry, surfaces and release for all current owners; provider updates wait for a new runtime', async t => {
     let selected = hostedResources(); const creations = [];
     const h = harness(t, { serverStart: async () => selected, onCreateServer: (entry, source) => creations.push({ entry, source }) });
@@ -192,6 +214,55 @@ test('version resource requests allow only exact manifest URLs and owned blobs w
     legacy.windows[0].webContents.requestHandler({ url: 'http://127.0.0.1:49152/previous-unlisted.js', method: 'GET' }, value => { result = value; });
     assert.equal(result.cancel, false);
     assert.equal(legacy.windows[0].webContents.getURL(), 'http://127.0.0.1:49152/execution.html');
+});
+
+test('only Main manifest member pins admit canonical runtime cache queries without changing surface authority', async t => {
+    const selected = hostedResources(), pin = 'a'.repeat(64);
+    selected.resourceSha256 = Object.fromEntries(selected.resourcePaths.map(entry => [entry, pin]));
+    const h = harness(t, { resourceLocation: selected }), owner = h.owner(), acquired = await h.host.acquire(owner);
+    const state = h.host.runtimes.get(owner.runtimeId), request = (url, method = 'GET') => {
+        let outcome; h.windows[0].webContents.requestHandler({ url, method }, value => { outcome = value; }); return outcome.cancel;
+    };
+    const base = selected.resourceBaseUrl, bare = `${base}core.wasm`, versioned = `${bare}?sha256=${pin}`;
+    assert.equal(request(bare), false);
+    assert.equal(request(versioned), false); assert.equal(request(versioned, 'HEAD'), false);
+    selected.resourceSha256['core.wasm'] = 'b'.repeat(64);
+    assert.equal(request(versioned), false, 'the original verified pin is captured before provider mutation');
+    assert.equal(state.resourceSha256['core.wasm'], pin); assert.ok(Object.isFrozen(state.resourceSha256));
+    assert.ok(Object.isFrozen(state.resourceVersionUrls));
+    assert.equal(Object.hasOwn(acquired, 'resourceSha256'), false);
+    for (const url of [`${bare}?sha256=${'b'.repeat(64)}`, `${versioned}&sha256=${pin}`, `${versioned}&`,
+        `${versioned}&extra=1`, `${bare}?extra=1&sha256=${pin}`, `${bare}?sha256=${pin.toUpperCase()}`,
+        `${bare}?sha256=%61${pin.slice(1)}`, `${bare}?%73ha256=${pin}`, `${versioned}#x`, `${versioned}#`,
+        `${base}unknown.wasm?sha256=${pin}`, `${base.replace('/r1/', '/r2/')}core.wasm?sha256=${pin}`,
+        `${base.replace('resources.example', 'elsewhere.example')}core.wasm?sha256=${pin}`]) {
+        assert.equal(request(url), true, url);
+    }
+    assert.equal(request(versioned, 'POST'), true); assert.equal(request(versioned, 'PUT'), true);
+    // A version query can select public bytes, never the View's launch/port identity.
+    const target = new Contents(); target.url = `${base}view.html?sha256=${pin}`;
+    assert.equal(request(target.url), false);
+    await assert.rejects(h.host.connect({ ...owner, executionId: acquired.executionId,
+        target, purpose: 'view', surface: 'full' }), /trusted/);
+    assert.equal(target.received.length, 0);
+});
+
+test('Main resource pins are complete, bounded SHA metadata and never accepted without a fixed resource base', async t => {
+    const valid = Object.fromEntries(hostedResources().resourcePaths.map(entry => [entry, 'a'.repeat(64)]));
+    for (const resourceSha256 of [null, [], {}, { ...valid, extra: 'a'.repeat(64) },
+        { ...valid, 'core.wasm': undefined }, { ...valid, 'core.wasm': 'A'.repeat(64) },
+        { ...valid, 'core.wasm': { toString: () => 'a'.repeat(64) } }]) {
+        const h = harness(t, { resourceLocation: { ...hostedResources(), resourceSha256 } });
+        await assert.rejects(h.host.acquire(h.owner()), /resource pins/);
+        assert.equal(h.windows.length, 0); assert.equal(h.host.runtimes.size, 0);
+    }
+    const unbound = harness(t, { resourceLocation: { origin: 'http://127.0.0.1:49152', resourceSha256: valid } });
+    await assert.rejects(unbound.host.acquire(unbound.owner()), /requires a base URL/);
+    const unpinned = harness(t, { resourceLocation: hostedResources() }); await unpinned.host.acquire(unpinned.owner());
+    let result;
+    unpinned.windows[0].webContents.requestHandler({ url: `${hostedResources().resourceBaseUrl}core.wasm?sha256=${'a'.repeat(64)}`,
+        method: 'GET' }, value => { result = value; });
+    assert.equal(result.cancel, true, 'unversioned controlled providers gain no new URL permission');
 });
 
 test('same-origin foreign release, surface query and stale instance do not receive View ports', async t => {
@@ -562,6 +633,59 @@ test('closing a View or replacing an Agent connection is not release evidence an
     await assert.rejects(h.invoke('chat-a', { action: 'bindProcess' }), /confirmed retirement/);
     assert.equal(h.frames.filter(frame => frame.type === OWNER_TYPES.bind).length, 1);
     await h.supervisor.release(h.renderer, h.input('chat-a'));
+});
+
+test('unconfirmed Agent cancellation plus retried View close requires actual old owner retirement before a fresh lease recovers', async t => {
+    let paused = false;
+    const h = await supervisedBrowserOwner(t, { ignore: message => paused && message.type === 'detach' });
+    const sent = [];
+    h.broker.send = async (stream, message) => { sent.push({ stream, message }); return { success: true }; };
+    h.broker.cancelGraceMs = 10;
+    await h.track('chat-a'); await h.track('chat-b');
+    const a = await h.invoke('chat-a', { action: 'bindProcess' }), b = await h.invoke('chat-b', { action: 'bindProcess' });
+    const view = await h.invoke('chat-a', { action: 'openView', runtimeId: a.endpoint.runtimeId, surface: 'full' });
+    const record = h.broker.connections.get(a.connectionId);
+    const frame = { type: REQUEST, version: 1, runtimeId: a.endpoint.runtimeId, connectionId: a.connectionId,
+        requestId: 'unconfirmed-original', timeoutMs: 100, payload: { method: 'session.release' } };
+    try {
+        paused = true;
+        h.broker.handle(h.runtimeId, frame);
+        await assert.rejects(h.invoke('chat-a', { action: 'closeView', runtimeId: a.endpoint.runtimeId, connectionId: view.connectionId }), /cleanup was not acknowledged/);
+        const end = Date.now() + 1500;
+        while (!record.retiring || record.revoking) { assert(Date.now() < end, 'Original cancel/detach must reach its actual failed outcome.'); await tick(); }
+        assert.equal(h.broker.pendingCount, 1); assert.equal(record.closed, undefined);
+        assert.equal(h.windows[1].isDestroyed(), false);
+        assert.equal(h.frames.filter(f => f.type === OWNER_TYPES.released).length, 0);
+        paused = false;
+        await h.invoke('chat-a', { action: 'closeView', runtimeId: a.endpoint.runtimeId, connectionId: view.connectionId });
+        assert.equal(h.windows[1].isDestroyed(), true);
+        assert.equal(record.retiring, true); assert.equal(h.broker.pendingCount, 1);
+        await assert.rejects(h.invoke('chat-a', { action: 'bindProcess' }), /being revoked/);
+        assert.equal(h.frames.filter(f => f.type === OWNER_TYPES.bind).length, 2, 'View ACK never mints replacement private owner I/O.');
+        assert.equal(h.frames.filter(f => f.type === OWNER_TYPES.released).length, 0, 'View detach is not Worker/Node owner release evidence.');
+        const retired = await h.invoke('chat-a', { action: 'release', runtimeId: a.endpoint.runtimeId });
+        assert.equal(retired.released, true); assert.equal(retired.refCount, 1);
+        assert.equal(record.closed, true); assert.equal(h.broker.pendingCount, 0);
+        assert.equal(h.broker.connections.has(a.connectionId), false); assert.equal(h.broker.connections.has(b.connectionId), true);
+        assert.equal(h.frames.filter(f => f.type === OWNER_TYPES.released && f.owner.sessionId === 'chat-a').length, 1);
+        assert.equal(sent.filter(row => row.message.requestId === frame.requestId).length, 1, 'The original unconfirmed terminal must not be followed by a contradictory success.');
+        await assert.rejects(h.invoke('chat-a', { action: 'bindProcess' }), /binding has ended/);
+        await h.track('chat-a-fresh');
+        const fresh = await h.invoke('chat-a-fresh', { action: 'bindProcess' });
+        assert.notEqual(fresh.connectionId, a.connectionId); assert.equal(fresh.endpoint.runtimeId, b.endpoint.runtimeId, 'Owner B keeps the original shared execution alive.');
+        const freshView = await h.invoke('chat-a-fresh', { action: 'openView', runtimeId: fresh.endpoint.runtimeId, surface: 'full' });
+        assert.notEqual(freshView.connectionId, view.connectionId);
+        const request = { ...frame, connectionId: fresh.connectionId, requestId: 'actual-fresh-result', timeoutMs: 1000 };
+        h.broker.handle(h.runtimeId, request); await tick();
+        h.activePorts.get(fresh.connectionId).postMessage({ ...request, type: RESULT, ok: true, result: { originalFreshOwner: true } });
+        await tick();
+        assert.equal(sent.find(row => row.message.requestId === request.requestId).message.result.originalFreshOwner, true);
+        await h.invoke('chat-a-fresh', { action: 'release', runtimeId: fresh.endpoint.runtimeId });
+        assert.equal(h.broker.connections.has(b.connectionId), true);
+        await h.invoke('chat-b', { action: 'release', runtimeId: b.endpoint.runtimeId });
+        assert.equal(h.host.runtimes.size, 0); assert.equal(h.broker.owners.size, 0); assert.equal(h.broker.connections.size, 0);
+        assert.equal(h.broker.pendingCount, 0); assert.equal(h.broker.pendingBytes, 0); assert.equal(h.bridge.pendingCount, 0);
+    } finally { paused = false; }
 });
 
 test('an actual execution crash cannot manufacture a Worker release ACK or private Node evidence', async t => {

@@ -1,7 +1,9 @@
 // 管理主窗口和子窗口的创建、状态同步及窗口控制操作。
 const { ipcMain, BrowserWindow, MessageChannelMain, app, screen, webContents } = require("electron");
 const { createConfiguredBrowserExecutionHost } = require('./subapp-browser-resource-config');
-const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain });
+const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain,
+    allowLoopbackHttp: !app.isPackaged && process.argv.includes('--serve'),
+});
 const { requestWindowAttention } = require('./window-attention');
 const {
     getActiveCmdProcesses,

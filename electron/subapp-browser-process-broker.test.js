@@ -139,3 +139,24 @@ test('a concurrent bind cannot hand out a retiring connection while detach is un
     assert.equal(record.retiring, true); assert.equal(record.closed, undefined);
     fail = false; await a.revoke(); assert.equal(h.broker.owners.size, 0);
 });
+
+test('signed authorization stays on the current registered-process Host lane and never enters an Agent domain port', async t => {
+    const h = harness(t), a = h.owner(), bound = await h.broker.bind(a), calls = [];
+    h.host.refreshRuntimeAuthorization = async input => { input.guard(); calls.push(input); return null; };
+    const response = { configuration: { public: true }, lease: { signed: true }, revocations: { signed: true } };
+    const frame = h.request(bound, 'signed-refresh', { method: 'authorization.refresh', response });
+    h.broker.handle('foreign-process', frame); await tick(); assert.equal(calls.length, 0);
+    h.broker.handle('node-a', frame); await tick();
+    assert.equal(calls.length, 1); assert.equal(calls[0].connectionId, bound.connectionId);
+    assert.deepEqual(calls[0].response, response); assert.equal(h.browser.length, 0);
+    assert.equal(h.sent.at(-1).message.ok, true); assert.equal(h.sent.at(-1).message.result, null);
+    assert.equal(h.sent.at(-1).message.response, undefined); assert.equal(h.broker.pendingCount, 0);
+});
+
+test('signed authorization verifier failure is explicit and cannot fall through to ordinary domain requests', async t => {
+    const h = harness(t), a = h.owner(), bound = await h.broker.bind(a);
+    h.host.refreshRuntimeAuthorization = async () => { throw Error('original verifier rejected'); };
+    h.broker.handle('node-a', h.request(bound, 'bad-refresh', { method: 'authorization.refresh', response: {} }));
+    await tick(); assert.equal(h.sent.at(-1).message.errorCode, 'BROWSER_EXECUTION_AUTHORIZATION_FAILED');
+    assert.equal(h.browser.length, 0); assert.equal(h.broker.pendingCount, 0);
+});

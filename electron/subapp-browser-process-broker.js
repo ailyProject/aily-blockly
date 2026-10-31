@@ -135,7 +135,16 @@ class SubappBrowserProcessBroker {
 
             pending.timer = setTimeout(() => this.cancel(record, pending, 'BROWSER_EXECUTION_TIMEOUT'), timeoutMs);
 
-            record.connection.port.postMessage(message);
+            if (message.payload.method === 'authorization.refresh') {
+                if (Object.keys(message.payload).sort().join(',') !== 'method,response'
+                    || typeof this.host.refreshRuntimeAuthorization !== 'function') throw new Error('Signed Host refresh delivery is unavailable');
+                // Only the acknowledged registered process can reach this
+                // broker. Agent/View ports have no corresponding domain method.
+                void this.host.refreshRuntimeAuthorization({ ...record.lease, guard: record.guard,
+                    connectionId: record.connection.connectionId, response: message.payload.response }).then(result => {
+                    this.finish(record, pending, pending.cancelCode ? errorFrame(pending.cancelCode) : { ok: true, result });
+                }, () => this.finish(record, pending, errorFrame('BROWSER_EXECUTION_AUTHORIZATION_FAILED')));
+            } else record.connection.port.postMessage(message);
         } catch {
             if (validId(input.requestId) && !record.pending.has(input.requestId)) this.reply(streamId, input, errorFrame('BROWSER_EXECUTION_INVALID_REQUEST'), record.maxBytes);
             else void this.revoke(record).catch(() => {});

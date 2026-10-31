@@ -19,7 +19,9 @@ function resourceLocation(location, source) {
         throw fault('Browser execution resource origin must be HTTPS or loopback HTTP');
     }
     if (location.resourceBaseUrl === undefined) {
-        if (location.resourceIdentity !== undefined || location.resourcePaths !== undefined) throw fault('Browser execution resource metadata requires a base URL');
+        if (location.resourceIdentity !== undefined || location.resourcePaths !== undefined || location.resourceSha256 !== undefined) {
+            throw fault('Browser execution resource metadata requires a base URL');
+        }
         return { origin: origin.origin, resourceBaseUrl: `${origin.origin}/` };
     }
     const base = new URL(location.resourceBaseUrl);
@@ -38,8 +40,23 @@ function resourceLocation(location, source) {
     if (new Set(paths).size !== paths.length || ![source.entry, ...Object.values(source.surfaces)].every(entry => paths.includes(entry))) {
         throw fault('Browser execution entry and surfaces must belong to its unique resource list');
     }
+    let resourceSha256, resourceVersionUrls;
+    if (location.resourceSha256 !== undefined) {
+        const pins = location.resourceSha256;
+        if (!pins || typeof pins !== 'object' || Array.isArray(pins) || Object.keys(pins).length !== paths.length
+            || paths.some(entry => !Object.hasOwn(pins, entry) || typeof pins[entry] !== 'string' || !/^[a-f0-9]{64}$/.test(pins[entry]))) {
+            throw fault('Browser execution resource pins must match its complete resource list');
+        }
+        resourceSha256 = Object.freeze(Object.fromEntries(paths.map(entry => [entry, pins[entry]])));
+        resourceVersionUrls = Object.freeze(paths.map(entry => {
+            const url = new URL(entry, base);
+            url.searchParams.set('sha256', resourceSha256[entry]);
+            return url.href;
+        }));
+    }
     return { origin: origin.origin, resourceBaseUrl: base.href, resourceIdentity: identity,
-        resourcePaths: Object.freeze(paths), resourceUrls: Object.freeze(paths.map(entry => new URL(entry, base).href)) };
+        resourcePaths: Object.freeze(paths), resourceUrls: Object.freeze(paths.map(entry => new URL(entry, base).href)),
+        ...(resourceSha256 ? { resourceSha256, resourceVersionUrls } : {}) };
 }
 
 /** Hosts documents/leases/ports, never domain sessions or MCU state. The package
@@ -132,7 +149,8 @@ class SubappBrowserExecutionHost {
                 const url = new URL(details.url);
                 permitted = url.protocol === 'blob:' ? url.origin === state.origin
                     : url.origin === state.origin && url.pathname.startsWith(new URL(state.resourceBaseUrl).pathname)
-                        && (!state.resourceUrls || ['GET', 'HEAD'].includes(details.method) && !url.search && !url.hash && state.resourceUrls.includes(url.href));
+                        && (!state.resourceUrls || ['GET', 'HEAD'].includes(details.method) && !url.hash
+                            && (state.resourceUrls.includes(url.href) || state.resourceVersionUrls?.includes(url.href) === true));
             } catch { /* Deny malformed and non-owned sources. */ }
             callback({ cancel: !permitted });
         });
@@ -221,6 +239,28 @@ class SubappBrowserExecutionHost {
 
     /** Main-only registered-process broker endpoint. Never serialized to IPC. */
     async connectRuntime(input) { return this.connectEndpoint({ ...input, purpose: 'agent' }, true); }
+
+    /** Registered Node process only. This private lifecycle delivery is never a
+     * Renderer IPC action and cannot choose keys, configuration or a subject. */
+    async refreshRuntimeAuthorization({ runtimeId, executionId, ownerId, leaseId, guard, connectionId, response }) {
+        guard();
+        const state = this.runtimes.get(runtimeId), key = ownerKey(ownerId, leaseId);
+        const current = () => {
+            guard();
+            const connection = state?.connections.get(connectionId), binding = state?.bindings.get(key);
+            if (!this.isCurrent({ runtimeId, executionId, ownerId, leaseId }) || !connection || connection.key !== key
+                || connection.disconnecting || binding?.node?.nodeBound !== true || binding.node.bindingId !== connectionId) {
+                throw fault('Signed refresh requires the acknowledged current Node owner');
+            }
+        };
+        current();
+        if (!response || Object.getPrototypeOf(response) !== Object.prototype
+            || Object.keys(response).sort().join(',') !== 'configuration,lease,revocations'
+            || Buffer.byteLength(JSON.stringify(response), 'utf8') > 448 * 1024) throw fault('Invalid signed refresh delivery');
+        await this.request(state, 'authorize', { ownerHandle: state.ownerHandles.get(key), connectionId, response });
+        current();
+        return null;
+    }
 
     async connectEndpoint({ runtimeId, executionId, ownerId, leaseId, guard, target, purpose = 'agent', surface, onClosed }, internal) {
         guard();

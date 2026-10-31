@@ -55,6 +55,9 @@ test('actual HTTP entry verification freezes selection and has no account or rem
     const [a, b] = await Promise.all([adapter.start(), adapter.start()]);
     assert.equal(a, b); assert.equal(a.resourceBaseUrl, f.resourceBaseUrl); assert.equal(a.resourceIdentity, f.releaseId);
     assert.deepEqual(a.resourcePaths, ['execution.html', 'view.html']); assert.ok(Object.isFrozen(a.resourcePaths));
+    assert.deepEqual(a.resourceSha256, { 'execution.html': hash(f.bytes), 'view.html': hash('') });
+    assert.ok(Object.isFrozen(a.resourceSha256));
+    assert.throws(() => { a.resourceSha256['execution.html'] = 'f'.repeat(64); }, TypeError);
     assert.equal(f.requests.length, 1); assert.equal(f.requests[0].url, new URL('execution.html', f.resourceBaseUrl).pathname);
     assert.equal(f.requests[0].authorization, undefined); assert.equal(f.requests[0].cookie, undefined);
     await adapter.close(); await assert.rejects(adapter.start(), /closed/);
