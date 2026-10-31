@@ -17,6 +17,8 @@ import {
   BlocklyLiveOperationBridgeService,
 } from '@integration/automation/public-api';
 import { BlocklyEditorAutomationAdapter } from './integrations/blockly/blockly-editor-automation.adapter';
+import { BLOCKLY_PORTABLE_PROJECT_SAVE } from './editors/blockly-editor/services/blockly-portable-project-save';
+import { AbsWorkspaceSyncService } from './integrations/blockly/abs/abs-workspace-sync.service';
 import { AutomationUiAdapter } from './integrations/automation/automation-ui.adapter';
 import { ActionService } from '@core/app-shell/public-api';
 import { BUILD_ACTION_PORT, BUILD_APPLICATION_PORT } from '@domain/build/public-api';
@@ -43,6 +45,12 @@ export const appConfig: ApplicationConfig = {
     provideSimulatorWebApplication(),
     provideBlocklySimulatorWebProject(),
     provideBrowserProjectInput(),
+    { provide: BLOCKLY_PORTABLE_PROJECT_SAVE,
+      // Capture only the injector here: constructing the coordinator while the
+      // editor ProjectService is being injected would form a dependency cycle.
+      useFactory: (injector: EnvironmentInjector) => ({
+        save: (path: string) => injector.get(AbsWorkspaceSyncService).saveProjectGeneration(path),
+      }), deps: [EnvironmentInjector] },
     { provide: CHILD_TOOL_PRESENTATION_PLATFORM,
       useFactory: (electron: ElectronService) => electron.isElectron ? 'native' : 'web', deps: [ElectronService] },
     { provide: CHILD_TOOL_PRESENTATION_OVERRIDES,

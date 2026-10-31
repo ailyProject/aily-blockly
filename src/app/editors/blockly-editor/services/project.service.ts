@@ -1,4 +1,5 @@
-import { Injectable } from '@angular/core';
+import { Inject, Injectable, Optional } from '@angular/core';
+import { BLOCKLY_PORTABLE_PROJECT_SAVE, type BlocklyPortableProjectSave } from './blockly-portable-project-save';
 import { Subscription } from 'rxjs';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyLibraryRuntimeRebuildOptions, BlocklyProjectDocument, BlocklyService } from './blockly.service';
 import { ActionService } from '@core/app-shell/public-api';
@@ -34,7 +35,8 @@ export class _ProjectService {
   constructor(
     private blocklyService: BlocklyService,
     private actionService: ActionService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    @Optional() @Inject(BLOCKLY_PORTABLE_PROJECT_SAVE) private readonly portableSave?: BlocklyPortableProjectSave,
   ) { }
 
   init() {
@@ -205,10 +207,20 @@ export class _ProjectService {
     };
   }
 
-  save(path: string): Promise<void> {
+  async save(path: string): Promise<void> {
     const context = this.captureSaveContext(path);
+    context.assertCurrent();
+    const hasPortableMap = () => window['fs'].existsSync?.(`${path}/project.abs.map.json`) === true;
+    if (hasPortableMap()) {
+      // Join the original generation FIFO/lease/journal rather than saving ABI
+      // first and leaving its ABS/map on a previous version. Never initialize a
+      // legacy mirror, overwrite a draft or fall back after coordinator failure.
+      if (!this.portableSave) return Promise.reject(new Error('Portable project save coordinator is unavailable.'));
+      return this.portableSave.save(path);
+    }
     return this.blocklyService.runProjectOperation(async () => {
       context.assertCurrent();
+      if (hasPortableMap()) throw new Error('Portable project generation changed before saving. Retry the current project.');
       const abiPath = `${path}/project.abi`;
       const expectedAbi = window['fs'].existsSync(abiPath) ? window['fs'].readFileSync(abiPath, 'utf8') : null;
       const lease = this.blocklyService.acquireWorkspaceEditLease();
@@ -223,6 +235,7 @@ export class _ProjectService {
         const document = snapshot.document;
         const assertRevision = () => {
           assertContext();
+          if (hasPortableMap()) throw new Error('Portable project generation appeared during save preparation. Retry the current project.');
           if (this.blocklyService.captureProjectSnapshot(lease).revision !== snapshot.revision) {
             throw new Error('Project state changed during save preparation; retry saving the latest revision.');
           }

@@ -101,8 +101,24 @@ export class AbsWorkspaceSyncService {
       ...(selected ? { instanceSyntax: instanceSyntax ?? { scope: 'unavailable', reason: 'no-current-committed-snapshot' } } : {}) };
   }
 
+  /** Normal GUI/API Save joins an already-versioned generation. Its original
+   * guards preserve unapplied ABS drafts; it does not initialize/rebind legacy
+   * input. Derived code is prepared once even when the saved program is equal. */
+  async saveProjectGeneration(path: string): Promise<void> {
+    if (path !== this.project.currentProjectPath) throw new AbsSyncError('ABS_BASELINE_STALE', 'Portable save belongs to a stale project.');
+    const result = await this.exportCurrentGeneration({ synchronize: true }, true);
+    if (result.publication.status !== 'COMMITTED' || result.requiresReload) {
+      throw new AbsSyncError('ABS_SAVE_PENDING', 'Portable project save is incomplete; inspect and recover the original generation before saving again.');
+    }
+    if (result.warnings.length) console.warn('Portable project generation committed with derived output warnings:', result.warnings);
+  }
+
   /** initialize must be explicit when replacing an existing unversioned ABS mirror. */
   exportGeneration(options: { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string; reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean } = {}): Promise<AbsWorkspaceSyncOutcome> {
+    return this.exportCurrentGeneration(options);
+  }
+
+  private exportCurrentGeneration(options: { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string; reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean }, normalSave = false): Promise<AbsWorkspaceSyncOutcome> {
     options = { ...options };
     if (options.synchronize && (options.initialize || options.publish === false || options.rebind || options.preserveDraft)) {
       return Promise.reject(new AbsSyncError('ABS_REQUEST_INVALID', 'Turn synchronization cannot initialize, rebind or replace a draft.'));
@@ -120,6 +136,7 @@ export class AbsWorkspaceSyncService {
       }
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
       const committed = inspection ? inspection.committed?.projection : await store.loadCommitted();
+      if (normalSave && !committed) throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'A normal portable save requires its existing committed generation; inspect project recovery.');
       if (committed && !inspection) this.assertMirrors(committed, expected, true);
       else if (!committed && (expected.map !== null || expected.abs !== null && !initialize)) {
         throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.', undefined, [], {
@@ -159,7 +176,7 @@ export class AbsWorkspaceSyncService {
         // from the current canvas. Save + projection share one lease and journal;
         // no inspection of the OLD runtime contract grants or denies this operation.
         prepared ??= await this.project.prepareSave(snapshot.document, assertCurrent);
-        if (expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
+        if (normalSave || expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
           assertCurrent();
           generated = await this.editor.prepareProjectCode(context.assertCurrent, lease);
           context.assertCurrent();

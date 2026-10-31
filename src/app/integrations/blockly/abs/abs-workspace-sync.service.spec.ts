@@ -94,7 +94,7 @@ describe('v2 actual workspace generation coordinator', () => {
         return result;
       } finally { held = false; }
     }) };
-    window['fs'] = { projectSyncStorageVersion: 2, openProjectSyncStorage: async (_path, assertCurrent) => {
+    window['fs'] = { existsSync: path => disk.has(path.replace(`${scope.projectKey}/`, '')), projectSyncStorageVersion: 2, openProjectSyncStorage: async (_path, assertCurrent) => {
       assertCurrent();
       return { read: port.read, withLock: operation => port.withLock(locked => new Promise((resolve, reject) => {
         operation(locked, result => result.ok ? resolve(result.value) : reject(Object.assign(new Error(result.error.message), { code: result.error.code })));
@@ -141,7 +141,7 @@ describe('v2 actual workspace generation coordinator', () => {
       describeCommittedAbsSyntax: jasmine.createSpy('describeCommittedAbsSyntax').and.returnValue(undefined),
     };
     Blockly.serialization.workspaces.load(seed(), editor.workspace);
-    project = new _ProjectService(editor, {} as any, {} as any); project.currentProjectPath = scope.projectKey;
+    project = new _ProjectService(editor, {} as any, {} as any, { save: path => service.saveProjectGeneration(path) }); project.currentProjectPath = scope.projectKey;
     spyOn(project, 'publishPreparedSaveOutputs').and.callFake(async (_path, _prepared, _generated, guard) => {
       expect(guard()).toBeUndefined();
     });
@@ -237,6 +237,130 @@ describe('v2 actual workspace generation coordinator', () => {
     (project.publishPreparedSaveOutputs as jasmine.Spy).and.callThrough();
     spyOn(project, 'syncUsedLibraryManifest').and.returnValue(false);
   };
+
+  it('normal Save commits a manually toggled real checkbox with ABI, ABS and map in one generation', async () => {
+    const checkbox = editor.workspace.newBlock('abs_declared_text', 'manual-checkbox');
+    trackCleanState(); await baseline();
+    checkbox.setFieldValue('FALSE', 'FLAG');
+    const directSave = spyOn(project, 'commitPreparedSave').and.throwError('Normal portable Save must use its generation journal.');
+    await project.save(scope.projectKey);
+    const saved = composeBlocklyPage(JSON.parse(disk.get('project.abi')!), 'main');
+    expect(saved.blocks.blocks.find(block => block.id === 'manual-checkbox')!.fields.FLAG).toBeFalse();
+    expect(disk.get('project.abs')).toContain('abs_declared_text("default", false)');
+    const map = JSON.parse(disk.get('project.abs.map.json')!);
+    expect(map.savedAbiHash).toBe(await hashAbsText(absJson(JSON.parse(disk.get('project.abi')!))));
+    const inspection = await service.inspectGeneration();
+    expect(inspection.diagnostics.status).withContext(JSON.stringify(inspection)).toBe('ready');
+    expect(inspection.diagnostics.workspace).toEqual({ changedFromBaseline: false, savedChangedFromBaseline: false, matchesSaved: true });
+    expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
+    expect(directSave).not.toHaveBeenCalled();
+    expect(await project.hasUnsavedChanges()).toBeFalse();
+    expect(gate.blocked).toBeFalse(); expect(await service.inspectRecovery()).toBeNull();
+  });
+
+  it('normal portable Save prepares and republishes derived output even with unchanged saved code', async () => {
+    trackCleanState(); await baseline();
+    await project.save(scope.projectKey);
+    expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
+    expect((await service.inspectGeneration()).diagnostics.status).toBe('ready');
+    expect(await project.hasUnsavedChanges()).toBeFalse();
+  });
+
+  it('normal Save preserves an unapplied ABS draft and unsaved canvas instead of committing ABI alone', async () => {
+    trackCleanState(); const base = await baseline();
+    roots().setFieldValue('manual checkbox companion edit', 'TEXT');
+    disk.set('project.abs', base.source + '\n# user draft');
+    const before = [...disk];
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SOURCE_CONFLICT' }));
+    expect([...disk]).toEqual(before); expect(await project.hasUnsavedChanges()).toBeTrue();
+    expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+    expect(gate.blocked).toBeFalse();
+  });
+
+  it('normal portable Save refuses a corrupt map without overwriting mirrors', async () => {
+    trackCleanState(); await baseline(); roots().setFieldValue('unsaved edit', 'TEXT');
+    disk.set('project.abs.map.json', '{"invalid":true}'); const before = [...disk];
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MAP_INVALID' }));
+    expect([...disk]).toEqual(before); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('normal portable Save retains external ABI edits that conflict with the current canvas', async () => {
+    trackCleanState(); await baseline();
+    const external = JSON.parse(disk.get('project.abi')!);
+    external.pages[0].content.blocks.blocks[0].fields.TEXT = 'external change';
+    disk.set('project.abi', absJson(external)); roots().setFieldValue('canvas change', 'TEXT');
+    const before = [...disk];
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DUAL_EDIT_CONFLICT' }));
+    expect([...disk]).toEqual(before); expect(roots().getFieldValue('TEXT')).toBe('canvas change');
+    expect(editor.prepareProjectCode).not.toHaveBeenCalled(); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('normal portable Save detects a concurrent draft write during code preparation', async () => {
+    trackCleanState(); const base = await baseline(); roots().setFieldValue('canvas change', 'TEXT');
+    const oldAbi = disk.get('project.abi'), oldMap = disk.get('project.abs.map.json');
+    editor.prepareProjectCode.and.callFake(async () => { disk.set('project.abs', base.source + '\n# concurrent writer'); return null; });
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DISK_CONFLICT' }));
+    expect(disk.get('project.abi')).toBe(oldAbi); expect(disk.get('project.abs.map.json')).toBe(oldMap);
+    expect(disk.get('project.abs')).toContain('# concurrent writer'); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('normal portable Save does not follow a different page selected while preparation is pending', async () => {
+    trackCleanState(); await baseline(); roots().setFieldValue('canvas change', 'TEXT'); const before = [...disk];
+    editor.prepareProjectCode.and.callFake(async () => { editor.switchPage('other'); return null; });
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_CONTEXT_STALE' }));
+    expect([...disk]).toEqual(before); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('normal portable Save preserves quarantine and explicit recovery after an ABI commit with mirror failure', async () => {
+    trackCleanState(); await baseline(); roots().setFieldValue('saved before mirror failure', 'TEXT'); failWrite = 'project.abs';
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_SAVE_PENDING' }));
+    expect(gate.blocked).toBeTrue(); expect((await service.inspectRecovery())!.abiSaved).toBeTrue();
+    expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+    const abi = disk.get('project.abi'); failWrite = undefined;
+    expect((await service.recoverGeneration())!.status).toBe('COMMITTED'); expect(disk.get('project.abi')).toBe(abi);
+    expect(disk.get('project.abs')).toContain('saved before mirror failure'); expect(gate.blocked).toBeTrue();
+  });
+
+  it('normal portable Save quarantines an unacknowledged complete commit without rolling it back or saving twice', async () => {
+    trackCleanState(); await baseline(); roots().setFieldValue('commit whose reply was lost', 'TEXT');
+    const withLock = port.withLock.bind(port); let calls = 0;
+    port.withLock = async operation => {
+      const result = await withLock(operation);
+      if (++calls === 2) throw new Error('lost normal save commit acknowledgement');
+      return result;
+    };
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWithError('lost normal save commit acknowledgement');
+    expect(gate.blocked).toBeTrue(); expect(disk.get('project.abs')).toContain('commit whose reply was lost');
+    const committed = [...disk];
+    expect(editor.restoreProjectWorkspaceSnapshot).not.toHaveBeenCalled(); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'BLOCKLY_WORKSPACE_TAINTED' }));
+    expect([...disk]).toEqual(committed); expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(await service.recoverGeneration()).toBeNull(); expect(gate.blocked).toBeTrue();
+  });
+
+  it('normal portable Save never treats an orphan public map as permission to initialize a generation', async () => {
+    trackCleanState(); disk.set('project.abs.map.json', '{"orphan":true}');
+    const before = [...disk];
+    await expectAsync(project.save(scope.projectKey)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_INITIALIZATION_REQUIRED' }));
+    expect([...disk]).toEqual(before); expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+  });
+
+  it('ordinary Save keeps the no-map legacy path and never initializes an existing draft', async () => {
+    trackCleanState(); roots().setFieldValue('legacy canvas change', 'TEXT'); disk.set('project.abs', '# existing unversioned draft');
+    const portable = spyOn(service, 'saveProjectGeneration').and.throwError('Do not initialize legacy mirrors.');
+    spyOn(project, 'commitPreparedSave').and.callFake(async (_path, prepared, expectedAbi, assertCurrent) => {
+      assertCurrent(); expect(disk.get('project.abi')).toBe(expectedAbi); disk.set('project.abi', prepared.abiText);
+      return { warnings: [] } as any;
+    });
+    await project.save(scope.projectKey);
+    expect(portable).not.toHaveBeenCalled(); expect(disk.get('project.abs')).toBe('# existing unversioned draft');
+    expect(disk.has('project.abs.map.json')).toBeFalse(); expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1); expect(await project.hasUnsavedChanges()).toBeFalse();
+  });
 
   it('validation retains the loaded clean state; a complete ABS commit acknowledges only the committed snapshot', async () => {
     trackCleanState();
