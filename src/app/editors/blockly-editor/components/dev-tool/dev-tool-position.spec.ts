@@ -1,5 +1,6 @@
 import { ElementRef } from '@angular/core';
 import { fakeAsync, tick } from '@angular/core/testing';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { DevToolComponent } from './dev-tool.component';
 
 describe('DevToolComponent position persistence', () => {
@@ -9,6 +10,7 @@ describe('DevToolComponent position persistence', () => {
     box: HTMLDivElement;
     handle: HTMLDivElement;
     config: { data: { devToolPosition: unknown }; save: jasmine.Spy };
+    diagramGenerationState: BehaviorSubject<{ architecture: object | null; projectScene: object | null }>;
   }
   const harnesses: Harness[] = [];
 
@@ -27,15 +29,25 @@ describe('DevToolComponent position persistence', () => {
       save: jasmine.createSpy('save').and.resolveTo(),
     };
     const zone = { run: (fn: () => void) => fn(), runOutsideAngular: (fn: () => void) => fn() };
+    const project = {
+      currentProjectPath: '', currentProjectPath$: new BehaviorSubject(''), boardChangeSubject: new Subject<void>(),
+      getProjectMode: jasmine.createSpy('getProjectMode').and.returnValue('blockly'),
+    };
+    const installedChildTools = { launch: jasmine.createSpy('launch').and.resolveTo({ status: 'opened' }) };
+    const simulatorProjects = { prepareCurrentProjectForSimulation: jasmine.createSpy('prepareSimulatorProject').and.resolveTo() };
+    const diagramGenerationState = new BehaviorSubject<{ architecture: object | null; projectScene: object | null }>({ architecture: null, projectScene: null });
+    const demandSession = { diagramGenerationState$: diagramGenerationState.asObservable() };
     const component = new DevToolComponent(
-      null!, null!, null!, config as any, null!, null!, null!, null!,
-      null!, null!, null!, null!, null!, null!, zone as any,
+      project as any, null!, null!, config as any, null!, null!, null!, null!,
+      null!, null!, null!, null!, zone as any, installedChildTools as any,
+      simulatorProjects as any, demandSession as any,
     );
     Object.assign(component, { devtoolBox: new ElementRef(box), dragHandle: new ElementRef(handle) });
     // Exercise the native listeners even when synthetic events cannot capture a pointer.
     spyOn(handle, 'setPointerCapture').and.throwError('Synthetic pointer');
-    const harness = { component, container, box, handle, config };
+    const harness = { component, container, box, handle, config, diagramGenerationState };
     harnesses.push(harness);
+    component.ngOnInit();
     component.ngAfterViewInit();
     tick(20);
     return harness;
@@ -60,6 +72,21 @@ describe('DevToolComponent position persistence', () => {
       harness.container.remove();
     }
   });
+
+  it('observes the injected diagram-generation port and unsubscribes it on destruction', fakeAsync(() => {
+    const harness = createHarness();
+    expect(harness.component.isArchitectureGenerating).toBeFalse();
+    expect(harness.component.isProjectSceneGenerating).toBeFalse();
+    harness.diagramGenerationState.next({ architecture: {}, projectScene: {} });
+    expect(harness.component.isArchitectureGenerating).toBeTrue();
+    expect(harness.component.isProjectSceneGenerating).toBeTrue();
+    harness.component.ngOnDestroy();
+    expect(harness.diagramGenerationState.observers.length).toBe(0);
+    harness.diagramGenerationState.next({ architecture: null, projectScene: null });
+    expect(harness.component.isArchitectureGenerating).toBeTrue();
+    expect(harness.component.isProjectSceneGenerating).toBeTrue();
+    expect(harness.config.save).not.toHaveBeenCalled();
+  }));
 
   it('centers without a valid preference and does not write during initialization', fakeAsync(() => {
     for (const saved of [undefined, { x: '12', y: 10 }, { x: -1, y: 5 }, { x: 10, y: NaN }]) {

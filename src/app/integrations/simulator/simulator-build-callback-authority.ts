@@ -323,7 +323,10 @@ export class SimulatorBuildCallbackAuthority {
       const artifact = await this.execution.reconcileAndBuild(
         structuredClone(job.request),
         {
-          diagnostic: stage => job.diagnostic(stage),
+          diagnostic: stage => {
+            // Only this authority's finally may attest actual slot release.
+            if ((stage as string) !== 'execution-settled') job.diagnostic(stage);
+          },
           report: (stage, progressPermille) => {
             if (job.controller.signal.aborted || job.terminal) return;
             this.publishProgress(
@@ -384,6 +387,9 @@ export class SimulatorBuildCallbackAuthority {
         this.activeRequestId = null;
       }
       job.releaseExecutionSlot();
+      // A projected terminal/cancel intent may precede ignored-abort work.
+      // Emit only after its original await ended and the actual slot returned.
+      job.diagnostic('execution-settled');
     }
   }
 
@@ -501,9 +507,13 @@ function createBuildDiagnostic(requestId: string): BuildJob['diagnostic'] {
     'artifact-read-started', 'artifact-read-resolved', 'terminal-completed', 'terminal-failed',
     'terminal-cancelled', 'listener-failed']);
   let remaining = 12;
+  let settledObserved = false;
   return (stage, errorCode = null, artifactId) => {
-    if (!allowedStages.has(stage) || remaining-- <= 0
-      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) return;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) return;
+    if (stage === 'execution-settled') {
+      if (settledObserved) return;
+      settledObserved = true; // One reserved row, even if regular diagnostics exhausted their 12-row budget.
+    } else if (!allowedStages.has(stage) || remaining-- <= 0) return;
     try {
       console.info('[SimulatorHost][Build]', JSON.stringify({
         event: 'simulator-host-build', requestId, stage,

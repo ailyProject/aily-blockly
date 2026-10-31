@@ -1263,14 +1263,82 @@ test('Build diagnostics retain the actual staging failure without logging error 
   authority.callbacks.subscribeProgress(progressSubscription(request), value => progress.push(value), signal);
   await waitFor(() => authority.snapshot().activeRequestId === null);
   assert.deepEqual(logs.map(value => value.stage), ['accepted', 'agent-resolved', 'builder-started',
-    'builder-resolved', 'artifact-read-started', 'terminal-failed']);
-  assert.equal(logs.at(-1).errorCode, 'artifact-staging-failed');
+    'builder-resolved', 'artifact-read-started', 'terminal-failed', 'execution-settled']);
+  assert.equal(logs.at(-2).errorCode, 'artifact-staging-failed');
+  assert.equal(logs.at(-1).errorCode, null);
   assert.equal(progress.at(-1).stage, 'failed');
   assert.equal(progress.at(-1).errorCode, 'artifact-staging-failed');
   assert.equal(authority.snapshot().activeSubscriptions, 0);
   assert(!JSON.stringify(logs).includes('secret-token'));
   assert(!JSON.stringify(logs).includes('/private/'));
   assert(logs.every(value => Object.keys(value).sort().join(',') === 'elapsedMs,errorCode,event,requestId,stage'));
+});
+
+test('execution-settled is emitted only after ignored-abort work and actual shared slot release, never from an execution observer', async t => {
+  const { SimulatorBuildCallbackAuthority, createSimulatorBuildExecutionSlot, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), gate = Promise.withResolvers();
+  const shared = createSimulatorBuildExecutionSlot(), originalInfo = console.info, logs = [];
+  let started = false, releases = 0;
+  const executionSlot = { tryAcquire() {
+    const release = shared.tryAcquire();
+    return release && (() => { release(); releases++; });
+  } };
+  console.info = (_prefix, text) => {
+    const row = JSON.parse(text), probe = shared.tryAcquire();
+    logs.push({ row, slotFreeAtObservation: probe !== null, releasesAtObservation: releases });
+    probe?.();
+  };
+  t.after(() => { console.info = originalInfo; });
+  const first = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, executionSlot, execution: {
+    async reconcileAndBuild(_request, observer) {
+      started = true;
+      observer.diagnostic('execution-settled'); // An out-of-contract port cannot forge the reserved evidence.
+      await gate.promise;
+      return artifactDescriptorFixture(Buffer.from('first-real-work'), document.graphSemanticRevision);
+    },
+  } });
+  const second = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, executionSlot, execution: {
+    async reconcileAndBuild() { return artifactDescriptorFixture(Buffer.from('second-real-work'), document.graphSemanticRevision); },
+  } });
+  const request = rebuildRequest(document), next = { ...request, requestId: `rebuild-v1-${'9'.repeat(64)}` }, signal = new AbortController().signal;
+  try {
+    first.callbacks.requestArtifact(request, signal); await waitFor(() => started);
+    const closing = first.close(); await new Promise(resolve => setImmediate(resolve));
+    assert(logs.some(entry => entry.row.stage === 'terminal-cancelled'));
+    assert.equal(logs.filter(entry => entry.row.stage === 'execution-settled').length, 0, 'Projected cancellation/observer input cannot attest original settlement.');
+    assert.equal(releases, 0);
+    assert.equal((await second.callbacks.requestArtifact(next, signal)).status, 'conflict');
+    gate.resolve(); await closing;
+    const settled = logs.filter(entry => entry.row.requestId === request.requestId && entry.row.stage === 'execution-settled');
+    assert.equal(settled.length, 1); assert.equal(settled[0].slotFreeAtObservation, true); assert.equal(settled[0].releasesAtObservation, 1);
+    assert.equal(first.snapshot().activeRequestId, null);
+    assert(!logs.some(entry => entry.row.requestId === request.requestId && entry.row.stage === 'terminal-completed'), 'Cancelled late Artifact never becomes a successful delivery.');
+    assert.equal((await second.callbacks.requestArtifact(next, signal)).status, 'accepted');
+    await waitFor(() => second.snapshot().activeRequestId === null);
+    assert.equal(logs.filter(entry => entry.row.requestId === next.requestId && entry.row.stage === 'execution-settled').length, 1);
+    await first.close(); await first.close();
+    assert.equal(logs.filter(entry => entry.row.requestId === request.requestId && entry.row.stage === 'execution-settled').length, 1, 'Repeated close never repeats execution evidence.');
+  } finally { gate.resolve(); await Promise.all([first.close(), second.close()]); }
+});
+
+test('execution settlement has one reserved metadata row after the regular diagnostic budget is exhausted', async t => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), originalInfo = console.info, logs = [];
+  console.info = (_prefix, text) => logs.push(JSON.parse(text));
+  t.after(() => { console.info = originalInfo; });
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer) {
+      for (let index = 0; index < 40; index++) observer.diagnostic('builder-resolved');
+      throw new Error('private source and credential must never enter diagnostics');
+    },
+  } });
+  t.after(() => authority.close());
+  authority.callbacks.requestArtifact(rebuildRequest(document), new AbortController().signal);
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(logs.length, 13); assert.equal(logs.at(-1).stage, 'execution-settled');
+  assert.equal(logs.filter(row => row.stage === 'execution-settled').length, 1);
+  assert(logs.every(row => Object.keys(row).sort().join(',') === 'elapsedMs,errorCode,event,requestId,stage'));
+  assert(!JSON.stringify(logs).includes('private source')); assert(!JSON.stringify(logs).includes('credential'));
 });
 
 test('a failing diagnostic sink cannot change the real Build outcome or retain the execution slot', async t => {
