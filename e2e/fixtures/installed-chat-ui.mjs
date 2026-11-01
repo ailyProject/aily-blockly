@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
+import { createInstalledChatObserver } from './installed-chat-observer.mjs'
 
 const PACKAGE = '@aily-project/subapp-aily-chat'
 const INPUT = '9a9c0b2877e6bcffe53b36d909b644d3d312c6e533d797f87c577ee87802b230'
@@ -211,16 +212,7 @@ export async function assertInstalledChatLoaded(page, { installedRoot, output, e
   const health = await healthResponse.json()
   assert.equal(health.buildEvidence?.inputHash, expectedInputHash)
   assert.equal(health.buildEvidence?.outputHash, expectedOutputHash)
-  const e2e = async (method, fields = {}) => {
-    const response = await fetch(new URL('/api/agent/e2e', url), { method: 'POST',
-      headers: { authorization: `Bearer ${url.searchParams.get('token')}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ protocol: 'aily-agent-e2e', version: 4, method, ...fields }), signal: AbortSignal.timeout(15000) })
-    assert.equal(response.status, 200)
-    const value = await response.json()
-    assert.equal(value.ok, true)
-    assert.equal(value.method, method)
-    return value.result
-  }
+  const e2e = createInstalledChatObserver(url)
   const sessions = await e2e('session.list')
   const html = await fs.readFile(path.join(installedRoot, 'ui/index.html'), 'utf8')
   const entry = /<script type="module"[^>]+src="\.\/([^"]+)"/.exec(html)?.[1]

@@ -65,6 +65,348 @@ test('real upstream streams survive two downstream faults and duplicate steps ne
   }
 })
 
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+async function eventually(predicate) {
+  const deadline = Date.now() + 2000
+  while (!predicate() && Date.now() < deadline) await pause(5)
+  assert.equal(predicate(), true, 'Expected proxy observation did not arrive')
+}
+
+async function strictThinkingFixture({ status = 'running', streamState = 'open', stateDelayMs = 0,
+  canonicalSequenceLag = false, stateStatus = 200, stateReplies = [], requireResumedThinkingSpan = true } = {}) {
+  const interactionId = 'itx_strict_thinking', operationId = `${interactionId}:0`, threshold = 35
+  const clients = new Set(), frames = [], readings = []
+  const metrics = { posts: 0, stateReads: 0, eventReads: 0, producerCloses: 0 }
+  let sequence = 0
+  const emit = (type, rest = {}) => {
+    const event = { type, interactionId, operationId, operationStepIndex: 0,
+      seq: ++sequence, ...rest }
+    sequence = Math.max(sequence, event.seq)
+    frames.push(event)
+    for (const client of clients) client.write(`data: ${JSON.stringify(event)}\n\n`)
+    return event
+  }
+  const upstream = http.createServer(async (request, response) => {
+    request.resume()
+    const url = new URL(request.url, 'http://localhost')
+    if (request.method === 'POST') {
+      metrics.posts++
+      response.writeHead(200, { 'content-type': 'text/event-stream' }); response.flushHeaders()
+      clients.add(response)
+      response.once('close', () => { clients.delete(response); metrics.producerCloses++ })
+      emit('thinking_delta', { text: 'private initial thinking' }); return
+    }
+    if (url.pathname.endsWith('/state')) {
+      metrics.stateReads++
+      const planned = stateReplies.shift() ?? {}
+      if (planned.wait) await planned.wait
+      if (stateDelayMs) await pause(stateDelayMs)
+      response.writeHead(stateStatus, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ interactionId, operationId, status, streamState,
+        lastSequence: planned.lastSequence ?? (canonicalSequenceLag ? 1 : sequence) })); return
+    }
+    metrics.eventReads++
+    response.writeHead(200, { 'content-type': 'text/event-stream' }); response.flushHeaders()
+    const after = Number(url.searchParams.get('after'))
+    for (const event of frames) if (event.seq > after) response.write(`data: ${JSON.stringify(event)}\n\n`)
+    clients.add(response); response.once('close', () => clients.delete(response))
+  })
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  const proxy = await createOnlineOperationFaultProxy({ upstreamOrigin: `http://127.0.0.1:${upstream.address().port}`,
+    mode: 'live-disconnect', armNow: true, requireResumedThinkingSpan, secondOnThinkingSpanAfterMs: threshold,
+    secondOnAnyProgressAfterMs: 0 })
+  const consume = async response => { try { await (await response).text() } catch { /* Faults are intentional. */ } }
+  await consume(fetch(proxy.origin + '/api/v3/interactions', { method: 'POST', body: '{}' }))
+  assert.equal(proxy.snapshot().faults.length, 1)
+  const stateUrl = `${proxy.origin}/api/v3/interactions/${interactionId}/operations/0/state`
+  const readState = async () => (await fetch(stateUrl)).json()
+  const resume = async (after = 1) => {
+    const response = await fetch(stateUrl.replace('/state', `/events?after=${after}`))
+    const reading = consume(Promise.resolve(response)); readings.push(reading)
+    return reading
+  }
+  const freshSequence = () => proxy.snapshot().operations.find(item => item.step === 0).maxResumedSequence
+  return { proxy, metrics, emit, threshold, readState, resume, freshSequence,
+    async close() {
+      await proxy.close()
+      for (const client of clients) client.end()
+      upstream.closeAllConnections()
+      await new Promise(resolve => upstream.close(resolve))
+      await Promise.all(readings)
+    } }
+}
+
+test('strict thinking proof drops only after fresh same-operation thinking spans the threshold', { timeout: 10000 }, async () => {
+  const f = await strictThinkingFixture()
+  try {
+    await f.readState()
+    const resumed = f.resume()
+    await eventually(() => f.metrics.eventReads === 1)
+    const first = f.emit('thinking_delta', { text: 'private first resumed thinking' })
+    await eventually(() => f.freshSequence() === first.seq)
+    await pause(f.threshold + 25)
+    const last = f.emit('thinking_delta', { text: 'private last resumed thinking' })
+    await resumed
+    const proof = f.proxy.snapshot(), fault = proof.faults[1]
+    assert.equal(proof.requireResumedThinkingSpan, true)
+    assert.equal(proof.secondDisconnectCovered, true)
+    assert.equal(proof.strictThinkingCovered, true)
+    assert.equal(fault.kind, 'second-live-disconnect')
+    assert.equal(fault.strictThinking, true)
+    assert.equal(fault.watermark, 1)
+    assert.equal(fault.watermarkSource, 'canonical-state')
+    assert.equal(fault.firstThinkingSequence, first.seq)
+    assert.equal(fault.lastThinkingSequence, last.seq)
+    assert.equal(fault.sequence, last.seq)
+    assert.equal(fault.resumedThinkingEvents, 2)
+    assert.equal(fault.resumedThinkingDurationMs, fault.lastThinkingAt - fault.firstThinkingAt)
+    assert.ok(fault.resumedThinkingDurationMs > f.threshold)
+    assert.equal(fault.canonicalStatus, 'running'); assert.equal(fault.canonicalStreamState, 'open')
+    assert.ok(fault.canonicalSequence >= last.seq)
+    assert.equal(f.metrics.posts, 1); assert.equal(f.metrics.producerCloses, 0)
+    assert.equal(proof.duplicatePosts, 0); assert.deepEqual(proof.failures, [])
+    assert.doesNotMatch(JSON.stringify(proof), /private.*thinking/)
+  } finally { await f.close() }
+})
+
+test('strict thinking proof ignores wall time, markdown, heartbeat and empty thinking', { timeout: 10000 }, async () => {
+  const f = await strictThinkingFixture()
+  try {
+    await f.readState(); void f.resume()
+    await eventually(() => f.metrics.eventReads === 1)
+    const first = f.emit('thinking_delta', { text: 'one genuine resumed event' })
+    await eventually(() => f.freshSequence() === first.seq)
+    await pause(f.threshold + 25)
+    assert.equal(f.proxy.snapshot().faults.length, 1, 'Waiting alone cannot prove thinking')
+    f.emit('markdown_delta', { text: 'real markdown is not thinking' })
+    f.emit('heartbeat')
+    const empty = f.emit('thinking_delta', { text: ' \t\n' })
+    await eventually(() => f.freshSequence() === empty.seq)
+    await pause(10)
+    assert.equal(f.proxy.snapshot().faults.length, 1)
+    assert.equal(f.metrics.stateReads, 1, 'No canonical fault check is attempted without strict thinking proof')
+  } finally { await f.close() }
+})
+
+test('strict thinking proof rejects duplicate, decreasing and cross-operation sequences', { timeout: 10000 }, async () => {
+  const f = await strictThinkingFixture()
+  try {
+    await f.readState(); void f.resume()
+    await eventually(() => f.metrics.eventReads === 1)
+    const first = f.emit('thinking_delta', { text: 'one fresh event' })
+    await eventually(() => f.freshSequence() === first.seq)
+    await pause(f.threshold + 25)
+    f.emit('thinking_delta', { seq: first.seq, text: 'duplicate cannot extend measured thinking' })
+    f.emit('thinking_delta', { seq: 1, text: 'old cached thinking cannot extend measured thinking' })
+    f.emit('thinking_delta', { operationId: 'itx_other:0', interactionId: 'itx_other', text: 'foreign thinking' })
+    f.emit('thinking_delta', { operationId: 'itx_strict_thinking:1', operationStepIndex: 1, text: 'another step' })
+    const high = f.emit('heartbeat')
+    await eventually(() => f.freshSequence() === high.seq)
+    f.emit('thinking_delta', { seq: high.seq - 1, text: 'decreasing sequence' })
+    await pause(15)
+    assert.equal(f.proxy.snapshot().faults.length, 1)
+    assert.equal(f.metrics.stateReads, 1)
+  } finally { await f.close() }
+})
+
+test('strict thinking proof excludes canonical-cache replay and duplicated observation streams', { timeout: 10000 }, async () => {
+  const f = await strictThinkingFixture()
+  try {
+    f.emit('thinking_delta', { text: 'cached thinking before canonical watermark' })
+    const cached = f.emit('thinking_delta', { text: 'more cached thinking' })
+    await f.readState(); void f.resume(1)
+    await eventually(() => f.metrics.eventReads === 1)
+    await pause(f.threshold + 25)
+    f.emit('thinking_delta', { seq: cached.seq, text: 'delayed cache duplicate' })
+    const first = f.emit('thinking_delta', { text: 'first genuinely fresh thinking' })
+    await eventually(() => f.freshSequence() === first.seq)
+    void f.resume(1)
+    await eventually(() => f.metrics.eventReads === 2)
+    await pause(10)
+    assert.equal(f.proxy.snapshot().faults.length, 1, 'Replay and a second consumer cannot manufacture thinking duration')
+    assert.equal(f.metrics.stateReads, 1)
+  } finally { await f.close() }
+})
+
+for (const initialState of ['missing', 'non-200']) {
+  test(`strict thinking proof cannot use an observed-stream fallback when canonical state is ${initialState}`, { timeout: 10000 }, async () => {
+    const f = await strictThinkingFixture({ stateStatus: initialState === 'non-200' ? 410 : 200 })
+    try {
+      if (initialState === 'non-200') await f.readState()
+      void f.resume()
+      await eventually(() => f.metrics.eventReads === 1)
+      f.emit('thinking_delta', { text: 'a real thinking event without a proven canonical baseline' })
+      await pause(f.threshold + 25)
+      f.emit('thinking_delta', { text: 'another real thinking event still lacks a canonical baseline' })
+      await pause(15)
+      const proof = f.proxy.snapshot(), operation = proof.operations.find(item => item.step === 0)
+      assert.equal(proof.faults.length, 1)
+      assert.equal(proof.strictThinkingCovered, false)
+      assert.equal(operation.lastCanonicalSequence, undefined)
+      assert.equal(operation.maxResumedSequence, 0, 'Strict evidence cannot accumulate before a successful canonical observation')
+      assert.equal(f.metrics.stateReads, initialState === 'non-200' ? 1 : 0)
+    } finally { await f.close() }
+  })
+}
+
+test('legacy non-strict live acceptance keeps its observed-stream fallback and labels that source', { timeout: 10000 }, async () => {
+  const f = await strictThinkingFixture({ requireResumedThinkingSpan: false })
+  try {
+    const resumed = f.resume()
+    await eventually(() => f.metrics.eventReads === 1)
+    f.emit('thinking_delta', { text: 'legacy progress without an initial canonical state read' })
+    await resumed
+    const proof = f.proxy.snapshot()
+    assert.equal(proof.secondDisconnectCovered, true)
+    assert.equal(proof.strictThinkingCovered, false)
+    assert.equal(proof.faults[1].watermarkSource, 'observed-stream')
+    assert.equal(proof.faults[1].strictThinking, false)
+    assert.equal(proof.faults[1].watermark, 1)
+  } finally { await f.close() }
+})
+
+test('a late older canonical response cannot lower the next resumed thinking watermark', { timeout: 10000 }, async () => {
+  let releaseOlder
+  const olderReply = new Promise(resolve => { releaseOlder = resolve })
+  const f = await strictThinkingFixture({ stateReplies: [{ wait: olderReply, lastSequence: 1 }] })
+  try {
+    const slow = f.readState()
+    await eventually(() => f.metrics.stateReads === 1)
+    const cached = f.emit('thinking_delta', { seq: 4, text: 'progress before the fresh canonical observation' })
+    const fresh = await f.readState()
+    assert.equal(fresh.lastSequence, cached.seq)
+    assert.equal(f.proxy.snapshot().operations.find(item => item.step === 0).lastCanonicalSequence, cached.seq)
+    releaseOlder()
+    assert.equal((await slow).lastSequence, 1, 'The older real upstream response is forwarded unchanged')
+    assert.equal(f.proxy.snapshot().operations.find(item => item.step === 0).lastCanonicalSequence, cached.seq)
+    const resumed = f.resume(1)
+    await eventually(() => f.metrics.eventReads === 1)
+    const first = f.emit('thinking_delta', { text: 'first thinking after the non-regressed canonical watermark' })
+    await eventually(() => f.freshSequence() === first.seq)
+    await pause(f.threshold + 25)
+    const last = f.emit('thinking_delta', { text: 'last thinking after the non-regressed canonical watermark' })
+    await resumed
+    const fault = f.proxy.snapshot().faults[1]
+    assert.equal(fault.watermark, cached.seq)
+    assert.equal(fault.watermarkSource, 'canonical-state')
+    assert.equal(fault.firstThinkingSequence, first.seq)
+    assert.equal(fault.lastThinkingSequence, last.seq)
+    assert.equal(fault.resumedThinkingEvents, 2)
+    assert.ok(fault.resumedThinkingDurationMs > f.threshold)
+  } finally { releaseOlder(); await f.close() }
+})
+
+for (const state of [
+  { status: 'waiting_tool_results', streamState: 'open' },
+  { status: 'running', streamState: 'done' },
+  { status: 'running', streamState: 'registered' },
+  { status: 'running', streamState: 'open', canonicalSequenceLag: true },
+]) {
+  test(`strict thinking proof requires current running/open canonical progress: ${JSON.stringify(state)}`, { timeout: 10000 }, async () => {
+    const f = await strictThinkingFixture(state)
+    try {
+      await f.readState(); void f.resume()
+      await eventually(() => f.metrics.eventReads === 1)
+      const first = f.emit('thinking_delta', { text: 'first fresh thinking' })
+      await eventually(() => f.freshSequence() === first.seq)
+      await pause(f.threshold + 25)
+      f.emit('thinking_delta', { text: 'second fresh thinking' })
+      await eventually(() => f.metrics.stateReads >= 2)
+      await pause(15)
+      assert.equal(f.proxy.snapshot().faults.length, 1)
+    } finally { await f.close() }
+  })
+}
+
+test('strict thinking proof cannot disconnect an operation that terminates during canonical checking', { timeout: 10000 }, async () => {
+  const f = await strictThinkingFixture({ stateDelayMs: 35 })
+  try {
+    await f.readState(); void f.resume()
+    await eventually(() => f.metrics.eventReads === 1)
+    const first = f.emit('thinking_delta', { text: 'first fresh thinking' })
+    await eventually(() => f.freshSequence() === first.seq)
+    await pause(f.threshold + 25)
+    f.emit('thinking_delta', { text: 'second fresh thinking' })
+    await eventually(() => f.metrics.stateReads >= 2)
+    f.emit('turn_end')
+    await pause(60)
+    assert.equal(f.proxy.snapshot().faults.length, 1)
+  } finally { await f.close() }
+})
+
+test('first-thinking selection skips a short operation and waits for a later natural thinking span', { timeout: 10000 }, async () => {
+  const interactionId = 'itx_first_thinking_window', threshold = 80
+  const clients = new Map(), sequences = new Map()
+  let posts = 0, producerCloses = 0
+  const emit = (step, type, rest = {}) => {
+    const event = { type, interactionId, operationId: `${interactionId}:${step}`, operationStepIndex: step,
+      seq: (sequences.get(step) ?? 0) + 1, ...rest }
+    sequences.set(step, Math.max(sequences.get(step) ?? 0, event.seq))
+    clients.get(step)?.write(`data: ${JSON.stringify(event)}\n\n`)
+    return event
+  }
+  const upstream = http.createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    assert.equal(request.method, 'POST')
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+    const step = request.url === '/api/v3/interactions' ? 0 : body.stepIndex
+    posts++
+    response.writeHead(200, { 'content-type': 'text/event-stream' }); response.flushHeaders()
+    clients.set(step, response)
+    response.once('close', () => { clients.delete(step); producerCloses++ })
+    emit(step, 'thinking_delta', { text: 'private natural initial reasoning' })
+  })
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  const proxy = await createOnlineOperationFaultProxy({ upstreamOrigin: `http://127.0.0.1:${upstream.address().port}`,
+    armNow: true, requireResumedThinkingSpan: true, firstDisconnectAfterThinkingMs: threshold })
+  const consume = async response => { try { await response.text() } catch { /* The selected long operation is cut. */ } }
+  try {
+    const short = await fetch(proxy.origin + '/api/v3/interactions', { method: 'POST', body: '{}' })
+    const shortReading = consume(short)
+    const second = emit(0, 'thinking_delta', { text: 'short planning is still below the threshold' })
+    await eventually(() => proxy.snapshot().operations.find(item => item.step === 0)?.thinkingEvents === 2)
+    assert.equal(proxy.snapshot().faults.length, 0)
+    assert.equal(proxy.snapshot().selectedOperation, undefined)
+    await pause(threshold + 25)
+    emit(0, 'thinking_delta', { seq: second.seq, text: 'a delayed duplicate is not new thinking' })
+    emit(0, 'markdown_delta', { text: 'a later short-stage answer is not thinking' })
+    emit(0, 'thinking_delta', { text: ' \t' })
+    await pause(10)
+    assert.equal(proxy.snapshot().faults.length, 0, 'Wall time, replay and answer output cannot select this short stage')
+    emit(0, 'turn_end'); clients.get(0).end()
+    await shortReading
+    assert.equal(proxy.snapshot().selectedOperation, undefined)
+
+    const long = await fetch(`${proxy.origin}/api/v3/interactions/${interactionId}/steps`,
+      { method: 'POST', body: JSON.stringify({ stepIndex: 1 }) })
+    const longReading = consume(long)
+    await pause(threshold + 25)
+    const last = emit(1, 'thinking_delta', { text: 'a genuinely new long-stage thinking event' })
+    await longReading
+    const proof = proxy.snapshot(), fault = proof.faults[0]
+    assert.equal(proof.firstDisconnectAfterThinkingMs, threshold)
+    assert.equal(proof.selectedOperation, `${interactionId}:1`)
+    assert.equal(proof.faults.length, 1)
+    assert.equal(fault.kind, 'first-thinking-disconnect')
+    assert.equal(fault.originalFirstThinkingSequence, 1)
+    assert.equal(fault.originalLastThinkingSequence, last.seq)
+    assert.equal(fault.originalThinkingEvents, 2)
+    assert.equal(fault.originalThinkingDurationMs, fault.originalLastThinkingAt - fault.originalFirstThinkingAt)
+    assert.ok(fault.originalThinkingDurationMs > threshold)
+    assert.equal(fault.resumedThinkingEvents, 0)
+    assert.equal(fault.resumedThinkingDurationMs, 0, 'Original thinking must not inflate resumed evidence')
+    assert.equal(posts, 2); assert.equal(producerCloses, 1, 'Only the naturally completed short producer has closed')
+    assert.deepEqual(proof.failures, [])
+    assert.doesNotMatch(JSON.stringify(proof), /private natural|short planning|delayed duplicate|long-stage thinking/)
+  } finally {
+    await proxy.close()
+    for (const response of clients.values()) response.end()
+    upstream.closeAllConnections()
+    await new Promise(resolve => upstream.close(resolve))
+  }
+})
+
 const hash = value => createHash('sha256').update(value).digest('hex')
 
 async function unclaimedFixture() {

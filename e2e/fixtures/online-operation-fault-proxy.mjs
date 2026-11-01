@@ -9,6 +9,29 @@ const DIGEST = /^[a-f0-9]{64}$/
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
 const semantic = event => ['thinking_delta', 'markdown_delta', 'text_delta'].includes(event.type)
   && typeof event.text === 'string' && event.text.trim().length > 0
+const thinkingProof = window => ({
+  watermark: window.watermark,
+  watermarkSource: window.watermarkSource,
+  firstThinkingSequence: window.firstSequence ?? null,
+  lastThinkingSequence: window.lastSequence ?? null,
+  firstThinkingAt: window.firstAt ?? null,
+  lastThinkingAt: window.lastAt ?? null,
+  resumedThinkingDurationMs: window.firstAt === undefined ? 0 : window.lastAt - window.firstAt,
+  resumedThinkingEvents: window.count,
+})
+const originalThinkingProof = window => ({
+  originalFirstThinkingSequence: window.firstSequence ?? null,
+  originalLastThinkingSequence: window.lastSequence ?? null,
+  originalFirstThinkingAt: window.firstAt ?? null,
+  originalLastThinkingAt: window.lastAt ?? null,
+  originalThinkingDurationMs: window.firstAt === undefined ? 0 : window.lastAt - window.firstAt,
+  originalThinkingEvents: window.count,
+})
+const observeThinking = (window, event, at) => {
+  if (event.type !== 'thinking_delta' || !semantic(event)) return
+  window.firstSequence ??= event.seq; window.firstAt ??= at
+  window.lastSequence = event.seq; window.lastAt = at; window.count++
+}
 const stripHopHeaders = headers => {
   const clean = { ...headers }
   for (const key of ['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -22,12 +45,19 @@ const stripHopHeaders = headers => {
  * Credentials, request bodies and output text never enter snapshot(). */
 export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfterToolName = 'edit',
   armAfterToolNames = [armAfterToolName], armNow = false, secondOnAnyProgressAfterMs = 32_000,
+  requireResumedThinkingSpan = false, secondOnThinkingSpanAfterMs = 32_000,
+  firstDisconnectAfterThinkingMs = 0,
   mode = 'live-disconnect' }) {
   const base = new URL(upstreamOrigin)
   assert.ok(['http:', 'https:'].includes(base.protocol) && base.pathname === '/'
     && !base.username && !base.password && !base.search && !base.hash)
   assert.ok(Number.isFinite(secondOnAnyProgressAfterMs) && secondOnAnyProgressAfterMs >= 0)
+  assert.equal(typeof requireResumedThinkingSpan, 'boolean')
+  assert.ok(Number.isFinite(secondOnThinkingSpanAfterMs) && secondOnThinkingSpanAfterMs >= 0)
+  assert.ok(Number.isFinite(firstDisconnectAfterThinkingMs) && firstDisconnectAfterThinkingMs >= 0)
   assert.ok(['live-disconnect', 'unclaimed-retry-ack'].includes(mode))
+  assert.ok(!requireResumedThinkingSpan || mode === 'live-disconnect', 'Strict thinking proof belongs only to live-stream acceptance')
+  assert.ok(firstDisconnectAfterThinkingMs === 0 || mode === 'live-disconnect', 'First-thinking selection belongs only to live-stream acceptance')
   assert.ok(Array.isArray(armAfterToolNames) && armAfterToolNames.length > 0
     && armAfterToolNames.every(name => typeof name === 'string' && name.length > 0))
   assert.ok(mode !== 'unclaimed-retry-ack' || !armNow, 'Unclaimed-step acceptance must follow a real completed tool')
@@ -37,7 +67,7 @@ export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfter
   const getOperation = (id, step) => {
     const key = `${id}:${step}`
     if (!operations.has(key)) operations.set(key, { id, step, posts: 0, forwardedPosts: 0, stateReads: 0, eventReads: 0,
-      maxSequence: 0, thinkingEvents: 0, semanticEvents: 0, toolCalls: [], terminal: false })
+      maxSequence: 0, maxResumedSequence: 0, thinkingEvents: 0, semanticEvents: 0, toolCalls: [], terminal: false })
     return operations.get(key)
   }
   const open = (url, method, headers, callback) => {
@@ -191,15 +221,23 @@ export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfter
         let buffer = '', stateBody = '', dropped = false, checking = false
         const decoder = new StringDecoder('utf8')
         const resumed = observe?.[3] === 'events'
-        const watermark = operation?.lastCanonicalSequence ?? operation?.maxSequence ?? 0
-        let resumedLiveAt, resumedThinkingAt, resumedThinkingEvents = 0
-        const drop = (kind, event, state) => {
+        const originalPost = request.method === 'POST' && (create || !!stepMatch)
+        const hasCanonicalWatermark = Number.isSafeInteger(operation?.lastCanonicalSequence)
+          && operation.lastCanonicalSequence >= 0
+        const watermark = hasCanonicalWatermark ? operation.lastCanonicalSequence : operation?.maxSequence ?? 0
+        const watermarkSource = !resumed ? 'original-post' : hasCanonicalWatermark ? 'canonical-state' : 'observed-stream'
+        const thinkingWindow = { watermark, watermarkSource, count: 0 }
+        const originalThinkingWindow = { count: 0 }
+        let resumedLiveAt, originalMaxSequence = 0
+        const drop = (kind, event, state, measuredThinking = thinkingProof(thinkingWindow), extra = {}) => {
           if (dropped || response.destroyed || faults.length >= 2) return
           dropped = true
           faults.push({ kind, operationId: `${operation.id}:${operation.step}`, step: operation.step,
             sequence: event.seq, at: Date.now(), resumedLiveDurationMs: resumedLiveAt === undefined ? 0 : Date.now() - resumedLiveAt,
-            resumedThinkingDurationMs: resumedThinkingAt === undefined ? 0 : Date.now() - resumedThinkingAt,
-            resumedThinkingEvents, ...(state ? { canonicalStatus: state.status, canonicalSequence: state.lastSequence } : {}) })
+            ...measuredThinking, strictThinking: requireResumedThinkingSpan,
+            ...extra,
+            ...(state ? { canonicalStatus: state.status, canonicalStreamState: state.streamState,
+              canonicalSequence: state.lastSequence } : {}) })
           response.destroy()
         }
         const onEvent = event => {
@@ -211,6 +249,8 @@ export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfter
           if (operation.step !== event.operationStepIndex) return
           if (create && operation.posts === 0) { operation.posts = 1; operation.forwardedPosts = 1 }
           operation.maxSequence = Math.max(operation.maxSequence, event.seq)
+          const freshOriginal = originalPost && event.seq > originalMaxSequence
+          if (freshOriginal) originalMaxSequence = event.seq
           if (awaitRetryBegin && event.type === 'turn_begin' && event.seq >= 1) {
             awaitRetryBegin = false
             unclaimed.lostRetryHeaders = true
@@ -224,24 +264,46 @@ export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfter
             if (!operation.toolCalls.some(item => item.idHash === idHash)) operation.toolCalls.push({ name, idHash })
           }
           if (event.type === 'turn_end') operation.terminal = true
+          // Only a resumed stream can contribute fresh evidence. The original
+          // dropped producer is still consumed, so its duplicate events must
+          // not count again; multiple observation streams share one high-water
+          // mark while each connection has its own measured thinking window.
+          const freshResumed = resumed && selectedOperation === `${operation.id}:${operation.step}`
+            && faults.length === 1 && (!requireResumedThinkingSpan || hasCanonicalWatermark)
+            && event.seq > watermark && event.seq > operation.maxResumedSequence
+          if (freshResumed) operation.maxResumedSequence = event.seq
           if (!semantic(event)) return
           operation.semanticEvents++
           if (event.type === 'thinking_delta') operation.thinkingEvents++
           if (dropped || response.destroyed || operation.terminal) return
           if (mode !== 'live-disconnect') return
-          if (!selectedOperation && armed && event.type === 'thinking_delta' && faults.length === 0) {
+          if (!selectedOperation && armed && originalPost && freshOriginal
+            && event.type === 'thinking_delta' && faults.length === 0) {
+            observeThinking(originalThinkingWindow, event, performance.now())
+            const original = originalThinkingProof(originalThinkingWindow)
+            if (firstDisconnectAfterThinkingMs > 0 && (original.originalThinkingEvents < 2
+              || original.originalThinkingDurationMs <= firstDisconnectAfterThinkingMs)) return
             selectedOperation = `${operation.id}:${operation.step}`
-            drop('first-thinking-disconnect', event); return
+            drop('first-thinking-disconnect', event, undefined, undefined, original); return
           }
           if (!resumed || selectedOperation !== `${operation.id}:${operation.step}` || faults.length !== 1
             || event.seq <= watermark) return
           resumedLiveAt ??= Date.now()
-          if (event.type === 'thinking_delta') { resumedThinkingAt ??= Date.now(); resumedThinkingEvents++ }
-          if (Date.now() - resumedLiveAt < secondOnAnyProgressAfterMs || checking) return
+          // A monotonic local clock measures event-to-event duration, not time
+          // since an old event or the system clock's later wall-time correction.
+          if (freshResumed) observeThinking(thinkingWindow, event, performance.now())
+          const measuredThinking = thinkingProof(thinkingWindow)
+          if (requireResumedThinkingSpan) {
+            if (!freshResumed || event.type !== 'thinking_delta' || measuredThinking.resumedThinkingEvents < 2
+              || measuredThinking.resumedThinkingDurationMs <= secondOnThinkingSpanAfterMs) return
+          } else if (Date.now() - resumedLiveAt < secondOnAnyProgressAfterMs) return
+          if (checking) return
           checking = true
           void canonicalState(operation, request.headers).then(state => {
-            if (state?.status === 'running' && !operation.terminal && !response.destroyed) {
-              drop('second-live-disconnect', event, state)
+            if (state?.status === 'running' && !operation.terminal && !response.destroyed
+              && (!requireResumedThinkingSpan || (state.streamState === 'open'
+                && Number.isSafeInteger(state.lastSequence) && state.lastSequence >= event.seq))) {
+              drop('second-live-disconnect', event, state, measuredThinking)
             }
           }).finally(() => { checking = false })
         }
@@ -274,8 +336,11 @@ export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfter
         reply.once('end', () => {
           if (operation && observe?.[3] === 'state') try {
             const state = JSON.parse(stateBody)
-            if (state.interactionId === operation.id && state.operationId === `${operation.id}:${operation.step}`
-              && Number.isSafeInteger(state.lastSequence)) operation.lastCanonicalSequence = state.lastSequence
+            if (reply.statusCode === 200 && state.interactionId === operation.id
+              && state.operationId === `${operation.id}:${operation.step}`
+              && Number.isSafeInteger(state.lastSequence) && state.lastSequence >= 0) {
+              operation.lastCanonicalSequence = Math.max(operation.lastCanonicalSequence ?? 0, state.lastSequence)
+            }
             if (reply.statusCode === 200) observeGrant(state, operation)
           } catch { /* Real client validates the unchanged state response. */ }
           if (!dropped && !response.destroyed) {
@@ -306,8 +371,12 @@ export async function createOnlineOperationFaultProxy({ upstreamOrigin, armAfter
   return { origin: `http://127.0.0.1:${server.address().port}`,
     arm() { armed = true },
     snapshot: () => ({ mode, transparentRealUpstream: true, syntheticOutput: false, interactionId, selectedOperation,
+      firstDisconnectAfterThinkingMs,
+      requireResumedThinkingSpan, ...(requireResumedThinkingSpan ? { secondOnThinkingSpanAfterMs } : {}),
       armed, createCount, duplicatePosts, interruptCount, faults: structuredClone(faults),
       secondDisconnectCovered: mode === 'live-disconnect' && faults.length === 2,
+      strictThinkingCovered: mode === 'live-disconnect' && requireResumedThinkingSpan && faults.length === 2
+        && faults[1].resumedThinkingEvents >= 2 && faults[1].resumedThinkingDurationMs > secondOnThinkingSpanAfterMs,
       unclaimedRecoveryCovered: mode === 'unclaimed-retry-ack' && unclaimed?.retryForwarded === true
         && unclaimed?.lostRetryHeaders === true && unclaimed?.notClaimedObservations > 0,
       ...(unclaimed ? { unclaimed: { operationId: unclaimed.operationId, step: unclaimed.step,

@@ -7,6 +7,7 @@ import { _electron } from '@playwright/test'
 import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { prepareInstalledChatProfile, assertInstalledChatLoaded } from '../fixtures/installed-chat-ui.mjs'
 import { createOnlineOperationFaultProxy } from '../fixtures/online-operation-fault-proxy.mjs'
+import { createReadLineCoverage, grepCoversSourceLines } from '../fixtures/read-line-coverage.mjs'
 
 // Explicit paid acceptance only. Real installed UI/provider, real upstream
 // model, native tools and compiler; the proxy never manufactures model output.
@@ -14,7 +15,7 @@ import { createOnlineOperationFaultProxy } from '../fixtures/online-operation-fa
 // {apiBase, authFile, configFile, model?, thinkingLevel?}. authFile contains only
 // the test account's access_token; configFile selects that same API region.
 // AILY_ONLINE_FAULT_MODE independently selects unclaimed-retry-ack (default)
-// or live-disconnect (two real stream breaks separated by >=32s live output).
+// or live-disconnect (two real breaks with >32s of fresh resumed thinking).
 assert.equal(process.env.AILY_ONLINE_ACCEPTANCE, '1')
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const appDataSource = 'C:/Users/LENOVO/AppData/Local/aily-project'
@@ -28,7 +29,8 @@ const output = path.join(outputRoot, path.basename(suite))
 const reuseProject = process.env.AILY_ONLINE_PROJECT
 const project = path.resolve(reuseProject || path.join(suite, 'project')), appData = path.join(suite, 'appdata')
 const scenario = process.env.AILY_ONLINE_SCENARIO ?? 'new-counter'
-assert.ok(['new-counter', 'counter-boundary'].includes(scenario))
+assert.ok(['new-counter', 'counter-boundary', 'review-only'].includes(scenario))
+const readOnly = scenario === 'review-only'
 const home = path.join(suite, 'home'), agentProfile = path.join(suite, 'agent-profile')
 const agentTemp = path.join(suite, 'agent-temp')
 const seed = path.join(testRoot, 'archive-user-project/esp32-c3-HANTAI')
@@ -56,7 +58,10 @@ const inside = (root, value) => { const relative = path.relative(root, value)
 const evidence = { ok: false, onlineLlm: false, localSyntheticModel: false, hardwareUsed: false,
   simulatorUsed: false, userProjectsModified: false, backendDeployed: false, mode, scenario, suite, project, tools: [] }
 let app, renderer, proxy, page, loaded, hostPid, sessionId, baseline, baselineDocument, snapshot, installedRoot, installedEvidence, verifyPortableBuild
-let sourceHash
+let sourceHash, baselineAbiBytes, baselineSketchBytes, baselineAbsProgram, absCoverage
+const programOf = value => String(value).split('\n# @project-state:')[0]
+const requiredReads = new Set(readOnly ? ['project.abs', 'abs-syntax.md', 'sketch.ino'] : ['abs-syntax.md'])
+const completedReads = new Set()
 const protectedFiles = new Map()
 const phase = value => { evidence.phase = value; console.log(new Date().toISOString(), 'PHASE=' + value) }
 async function treeHash(root) {
@@ -138,7 +143,8 @@ try {
     }
   }
   proxy = await createOnlineOperationFaultProxy({ upstreamOrigin: apiUrl.origin, mode,
-    armNow: mode === 'live-disconnect', armAfterToolNames: ['edit', 'write'] })
+    armNow: false, armAfterToolNames: ['edit', 'write'], requireResumedThinkingSpan: mode === 'live-disconnect',
+    firstDisconnectAfterThinkingMs: mode === 'live-disconnect' ? 5000 : 0 })
   const profile = await prepareInstalledChatProfile({ appData, installedRoot, apiBase: proxy.origin,
     baseConfigPath: configFile, token: auth.access_token })
   // Keep sensitive credentials inaccessible to model-visible tools. Mutating
@@ -153,6 +159,8 @@ try {
       [dailyAuthFile]: 'deny', ...(connectionFile ? { [connectionFile]: 'deny' } : {}) } }
   for (const name of ['abs_export', 'abs_validate', 'abs_apply', 'project_build', 'library_docs', 'block_info', 'block_list',
     'board_info', 'get_board_config', 'project_status', 'app_info', 'app_status', 'app_reload', 'todo']) permission[name] = 'allow'
+  if (readOnly) for (const name of ['write', 'edit', 'abs_export', 'abs_validate', 'abs_apply', 'project_build', 'app_reload'])
+    permission[name] = 'deny'
   const policy = path.join(agentProfile, 'extensions/pi-permission-system/config.json')
   await fs.mkdir(path.dirname(policy), { recursive: true })
   await fs.writeFile(policy, JSON.stringify({ permission }), { flag: 'wx' })
@@ -212,18 +220,29 @@ try {
   evidence.chat = { ...loaded.evidence, syntheticIdentity: false, realModelInvoked: false }
   delete evidence.chat.buildEvidence // Full sealed source lists are not a test report.
   await page.screenshot({ path: path.join(output, 'installed-chat.png'), fullPage: true })
+  if (readOnly) {
+    baselineAbiBytes = await fs.readFile(path.join(project, 'project.abi'))
+    baselineSketchBytes = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'))
+    baselineAbsProgram = programOf(await fs.readFile(path.join(project, 'project.abs'), 'utf8'))
+    absCoverage = createReadLineCoverage(baselineAbsProgram.split('\n').length)
+  }
   // Use the real composer's own existing transport and product-default model,
   // not a second control connection that can obscure the actual UI behavior.
   evidence.controlTransport = { protocol: 'embedded-composer' }
   phase('real-llm-prompt')
   const marker = 'ONLINE_RECOVERY_' + randomUUID().slice(0, 8)
-  evidence.marker = marker; evidence.startedAt = Date.now()
-  const requirement = scenario === 'counter-boundary'
+  if (!readOnly) evidence.marker = marker
+  evidence.startedAt = Date.now()
+  const requirement = readOnly
+    ? `本轮只读审查，不改任何文件。请实际read当前project.abs的程序主体（不必读取很长的宿主元数据行）、ABS语法参考abs-syntax.md，以及本项目.temp/sketch/sketch.ino，三者读完后再作完整结论。依据真实代码而非仅复述注释，分析setup到loop的执行顺序、首次计数与32位millis回绕、长时间loop滞后时计数语义、原串口readStringUntil和delay对阻塞性的影响、禁用块是否进入生成代码、UART引脚的实际设置与注释差异。区分真实缺陷、保留旧逻辑的限制，以及静态代码和已有编译回执无法证明的硬件行为。给出有代码依据的评审结论，但不提出或执行本轮修补。必要时只读查询相关库文档，不创建文件、修改ABS或C++、编译、烧录、运行脚本或操作仿真/串口。`
+    : scenario === 'counter-boundary'
     ? `当前隔离工程已存在counterMark和counterValue计数逻辑。只修正首次计时边界：在setup最后追加counterMark=millis()，保证setup完成后再满1000ms才首次输出0；不能仅依赖全局counterMark初值0。setup中同时追加一条新的串口打印，输出本轮标记 ${marker}；上一轮的标记字符串及原打印块都必须保持不动，不得替换。保留已有计数、风扇及串口代码，不新增重复计数逻辑、不重配串口。`
     : `用现有库增量增加：setup输出一次串口标记 ${marker}；再增加一个用millis差值而非delay的非阻塞1秒计数输出，计数0..9循环。必须在setup最后保存millis计时基准，保证setup完成后再满1000ms才首次输出0，不能只靠全局时间变量初值0。保持原有风扇/串口处理不变、不重配现有串口。`
-  await loaded.frame.locator('.aily-chat-composer-input[role="textbox"]').fill(`这是已授权的隔离验收工程 ${project}，不是用户原工程。${requirement} 必须保留原有块ID、变量/对象模型与禁用/折叠/不可删除属性。专门验收文件编辑通道：先read磁盘 ${path.join(project, 'project.abs')} 及必要库文档，必须使用原生edit或write工具把修改实际写入该文件；然后abs_validate与abs_apply读取磁盘候选，不要给它们传inline abs字符串，不要用它们替代文件编辑。最后实际project_build编译并检查本次成功回执。分别说明代码/编译可证明与仍需硬件验证的边界。不要删除原块或重建工程，不创建或安装库，不用bash/powershell/脚本替代ABS编辑，不烧录、不操作串口或仿真、不访问其他工程。若服务短暂断线，沿用原会话状态和已完成工具回执，不重复写入或应用。`)
+  const editProtocol = readOnly ? '' : `必须保留原有块ID、变量/对象模型与禁用/折叠/不可删除属性。专门验收文件编辑通道：先read磁盘 ${path.join(project, 'project.abs')} 及必要库文档，必须使用原生edit或write工具把修改实际写入该文件；然后abs_validate与abs_apply读取磁盘候选，不要给它们传inline abs字符串，不要用它们替代文件编辑。最后实际project_build编译并检查本次成功回执。`
+  await loaded.frame.locator('.aily-chat-composer-input[role="textbox"]').fill(`这是已授权的隔离验收工程 ${project}，不是用户原工程。${requirement} ${editProtocol} 不访问其他工程或凭据。若服务短暂断线，沿用原会话状态和已完成工具回执，不重复任何已完成工具。`)
   await loaded.frame.locator('button.primary-action.send-action').click()
   const observed = new Set(), deadline = Date.now() + 12 * 60 * 1000
+  let nextProgressAt = 0
   while (Date.now() < deadline) {
     const dialogs = loaded.frame.locator('.pi-extension-dialog')
     for (const dialog of await dialogs.all()) if (await dialog.isVisible()) {
@@ -245,6 +264,21 @@ try {
         if (!observed.has(message.toolCallId)) {
           observed.add(message.toolCallId)
           evidence.tools.push({ name: message.toolName, id: message.toolCallId, isError: message.isError === true, at: Date.now() })
+          if (mode === 'live-disconnect' && ['read', 'grep'].includes(message.toolName) && message.isError !== true) {
+            const call = snapshot.messages.filter(item => item.role === 'assistant').flatMap(item => item.content ?? [])
+              .find(item => item.type === 'toolCall' && item.id === message.toolCallId)
+            const name = typeof call?.arguments?.path === 'string' ? path.basename(call.arguments.path).toLowerCase() : ''
+            if (readOnly && name === 'project.abs' && same(path.resolve(project, call.arguments.path), path.join(project, 'project.abs'))) {
+              if (message.toolName === 'read') {
+                absCoverage.observe(call.arguments, message.details?.truncation)
+                if (absCoverage.complete) completedReads.add(name)
+              } else if (grepCoversSourceLines(baselineAbsProgram, textOf(message))) completedReads.add(name)
+            } else if (message.toolName === 'read' && requiredReads.has(name)) completedReads.add(name)
+            if (!evidence.faultArm && [...requiredReads].every(value => completedReads.has(value))) {
+              proxy.arm()
+              evidence.faultArm = { afterSuccessfulReads: [...completedReads].sort(), at: Date.now() }
+            }
+          }
           console.log(new Date().toISOString(), 'ONLINE_TOOL', message.toolName, message.isError === true ? 'ERROR' : 'OK')
           await fs.appendFile(path.join(output, 'tool-results.jsonl'), JSON.stringify(message) + '\n')
         }
@@ -254,16 +288,29 @@ try {
         evidence.final = { stopReason: final.stopReason, text: textOf(final), errorMessage: final.errorMessage }; break
       }
     }
+    if (Date.now() >= nextProgressAt) {
+      nextProgressAt = Date.now() + 5000
+      await fs.writeFile(path.join(output, 'progress.json'), JSON.stringify({ phase: evidence.phase, sessionId,
+        tools: evidence.tools, faultArm: evidence.faultArm, transport: proxy.snapshot() }, null, 2))
+    }
     await new Promise(resolve => setTimeout(resolve, 750))
   }
   assert.equal(evidence.final?.stopReason, 'stop', 'Actual online turn must settle normally')
   assert.equal(snapshot.messages.filter(item => item.role === 'user').length, 1)
-  for (const name of ['abs_validate', 'abs_apply', 'project_build']) assert.ok(evidence.tools.some(tool => tool.name === name && !tool.isError), name)
   evidence.fileEditObserved = evidence.tools.some(tool => ['edit', 'write'].includes(tool.name) && !tool.isError)
-  const compile = JSON.parse(await fs.readFile(path.join(project, '.log/compile/latest-result.json'), 'utf8'))
-  assert.equal(compile.success, true); assert.ok(compile.finishedAt >= evidence.startedAt)
-  evidence.compiled = true; evidence.build = { requestId: compile.requestId, finishedAt: compile.finishedAt }
-  const code = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'), 'utf8'); assert.ok(code.includes(marker))
+  if (readOnly) {
+    assert.equal(evidence.tools.some(tool => ['write', 'edit', 'abs_export', 'abs_apply', 'project_build', 'app_reload'].includes(tool.name) && !tool.isError), false)
+    assert.deepEqual(await fs.readFile(path.join(project, 'project.abi')), baselineAbiBytes)
+    assert.deepEqual(await fs.readFile(path.join(project, '.temp/sketch/sketch.ino')), baselineSketchBytes)
+    assert.equal(programOf(await fs.readFile(path.join(project, 'project.abs'), 'utf8')), baselineAbsProgram)
+    evidence.readOnlyProjectUnchanged = true
+  } else {
+    for (const name of ['abs_validate', 'abs_apply', 'project_build']) assert.ok(evidence.tools.some(tool => tool.name === name && !tool.isError), name)
+    const compile = JSON.parse(await fs.readFile(path.join(project, '.log/compile/latest-result.json'), 'utf8'))
+    assert.equal(compile.success, true); assert.ok(compile.finishedAt >= evidence.startedAt)
+    evidence.compiled = true; evidence.build = { requestId: compile.requestId, finishedAt: compile.finishedAt }
+    const code = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'), 'utf8'); assert.ok(code.includes(marker))
+  }
   const after = await page.evaluate(() => JSON.parse(JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))))
   const beforeBlocks = blocks(baseline), afterBlocks = blocks(after)
   for (const [id, value] of beforeBlocks) assert.deepEqual(afterBlocks.get(id), value, 'Keep every original block attribute')
@@ -281,7 +328,7 @@ try {
     originalModels: baseline.variables?.length, allPageAndProcedureBlocks: oldDocumentBlocks.size,
     originalPages: baselineDocument.pages.length }
   evidence.transport = proxy.snapshot()
-  assert.ok(evidence.fileEditObserved, 'The file-edit acceptance requires actual native edit/write, not inline ABS submission')
+  if (!readOnly) assert.ok(evidence.fileEditObserved, 'The file-edit acceptance requires actual native edit/write, not inline ABS submission')
   assert.equal(evidence.transport.duplicatePosts, 0); assert.equal(evidence.transport.interruptCount, 0)
   assert.deepEqual(evidence.transport.failures, [])
   if (mode === 'unclaimed-retry-ack') {
@@ -296,10 +343,38 @@ try {
       assert.equal(calls.length, 1, 'Recovery must not replay the previous model step tool call')
     }
   } else {
-    assert.equal(evidence.transport.secondDisconnectCovered, true,
-      'Upstream did not produce enough real live progress for the requested 32-second second-disconnect coverage; do not report this as passed')
+    assert.equal(evidence.transport.requireResumedThinkingSpan, true)
+    assert.equal(evidence.transport.strictThinkingCovered, true,
+      'Real fresh thinking did not span more than 32 seconds after recovery; do not report this as passed')
+    const second = evidence.transport.faults[1]
+    assert.ok(second.resumedThinkingDurationMs > 32000 && second.resumedThinkingEvents >= 2)
+    assert.ok(second.lastThinkingSequence > second.firstThinkingSequence && second.firstThinkingSequence > second.watermark)
+    assert.equal(second.canonicalStatus, 'running'); assert.equal(second.canonicalStreamState, 'open')
+    for (const operation of evidence.transport.operations) {
+      assert.equal(operation.posts, 1); assert.equal(operation.forwardedPosts, 1)
+    }
   }
-  evidence.longThinkingAndSecondDisconnectCovered = evidence.transport.secondDisconnectCovered
+  evidence.longThinkingAndSecondDisconnectCovered = evidence.transport.strictThinkingCovered === true
+  const finalOperation = evidence.transport.operations.toSorted((a, b) => a.step - b.step).at(-1)
+  assert.ok(finalOperation?.terminal && finalOperation.operationId.startsWith(evidence.transport.interactionId + ':'))
+  const canonicalBase = `${proxy.origin}/api/v3/interactions/${evidence.transport.interactionId}/operations/${finalOperation.step}`
+  const getCanonical = async suffix => {
+    const response = await fetch(canonicalBase + suffix, { headers: { authorization: 'Bearer ' + auth.access_token }, signal: AbortSignal.timeout(15000) })
+    assert.equal(response.status, 200, 'Canonical final output must be recoverable without a new execution')
+    return response.json()
+  }
+  const result = await getCanonical('/result'), state = await getCanonical('/state')
+  const finalText = snapshot.messages.filter(item => item.role === 'assistant').at(-1).content
+    .filter(item => item.type === 'text').map(item => item.text).join('')
+  assert.equal(result.operationId, finalOperation.operationId); assert.equal(result.status, 'completed')
+  assert.equal(result.pendingKind, 'none'); assert.equal(result.format, 'wire_text_utf8_v1')
+  assert.equal(result.text, finalText); assert.equal(result.hash, 'sha256:' + sha(finalText))
+  assert.equal(result.bytes, Buffer.byteLength(finalText)); assert.equal(result.nextStepIndex, finalOperation.step + 1)
+  assert.equal(state.operationId, result.operationId); assert.equal(state.executionTerminal?.outputState, 'available')
+  assert.equal(state.executionTerminal.outputHash, result.hash); assert.equal(state.executionTerminal.outputBytes, result.bytes)
+  assert.equal(state.executionTerminal.responseGeneration, result.responseGeneration)
+  evidence.canonicalAnswer = { operationId: result.operationId, hash: result.hash, bytes: result.bytes,
+    responseGeneration: result.responseGeneration, sdkMatchesOriginal: true }
   evidence.unclaimedRecoveryCovered = evidence.transport.unclaimedRecoveryCovered
   evidence.completedAt = Date.now(); evidence.ok = true
   phase('complete')
