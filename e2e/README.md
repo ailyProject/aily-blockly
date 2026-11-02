@@ -1,7 +1,7 @@
 # 端到端测试（E2E）
 
 使用 [Playwright](https://playwright.dev/) 的 `_electron` API 对 aily-blockly 桌面应用做端到端测试。
-测试直接启动 `electron/main.js` 主进程，针对 **生产构建产物** 运行。
+测试直接启动 `electron/main.js` 主进程，默认 Playwright 套件针对 **生产构建产物** 运行。`test:onboarding` 专项使用源码开发服务，并与 Eval 共用引导验证实现。
 
 需要由 AI 按改动/发布类型选择测试、执行并汇报时，使用 [AI 执行手册](AI-RUNBOOK.md)。
 
@@ -17,7 +17,7 @@
 
 运行前注意：
 
-- 所有 E2E 测试入口都会先重新执行 Angular 构建并暂存 `renderer/`，不会复用上一次运行留下的渲染产物。`test:fast` 仅作为历史兼容命令保留。
+- 默认 Playwright 测试入口会先重新执行 Angular 构建并暂存 `renderer/`，不会复用上一次运行留下的渲染产物。`test:fast` 仅作为历史兼容命令保留。独立源码专项按各自说明运行。
 - 运行中需要停止时只按一次 `Ctrl+C`，等待测试关闭 Electron、编译/终端子进程并生成 HTML 报告；再次按下会强制终止，此时报告可能不完整。
 - PowerShell 环境变量会保留在当前终端。全流程场景统一使用 `AILY_E2E_MODE` 选择，切换场景时直接覆盖该变量即可。
 - 旧版的 `AILY_E2E_FULLFLOW`、`AILY_E2E_ALL_BOARDS`、`AILY_E2E_PROJECT_PLAZA` 仍兼容单独使用；若同时启用多个，测试会立即报错，不再串到其他场景。
@@ -34,6 +34,16 @@
 | 查看上次报告 | `npm --prefix e2e run report` | 打开 Playwright HTML 报告，不运行测试 |
 | 只跑某个文件 | `npm --prefix e2e run test -- smoke.spec.ts` | 文件名也可换成下方测试套件中的任意 spec |
 | 兼容入口跑某个文件 | `npm --prefix e2e run test:fast -- full-flow.spec.ts` | 同样先重新构建，再运行指定 spec |
+
+### 启动与项目引导
+
+```bash
+npm --prefix e2e run test:onboarding -- --lex-root <aily-lex-pro> --project <已安装依赖的Blockly项目> --reuse-angular
+```
+
+该入口与 Eval 的“验证启动与项目引导”共用判定器和运行逻辑，验证助手入口显示/隐藏时的完整步骤、独立 AI/应用商店文案、实际工作区高亮、正常及最小原生窗口、前进后退、跳过和完成标记持久化。仅复制传入项目，使用独立用户目录，通过真实本地 Aily Chat 便携包注册助手入口；不注入 DOM、不调用 Angular 调试接口、不手动启动引导服务，不发送 AI 消息或编译烧录。
+
+`--reuse-angular` 要求已有开发服务来自当前主软件源码；否则省略该参数，由 Eval 启动并核对开发服务。默认读取 Lex 的 `packages/aily-chat/dist/aily-chat`，可用 `--chat-root` 指定已有便携构建；本专项只验证入口和引导，不代表 AI 任务验收。证据保存在 `e2e/.artifacts/onboarding/<运行ID>/` 的 `onboarding.json` 和逐步截图中，可通过 `--output` 更改。测试结束恢复本次修改的引导及工具栏配置，并清除私有用户目录。
 
 常用定向组合：
 

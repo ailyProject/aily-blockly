@@ -180,6 +180,7 @@
         "SPONSORS_DESC": "Este proyecto está patrocinado por las siguientes empresas/individuos",
         "NEWS": "Noticias",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Describe lo que necesitas en lenguaje natural. El asistente de IA puede ayudarte a crear proyectos y resolver dudas.",
             "STEP1_TITLE": "Crear nuevo proyecto",
             "STEP1_DESC": "Haga clic aquí para crear un nuevo proyecto de programación. Elija su placa y lenguaje de programación para comenzar su viaje creativo.",
             "STEP2_TITLE": "Abrir proyecto existente",
@@ -206,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "Seleccionar todos los bloques",
         "EXPLAIN_BLOCK": "Explicar con IA",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "El asistente de IA puede ayudarte a entender tu proyecto, generar código, explicar programas y corregir errores.",
             "TOOLBOX_TITLE": "Caja de herramientas de bloques",
             "TOOLBOX_DESC": "Aquí están las categorías de bloques. Haz clic en las distintas categorías para encontrar bloques de funciones y arrástralos al área de trabajo de la derecha para usarlos.",
             "WORKSPACE_TITLE": "Área de trabajo",
@@ -905,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "Cerrar sesión",
         "CANCEL": "Cancelar",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "Tienda de aplicaciones",
+            "APP_STORE_DESC": "Explora e instala herramientas de IA para ampliar las capacidades del asistente. Añade otras aplicaciones y gestiona los accesos de la barra de herramientas.",
+            "AI_TOOLS_TITLE": "Asistente de IA",
             "SKIP": "Saltar",
             "PREV": "Anterior",
             "NEXT": "Siguiente",

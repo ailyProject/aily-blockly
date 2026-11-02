@@ -29,6 +29,7 @@
     "perf:blockly:real:prepare": "cd .. && node e2e/performance/scripts/prepare-blockly-real-performance.cjs",
     "perf:blockly:real:test": "cd .. && playwright test -c e2e/real-performance.config.ts",
     "test:project-save-as": "cd .. && node ./e2e/scripts/run-e2e.mjs test --config e2e/project-save-as.config.ts",
-    "test:message-popups": "node scripts/run-message-popups.mjs"
+    "test:message-popups": "node scripts/run-message-popups.mjs",
+    "test:onboarding": "node scripts/run-onboarding.mjs"
   }
 }
