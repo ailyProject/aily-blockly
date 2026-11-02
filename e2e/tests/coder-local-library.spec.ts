@@ -87,6 +87,8 @@ test('real local Coder project: all four library roots uninstall, cancel, discar
     await win.evaluate(()=>{const w=window as any;w.discardDecision=w.ng.getComponent(document.querySelector('app-header')).checkUnsavedChanges('close');});
     await win.locator('app-unsave-dialog').getByRole('button',{name:'跳过保存',exact:true}).click();
     expect(await win.evaluate(()=>(window as any).discardDecision)).toBe(true);
+    await win.evaluate(async project => { const service=(window as any).ng.getComponent(document.querySelector('app-header')).projectService; await service.close(); await service.projectOpen(project); }, project);
+    await ready();
     await dirty(false);expect(await digest(path.join(project,'sketch/libraries'))).toBe(baseline);await record('explicit-discard');
     const agent=process.env['AILY_E2E_AGENT_ROOT'];
     if(agent){
