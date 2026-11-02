@@ -989,6 +989,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController?.();
     this.unregisterHostController = this.childHostRegistry.register(this.resolvedToolId, {
       status: () => this.hostAutomationStatus(),
+      reportIssue: () => this.reportChatSessionIssue(),
       restart: () => this.restart(),
       close: () => this.close(),
       detach: options => this.detach(options),
@@ -1012,6 +1013,19 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       pid: this.serverInfo?.pid ?? null,
       port: this.serverInfo?.port ?? null,
     };
+  }
+
+  private async reportChatSessionIssue(): Promise<Record<string, unknown>> {
+    const sessionId = this.ailyChatSessionId;
+    if (!this.isAilyChatTool() || !sessionId || typeof this.remoteApi?.reportSessionIssue !== 'function') {
+      return { ok: true, skipped: true };
+    }
+    try {
+      return await this.remoteApi.reportSessionIssue({ sessionId });
+    } catch {
+      // Supplementary diagnostics must not affect the host or the active turn.
+      return { ok: false };
+    }
   }
 
   private async startServer(restart: boolean): Promise<void> {
