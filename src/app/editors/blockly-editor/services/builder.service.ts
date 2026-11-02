@@ -1317,6 +1317,11 @@ export class _BuilderService {
           
         }
         if (!cloudBuild) await this.waitForPreprocessDrain(requestedProjectPath, () => cancellation.signal.aborted, 'compile');
+        if (!cloudBuild) {
+          if (cancellation.signal.aborted || !projectCurrent()) throw new Error('Build configuration changed or was cancelled.');
+          await this.npmService.ensureLocalCompilerDependencies(requestedProjectPath);
+          if (cancellation.signal.aborted || !projectCurrent()) throw new Error('Build configuration changed or was cancelled.');
+        }
 
         // compile.js owns fresh preprocessing in the same supervised transaction.
         // Background diagnostics/cache are advisory, never a gate for a new build.

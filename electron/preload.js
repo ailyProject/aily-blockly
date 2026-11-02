@@ -738,7 +738,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);
-      return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
+      return { size: s.size, mode: s.mode, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
     },
     lstatSync: (path) => {
       const s = require("fs").lstatSync(path);
