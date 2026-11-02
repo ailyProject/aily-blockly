@@ -156,6 +156,19 @@ export class CloudSpaceComponent {
     return !this.isStudent && this.canEditProject(item);
   }
 
+  canPublishToHub(item): boolean {
+    const accountId = this.authService.userInfo?.id;
+    return !!accountId && !this.isStudent && !item?.student
+      && item?.owner_id === accountId && !!item.uuid
+      && (item.category === 'blockly' || item.category === 'coder');
+  }
+
+  publishToHub(item): void {
+    if (!this.canPublishToHub(item)) return;
+    this.electronService.openUrl(`${this.configService.getHubWebUrl()}/publish?cloudProject=${encodeURIComponent(item.uuid)}`);
+    this.message.info('已发起打开 Hub，请在网页完善作品并提交审核');
+  }
+
   async requestSync(): Promise<void> {
     if (this.isSyncing || !this.projectService.currentProjectPath) return;
     const projectPath = this.projectService.currentProjectPath;

@@ -1070,6 +1070,11 @@ export class ConfigService {
     return url.endsWith('/') ? url.slice(0, -1) : url;
   }
 
+  getHubWebUrl(): string {
+    const url = this.getCurrentRegionConfig()?.hub_web || 'https://hub.aily.pro';
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+  }
+
 
   /**
    * 获取所有可用区域列表
@@ -2100,6 +2105,7 @@ interface AppConfig {
       api_server: string;
       web?: string;
       ucenter_web?: string;
+      hub_web?: string;
       tool_web: string;
       npm_registry: string;
       npm_registry_linux?: string;

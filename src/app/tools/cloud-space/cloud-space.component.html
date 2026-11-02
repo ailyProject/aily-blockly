@@ -77,7 +77,12 @@
                         编辑
                     </button>
                     }
-                    @if (canEditProject(item) && (item.is_published || canPublishProject(item))) {
+                    @if (canPublishToHub(item)) {
+                    <button (click)="publishToHub(item)" title="发布最近一次同步到云空间的版本，本地修改请先同步">
+                        <i class="fa-light fa-arrow-up-from-bracket"></i>
+                        发布到 Hub
+                    </button>
+                    } @else if (canEditProject(item) && (item.is_published || canPublishProject(item))) {
                     <button (click)="toggleVisibility(item)">
                         @if (item?.is_published === false) {
                         <i class="fa-light fa-eye"></i>

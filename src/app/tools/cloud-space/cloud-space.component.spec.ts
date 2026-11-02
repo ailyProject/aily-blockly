@@ -31,6 +31,55 @@ describe('CloudSpace opening state', () => {
   }
 });
 
+describe('CloudSpace Hub publishing', () => {
+  let component: any;
+  const ownProject = { id: 17, uuid: 'cloud & project', owner_id: 'author', category: 'blockly', is_published: false };
+
+  beforeEach(() => {
+    component = Object.create(CloudSpaceComponent.prototype);
+    component.isStudent = false;
+    component.authService = { userInfo: { id: 'author' } };
+    component.electronService = { openUrl: jasmine.createSpy('openUrl') };
+    component.configService = { getHubWebUrl: () => 'https://hub.example' };
+    component.message = { info: jasmine.createSpy('info') };
+    component.cloudService = {
+      publishProject: jasmine.createSpy('publish'),
+      unpublishProject: jasmine.createSpy('unpublish').and.returnValue(of({ status: 200 })),
+    };
+  });
+
+  it('offers Hub only for the signed-in non-student owner of a supported cloud project', () => {
+    expect(component.canPublishToHub(ownProject)).toBeTrue();
+    expect(component.canPublishToHub({ ...ownProject, category: 'coder' })).toBeTrue();
+    for (const item of [
+      { ...ownProject, owner_id: 'other' },
+      { ...ownProject, student: { active: true } },
+      { ...ownProject, uuid: undefined },
+      { ...ownProject, category: 'other' },
+    ]) {
+      expect(component.canPublishToHub(item)).toBeFalse();
+      component.publishToHub(item);
+    }
+    component.isStudent = true;
+    component.publishToHub(ownProject);
+    component.isStudent = false;
+    component.authService.userInfo = null;
+    component.publishToHub(ownProject);
+    expect(component.electronService.openUrl).not.toHaveBeenCalled();
+  });
+
+  it('opens the configured Hub with an encoded cloud UUID without changing publication state', () => {
+    const item = { ...ownProject };
+    component.publishToHub(item);
+    expect(component.electronService.openUrl).toHaveBeenCalledOnceWith('https://hub.example/publish?cloudProject=cloud%20%26%20project');
+    expect(component.message.info).toHaveBeenCalledOnceWith('已发起打开 Hub，请在网页完善作品并提交审核');
+    expect(component.cloudService.publishProject).not.toHaveBeenCalled();
+    expect(component.cloudService.unpublishProject).not.toHaveBeenCalled();
+    expect(item).toEqual(ownProject);
+  });
+
+});
+
 describe('CloudSpace project packaging and sync mode isolation', () => {
   const root = '/Aily Projects/demo';
   let component: any;
