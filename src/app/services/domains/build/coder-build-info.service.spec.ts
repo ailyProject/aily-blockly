@@ -1,6 +1,9 @@
+import { localCompileDiagnostic, localCompileErrorEvents } from '../../../../../tests/fixtures/local-compile-error-events';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { CompileService } from './compile.service';
-import { NpmService } from '../dependencies/npm.service';
+import { NoticeService } from '@core/app-shell/public-api';
+import { NpmService } from '../dependencies/public-api';
+import { CmdService } from '@core/platform/public-api';
 import { of, Subject } from 'rxjs';
 import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
 
@@ -10,6 +13,7 @@ describe('Coder build metadata', () => {
   let originalFs: any;
   let originalPath: any;
   let originalBuilder: any;
+  let originalCmd: any;
   let electron: any;
   let project: any;
   let metadata: CoderBuildInfoService;
@@ -21,6 +25,7 @@ describe('Coder build metadata', () => {
     originalFs = window['fs'];
     originalPath = window['path'];
     originalBuilder = window['builder'];
+    originalCmd = window['cmd'];
     files = new Map([
       [packagePath, JSON.stringify({
         type: 'coder', entry: 'src/main.cpp', dependencies: { '@aily-project/board-test': '1.0.0' },
@@ -77,6 +82,7 @@ describe('Coder build metadata', () => {
     window['fs'] = originalFs;
     window['path'] = originalPath;
     window['builder'] = originalBuilder;
+    window['cmd'] = originalCmd;
   });
 
   it('persists a content hash covering headers, local libraries and build configuration', async () => {
@@ -171,6 +177,61 @@ describe('Coder build metadata', () => {
     spyOn<any>(service, 'handleFailNotice');
     return service;
   }
+
+
+
+  for (const scenario of [
+    { name: 'stdout-typed-error', stream: 'stdout', newline: true, ending: 'typed-error', noWarning: true },
+    { name: 'stderr-tail-typed-error', stream: 'stderr', newline: false, ending: 'typed-error' },
+    { name: 'captured-native-error', stream: 'stderr', newline: true, ending: 'close', native: true },
+    { name: 'silent-stderr-close', stream: 'stderr', newline: true, ending: 'close', silent: true },
+    { name: 'stderr-close', stream: 'stderr', newline: true, ending: 'close' },
+    { name: 'stderr-tail-close', stream: 'stderr', newline: false, ending: 'close' },
+    { name: 'stdout-close-fallback', stream: 'stdout', newline: true, ending: 'close' },
+    { name: 'stderr-tail-observable-error', stream: 'stderr', newline: false, ending: 'observable-error' },
+  ]) it('local Coder diagnostic appears once: ' + scenario.name, async () => {
+    const compiler: any = createCompiler(() => 1), entries: any[] = [], notices: any[] = [];
+    const logService = { update: (entry: any) => entries.push(entry) };
+    const noticeService = new NoticeService(logService as any);
+    noticeService.stateSubject.subscribe(notice => notices.push(notice));
+    compiler.logService = logService; compiler.application.updateNotice = (notice: any) => noticeService.update(notice);
+    let listener: any, rejectRun!: (reason: unknown) => void;
+    window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },
+      run: () => new Promise((_resolve, reject) => { rejectRun = reject; }) };
+    const cmd = new CmdService(logService as any), spawn = cmd.spawn.bind(cmd);
+    spyOn(cmd, 'spawn').and.callFake((command, args, options, silent) => spawn(command, args, options, scenario.silent || silent));
+    compiler.cmdService = cmd;
+    compiler.runOneShotCommand.and.callThrough(); compiler.publishBuildLog.and.callThrough(); compiler.handleFailNotice.and.callThrough();
+    window['fs'].appendFileSync = (file: string, content: string) => files.set(file, (files.get(file) || '') + content);
+    const normal = scenario.native ? 'Starting compilation of' : 'LOCAL_CODER_NORMAL_' + scenario.name;
+    const warning = 'warning: LOCAL_CODER_WARNING_' + scenario.name;
+    const diagnostic = scenario.native ? localCompileDiagnostic : '[ERROR] source.cpp:4:3: LOCAL_CODER_DIAGNOSTIC_' + scenario.name;
+    const transport = 'LOCAL_CODER_TRANSPORT_' + scenario.name;
+    const pending = compiler.runCompileFromDisk();
+    for (let n = 0; n < 100 && !compiler.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(compiler.cmdService.spawn).toHaveBeenCalledTimes(1);
+    if (scenario.native) localCompileErrorEvents.forEach(event => listener({ ...event }));
+    else {
+    listener({ type: 'stdout', data: normal + '\n' });
+    if (!scenario.noWarning) listener({ type: 'stderr', data: warning + '\n' });
+    listener({ type: scenario.stream, data: diagnostic + (scenario.newline ? '\n' : '') });
+    }
+    if (scenario.ending === 'observable-error') rejectRun(new Error(transport));
+    else if (scenario.ending === 'typed-error') listener({ type: 'error', error: transport });
+    else listener({ type: 'close', code: 1 });
+    const outcome = await pending;
+    expect(outcome.success).toBeFalse();
+    const count = (marker: string) => entries.reduce((n, entry) => n + String(entry.detail || '').split(marker).length - 1, 0);
+    console.log('LOCAL_LOG_REPRO ' + JSON.stringify({ editor: 'Coder', scenario: scenario.name,
+      normal: count(normal), warning: count(warning), diagnostic: count(diagnostic),
+      errorEntries: entries.filter(entry => entry.state === 'error').length,
+      finalNoticeHasDiagnostic: notices.filter(notice => notice.state === 'error').at(-1)?.detail?.includes(diagnostic) || false }));
+    expect(count(normal)).withContext('normal stdout replayed after local failure').toBe(1);
+    if (!scenario.native && !scenario.noWarning) expect(count(warning)).withContext('warning missing or replayed after local failure').toBe(1);
+    expect(count(diagnostic)).withContext('diagnostic missing or replayed after local failure').toBe(1);
+    expect(notices.filter(notice => notice.state === 'error').at(-1)?.detail).toContain(diagnostic);
+    if (scenario.ending === 'typed-error') expect(notices.filter(notice => notice.state === 'error').at(-1)?.detail).toContain(transport);
+  });
 
   for (const stage of ['preflight', 'cloud-execution', 'local-error', 'cancel-preparation']) it(`retries a failed cloud Coder task only after clicking: ${stage}`, async () => {
     const compiler: any = createCompiler(() => stage === 'local-error' ? 1 : 0);
@@ -382,7 +443,7 @@ describe('Coder build metadata', () => {
     expect(result.success).toBeFalse();
     expect(result.result.fullStdErr).toBe(detail);
     expect(result.result.text).toBe('Compiler exited with code 1');
-    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail, undefined);
+    expect((service as any).handleFailNotice).toHaveBeenCalledWith(root, jasmine.any(String), 'Compiler exited with code 1', detail, undefined, false);
   });
 
   it('records successful compilation against the captured project even after a project switch', async () => {

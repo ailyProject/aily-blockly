@@ -1,6 +1,6 @@
 import { BehaviorSubject } from 'rxjs';
 import { sha256Hex } from '../../../../utils/crypto.utils';
-import { normalizeProjectDataDocument, ProjectDataNormalizationStore } from './project-data-normalization';
+import { normalizeProjectDataDocument, ProjectDataNormalizationStore, isDeferredProjectDataNormalization } from './project-data-normalization';
 import { AilyDataRef, createProjectDataMarker } from './project-data.types';
 import { ProjectService } from '../project.service';
 import { projectDataRuntime } from './project-data-runtime';
@@ -35,7 +35,7 @@ describe('Project Data normalization publication boundary', () => {
       validateReferences: jasmine.createSpy('validate').and.callFake(async () => { events.push('validate'); return { valid: true, issues: [] }; }),
       resolve: jasmine.createSpy('resolve').and.callFake(async ref => { events.push('resolve'); return values.get(ref.$ailyData.id); }),
     };
-    files = { projectFilePublicationVersion: 2,
+    files = { projectFilePublicationVersion: 2, existsSync: () => false,
       replaceProjectText: jasmine.createSpy('publish').and.callFake(async (request, check) => {
         const expected = await digest(disk); const output = await digest(request.content); check(); events.push('publish');
         if (expected !== request.expectedHash) return { status: 'CONFLICT' };
@@ -57,6 +57,51 @@ describe('Project Data normalization publication boundary', () => {
   it('initialization externalizes and validates without materializing large fields', async () => {
     const result = await prepare(source(), false);
     expect(store.resolve).not.toHaveBeenCalled(); expect(result.document).toEqual(JSON.parse(disk));
+  });
+
+  for (const identity of ['project.abs.map.json', '.aily/abs-sync']) {
+    it(`defers a changed ABI when ${identity} exists and retains actual disk acknowledgement`, async () => {
+      const original = disk;
+      files.existsSync = (file: string) => file.endsWith('/' + identity);
+      const result = await prepare();
+      expect(disk).toBe(original);
+      expect(files.replaceProjectText).not.toHaveBeenCalled();
+      expect(result.persistedText).toBe(original);
+      expect(isDeferredProjectDataNormalization(result.deferredNormalization)).toBeTrue();
+      expect(result.deferredNormalization!.mode).toBe('load');
+      expect(result.deferredNormalization!.persistedText.length).toBeLessThan(2000);
+      expect(result.document).toEqual({ ...source(), $ailyProjectData: createProjectDataMarker() });
+    });
+  }
+
+  it('does not infer absence of ABS identity from an unavailable filesystem inspection API', async () => {
+    delete files.existsSync;
+    const original = disk, result = await prepare();
+    expect(disk).toBe(original); expect(files.replaceProjectText).not.toHaveBeenCalled();
+    expect(isDeferredProjectDataNormalization(result.deferredNormalization)).toBeTrue();
+  });
+
+  it('does not grant a load receipt to initialization, caller-edited input or explicit field updates', async () => {
+    files.existsSync = () => true;
+    expect((await prepare(source(), false)).deferredNormalization!.mode).toBe('other');
+    const edited = source(); edited.blocks.blocks[0].type = 'other';
+    expect((await prepare(edited)).deferredNormalization!.mode).toBe('other');
+    const result = await normalizeProjectDataDocument({ projectPath: path, document: source(), originalContent: disk,
+      materialize: true, fieldUpdates: {} }, store, guard, files);
+    expect(result.deferredNormalization!.mode).toBe('other');
+    expect(files.replaceProjectText).not.toHaveBeenCalled();
+  });
+
+  it('defers if an ABS generation appears at the host-locked publication guard without converting an unknown ACK', async () => {
+    const original = disk;
+    files.replaceProjectText.and.callFake(async (_request, check) => {
+      files.existsSync = () => true;
+      try { check(); } catch { return { status: 'NOT_COMMITTED' }; }
+      throw new Error('No ABI write is authorized');
+    });
+    const result = await prepare();
+    expect(disk).toBe(original); expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+    expect(isDeferredProjectDataNormalization(result.deferredNormalization)).toBeTrue();
   });
 
   describe('legacy hidden identity migration publication', () => {
@@ -297,7 +342,7 @@ describe('Project Data normalization publication boundary', () => {
     let session: string;
     beforeEach(() => {
       previous = { fs: window['fs'], path: window['path'] };
-      window['fs'] = { ...files, existsSync: () => true, readFileSync: () => disk,
+      window['fs'] = { ...files, existsSync: file => file.endsWith('/project.abi'), readFileSync: () => disk,
         writeFileSync: jasmine.createSpy('unchecked write'), renameSync: jasmine.createSpy('unchecked rename') };
       window['path'] = { join: (...parts: string[]) => parts.join('/') };
       service = Object.create(ProjectService.prototype);
@@ -312,6 +357,28 @@ describe('Project Data normalization publication boundary', () => {
       await service.initializeProjectDataSchema(path);
       expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
       expect(window['fs'].writeFileSync).not.toHaveBeenCalled(); expect(window['fs'].renameSync).not.toHaveBeenCalled();
+    });
+    it('does not announce a deferred standalone initialization as a persisted success', async () => {
+      window['fs'].existsSync = () => true;
+      const original = disk;
+      await expectAsync(service.initializeProjectDataSchema(path))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DATA_NORMALIZATION_DEFERRED', status: 'DEFERRED' }));
+      expect(disk).toBe(original); expect(files.replaceProjectText).not.toHaveBeenCalled();
+    });
+    it('allows a new copied complete project to explicitly hand normalization to its real loader', async () => {
+      window['fs'].existsSync = () => true;
+      const original = disk;
+      const outcome = await service.initializeProjectDataSchema(path, guard, undefined, { deferToLoad: true });
+      expect(outcome).toEqual({ status: 'DEFERRED', code: 'PROJECT_DATA_NORMALIZATION_DEFERRED', project: path });
+      expect(disk).toBe(original); expect(files.replaceProjectText).not.toHaveBeenCalled();
+    });
+    it('never silently defers requested example field edits as a successful import', async () => {
+      window['fs'].existsSync = () => true;
+      disk = JSON.stringify({ $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [{ id: 'small', type: 'text', fields: { TEXT: 'before' } }] } });
+      const original = disk;
+      await expectAsync(service.initializeProjectDataSchema(path, guard, { small: 'after' }, { deferToLoad: true }))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DATA_NORMALIZATION_DEFERRED' }));
+      expect(disk).toBe(original); expect(files.replaceProjectText).not.toHaveBeenCalled();
     });
     it('publishes small field edits even when Project Data normalization itself is a no-op', async () => {
       disk = JSON.stringify({ $ailyProjectData: createProjectDataMarker(), blocks: { blocks: [{ type: 'text', id: 'small', fields: { TEXT: 'before' } }] } });

@@ -1,4 +1,7 @@
-export interface AbsDerivedOutputs { published: boolean; code?: string; error?: string }
+import type { GeneratedSourcePublicationReceipt } from '../../../editors/blockly-editor/services/generated-code-artifacts';
+
+export interface AbsDerivedOutputs { published: boolean; code?: string; error?: string;
+  sourceArchive?: GeneratedSourcePublicationReceipt['sourceArchive'] }
 type PreparedCode = { code: string | null; error?: string };
 
 /** Source publication and generated artifacts have independent outcomes. Reuse

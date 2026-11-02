@@ -2,11 +2,14 @@ import { isReservedAbsWorkspaceCode, trustedAbsWorkspaceFailure } from './abs-wo
 
 /** Data-only diagnostics shared by the isolated runtime and tool boundary. No Blockly runtime dependency. */
 export interface AbsDiagnostic {
+  blockId?: string;
   blockType?: string;
   parentBlockType?: string;
   field?: string;
   received?: string | number | boolean | null;
+  expected?: string | number | boolean | null;
   allowedValues?: readonly (string | number | boolean)[];
+  previousAllowedValues?: readonly (string | number | boolean)[];
   expectedTypes?: readonly string[];
   actualTypes?: readonly string[];
   modelName?: string;
@@ -14,11 +17,41 @@ export interface AbsDiagnostic {
   conflicts?: AbsModelConflict[];
   hint?: string;
   reason?: string;
+  phase?: string;
+  path?: string;
   identity?: AbsIdentityDiagnostic;
   resource?: AbsResourceDiagnostic;
   capacity?: { phase: string; resource: string; actual: number; limit: number };
+  requestPayload?: AbsNativeRequestPayload;
   nativeTiming?: AbsNativeTiming;
   truncated?: boolean;
+}
+
+/** UTF-16 text characters + unique binary backing bytes; not exact wire bytes. */
+export interface AbsNativeRequestPayload {
+  textCharacters: number;
+  backingBytes: number;
+  backingBuffers: number;
+  units: number;
+  components: { replay: number; graphics: number; abs: number; blocks: number; bindings: number; models: number;
+    resources: number; verification: number; envelope: number };
+  replay: { steps: number; script: number; definitions: number; context: number; messages: number; i18n: number; other: number };
+}
+
+function boundedRequestPayload(value: unknown): AbsNativeRequestPayload | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as AbsNativeRequestPayload;
+  const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+  const componentKeys = ['replay', 'graphics', 'abs', 'blocks', 'bindings', 'models', 'resources', 'verification', 'envelope'] as const;
+  const replayKeys = ['steps', 'script', 'definitions', 'context', 'messages', 'i18n', 'other'] as const;
+  if (![input.units, input.textCharacters, input.backingBytes, input.backingBuffers].every(count)
+    || input.units !== input.textCharacters + input.backingBytes || input.backingBuffers > input.units
+    || !input.components || !input.replay
+    || !componentKeys.every(key => count(input.components[key]))
+    || !replayKeys.every(key => count(input.replay[key]))) return undefined;
+  return { units: input.units, textCharacters: input.textCharacters, backingBytes: input.backingBytes, backingBuffers: input.backingBuffers,
+    components: Object.fromEntries(componentKeys.map(key => [key, input.components[key]])) as AbsNativeRequestPayload['components'],
+    replay: Object.fromEntries(replayKeys.map(key => [key, input.replay[key]])) as AbsNativeRequestPayload['replay'] };
 }
 
 /** Bounded aggregate observations only: no source, field values or file paths. */
@@ -115,6 +148,8 @@ export function serializeAbsFailure(error: unknown): AbsFailure {
   const input = value['diagnostic'];
   if (!input || typeof input !== 'object' || Array.isArray(input)) return result;
   const diagnostic: AbsDiagnostic = {};
+  const requestPayload = boundedRequestPayload(input.requestPayload);
+  if (requestPayload) diagnostic.requestPayload = requestPayload;
   const nativeTiming = boundedNativeTiming(input.nativeTiming);
   if (nativeTiming) diagnostic.nativeTiming = nativeTiming;
   const capacity = input.capacity;
@@ -126,8 +161,12 @@ export function serializeAbsFailure(error: unknown): AbsFailure {
   }
   let truncated = input.truncated === true;
   const text = (value: string) => { if (value.length > 256) truncated = true; return value.slice(0, 256); };
-  for (const key of ['blockType', 'parentBlockType', 'field', 'modelName', 'availableName', 'hint', 'reason'] as const) {
+  for (const key of ['blockId', 'blockType', 'parentBlockType', 'field', 'modelName', 'availableName', 'hint', 'reason', 'phase'] as const) {
     if (typeof input[key] === 'string') diagnostic[key] = text(input[key]);
+  }
+  if (typeof input.path === 'string' && input.path.startsWith('/')) {
+    if (input.path.length > 512) truncated = true;
+    diagnostic.path = input.path.slice(0, 512);
   }
   if (typeof input.resource?.url === 'string' && input.resource.url.length <= 2048) {
     try {
@@ -159,15 +198,15 @@ export function serializeAbsFailure(error: unknown): AbsFailure {
   }
   const primitive = (value: unknown): value is string | number | boolean => typeof value === 'string'
     || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value);
-  if (input.received === null || primitive(input.received)) {
-    diagnostic.received = typeof input.received === 'string' ? text(input.received) : input.received;
+  for (const key of ['received', 'expected'] as const) if (input[key] === null || primitive(input[key])) {
+    diagnostic[key] = typeof input[key] === 'string' ? text(input[key]) : input[key];
   }
-  for (const key of ['allowedValues', 'expectedTypes', 'actualTypes'] as const) {
+  for (const key of ['allowedValues', 'previousAllowedValues', 'expectedTypes', 'actualTypes'] as const) {
     if (!Array.isArray(input[key])) continue;
     if (input[key].length > 64) truncated = true;
-    const items = input[key].slice(0, 64).filter((item: unknown) => key === 'allowedValues' ? primitive(item) : typeof item === 'string')
+    const items = input[key].slice(0, 64).filter((item: unknown) => key === 'allowedValues' || key === 'previousAllowedValues' ? primitive(item) : typeof item === 'string')
       .map((item: string | number | boolean) => typeof item === 'string' ? text(item) : item);
-    if (key === 'allowedValues') diagnostic.allowedValues = items;
+    if (key === 'allowedValues' || key === 'previousAllowedValues') diagnostic[key] = items;
     else diagnostic[key] = items as string[];
   }
   const identity = input.identity;

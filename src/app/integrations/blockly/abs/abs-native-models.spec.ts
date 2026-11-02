@@ -12,6 +12,18 @@ describe('native initializer model preparation', () => {
   const run = (value: NativeCandidateRequest) => evaluateNativeCandidate(value, { assertCurrent: () => {} });
   afterEach(() => expect(document.querySelectorAll('[data-blockly-native-candidate]').length).toBe(0));
 
+  it('returns a bounded producer diagnostic for invalid native initializer registrations', async () => {
+    for (const [name, reason] of [[null, 'invalid-type'], ['', 'empty-text'], ['private-payload'.repeat(1000), 'text-limit']] as const) {
+      const value = request('test_object_init("sensor", Sensor)');
+      value.steps.push({ kind: 'script', label: 'invalid-producer-value', source:
+        `Arduino.forBlock.test_object_init = () => { registerVariableToBlockly(${JSON.stringify(name)}, 'Sensor'); return ''; };` });
+      await expectAsync(run(value)).toBeRejectedWith(jasmine.objectContaining({
+        code: 'ABS_MODEL_DECLARATION_INVALID',
+        diagnostic: jasmine.objectContaining({ reason, field: 'name', blockType: 'test_object_init', phase: 'model-declaration' }),
+      }));
+    }
+  });
+
   it('adopts more than 128 genuine native declarations without dropping producer identities', async () => {
     const value = request(Array.from({ length: 186 }, (_, i) => `test_object_init("sensor${i}", Sensor)`).join('\n'));
     const result = await run(value), declarations = result.binding!.modelDeclarations!;
@@ -269,6 +281,61 @@ describe('native initializer model preparation', () => {
     await expectAsync(run(value)).toBeRejected();
     for (const abs of ['test_object_init("sensor", Sensor)\ntest_object_init("sensor", Sensor)',
       'test_object_init("sensor", Other)\ntest_object_read($sensor)']) await expectAsync(run(request(abs))).toBeRejected();
+  });
+  for (const reverse of [false, true]) it('reuses exact typed identities regardless of same-name model order: ' + reverse, async () => {
+    const value = request('test_object_read($sensor)\ntest_object_init("sensor", Sensor)\ntest_object_init("sensor", Other)');
+    value.variables = [
+      { id: 'preserved-function', name: 'sensor', type: 'FUNC' },
+      { id: 'preserved-sensor', name: 'sensor', type: 'Sensor' },
+      { id: 'preserved-other', name: 'sensor', type: 'Other' },
+      { id: 'other-page', name: 'shared', type: 'Shared' },
+    ];
+    if (reverse) value.variables.reverse();
+    const result = await run(value), effects = result.binding!.modelDeclarations!;
+    expect(effects.map(item => item.id)).toEqual(['preserved-sensor', 'preserved-other']);
+    expect(result.state['variables']).toEqual(value.variables);
+    const state = normalizeAbsSerializedWorkspace(result.state);
+    const contracts = { fields: Object.fromEntries(result.binding!.instances.map(item => [item.id, item.shape.fields])) };
+    await run({ blocks: [], steps: value.steps, verify: { state, contracts,
+      modelDeclarations: effects.map(effect => ({ ...effect,
+        ownerId: result.binding!.instances.find(item => item.start === effect.start)!.id })),
+    } });
+    await expectAsync(run({ ...value, abs: value.abs!.replace('"sensor", Sensor', '"SENSOR", Sensor') }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CONFLICT' }));
+  });
+
+  it('adopts by exact identity without retyping or authorizing fresh same-name typed models', () => {
+    const variables = [{ id: 'function', name: 'sensor', type: 'FUNC' },
+      { id: 'sensor', name: 'sensor', type: 'TASK' }];
+    const declaration = { start: 0, blockType: 'test_task_init', id: 'sensor', name: 'sensor', type: 'TASK' };
+    const workspace: any = { variables: structuredClone(variables) };
+    adoptAbsNativeModels(workspace, [declaration]);
+    expect(workspace.variables).toEqual(variables);
+    for (const changed of [{ id: 'new-id' }, { type: 'FUNC' }, { name: 'renamed' }, { name: 'SENSOR' }]) {
+      expect(() => adoptAbsNativeModels(workspace, [{ ...declaration, ...changed }]))
+        .toThrow(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CONFLICT' }));
+      expect(workspace.variables).toEqual(variables);
+    }
+    expect(() => adoptAbsNativeModels(workspace, [{ ...declaration, id: 'new-kind', type: 'Other' }]))
+      .toThrow(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CONFLICT' }));
+    const fresh: any = {};
+    expect(() => adoptAbsNativeModels(fresh, [declaration, { ...declaration, start: 1, id: 'other-id', type: 'Other' }]))
+      .toThrow(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CONFLICT' }));
+    expect(fresh.variables).toBeUndefined();
+  });
+  it('does not let a prepared producer add an unproved registration in another existing type namespace', async () => {
+    const value = request('test_object_init("sensor", Sensor)');
+    value.variables = [{ id: 'sensor', name: 'sensor', type: 'Sensor' }, { id: 'other', name: 'sensor', type: 'Other' }];
+    const result = await run(value), effect = result.binding!.modelDeclarations![0];
+    const contracts = { fields: Object.fromEntries(result.binding!.instances.map(item => [item.id, item.shape.fields])) };
+    value.steps.push({ kind: 'script', label: 'changed-model-registration', source: `
+      Arduino.forBlock.test_object_init = block => {
+        registerVariableToBlockly('sensor', 'Sensor'); registerVariableToBlockly('sensor', 'Other'); return '';
+      };
+    ` });
+    await expectAsync(run({ blocks: [], steps: value.steps, verify: { state: normalizeAbsSerializedWorkspace(result.state), contracts,
+      modelDeclarations: [{ ...effect, ownerId: result.binding!.instances.find(item => item.start === effect.start)!.id }] } }))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_MODEL_DECLARATION_CHANGED' }));
   });
   it('prepares multiple independent objects and rejects unowned generator side effects', async () => {
     const value = request('test_object_read($a)\ntest_object_read($b)\ntest_object_init("a", Sensor)\ntest_object_init("b", Sensor)');

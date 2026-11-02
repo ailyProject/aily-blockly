@@ -167,3 +167,20 @@ test('a non-Chat host only forwards its ordinary language/theme context', async 
   const count = f.messages.length; f.lang('en'); f.theme.next('light'); f.add(); await turn();
   assert.equal(f.messages.length, count); assert.equal(f.reads.length, 0); assert.equal(f.contexts.length, 2);
 });
+
+test('Dock resource targets are scoped to the chat and survive status calls until their matching close', t => {
+  const {activity}=fixture(t), toolId='mqtt-debugger';
+  const start=(sessionId,toolName='mqtt_session_open')=>activity.recordInvocationStarted({sessionId,toolId,toolName,now:1});
+  const done=(sessionId,extra={})=>activity.recordInvocationCompleted({sessionId,toolId,state:'succeeded',now:2,...extra});
+  start('one'); done('one',{openedResourceSessionId:'mqtt-one'});
+  start('two'); done('two',{openedResourceSessionId:'mqtt-two'});
+  start('one','mqtt_logs_read'); done('one');
+  assert.equal(activity.getActivity('one',toolId).resourceSessionId,'mqtt-one');
+  done('one',{closedResourceSessionId:'unrelated'});
+  assert.equal(activity.getActivity('one',toolId).resourceSessionId,'mqtt-one');
+  done('one',{closedResourceSessionId:'mqtt-one'});
+  assert.equal(activity.getActivity('one',toolId).resourceSessionId,undefined);
+  assert.equal(activity.getActivity('two',toolId).resourceSessionId,'mqtt-two');
+  activity.releaseSession('two');
+  assert.equal(activity.getActivity('two',toolId).resourceSessionId,undefined);
+});

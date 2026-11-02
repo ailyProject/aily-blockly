@@ -24,7 +24,7 @@ describe('main-window close confirmation', () => {
     await Promise.resolve();
     expect(window['iWindow'].confirmClose).not.toHaveBeenCalled();
     finish(allowed); await pending;
-    expect(view.checkUnsavedChanges).toHaveBeenCalledOnceWith('close');
+    expect(view.checkUnsavedChanges).toHaveBeenCalledOnceWith('close', { quitting: true });
     expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('quit-one', allowed);
     expect(window['iWindow'].close).not.toHaveBeenCalled();
   });

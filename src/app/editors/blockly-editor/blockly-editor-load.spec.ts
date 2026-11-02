@@ -6,6 +6,7 @@ import { BlocklyService } from './services/blockly.service';
 import { canTransferProjectAbi } from './utils/project-abi-transfer';
 import { BlocklyLibraryPackageService } from '@domain/dependencies/public-api';
 import { hashAbsText } from '../../integrations/blockly/abs/abs-identity-map';
+import { projectResourceGc } from './services/project-resource-gc.service';
 
 describe('legacy native-procedure library validation', () => {
   function fixture() {
@@ -209,6 +210,47 @@ describe('project load normalization context', () => {
 });
 
 describe('Blockly dependency preparation cancellation', () => {
+  for (const retainedHistory of [false, true]) {
+    it(`${retainedHistory ? 'retains old baseline-only resources for a deferred plain-ABS load' : 'still collects an ordinary ABI-only project without history'}`, async () => {
+      const component: any = Object.create(BlocklyEditorComponent.prototype);
+      const resources = new Map([['old-baseline-only', 'immutable asset bytes']]);
+      const gc = spyOn(projectResourceGc, 'cleanupUnreferencedFiles').and.callFake(() => {
+        resources.clear(); return { deleted: ['old-baseline-only'], kept: [], errors: [] } as any;
+      });
+      const previousBoard = window['boardConfig'];
+      Object.assign(component, {
+        stopPackageJsonDependencyWatch() {}, clearProjectLoadedCodeRefreshTimer() {},
+        configService: { ensureLibraryListForProject: async () => {}, getApplicationName: () => 'isolated' },
+        electronService: { readFile: () => '{"name":"isolated","devmode":"arduino"}', setTitle() {} },
+        projectService: { discardLibraryChanges: async () => {}, addRecentlyProject() {},
+          resolveBoardConfigForRuntime: async () => ({}), loadBoardMenuConfig: async () => {}, isCloudBuild: () => false,
+          markBlocklyProjectLoaded() {}, markBlocklyLibraryRuntimeReady() {} },
+        applyProjectPackageJson() {}, getDeclaredBlocklyLibraryDependencies: () => new Map(),
+        npmService: { ensureProjectDependenciesInstalled: async () => true, installedOk: async () => true,
+          getAllInstalledLibraries: async () => [], installBoardDeps: async () => {} },
+        blocklyService: { waitForWorkspace: async () => {}, withToolboxRefreshBatch: async work => work(),
+          getMissingBlockDefinitions: () => [], acquireWorkspaceEditLease: () => ({ assertCurrent() {}, release() {} }),
+          loadProjectDocumentForOpen: async () => {} },
+        generatorRuntime: { updateContext() {}, markReady() {} }, uiService: { updateFooterState() {} },
+        translate: { instant: text => text }, getMissingProjectLibraries: () => [], waitForNextFrame: async () => {},
+        loadProjectAbiDocument: async () => ({ document: { pages: [] }, usedBoardTemplate: false,
+          diskText: 'original ABI', completeAbs: false,
+          ...(retainedHistory ? { deferredNormalization: { status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_DEFERRED',
+            recovery: { tool: 'project_recover' } } } : {}) }),
+        ngZone: { runOutsideAngular: work => work() },
+        _projectService: { rememberLoadedProject() {}, syncUsedLibraryManifest: () => false },
+        scheduleProjectLoadedCodeRefresh() {}, promptLoginForAuthRequiredBoard: async () => {},
+        startPackageJsonDependencyWatch() {}, localLibrarySyncService: { start() {} }, checkBlocklyOnboarding() {},
+      });
+      spyOn(console, 'warn'); spyOn(console, 'info');
+      try {
+        await component.prepareProject('D:/isolated-load', { signal: new AbortController().signal }, () => {});
+        expect(gc.calls.count()).toBe(retainedHistory ? 0 : 1);
+        expect(resources.size).toBe(retainedHistory ? 1 : 0);
+      } finally { window['boardConfig'] = previousBoard; }
+    });
+  }
+
   for (const superseded of [false, true]) {
     it(`${superseded ? 'rejects a stale route' : 'captures the dependency session'} after startup configuration is loaded`, async () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);

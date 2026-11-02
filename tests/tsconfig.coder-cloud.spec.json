@@ -6,6 +6,7 @@
     "../src/app/tools/cloud-space/services/cloud.service.spec.ts",
     "../src/app/tools/cloud-space/services/cloud-project-open.service.spec.ts",
     "../src/app/pages/playground/example-list/example-list-import.spec.ts",
+    "../src/app/tools/cloud-space/services/legacy-cloud-project.spec.ts",
     "../src/**/*.d.ts"
   ]
 }

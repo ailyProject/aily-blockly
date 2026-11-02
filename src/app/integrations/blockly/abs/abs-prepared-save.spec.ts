@@ -148,7 +148,7 @@ describe('prepared Blockly save boundary', () => {
       });
       await service.save('D:/project');
       expect(JSON.parse(disk.get('D:/project/project.abi')!).sharedModel.variables).toEqual(source.sharedModel['variables']);
-      expect((service as any).publishPreparedCode).toHaveBeenCalledOnceWith('D:/project', generated, jasmine.any(Function));
+      expect((service as any).publishPreparedCode).toHaveBeenCalledOnceWith('D:/project', generated, jasmine.any(Function), {});
       expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
       expect(editor.isWorkspaceEditBlocked()).toBeFalse();
     });
@@ -272,6 +272,14 @@ describe('prepared Blockly save boundary', () => {
       });
       await service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined);
       expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [], sketchCode: generated.code });
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+    });
+    it('propagates the explicit preservation flag and the actual source archive receipt after an ABI commit', async () => {
+      const receipt = { changed: true, sourceArchive: { version: 1 as const, manifest: '.aily/generated-source-archives/id/manifest.json',
+        hash: `sha256:${'a'.repeat(64)}`, fileCount: 1, bytes: 12 } };
+      window['builder'].generatedSourceArchiveVersion = 1; publishArtifacts.and.returnValue(receipt);
+      expect(await service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined, { preserveSuperseded: true })).toBe(receipt);
+      expect(publishArtifacts).toHaveBeenCalledOnceWith('D:/project', { artifacts: [], sketchCode: generated.code, preserveSuperseded: true });
       expect(editor.prepareProjectCode).not.toHaveBeenCalled();
     });
     it('publishes the same prepared sketch and headers together, including an empty sketch', async () => {

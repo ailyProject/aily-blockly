@@ -21,6 +21,7 @@ export interface AbsSyncStoragePort {
 }
 
 export interface AbsDiskSnapshot { abi: string | null; abs: string | null; map: string | null }
+export interface AbsViewResolutionRecord { token: string; choice: 'keep_view' | 'replace_view'; inputAbiHash: string }
 export interface AbsJournalRecovery {
   action: 'recover' | 'abandon'; generation: string; token: string; scope: AbsIdentityMap['scope'];
 }
@@ -137,8 +138,13 @@ export class AbsBaselineStore {
 
   /** Exact originals are durable before any replacement of user-visible mirrors. */
   async archiveRepair(generation: string, expected: AbsDiskSnapshot, pointerHash: string,
-    workspace: string, repairToken: string, assertCurrent: () => void): Promise<AbsRecoveryArchive> {
+    workspace: string, repairToken: string, assertCurrent: () => void, resolution?: AbsViewResolutionRecord): Promise<AbsRecoveryArchive> {
     absBaselineKey(generation);
+    resolution = resolution && { ...resolution };
+    if (resolution && (!/^sha256:[a-f0-9]{64}$/.test(resolution.token) || resolution.token !== repairToken
+      || !['keep_view', 'replace_view'].includes(resolution.choice) || resolution.inputAbiHash !== await hashNullable(expected.abi))) {
+      throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_INVALID', 'Invalid view resolution archive binding.');
+    }
     return this.port.withLock(async storage => {
       assertCurrent();
       if (await storage.read(PREPARED) !== null) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the existing transaction before repair.');
@@ -153,7 +159,7 @@ export class AbsBaselineStore {
         throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Original baseline changed before archival.');
       }
       const content = absJson({ schemaVersion: 1, generation, authority: 'workspace', repairToken, scope: this.scope,
-        disk: expected, committed: { pointer, baseline }, workspace });
+        disk: expected, committed: { pointer, baseline }, workspace, ...(resolution ? { resolution } : {}) });
       const key = `recoveries/${generation}.json`;
       assertCurrent();
       if (!await storage.replace(key, null, content)) throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_CONFLICT', 'Repair archive already exists.');
@@ -161,7 +167,7 @@ export class AbsBaselineStore {
       const files = { abi: await file(expected.abi), abs: await file(expected.abs), map: await file(expected.map),
         committed: await file(pointer), baseline: await file(baseline) };
       assertCurrent();
-      return { generation, key, hash: await hashAbsText(content), files, draft: files.abs };
+      return { generation, key, hash: await hashAbsText(content), files, draft: files.abs, ...(resolution ? { resolution } : {}) };
     });
   }
 
@@ -179,7 +185,8 @@ export class AbsBaselineStore {
     const file = async (text: string | null) => ({ hash: await hashNullable(text), bytes: text === null ? 0 : new TextEncoder().encode(text).byteLength });
     const files = { abi: await file(archive.disk.abi), abs: await file(archive.disk.abs), map: await file(archive.disk.map),
       committed: await file(archive.committed.pointer), baseline: await file(archive.committed.baseline) };
-    return { archive, recoveryArchive: { generation, ...record.recoveryArchive, files, draft: files.abs } };
+    return { archive, recoveryArchive: { generation, ...record.recoveryArchive, files, draft: files.abs,
+      ...(archive.resolution ? { resolution: archive.resolution as AbsViewResolutionRecord } : {}) } };
   }
 
   private async readRepairArchive(reference: { key: string; hash: string }) {
@@ -195,6 +202,11 @@ export class AbsBaselineStore {
       || !['abi', 'abs', 'map'].every(key => value.disk[key] === null || typeof value.disk[key] === 'string')
       || typeof value.committed?.pointer !== 'string' || typeof value.committed?.baseline !== 'string'
       || typeof value.workspace !== 'string') throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_INVALID', 'Invalid archived repair inputs.');
+    if (value.resolution && (Object.keys(value.resolution).sort().join(',') !== 'choice,inputAbiHash,token'
+      || value.resolution.token !== value.repairToken || !['keep_view', 'replace_view'].includes(value.resolution.choice)
+      || value.resolution.inputAbiHash !== await hashNullable(value.disk.abi))) {
+      throw new AbsSyncError('ABS_RECOVERY_ARCHIVE_INVALID', 'Invalid archived view resolution.');
+    }
     return value;
   }
 

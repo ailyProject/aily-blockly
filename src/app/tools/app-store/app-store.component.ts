@@ -507,7 +507,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.message.success(this.translate.instant(`APP_STORE.${action.toUpperCase()}_SUCCESS`, { name: app.name }));
     } catch (error) {
       if (!this.isBusyCancelledError(error)) {
-        const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+        const message = this.readableActionError(error);
         this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       }
     } finally {
@@ -533,7 +533,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       await this.subappManager.downloadUpdate(catalogId);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
     }
   }
@@ -646,7 +646,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       this.message.success(this.translate.instant('APP_STORE.UPDATE_SUCCESS', { name: app.name }));
     } catch (error) {
       if (!this.isBusyCancelledError(error)) {
-        const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+        const message = this.readableActionError(error);
         this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       }
       if (wasActive && processStopped && !updateInstalled) {
@@ -708,7 +708,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         { name: app.name },
       ));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
     } finally {
       this.pendingCatalogId = '';
@@ -786,6 +786,11 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
     return /EBUSY|resource busy|被占用/i.test(String(err.message || ''));
   }
 
+  private readableActionError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+    return message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
+  }
+
   private isBusyCancelledError(error: unknown): boolean {
     const err = error as { code?: string; message?: string } | null;
     if (!err) return false;
@@ -828,7 +833,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
       await this.refreshSubappActiveVersion(app);
       this.message.success(this.translate.instant('APP_STORE.RESTART_SUCCESS', { name: app.name }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message }));
       throw error;
     } finally {
@@ -879,7 +884,7 @@ export class AppStoreComponent implements OnInit, AfterViewInit, OnDestroy {
         name: refreshedApp.name,
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const message = this.readableActionError(error);
       this.message.error(this.translate.instant('APP_STORE.CHECK_UPDATE_FAILED', { message }));
     } finally {
       this.checkingCatalogId = '';

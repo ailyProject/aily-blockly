@@ -8,6 +8,8 @@ import {
   type BlocklySaveAsSnapshot,
   type ProjectSaveDispatchResult,
   type ProjectRecoveryFragment,
+  type ProjectConflictChoice,
+  type ProjectConflictResolution,
   type AilyDataRef,
   canonicalProjectJsonStringify,
   materializeGenericProjectDataValues,
@@ -132,13 +134,38 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     });
   }
 
+  async inspectBlocklyConflict(path: string) {
+    this.assertConflictProject(path);
+    return this.injector.get(AbsWorkspaceSyncService).inspectViewConflict();
+  }
+
+  async resolveBlocklyConflict(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution> {
+    this.assertConflictProject(path);
+    const outcome = await this.injector.get(AbsWorkspaceSyncService).resolveViewConflict(choice, token);
+    const projectSaved = outcome.publication.status === 'COMMITTED' && !outcome.requiresReload;
+    const generatedCodePublished = outcome.derivedOutputs?.published ?? outcome.warnings.length === 0;
+    return { project: path, choice, refreshed: outcome.refreshed, generation: outcome.publication.generation,
+      projectSaved, generatedCodePublished, partial: !projectSaved || !generatedCodePublished,
+      ...(!projectSaved || !generatedCodePublished ? { code: outcome.derivedOutputs?.code ?? 'ABS_VIEW_RESOLUTION_INCOMPLETE',
+        error: outcome.derivedOutputs?.error ?? outcome.publication.error ?? outcome.warnings.join('\n') } : {}) };
+  }
+
+  private assertConflictProject(path: string): void {
+    if (!this.isSameProjectPath(path, this.projectService.currentProjectPath)
+      || this.projectService.getProjectMode(path) !== 'blockly'
+      || !this.projectService.getBlocklyProjectLoadStatus(path)?.ready) {
+      throw Object.assign(new Error('Conflict resolution requires this fully loaded Blockly project.'), { code: 'ABS_CONTEXT_STALE' });
+    }
+  }
+
   hasUnsavedBlocklyChanges(): Promise<boolean> {
     const path = this.projectService.currentProjectPath;
     return new Promise((resolve, reject) => {
       this.actionService.dispatch('project-check-unsaved', {}, (result) => {
         if (path !== this.projectService.currentProjectPath) return reject(new Error('Project changed during the unsaved-state check.'));
         if (!result.success || typeof result.data?.hasUnsavedChanges !== 'boolean') {
-          return reject(new Error(result.error || 'The editor did not return a valid unsaved-state result.'));
+          return reject(Object.assign(new Error(result.data?.error || result.error || 'The editor did not return a valid unsaved-state result.'),
+            typeof result.data?.code === 'string' ? { code: result.data.code } : {}));
         }
         resolve(result.data.hasUnsavedChanges);
       }, 15000);

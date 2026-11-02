@@ -225,7 +225,73 @@ function createCandidate(rootDir, entry) {
   return { token, project, source, tarball: path.join(project, 'package.tgz') };
 }
 
-function publishCandidate(rootDir, entry, candidate, options = {}) {
+function isTransientDirectoryRename(error) {
+  return ['EPERM', 'EACCES', 'EBUSY'].includes(error?.code);
+}
+
+function renameDelayMs(attempt) {
+  return Math.min(1000, 50 * (2 ** attempt));
+}
+
+function publishBusyError(destination, cause) {
+  const error = new Error(`新版本目录暂时无法完成替换，请稍后重试。\n${destination}`);
+  error.code = 'SUBAPP_VERSION_PUBLISH_BUSY';
+  error.keepsPreviousVersion = true;
+  error.cause = cause;
+  return error;
+}
+
+function markDestinationExists(error, source, destination) {
+  if (!error) {
+    error = new Error(`EPERM: operation not permitted, rename '${source}' -> '${destination}'`);
+    error.code = 'EEXIST';
+  }
+  error.destinationExists = true;
+  return error;
+}
+
+// Windows reports EPERM both for a locked tree and for an existing destination.
+// Retry only while the destination is still absent; yield so the host UI stays responsive.
+async function renameDirectory(source, destination, options = {}) {
+  const retries = Number.isInteger(options.renameAttempts) ? options.renameAttempts : 7;
+  const sleep = typeof options.sleep === 'function'
+    ? options.sleep
+    : (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const wrapFailure = options.wrapFailure !== false;
+  let last;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (fs.existsSync(destination)) throw markDestinationExists(null, source, destination);
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (error) {
+      last = error;
+      if (fs.existsSync(destination)) throw markDestinationExists(error, source, destination);
+      if (!isTransientDirectoryRename(error) || attempt >= retries) break;
+      await sleep(renameDelayMs(attempt));
+    }
+  }
+  if (!wrapFailure) throw last;
+  throw publishBusyError(destination, last);
+}
+
+function versionIsReferenced(rootDir, entry) {
+  let manifest;
+  try {
+    manifest = readActiveManifest(rootDir, entry);
+  } catch {
+    // A corrupt selector must not be used as permission to move the live directory.
+    return true;
+  }
+  if (!manifest) return false;
+  return manifest.selected.version === entry.version || manifest.previous?.version === entry.version;
+}
+
+function discardStaging(candidate) {
+  try { fs.rmSync(candidate.project, { recursive: true, force: true }); } catch { /* The published version is already usable. */ }
+}
+
+async function publishCandidate(rootDir, entry, candidate, options = {}) {
   validateEntry(entry);
   const parent = storeRoot(rootDir, entry, { create: true });
   const candidateName = typeof candidate?.token === 'string' ? candidate.token : '';
@@ -267,49 +333,84 @@ function publishCandidate(rootDir, entry, candidate, options = {}) {
   });
 
   const destination = path.join(parent, entry.version);
+  const locator = {
+    version: entry.version, path: relativePath, ...(integrity ? { integrity } : {}),
+  };
+  const inspectPrepared = () => {
+    const prepared = inspectVersion(rootDir, entry, locator);
+    options.validatePrepared?.(prepared);
+    return prepared;
+  };
   let replacementBackup;
   let movedNew = false;
-  if (options.replacementTransaction) {
-    options.replacementTransaction.rollback = () => {
-      if (replacementBackup && fs.existsSync(replacementBackup)) {
-        if (fs.existsSync(destination)) fs.renameSync(destination, path.join(parent, `.failed-repair-${randomUUID()}`));
-        fs.renameSync(replacementBackup, destination);
-        replacementBackup = undefined;
-      } else if (movedNew && fs.existsSync(destination)) {
-        fs.renameSync(destination, path.join(parent, `.failed-repair-${randomUUID()}`));
+  const restoreOptions = { ...options, wrapFailure: false };
+  const rollback = async () => {
+    if (replacementBackup && fs.existsSync(replacementBackup)) {
+      if (fs.existsSync(destination)) {
+        await renameDirectory(destination, path.join(parent, `.failed-repair-${randomUUID()}`), restoreOptions);
       }
-      movedNew = false;
-    };
-  }
-  if (fs.existsSync(destination)) {
-    if (!options.replace) {
-      const existing = inspectVersion(rootDir, entry, {
-        version: entry.version, path: relativePath, ...(integrity ? { integrity } : {}),
-      });
-      fs.rmSync(candidate.project, { recursive: true, force: true });
-      return existing;
+      await renameDirectory(replacementBackup, destination, restoreOptions);
+      replacementBackup = undefined;
+    } else if (movedNew && fs.existsSync(destination)) {
+      await renameDirectory(destination, path.join(parent, `.failed-repair-${randomUUID()}`), restoreOptions);
     }
-    const replaced = path.join(parent, `.replaced-${entry.version}-${randomUUID()}`);
-    fs.renameSync(destination, replaced);
-    if (options.retainPrevious) replacementBackup = replaced;
+    movedNew = false;
+  };
+  if (options.replacementTransaction) options.replacementTransaction.rollback = rollback;
+
+  // A different version stays where it is. This publish only moves the new
+  // generation, and the caller switches active.json after this function returns.
+  if (fs.existsSync(destination) && !options.replace) {
     try {
-      fs.renameSync(candidate.project, destination);
-      if (!options.retainPrevious) fs.rmSync(replaced, { recursive: true, force: true });
+      const existing = inspectPrepared();
+      discardStaging(candidate);
+      return existing;
+    } catch (inspectError) {
+      if (versionIsReferenced(rootDir, entry)) throw publishBusyError(destination, inspectError);
+      await renameDirectory(destination, path.join(parent, `.failed-${entry.version}-${randomUUID()}`), options);
+    }
+  } else if (fs.existsSync(destination)) {
+    const replaced = path.join(parent, `.replaced-${entry.version}-${randomUUID()}`);
+    await renameDirectory(destination, replaced, options);
+    replacementBackup = replaced;
+    try {
+      await renameDirectory(candidate.project, destination, options);
+      movedNew = true;
     } catch (error) {
-      if (!fs.existsSync(destination) && fs.existsSync(replaced)) fs.renameSync(replaced, destination);
+      if (!fs.existsSync(destination) && fs.existsSync(replaced)) {
+        try {
+          await renameDirectory(replaced, destination, restoreOptions);
+          replacementBackup = undefined;
+          movedNew = false;
+        } catch (restoreError) {
+          error.message += `\n先前版本仍保留在 ${replaced}：${restoreError.message}`;
+        }
+      }
       throw error;
     }
-  } else {
-    fs.renameSync(candidate.project, destination);
   }
-  movedNew = true;
+
+  if (!movedNew && fs.existsSync(candidate.project)) {
+    try {
+      await renameDirectory(candidate.project, destination, options);
+      movedNew = true;
+    } catch (error) {
+      if (!error.destinationExists || options.replace) throw error;
+      const existing = inspectPrepared();
+      discardStaging(candidate);
+      return existing;
+    }
+  }
+
   try {
-    const prepared = inspectVersion(rootDir, entry, {
-      version: entry.version, path: relativePath, ...(integrity ? { integrity } : {}),
-    });
+    const prepared = inspectPrepared();
+    if (replacementBackup && !options.retainPrevious) {
+      discardStaging({ project: replacementBackup });
+      replacementBackup = undefined;
+    }
     return replacementBackup ? { ...prepared, replacementBackup } : prepared;
   } catch (error) {
-    options.replacementTransaction?.rollback();
+    await rollback();
     throw error;
   }
 }

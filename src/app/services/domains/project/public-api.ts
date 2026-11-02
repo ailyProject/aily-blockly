@@ -14,12 +14,15 @@ export * from './project-data/project-data-policy';
 export * from './project-data/project-data-runtime';
 export * from './project-data/project-data-store';
 export * from './project-data/project-data.types';
+export { normalizeProjectDataDocument, isDeferredProjectDataNormalization,
+  type ProjectDataNormalizationStore, type DeferredProjectDataNormalization } from './project-data/project-data-normalization';
 export * from './project-debug-configuration.service';
 export * from './operations/project-creation-workflow';
 export * from './project-root-path';
 export * from './project-view-ownership';
 export * from './project-package-name';
 export * from './project-save-outcome';
+export * from './project-conflict';
 export { captureProjectDiskRecovery, inspectProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
 export * from './project-mode';
 export * from './project-document-json';

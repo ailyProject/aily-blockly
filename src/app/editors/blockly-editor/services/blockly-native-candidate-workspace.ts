@@ -23,6 +23,7 @@ export class NativeCandidateWorkspace {
   private readonly requested = new Map<string, NativeCandidateBlock>();
   private readonly connections = new Map<Blockly.Block, Map<string, string | null>>();
   private readonly createdBy = new Map<Blockly.Block, string | undefined>();
+  private readonly writtenFields = new Map<Blockly.Block, Map<string, Blockly.Field>>();
   readonly creations: NativeDefaultCreations;
   readonly shadows: NativeShadowEvidence;
   private creationScope: NativeOwnedOperation | undefined;
@@ -120,11 +121,14 @@ export class NativeCandidateWorkspace {
     return defaults;
   }
 
-  field(block: Blockly.Block, name: string, value: unknown): void {
+  field(block: Blockly.Block, name: string, value: unknown, restoreReplaced = false): void {
     const request = this.requested.get(block.id)!;
-    if (request.fields.some(field => field.name === name)) throw new Error(`Duplicate native field ${name}.`);
+    const previous = request.fields.find(field => field.name === name);
     const field = block.getField(name);
     if (!field || field.SERIALIZABLE === false) throw new Error(`Native field is unavailable: ${name}.`);
+    const written = this.writtenFields.get(block) ?? new Map<string, Blockly.Field>();
+    if ((previous && (!restoreReplaced || written.get(name) === field))
+      || (restoreReplaced && (!previous || !written.has(name)))) throw new Error(`Duplicate native field ${name}.`);
     const requestedValue = structuredClone(value);
     this.owned(block.id, () => field.loadState(structuredClone(requestedValue))); this.assertClean();
     if (!sameJsonValue(field.saveState(), requestedValue)) {
@@ -132,7 +136,9 @@ export class NativeCandidateWorkspace {
       throw new Error(`Native field did not retain requested value: ${name}.` + (media
         ? ' Import the original media with project_media_import and use its returned value unchanged; legacy Base64 fields are not canonical resource references.' : ''));
     }
-    request.fields.push({ name, value: requestedValue });
+    if (previous) previous.value = requestedValue;
+    else request.fields.push({ name, value: requestedValue });
+    written.set(name, field); this.writtenFields.set(block, written);
   }
 
   connect(block: Blockly.Block, name: string, child: Blockly.Block | null, retainShadow?: (snapshot: NativeShadowSnapshot) => void): void {

@@ -7,6 +7,7 @@ const project = require('./aily-code-project');
 const { confirmLibraryProjections } = require('./library-source-evidence');
 const { confirmBuildSource, sourceManifest } = require('./build-source-capture');
 const { readBuildInputContextBinding } = require('./build-input-context');
+const { isProjectCoordinationFile } = require('./project-coordination-files');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(`PROJECT_INPUTS_CHANGED: ${message}`); };
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
@@ -41,6 +42,10 @@ function captureProjectSources(config) {
         if (depth > 64) fail('Source tree exceeds depth limit.');
         const before = fs.lstatSync(filename);
         if (before.isSymbolicLink()) fail(`Implicit source link refused: ${relative}`);
+        if (exclusions && isProjectCoordinationFile(relative)) {
+            if (!before.isFile() || before.nlink !== 1) fail(`Unsafe project coordination entry: ${relative}`);
+            return;
+        }
         if (before.isDirectory()) {
             for (const name of fs.readdirSync(filename).sort()) visit(path.join(filename, name), relative ? `${relative}/${name}` : name, depth + 1, exclusions);
             return;

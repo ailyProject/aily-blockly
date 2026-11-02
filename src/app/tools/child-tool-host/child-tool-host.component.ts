@@ -980,7 +980,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private showSubappActionError(error: unknown): void {
-    const actionError = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const raw = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const actionError = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
     this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message: actionError }));
   }
 

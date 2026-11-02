@@ -19,6 +19,7 @@ import { captureStructuralMutators } from '../components/blockly/plugins/block-p
 import { prepareNativeModels } from './blockly-native-model-preparation';
 import { nativeFieldDependencies } from './blockly-native-field-dependencies';
 import { inactiveAbsSyntax } from '../../../integrations/blockly/abs/abs-native-preservation';
+import { NativeFieldConfiguration } from './blockly-native-field-configuration';
 
 /** Native binding has no library/shape templates. Only the shared grammar knows ABS spelling. */
 export function bindNativeAbs(source: string, execution: NativeCandidateWorkspace, declarations: Map<string, Record<string, any>>,
@@ -33,9 +34,10 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
   const hosted = new Map(hostCalls.map(call => [call.start, call]));
   const consumed = new Set<number>();
   const fallbacks: AbsNativeDefault[] = [];
-  const pending: Array<{ block: Blockly.Block; node: AbsSyntaxNode; name: string; token: AbsSyntaxNode['fields'][string] }> = [];
+  const pending = new Map<Blockly.Block, AbsSyntaxNode>();
   let bindingReferences = false;
   const conflicts: AbsSyncError[] = [];
+  const configured = new Map<Blockly.Block, NativeFieldConfiguration>();
   const capture = (block: Blockly.Block, seed: AbsNativeBlock['seed']) => captureNativeBlock(execution, declarations, block, seed);
   // Replay owns these detached declarations and registration is already closed.
   // Reuse only their parsed syntax within this binding, not live field contracts,
@@ -67,39 +69,78 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
     // preserves its original reason set; final ABI verification checks the real state.
     return block;
   };
-  const setField = (block: Blockly.Block, node: AbsSyntaxNode, name: string, token: AbsSyntaxNode['fields'][string]) => {
-    try {
-      const field = block.getField(name);
-      if (!field) throw new Error(`Native field is unavailable: ${name}.`);
-      // saveState on an unconfigured FieldVariable creates a default model. Resolve
-      // the requested symbol first; do not create then adopt/delete an incidental model.
-      const definition = captureAbsFieldContract(field, field instanceof execution.native.FieldVariable ? undefined : field.saveState());
-      const hydrated = hydrate(token.value);
-      const resolvedToken = absJson(hydrated) === absJson(token.value) ? token
-        : { raw: JSON.stringify(hydrated), value: hydrated, quoted: typeof hydrated === 'string' };
-      const value = normalizeAbsSerializedField(definition.symbol ? execution.models.resolve(token, definition) : resolveAbsFieldValue(resolvedToken, definition), definition);
-      execution.field(block, name, value);
-    } catch (error) {
-      const dependencies = nativeFieldDependencies(execution.workspace);
-      if (dependencies && !bindingReferences && error instanceof AbsSyncError && error.code === 'ABS_FIELD_OPTION_INVALID') {
-        dependencies.defer(block, name, () => setField(block, node, name, token)); return;
-      }
-      if (modelPreparation && !bindingReferences && error instanceof AbsSyncError && error.code === 'ABS_SYMBOL_MISSING') {
-        pending.push({ block, node, name, token }); return;
-      }
-      const failure = serializeAbsFailure(error);
-      const located = new AbsSyncError(failure.code, failure.message, node.fieldRanges[name] ?? { start: node.start, end: node.end }, [],
-        { ...failure.diagnostic, blockType: block.type, field: name });
-      if (!bindingReferences && failure.code === 'ABS_SYMBOL_TYPE_MISMATCH') { conflicts.push(located); return; }
-      throw located;
+  const applyField = (block: Blockly.Block, name: string, token: AbsSyntaxNode['fields'][string], replaced = false) => {
+    const field = block.getField(name);
+    if (!field) throw new Error(`Native field is unavailable: ${name}.`);
+    // saveState on an unconfigured FieldVariable creates a default model. Resolve
+    // the requested symbol first; do not create then adopt/delete an incidental model.
+    const definition = captureAbsFieldContract(field, field instanceof execution.native.FieldVariable ? undefined : field.saveState());
+    const hydrated = hydrate(token.value);
+    const resolvedToken = absJson(hydrated) === absJson(token.value) ? token
+      : { raw: JSON.stringify(hydrated), value: hydrated, quoted: typeof hydrated === 'string' };
+    const value = normalizeAbsSerializedField(definition.symbol ? execution.models.resolve(token, definition) : resolveAbsFieldValue(resolvedToken, definition), definition);
+    execution.field(block, name, value, replaced);
+  };
+  const fieldFailure = (error: unknown, block: Blockly.Block, node: AbsSyntaxNode, name: string,
+    token: AbsSyntaxNode['fields'][string], replaced: boolean, deferOptions = !bindingReferences) => {
+    const dependencies = nativeFieldDependencies(execution.workspace);
+    if (dependencies && deferOptions && error instanceof AbsSyncError && error.code === 'ABS_FIELD_OPTION_INVALID') {
+      dependencies.defer(block, name, () => setField(block, node, name, token, replaced)); return;
     }
+    if (modelPreparation && !bindingReferences && error instanceof AbsSyncError && error.code === 'ABS_SYMBOL_MISSING') {
+      pending.set(block, node); return;
+    }
+    const failure = serializeAbsFailure(error);
+    const located = new AbsSyncError(failure.code, failure.message, node.fieldRanges[name] ?? { start: node.start, end: node.end }, [],
+      { ...failure.diagnostic, blockType: block.type, field: name });
+    if (!bindingReferences && failure.code === 'ABS_SYMBOL_TYPE_MISMATCH') { conflicts.push(located); return; }
+    throw located;
+  };
+  const setField = (block: Blockly.Block, node: AbsSyntaxNode, name: string, token: AbsSyntaxNode['fields'][string], replaced = false) => {
+    try { applyField(block, name, token, replaced); }
+    catch (error) { fieldFailure(error, block, node, name, token, replaced); }
+  };
+  const configureFields = (block: Blockly.Block, node: AbsSyntaxNode, complete = false, deferOptions = !bindingReferences) => {
+    let fields = configured.get(block);
+    if (!fields) configured.set(block, fields = new NativeFieldConfiguration(block));
+    const failures = new Map<string, AbsSyncError>();
+    const deferred = fields.restore(node.fields, () => {
+      const trace = execution.observer.readNativeBlockStructure(block);
+      return trace && nativeAbsArgumentOrder(execution.observer.readNativeBlockJson(block) ?? declarations.get(node.type) ?? { type: node.type }, trace)
+        ?.filter(argument => argument.kind === 'field').map(argument => argument.name);
+    }, (name, token, replaced) => {
+      try { applyField(block, name, token, replaced); failures.delete(name); }
+      catch (error) {
+        // These may become valid after later selectors or model declarations.
+        if (error instanceof AbsSyncError && (error.code === 'ABS_FIELD_OPTION_INVALID' || error.code === 'ABS_SYMBOL_MISSING')) {
+          failures.set(name, error); throw error;
+        }
+        fieldFailure(error, block, node, name, token, replaced);
+      }
+    },
+      error => error instanceof AbsSyncError && (error.code === 'ABS_FIELD_OPTION_INVALID' || error.code === 'ABS_SYMBOL_MISSING'));
+    const missingModel = deferred.find(name => failures.get(name)?.code === 'ABS_SYMBOL_MISSING');
+    if (complete) {
+      // A real unresolved model selector may create/replace the other fields.
+      // Resume this same instance worklist after registration, not a lone setter.
+      if (missingModel && modelPreparation && !bindingReferences) { pending.set(block, node); return { deferred, missingModel }; }
+      // Report the actual missing model before secondary not-yet-created fields.
+      if (missingModel) fieldFailure(failures.get(missingModel)!, block, node, missingModel,
+        node.fields[missingModel], fields.hasApplied(missingModel), deferOptions);
+      for (const name of deferred) {
+        const error = failures.get(name);
+        if (error) fieldFailure(error, block, node, name, node.fields[name], fields.hasApplied(name), deferOptions);
+        else setField(block, node, name, node.fields[name], fields.hasApplied(name));
+      }
+    }
+    return { deferred, missingModel };
   };
   const materialize = (node: AbsSyntaxNode): Blockly.Block => {
     const existing = blocks.get(node);
     if (existing) return existing;
     // The shared value-input fallback produces literal/variable blocks, never guessed slot names.
     const block = create(node);
-    for (const [name, token] of Object.entries(node.fields)) setField(block, node, name, token);
+    configureFields(block, node, true);
     return block;
   };
   const syntax = bindAbsSyntax(raw, options, node => {
@@ -119,7 +160,8 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
         execution.assertClean();
         return trace && nativeAbsArgumentOrder(execution.observer.readNativeBlockJson(block) ?? declarations.get(node.type) ?? { type: node.type }, trace);
       },
-      field: (name, token) => setField(block, node, name, token),
+      field: () => configureFields(block, node),
+      fieldsComplete: () => configureFields(block, node, true),
       // Cross-boundary edges are checked by loading the complete merged ABI, not
       // by creating a surrogate model block inside the discovery workspace.
       input: (name, child) => {
@@ -144,22 +186,18 @@ export function bindNativeAbs(source: string, execution: NativeCandidateWorkspac
   }
   bindingReferences = true;
   const resolvePending = () => {
-    for (let index = pending.length - 1; index >= 0; index--) {
-      const item = pending[index];
-      try {
-        setField(item.block, item.node, item.name, item.token);
-        pending.splice(index, 1);
-      } catch (error) {
-        if (!(error instanceof AbsSyncError) || error.code !== 'ABS_SYMBOL_MISSING') throw error;
-      }
+    for (const [block, node] of pending) {
+      if (configureFields(block, node).missingModel) continue;
+      pending.delete(block);
+      configureFields(block, node, true, true);
     }
     const dependencies = nativeFieldDependencies(execution.workspace);
-    if (!pending.length) dependencies?.settle(false);
-    return new Set([...pending.map(item => item.block), ...dependencies?.blocks ?? []]);
+    if (!pending.size) dependencies?.settle(false);
+    return new Set([...pending.keys(), ...dependencies?.blocks ?? []]);
   };
   const modelDeclarations = modelPreparation ? prepareNativeModels(execution, modelPreparation.generator, blocks,
     resolvePending, modelPreparation.requestId, { ...modelPreparation, inactiveNodes: inactiveAbsSyntax(syntax) }) : [];
-  for (const item of pending) setField(item.block, item.node, item.name, item.token);
+  for (const [block, node] of pending) configureFields(block, node, true);
   if (assigned && assigned.size !== consumed.size || hostCalls.some(call => !consumed.has(call.start))) throw new Error('Native candidate identities or host bindings contain unused calls.');
   structural.assertCurrent();
   return () => {
