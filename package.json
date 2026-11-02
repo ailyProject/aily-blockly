@@ -129,7 +129,7 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": false,
+      "createDesktopShortcut": true,
       "perMachine": true,
       "allowElevation": true,
       "deleteAppDataOnUninstall": true,
