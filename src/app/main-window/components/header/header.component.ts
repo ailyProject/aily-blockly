@@ -1906,19 +1906,18 @@ export class HeaderComponent implements OnInit, OnDestroy {
             }
             break;
           case 'continue':
+            // The picker, project lock or child-window close can still cancel
+            // navigation. Only the lifecycle owner may discard dependencies,
+            // after the departing Blockly editor has been disposed.
+            if (!quitting) { resolve(unchanged()); return; }
             try {
-              await this.projectService.discardAllLibraryChanges({ quitting });
+              await this.projectService.discardLibraryChangesBeforeQuit();
               resolve(unchanged());
             } catch (error) {
-              if (quitting) {
-                // The user explicitly chose to discard. A damaged project must
-                // not veto application shutdown by failing dependency recovery.
-                console.warn('退出时未能恢复全部库依赖：', error);
-                resolve(unchanged());
-              } else {
-                this.message.error(error instanceof Error ? error.message : String(error));
-                resolve(false);
-              }
+              // The user explicitly chose to discard. A damaged project must
+              // not veto application shutdown by failing dependency recovery.
+              console.warn('退出时未能恢复全部库依赖：', error);
+              resolve(unchanged());
             }
             break;
           case 'cancel':

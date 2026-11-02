@@ -132,6 +132,8 @@ test('immediate libraries, explicit manifest save, discard reload and real Chat 
     await writeFile(info.outputPath('discard-dialog.txt'),await win.locator('app-unsave-dialog').innerText());
     await win.locator('app-unsave-dialog').getByRole('button',{name:'跳过保存',exact:true}).click();
     expect(await win.evaluate(()=>(window as any).discardDecision)).toBe(true);
+    await win.evaluate(async project => { const service=(window as any).ng.getComponent(document.querySelector('app-header')).projectService; await service.close(); await service.projectOpen(project); }, project);
+    await ready();
     expect(await manifest()).toBe(saved); expect(installed()).toEqual(['c','d']); await expectDirtyTitle(false); await record('explicit-discard');
     // Real Aily Chat history engine: same external transaction API used by lib_add/lib_remove.
     const {WorkspaceHistoryEngine}=await import(pathToFileURL(path.join(agentRoot!,'packages/aily-agent/dist/extensions/pi-workspace-history/history-engine.js')).href);

@@ -144,7 +144,7 @@ export class CompileService {
 
     // Ordinary local builds retain the existing readiness-before-admission flow.
     if (!context.cloud && !retryLocally) {
-      const blocked = await this.checkCompileDependencies(root);
+      const blocked = await this.checkCompileDependencies(root, false);
       if (blocked) return blocked;
     }
 
@@ -208,7 +208,7 @@ export class CompileService {
       }
 
       if (context.cloud || retryLocally) {
-        const blocked = await this.checkCompileDependencies(root);
+        const blocked = await this.checkCompileDependencies(root, context.cloud);
         if (blocked) return blocked;
       }
 
@@ -227,21 +227,22 @@ export class CompileService {
     }
   }
 
-  private async checkCompileDependencies(root: string) {
+  private async checkCompileDependencies(root: string, cloud = false) {
     const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
     if (dependencyBlock) {
       this.message.warning(dependencyBlock);
       return { success: false, result: { state: 'warn', text: dependencyBlock } };
     }
 
-    if (this.configService.isCoderProduct()) {
-      try {
+    try {
+      if (!cloud) await this.npmService.ensureLocalCompilerDependencies(root);
+      if (this.configService.isCoderProduct()) {
         await this.npmService.assertCoderDependenciesReady(root);
-      } catch (error) {
-        const text = error instanceof Error ? error.message : String(error);
-        this.message.warning(text);
-        return { success: false, result: { state: 'warn', text } };
       }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      this.message.warning(text);
+      return { success: false, result: { state: 'warn', text } };
     }
 
     return undefined;

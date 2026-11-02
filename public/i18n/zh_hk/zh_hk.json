@@ -3,6 +3,8 @@
     "LABEL": "子應用活動面板",
     "TITLE": "子應用",
     "OPEN_FULL": "開啟完整子應用",
+    "OPEN_EMBEDDED": "以內嵌模式開啟",
+    "OPEN_WINDOW": "在獨立視窗中開啟",
     "COLLAPSE": "收起",
     "CALL_COUNT": "調用次數：{{count}}",
     "RUNTIME_READY": "執行服務已就緒",
@@ -194,6 +196,7 @@
         "SPONSORS_DESC": "本專案得到了以下企業/個人的贊助",
         "NEWS": "動態",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "用自然語言描述需求，AI 助手可協助建立專案、解答問題。",
             "STEP1_TITLE": "建立新專案",
             "STEP1_DESC": "點擊這裡可以建立一個新的程式設計專案，選擇開發板和程式語言開始您的創作之旅。",
             "STEP2_TITLE": "開啟現有專案",
@@ -220,6 +223,7 @@
         "WORKSPACE_SELECT_ALL": "全選積木",
         "EXPLAIN_BLOCK": "AI 解釋",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "AI 助手可協助理解專案、產生程式碼、解釋程式和修復錯誤。",
             "TOOLBOX_TITLE": "積木工具箱",
             "TOOLBOX_DESC": "這裡是積木分類區域，點擊不同分類可以找到各種功能積木，拖曳到右側工作區使用。",
             "WORKSPACE_TITLE": "工作區",
@@ -990,6 +994,9 @@
         "SAFE_LOGOUT_CONFIRM": "登出",
         "CANCEL": "取消",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "應用商店",
+            "APP_STORE_DESC": "瀏覽和安裝 AI 工具，擴展 AI 助手的能力；亦可新增其他應用、管理工具列入口。",
+            "AI_TOOLS_TITLE": "AI 助手",
             "SKIP": "跳過",
             "PREV": "上一步",
             "NEXT": "下一步",

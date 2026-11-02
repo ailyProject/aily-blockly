@@ -65,6 +65,7 @@
       @for (app of headerApps; track app.id) {
       @if(showApp(app)){
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ app.name | translate}}" (click)="onClick(app,$event)"
+        [attr.data-onboarding]="app.id === 'aily-chat' ? 'ai-tools' : null"
         [ngStyle]="{ color: app.color ? app.color : '' }" [ngClass]="{ selected: isOpenTool(app) }">
         <i class="{{ app.icon }}"></i>
         @if (app.ai) {
@@ -79,6 +80,7 @@
     <div style="border-left: 1px solid var(--aily-border-primary);height: 24px;"></div>
     <div class="zone ccenter">
       <div class="btn ccenter" nz-tooltip nzTooltipTitle="{{ 'MENU.APP_STORE' | translate }}"
+        data-onboarding="app-store"
         (click)="onClick(appStoreBtn,$event)" [ngClass]="{ selected: isOpenTool(appStoreBtn) }">
         <i class="fa-light fa-grid-2-plus"></i>
       </div>

@@ -28,6 +28,7 @@ describe('Coder concurrent process integration', () => {
 
   beforeEach(() => {
     spyOn(NpmService.prototype, 'assertCoderDependenciesReady').and.resolveTo();
+    spyOn(NpmService.prototype, 'ensureLocalCompilerDependencies').and.resolveTo();
     originals = { path: window['path'], fs: window['fs'], cmd: window['cmd'], builder: window['builder'] };
     window['builder'] = { captureBuildSource: () => ({ digest: 'fixture-source' }) };
     window['path'] = { join: (...parts: string[]) => parts.join('/'), isExists: () => true,

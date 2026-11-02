@@ -20,22 +20,15 @@ describe('library discard before application quit', () => {
   }
   it('attempts every open project once and reports failures to the quit decision', async () => {
     const service = fixture();
-    await expectAsync(service.discardAllLibraryChanges({ quitting: true })).toBeRejectedWithError(AggregateError);
+    await expectAsync(service.discardLibraryChangesBeforeQuit()).toBeRejectedWithError(AggregateError);
     expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken'], ['/healthy']]);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
   });
   it('does not rebuild the editor that is about to quit after successful recovery', async () => {
     const service = fixture(); service.discardLibraryChanges.and.resolveTo();
-    await service.discardAllLibraryChanges({ quitting: true });
+    await service.discardLibraryChangesBeforeQuit();
     expect(service.discardLibraryChanges).toHaveBeenCalledTimes(2);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
-    await service.discardAllLibraryChanges();
-    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).toHaveBeenCalledTimes(1);
-  });
-  it('keeps project switching strict when dependency recovery fails', async () => {
-    const service = fixture();
-    await expectAsync(service.discardAllLibraryChanges()).toBeRejectedWithError('ENOENT package.json');
-    expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken']]);
   });
 });
 
@@ -109,12 +102,14 @@ describe('project lifecycle admission across sessions', () => {
     service.coderProjectsSubject = new BehaviorSubject([]);
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
+    service.stateSubject = new BehaviorSubject('loaded');
+    Object.defineProperty(service, 'router', { value: { url: '/main/guide' } });
     service.getProjectMode = () => 'blockly';
     service.save = jasmine.createSpy('save').and.resolveTo({ success: true });
     service.projectOpenInternal = jasmine.createSpy('open').and.resolveTo(true);
     service.closeInternal = jasmine.createSpy('close').and.resolveTo(true);
     service.stopProjectCommands = jasmine.createSpy('stopCommands').and.resolveTo();
-    Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path) } });
+    Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path), closeConnectionGraphWindows: async () => true } });
     return { service, registry };
   }
 

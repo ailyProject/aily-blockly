@@ -161,6 +161,7 @@ describe('Blockly compile and upload handoff', () => {
       waitForOneIdleBoundary: async () => {}, runBuilderPreprocessPhase: (_tag: string, fn: any) => fn(),
       waitForAilyBuilderReady: async () => {}, writeCompileRequest: jasmine.createSpy('request').and.resolveTo('/request'),
       cmdService: { spawn: jasmine.createSpy('spawn').and.returnValue(command) },
+      npmService: { ensureLocalCompilerDependencies: jasmine.createSpy('compilerIntegrity').and.resolveTo() },
       noticeService: { update() {} }, logService: { update() {} }, message: { warning() {} },
       projectDebugConfigurationService: { updateWorkspaceGeneratedCode: async () => {} },
       compileValidationService: { triggerAfterSuccessfulCompile() {} },
@@ -195,7 +196,7 @@ describe('Blockly compile and upload handoff', () => {
     const notices: any[] = [];
     f.service.noticeService.update = (notice: any) => notices.push(notice);
     f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
-    f.service.npmService = { prepareCompileBackend: async () => {
+    f.service.npmService = { ensureLocalCompilerDependencies: async () => {}, prepareCompileBackend: async () => {
       if (!local && stage === 'preflight') throw new Error('unsupported board');
     }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
       expect(local).toBeTrue(); expect(owners).toBe(1);
@@ -340,6 +341,7 @@ describe('Blockly compile and upload handoff', () => {
       prjService: f.service.projectService, configService: { isCoderProduct: () => false },
       prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
       prepareLocalCompileBackend: async () => {},
+      ensureLocalCompilerDependencies: async () => {},
     });
     let clouds = 0;
     f.service.runCloudCompilation = jasmine.createSpy('cloud').and.callFake(async () => {

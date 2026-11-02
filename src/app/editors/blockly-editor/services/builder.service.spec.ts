@@ -49,6 +49,7 @@ describe('BuilderService background preprocess ownership', () => {
       finishBuild: jasmine.createSpy('finishBuild').and.callFake(() => { service.workflowService.currentState = ProcessState.IDLE; }) };
     service.electronService = { pathJoin: (...parts: string[]) => parts.join('/') };
     service.cmdService = { spawn: jasmine.createSpy('spawn') };
+    service.npmService = { ensureLocalCompilerDependencies: async () => {} };
     service.t = (key: string) => key;
     for (const method of ['clearProgressTimer', 'updateCancelledNotice', 'ensureCancelState', 'handleCompileError', 'safeUpdateNotice']) service[method] = jasmine.createSpy(method);
     return service;

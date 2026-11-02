@@ -23,7 +23,7 @@ describe('save-before-leaving confirmation', () => {
       const dialog = new Subject<any>();
       const project = projectFixture({ getProjectMode: () => 'blockly',
         hasUnsavedChanges: jasmine.createSpy('dirty').and.resolveTo(true),
-        discardAllLibraryChanges: jasmine.createSpy('discard').and.resolveTo(),
+        discardLibraryChangesBeforeQuit: jasmine.createSpy('discard').and.resolveTo(),
         save: jasmine.createSpy('save').and.resolveTo({ success: true }) });
       const view: any = Object.create(entry === 'header' ? HeaderComponent.prototype : ProjectNewComponent.prototype);
       view.projectService = project;

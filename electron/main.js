@@ -53,6 +53,7 @@ const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const { refreshApplicationMenu } = require('./application-menu');
 const {
   createDevelopmentProtocolArgs,
+  getProductAppId,
   normalizeBuildProduct,
   resolveBuildProduct,
   getProductAuthConfig,
@@ -112,10 +113,7 @@ function applyAppIdentity(product) {
   const isCoderProduct = normalizeBuildProduct(product) === 'coder';
   app.setName(isCoderProduct ? 'Aily Coder' : 'aily blockly');
   if (isWin32) {
-    const configuredAppUserModelId = getPackagedMetadata()?.ailyAppUserModelId;
-    app.setAppUserModelId(
-      configuredAppUserModelId || (isCoderProduct ? 'pro.aily.coder' : 'pro.aily.blockly'),
-    );
+    app.setAppUserModelId(getProductAppId(product));
   }
 }
 

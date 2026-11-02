@@ -3,6 +3,8 @@
     "LABEL": "Subapp activity dock",
     "TITLE": "Subapps",
     "OPEN_FULL": "Open full subapp",
+    "OPEN_EMBEDDED": "Open embedded in main app",
+    "OPEN_WINDOW": "Open in separate window",
     "COLLAPSE": "Collapse",
     "CALL_COUNT": "Calls: {{count}}",
     "RUNTIME_READY": "Runtime ready",
@@ -231,6 +233,7 @@
         "SPONSORS_DESC": "This project is sponsored by the following companies/individuals",
         "NEWS": "News",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Describe what you need in natural language. The AI assistant can help create projects and answer questions.",
             "STEP1_TITLE": "Create New Project",
             "STEP1_DESC": "Click here to create a new programming project. Choose your board and programming language to start your creative journey.",
             "STEP2_TITLE": "Open Existing Project",
@@ -257,6 +260,7 @@
         "WORKSPACE_SELECT_ALL": "Select all blocks",
         "EXPLAIN_BLOCK": "Explain with AI",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "The AI assistant can help understand your project, generate code, explain programs, and fix errors.",
             "TOOLBOX_TITLE": "Block Toolbox",
             "TOOLBOX_DESC": "Find all available blocks here. Drag and drop blocks to the workspace to build your program.",
             "WORKSPACE_TITLE": "Workspace",
@@ -1041,6 +1045,9 @@
         "SAFE_LOGOUT_CONFIRM": "Log out",
         "CANCEL": "Cancel",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "App Store",
+            "APP_STORE_DESC": "Browse and install AI tools to extend the AI assistant's capabilities. Add other apps and manage toolbar entries.",
+            "AI_TOOLS_TITLE": "AI Assistant",
             "SKIP": "Skip",
             "PREV": "Previous",
             "NEXT": "Next",

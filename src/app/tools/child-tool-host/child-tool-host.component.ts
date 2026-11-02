@@ -980,7 +980,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private showSubappActionError(error: unknown): void {
-    const actionError = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const raw = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const actionError = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
     this.message.error(this.translate.instant('APP_STORE.ACTION_FAILED', { message: actionError }));
   }
 
@@ -988,6 +989,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController?.();
     this.unregisterHostController = this.childHostRegistry.register(this.resolvedToolId, {
       status: () => this.hostAutomationStatus(),
+      reportIssue: () => this.reportChatSessionIssue(),
       restart: () => this.restart(),
       close: () => this.close(),
       detach: options => this.detach(options),
@@ -1011,6 +1013,19 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       pid: this.serverInfo?.pid ?? null,
       port: this.serverInfo?.port ?? null,
     };
+  }
+
+  private async reportChatSessionIssue(): Promise<Record<string, unknown>> {
+    const sessionId = this.ailyChatSessionId;
+    if (!this.isAilyChatTool() || !sessionId || typeof this.remoteApi?.reportSessionIssue !== 'function') {
+      return { ok: true, skipped: true };
+    }
+    try {
+      return await this.remoteApi.reportSessionIssue({ sessionId });
+    } catch {
+      // Supplementary diagnostics must not affect the host or the active turn.
+      return { ok: false };
+    }
   }
 
   private async startServer(restart: boolean): Promise<void> {

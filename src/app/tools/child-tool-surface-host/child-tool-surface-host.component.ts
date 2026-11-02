@@ -22,6 +22,7 @@ import {
 import {
   ChildAppHostRegistryService,
   resolveChildCloseDecision,
+  hasDockEmbeddedViewControl,
   type ChildAppWindowPlacement,
   ChildToolProcessService,
   type ChildToolHostInfo,
@@ -376,6 +377,7 @@ export class ChildToolSurfaceHostComponent implements OnInit, OnChanges, OnDestr
         snapshotRefresh: true,
         userInteractionNotifications: true,
         compactSurface: true,
+        dockOpenEmbedded: this.placement === 'chat-dock' && hasDockEmbeddedViewControl(this.toolId),
         runtimeControl: false,
       },
     };

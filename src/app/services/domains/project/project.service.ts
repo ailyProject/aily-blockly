@@ -249,20 +249,43 @@ export class ProjectService {
     this.libraryChangesChanged?.next();
   }
 
-  async discardAllLibraryChanges({ quitting = false }: { quitting?: boolean } = {}): Promise<void> {
-    const refresh = this.libraryChanges.has(this.normalizeProjectPath(this.currentProjectPath));
+  /** Native quit has already been confirmed. It never rebuilds a departing editor. */
+  async discardLibraryChangesBeforeQuit(): Promise<void> {
     const errors: unknown[] = [];
     for (const path of new Set([this.currentProjectPath, ...this.coderProjects.map(project => project.path)].filter(Boolean))) {
       try { await this.discardLibraryChanges(path); }
       catch (error) {
-        if (!quitting) throw error;
         // Still restore other open projects when one manifest is unavailable.
         errors.push(error);
       }
     }
     if (errors.length) throw new AggregateError(errors, '退出时部分项目的库依赖未能恢复');
-    if (!quitting && refresh && this.getProjectMode(this.currentProjectPath) === 'blockly'
-      && this.getBlocklyProjectLoadStatus(this.currentProjectPath).ready) await this.rebuildBlocklyRuntimeAfterLibraryChange();
+  }
+
+  /** Retire the complete editor session before changing the dependency tree it
+   * owns. A refused navigation must leave both the canvas and libraries intact. */
+  private async retireBlocklyEditor(projectPath: string): Promise<boolean> {
+    if (!projectPath || !this.isSameProjectPath(projectPath, this.currentProjectPath)
+      || !this.router.url.startsWith('/main/blockly-editor')) return true;
+    const navigated = await this.router.navigate(['/main/guide'], { replaceUrl: true });
+    if (!navigated || this.router.url.startsWith('/main/blockly-editor')) return false;
+    this.beginBlocklyProjectLoad(projectPath);
+    return true;
+  }
+
+  private async discardDepartingBlocklyProject(projectPath: string, reconcile = false): Promise<boolean> {
+    if (!(await this.retireBlocklyEditor(projectPath))) return false;
+    try {
+      await this.discardLibraryChanges(projectPath, reconcile);
+      return true;
+    } catch (error) {
+      // Keep the main-process edit session for a subsequent close/reopen retry.
+      // The retired canvas must never be revived against a partially restored tree.
+      const detail = `项目库依赖恢复失败，请重试关闭或重新打开项目：${error instanceof Error ? error.message : String(error)}`;
+      this.markBlocklyProjectLoadFailed(projectPath, detail);
+      this.message.error(detail);
+      return false;
+    }
   }
 
   /** Each open iframe and executor keeps a stable project context across tab changes. */
@@ -1734,12 +1757,6 @@ export class ProjectService {
     if (activationReason === 'abs-journal-reopen' && !recovery) throw new Error('Journal reopen requires in-process recovery authority.');
     recovery?.assertCurrent();
 
-    if (activationReason === 'chat-tool-reload' && this.getProjectMode(projectPath) !== 'coder') {
-      // History has already restored the root manifest. Reconcile node_modules
-      // to that version, including removals, without publishing a saved edit.
-      await this.discardLibraryChanges(projectPath, true);
-    }
-
     // Coder tabs keep their iframe and in-flight operations. Activating another
     // project only changes the host projection; it does not save or recreate editors.
     if (this.getProjectMode(projectPath) === 'coder') {
@@ -1767,6 +1784,21 @@ export class ProjectService {
           await window['projectLock']?.release(projectPath);
           throw error;
         }
+      }
+      if (isSwitchingProject && this.getProjectMode(previousProjectPath) === 'blockly') {
+        try {
+          await this.stopProjectCommands(previousProjectPath);
+          if (!(await this.discardDepartingBlocklyProject(previousProjectPath))) {
+            if (!retained) await window['projectLock']?.release(projectPath);
+            return false;
+          }
+        } catch (error) {
+          if (!retained) await window['projectLock']?.release(projectPath);
+          throw error;
+        }
+        await window['projectLock']?.release(previousProjectPath);
+      }
+      if (!retained) {
         this.registerCoderProject(projectPath);
         await this.restoreCoderWorkspaceTabs(projectPath);
       }
@@ -1799,23 +1831,19 @@ export class ProjectService {
       if (!r.ok && r.conflict && r.holder) {
         const action = await this.promptProjectLockConflict(r.holder);
         if (action === 'cancel') {
-          this.stateSubject.next('default');
           return false;
         }
         if (action === 'focus') {
           await window['projectLock'].focusProcess(r.holder.pid);
-          this.stateSubject.next('default');
           return false;
         }
         r = await window['projectLock'].tryAcquire(projectPath, { force: true });
         if (!r.ok) {
           this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
-          this.stateSubject.next('default');
           return false;
         }
       } else if (!r.ok) {
         this.message.error(this.translate.instant('PROJECT.LOCK_ACQUIRE_FAILED'));
-        this.stateSubject.next('default');
         return false;
       }
     }
@@ -1830,7 +1858,6 @@ export class ProjectService {
         }
       }
       this.warnConnectionGraphWindowCloseFailure();
-      this.stateSubject.next('default');
       return false;
     }
 
@@ -1852,6 +1879,19 @@ export class ProjectService {
         this.message.warning((error as Error).message);
         return false;
       }
+    }
+
+    if (!recovery && previousProjectPath
+      && !this.coderProjects.some(folder => this.isSameProjectPath(folder.path, previousProjectPath))) {
+      const reconcilesHistory = activationReason === 'chat-tool-reload'
+        && this.isSameProjectPath(previousProjectPath, projectPath);
+      if (!(await this.discardDepartingBlocklyProject(previousProjectPath, reconcilesHistory))) {
+        if (isSwitchingProject) await window['projectLock']?.release(projectPath);
+        return false;
+      }
+    }
+    if (activationReason === 'chat-tool-reload' && !this.isSameProjectPath(previousProjectPath, projectPath)) {
+      await this.discardLibraryChanges(projectPath, true);
     }
 
     if (this.electronService.isElectron
@@ -2540,6 +2580,12 @@ export class ProjectService {
     }
     try {
       const closingPaths = [...new Set([...paths, opening?.path].filter((path): path is string => !!path))];
+      // A child window may veto close. Keep the editor and dependency session
+      // intact until all user-visible close decisions have succeeded.
+      if (this.currentProjectPath && !(await this.application.closeConnectionGraphWindows())) {
+        this.warnConnectionGraphWindowCloseFailure();
+        return false;
+      }
       // Once renderer work is aborted, native cleanup must run even if saving or closing a child window fails.
       const stopped = await Promise.allSettled(closingPaths.map(path => this.stopProjectCommands(path)));
       const failed = stopped.find((result): result is PromiseRejectedResult => result.status === 'rejected');
@@ -2554,7 +2600,11 @@ export class ProjectService {
         const saved = await this.save(path);
         if (!saved.success) throw new ProjectLifecycleError('PROJECT_SAVE_FAILED', `关闭项目前保存失败：${saved.error || '未知错误'}`);
       }
-      for (const project of closingPaths) await this.discardLibraryChanges(project);
+      for (const project of closingPaths) {
+        if (this.isSameProjectPath(project, path) && this.getProjectMode(project) === 'blockly') {
+          if (!(await this.discardDepartingBlocklyProject(project))) return false;
+        } else await this.discardLibraryChanges(project);
+      }
       return await this.closeInternal(closingPaths);
     } finally { lease.release(); }
   }
@@ -2586,11 +2636,6 @@ export class ProjectService {
   }
 
   private async closeInternal(paths: string[]) {
-    if (this.currentProjectPath && !(await this.application.closeConnectionGraphWindows())) {
-      this.warnConnectionGraphWindowCloseFailure();
-      return false;
-    }
-
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
       try {
         for (const path of paths) {

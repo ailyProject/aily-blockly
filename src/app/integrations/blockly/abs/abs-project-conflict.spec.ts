@@ -104,7 +104,7 @@ describe('manual save and quit conflict choices', () => {
       inspectSaveConflict: jasmine.createSpy('inspect').and.resolveTo({ project, token }),
       resolveSaveConflict: jasmine.createSpy('resolve').and.callFake(async (_path, choice) => resolved(choice)),
       hasUnsavedChanges: jasmine.createSpy('dirty').and.rejectWith(conflict()),
-      discardAllLibraryChanges: jasmine.createSpy('discard').and.resolveTo(),
+      discardLibraryChangesBeforeQuit: jasmine.createSpy('discard').and.resolveTo(),
     };
     const view: any = Object.assign(Object.create(HeaderComponent.prototype), {
       projectService: service, ngZone: new NgZone({}),
@@ -174,7 +174,7 @@ describe('manual save and quit conflict choices', () => {
     expect(done).toHaveBeenCalledOnceWith(false); expect(service.resolveSaveConflict).not.toHaveBeenCalled();
     view.checkUnsavedChanges('close').then(done); flushMicrotasks();
     dialogs[1].next({ result: 'keep_view' }); flushMicrotasks();
-    expect(done.calls.allArgs()).toEqual([[false], [true]]); expect(service.discardAllLibraryChanges).not.toHaveBeenCalled();
+    expect(done.calls.allArgs()).toEqual([[false], [true]]); expect(service.discardLibraryChangesBeforeQuit).not.toHaveBeenCalled();
   }));
 
   it('blocks duplicate saves while the explicit choice is pending', fakeAsync(() => {
@@ -217,7 +217,7 @@ describe('manual save and quit conflict choices', () => {
     else service.resolveSaveConflict.and.resolveTo({ ...resolved('replace_view'), partial: true });
     view.checkUnsavedChanges('close', { quitting: true }).then(done); flushMicrotasks();
     dialogs[0].next({ result: 'replace_view' }); flushMicrotasks();
-    expect(done).toHaveBeenCalledOnceWith(false); expect(service.discardAllLibraryChanges).not.toHaveBeenCalled();
+    expect(done).toHaveBeenCalledOnceWith(false); expect(service.discardLibraryChangesBeforeQuit).not.toHaveBeenCalled();
   }));
 
   it('offers the same resolver when save-before-quit discovers the conflict only after the ordinary dialog', fakeAsync(() => {

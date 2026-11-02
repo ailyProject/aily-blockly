@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/services/domains/project/project-library-disposal.spec.ts",
+    "../src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+    "../src/app/services/domains/project/project-journal-reopen.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-action-feedback.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-leave.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-conflict.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-runtime-rebuild.spec.ts",
+    "../src/app/editors/blockly-editor/blockly-editor-load.spec.ts",
+    "../src/**/*.d.ts"
+  ],
+  "exclude": []
+}

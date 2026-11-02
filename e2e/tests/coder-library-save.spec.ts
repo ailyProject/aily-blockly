@@ -136,6 +136,8 @@ test('Coder library save, uninstall discard, editor undo and Chat restore use th
     await expect(win.locator('app-unsave-dialog')).toBeVisible();
     await win.locator('app-unsave-dialog').getByRole('button',{name:'跳过保存',exact:true}).click();
     expect(await win.evaluate(()=>(window as any).discardDecision)).toBe(true);
+    await win.evaluate(async project => { const service=(window as any).ng.getComponent(document.querySelector('app-header')).projectService; await service.close(); await service.projectOpen(project); }, project);
+    await ready();
     await dirty(false);expect(installed()).toEqual(['b','c']);expect(await manifest()).toBe(saved);await record('explicit-discard');
     sourceReady('c');
     // Real Monaco edits: undo must clear the title, and iframe Save commits both
