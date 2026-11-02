@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const ts = require('typescript');
 const repo = path.resolve(__dirname, '../..');
+fs.mkdirSync(path.join(repo, 'tests/.artifacts'), { recursive: true });
 const output = process.env.AILY_COMPILER_BRIDGE_OUTPUT || fs.mkdtempSync(path.join(repo, 'tests/.artifacts/compiler-bridge-'));
 if (!process.versions.electron) {
   const environment = { ...process.env, AILY_COMPILER_BRIDGE_OUTPUT: output, AILY_APPDATA_PATH: path.join(output, 'appdata'), AILY_CHILD_PATH: path.join(repo, 'child') };
@@ -37,7 +38,9 @@ if (!process.versions.electron) {
         const check = directory => exports.findCompilerIntegrityProblem('@aily-project/compiler-esp-x32', directory, api.fs, api.path.join, api.platform.isWindows);
         let missingError;
         try { api.fs.statSync(${JSON.stringify(empty + '/missing')}); } catch (error) { missingError = { code: error.code, message: error.message }; }
+        const firstStart = performance.now();
         const healthy = check(${JSON.stringify(compiler)});
+        const firstCheckMs = performance.now() - firstStart;
         const missing = check(${JSON.stringify(empty)});
         const layouts = ${JSON.stringify(['arm-none-eabi-gcc@4.8.3', 'arm-none-eabi-gcc@7.2.1', 'avr-gcc@7.3.0', 'esp-rv32@14.2.0', 'pqt-gcc@4.1.0', 'riscv-gcc@9.2.0', 'xpack-arm-none-eabi-gcc@14.2.1'])}
           .filter(entry => api.path.isExists(api.path.join(${JSON.stringify(base)}, 'tools', entry)))
@@ -46,13 +49,16 @@ if (!process.versions.electron) {
         const values = [];
         for (let i = 0; i < 500; i++) { const start = performance.now(); check(${JSON.stringify(compiler)}); values.push(performance.now() - start); }
         values.sort((a,b) => a-b);
-        return { healthy, missing, missingError, layouts, performance: { samples: values.length, medianMs: values[250], p95Ms: values[475], maxMs: values[499] } };
+        return { healthy, missing, missingError, layouts, performance: { samples: values.length, firstCheckMs, medianMs: values[250], p95Ms: values[475], maxMs: values[499] } };
         } catch (error) { return { scriptError: error.message, code: error.code, stack: error.stack }; }
       })()`);
       if (result.scriptError) throw new Error(JSON.stringify(result));
       if (result.healthy !== undefined || !result.missing) throw new Error('Incorrect integrity result through production preload');
       if (result.layouts.some(layout => layout.problem)) throw new Error(JSON.stringify(result.layouts));
       result.success = true;
+      result.compilerDirectory = compiler;
+      result.environment = { platform: process.platform, arch: process.arch, osRelease: os.release(),
+        electron: process.versions.electron, node: process.versions.node };
       fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(result, null, 2) + '\n');
       console.log(JSON.stringify({ output, ...result }));
       window.destroy(); app.quit();
