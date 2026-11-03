@@ -10,6 +10,7 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     Object.assign(service, {
       currentProjectPathSubject: new BehaviorSubject('/source'),
       stateSubject: new BehaviorSubject('loaded'),
+      loadedBlocklyProjectPath: '/source',
       coderProjectsSubject: new BehaviorSubject([]), coderOperationsSubject: new BehaviorSubject(new Map()),
       projectLifecycle: new ProjectLifecycleGate(),
       messageService: { error: jasmine.createSpy('error'), warning: jasmine.createSpy('warning') },
@@ -39,6 +40,32 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     expect(events).toEqual(['stop', 'dispose', 'discard', 'close']);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
     expect(service.isProjectTransitionInProgress('/source')).toBeFalse();
+  });
+
+  it('stays closing during slow dependency cleanup without announcing a project load', async () => {
+    const { service, mounted } = fixture();
+    const states: string[] = [];
+    service.stateSubject.subscribe((state: string) => states.push(state));
+    let finishDiscard!: () => void;
+    let startedDiscard!: () => void;
+    const discarding = new Promise<void>(resolve => { startedDiscard = resolve; });
+    service.discardLibraryChanges.and.callFake(() => {
+      startedDiscard();
+      return new Promise<void>(resolve => { finishDiscard = resolve; });
+    });
+    const closing = service.close();
+    await discarding;
+    expect(mounted()).toBeFalse();
+    expect(states).toEqual(['loaded', 'closing']);
+    expect(service.isProjectOpening).toBeFalse();
+    expect(service.getBlocklyProjectLoadStatus('/source').ready).toBeFalse();
+    expect(service.loadedBlocklyProjectPath).toBe('');
+    expect(service.loadingBlocklyProjectPath).toBe('');
+    expect(await service.hasUnsavedChanges()).toBeFalse();
+    expect(service.isProjectTransitionInProgress('/source')).toBeTrue();
+    finishDiscard();
+    expect(await closing).toBeTrue();
+    expect(states).not.toContain('loading');
   });
 
   it('leaves the loaded canvas and library edits intact when a child window refuses close', async () => {

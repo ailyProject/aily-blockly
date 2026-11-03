@@ -150,9 +150,11 @@ interface ProjectCreationOptions {
   templateDirectory?: 'template' | typeof CODER_TEMPLATE_DIRECTORY;
 }
 
+export type ProjectState = 'default' | 'loading' | 'loaded' | 'closing' | 'saving' | 'saved' | 'error';
+
 export interface BlocklyProjectLoadStatus {
   project: string;
-  state: 'default' | 'loading' | 'loaded' | 'saving' | 'saved' | 'error';
+  state: ProjectState;
   ready: boolean;
   error?: string;
 }
@@ -165,7 +167,7 @@ export class ProjectService {
   private recoveryTargets?: ProjectRecoveryTargets;
   private get savedRecoveryTargets(): ProjectRecoveryTargets { return this.recoveryTargets ??= new ProjectRecoveryTargets(); }
 
-  stateSubject = new BehaviorSubject<'default' | 'loading' | 'loaded' | 'saving' | 'saved' | 'error'>('default');
+  stateSubject = new BehaviorSubject<ProjectState>('default');
 
   // 开发板变更事件通知，只在变更时发出
   boardChangeSubject = new Subject<void>();
@@ -448,7 +450,12 @@ export class ProjectService {
       || !this.router.url.startsWith('/main/blockly-editor')) return true;
     const navigated = await this.router.navigate(['/main/guide'], { replaceUrl: true });
     if (!navigated || this.router.url.startsWith('/main/blockly-editor')) return false;
-    this.beginBlocklyProjectLoad(projectPath);
+    // The old workspace is gone. Invalidate readiness without starting a load
+    // transaction while its dependencies and native resources are being released.
+    this.loadingBlocklyProjectPath = '';
+    this.loadedBlocklyProjectPath = '';
+    this.blocklyProjectLoadFailure = null;
+    this.stateSubject.next('closing');
     return true;
   }
 
@@ -3237,7 +3244,7 @@ export class ProjectService {
   // 检查项目是否未保存
   async hasUnsavedChanges(): Promise<boolean> {
     // 如果项目尚未加载，则没有未保存的更改
-    if (this.stateSubject.value === 'default' || !this.currentProjectPath) {
+    if (this.stateSubject.value === 'default' || this.stateSubject.value === 'closing' || !this.currentProjectPath) {
       return false;
     }
 
