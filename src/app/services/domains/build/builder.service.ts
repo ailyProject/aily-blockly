@@ -148,10 +148,6 @@ export class BuilderService {
         && !!buildResult
         && buildResult?.state !== 'error';
 
-      if (!this.electronService.isWindowFocused()) {
-        this.electronService.notify('编译', buildResult?.text || '');
-      }
-
       if (!buildSuccess) {
         // 编译失败，构造包含状态和错误详情的错误对象抛出
         const error: any = new Error(buildResult?.text || buildResult?.message || '编译失败');
@@ -163,6 +159,7 @@ export class BuilderService {
         throw error;
       }
 
+      this.notifyBuildCompletion(buildResult, true);
       if (checkpoint?.startedAt) persistBuildResult(projectPath, true, buildResult, undefined, checkpoint, payload.source);
       this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
       return buildResult;
@@ -171,9 +168,7 @@ export class BuilderService {
       // Editor admission (busy/stale/unmounted) does not attest a compiler exit.
       if (editorExecution && !checkpoint?.startedAt) error.buildOutcome = 'not-started';
       // console.error('编译失败:', error);
-      if (!this.electronService.isWindowFocused()) {
-        this.electronService.notify('编译', error?.text || error?.message || '编译失败');
-      }
+      this.notifyBuildCompletion(error, false);
       if (checkpoint?.startedAt) persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
       this.buildFinishedSubject.next({ projectPath, success: false, result: error?.buildResult, error });
       throw error;
@@ -189,8 +184,14 @@ export class BuilderService {
   }
 
   private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source'] } = {}) {
-    await this.persistActiveCoderProjectBeforeBuild(projectPath);
-    const compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
+    let compileResult: Awaited<ReturnType<CompileService['runCompileFromDisk']>>;
+    try {
+      await this.persistActiveCoderProjectBeforeBuild(projectPath);
+      compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
+    } catch (error) {
+      this.notifyBuildCompletion(error, false, options);
+      throw error;
+    }
     const buildResult = compileResult.result;
     if (!compileResult.success || buildResult?.state === 'error') {
       const error: any = new Error(buildResult?.text || 'Build failed');
@@ -201,12 +202,30 @@ export class BuilderService {
       if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
       if (!options.preprocessOnly) persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
       this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
+      this.notifyBuildCompletion(error, false, options);
       throw error;
     }
 
     if (!options.preprocessOnly) persistBuildResult(projectPath, true, buildResult, undefined, undefined, options.source);
     this.buildFinishedSubject.next({ projectPath, success: true, result: buildResult });
+    this.notifyBuildCompletion(buildResult, true, options);
     return buildResult;
+  }
+
+  /** 编译结果由实际执行窗口提醒；预处理、取消和未启动不发送完成通知。 */
+  private notifyBuildCompletion(result: any, success: boolean, options: { preprocessOnly?: boolean } = {}): void {
+    const outcome = result?.buildOutcome || result?.buildResult?.buildOutcome;
+    if (
+      options.preprocessOnly
+      || outcome === 'cancelled'
+      || outcome === 'not-started'
+      || result?.code === 'BUILD_CANCELLED'
+      || this.electronService.isWindowFocused()
+    ) return;
+    void this.electronService.notify(
+      '编译',
+      result?.text || result?.message || (success ? '编译完成' : '编译失败'),
+    );
   }
 
   /**
