@@ -50,11 +50,21 @@ test('copy-interval file replacement is rejected even when every byte and mtime 
   fs.writeFileSync(path.join(library, 'package.json'), '{"name":"example"}');
   const source = path.join(library, 'test.h');
   fs.writeFileSync(source, 'same source bytes');
-  const io = ioWithFs({ ...fs, cpSync: (...args) => {
-    fs.cpSync(...args);
-    const previous = fs.statSync(source), temporary = source + '.tmp';
-    fs.copyFileSync(source, temporary); fs.utimesSync(temporary, previous.atime, previous.mtime);
-    fs.renameSync(temporary, source);
+  let replaced = false, sourceDescriptor;
+  const io = ioWithFs({ ...fs, openSync: (...args) => {
+    const descriptor = fs.openSync(...args);
+    if (args[0] === source) sourceDescriptor = descriptor;
+    return descriptor;
+  }, closeSync: descriptor => {
+    fs.closeSync(descriptor);
+    // Windows refuses replacing this file while its read descriptor is open.
+    // Replace immediately after close, before the final path/identity check.
+    if (!replaced && descriptor === sourceDescriptor) {
+      replaced = true;
+      const previous = fs.statSync(source), temporary = source + '.tmp';
+      fs.copyFileSync(source, temporary); fs.utimesSync(temporary, previous.atime, previous.mtime);
+      fs.renameSync(temporary, source);
+    }
   } });
   assert.throws(() => io.capture(root, ['example'], path.join(root, 'backup')), { code: 'LIBRARY_HISTORY_CONFLICT' });
   assert.equal(fs.readFileSync(source, 'utf8'), 'same source bytes');
@@ -74,7 +84,10 @@ test('source edits with an unchanged size and restored mtime are detected on the
   const second = await history.begin(root, ['example']);
   t.after(() => history.discard(root, second.token));
   assert.notEqual(history.get(root, first.token).before.sources[0].hash, history.get(root, second.token).before.sources[0].hash);
-  assert.equal(fs.readFileSync(path.join(history.get(root, second.token).before.sources[0].copy, 'test.h'), 'utf8'), 'changed');
+  const snapshot = history.get(root, second.token).before;
+  fs.writeFileSync(source, 'later content');
+  await history.restoreSources(root, snapshot, snapshot, true);
+  assert.equal(fs.readFileSync(source, 'utf8'), 'changed');
 });
 
 test('unchanged library backups are shared, survive earlier-step discard and stay isolated from user edits', async t => {
@@ -93,7 +106,7 @@ test('unchanged library backups are shared, survive earlier-step discard and sta
   const firstCopy = history.get(root, first.token).before.sources[0].copy;
   assert.equal(history.get(root, second.token).before.sources[0].copy, firstCopy);
   fs.writeFileSync(source, 'new package version');
-  assert.equal(fs.readFileSync(path.join(firstCopy, 'example.h'), 'utf8'), 'original source');
+  assert.equal(fs.statSync(firstCopy).isFile(), true, 'checkpoint stores one file rather than a duplicate source tree');
   await history.commit(root, second.token);
   await history.discard(root, first.token);
   assert.equal(fs.existsSync(firstCopy), true);
@@ -102,4 +115,50 @@ test('unchanged library backups are shared, survive earlier-step discard and sta
   assert.equal(fs.readFileSync(source, 'utf8'), 'original source');
   await history.discard(root, second.token);
   assert.equal(fs.existsSync(firstCopy), false);
+});
+
+test('packed checkpoints restore binary files and empty directories; damaged backups never replace current sources', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-packed-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const library = path.join(root, 'node_modules', 'example');
+  fs.mkdirSync(path.join(library, 'empty'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), '{}');
+  fs.writeFileSync(path.join(library, 'package.json'), '{"name":"example"}');
+  const content = Buffer.alloc(150003, 219), source = path.join(library, 'font.bin');
+  fs.writeFileSync(source, content);
+  const history = new LibraryHistory(), { token } = await history.begin(root, ['example']);
+  t.after(() => history.discard(root, token));
+  const target = history.get(root, token).before, copy = target.sources[0].copy;
+  const original = fs.readFileSync(copy);
+  fs.writeFileSync(source, 'current');
+  for (const damaged of [original.subarray(0, original.length - 1), Buffer.concat([original, Buffer.from('extra')]), Buffer.from(original)]) {
+    if (damaged.length === original.length) damaged[damaged.length - 10] ^= 1;
+    fs.writeFileSync(copy, damaged);
+    await assert.rejects(history.restoreSources(root, target, target, true), { code: 'LIBRARY_HISTORY_CONFLICT' });
+    assert.equal(fs.readFileSync(source, 'utf8'), 'current');
+  }
+  fs.writeFileSync(copy, original);
+  await history.restoreSources(root, target, target, true);
+  assert.deepEqual(fs.readFileSync(source), content);
+  assert.deepEqual(fs.readdirSync(path.join(library, 'empty')), []);
+});
+
+test('packed checkpoint path traversal is rejected before publishing any source', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-packed-path-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const library = path.join(root, 'node_modules', 'example');
+  fs.mkdirSync(library, { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), '{}');
+  fs.writeFileSync(path.join(library, 'package.json'), '{"name":"example"}');
+  const history = new LibraryHistory(), { token } = await history.begin(root, ['example']);
+  t.after(() => history.discard(root, token));
+  const target = history.get(root, token).before, copy = target.sources[0].copy;
+  for (const key of ['/../escaped', ...(process.platform === 'win32' ? ['/.. /escaped'] : [])]) {
+    const header = Buffer.from(JSON.stringify({ key, directory: false, size: 0, mode: 0o644 }));
+    const length = Buffer.alloc(4); length.writeUInt32LE(header.length);
+    fs.writeFileSync(copy, Buffer.concat([Buffer.from('AILYLIB1\n'), length, header, Buffer.alloc(4)]));
+    await assert.rejects(history.restoreSources(root, target, target, true), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  }
+  assert.equal(fs.existsSync(path.join(root, 'node_modules', 'escaped')), false);
+  assert.equal(fs.readFileSync(path.join(library, 'package.json'), 'utf8'), '{"name":"example"}');
 });

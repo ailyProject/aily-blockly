@@ -12,9 +12,27 @@ const dependencies = manifest => Object.fromEntries(fields.map(field => [field,
 const sameFile = (a, b) => a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs
   && (a.dev === b.dev || (process.platform === 'win32' && (a.dev === 0 || b.dev === 0)));
 
-function captureSource(directory) {
+// A checkpoint is one private, uncompressed stream. On Windows, opening each
+// newly copied header/font file again can dominate the entire library operation.
+// Keep byte verification, without creating and reopening a second source tree.
+const archiveMagic = Buffer.from('AILYLIB1\n');
+function writeAll(fd, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = fs.writeSync(fd, bytes, offset, bytes.length - offset);
+    if (!written) throw fault('Library checkpoint write was incomplete.');
+    offset += written;
+  }
+}
+
+function captureSource(directory, archive) {
   const digest = createHash('sha256'), seen = new Set(), observations = [];
   const root = realpath(directory), buffer = Buffer.allocUnsafe(64 * 1024);
+  let output;
+  if (archive) {
+    fs.mkdirSync(path.dirname(archive), { recursive: true });
+    output = fs.openSync(archive, 'wx');
+  }
   const changed = () => { throw fault('Library source changed while creating its undo checkpoint.'); };
   const visit = (directory, relative = '') => {
     const real = realpath(directory), directoryStat = fs.statSync(directory);
@@ -24,6 +42,11 @@ function captureSource(directory) {
       if (['node_modules', '.git', '.DS_Store'].includes(name) || name.startsWith('.src-extract-')) continue;
       const file = path.join(directory, name), key = `${relative}/${name}`, stat = fs.statSync(file);
       digest.update(key); digest.update(stat.isDirectory() ? 'directory' : 'file');
+      if (output !== undefined) {
+        const header = Buffer.from(JSON.stringify({ key, directory: stat.isDirectory(), size: stat.isFile() ? stat.size : 0, mode: stat.mode }));
+        const length = Buffer.alloc(4); length.writeUInt32LE(header.length);
+        writeAll(output, length); writeAll(output, header);
+      }
       if (stat.isDirectory()) visit(file, key);
       else if (stat.isFile()) {
         const physical = realpath(file);
@@ -36,6 +59,7 @@ function captureSource(directory) {
           while ((count = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
             if ((bytes += count) > opened.size) changed();
             digest.update(buffer.subarray(0, count));
+            if (output !== undefined) writeAll(output, buffer.subarray(0, count));
           }
           if (bytes !== opened.size || !sameFile(opened, fs.fstatSync(fd))) changed();
           observations.push({ file, real: physical, stat });
@@ -44,17 +68,82 @@ function captureSource(directory) {
     }
     seen.delete(real);
   };
-  visit(directory);
   const confirm = () => {
     for (const { file, real, stat } of observations) {
       if (realpath(file) !== real || !sameFile(stat, fs.statSync(file))) changed();
     }
   };
-  confirm();
-  return { hash: digest.digest('hex'), confirm };
+  try {
+    if (output !== undefined) writeAll(output, archiveMagic);
+    visit(directory);
+    confirm();
+    if (output !== undefined) writeAll(output, Buffer.alloc(4));
+    return { hash: digest.digest('hex'), confirm };
+  } catch (error) {
+    if (output !== undefined) { fs.closeSync(output); output = undefined; fs.rmSync(archive, { force: true }); }
+    throw error;
+  } finally { if (output !== undefined) fs.closeSync(output); }
 }
 const sourceHash = directory => captureSource(directory).hash;
 
+function readArchive(file, destination) {
+  const fd = fs.openSync(file, 'r'), initial = fs.fstatSync(fd), buffer = Buffer.allocUnsafe(64 * 1024);
+  const digest = createHash('sha256'), directories = new Set(['']), entries = new Set();
+  let position = 0;
+  const invalid = () => { throw fault('Library undo source backup is invalid or changed.'); };
+  const readExact = bytes => {
+    let offset = 0;
+    if (position + bytes.length > initial.size) invalid();
+    while (offset < bytes.length) {
+      const count = fs.readSync(fd, bytes, offset, bytes.length - offset, position);
+      if (!count) invalid();
+      offset += count; position += count;
+    }
+  };
+  try {
+    const magic = Buffer.alloc(archiveMagic.length); readExact(magic);
+    if (!magic.equals(archiveMagic)) invalid();
+    if (destination) fs.mkdirSync(destination);
+    for (;;) {
+      const length = Buffer.alloc(4); readExact(length);
+      const size = length.readUInt32LE();
+      if (!size) break;
+      if (size > 65536) invalid();
+      const bytes = Buffer.alloc(size); readExact(bytes);
+      let entry; try { entry = JSON.parse(bytes.toString()); } catch { invalid(); }
+      const { key, directory, size: count, mode } = entry || {};
+      if (typeof key !== 'string' || !key.startsWith('/') || key.includes('\0')
+        || (process.platform === 'win32' && /[\\:]/.test(key))
+        || key.slice(1).split('/').some(part => !part || part === '.' || part === '..')
+        || (process.platform === 'win32' && key.slice(1).split('/').some(part => /[. ]$/.test(part)))
+        || typeof directory !== 'boolean' || !Number.isSafeInteger(count) || count < 0 || (directory && count !== 0)
+        || !Number.isInteger(mode)) invalid();
+      const identity = process.platform === 'win32' ? key.toLowerCase() : key;
+      const parent = identity.slice(0, identity.lastIndexOf('/'));
+      if (entries.has(identity) || !directories.has(parent)) invalid();
+      entries.add(identity);
+      digest.update(key); digest.update(directory ? 'directory' : 'file');
+      const target = destination && path.join(destination, ...key.slice(1).split('/'));
+      if (directory) {
+        directories.add(identity);
+        if (target) fs.mkdirSync(target);
+      } else {
+        const out = target ? fs.openSync(target, 'wx', mode & 0o777) : undefined;
+        try {
+          for (let remaining = count; remaining > 0;) {
+            const chunk = buffer.subarray(0, Math.min(remaining, buffer.length));
+            readExact(chunk); digest.update(chunk);
+            if (out !== undefined) writeAll(out, chunk);
+            remaining -= chunk.length;
+          }
+        } finally { if (out !== undefined) fs.closeSync(out); }
+      }
+    }
+    if (position !== initial.size || !sameFile(initial, fs.fstatSync(fd)) || !sameFile(initial, fs.statSync(file))) invalid();
+    return digest.digest('hex');
+  } finally { fs.closeSync(fd); }
+}
+const backupHash = file => fs.statSync(file).isDirectory() ? sourceHash(file) : readArchive(file);
 
 class LibraryHistoryIO {
   capture(root, names, backup, reusable = []) {
@@ -64,23 +153,23 @@ class LibraryHistoryIO {
     const sources = names.map(name => {
       const logical = path.join(root, 'node_modules', name);
       if (!fs.existsSync(path.join(logical, 'package.json'))) return { name, exists: false };
-      const physical = realpath(logical), captured = captureSource(physical), hash = captured.hash;
+      const physical = realpath(logical);
       const owned = inside(root, physical) ? path.relative(root, physical) : undefined;
       let copy = backup && owned ? path.join(backup, Buffer.from(name).toString('base64url')) : undefined;
-      const existing = copy && reusable.find(source => source.name === name && source.hash === hash
-        && fs.existsSync(source.copy) && sourceHash(source.copy) === hash);
+      const candidates = copy ? reusable.filter(source => source.name === name) : [];
+      const captured = captureSource(physical, !candidates.length ? copy : undefined), hash = captured.hash;
+      const existing = candidates.find(source => source.hash === hash
+        && fs.existsSync(source.copy) && backupHash(source.copy) === hash);
       if (existing) {
         // Byte verification, never timestamp/cache-only acceptance. Windows
         // avoids thousands of fresh small-file creations for install → remove.
         captured.confirm();
         copy = existing.copy;
       } else if (copy) {
-        fs.cpSync(physical, copy, { recursive: true, dereference: true, mode: fs.constants.COPYFILE_FICLONE,
-          filter: file => !path.relative(physical, file).split(path.sep).some(part => ['node_modules', '.git', '.DS_Store'].includes(part)) });
-        if (sourceHash(copy) !== hash) throw fault('Library changed while creating its undo checkpoint.');
-        // Hash every current source and backup byte, but do not read the current
-        // 200+ MiB font tree a second time. Descriptor/path identity, size and
-        // change times fence the copy interval; no cross-operation stat cache.
+        if (candidates.length && captureSource(physical, copy).hash !== hash) throw fault('Library changed while creating its undo checkpoint.');
+        if (backupHash(copy) !== hash) throw fault('Library changed while creating its undo checkpoint.');
+        // Verify source and backup contents. Descriptor/path identity, size and
+        // change times fence this capture; no cross-operation stat cache.
         captured.confirm();
       }
       return { name, exists: true, hash, ...(fs.lstatSync(logical).isSymbolicLink() ? { link: physical } : {}), ...(owned ? { owned } : {}), ...(copy ? { copy } : {}) };
@@ -99,7 +188,7 @@ class LibraryHistoryIO {
       if (!inside(root, realpath(path.dirname(destination)))) {
         throw fault('Library undo destination is no longer project-owned.');
       }
-      if (sourceHash(source.copy) !== source.hash) throw fault('Library undo source backup changed.');
+      if (backupHash(source.copy) !== source.hash) throw fault('Library undo source backup changed.');
       if (npmManaged && fs.lstatSync(destination, { throwIfNoEntry: false })?.isSymbolicLink()) fs.unlinkSync(destination);
       if (fs.existsSync(destination)) {
         const hash = sourceHash(destination);
@@ -109,7 +198,10 @@ class LibraryHistoryIO {
       }
       const staging = fs.mkdtempSync(path.join(path.dirname(destination), '.library-history-'));
       try {
-        fs.cpSync(source.copy, path.join(staging, 'source'), { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
+        if (fs.statSync(source.copy).isDirectory()) {
+          fs.cpSync(source.copy, path.join(staging, 'source'), { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
+          if (sourceHash(path.join(staging, 'source')) !== source.hash) throw fault('Library undo source backup changed.');
+        } else if (readArchive(source.copy, path.join(staging, 'source')) !== source.hash) throw fault('Library undo source backup changed.');
         if (fs.existsSync(destination)) fs.renameSync(destination, path.join(staging, 'previous'));
         try { fs.renameSync(path.join(staging, 'source'), destination); }
         catch (error) {
