@@ -101,6 +101,7 @@ import { BlocklyWorkspacePagesComponent } from './components/blockly-workspace-p
 import { BlocklyConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
+import { _BuilderService } from '../../services/builder.service';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 
 type BlocklyWorkspaceEvent = WorkspaceCodeEvent | null | undefined;
@@ -482,6 +483,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     private generatorRuntime: BlocklyGeneratorRuntimeService,
     private projectDebugConfigurationService:
       ProjectDebugConfigurationService,
+    private builderService: _BuilderService,
   ) {
     // Initialize GlobalServiceManager with BitmapUploadService
     const globalServiceManager = GlobalServiceManager.getInstance();
@@ -2283,8 +2285,13 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
           this.blocklyService.publishPreparedCodeView(code, generated.blockCodeMapText);
           void this.projectDebugConfigurationService.updateWorkspaceGeneratedCode(projectPath, code);
           try {
-            await writePreparedArduinoGeneratedArtifacts(projectPath, generated.artifacts);
-            this.clearGeneratedArtifactRetry();
+            if (this.deferBackgroundArtifactPublication(projectPath)) {
+              this.scheduleGeneratedArtifactRetry(projectPath, generated.artifacts,
+                this.blocklyService.getWorkspaceContentRevision());
+            } else {
+              await writePreparedArduinoGeneratedArtifacts(projectPath, generated.artifacts);
+              this.clearGeneratedArtifactRetry();
+            }
           } catch (error) {
             if (!isBuildWorkspaceBusyError(error)) throw error;
             this.scheduleGeneratedArtifactRetry(
@@ -2341,6 +2348,15 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
+  private deferBackgroundArtifactPublication(projectPath: string): boolean {
+    // A terminated preprocess parent can exit before its supervisor confirms
+    // the entire tree stopped. Keep previews in memory through that handoff;
+    // do not misclassify its still-protected marker as abandoned recovery.
+    return this.builderService.isPreprocessing()
+      || this.projectService.isProjectTransitionInProgress(projectPath)
+      || this.projectService.stateSubject.value === 'saving';
+  }
+
   /** Retry only the disk write. The code view was already published from memory. */
   private scheduleGeneratedArtifactRetry(
     projectPath: string,
@@ -2358,7 +2374,8 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
       if (projectPath !== this.projectService.currentProjectPath) return;
       // Revision capture serializes the full project. Even a disk-only retry
       // must defer that work while a small function is being dragged/edited.
-      if (this.workspace && isBlocklyWorkspaceInteracting(this.workspace)) {
+      if (this.deferBackgroundArtifactPublication(projectPath)
+        || (this.workspace && isBlocklyWorkspaceInteracting(this.workspace))) {
         this.generatedArtifactRetryTimer = setTimeout(() => void attempt(), 1000);
         return;
       }

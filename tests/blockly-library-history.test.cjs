@@ -18,6 +18,19 @@ const fixture = () => {
   } };
 };
 
+test('cancelling dependency confirmation leaves both undo stacks unchanged and allows retry', async () => {
+  const workspace = fixture(), failures = [];
+  let accepted = false;
+  recordLibraryMutation(workspace, async () => accepted, error => failures.push(error));
+  const marker = workspace.getUndoStack().at(-1);
+  workspace.undo(); await tick();
+  assert.equal(workspace.getUndoStack().at(-1), marker);
+  assert.equal(workspace.getRedoStack().length, 0);
+  assert.deepEqual(failures, []);
+  accepted = true; workspace.undo(); await tick();
+  assert.equal(workspace.getRedoStack().at(-1), marker);
+});
+
 test('async library undo moves only after verified restore, retains prior block edits and supports redo', async () => {
   const workspace = fixture(), failures = [], directions = [];
   const earlier = {run(){}}; workspace.getUndoStack().push(earlier);

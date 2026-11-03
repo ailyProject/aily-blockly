@@ -1,26 +1,32 @@
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-
-const backupDirectories = new Set();
-process.once('exit', () => { for (const directory of backupDirectories) {
-  try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
-} });
-
 const fields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'ailyLocalLibrarySources'];
 const fault = message => Object.assign(new Error(message), { code: 'LIBRARY_HISTORY_CONFLICT' });
+const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+const dependencies = manifest => Object.fromEntries(fields.map(field => [field,
+  Object.fromEntries(Object.entries(manifest[field] || {}).sort(([a], [b]) => a.localeCompare(b)))]));
 
-/** Private, project-bound checkpoints. Only library inputs are restored;
- * unrelated project settings and independently refreshed build metadata survive. */
+/** Dependency history records intent and lock resolution, never library bytes.
+ * Confirmed undo reuses the normal npm/source-preparation path. Canonical local
+ * libraries remain user-owned; their content is never copied or rolled back. */
 class LibraryHistory {
-  constructor() { this.entries = new Map(); this.directories = new Set(); }
+  constructor() { this.entries = new Map(); }
 
-  capture(root, names, backup) {
-    const reusable = backup ? [...this.entries.values()].filter(entry => entry.root === root)
-      .flatMap(entry => [entry.before, entry.after].filter(Boolean).flatMap(snapshot => snapshot.sources))
-      .filter(source => source.copy && names.includes(source.name)) : [];
-    return runHistoryIO('capture', [root, names, backup, reusable]);
+  async capture(root, names = []) {
+    const packageText = read(path.join(root, 'package.json'));
+    const lock = read(path.join(root, 'package-lock.json'));
+    const links = [];
+    for (const name of names) {
+      const logical = path.join(root, 'node_modules', name);
+      if (fs.lstatSync(logical, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        links.push({ name, target: fs.realpathSync(logical) });
+      }
+    }
+    const inputs = dependencies(JSON.parse(packageText));
+    if (JSON.stringify(dependencies(JSON.parse(read(path.join(root, 'package.json'))))) !== JSON.stringify(inputs)
+      || read(path.join(root, 'package-lock.json')) !== lock) throw fault('Dependencies changed while recording library history.');
+    return { dependencies: inputs, lock, links };
   }
 
   async begin(root, packages) {
@@ -32,95 +38,76 @@ class LibraryHistory {
       if (!/^(?:@[\w.-]+\/)?[\w.-]+$/.test(name) || name === '.' || name === '..') throw fault('Invalid library history package.');
       return name;
     }))];
-    const token = randomUUID(), directory = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-library-history-'));
-    try {
-      const before = await this.capture(root, names, path.join(directory, 'before'));
-      backupDirectories.add(directory);
-      this.directories.add(directory);
-      this.entries.set(token, { root, names, directory, before });
-      return { token };
-    } catch (error) { await fs.promises.rm(directory, { recursive: true, force: true }); throw error; }
+    const token = randomUUID(), before = await this.capture(root, names);
+    this.entries.set(token, { root, names, before });
+    return { token };
   }
 
   get(root, token) {
     const entry = this.entries.get(token);
-    if (!entry || entry.root !== root) throw fault('Library undo checkpoint is unavailable for this project.');
+    if (!entry || entry.root !== root) throw fault('Library undo record is unavailable for this project.');
     return entry;
   }
 
   async commit(root, token) {
     const entry = this.get(root, token);
-    if (entry.after) throw fault('Library checkpoint was already committed.');
-    entry.after = await this.capture(root, entry.names, path.join(entry.directory, 'after'));
-    const changed = JSON.stringify(this.identity(entry.before)) !== JSON.stringify(this.identity(entry.after));
-    return { token, changed };
+    if (entry.after) throw fault('Library history was already committed.');
+    entry.after = await this.capture(root, entry.names);
+    return { token, changed: JSON.stringify(this.identity(entry.before)) !== JSON.stringify(this.identity(entry.after)) };
   }
 
-  identity(snapshot) {
-    return { dependencies: snapshot.dependencies, lock: snapshot.lock,
-      sources: snapshot.sources.map(({ copy, ...source }) => source) };
-  }
+  identity(record) { return record; }
 
   async prepare(root, token, forward) {
     const entry = this.get(root, token);
-    if (!entry.after || typeof forward !== 'boolean') throw fault('Library undo checkpoint is incomplete.');
+    if (!entry.after || typeof forward !== 'boolean') throw fault('Library undo record is incomplete.');
     const target = forward ? entry.after : entry.before, expected = forward ? entry.before : entry.after;
     const current = await this.capture(root, entry.names);
     if (JSON.stringify(this.identity(current)) !== JSON.stringify(this.identity(expected))) {
-      throw fault('Project dependencies or library sources changed since this undo step. The newer files were retained.');
+      throw fault('Project dependencies changed since this undo step. The newer dependencies were retained.');
     }
     return { target, expected, names: entry.names };
   }
 
-  patch(manifest, snapshot) {
+  async preview(root, token, forward) {
+    const { target, expected, names } = await this.prepare(root, token, forward);
+    const changes = [];
+    for (const field of fields.filter(field => field !== 'ailyLocalLibrarySources')) {
+      for (const name of new Set([...Object.keys(expected.dependencies[field]), ...Object.keys(target.dependencies[field])])) {
+        const before = expected.dependencies[field][name], after = target.dependencies[field][name];
+        if (before !== after) changes.push({ name, field, before: before ?? null, after: after ?? null });
+      }
+    }
+    return { changes, packages: names };
+  }
+
+  patch(manifest, record) {
     const result = { ...manifest };
     for (const field of fields) {
-      if (!Object.keys(snapshot.dependencies[field]).length) delete result[field];
-      else result[field] = snapshot.dependencies[field];
+      if (!Object.keys(record.dependencies[field]).length) delete result[field];
+      else result[field] = record.dependencies[field];
     }
     return result;
   }
 
-  restoreSources(...args) { return runHistoryIO('restoreSources', args); }
-  restoreLinks(...args) { return runHistoryIO('restoreLinks', args); }
-
-  async discard(root, token) {
-    const entry = this.get(root, token);
-    this.entries.delete(token);
-    // A later step may share this immutable backup. Keep it until its last
-    // reference disappears; never hard-link the editable package into history.
-    const retained = [...this.entries.values()].flatMap(item => [item.directory,
-      ...[item.before, item.after].filter(Boolean).flatMap(snapshot => snapshot.sources.map(source => source.copy).filter(Boolean))]);
-    for (const directory of this.directories) {
-      if (retained.some(file => file === directory || file.startsWith(directory + path.sep))) continue;
-      await fs.promises.rm(directory, { recursive: true, force: true });
-      this.directories.delete(directory); backupDirectories.delete(directory);
+  async restoreLinks(root, record) {
+    for (const { name, target } of record.links) {
+      // npm validates the saved local spec first. Retain its original link
+      // topology without reading or overwriting the canonical source tree.
+      const logical = path.join(root, 'node_modules', name);
+      if (!fs.existsSync(path.join(target, 'package.json'))) throw fault('Local library source is unavailable.');
+      const parent = path.dirname(logical);
+      fs.mkdirSync(parent, { recursive: true });
+      const relative = path.relative(root, fs.realpathSync(parent));
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw fault('Library link destination escaped this project.');
+      if (fs.existsSync(logical) && fs.realpathSync(logical) === target) continue;
+      await fs.promises.rm(logical, { recursive: true, force: true });
+      fs.symlinkSync(process.platform === 'win32' ? target : path.relative(parent, target), logical,
+        process.platform === 'win32' ? 'junction' : 'dir');
     }
   }
-}
 
-// Read through Electron's ASAR-aware fs once; the worker needs only Node built-ins.
-// No native resource path or application module is resolved from an eval worker.
-let ioSource;
-function runHistoryIO(operation, args) {
-  ioSource ??= fs.readFileSync(path.join(__dirname, 'library-history-io.js'), 'utf8');
-  const { Worker } = require('node:worker_threads');
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(ioSource + `
-      const { parentPort, workerData } = require('node:worker_threads');
-      try { parentPort.postMessage({ ok: true, value: module.exports[workerData.operation](...workerData.args) }); }
-      catch (error) { parentPort.postMessage({ ok: false, error: { message: error.message, code: error.code } }); }
-    `, { eval: true, workerData: { operation, args } });
-    let result;
-    worker.once('message', value => { result = value; });
-    worker.once('error', reject);
-    // Keep the caller's project lease until the worker has stopped touching files.
-    worker.once('exit', code => {
-      if (code === 0 && result?.ok) resolve(result.value);
-      else reject(Object.assign(new Error(result?.error?.message || `Library history worker exited: ${code}`),
-        { code: result?.error?.code || 'LIBRARY_HISTORY_IO_FAILED' }));
-    });
-  });
+  async discard(root, token) { this.get(root, token); this.entries.delete(token); }
 }
 
 module.exports = { LibraryHistory };

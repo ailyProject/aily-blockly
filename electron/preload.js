@@ -861,6 +861,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     historyBegin: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyBegin', projectPath, request }),
     historyCommit: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyCommit', projectPath, request }),
     historyRestore: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyRestore', projectPath, request }),
+    historyPreview: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyPreview', projectPath, request }),
     historyDiscard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyDiscard', projectPath, request }),
     status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath }),
     recover: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'recover', projectPath, request }),

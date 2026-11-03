@@ -3,103 +3,85 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { LibraryHistory } = require('../../electron/library-history');
 const vm = require('node:vm');
+const { LibraryHistory } = require('../../electron/library-history');
 
-function ioWithFs(files) {
-  const context = { module: { exports: {} }, Buffer, process,
-    require: name => name === 'node:fs' ? files : require(name) };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/library-history-io.js'), 'utf8'), context);
-  return context.module.exports;
+function fixture(t) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-intent-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = dependencies => fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies }));
+  write({ example: '1.0.0' });
+  return { root, write };
 }
 
-test('library checkpoint copying and validation leave the host event loop available', async t => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-responsive-')));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const name = '@aily-project/lib-many-files', library = path.join(root, 'node_modules', name);
-  fs.mkdirSync(path.join(library, 'src'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies: { [name]: '1.0.0' } }));
-  fs.writeFileSync(path.join(library, 'package.json'), JSON.stringify({ name, version: '1.0.0' }));
-  for (let index = 0; index < 300; index++) fs.writeFileSync(path.join(library, 'src', `${index}.h`), Buffer.alloc(65536, index % 255));
-  const history = new LibraryHistory();
-  let ticks = 0;
-  const timer = setInterval(() => ticks++, 1);
-  t.after(() => clearInterval(timer));
-  const start = performance.now();
-  const { token } = await history.begin(root, [name]);
-  t.after(() => history.discard(root, token));
-  t.diagnostic(`checkpoint ${Math.round(performance.now() - start)}ms; event-loop ticks ${ticks}`);
-  assert.ok(ticks > 0, 'history creation blocked all event-loop ticks');
-  fs.writeFileSync(path.join(library, 'src', '0.h'), 'changed by install');
-  const beforeCommit = ticks;
+test('history records dependency intent without walking, copying or hashing installed library contents', async t => {
+  const { root, write } = fixture(t), reads = [];
+  const source = path.join(root, 'node_modules/example');
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, 'large-font.bin'), Buffer.alloc(1024 * 1024, 17));
+  const guardedFs = { ...fs,
+    readdirSync() { throw new Error('history must not enumerate sources'); },
+    cpSync() { throw new Error('history must not copy sources'); },
+    mkdtempSync() { throw new Error('history must not create backup directories'); },
+    readFileSync(file, ...args) {
+      reads.push(file);
+      assert.ok(['package.json', 'package-lock.json'].includes(path.basename(file)));
+      return fs.readFileSync(file, ...args);
+    },
+  };
+  const context = { module: { exports: {} }, process,
+    require: name => name === 'node:fs' ? guardedFs : require(name) };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/library-history.js'), 'utf8'), context);
+  const history = new context.module.exports.LibraryHistory();
+  const { token } = await history.begin(root, ['example']);
+  write({});
   assert.equal((await history.commit(root, token)).changed, true);
-  assert.ok(ticks > beforeCommit, 'history commit blocked all event-loop ticks');
-  const { target, expected } = await history.prepare(root, token, false);
-  await history.restoreSources(root, target, expected, true);
-  assert.deepEqual(fs.readFileSync(path.join(library, 'src', '0.h')), Buffer.alloc(65536));
-  fs.writeFileSync(path.join(library, 'src', '0.h'), 'newer user content');
-  await assert.rejects(async () => history.prepare(root, token, true), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  const plan = await history.preview(root, token, false);
+  assert.equal(plan.changes[0].after, '1.0.0');
+  assert.ok(JSON.stringify(history.get(root, token)).length < 2000);
+  assert.ok(reads.length <= 12);
+  await history.discard(root, token);
+  assert.equal(fs.statSync(path.join(source, 'large-font.bin')).size, 1024 * 1024);
 });
 
-test('copy-interval file replacement is rejected even when every byte and mtime is retained', t => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-race-')));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const library = path.join(root, 'node_modules', 'example');
-  fs.mkdirSync(library, { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), '{}');
-  fs.writeFileSync(path.join(library, 'package.json'), '{"name":"example"}');
-  const source = path.join(library, 'test.h');
-  fs.writeFileSync(source, 'same source bytes');
-  const io = ioWithFs({ ...fs, cpSync: (...args) => {
-    fs.cpSync(...args);
-    const previous = fs.statSync(source), temporary = source + '.tmp';
-    fs.copyFileSync(source, temporary); fs.utimesSync(temporary, previous.atime, previous.mtime);
-    fs.renameSync(temporary, source);
-  } });
-  assert.throws(() => io.capture(root, ['example'], path.join(root, 'backup')), { code: 'LIBRARY_HISTORY_CONFLICT' });
-  assert.equal(fs.readFileSync(source, 'utf8'), 'same source bytes');
+test('preview is read-only and rejects newer manifest or lock resolutions', async t => {
+  const { root, write } = fixture(t), history = new LibraryHistory();
+  const lock = path.join(root, 'package-lock.json');
+  fs.writeFileSync(lock, '{"version":"before"}');
+  const { token } = await history.begin(root, ['example']);
+  write({}); fs.writeFileSync(lock, '{"version":"after"}');
+  await history.commit(root, token);
+  const before = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+  assert.deepEqual((await history.preview(root, token, false)).changes,
+    [{ name: 'example', field: 'dependencies', before: null, after: '1.0.0' }]);
+  assert.equal(fs.readFileSync(path.join(root, 'package.json'), 'utf8'), before);
+  write({ other: '2.0.0' });
+  await assert.rejects(history.prepare(root, token, false), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  write({}); fs.writeFileSync(lock, '{"version":"external"}');
+  await assert.rejects(history.prepare(root, token, false), { code: 'LIBRARY_HISTORY_CONFLICT' });
 });
 
-test('source edits with an unchanged size and restored mtime are detected on the next operation', async t => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-edit-')));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const library = path.join(root, 'node_modules', 'example');
-  fs.mkdirSync(library, { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), '{}');
-  fs.writeFileSync(path.join(library, 'package.json'), '{"name":"example"}');
-  const source = path.join(library, 'test.h'); fs.writeFileSync(source, 'initial');
-  const history = new LibraryHistory(), first = await history.begin(root, ['example']);
-  t.after(() => history.discard(root, first.token));
-  const old = fs.statSync(source); fs.writeFileSync(source, 'changed'); fs.utimesSync(source, old.atime, old.mtime);
-  const second = await history.begin(root, ['example']);
-  t.after(() => history.discard(root, second.token));
-  assert.notEqual(history.get(root, first.token).before.sources[0].hash, history.get(root, second.token).before.sources[0].hash);
-  assert.equal(fs.readFileSync(path.join(history.get(root, second.token).before.sources[0].copy, 'test.h'), 'utf8'), 'changed');
+test('local source edits are not snapshots and are never reverted by history', async t => {
+  const { root, write } = fixture(t), history = new LibraryHistory();
+  const local = path.join(root, 'local-libraries/example'), logical = path.join(root, 'node_modules/example');
+  fs.mkdirSync(local, { recursive: true }); fs.mkdirSync(path.dirname(logical));
+  fs.writeFileSync(path.join(local, 'package.json'), '{"name":"example","version":"1.0.0"}');
+  fs.symlinkSync(local, logical, process.platform === 'win32' ? 'junction' : 'dir');
+  const { token } = await history.begin(root, ['example']);
+  fs.unlinkSync(logical); write({}); await history.commit(root, token);
+  fs.writeFileSync(path.join(local, 'user.h'), 'new manual edit');
+  const { target } = await history.prepare(root, token, false);
+  await history.restoreLinks(root, target);
+  assert.equal(fs.realpathSync(logical), local);
+  assert.equal(fs.readFileSync(path.join(local, 'user.h'), 'utf8'), 'new manual edit');
 });
 
-test('unchanged library backups are shared, survive earlier-step discard and stay isolated from user edits', async t => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-history-shared-')));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const name = 'example', library = path.join(root, 'node_modules', name);
-  fs.mkdirSync(library, { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies: { [name]: '1.0.0' } }));
-  fs.writeFileSync(path.join(library, 'package.json'), JSON.stringify({ name, version: '1.0.0' }));
-  const source = path.join(library, 'example.h');
-  fs.writeFileSync(source, 'original source');
-  const history = new LibraryHistory();
-  const first = await history.begin(root, [name]);
-  const second = await history.begin(root, [name]);
-  t.after(() => history.entries.has(second.token) && history.discard(root, second.token));
-  const firstCopy = history.get(root, first.token).before.sources[0].copy;
-  assert.equal(history.get(root, second.token).before.sources[0].copy, firstCopy);
-  fs.writeFileSync(source, 'new package version');
-  assert.equal(fs.readFileSync(path.join(firstCopy, 'example.h'), 'utf8'), 'original source');
-  await history.commit(root, second.token);
-  await history.discard(root, first.token);
-  assert.equal(fs.existsSync(firstCopy), true);
-  const { target, expected } = await history.prepare(root, second.token, false);
-  await history.restoreSources(root, target, expected, true);
-  assert.equal(fs.readFileSync(source, 'utf8'), 'original source');
-  await history.discard(root, second.token);
-  assert.equal(fs.existsSync(firstCopy), false);
+test('history validates project identity and package paths, and detects no-op dependency operations', async t => {
+  const { root } = fixture(t), history = new LibraryHistory();
+  await assert.rejects(history.begin(root, ['../outside']), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  const { token } = await history.begin(root, ['example@1.0.0']);
+  assert.equal((await history.commit(root, token)).changed, false);
+  await assert.rejects(history.prepare(root + '-other', token, false), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  await history.discard(root, token);
+  await assert.rejects(history.prepare(root, token, false), { code: 'LIBRARY_HISTORY_CONFLICT' });
 });

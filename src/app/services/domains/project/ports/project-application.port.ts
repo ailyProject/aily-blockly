@@ -58,9 +58,12 @@ export interface ProjectApplicationPort {
   hasUnsavedBlocklyChanges(): Promise<boolean>;
   prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[]): Promise<{
     document: unknown;
+    usedLibraries?: string[];
     release(): void;
-    record(restore: (forward: boolean) => Promise<void>): void;
+    record(restore: (forward: boolean) => Promise<void | boolean>): void;
   }>;
+  confirmBlocklyLibraryRestore?(offer: { forward: boolean; packages: string[];
+    changes: { name: string; before: string | null; after: string | null }[] }, apply: () => Promise<void>): Promise<boolean>;
   captureBlocklyLibraryDocument?(): Promise<unknown>;
   /** File equality alone is not evidence that a failed Realm became ready. */
   isBlocklyLibraryRuntimeReady?(projectPath: string): boolean;

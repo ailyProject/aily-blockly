@@ -3,7 +3,7 @@ import * as Blockly from 'blockly';
 class LibraryMutationEvent extends Blockly.Events.Abstract {
   override type = 'aily_library_mutation';
   override isBlank = false;
-  constructor(workspace: Blockly.WorkspaceSvg, readonly restore: (forward: boolean) => Promise<void>) {
+  constructor(workspace: Blockly.WorkspaceSvg, readonly restore: (forward: boolean) => Promise<void | boolean>) {
     super();
     this.workspaceId = workspace.id;
     this.group = `library-${crypto.randomUUID()}`;
@@ -17,7 +17,7 @@ const installed = new WeakSet<Blockly.WorkspaceSvg>();
 /** Blockly's event.run is synchronous. Keep the event on its original stack
  * until dependency/runtime/source restoration has actually completed. */
 export function recordLibraryMutation(workspace: Blockly.WorkspaceSvg,
-  restore: (forward: boolean) => Promise<void>, failed: (error: unknown) => void): void {
+  restore: (forward: boolean) => Promise<void | boolean>, failed: (error: unknown) => void): void {
   if (!installed.has(workspace)) {
     installed.add(workspace);
     const undo = workspace.undo;
@@ -28,7 +28,8 @@ export function recordLibraryMutation(workspace: Blockly.WorkspaceSvg,
       const event = stack.at(-1);
       if (!(event instanceof LibraryMutationEvent)) { undo.call(this, redo); return; }
       pending = true;
-      void event.restore(redo).then(() => {
+      void event.restore(redo).then(accepted => {
+        if (accepted === false) return;
         if (stack.at(-1) !== event) throw new Error('Blockly undo history changed during library restoration.');
         undo.call(this, redo);
       }).catch(failed).finally(() => { pending = false; });

@@ -128,6 +128,8 @@ export class MainWindowComponent implements OnDestroy {
   private configNoticeSubscription: Subscription | null = null;
   private projectContextSubscription: Subscription | null = null;
   private projectStateSubscription: Subscription | null = null;
+  private projectLoadingMessageTimer: ReturnType<typeof setTimeout> | null = null;
+  private projectProgressMessageId: string | null = null;
   private loginDialogSubscription: Subscription | null = null;
   private loginModalRef: NzModalRef<LoginComponent> | null = null;
   private authSessionInvalidationSubscription: Subscription | null = null;
@@ -461,6 +463,7 @@ export class MainWindowComponent implements OnDestroy {
     this.projectContextSubscription = null;
     this.projectStateSubscription?.unsubscribe();
     this.projectStateSubscription = null;
+    this.clearProjectProgressMessage();
     this.oauthResultListener?.();
     this.oauthResultListener = null;
     this.exampleListListener?.();
@@ -600,29 +603,28 @@ export class MainWindowComponent implements OnDestroy {
     this.projectStateSubscription = this.projectService.stateSubject.pipe(
       distinctUntilChanged(),
     ).subscribe((state) => {
+      this.clearProjectProgressMessage();
       switch (state) {
         case 'loading':
-          // this.loaded = false;
-          setTimeout(() => {
-            this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'));
-            // this.loaded = true;
+          this.projectLoadingMessageTimer = setTimeout(() => {
+            this.projectLoadingMessageTimer = null;
+            if (this.projectService.stateSubject.value !== 'loading') return;
+            this.projectProgressMessageId = this.message.loading(
+              this.translate.instant('MAIN_WINDOW.PROJECT_LOADING'), { nzDuration: 0 },
+            ).messageId;
           }, 20);
           break;
         case 'loaded':
-          this.message.remove();
           this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_LOADED'));
           void this.reloadTerminalAfterProjectOpen();
           break;
         case 'saving':
-          this.message.loading(this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'));
+          this.projectProgressMessageId = this.message.loading(
+            this.translate.instant('MAIN_WINDOW.PROJECT_SAVING'), { nzDuration: 0 },
+          ).messageId;
           break;
         case 'saved':
-          this.message.remove();
           this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_SAVED'));
-          break;
-        case 'default':
-          // this.message.success(this.translate.instant('MAIN_WINDOW.PROJECT_CLOSED'));
-          // this.loaded = false;
           break;
         default:
           break;
@@ -630,6 +632,17 @@ export class MainWindowComponent implements OnDestroy {
       this.cd.detectChanges();
     });
 
+  }
+
+  private clearProjectProgressMessage(): void {
+    if (this.projectLoadingMessageTimer != null) {
+      clearTimeout(this.projectLoadingMessageTimer);
+      this.projectLoadingMessageTimer = null;
+    }
+    if (this.projectProgressMessageId != null) {
+      this.message.remove(this.projectProgressMessageId);
+      this.projectProgressMessageId = null;
+    }
   }
 
   closeRightBox() {

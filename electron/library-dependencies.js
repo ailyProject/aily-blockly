@@ -316,8 +316,6 @@ class LibraryDependencies {
         fs.writeFileSync(packageFile, JSON.stringify(manifest, null, 2) + '\n');
         if (snapshot.lock === null) fs.rmSync(lockFile, { force: true });
         else fs.writeFileSync(lockFile, snapshot.lock);
-        await this.history.restoreSources(root, snapshot, snapshot === target ? expected : target, false);
-        assertCurrent();
         await this.run(root, { add: [], remove: [], options: { installLinks: false },
           // A pre-install checkpoint can have no root lockfile. In that case
           // npm's hidden lock must not resurrect the just-undone installation.
@@ -326,13 +324,11 @@ class LibraryDependencies {
         const current = await this.history.capture(root, []);
         assertCurrent();
         if (!same(current.dependencies, snapshot.dependencies) || current.lock !== snapshot.lock) throw conflict();
-        await this.history.restoreSources(root, snapshot, snapshot === target ? expected : target, true);
-        assertCurrent();
         await this.history.restoreLinks(root, snapshot);
         assertCurrent();
         await this.prepareSources(root, assertCurrent);
         // npm's no-save reify must leave the saved lock and dependency inputs exact.
-        const actual = await this.history.capture(root, snapshot.sources.map(source => source.name));
+        const actual = await this.history.capture(root, this.history.get(root, token).names);
         assertCurrent();
         if (!same(this.history.identity(actual), this.history.identity(snapshot))) {
           throw new Error('Library undo could not verify the restored dependency tree.');
@@ -347,6 +343,10 @@ class LibraryDependencies {
       }
       return this.status(root);
     }));
+  }
+
+  historyPreview(project, { token, forward }) {
+    return this.queue(project, root => this.locked(root, () => this.history.preview(root, token, forward)));
   }
 
   discard(project, { reconcile = false, historyRestored = false } = {}) {
