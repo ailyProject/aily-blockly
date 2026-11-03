@@ -1,7 +1,7 @@
 const { randomUUID } = require('node:crypto');
 
-/** Keep save/discard behind the entire Coder validation/npm/source transaction.
- * Only memory is checkpointed. The saved manifest is never used as a scratch file. */
+/** Keep persistence behind the entire validation/npm/source transaction.
+ * Editor content is saved separately; successful library edits are durable. */
 class LibraryDependencySessions {
   constructor(libraries, { timeoutMs = 300_000 } = {}) {
     this.libraries = libraries;
@@ -38,10 +38,7 @@ class LibraryDependencySessions {
         }
         session.snapshot = JSON.parse(JSON.stringify({ manifest: this.libraries.effective(root), state: this.libraries.states.get(root) }));
         session.snapshot.locals = this.libraries.locals.snapshot(root);
-        session.timer = setTimeout(() => {
-          void this.run('abort', root, undefined, session.token).catch(() => {});
-        }, this.timeoutMs);
-        session.timer.unref?.();
+        this.expire(root, session);
         return { transaction: session.token };
       } catch (error) { this.finish(root, session); throw error; }
     }
@@ -52,18 +49,40 @@ class LibraryDependencySessions {
       session.closing = true;
       try {
         await this.libraries.queues.get(root)?.catch(() => {});
-        if (operation === 'abort' && (JSON.stringify(this.libraries.states.get(root)) !== JSON.stringify(session.snapshot.state)
+        if (operation === 'end') {
+          await this.libraries.save(root, { prepareSources: true, onPublish: () => { session.publishing = true; } });
+        }
+        if (operation === 'abort' && !session.publishing && (JSON.stringify(this.libraries.states.get(root)) !== JSON.stringify(session.snapshot.state)
           || this.libraries.locals.snapshot(root).size !== session.snapshot.locals.size)) {
           await this.libraries.restore(root, session.snapshot);
         }
-      } finally { this.finish(root, session); }
+      } catch (error) {
+        // The caller can still abort preparation. Once publication starts,
+        // retain staged recovery state rather than hiding a partial save.
+        session.closing = false;
+        if (operation === 'abort') this.finish(root, session);
+        else this.expire(root, session);
+        throw error;
+      }
+      this.finish(root, session);
       return this.libraries.status(root);
     }
-    if (!['mutate', 'patch', 'removeLocal', 'save', 'discard'].includes(operation)) throw new Error('Invalid library operation');
+    if (!['mutate', 'patch', 'removeLocal', 'prepare', 'save', 'discard'].includes(operation)) throw new Error('Invalid library operation');
     if (token && !['mutate', 'patch', 'removeLocal'].includes(operation)) throw new Error('Invalid transaction operation');
     if (session && !token) {
       await session.done;
       return this.run(operation, root, request);
+    }
+    if (!token && ['mutate', 'removeLocal'].includes(operation)) {
+      const { transaction } = await this.run('begin', root);
+      try {
+        await this.run(operation, root, request, transaction);
+        return await this.run('end', root, undefined, transaction);
+      } catch (error) {
+        try { await this.run('abort', root, undefined, transaction); }
+        catch (rollback) { throw new AggregateError([error, rollback], `${error.message}; 库还原失败: ${rollback.message}`); }
+        throw error;
+      }
     }
     return this.libraries[operation](root, request);
   }
@@ -72,6 +91,14 @@ class LibraryDependencySessions {
     clearTimeout(session.timer);
     if (this.sessions.get(root) === session) this.sessions.delete(root);
     session.release();
+  }
+
+  expire(root, session) {
+    clearTimeout(session.timer);
+    session.timer = setTimeout(() => {
+      void this.run('abort', root, undefined, session.token).catch(() => {});
+    }, this.timeoutMs);
+    session.timer.unref?.();
   }
 }
 

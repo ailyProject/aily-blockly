@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ const { runDependencyWorker } = require('../../electron/library-dependencies');
 const tft = '@aily-project/lib-tft-espi';
 const types = ['tftespi_setup', 'tftespi_play_animation', 'tftespi_animation'];
 
-test('TFT library discard: cancellation, close, switch, real filesystem failure and recovery', async ({}, info) => {
+test('TFT automatic persistence: cancelled navigation, discarded canvas, reopen and damaged runtime recovery', async ({}, info) => {
   const libraries = process.env['AILY_E2E_LIBRARIES'];
   const seed = process.env['AILY_E2E_PLATFORM_SEED'];
   test.skip(!libraries || !seed, 'Requires local library sources and installed platform resources.');
@@ -60,24 +60,28 @@ test('TFT library discard: cancellation, close, switch, real filesystem failure 
     await win.screenshot({ path: info.outputPath(`${step}.png`) });
   };
   async function installAndEdit() {
-    if (!await win.locator('app-lib-manager').count()) await win.locator('.toolbox-footer__button').click();
-    await expect(win.locator('app-lib-manager')).toBeVisible();
-    // Offline catalog only. The install button, queue, dependency IPC, npm and
-    // actual published TFT blocks/generator use the product implementation.
-    await win.evaluate(tft => {
-      const w = window as any, manager = w.ng.getComponent(document.querySelector('app-lib-manager'));
-      ++manager.initialDataLoadToken;
-      manager.libraryList = [{ name: tft, version: 'file:local-libraries/TFT_eSPI', nickname: 'TFT_eSPI', _nickname: 'TFT_eSPI',
-        description: 'Offline actual TFT library', _description: 'Offline actual TFT library', author: 'ailyProject',
-        icon: '', tested: true, state: 'default', compatibility: { core: ['esp32:esp32'] } }];
-      manager._libraryList = manager.libraryList;
-      manager.cd.detectChanges();
-    }, tft);
-    await win.locator('app-lib-manager .lib-item').filter({ hasText: 'Offline actual TFT library' })
-      .getByRole('button', { name: '安装', exact: true }).click();
-    await expect.poll(() => win.evaluate(() => !(window as any).ng.getComponent(document.querySelector('app-lib-manager')).isProcessingLibraryOperationQueue), { timeout: 90_000 }).toBe(true);
-    expect(installed()).toBe(true); expect((await status()).dirty).toBe(true);
-    await win.locator('app-lib-manager .header .btn').click();
+    if (!installed()) {
+      if (!await win.locator('app-lib-manager').count()) await win.locator('.toolbox-footer__button').click();
+      await expect(win.locator('app-lib-manager')).toBeVisible();
+      // Offline catalog only. The install button, queue, dependency IPC, npm and
+      // actual published TFT blocks/generator use the product implementation.
+      await win.evaluate(tft => {
+        const w = window as any, manager = w.ng.getComponent(document.querySelector('app-lib-manager'));
+        ++manager.initialDataLoadToken;
+        manager.libraryList = [{ name: tft, version: 'file:local-libraries/TFT_eSPI', nickname: 'TFT_eSPI', _nickname: 'TFT_eSPI',
+          description: 'Offline actual TFT library', _description: 'Offline actual TFT library', author: 'ailyProject',
+          icon: '', tested: true, state: 'default', compatibility: { core: ['esp32:esp32'] } }];
+        manager._libraryList = manager.libraryList;
+        manager.cd.detectChanges();
+      }, tft);
+      await win.locator('app-lib-manager .lib-item').filter({ hasText: 'Offline actual TFT library' })
+        .getByRole('button', { name: '安装', exact: true }).click();
+      await expect.poll(() => win.evaluate(() => !(window as any).ng.getComponent(document.querySelector('app-lib-manager')).isProcessingLibraryOperationQueue), { timeout: 90_000 }).toBe(true);
+      expect(installed()).toBe(true); expect((await status()).dirty).toBe(false);
+      expect(existsSync(path.join(project, 'node_modules', tft, 'src'))).toBe(true);
+      await expect(win.locator('app-header .project-box')).toHaveAttribute('data-unsaved', 'false');
+      await win.locator('app-lib-manager .header .btn').click();
+    }
     // Deterministic native Blockly editing; no project document or saved-state
     // mocks. All custom TFT fields and generator extensions are instantiated.
     await win.evaluate(() => {
@@ -106,14 +110,17 @@ test('TFT library discard: cancellation, close, switch, real filesystem failure 
   const unchangedDisk = async () => {
     const disk = await Promise.all(['package.json', 'package-lock.json', 'project.abi'].map(file => readFile(path.join(project, file), 'utf8')));
     // Generated build metadata can be refreshed independently of project Save.
-    // Dependency rollback, the saved lockfile and admitted ABI are authoritative.
+    // Automatic dependency persistence must not save the canvas.
     expect(JSON.parse(disk[0]).dependencies).toEqual(JSON.parse(baseline[0]).dependencies);
     expect(disk.slice(1)).toEqual(baseline.slice(1));
   };
   try {
     await openBlocklyProject(win, project); await ready();
     baseline[2] = await readFile(path.join(project, 'project.abi'), 'utf8');
-    await installAndEdit(); await record('01-unsaved-tft');
+    await installAndEdit();
+    baseline[0] = await readFile(path.join(project, 'package.json'), 'utf8');
+    baseline[1] = await readFile(path.join(project, 'package-lock.json'), 'utf8');
+    await record('01-auto-saved-library-unsaved-canvas');
     // A cancelled native file picker is a real post-confirmation cancellation.
     await launched.app.evaluate(({ dialog }) => {
       const original = dialog.showOpenDialog;
@@ -124,7 +131,7 @@ test('TFT library discard: cancellation, close, switch, real filesystem failure 
     });
     await action('project-open'); await skip();
     await expect.poll(async () => (await runtime()).project).toBe(project);
-    expect((await status()).dirty).toBe(true); expect(installed()).toBe(true);
+    expect((await status()).dirty).toBe(false); expect(installed()).toBe(true);
     expect((await runtime()).blocked).toBe(false); await record('02-picker-cancel-preserves-edits');
 
     // Reject an unavailable destination after the same real confirmation UI.
@@ -133,11 +140,11 @@ test('TFT library discard: cancellation, close, switch, real filesystem failure 
       w.__libraryDisposalAction = header.onHeaderMenuSubItemClick({ action: 'recent-project-open', data: { path: missing } });
     }, path.join(root, 'missing-project'));
     await skip(); await win.evaluate(() => (window as any).__libraryDisposalAction);
-    expect((await runtime()).mounted).toBe(true); expect((await status()).dirty).toBe(true);
+    expect((await runtime()).mounted).toBe(true); expect((await status()).dirty).toBe(false);
     await record('03-missing-target-preserves-edits');
 
     await action('project-close'); await skip(); await win.evaluate(() => (window as any).__libraryDisposalAction);
-    expect((await runtime()).mounted).toBe(false); expect(installed()).toBe(false);
+    expect((await runtime()).mounted).toBe(false); expect(installed()).toBe(true);
     expect((await status()).dirty).toBe(false); await unchangedDisk(); await record('04-discard-close');
     await win.evaluate(project => (window as any).ng.getComponent(document.querySelector('app-header')).projectService.projectOpen(project), project);
     await ready(); expect((await runtime()).types.some((type: string) => type.startsWith('tftespi_'))).toBe(false);
@@ -148,26 +155,10 @@ test('TFT library discard: cancellation, close, switch, real filesystem failure 
       w.__libraryDisposalAction = header.onHeaderMenuSubItemClick({ action: 'recent-project-open', data: { path: target } });
     }, target);
     await skip(); await win.evaluate(() => (window as any).__libraryDisposalAction); await ready(target);
-    expect(installed()).toBe(false); expect((await status()).dirty).toBe(false); await unchangedDisk(); await record('05-discard-switch');
+    expect(installed()).toBe(true); expect((await status()).dirty).toBe(false); await unchangedDisk(); await record('05-discard-switch');
     await win.evaluate(project => (window as any).ng.getComponent(document.querySelector('app-header')).projectService.projectOpen(project), project);
     await ready(); await installAndEdit();
 
-    // Real OS fault: npm cannot rename/remove packages in this read-only scope.
-    const scope = path.join(project, 'node_modules/@aily-project');
-    await chmod(scope, 0o555);
-    try {
-      await action('project-close'); await skip(); await win.evaluate(() => (window as any).__libraryDisposalAction);
-      expect((await runtime()).mounted).toBe(false); expect((await runtime()).state).toBe('error');
-      expect((await status()).dirty).toBe(true);
-      await expect(win.locator('body')).toContainText('项目库依赖恢复失败');
-      await record('06-real-permission-failure');
-    } finally { await chmod(scope, 0o755); }
-    await action('project-close'); await win.evaluate(() => (window as any).__libraryDisposalAction);
-    expect((await runtime()).project).toBe(''); expect((await status()).dirty).toBe(false);
-    expect(installed()).toBe(false); await unchangedDisk(); await record('07-retry-close-recovers');
-
-    await win.evaluate(project => (window as any).ng.getComponent(document.querySelector('app-header')).projectService.projectOpen(project), project);
-    await ready(); await installAndEdit();
     await win.evaluate(() => (window as any).ng.getComponent(document.querySelector('app-header')).process({ action: 'project-save' }, null, 'manual'));
     await expect.poll(async () => (await status()).dirty).toBe(false);
     await action('project-close'); await win.evaluate(() => (window as any).__libraryDisposalAction);
@@ -200,16 +191,8 @@ test('TFT library discard: cancellation, close, switch, real filesystem failure 
       expect(await readFile(path.join(project, 'project.abi'), 'utf8')).toBe(savedAbi);
       await record('09-real-incomplete-library-quarantine');
     } finally { await writeFile(blockFile, originalBlocks); }
-    await action('project-close');
-    await expect(win.locator('app-unsave-dialog')).toContainText('无法确认保存状态');
-    await win.screenshot({ path: info.outputPath('09a-quarantined-close-dialog.png') });
-    await skip(); await win.evaluate(() => (window as any).__libraryDisposalAction);
-    expect((await runtime()).mounted).toBe(false); expect((await runtime()).project).toBe('');
-    await win.evaluate(project => (window as any).ng.getComponent(document.querySelector('app-header')).projectService.projectOpen(project), project);
-    await ready(); expect((await runtime()).blocked).toBe(false);
-    expect(await win.evaluate(() => (window as any).blocklyWorkspace.getBlockById('tft-setup').getFieldValue('WIDTH'))).toBe('240');
     expect((await readdir(temp)).filter(file => /^library-runtime-.*\.recovery\.json$/.test(file)).length).toBe(1);
-    expect(errors).toEqual([]); await record('10-quarantined-close-and-reopen');
+    expect(errors).toEqual([]); await record('10-protected-canvas-retains-recovery');
   } finally {
     await writeFile(info.outputPath('evidence.json'), JSON.stringify({ root, project, target, errors, snapshots }, null, 2));
     await launched.close();

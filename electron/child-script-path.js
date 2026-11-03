@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { app } = require('electron');
+const app = process.versions.electron ? require('electron').app : undefined;
 
 function childScriptPath(filename) {
   // Preload has no main-process app object. In that realm only this bundled

@@ -862,6 +862,10 @@ function normalizeExtractedSourceDirectory(extractPath, sourcePath) {
         ? nestedSourcePath
         : extractPath;
 
+    if (!fs.readdirSync(extractedSourcePath).filter(item => !item.startsWith('.')).length) {
+        throw new Error('Library source archive is empty.');
+    }
+
     if (fs.existsSync(sourcePath)) {
         throw new Error('Library source destination appeared during archive extraction.');
     }
@@ -1038,6 +1042,7 @@ module.exports = {
     collectWorkspaceLibraries,
     collectLibraryPackages,
     createLibrarySourceFingerprint,
+    extractLibrarySourceArchive,
     isCompilableLibraryPackage,
     normalizeExtractedSourceDirectory,
     processComponentLibraries,

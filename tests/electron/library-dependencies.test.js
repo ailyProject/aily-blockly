@@ -52,6 +52,111 @@ async function fixture(t) {
   return { root, read, write, installed, api, install, remove };
 }
 
+test('public library operations persist manifest and lockfile before returning and survive discard/reopen', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  for (const request of [
+    { action: 'remove', packages: ['test-b'] },
+    { action: 'install', packages: ['test-c@file:local-libraries/c'] },
+    { action: 'install', packages: ['test-d@file:local-libraries/d'] },
+  ]) {
+    const status = await sessions.run('mutate', f.root, request);
+    assert.equal(status.dirty, false);
+    assert.deepEqual(JSON.parse(f.read('package.json')).dependencies,
+      JSON.parse(f.read('package-lock.json')).packages[''].dependencies);
+  }
+  const baseline = ['package.json', 'package-lock.json'].map(f.read);
+  await sessions.run('discard', f.root);
+  await new LibraryDependencies().discard(f.root, { reconcile: true });
+  assert.deepEqual(f.installed(), ['test-a', 'test-c', 'test-d']);
+  assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), baseline);
+});
+
+test('automatic library save preserves build fingerprints refreshed during npm and source preparation', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api), run = f.api.run;
+  let revision = 0;
+  f.api.run = async (root, request) => {
+    const result = await run(root, request);
+    if (!request.save) f.write('package.json', { ...JSON.parse(f.read('package.json')),
+      codeHash: `build-${++revision}`, buildInfo: { lastBuildCode: `build-${revision}` } });
+    return result;
+  };
+  await sessions.run('mutate', f.root, { action: 'install', packages: ['test-c@file:local-libraries/c'] });
+  const saved = JSON.parse(f.read('package.json'));
+  assert.equal(revision, 2);
+  assert.equal(saved.codeHash, 'build-2');
+  assert.deepEqual(saved.buildInfo, { lastBuildCode: 'build-2' });
+  assert.ok(saved.dependencies['test-c']);
+  assert.deepEqual(JSON.parse(f.read('package-lock.json')).packages[''].dependencies, saved.dependencies);
+  assert.equal(f.api.status(f.root).dirty, false);
+});
+
+test('automatic source preparation expands root/nested archives and transitives, preserves edits and rejects bad archives', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  const { execFileSync } = require('node:child_process');
+  const extractor = path.resolve(__dirname, '../../child', process.platform === 'win32' ? '7za.exe' : '7zz');
+  for (const [folder, nested] of [['archive', false], ['nested', true], ['bad', false], ['empty', true]]) {
+    const directory = path.join(f.root, 'local-libraries', folder);
+    const input = path.join(f.root, `archive-input-${folder}`, ...(nested ? ['src'] : []));
+    fs.mkdirSync(directory, { recursive: true }); fs.mkdirSync(input, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: `@aily-project/lib-${folder}`, version: '1.0.0',
+      ...(folder === 'archive' ? { dependencies: { '@aily-project/lib-nested': 'file:../nested' } } : {}) }));
+    if (folder !== 'empty') fs.writeFileSync(path.join(input, 'Fixture.h'), `// ${folder}\n`);
+    execFileSync(extractor, ['a', '-t7z', path.join(directory, 'src.7z'), '.'], {
+      cwd: path.join(f.root, `archive-input-${folder}`), stdio: 'pipe',
+    });
+    if (folder === 'bad') fs.writeFileSync(path.join(directory, 'src.7z'), 'invalid archive');
+  }
+  const install = folder => sessions.run('mutate', f.root, { action: 'install',
+    packages: [`@aily-project/lib-${folder}@file:local-libraries/${folder}`], options: { installLinks: false } });
+  await install('archive');
+  const source = name => path.join(f.root, 'node_modules', `@aily-project/lib-${name}`, 'src/Fixture.h');
+  assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// archive\n');
+  assert.equal(fs.readFileSync(source('nested'), 'utf8'), '// nested\n');
+  // Reload may hold the renderer's mirror-publication lock while preparing
+  // package sources. Expansion must not try to acquire that same lock again.
+  fs.rmSync(path.dirname(source('archive')), { recursive: true });
+  const { createProjectFileAccess, acquireProjectFileLock } = require('../../electron/project-file-access');
+  const lock = await acquireProjectFileLock(createProjectFileAccess(f.root, f.root), () => {});
+  try { await sessions.run('prepare', f.root); }
+  finally { lock.release(); }
+  assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// archive\n');
+  fs.writeFileSync(source('archive'), '// user edit\n');
+  const baseline = ['package.json', 'package-lock.json'].map(f.read);
+  for (const folder of ['bad', 'empty']) {
+    await assert.rejects(install(folder), /解压失败/);
+    assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), baseline);
+    assert.equal(f.api.status(f.root).dirty, false);
+    assert.equal(sessions.sessions.size, 0);
+    assert.equal(fs.existsSync(path.join(f.root, 'node_modules', `@aily-project/lib-${folder}`)), false);
+    assert.equal(fs.existsSync(path.join(f.root, 'local-libraries', folder, 'src')), false);
+    assert.deepEqual(fs.readdirSync(path.join(f.root, 'local-libraries', folder)).filter(name => name.startsWith('.src-extract-')), []);
+  }
+  assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// user edit\n');
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['@aily-project/lib-archive'] });
+  assert.equal(JSON.parse(f.read('package.json')).dependencies['@aily-project/lib-archive'], undefined);
+  assert.equal(fs.existsSync(path.join(f.root, 'node_modules/@aily-project/lib-archive')), false);
+});
+
+test('Coder transaction commits only at end; failed publication retains recoverable staged state', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  const { transaction } = await sessions.run('begin', f.root);
+  const before = f.read('package.json');
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] }, transaction);
+  assert.equal(f.read('package.json'), before);
+  await sessions.run('end', f.root, undefined, transaction);
+  assert.equal(JSON.parse(f.read('package.json')).dependencies['test-b'], undefined);
+  assert.equal(f.api.status(f.root).dirty, false);
+  const run = f.api.run;
+  f.api.run = (root, request) => request.save ? Promise.reject(new Error('publication failed')) : run(root, request);
+  await assert.rejects(sessions.run('mutate', f.root, { action: 'install', packages: ['test-c@file:local-libraries/c'] }), /publication failed/);
+  assert.equal(f.api.status(f.root).dirty, true);
+  assert.equal(sessions.sessions.size, 0);
+  f.api.run = run;
+  await sessions.run('save', f.root);
+  assert.equal(f.api.status(f.root).dirty, false);
+  assert.ok(JSON.parse(f.read('package.json')).dependencies['test-c']);
+});
+
 test('Coder source preparation holds saves, and a failed operation restores the previous unsaved tree', async t => {
   const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
   await f.install('c');
@@ -81,16 +186,18 @@ test('local and legacy Coder library removal restores bytes without draft direct
     fs.writeFileSync(path.join(directory(name), 'library.properties'), `name=${name}\nversion=1.0.0`);
   }
   const disk = f.read('package.json'), lock = f.read('package-lock.json');
-  await sessions.run('removeLocal', f.root, { folderName: 'UserLibrary' });
+  const staging = await sessions.run('begin', f.root);
+  await sessions.run('removeLocal', f.root, { folderName: 'UserLibrary' }, staging.transaction);
   assert.equal(f.api.status(f.root).dirty, true);
-  await assert.rejects(sessions.run('begin', f.root, { requireClean: true }), /LIBRARY_CHANGES_UNSAVED/);
+  await sessions.run('end', f.root, undefined, staging.transaction);
+  assert.equal(f.api.status(f.root).dirty, false);
   const { transaction } = await sessions.run('begin', f.root);
   await sessions.run('removeLocal', f.root, { folderName: 'LegacyLibrary' }, transaction);
   await sessions.run('abort', f.root, undefined, transaction);
   assert.equal(fs.existsSync(directory('UserLibrary')), false);
   assert.equal(fs.existsSync(directory('LegacyLibrary')), true);
   await f.api.discard(f.root, { reconcile: true });
-  assert.deepEqual(fs.readFileSync(path.join(directory('UserLibrary'), 'src/data.bin')), Buffer.from([0, 255, 17]));
+  assert.equal(fs.existsSync(directory('UserLibrary')), false, 'a completed removal is already saved');
   assert.equal(f.api.status(f.root).dirty, false);
   await f.api.removeLocal(f.root, { folderName: 'LegacyLibrary' });
   await f.api.save(f.root);
@@ -100,6 +207,7 @@ test('local and legacy Coder library removal restores bytes without draft direct
   assert.equal(f.read('package-lock.json'), lock);
   assert.equal(fs.existsSync(path.join(f.root, '.temp')), false);
   await assert.rejects(f.api.removeLocal(f.root, { folderName: '../UserLibrary' }), /Invalid/);
+  fs.mkdirSync(directory('UserLibrary'), { recursive: true });
   fs.symlinkSync(directory('UserLibrary'), directory('LinkedLibrary'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(f.api.removeLocal(f.root, { folderName: 'LinkedLibrary' }), /links/);
   assert.equal(fs.existsSync(directory('UserLibrary')), true);

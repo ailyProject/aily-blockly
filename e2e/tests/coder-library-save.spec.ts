@@ -14,7 +14,7 @@ const agent = process.env['AILY_E2E_AGENT_ROOT'];
 const { runDependencyWorker } = require('../../electron/library-dependencies');
 const name = (id: string) => `@aily-project-coder/lib-save-${id}`;
 
-test('Coder library save, uninstall discard, editor undo and Chat restore use the saved baseline', async ({}, info) => {
+test('Coder libraries save automatically while editor undo, discard and Chat restore retain their own baselines', async ({}, info) => {
   test.skip(!platform || !coder || !agent, 'Supply installed platform, Coder and Agent source roots.');
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'aily-coder-save-')));
   const project = path.join(root, 'project');
@@ -53,8 +53,7 @@ test('Coder library save, uninstall discard, editor undo and Chat restore use th
   if (largeSource) await cp(largeSource,path.join(project,'sketch/src/workload'),{recursive:true,mode:constants.COPYFILE_FICLONE});
   await runDependencyWorker(project,{save:true,options:{'@aily-project-coder:registry':registry}});
   await runDependencyWorker(project,{options:{'@aily-project-coder:registry':registry}});
-  const launch=await launchAilyElectron({environment:{AILY_BUILD_PRODUCT:'coder',AILY_E2E_TOOLCHAIN_SEED:process.env['AILY_E2E_TOOLCHAIN_SEED']||platform!},config:{lang:'zh_CN',blocklyOnboardingCompleted:true,devmode:{enabled:true,autoSave:false},regions:{cn:{npm_registry_coder:registry}}}});
-  await cp(path.join(platform!,'npm-global/app/store/subapp-aily-coder-editor'),path.join(launch.userDataDir,'npm-global/app/store/subapp-aily-coder-editor'),{recursive:true,verbatimSymlinks:true,mode:constants.COPYFILE_FICLONE});
+  const launch=await launchAilyElectron({environment:{AILY_BUILD_PRODUCT:'coder',AILY_E2E_CODER_STORE_SEED:path.join(platform!,'npm-global/app/store/subapp-aily-coder-editor'),AILY_E2E_TOOLCHAIN_SEED:process.env['AILY_E2E_TOOLCHAIN_SEED']||platform!},config:{lang:'zh_CN',blocklyOnboardingCompleted:true,devmode:{enabled:true,autoSave:false},regions:{cn:{npm_registry_coder:registry}}}});
   const catalog={libraries:['a','b','c','broken'].map(id=>({name:name(id),nickname:`Save ${id}`,version:'1.0.0',architectures:['*'],description:'Save regression fixture'}))};
   const index='https://blockly.yiyu.pro/libraries-coder-index.json';
   await write(path.join(launch.userDataDir,'cache/coder-package-libraries',`${createHash('sha256').update(index).digest('hex')}.json`),JSON.stringify(catalog));
@@ -103,59 +102,65 @@ test('Coder library save, uninstall discard, editor undo and Chat restore use th
     const card=panel!.locator('.card').filter({has:panel!.locator('.title',{hasText:new RegExp(`^Save ${id}$`)})});
     await card.getByRole('button',{name:action==='install'?'安装':'卸载',exact:true}).click();
     await expect.poll(()=>installed().includes(id)).toBe(action==='install');
-    await dirty(true);
+    await expect.poll(async () => (await status()).busy).toBe(false);
+    await dirty(false);
   };
   const record=async(step:string)=>{snapshots.push({step,installed:installed(),disk:JSON.parse(await manifest()),status:await status(),title:await win.locator('app-header .project-box').innerText()});};
   try {
     await win.evaluate(project=>(window as any).ng.getComponent(document.querySelector('app-header')).projectService.projectOpen(project),project);
     await ready(); await dirty(false);
     await writeFile(info.outputPath('initial-dom.txt'),await frame().locator('body').innerText());
-    const baseline=await manifest(),baselineLock=await readFile(path.join(project,'package-lock.json'),'utf8');
     for(const [action,id] of [['remove','a'],['install','b'],['install','c']]){
       await changeFromUI(id,action as 'install'|'remove');
-      expect(await manifest()).toBe(baseline);expect(await readFile(path.join(project,'package-lock.json'),'utf8')).toBe(baselineLock);await record(`${action}-${id}`);
+      const disk=JSON.parse(await manifest());
+      expect(!!disk.dependencies[name(id)]).toBe(action==='install');
+      expect(JSON.parse(await readFile(path.join(project,'package-lock.json'),'utf8')).packages[''].dependencies).toEqual(disk.dependencies);
+      await record(`${action}-${id}`);
     }
     expect(installed()).toEqual(['b','c']);
     sourceReady('b'); sourceReady('c');
+    const accepted = await manifest();
     expect(await api('install','broken')).toMatchObject({ok:false});
     expect(existsSync(path.join(project,'node_modules',name('broken')))).toBe(false);
-    expect(await manifest()).toBe(baseline); expect(installed()).toEqual(['b','c']);
-    sourceReady('b'); sourceReady('c'); await dirty(true); await record('failed-install-rollback');
-    expect(JSON.stringify(await agentCall('coder_library_install','a'))).toContain('LIBRARY_CHANGES_UNSAVED');
+    expect(await manifest()).toBe(accepted); expect(installed()).toEqual(['b','c']);
+    sourceReady('b'); sourceReady('c'); await dirty(false); await record('failed-install-rollback');
+    expect((await status()).dirty).toBe(false);
     expect((await api('search','')).libraries.filter((item:any)=>item.installed).map((item:any)=>item.packageName).sort()).toEqual([name('b'),name('c')]);
     await win.locator('app-footer .footer-box').click({position:{x:600,y:10}});
     await win.keyboard.press(process.platform==='darwin'?'Meta+s':'Control+s');
     await dirty(false); expect((await status()).dirty).toBe(false);
     expect(Object.keys(JSON.parse(await manifest()).dependencies).filter(key=>key.startsWith('@aily-project-coder/')).sort()).toEqual([name('b'),name('c')]);
-    const saved=await manifest();await record('saved');
-    expect(await api('remove','b')).toMatchObject({ok:true});await dirty(true);expect(await manifest()).toBe(saved);
-    await win.reload();await ready();await dirty(false);expect(installed()).toEqual(['b','c']);expect(await manifest()).toBe(saved);await record('unsaved-uninstall-refresh');
-    sourceReady('b');
-    expect(await api('remove','c')).toMatchObject({ok:true});expect(await api('install','a')).toMatchObject({ok:true});await dirty(true);
+    await record('auto-saved');
+    expect(await api('remove','b')).toMatchObject({ok:true});await dirty(false);expect(JSON.parse(await manifest()).dependencies[name('b')]).toBeUndefined();
+    await win.reload();await ready();await dirty(false);expect(installed()).toEqual(['c']);expect(JSON.parse(await manifest()).dependencies[name('b')]).toBeUndefined();await record('auto-uninstall-refresh');
+    expect(await api('install','b')).toMatchObject({ok:true}); sourceReady('b');
+    expect(await api('remove','c')).toMatchObject({ok:true});expect(await api('install','a')).toMatchObject({ok:true});await dirty(false);
+    const editor=()=>frame().locator('.monaco-editor').first();
+    const codeBeforeDiscard=await readFile(path.join(project,'sketch/src/main.cpp'),'utf8');
+    await editor().click({position:{x:420,y:65}});await win.keyboard.insertText('// unsaved edit\n');await dirty(true);
+    expect(await readFile(path.join(project,'sketch/src/main.cpp'),'utf8')).toBe(codeBeforeDiscard);
     await win.evaluate(()=>{const w=window as any;w.discardDecision=w.ng.getComponent(document.querySelector('app-header')).checkUnsavedChanges('close');});
     await expect(win.locator('app-unsave-dialog')).toBeVisible();
     await win.locator('app-unsave-dialog').getByRole('button',{name:'跳过保存',exact:true}).click();
     expect(await win.evaluate(()=>(window as any).discardDecision)).toBe(true);
     await win.evaluate(async project => { const service=(window as any).ng.getComponent(document.querySelector('app-header')).projectService; await service.close(); await service.projectOpen(project); }, project);
     await ready();
-    await dirty(false);expect(installed()).toEqual(['b','c']);expect(await manifest()).toBe(saved);await record('explicit-discard');
-    sourceReady('c');
-    // Real Monaco edits: undo must clear the title, and iframe Save commits both
-    // editor contents and the host's pending dependency manifest.
-    const editor=()=>frame().locator('.monaco-editor').first();
+    await dirty(false);expect(installed()).toEqual(['a','b']);await record('discard-code-retains-library-changes');
+    expect(await readFile(path.join(project,'sketch/src/main.cpp'),'utf8')).toBe(codeBeforeDiscard);
+    expect(await api('remove','a')).toMatchObject({ok:true});expect(await api('install','c')).toMatchObject({ok:true});sourceReady('c');
+    // Real Monaco edits and iframe Save keep their independent baseline.
     await editor().click({position:{x:420,y:65}});await win.keyboard.press('Control+Home');
     const editorBefore=await editor().locator('.view-lines').innerText();
     await win.keyboard.insertText('x');await dirty(true);
     await win.keyboard.press(process.platform==='darwin'?'Meta+z':'Control+z');
     await expect(editor().locator('.view-lines')).toHaveText(editorBefore,{useInnerText:true});
     await dirty(false);
-    expect(await api('remove','c')).toMatchObject({ok:true});await dirty(true);
+    expect(await api('remove','c')).toMatchObject({ok:true});await dirty(false);
     await editor().click({position:{x:420,y:65}});await win.keyboard.press(process.platform==='darwin'?'Meta+s':'Control+s');
     await dirty(false);expect(JSON.parse(await manifest()).dependencies[name('c')]).toBeUndefined();await record('iframe-save-removal');
-    expect(await api('install','c')).toMatchObject({ok:true});await dirty(true);
+    expect(await api('install','c')).toMatchObject({ok:true});await dirty(false);
     await editor().click({position:{x:420,y:65}});await win.keyboard.press(process.platform==='darwin'?'Meta+s':'Control+s');await dirty(false);
-    // Actual Coder Agent RPC + Chat history engine, with dirty editor and
-    // library state present when a previous version is restored.
+    // Actual Coder Agent RPC + Chat history engine with unsaved editor content.
     const loadAgent=(file:string)=>import(pathToFileURL(path.join(agent!,'packages/aily-agent/dist',file)).href);
     const {WorkspaceHistoryEngine}=await loadAgent('extensions/pi-workspace-history/history-engine.js');
     const {synchronizeBlocklyWorkspaceHistory}=await loadAgent('blockly/workspace-history-sync.js');
@@ -169,7 +174,6 @@ test('Coder library save, uninstall discard, editor undo and Chat restore use th
     await history.captureExternalMutation('turn-0');expect((await history.finalize('turn-0')).commitId).toBeTruthy();
     const chatManifest=await manifest();await sync();await ready();await dirty(false);
     expect(installed()).toEqual(['a','b','c']);
-    expect(await api('remove','b')).toMatchObject({ok:true});
     await editor().click({position:{x:420,y:65}});await win.keyboard.insertText('// must not overwrite Chat restore\n');await dirty(true);
     await history.revertTurn('coder-save-chat',0);await sync();await ready();await dirty(false);
     expect(JSON.parse(await manifest())).toEqual(JSON.parse(beforeChat));expect(installed()).toEqual(['b','c']);

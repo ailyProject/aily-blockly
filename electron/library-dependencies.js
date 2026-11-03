@@ -9,6 +9,15 @@ const fields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peer
 const clone = value => JSON.parse(JSON.stringify(value));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const deps = manifest => Object.assign({}, ...fields.map(field => manifest[field]));
+// Build fingerprints can be refreshed independently while npm is running.
+// Keep all other project inputs guarded, and preserve the latest fingerprints.
+const sameLibraryInput = (before, after) => {
+  const input = text => {
+    const { codeHash, buildInfo, ...manifest } = JSON.parse(text);
+    return manifest;
+  };
+  try { return same(input(before), input(after)); } catch { return false; }
+};
 const conflict = () => fault('LIBRARY_DEPENDENCY_INPUT_CHANGED', 'Project dependencies changed outside this operation. Inspect dependency recovery; every version was retained.');
 const workers = new Set();
 let shuttingDown = false;
@@ -144,11 +153,11 @@ class LibraryDependencies {
       try {
         result = await this.run(root, { ...plan, options: request.options });
         assertCurrent();
-        if (fs.readFileSync(path.join(root, 'package.json'), 'utf8') !== original) throw conflict();
+        if (!sameLibraryInput(original, fs.readFileSync(path.join(root, 'package.json'), 'utf8'))) throw conflict();
       } catch (error) {
         // npm may have partially altered node_modules; restore the last accepted
         // tree. Never restore package.json bytes over an external writer.
-        if (fs.readFileSync(path.join(root, 'package.json'), 'utf8') === original) {
+        if (sameLibraryInput(original, fs.readFileSync(path.join(root, 'package.json'), 'utf8'))) {
           try { await this.run(root, { ...this.plan(disk, previous), options: request.options }); }
           catch (rollback) {
             // Keep a recoverable dirty session even when the first operation
@@ -207,10 +216,32 @@ class LibraryDependencies {
     }));
   }
 
-  save(project) {
+  async prepareSources(root, assertCurrent) {
+    const before = this.dependencyInput(root);
+    await this.run(root, { materializeSources: true, manifest: this.effective(root) });
+    assertCurrent();
+    const after = this.dependencyInput(root);
+    if (!sameLibraryInput(before.package, after.package) || after.lock !== before.lock) throw conflict();
+  }
+
+  prepare(project) {
+    // Opening/reloading can already own the renderer's project-file lease.
+    // Source expansion writes only package-local src; serialize it with npm,
+    // and verify inputs without nesting the manifest/mirror publication lock.
+    return this.queue(project, async root => {
+      const access = createProjectFileAccess(root, root);
+      await this.prepareSources(root, access.checkRoot);
+      return this.status(root);
+    });
+  }
+
+  save(project, { prepareSources = false, onPublish = () => {} } = {}) {
     return this.queue(project, root => this.locked(root, async assertCurrent => {
       const state = this.states.get(root);
-      if (!state) { this.locals.save(root); return this.status(root); }
+      if (!state) {
+        if (prepareSources) await this.prepareSources(root, assertCurrent);
+        this.locals.save(root); return this.status(root);
+      }
       const disk = this.read(root), effective = this.effective(root);
       if (state.treeNeedsReconcile) {
         state.resolution.archiveFile = archiveDependencyResolution(root, state.resolution);
@@ -226,9 +257,11 @@ class LibraryDependencies {
           throw Object.assign(error, { recoveryArchive: state.resolution.archiveFile, treeNeedsReconcile: true });
         }
       }
-      // npm owns lockfile creation and resolution. Only this explicit save is
-      // permitted to write the root manifest/lockfile; no installation is deferred.
+      // npm owns lockfile creation and resolution. Library transactions call
+      // this after source preparation, independently of saving editor content.
+      if (prepareSources) await this.prepareSources(root, assertCurrent);
       let publication;
+      onPublish();
       try { publication = await this.run(root, { ...this.plan(disk, effective), options: state.options, save: true }); }
       catch (error) {
         if (state.treeNeedsReconcile) state.reconcileFailure = { code: error.code || 'LIBRARY_DEPENDENCY_SAVE_FAILED',
@@ -286,10 +319,16 @@ function isCoderProject(root) {
 
 function runDependencyWorker(root, request) {
   if (shuttingDown) return Promise.reject(new Error('Application is shutting down'));
-  const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
+  const { childScriptPath } = require('./child-script-path');
+  const preprocessPath = childScriptPath('preprocess.js');
+  const childRoot = path.dirname(path.dirname(preprocessPath));
   const node = path.join(childRoot, 'node', process.platform === 'win32' ? 'node.exe' : 'bin/node');
   const npmRoot = path.join(childRoot, 'node', process.platform === 'win32' ? 'node_modules/npm' : 'lib/node_modules/npm');
   const source = fs.readFileSync(path.join(__dirname, 'library-dependency-worker.js'), 'utf8');
+  if (request.materializeSources) {
+    request = { ...request, preprocessPath, extractor: process.env.AILY_7ZA_PATH
+      || path.join(path.dirname(path.dirname(preprocessPath)), process.platform === 'win32' ? '7za.exe' : '7zz') };
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(node, ['-e', source], { cwd: root, windowsHide: true,
       env: { ...process.env, AILY_LIBRARY_WORKER: '1' }, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
