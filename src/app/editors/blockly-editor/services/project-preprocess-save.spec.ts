@@ -17,52 +17,82 @@ describe('complete save and background preprocess handoff', () => {
     return service;
   }
 
-  it('waits for the existing preprocess, pauses queued work through save, and never terminates its owner', fakeAsync(() => {
+  it('gives save priority over only its tracked background stream and holds the pause through save', fakeAsync(() => {
     const service = builder();
-    service.preprocessProcess = {};
-    service.preprocessStreamId = 'real-background';
+    service.preprocessProcess = { unsubscribe: jasmine.createSpy('unsubscribe') };
+    service.preprocessStreamId = 'owned-background';
+    service.streamId = 'active-user-build';
+    let stopped!: (confirmed: boolean) => void;
+    service.cmdService.kill.and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
     let release: (() => void) | undefined;
     service.pauseBackgroundPreprocessForSave('/project').then((value: () => void) => { release = value; });
-    tick(500);
+    tick();
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('owned-background');
+    expect(service.preprocessStreamId).toBe('owned-background');
     expect(release).toBeUndefined();
-    expect(service.cmdService.kill).not.toHaveBeenCalled();
-    service.preprocessProcess = null;
-    service.preprocessStreamId = null;
-    tick(100);
+    stopped(true);
+    tick();
     expect(typeof release).toBe('function');
     expect(service.isInstallInProgress()).toBeTrue();
-    expect(service.shouldCancelBackgroundPreprocess(1)).toBeTrue();
+    expect(service.pendingPrecompile).toBeTrue();
+    expect(service.triggerPendingPrecompile).not.toHaveBeenCalled();
     release!();
     release!();
     expect(service.preprocessSavePauses).toBe(0);
     expect(service.triggerPendingPrecompile).toHaveBeenCalledTimes(1);
   }));
 
-  it('releases scheduling on a changed project while retaining its live preprocess', fakeAsync(() => {
+  it('does not terminate another project when the save request is already stale', fakeAsync(() => {
     const service = builder();
-    service.preprocessStreamId = 'still-owned';
+    service.preprocessStreamId = 'other-project-background';
+    service.projectService.currentProjectPath = '/other';
     let failure: any;
     service.pauseBackgroundPreprocessForSave('/project').catch((error: unknown) => { failure = error; });
     tick();
-    service.projectService.currentProjectPath = '/other';
-    tick(100);
     expect(failure.message).toContain('project changed');
     expect(service.preprocessSavePauses).toBe(0);
-    expect(service.preprocessStreamId).toBe('still-owned');
+    expect(service.preprocessStreamId).toBe('other-project-background');
     expect(service.cmdService.kill).not.toHaveBeenCalled();
     expect(service.triggerPendingPrecompile).not.toHaveBeenCalled();
   }));
 
-  it('a long-running owner remains protected when the drain budget expires', fakeAsync(() => {
+  it('retains ownership on an unconfirmed stop and permits a subsequent save retry', fakeAsync(() => {
     const service = builder();
-    service.preprocessStreamId = 'slow-owner';
-    let failure: any;
+    service.preprocessStreamId = 'owned-background';
+    service.cmdService.kill.and.resolveTo(false);
+    let failure: any, release: (() => void) | undefined;
     service.pauseBackgroundPreprocessForSave('/project').catch((error: unknown) => { failure = error; });
-    tick(60_000);
-    expect(failure.code).toBe('BACKGROUND_PREPROCESS_BUSY');
+    tick();
+    expect(failure.message).toContain('未确认停止');
     expect(service.preprocessSavePauses).toBe(0);
-    expect(service.preprocessStreamId).toBe('slow-owner');
-    expect(service.cmdService.kill).not.toHaveBeenCalled();
+    expect(service.preprocessStreamId).toBe('owned-background');
+    service.cmdService.kill.and.resolveTo(true);
+    service.pauseBackgroundPreprocessForSave('/project').then((value: () => void) => { release = value; });
+    tick();
+    expect(typeof release).toBe('function');
+    expect(service.preprocessStreamId).toBeNull();
+    release!();
+    expect(service.preprocessSavePauses).toBe(0);
+  }));
+
+  it('shares cancellation and resumes background work only after concurrent saves both finish', fakeAsync(() => {
+    const service = builder();
+    service.preprocessStreamId = 'owned-background';
+    let stopped!: (confirmed: boolean) => void;
+    service.cmdService.kill.and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
+    let first!: () => void, second!: () => void;
+    service.pauseBackgroundPreprocessForSave('/project').then((release: () => void) => { first = release; });
+    service.pauseBackgroundPreprocessForSave('/project').then((release: () => void) => { second = release; });
+    tick();
+    expect(service.cmdService.kill).toHaveBeenCalledOnceWith('owned-background');
+    stopped(true);
+    tick();
+    first();
+    expect(service.isInstallInProgress()).toBeTrue();
+    expect(service.triggerPendingPrecompile).not.toHaveBeenCalled();
+    second();
+    expect(service.isInstallInProgress()).toBeFalse();
+    expect(service.triggerPendingPrecompile).toHaveBeenCalledTimes(1);
   }));
 
   for (const fails of [false, true]) {

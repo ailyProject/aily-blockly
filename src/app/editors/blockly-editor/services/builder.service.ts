@@ -593,6 +593,20 @@ export class _BuilderService {
         return;
       }
 
+      // Unsaved canvas edits are foreground work. Keep one advisory request
+      // pending until a real save completes instead of racing its publication.
+      try {
+        if (await this.projectService.hasUnsavedChanges()) {
+          this.pendingPrecompile = true;
+          return;
+        }
+      } catch (error) {
+        this.pendingPrecompile = true;
+        console.info('[Builder][PreprocessSchedule] defer until the canvas can be saved', error);
+        return;
+      }
+      if (this.shouldCancelBackgroundPreprocess(runGeneration)) return;
+
       await this.waitForBackgroundPreprocessIdle(String(data || 'dependency'));
       if (this.shouldCancelBackgroundPreprocess(runGeneration)) {
         console.log('AI操作进行中，idle 后继续延迟预编译');
@@ -949,7 +963,7 @@ export class _BuilderService {
   }
 
   private async waitForPreprocessDrain(projectPath: string, isCancelled: () => boolean,
-    purpose: 'compile' | 'upload' | 'background' | 'save', budgetMs = 60_000): Promise<void> {
+    purpose: 'compile' | 'upload' | 'background', budgetMs = 60_000): Promise<void> {
     const startedAt = Date.now();
     const assertCurrent = () => {
       if (isCancelled() || projectPath !== this.projectService.currentProjectPath) {
@@ -967,11 +981,10 @@ export class _BuilderService {
     assertCurrent();
   }
 
-  /** A complete save publishes source files too. Freeze advisory scheduling
-   * before draining an existing preprocess, and keep it frozen until the real
-   * save finishes. Never kill its owner or borrow its native workspace lease. */
+  /** Save/library operations outrank advisory preprocessing. Stop only our
+   * registered background command with confirmed tree cleanup, hold scheduling
+   * through the real save, then coalesce the deferred analysis. */
   async pauseBackgroundPreprocessForSave(projectPath: string): Promise<() => void> {
-    ++this.preprocessRunGeneration;
     this.preprocessSavePauses = (this.preprocessSavePauses || 0) + 1;
     let released = false;
     const release = () => {
@@ -983,7 +996,16 @@ export class _BuilderService {
       }
     };
     try {
-      await this.waitForPreprocessDrain(projectPath, () => !this.initialized, 'save');
+      const assertCurrent = () => {
+        if (!this.initialized || projectPath !== this.projectService.currentProjectPath) {
+          throw new Error('save cancelled or project changed before background preprocessing yielded.');
+        }
+      };
+      assertCurrent();
+      ++this.preprocessRunGeneration;
+      this.pendingPrecompile = true;
+      if (this.isPreprocessing()) await this.stopPreprocess();
+      assertCurrent();
       return release;
     } catch (error) { release(); throw error; }
   }
