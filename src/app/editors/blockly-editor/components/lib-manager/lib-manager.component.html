@@ -27,7 +27,7 @@
                 [attr.aria-pressed]="keyword === tag.key"
                 [nzColor]="keyword === tag.key ? '#739c19ff' : undefined">{{ tag.label }}</nz-tag>
             }
-            <span style="position: absolute;top: 10px;color: #444;">|</span>
+            <span class="tag-separator">|</span>
             <nz-tag role="button" tabindex="0" style="margin-left: 11px;" (click)="search('installed')"
                 (keydown.enter)="search('installed')" (keydown.space)="$event.preventDefault(); search('installed')"
                 [attr.aria-pressed]="keyword === 'installed'"
@@ -51,8 +51,13 @@
             </button>
         </div>
     </div>
-    <div class="lib-list">
-        @for( lib of libraryList;track lib.name ) {
+    <div class="lib-list" #scrollElement>
+        <div class="lib-canvas" [style.height.px]="virtualizer.getTotalSize()">
+        @for (row of virtualizer.getVirtualItems(); track row.index) {
+        <div class="lib-row" [style.transform]="'translateY(' + row.start + 'px)'"
+            [style.grid-template-columns]="'repeat(' + columnCount() + ', minmax(0, 365px))'"
+            [attr.data-row-index]="row.index">
+        @for (lib of libraryRows()[row.index]; track lib.name) {
         <div class="lib-item">
             <div class="name" [nz-tooltip] [nzTooltipTitle]="lib.tested?'':'该库未通过测试，可能存在问题'">
                 <div class="name-main">
@@ -133,5 +138,8 @@
             </div>
         </div>
         }
+        </div>
+        }
+        </div>
     </div>
 </div>

@@ -3,6 +3,15 @@
     inset: 0;
     display: block;
     z-index: 999999;
+    container-type: inline-size;
+}
+
+:host(.lib-manager-host--panel) {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    height: 100%;
+    z-index: auto;
 }
 
 .lib-manager-box {
@@ -25,29 +34,23 @@
         min-height: 0;
         height: 100%;
 
-        .lib-list {
-            grid-template-columns: 1fr;
-            padding: 8px;
-            gap: 10px;
+        .lib-list { padding: 8px; }
+        .lib-row { column-gap: 10px; }
+    }
 
-            .lib-item {
-                max-width: none;
-                height: auto;
-                min-height: 140px;
-            }
-        }
-
-        .header nz-input-group {
-            width: 120px;
-            margin-left: 8px;
-        }
+    .header .ant-input-suffix i.fa-xmark {
+        cursor: pointer;
+        &:hover { color: var(--aily-color-primary); }
     }
 
     .header {
         position: relative;
         flex-shrink: 0;
-        height: 40px;
+        min-height: 40px;
         display: flex;
+        flex-wrap: wrap;
+        gap: 6px 0;
+        padding: 6px 10px;
         align-items: center;
         border-bottom: 1px solid var(--aily-bg-tertiary);
         z-index: 99;
@@ -55,12 +58,10 @@
         overflow: hidden;
 
         .btns {
-            position: absolute;
             display: flex;
             align-items: center;
-            right: 0;
-            padding: 0 10px;
-            height: 100%;
+            margin-left: auto;
+            flex-shrink: 0;
             background: var(--aily-bg-elevated);
 
             i {
@@ -69,9 +70,11 @@
         }
 
         .btn {
-            height: 40px;
-            width: 40px;
+            height: 24px;
+            width: 24px;
             font-size: 19px;
+            cursor: pointer;
+            &:hover { color: var(--aily-color-primary); }
             flex-shrink: 0;
         }
 
@@ -83,11 +86,8 @@
     }
 
     .lib-list {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, 365px);
-        justify-content: center;
-        align-content: start;
-        gap: 15px;
+        display: block;
+        box-sizing: border-box;
         flex: 1;
         min-height: 0;
         width: 100%;
@@ -115,8 +115,21 @@
             }
         }
 
+        .lib-canvas { position: relative; width: 100%; }
+        .lib-row {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            display: grid;
+            justify-content: center;
+            column-gap: 15px;
+        }
+
         .lib-item {
             width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
             max-width: 365px;
             height: 165px;
             background: var(--aily-bg-elevated);
@@ -170,7 +183,9 @@
 
             .desc {
                 color: var(--aily-text-tertiary);
-                flex-grow: 1;
+                flex: 1;
+                min-height: 0;
+                overflow: hidden;
                 font-size: 12px;
                 white-space: normal;
                 margin-top: 5px;
@@ -191,11 +206,16 @@
                 // position: absolute;
                 // bottom: 10px;
                 height: 24px;
+                flex-shrink: 0;
                 display: flex;
                 justify-content: space-between;
                 width: 100%;
 
                 .version {
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
                     nz-select {
                         width: 80px;
                     }
@@ -221,10 +241,21 @@
 }
 
 .tag-list {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
     white-space: nowrap;
+    scrollbar-width: thin;
+
+    .tag-separator { color: var(--aily-text-tertiary); }
 
     nz-tag {
         cursor: pointer;
+        flex-shrink: 0;
+
+        &:hover { filter: brightness(1.3); color: var(--aily-color-primary); }
 
         &:focus-visible {
             outline: 2px solid var(--aily-color-primary);
@@ -235,4 +266,15 @@
 
 .error {
     color: rgb(133, 8, 8) !important;
+}
+
+// Move filters onto their own scrollable row before they can overlap the actions.
+@container (max-width: 1100px) {
+    .lib-manager-box .header .tag-list { order: 3; flex-basis: 100%; }
+}
+@container (max-width: 420px) {
+    .lib-manager-box .header {
+        nz-input-group { flex: 1; width: 80px; min-width: 50px; margin: 0 8px; }
+        .btns button { padding-inline: 5px; }
+    }
 }
