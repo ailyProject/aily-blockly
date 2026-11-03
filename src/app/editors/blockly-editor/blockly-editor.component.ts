@@ -60,6 +60,7 @@ type ProjectDependencySession = ReturnType<ProjectService['getProjectDependencyS
 })
 export class BlocklyEditorComponent implements OnInit, OnDestroy {
   showLibraryManager = false;
+  private releasePreprocessSaveGuard?: () => void;
 
   private readonly packageJsonWatchDebounceMs = 300;
   /** 会话/检查点恢复会短暂改写 package.json，移除告警需等依赖集合稳定后再确认。 */
@@ -198,6 +199,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
 
     this._projectService.init();
     this._builderService.init();
+    this.releasePreprocessSaveGuard = this._projectService.bindPreprocessSaveGuard(
+      path => this._builderService.pauseBackgroundPreprocessForSave(path),
+    );
     this._uploadService.init();
     this.boardConfigUpdatedSubscription = this.projectService.boardConfigUpdatedSubject.subscribe((boardConfig) => {
       this.applyRuntimeBoardConfig(boardConfig);
@@ -250,6 +254,8 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.releasePreprocessSaveGuard?.();
+    this.releasePreprocessSaveGuard = undefined;
     ++this.projectLoadSequence;
     this.projectRouteSubscription?.unsubscribe();
     this.projectRouteSubscription = null;

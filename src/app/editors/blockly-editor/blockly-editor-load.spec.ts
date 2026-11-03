@@ -46,7 +46,7 @@ describe('failed Blockly open recovery', () => {
       const component: any = Object.create(BlocklyEditorComponent.prototype);
       Object.assign(component, {
         projectLoadSequence: 0, activatedRoute: { queryParams: route },
-        _projectService: { init() {} }, _builderService: { init() {} }, _uploadService: { init() {} },
+        _projectService: { init() {}, bindPreprocessSaveGuard: () => () => {} }, _builderService: { init() {} }, _uploadService: { init() {} },
         projectService: { boardConfigUpdatedSubject: board, beginBlocklyProjectLoad() {},
           markBlocklyProjectLoadFailed: jasmine.createSpy('failed') },
         uiService: { updateFooterState: jasmine.createSpy('footer') },
@@ -186,7 +186,7 @@ describe('project load normalization context', () => {
     const route = new Subject<any>(); const board = new Subject<any>(); let session = 0;
     component.projectLoadSequence = 0; component.loadedProjectPath = null;
     component.activatedRoute = { queryParams: route };
-    component._projectService = { init: () => {} }; component._builderService = { init: () => {} }; component._uploadService = { init: () => {} };
+    component._projectService = { init: () => {}, bindPreprocessSaveGuard: () => () => {} }; component._builderService = { init: () => {} }; component._uploadService = { init: () => {} };
     Object.assign(component.projectService, { boardConfigUpdatedSubject: board,
       beginBlocklyProjectLoad: () => {}, markBlocklyProjectLoadFailed: jasmine.createSpy('failed') });
     component.abortFailedProjectLoad = jasmine.createSpy('abort'); component.message = { error: jasmine.createSpy('error') };

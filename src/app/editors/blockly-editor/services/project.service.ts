@@ -44,6 +44,7 @@ export class _ProjectService {
   private readonly cleanState = new BlocklyProjectCleanState(workspace => this.blocklyService.getWorkspaceLoadReadbackView(workspace));
   private hydration?: Subscription;
   private runtimeRecovery?: RuntimeRecoveryRecord;
+  private preprocessSaveGuard?: (path: string) => Promise<() => void>;
   private deferredSaveOutputs?: { timer?: ReturnType<typeof setTimeout> };
 
   constructor(
@@ -436,7 +437,18 @@ export class _ProjectService {
     return this.absSaveAsHandler(path);
   }
 
-  save(path: string): Promise<ProjectSaveOutcome> {
+  bindPreprocessSaveGuard(guard: (path: string) => Promise<() => void>): () => void {
+    this.preprocessSaveGuard = guard;
+    return () => { if (this.preprocessSaveGuard === guard) this.preprocessSaveGuard = undefined; };
+  }
+
+  async save(path: string): Promise<ProjectSaveOutcome> {
+    const release = await this.preprocessSaveGuard?.(path);
+    try { return await this.saveProjectAfterPreprocess(path); }
+    finally { release?.(); }
+  }
+
+  private saveProjectAfterPreprocess(path: string): Promise<ProjectSaveOutcome> {
     if (this.absSaveHandler) return this.absSaveHandler(path);
     const context = this.captureSaveContext(path);
     return this.blocklyService.runProjectOperation(async () => {

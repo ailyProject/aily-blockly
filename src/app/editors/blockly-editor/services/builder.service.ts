@@ -105,6 +105,7 @@ export class _BuilderService {
   private preprocessFullError: string = ''; // 保存预编译完整错误日志
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
   private preprocessRunGeneration = 0;
+  private preprocessSavePauses = 0;
   private pendingPrecompileTimer: ReturnType<typeof setTimeout> | null = null;
   private preprocessStop: Promise<void> | null = null;
   private pendingPrecompileBlockedLogged = false;
@@ -163,7 +164,7 @@ export class _BuilderService {
   }
 
   private isInstallInProgress(): boolean {
-    return this.npmService.isInstalling || this.workflowService.currentState === ProcessState.INSTALLING;
+    return this.preprocessSavePauses > 0 || this.npmService.isInstalling || this.workflowService.currentState === ProcessState.INSTALLING;
   }
 
   private getPendingChatBackgroundOperationCount(): number {
@@ -948,7 +949,7 @@ export class _BuilderService {
   }
 
   private async waitForPreprocessDrain(projectPath: string, isCancelled: () => boolean,
-    purpose: 'compile' | 'upload' | 'background', budgetMs = 60_000): Promise<void> {
+    purpose: 'compile' | 'upload' | 'background' | 'save', budgetMs = 60_000): Promise<void> {
     const startedAt = Date.now();
     const assertCurrent = () => {
       if (isCancelled() || projectPath !== this.projectService.currentProjectPath) {
@@ -964,6 +965,27 @@ export class _BuilderService {
       await this.waitForDelay(Math.min(100, budgetMs - (Date.now() - startedAt)));
     }
     assertCurrent();
+  }
+
+  /** A complete save publishes source files too. Freeze advisory scheduling
+   * before draining an existing preprocess, and keep it frozen until the real
+   * save finishes. Never kill its owner or borrow its native workspace lease. */
+  async pauseBackgroundPreprocessForSave(projectPath: string): Promise<() => void> {
+    ++this.preprocessRunGeneration;
+    this.preprocessSavePauses = (this.preprocessSavePauses || 0) + 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      --this.preprocessSavePauses;
+      if (!this.preprocessSavePauses && this.initialized && projectPath === this.projectService.currentProjectPath) {
+        this.triggerPendingPrecompile('save-complete', '项目保存完成，继续待处理的后台依赖分析');
+      }
+    };
+    try {
+      await this.waitForPreprocessDrain(projectPath, () => !this.initialized, 'save');
+      return release;
+    } catch (error) { release(); throw error; }
   }
 
   /** Upload owns scheduling before it owns the device. Let an already-running
