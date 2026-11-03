@@ -1279,6 +1279,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
       const saved = await this.projectService.save(path);
       if (!unchanged()) return false;
       if (saved?.success === true) return true;
+      // The editable document is committed. Its derived outputs are queued
+      // until the active build releases ownership; this is not a failed save.
+      if (saved?.projectSaved === true && saved?.code === 'BUILD_WORKSPACE_BUSY') return true;
       const resolved = await this.resolveSaveConflictFromUi(path, saved);
       if (resolved !== undefined) return resolved && unchanged();
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {

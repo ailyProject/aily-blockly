@@ -129,7 +129,7 @@ export class AbsWorkspaceSyncService {
       const generatedCodePublished = result.derivedOutputs?.published ?? result.warnings.length === 0;
       const partial = !generatedCodePublished || !!dependencyError;
       return { projectSaved: true, generatedCodePublished, partial,
-        ...(partial ? { code: result.derivedOutputs?.code ?? 'PROJECT_DERIVED_OUTPUT_PENDING',
+        ...(partial ? { code: dependencyError ? 'PROJECT_DEPENDENCY_SAVE_FAILED' : result.derivedOutputs?.code ?? 'PROJECT_DERIVED_OUTPUT_PENDING',
           error: [result.derivedOutputs?.error, dependencyError].filter(Boolean).join('\n') || result.warnings.join('\n') } : {}) };
     });
     this.project.setAbsSaveAsHandler?.(path => this.captureSaveAsSnapshot(path));
