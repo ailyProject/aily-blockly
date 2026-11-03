@@ -210,7 +210,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       const document = await this.captureBlocklyLibraryDocument();
       const used = this.blocklyService.getProjectUsedLibraryManifest(this.projectService.currentPackageData, document as BlocklyProjectDocument);
       if (removedPackages.some(name => used[name])) throw Object.assign(new Error('项目仍在使用待卸载库的积木，请先删除或替换这些积木。'), {code:'LIBRARY_IN_USE'});
-      return { document, release, record: (restore: (forward: boolean) => Promise<void | boolean>) => {
+      return { document, usedLibraries: Object.keys(used), release, record: (restore: (forward: boolean) => Promise<void | boolean>) => {
         if (workspace !== this.blocklyService.workspace) throw new Error('Blockly workspace changed before recording library history.');
         recordLibraryMutation(workspace, restore, error => this.updateFooterState({ state: 'error', text: String(error instanceof Error ? error.message : error) }));
       } };
@@ -226,7 +226,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       nzMaskClosable: false, nzKeyboard: false, nzWidth: 560,
       nzData: {
         title: `${action}库变更`,
-        message: '此操作需要重新安装或移除以下依赖，成功后恢复积木。可能需要联网；不会还原库目录中的手工修改。',
+        message: '此操作需要重新安装或移除以下依赖，成功后恢复积木。画布不会自动保存，可能需要联网。',
         confirmText: `恢复依赖并${action}`,
         missingLibs: changes.map(change => ({ name: changes.filter(item => item.name === change.name).length > 1
           ? `${change.name}（${change.field}）` : change.name, blockType: '',

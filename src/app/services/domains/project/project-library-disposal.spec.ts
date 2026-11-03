@@ -111,7 +111,7 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
   });
 });
 
-describe('complete project persistence around library edits', () => {
+describe('dependency-only persistence around library edits', () => {
   function fixture() {
     const service: any = Object.create(ProjectService.prototype), calls: string[] = [];
     const release = jasmine.createSpy('release'), lifecycleRelease = jasmine.createSpy('lifecycle release');
@@ -125,6 +125,7 @@ describe('complete project persistence around library edits', () => {
     Object.assign(service, { libraryChangesChanged: new Subject(),
       acquireProjectLifecycle: () => ({ release: lifecycleRelease }),
       save: async () => { calls.push('save-project'); return {success: true, projectSaved: true, generatedCodePublished: true}; },
+      saveLibraryChanges: async () => { calls.push('save-dependencies'); },
       ensureBlocklyLibraryRuntimeReady: async () => { calls.push('runtime'); },
     });
     Object.defineProperty(service, 'application', {value: application});
@@ -155,37 +156,37 @@ describe('complete project persistence around library edits', () => {
     } finally { f.restore(); }
   });
 
-  it('saves before a checkpoint and after runtime synchronization, releasing both fences', async () => {
-    const f=fixture();
+  it('saves only dependencies and preserves a dirty canvas through runtime synchronization', async () => {
+    const f=fixture(); f.application.hasUnsavedBlocklyChanges = async () => true;
     try {
       const {token}=await f.service.beginLibraryMutation(['@aily-project/lib-test']);
-      expect(f.calls).toEqual(['save-project','fence','checkpoint']);
+      expect(f.calls).toEqual(['fence','save-dependencies','checkpoint']);
       expect(f.service.isLibraryMutationInProgress()).toBeTrue();
       await f.service.finishLibraryMutation(token);
-      expect(f.calls).toEqual(['save-project','fence','checkpoint','runtime','save-project','commit']);
+      expect(f.calls).toEqual(['fence','save-dependencies','checkpoint','runtime','commit']);
       expect(f.release).toHaveBeenCalledTimes(1);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
       expect(f.service.isLibraryMutationInProgress()).toBeFalse();
     } finally {f.restore();}
   });
 
-  it('prepares AI-reconciled sources once before the runtime and final full save', async () => {
+  it('prepares AI-reconciled sources once without saving the project', async () => {
     const f = fixture();
     window['libraryDependencies'].discard = async () => { f.calls.push('reconcile'); return {}; };
     (f.service as any).acceptLibraryStatus = () => {};
     try {
       const { token } = await f.service.beginLibraryMutation(['@aily-project/lib-test']);
       await f.service.finishLibraryMutation(token, true);
-      expect(f.calls).toEqual(['save-project','fence','checkpoint','reconcile','source-extraction','runtime','save-project','commit']);
+      expect(f.calls).toEqual(['fence','save-dependencies','checkpoint','reconcile','source-extraction','runtime','commit']);
     } finally { f.restore(); }
   });
 
-  it('accepts only an awaited, unchanged save-hash proof without saving the canvas twice', async () => {
+  it('ignores legacy full-save proof and preserves unsaved canvas content', async () => {
     const f=fixture(), previousFs=window['fs'];
     window['fs']={readFileSync:()=> 'hello'};
     const hash='sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
     try {
       const {token}=await f.service.beginLibraryMutation(['@aily-project/lib-test'],{abi:hash,abs:hash,map:hash});
-      expect(f.calls).toEqual(['fence','checkpoint']);
+      expect(f.calls).toEqual(['fence','save-dependencies','checkpoint']);
       await f.service.abortLibraryMutation(token);
       expect(f.release).toHaveBeenCalledTimes(1);
     } finally {window['fs']=previousFs;f.restore();}
@@ -200,11 +201,11 @@ describe('complete project persistence around library edits', () => {
     } finally {f.restore();}
   });
 
-  it('does not admit npm after an incomplete save', async () => {
-    const f=fixture();f.service.save=async()=>({success:false,error:'build occupied',generatedCodePublished:false});
+  it('does not admit npm after dependency persistence fails', async () => {
+    const f=fixture();f.service.saveLibraryChanges=async()=>{throw new Error('dependency write failed');};
     try {
-      await expectAsync(f.service.beginLibraryMutation(['@aily-project/lib-test'])).toBeRejectedWithError(/build occupied/);
-      expect(f.calls).toEqual([]);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
+      await expectAsync(f.service.beginLibraryMutation(['@aily-project/lib-test'])).toBeRejectedWithError(/dependency write failed/);
+      expect(f.calls).toEqual(['fence']);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
     } finally {f.restore();}
   });
 
@@ -249,18 +250,94 @@ describe('complete project persistence around library edits', () => {
       await restore(true);
       expect(current).toEqual(aiDocument);
       await restore(false);
-      const save = f.service.save;
-      let failSave = true;
-      f.service.save = async () => {
-        if (failSave) { failSave = false; return { success: false, error: 'disk busy' }; }
-        return save();
+      const rebuild = f.service.rebuildActiveBlocklyLibraryRuntime;
+      let failRuntime = true;
+      f.service.rebuildActiveBlocklyLibraryRuntime = async (...args: unknown[]) => {
+        if (failRuntime) { failRuntime = false; throw new Error('runtime failed'); }
+        return rebuild(...args);
       };
-      await expectAsync(restore(true)).toBeRejectedWithError('disk busy');
+      await expectAsync(restore(true)).toBeRejectedWithError('runtime failed');
       expect(current).toEqual({ pages: ['user-before-ai'] });
       expect(f.service.isLibraryMutationInProgress()).toBeFalse();
       await restore(true);
       expect(current).toEqual(aiDocument);
+      expect(f.calls).not.toContain('save-project');
     } finally { f.restore(); }
   });
 
+});
+
+describe('AI dependency history retains the unsaved canvas', () => {
+  const projectPath = '/history-project';
+  function fixture() {
+    const service: any = Object.create(ProjectService.prototype);
+    const files = new Map([
+      [`${projectPath}/package.json`, JSON.stringify({ name: 'project', dependencies: { '@aily-project/lib-a': '1.0.0' } })],
+      [`${projectPath}/project.abi`, 'saved-abi'], [`${projectPath}/project.abs`, 'unapplied-abs'],
+      [`${projectPath}/project.abs.map.json`, 'saved-map'],
+    ]);
+    const priorFs = window['fs'], priorDependencies = window['libraryDependencies'];
+    window['fs'] = { existsSync: file => files.has(file), readFileSync: file => files.get(file) };
+    const dependencies = window['libraryDependencies'] = {
+      status: jasmine.createSpy('status').and.resolveTo({ dirty: false, busy: false }),
+      discard: jasmine.createSpy('reconcile').and.resolveTo({}), prepare: jasmine.createSpy('prepare').and.resolveTo({}),
+    };
+    const edit = { document: { dirty: true }, usedLibraries: [] as string[], release: jasmine.createSpy('release') };
+    const lease = { release: jasmine.createSpy('release lifecycle') };
+    const application = {
+      hasActiveBlocklyBuildOrUpload: () => false,
+      confirmBlocklyLibraryRestore: jasmine.createSpy('confirm').and.callFake(async (_offer, apply) => { await apply(); return true; }),
+      prepareBlocklyLibraryEdit: jasmine.createSpy('capture live').and.resolveTo(edit),
+    };
+    Object.defineProperties(service, { currentProjectPath: { value: projectPath }, application: { value: application } });
+    Object.assign(service, { acquireProjectLifecycle: () => lease, isSameProjectPath: (a, b) => a === b,
+      acceptLibraryStatus: () => {}, ensureBlocklyLibraryRuntimeReady: jasmine.createSpy('refresh').and.resolveTo(),
+      save: jasmine.createSpy('save').and.throwError('Must not save canvas'), libraryChangesChanged: new Subject() });
+    return { service, files, edit, lease, application, dependencies,
+      close: () => { if (service.libraryHistoryNavigation) service.releaseLibraryHistoryNavigation(service.libraryHistoryNavigation.token);
+        window['fs'] = priorFs; window['libraryDependencies'] = priorDependencies; } };
+  }
+  it('reconciles directly without confirmation, saving or replacing the live document', async () => {
+    const f = fixture();
+    try {
+      const { token } = await f.service.beginLibraryHistoryNavigation(['package.json', 'package-lock.json']);
+      expect(f.service.isLibraryMutationInProgress()).toBeTrue();
+      expect(f.application.confirmBlocklyLibraryRestore).not.toHaveBeenCalled();
+      f.files.set(`${projectPath}/package.json`, JSON.stringify({ name: 'project', dependencies: {} }));
+      await f.service.synchronizeLibraryHistoryNavigation(token, ['package.json']);
+      expect(f.dependencies.discard).toHaveBeenCalledOnceWith(projectPath, { reconcile: true, historyRestored: true });
+      expect(f.service.ensureBlocklyLibraryRuntimeReady).toHaveBeenCalledOnceWith(projectPath);
+      expect(f.service.save).not.toHaveBeenCalled();
+      expect(f.files.get(`${projectPath}/project.abi`)).toBe('saved-abi');
+      expect(f.files.get(`${projectPath}/project.abs`)).toBe('unapplied-abs');
+      expect(f.edit.document).toEqual({ dirty: true });
+      f.service.releaseLibraryHistoryNavigation(token);
+      expect(f.edit.release).toHaveBeenCalledTimes(1); expect(f.lease.release).toHaveBeenCalledTimes(1);
+    } finally { f.close(); }
+  });
+  it('pending dependency changes release the editor without prompting or reconciling', async () => {
+    const f = fixture(); f.dependencies.status.and.resolveTo({ dirty: true, busy: false });
+    try {
+      await expectAsync(f.service.beginLibraryHistoryNavigation(['package.json'])).toBeRejectedWithError('请先处理待完成的库依赖变更。');
+      expect(f.application.confirmBlocklyLibraryRestore).not.toHaveBeenCalled();
+      expect(f.edit.release).toHaveBeenCalledTimes(1);
+      expect(f.lease.release).toHaveBeenCalledTimes(1);
+      expect(f.dependencies.discard).not.toHaveBeenCalled();
+    } finally { f.close(); }
+  });
+  for (const conflict of ['code', 'settings', 'used-library', 'write-set']) it(`rejects ${conflict} before npm and permits history rollback`, async () => {
+    const f = fixture();
+    try {
+      const { token } = await f.service.beginLibraryHistoryNavigation(['package.json']);
+      const old = new Map(f.files);
+      if (conflict === 'code') f.files.set(`${projectPath}/project.abs`, 'external candidate');
+      if (conflict === 'settings') f.files.set(`${projectPath}/package.json`, '{"name":"changed"}');
+      if (conflict === 'used-library') { f.edit.usedLibraries.push('@aily-project/lib-a'); f.files.set(`${projectPath}/package.json`, '{"name":"project"}'); }
+      await expectAsync(f.service.synchronizeLibraryHistoryNavigation(token, [conflict === 'write-set' ? 'project.abs' : 'package.json'])).toBeRejected();
+      expect(f.dependencies.discard).not.toHaveBeenCalled();
+      for (const [file, content] of old) f.files.set(file, content);
+      await f.service.synchronizeLibraryHistoryNavigation(token, ['package.json']);
+      expect(f.dependencies.discard).toHaveBeenCalledTimes(1);
+    } finally { f.close(); }
+  });
 });

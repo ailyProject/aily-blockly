@@ -58,6 +58,7 @@ export interface ProjectApplicationPort {
   hasUnsavedBlocklyChanges(): Promise<boolean>;
   prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[]): Promise<{
     document: unknown;
+    usedLibraries?: string[];
     release(): void;
     record(restore: (forward: boolean) => Promise<void | boolean>): void;
   }>;

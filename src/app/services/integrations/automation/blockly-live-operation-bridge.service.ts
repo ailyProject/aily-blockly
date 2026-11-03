@@ -53,7 +53,7 @@ type BlocklyLiveOperationPayload = {
 
 const PROJECT_MUTATIONS = new Set([
   'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery',
-  'library_runtime_sync', 'library_mutation_prepare', 'library_mutation_abort', 'set_board_config', 'project_save', 'blocks_tidy',
+  'library_history_navigation', 'library_runtime_sync', 'library_mutation_prepare', 'library_mutation_abort', 'set_board_config', 'project_save', 'blocks_tidy',
   'project_build', 'project_upload',
   'project_media_import',
 ]);
@@ -299,6 +299,7 @@ export class BlocklyLiveOperationBridgeService {
     // The coordinator consumes exact journal authority before invoking the
     // domain lifecycle gate. A generic mutation mask would block its own
     // reopen; all other recovery/writing operations retain their admission.
+    if (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release') return this.executeOperation(payload);
     const journalReopen = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'reopen';
     const recoveryInspection = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'inspect';
     const runtimeRecovery = payload.operation === 'abs_recovery' && payload.params?.['action'] === 'recover_runtime';
@@ -311,7 +312,7 @@ export class BlocklyLiveOperationBridgeService {
     const projectPath = payload.path || this.projectService.currentProjectPath;
     if (this.projectService.isProjectTransitionInProgress(projectPath)
       && !(this.projectService.isLibraryMutationInProgress(projectPath)
-        && ['library_runtime_sync', 'library_mutation_abort'].includes(payload.operation || ''))) {
+        && (['library_runtime_sync', 'library_mutation_abort'].includes(payload.operation || '') || this.isOwnedLibraryHistorySync(payload, projectPath)))) {
       return { ok: false, operation: payload.operation, project: projectPath, reason: 'project_lifecycle_busy',
         ...(payload.operation === 'project_build' ? { buildOutcome: 'not-started' } : {}),
         message: '项目正在切换、重载或关闭；本次写入尚未开始，请等待该宿主操作完成。' };
@@ -320,6 +321,11 @@ export class BlocklyLiveOperationBridgeService {
     this.aiOperations.setActive(source, true, { projectPath, blocksProjectLifecycle: true });
     try { return await this.executeOperation(payload); }
     finally { this.aiOperations.setActive(source, false); }
+  }
+
+  private isOwnedLibraryHistorySync(payload: BlocklyLiveOperationPayload, projectPath: string): boolean {
+    return payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'synchronize'
+      && this.projectService.ownsLibraryHistoryNavigation(payload.params['token'], projectPath);
   }
 
   private async executeOperation(payload: BlocklyLiveOperationPayload): Promise<Record<string, any>> {
@@ -445,6 +451,10 @@ export class BlocklyLiveOperationBridgeService {
     if (payload.operation === 'abs_recovery' && payload.params?.['action'] === 'history_release') {
       return this.absGenerationTools.execute('abs_recovery', payload.params);
     }
+    if (payload.operation === 'library_history_navigation' && payload.params?.['action'] === 'release') {
+      this.projectService.releaseLibraryHistoryNavigation(payload.params['token']);
+      return { ok: true };
+    }
     const requestedProject = payload.path;
     const currentProject = this.projectService.currentProjectPath;
     if (!currentProject) {
@@ -557,9 +567,10 @@ export class BlocklyLiveOperationBridgeService {
     }
 
     if (this.projectService.isLibraryMutationInProgress(currentProject)
-      && !['library_runtime_sync', 'library_mutation_abort', 'project_abi_check'].includes(payload.operation || '')) {
+      && !['library_runtime_sync', 'library_mutation_abort', 'project_abi_check'].includes(payload.operation || '')
+      && !this.isOwnedLibraryHistorySync(payload, currentProject)) {
       return { ok: false, code: 'LIBRARY_MUTATION_BUSY', project: currentProject,
-        message: '库安装或卸载正在完成，请等待保存和运行时同步结束。' };
+        message: '库依赖正在更新，请等待运行时同步结束。' };
     }
     switch (payload.operation) {
       case 'blocks_set_state':
@@ -587,6 +598,15 @@ export class BlocklyLiveOperationBridgeService {
           documentation: checkAbsDocumentation(payload.params) };
       case 'block_metadata_snapshot':
         return this.executeBlockMetadataSnapshot();
+      case 'library_history_navigation': {
+        const params = payload.params || {};
+        if (params['action'] === 'begin') return { ok: true, ...await this.projectService.beginLibraryHistoryNavigation(params['changedPaths']) };
+        if (params['action'] === 'synchronize') {
+          await this.projectService.synchronizeLibraryHistoryNavigation(params['token'], params['changedPaths']);
+          return { ok: true };
+        }
+        throw new Error('Unknown library history action');
+      }
       case 'library_mutation_prepare': {
         const params = payload.params || {};
         const result = await this.projectService.beginLibraryMutation(params['packages'], params['savedHashes'], params['removedPackages']);
@@ -664,6 +684,7 @@ export class BlocklyLiveOperationBridgeService {
       'abs_precheck',
       'block_metadata_snapshot',
       'library_runtime_sync',
+      'library_history_navigation',
       'library_mutation_prepare',
       'library_mutation_abort',
       'blocks_tidy',
