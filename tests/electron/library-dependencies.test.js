@@ -100,7 +100,7 @@ test('local and legacy Coder library removal restores bytes without draft direct
   assert.equal(f.read('package-lock.json'), lock);
   assert.equal(fs.existsSync(path.join(f.root, '.temp')), false);
   await assert.rejects(f.api.removeLocal(f.root, { folderName: '../UserLibrary' }), /Invalid/);
-  fs.symlinkSync(directory('UserLibrary'), directory('LinkedLibrary'), 'dir');
+  fs.symlinkSync(directory('UserLibrary'), directory('LinkedLibrary'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(f.api.removeLocal(f.root, { folderName: 'LinkedLibrary' }), /links/);
   assert.equal(fs.existsSync(directory('UserLibrary')), true);
 });

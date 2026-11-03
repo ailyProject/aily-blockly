@@ -89,7 +89,7 @@ export class SubappAgentBridgeService implements OnDestroy {
   private readonly channels = new Map<string, SubappRpcChannel>();
   private readonly ownerRequests = new SubappOwnerRequests();
   private readonly ownerGuard = new SubappOwnerGuard();
-  private readonly ownerLeases = new SubappAgentOwnerLeases(lease => this.releaseSession(lease.ownerLeaseId, lease.sessionId),
+  private readonly ownerLeases = new SubappAgentOwnerLeases(lease => this.releaseControlledOwner(lease.ownerLeaseId, lease.sessionId),
     Date.now, id => this.ownerRequests.pendingCount(id));
 
   constructor(
@@ -299,6 +299,55 @@ export class SubappAgentBridgeService implements OnDestroy {
     const ownerLeaseId = String(input['ownerLeaseId'] || '');
     const sessionId = String(input['sessionId'] || '').trim();
     try {
+      const controlled = input['ownerControl'] !== undefined || this.ownerGuard.hasAgentControl(ownerLeaseId);
+      if (action === 'acquire' && this.ownerGuard.hasControlApi()) {
+        const result = await this.ownerGuard.acquireAgent(sessionId);
+        this.ownerLeases.adopt(result as unknown as { ownerLeaseId: string; sessionId: string; expiresAt: number });
+        return { ...result, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
+      }
+      if (controlled) {
+        const observed = await this.ownerGuard.agent('inspect', ownerLeaseId, sessionId, input['ownerControl']);
+        if (action === 'inspect' || action === 'recover') {
+          if (input['version'] !== 1) throw new SubappRpcError('Owner recovery protocol version 1 is required.', 'SUBAPP_OWNER_PROTOCOL_REQUIRED');
+          if (observed['state'] === 'active' && observed['currentOwner'] === false) {
+            throw new SubappRpcError('Historical owner evidence cannot rebind a newer session incarnation.', 'SUBAPP_OWNER_SUPERSEDED');
+          }
+          if (action === 'inspect') {
+            const pendingRequests = Math.max(Number(observed['pendingRequests']), this.ownerRequests.pendingCount(ownerLeaseId));
+            const { leaseExpiresAt, ...inspection } = observed;
+            const restoresOriginal = observed['state'] === 'active' && observed['currentOwner'] === true && pendingRequests === 0
+              && Number.isSafeInteger(leaseExpiresAt) && Number(leaseExpiresAt) > Date.now();
+            if (restoresOriginal) {
+              this.ownerLeases.adopt({ ownerLeaseId, sessionId, expiresAt: Number(leaseExpiresAt) });
+              this.ownerLeases.require(ownerLeaseId, sessionId);
+            }
+            return { ...inspection, pendingRequests, recoverable: observed['recoverable'] === true && pendingRequests === 0,
+              ...(restoresOriginal ? { ownerRestored: true, expiresAt: Number(leaseExpiresAt) } : {}) };
+          }
+          if (observed['state'] === 'active') throw new SubappRpcError('The original main-process owner is still active.', 'SUBAPP_OWNER_ACTIVE');
+          const released = await this.ownerLeases.release(ownerLeaseId, sessionId);
+          // Registry loss is not absence proof: retire the independently issued
+          // main owner and join its actual Runtime/native cleanup as well.
+          await this.ownerGuard.agent('retire', ownerLeaseId, sessionId, input['ownerControl']);
+          const recovered = await this.ownerGuard.agent('recover', ownerLeaseId, sessionId, input['ownerControl'], {
+            recoveryRequestId: input['recoveryRequestId'], pendingRequests: this.ownerRequests.pendingCount(ownerLeaseId),
+            rendererCleanupConfirmed: released['ok'] === true,
+          });
+          if (recovered['ok'] === true) this.ownerLeases.adopt(recovered as unknown as { ownerLeaseId: string; sessionId: string; expiresAt: number });
+          return { ...recovered, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
+        }
+        if (action === 'renew') {
+          this.ownerLeases.require(ownerLeaseId, sessionId);
+          const renewed = await this.ownerGuard.agent('renew', ownerLeaseId, sessionId, input['ownerControl']);
+          this.ownerLeases.adopt(renewed as unknown as { ownerLeaseId: string; sessionId: string; expiresAt: number });
+          return { ...renewed, ttlMs: this.ownerLeases.ttlMs, heartbeatMs: this.ownerLeases.heartbeatMs };
+        }
+        if (action === 'release') {
+          const result = await this.ownerLeases.release(ownerLeaseId, sessionId);
+          await this.ownerGuard.agent('retire', ownerLeaseId, sessionId, input['ownerControl']);
+          return result;
+        }
+      }
       if (action === 'inspect' || action === 'recover') {
         if (input['version'] !== 1) throw new SubappRpcError('Owner recovery protocol version 1 is required.', 'SUBAPP_OWNER_PROTOCOL_REQUIRED');
         const result = action === 'inspect' ? this.ownerLeases.inspect(ownerLeaseId, sessionId)
@@ -321,6 +370,17 @@ export class SubappAgentBridgeService implements OnDestroy {
     }
   }
 
+  private async releaseControlledOwner(ownerLeaseId: string, sessionId: string): Promise<Record<string, unknown>> {
+    const results = await Promise.allSettled([
+      this.releaseSession(ownerLeaseId, sessionId),
+      ...(this.ownerGuard.hasAgentControl(ownerLeaseId) ? [this.ownerGuard.agent('retire', ownerLeaseId, sessionId)] : []),
+    ]);
+    const failed = results.some(result => result.status === 'rejected' || result.value['ok'] !== true);
+    const renderer = results[0].status === 'fulfilled' ? results[0].value : {};
+    return { ...renderer, ok: !failed, sessionId: ownerLeaseId,
+      ...(failed ? { errorCode: 'SUBAPP_OWNER_CLEANUP_FAILED', error: 'Original requests and Runtime resources are not all confirmed closed.' } : {}) };
+  }
+
   async releaseSession(sessionId: string, activitySessionId = sessionId): Promise<Record<string, unknown>> {
     const normalizedSessionId = String(sessionId || '').trim();
     if (!normalizedSessionId) {
@@ -333,17 +393,17 @@ export class SubappAgentBridgeService implements OnDestroy {
     const pendingInvocations = this.ownerRequests.release(normalizedSessionId);
     const cleanups: Promise<unknown>[] = [];
     for (const [toolId, channel] of [...this.channels.entries()]) {
-      if (!channel.sessionIds.delete(normalizedSessionId)) continue;
+      if (!channel.sessionIds.has(normalizedSessionId)) continue;
       channel.pendingOwnerReleases++;
       // Serialize lifecycle callbacks, not normal RPC calls. A new owner may
       // register during cleanup, but its work waits until cleanup has settled.
       const cleanup = channel.lifecycleTail.then(async () => {
         await channel.socketPromise?.catch(() => undefined);
         const lifecycle = getChildToolConfig(toolId)?.agent?.lifecycle;
-        const notify = async (request: ChildToolAgentLifecycleRequestConfig | undefined, owner: string) => {
-          if (!request) return;
+        const notify = async (request: ChildToolAgentLifecycleRequestConfig | undefined, owner: string): Promise<boolean> => {
           try {
-            if (owner && await this.ownerGuard.release(toolId, owner)) return;
+            if (owner && await this.ownerGuard.release(toolId, owner)) return true;
+            if (!request) return true;
             const timeoutMs = this.boundedNumber(request.timeoutMs, 5000, 100, 30000);
             if (channel.socket?.readyState === WebSocket.OPEN) {
               await this.request(toolId, request.method, { ...(request.params || {}) },
@@ -353,18 +413,26 @@ export class SubappAgentBridgeService implements OnDestroy {
               // lost. Cleanup may reconnect to that endpoint, but never spawn.
               await sendSubappLifecycleRequest(channel.lastWsUrl, request.method, { ...(request.params || {}) },
                 { actor: 'agent', actorId: 'subapp-agent-host', ...(owner ? { sessionId: owner } : {}) }, timeoutMs);
-            }
+            } else throw new Error('The original Runtime endpoint is unavailable; cleanup is not proven.');
+            return true;
           } catch (error) {
             cleanupErrors.push({ toolId, error: error instanceof Error ? error.message : String(error) });
+            return false;
           }
         };
-        await notify(lifecycle?.ownerRelease, normalizedSessionId);
+        const ownerReleased = await notify(lifecycle?.ownerRelease, normalizedSessionId);
         channel.pendingOwnerReleases--;
+        if (!ownerReleased) { retainedTools.push(toolId); return; }
+        channel.sessionIds.delete(normalizedSessionId);
         if (channel.pendingOwnerReleases) {
           retainedTools.push(toolId);
           return;
         }
-        if (!channel.sessionIds.size && !channel.hasUnscopedOwner) await notify(lifecycle?.sessionRelease, '');
+        if (!channel.sessionIds.size && !channel.hasUnscopedOwner && !await notify(lifecycle?.sessionRelease, '')) {
+          // Retain the exact last owner as the retry anchor. Do not close the
+          // transport and lose an unacknowledged final resource-release target.
+          channel.sessionIds.add(normalizedSessionId); retainedTools.push(toolId); return;
+        }
         if (channel.sessionIds.size || channel.hasUnscopedOwner) {
           retainedTools.push(toolId);
           return;

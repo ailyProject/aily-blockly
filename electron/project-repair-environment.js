@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
+const semver = require('semver');
 const { createHash, randomUUID } = require('node:crypto');
 const { createProjectRecoveryReceipts } = require('./project-recovery-receipts');
 
@@ -121,6 +122,79 @@ function queryChild(record, discoveryRoot = path.join(os.homedir(), '.aily-block
     request.on('timeout', () => request.destroy()); request.on('error', () => resolve(null)); request.end(body);
   });
 }
+function seedPlatformManifests(privateAppData, project, parentAppData) {
+  const contains = (root, target) => {
+    const relative = path.relative(key(root), key(target));
+    return relative === '' || !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep);
+  };
+  const physical = filename => {
+    if (fs.existsSync(filename)) return fs.realpathSync(filename);
+    return path.join(physical(path.dirname(filename)), path.basename(filename));
+  };
+  if (![privateAppData, project, parentAppData].every(value => typeof value === 'string' && path.isAbsolute(value)))
+    throw fail('Platform manifest roots must be absolute.');
+  const destinationRoot = physical(privateAppData), projectRoot = fs.realpathSync(project), parentRoot = fs.realpathSync(parentAppData);
+  if (contains(destinationRoot, parentRoot) || contains(destinationRoot, projectRoot) || contains(projectRoot, destinationRoot))
+    throw fail('Platform manifests require an independent private destination.');
+  const packageFile = (root, name) => {
+    const modules = path.join(root, 'node_modules'), filename = path.join(modules, name, 'package.json');
+    if (!fs.existsSync(filename)) return null;
+    if (!contains(fs.realpathSync(modules), fs.realpathSync(filename))) throw fail('Platform package escapes its installed resource root.');
+    return filename;
+  };
+  const satisfies = (version, declared) => typeof version === 'string' && semver.valid(version)
+    && typeof declared === 'string' && declared.length <= 256 && semver.satisfies(version, declared, { includePrerelease: true });
+  const declarations = new Map(), missing = [];
+  const add = values => {
+    if (values == null) return;
+    if (typeof values !== 'object' || Array.isArray(values)) throw fail('Invalid platform dependency declarations.');
+    for (const [name, declared] of Object.entries(values)) {
+      if (!/^@aily-project\/(?:compiler|sdk|tool)-[a-z0-9][a-z0-9._-]*$/.test(name)
+        || typeof declared !== 'string' || !declared.trim() || declared.length > 256 || !semver.validRange(declared)) throw fail('Invalid platform package declaration.');
+      declarations.set(name, [...(declarations.get(name) || []), declared]);
+    }
+  };
+  const manifest = readJson(path.join(projectRoot, 'package.json'));
+  add(manifest.boardDependencies);
+  for (const [name, declared] of Object.entries(manifest.dependencies || {})) {
+    if (!name.startsWith('@aily-project/board-')) continue;
+    if (!/^@aily-project\/board-[a-z0-9][a-z0-9._-]*$/.test(name)) throw fail('Invalid board package name.');
+    const filename = packageFile(projectRoot, name), board = filename && readJson(filename);
+    if (!board || board.name !== name || !satisfies(board.version, declared)) {
+      missing.push({ name, reason: board ? 'version-or-identity-mismatch' : 'manifest-missing' }); continue;
+    }
+    add(board.boardDependencies);
+  }
+  const copies = [], installed = {};
+  for (const [name, declared] of declarations) {
+    const filename = packageFile(parentRoot, name), value = filename && readJson(filename);
+    if (!value || value.name !== name || !declared.every(range => satisfies(value.version, range))) {
+      missing.push({ name, reason: value ? 'version-or-identity-mismatch' : 'manifest-missing' }); continue;
+    }
+    const destination = path.join(destinationRoot, 'node_modules', name, 'package.json');
+    if (!contains(destinationRoot, physical(destination))) throw fail('Private platform package destination is linked outside its root.');
+    if (fs.existsSync(destination)) {
+      if (JSON.stringify(readJson(destination)) !== JSON.stringify(value)) throw fail('Existing private platform metadata conflicts with the installed package.');
+    } else copies.push({ destination, value });
+    installed[name] = value.version;
+  }
+  const rootManifest = path.join(destinationRoot, 'package.json');
+  const previous = fs.existsSync(rootManifest) ? readJson(rootManifest) : { name: 'aily-repair-private-platform', private: true };
+  if (previous.dependencies != null && (typeof previous.dependencies !== 'object' || Array.isArray(previous.dependencies)))
+    throw fail('Invalid private platform manifest.');
+  for (const [name, version] of Object.entries(installed)) {
+    if (previous.dependencies?.[name] != null && previous.dependencies[name] !== version)
+      throw fail('Existing private platform dependency conflicts with the installed package.');
+  }
+  for (const { destination, value } of copies) {
+    fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 }); writeNew(destination, value);
+  }
+  fs.mkdirSync(destinationRoot, { recursive: true, mode: 0o700 });
+  const next = { ...previous, dependencies: { ...previous.dependencies, ...installed } };
+  if (!fs.existsSync(rootManifest)) writeNew(rootManifest, next);
+  else if (JSON.stringify(previous) !== JSON.stringify(next)) writeRecord(rootManifest, next);
+  return { installed, missing };
+}
 function seedPrivateData(record, parentAppData) {
   fs.mkdirSync(record.privateAppData, { recursive: true, mode: 0o700 });
   fs.mkdirSync(record.profile, { recursive: true, mode: 0o700 });
@@ -146,16 +220,7 @@ function seedPrivateData(record, parentAppData) {
   writeNew(path.join(record.privateAppData, 'config.json'), config);
   // Platform package manifests are readiness facts, not linked mutable package
   // trees. SDK/compiler bodies stay in the parent's read-only resource roots.
-  const manifest = readJson(path.join(record.project, 'package.json'));
-  const installed = {};
-  for (const name of Object.keys(manifest.boardDependencies || {})) {
-    if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name)) throw fail('Invalid platform package name.');
-    const from = path.join(parentAppData, 'node_modules', name, 'package.json');
-    if (!fs.existsSync(from)) continue;
-    const value = readJson(from), destination = path.join(record.privateAppData, 'node_modules', name, 'package.json');
-    fs.mkdirSync(path.dirname(destination), { recursive: true }); writeNew(destination, value); installed[name] = value.version;
-  }
-  writeNew(path.join(record.privateAppData, 'package.json'), { name: 'aily-repair-private-platform', private: true, dependencies: installed });
+  seedPlatformManifests(record.privateAppData, record.project, parentAppData);
 }
 function childEnvironment(parent, record, filename) {
   // Deliberately no inherited Agent/session credentials or auth-file overrides.
@@ -277,4 +342,4 @@ async function shutdownRepairEnvironment(bootstrap, params, ports) {
   return { ok: true, operation: 'project_repair_shutdown', repairEnvironment: identity.repairEnvironment };
 }
 module.exports = { createRepairEnvironmentController, readRepairBootstrap, codeIdentity, rendererOverride, verifyFork, queryChild, childEnvironment, shutdownRepairEnvironment,
-  readJson, writeNew, writeRecord, seedPrivateData };
+  readJson, writeNew, writeRecord, seedPrivateData, seedPlatformManifests };

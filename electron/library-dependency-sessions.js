@@ -11,6 +11,14 @@ class LibraryDependencySessions {
 
   async run(operation, project, request, token) {
     const root = this.libraries.root(project);
+    if (operation === 'recover') {
+      if (request?.action === 'resolve' && this.sessions.has(root)) return {
+        ok: false, code: 'LIBRARY_DEPENDENCY_RECOVERY_BUSY', message: 'A dependency transaction still owns this project; no decision was applied.' };
+      try { return { ok: true, ...await this.libraries.recover(root, request),
+        busy: this.libraries.queues.has(root) || this.sessions.has(root) }; }
+      catch (error) { return { ok: false, code: error.code || 'LIBRARY_DEPENDENCY_RECOVERY_FAILED', message: error.message,
+        ...(error.dependencyConflict ? { dependencyConflict: error.dependencyConflict } : {}) }; }
+    }
     if (operation === 'status') {
       const status = this.libraries.status(root);
       return { ...status, busy: status.busy || this.sessions.has(root) };

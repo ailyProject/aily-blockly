@@ -25,6 +25,7 @@ import { ActBtnComponent } from '../act-btn/act-btn.component';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../unsave-dialog/unsave-dialog.component';
+import { runtimeRecoveryDialogData, saveRuntimeRecoveryCopy } from '../unsave-dialog/runtime-recovery-copy';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { Router } from '@angular/router';
 import { ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
@@ -1268,25 +1269,53 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private projectConflictResolving = false;
 
   /** The UI chooses a conflict strategy; ordinary Agent saves never open a modal. */
-  private async saveProjectFromUi(path = this.projectService.currentProjectPath, timeoutMs = 5000): Promise<boolean> {
-    if (this.projectSavingFromUi || this.projectConflictResolving || this.unsaveDialogOpen) return false;
+  private async saveProjectFromUi(path = this.projectService.currentProjectPath): Promise<boolean> {
+    if (this.projectSavingFromUi || this.projectSavingAs || this.projectConflictResolving || this.unsaveDialogOpen) return false;
     const unchanged = this.projectService.captureCurrentProjectGuard();
     this.projectSavingFromUi = true;
     try {
-      const saved = await this.projectService.save(path, timeoutMs);
+      // Observe the original save task until it settles. A feedback deadline
+      // cannot prove that persistence failed or release this UI submission.
+      const saved = await this.projectService.save(path);
       if (!unchanged()) return false;
       if (saved?.success === true) return true;
       const resolved = await this.resolveSaveConflictFromUi(path, saved);
       if (resolved !== undefined) return resolved && unchanged();
+      if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
+        await this.offerRuntimeRecoveryCopyFromUi(path);
+        return false; // A recovery copy does not acknowledge saving this source.
+      }
       this.message.error(saved?.error || '编辑器未确认保存成功');
       return false;
     } catch (error) {
       if (!unchanged()) return false;
       const resolved = await this.resolveSaveConflictFromUi(path, error);
       if (resolved !== undefined) return resolved && unchanged();
+      if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
+        await this.offerRuntimeRecoveryCopyFromUi(path);
+        return false;
+      }
       this.message.error(error instanceof Error ? error.message : String(error));
       return false;
     } finally { this.projectSavingFromUi = false; }
+  }
+
+  private async saveRuntimeRecoveryCopyFromUi(path: string): Promise<boolean> {
+    if (this.projectSavingAs) return false;
+    this.projectSavingAs = true;
+    try { return await saveRuntimeRecoveryCopy(this.projectService, path, () => this.selectSaveAsFolder(), this.message); }
+    finally { this.projectSavingAs = false; }
+  }
+
+  private async offerRuntimeRecoveryCopyFromUi(path: string): Promise<void> {
+    const accepted = await this.ngZone.run(() => new Promise<boolean>(resolve => {
+      this.unsaveDialogOpen = true;
+      const modal = this.modal.create({ nzTitle: null, nzFooter: null, nzClosable: false,
+        nzBodyStyle: { padding: '0' }, nzWidth: '430px', nzContent: UnsaveDialogComponent,
+        nzData: runtimeRecoveryDialogData() });
+      modal.afterClose.subscribe(result => { this.unsaveDialogOpen = false; resolve(result?.result === 'recovery-copy'); });
+    }));
+    if (accepted) await this.saveRuntimeRecoveryCopyFromUi(path);
   }
 
   private async resolveSaveConflictFromUi(path: string, failure: unknown): Promise<boolean | undefined> {
@@ -1831,18 +1860,20 @@ export class HeaderComponent implements OnInit, OnDestroy {
     const path = this.projectService.currentProjectPath;
     // Coder activation retains each iframe, including its unsaved editor buffers.
     if (action !== 'close' && this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') return true;
-    if (this.projectSavingFromUi || this.projectConflictResolving) return false;
+    if (this.projectSavingFromUi || this.projectSavingAs || this.projectConflictResolving) return false;
     const unchanged = this.projectService.captureCurrentProjectGuard();
     let checkError: string | undefined;
+    let runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
     // 检查项目是否有未保存的更改
     try {
-      if (!await this.projectService.hasUnsavedChanges()) return unchanged();
+      if (!runtimeRecovery && !await this.projectService.hasUnsavedChanges()) return unchanged();
     } catch (error) {
       if (isProjectSaveConflict(error) && this.projectService.getProjectMode(path) === 'blockly') {
         return (await this.resolveSaveConflictFromUi(path, error)) === true && unchanged();
       }
       checkError = (error instanceof Error ? error.message : String(error)) || '编辑器未返回有效保存状态。';
-      if (action !== 'close') {
+      runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
+      if (action !== 'close' && !runtimeRecovery) {
         this.message.error(`无法确认保存状态：${checkError}`);
         return false;
       }
@@ -1868,7 +1899,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         },
         nzWidth: '350px',
         nzContent: UnsaveDialogComponent,
-        nzData: checkError ? {
+        nzData: runtimeRecovery ? runtimeRecoveryDialogData(true) : checkError ? {
           title: '无法确认保存状态',
           text: '无法确认项目是否有未保存的更改。跳过保存将关闭项目，并丢弃尚未保存的更改。',
           detail: checkError,
@@ -1890,13 +1921,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
           return;
         }
         switch (result.result) {
+          case 'recovery-copy':
+            try { resolve(await this.saveRuntimeRecoveryCopyFromUi(path) && unchanged()); }
+            catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); resolve(false); }
+            break;
           case 'save':
             if (checkError) { resolve(false); return; }
             // 保存项目并继续
             try {
               if (this.projectService.getProjectMode(this.projectService.currentProjectPath) === 'coder') await this.coderPersistence.saveAllOpenProjects();
               else {
-                resolve(await this.saveProjectFromUi(path, 15_000) && unchanged());
+                resolve(await this.saveProjectFromUi(path) && unchanged());
                 return;
               }
               resolve(unchanged());

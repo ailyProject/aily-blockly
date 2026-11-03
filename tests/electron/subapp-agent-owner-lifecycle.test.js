@@ -175,8 +175,9 @@ test('a new owner during final process release reacquires once and retains its c
   assert.equal(h.service.channels.get('fixture').sessionIds.has('b'), true);
 });
 
-test('cleanup errors are reported but do not leak the final process lease', async t => {
-  const h = await harness(t, { hold: item => item.method === lifecycle.ownerRelease.method });
+test('failed cleanup retains its actual target until an explicit idempotent retry confirms closure', async t => {
+  let broken = true;
+  const h = await harness(t, { hold: item => broken && item.method === lifecycle.ownerRelease.method });
   await h.call('a');
   const releasing = h.service.releaseSession('a');
   await new Promise(resolve => setImmediate(resolve));
@@ -184,6 +185,36 @@ test('cleanup errors are reported but do not leak the final process lease', asyn
   const result = await releasing;
   assert.equal(result.ok, false);
   assert.equal(result.cleanupErrors[0].error, 'fixture cleanup failed');
+  assert.equal(h.released, 0);
+  assert.equal(h.service.channels.get('fixture').sessionIds.has('a'), true);
+  broken = false;
+  assert.equal((await h.service.releaseSession('a')).ok, true);
+  assert.equal(h.released, 1);
+});
+
+test('unacknowledged final-session cleanup also retains its original retry target', async t => {
+  let broken = true;
+  const h = await harness(t, { hold: item => broken && item.method === lifecycle.sessionRelease.method });
+  await h.call('a');
+  const releasing = h.service.releaseSession('a');
+  await new Promise(resolve => setImmediate(resolve));
+  h.sockets[0].reply(h.messages.at(-1), false);
+  assert.equal((await releasing).ok, false);
+  assert.equal(h.service.channels.get('fixture').sessionIds.has('a'), true);
+  assert.equal(h.released, 0);
+  broken = false;
+  assert.equal((await h.service.releaseSession('a')).ok, true);
+  assert.equal(h.released, 1);
+});
+
+test('an older no-control owner can still be acquired, renewed and cleaned normally', async t => {
+  const h = await harness(t);
+  const lease = await h.acquire('legacy-chat');
+  assert.equal(lease.ownerControl, undefined);
+  assert.match(lease.ownerLeaseId, /^owner-[a-f0-9-]{36}$/);
+  assert.equal((await h.service.manageOwnerLease({ action: 'renew', ...lease })).ok, true);
+  assert.equal((await h.execute(lease)).ok, true);
+  assert.equal((await h.release(lease)).ok, true);
   assert.equal(h.released, 1);
 });
 

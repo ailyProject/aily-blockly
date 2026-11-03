@@ -11,11 +11,12 @@ import { BlocklyProjectCodePreparation } from '../../../editors/blockly-editor/s
 import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { AbsReferenceContractCache } from './abs-reference-contract-cache';
+import { sha256Hex } from '../../../utils/crypto.utils';
 
 describe('library rebuild transfers runtime ownership without acknowledging edits', () => {
   let editor: BlocklyService, internal: any, project: _ProjectService;
   let runtime: BlocklyGeneratorRuntimeService, live: Blockly.Workspace;
-  let files: Map<string, string>, oldFs: unknown, load: jasmine.Spy;
+  let files: Map<string, string>, oldFs: unknown, oldPath: unknown, load: jasmine.Spy;
   const path = 'D:/runtime-test';
   const options = () => ({ projectPath: path, packageJson: {}, libraryNames: ['test-library'], projectService: {} });
   const field = () => live.getBlockById('text')!;
@@ -49,8 +50,8 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
       { id: 'other', title: 'Other', content: { blocks: { languageVersion: 0, blocks: [] }, extension: { keep: true } } }],
       sharedModel: { procedureBlocks: [], extension: { keep: 'shared data' } } }));
     load = spyOn(editor, 'loadLibrary').and.resolveTo();
-    oldFs = window['fs']; files = new Map([[`${path}/project.abi`, JSON.stringify(editor.getProjectAbiForSave())]]);
-    window['fs'] = { readFileSync: file => files.get(file), mkdirSync() {},
+    oldFs = window['fs']; oldPath = window['path']; files = new Map([[`${path}/project.abi`, JSON.stringify(editor.getProjectAbiForSave())]]);
+    window['fs'] = { existsSync: file => files.has(file), readFileSync: file => files.get(file), mkdirSync() {},
       writeFileSync: (file, text) => { if (files.has(file)) throw new Error('exists'); files.set(file, text); },
       unlinkSync: file => files.delete(file) };
     spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
@@ -58,7 +59,7 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
     project.currentProjectPath = path; project.init();
     project.rememberLoadedProject(path, files.get(`${path}/project.abi`)!, editor.getProjectAbiForSave());
   });
-  afterEach(() => { project.destroy(); live.dispose(); runtime.destroy(); window['fs'] = oldFs; });
+  afterEach(() => { project.destroy(); live.dispose(); runtime.destroy(); window['fs'] = oldFs; window['path'] = oldPath; });
 
   async function loadLegacyFunctions() {
     const name = '@aily-project/lib-core-functions', root = `${path}/node_modules/${name}`;
@@ -236,11 +237,170 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
       const original = editor.loadProjectDocument.bind(editor);
       spyOn(editor, 'loadProjectDocument').and.callFake((...args) => { original(...args); field().setDeletable(true); });
     }
-    await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejectedWithError(/Unsaved project snapshot:/);
+    await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejectedWithError(/complete pre-rebuild snapshot is retained/);
     expect(recoveryFiles().length).toBe(1); expect(JSON.parse(files.get(recoveryFiles()[0])!)).toEqual(before);
     expect(files.get(`${path}/project.abi`)).toBe(disk);
     expect(runtime.isReady()).toBeFalse(); await expectAsync(project.hasUnsavedChanges()).toBeRejected();
     expect(editor.isWorkspaceEditBlocked()).toBeTrue();
+  });
+
+  /** Fail inside real document loading, after the old native blocks are gone.
+   * Subsequent recovery must use the retained full document, not this fragment. */
+  function failOneNativeLoad() {
+    const original = internal.loadWorkspaceJson;
+    let fail = true;
+    return spyOn(internal, 'loadWorkspaceJson').and.callFake(state => {
+      if (fail) {
+        fail = false; live.clear(); live.newBlock('math_number', 'partial-load').setFieldValue(999, 'NUM');
+        throw new Error('injected partial native load');
+      }
+      return original(state);
+    });
+  }
+
+  it('restores the complete pre-rebuild dirty document and clean checkpoint after a real partial native load failure', async () => {
+    field().setFieldValue('retained unsaved source', 'TEXT'); editor.renamePage('other', 'retained page');
+    files.set(`${path}/project.abs`, 'unapplied original ABS candidate');
+    const before = editor.getProjectAbiForSave(), disk = files.get(`${path}/project.abi`), candidate = files.get(`${path}/project.abs`);
+    const nativeLoad = failOneNativeLoad();
+    await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejectedWithError(/complete pre-rebuild snapshot/);
+    expect(live.getBlockById('text')).toBeNull(); expect(live.getBlockById('partial-load')).toBeTruthy();
+    expect(editor.isWorkspaceEditBlocked()).toBeTrue(); expect(runtime.isReady()).toBeFalse();
+    const offer = (await project.inspectLibraryRuntimeRecovery())!;
+    expect(offer.ready).toBeFalse(); expect(offer.status).toBe('available');
+    expect(offer.snapshotHash).toBe('sha256:' + await sha256Hex(JSON.stringify(before)));
+    const recovered = await project.recoverLibraryRuntime(offer.token, offer.requestId, false);
+    expect(recovered.status).toBe('completed'); expect(recovered.value?.ready).toBeTrue();
+    expect(recovered.value?.candidateApplied).toBeFalse(); expect(recovered.value?.sourcePreserved).toBeTrue();
+    expect(editor.isWorkspaceEditBlocked()).toBeFalse(); expect(runtime.isReady()).toBeTrue();
+    expect(editor.getProjectAbiForSave()).toEqual(before); expect(await project.hasUnsavedChanges()).toBeTrue();
+    expect(files.get(`${path}/project.abi`)).toBe(disk); expect(files.get(`${path}/project.abs`)).toBe(candidate);
+    expect(field().isDeletable()).toBeFalse();
+    const attempts = load.calls.count(), documentLoads = nativeLoad.calls.count();
+    expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, true)).status).toBe('completed');
+    expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, false)).status).toBe('completed');
+    expect(load.calls.count()).toBe(attempts); expect(nativeLoad.calls.count()).toBe(documentLoads);
+    expect((await project.recoverLibraryRuntime(offer.token, crypto.randomUUID(), false)).status).toBe('unavailable');
+    field().setFieldValue('saved', 'TEXT'); editor.renamePage('other', 'Other');
+    expect(await project.hasUnsavedChanges()).toBeFalse();
+  });
+
+  it('keeps one running original restoration observable while its actual library load is pending', async () => {
+    failOneNativeLoad();
+    await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+    const offer = (await project.inspectLibraryRuntimeRecovery())!;
+    let finish!: () => void;
+    load.and.callFake(() => new Promise<void>(resolve => { finish = resolve; }));
+    const original = project.recoverLibraryRuntime(offer.token, offer.requestId, false);
+    for (let turn = 0; turn < 20 && !finish; turn++) await Promise.resolve();
+    expect(finish).toBeDefined();
+    const attempts = load.calls.count();
+    const observed = await project.recoverLibraryRuntime(offer.token, offer.requestId, true);
+    const repeated = await project.recoverLibraryRuntime(offer.token, offer.requestId, false);
+    expect(observed.status).toBe('running'); expect(repeated.status).toBe('running');
+    expect(editor.isWorkspaceEditBlocked()).toBeTrue(); expect(load.calls.count()).toBe(attempts);
+    finish(); expect((await original).status).toBe('completed');
+    expect(load.calls.count()).toBe(attempts);
+  });
+
+  it('retains the full unsaved snapshot after recovery fails again and publishes only it to an independent copy', async () => {
+    field().setFieldValue('complete unsaved source', 'TEXT'); const before = editor.getProjectAbiForSave();
+    files.set(`${path}/project.abs`, 'original pre-rebuild draft');
+    const disk = files.get(`${path}/project.abi`); failOneNativeLoad();
+    await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+    const offer = (await project.inspectLibraryRuntimeRecovery())!;
+    load.and.rejectWith(Error('library still invalid'));
+    const failed = await project.recoverLibraryRuntime(offer.token, offer.requestId, false);
+    expect(failed.status).toBe('failed'); expect(failed.value?.failure?.message).toContain('library still invalid');
+    const attempts = load.calls.count();
+    expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, false)).status).toBe('failed');
+    expect(load.calls.count()).toBe(attempts); expect(editor.isWorkspaceEditBlocked()).toBeTrue();
+    expect(JSON.parse(files.get(recoveryFiles()[0])!)).toEqual(before);
+    expect(live.getBlockById('text')).toBeNull();
+    files.set(`${path}/project.abs`, 'new unapplied candidate after failed reconstruction');
+    const capture = (await project.captureLibraryRuntimeRecoveryCopy(path))!;
+    expect(capture.isCurrent()).toBeTrue();
+    window['path'] = { resolve: value => value, join: (...parts) => parts.join('/') };
+    window['fs'].replaceProjectText = jasmine.createSpy('target-only CAS').and.callFake(async (request, guard) => {
+      guard(); const file = `${request.projectPath}/${request.fileName}`, previous = files.get(file);
+      expect(request.projectPath).not.toBe(path);
+      expect(request.expectedHash).toBe(previous === undefined ? null : 'sha256:' + await sha256Hex(previous));
+      files.set(file, request.content);
+      return { status: 'COMMITTED', hash: 'sha256:' + await sha256Hex(request.content) };
+    });
+    const target = 'D:/runtime-recovery-copy', outcome = await capture.publish(target);
+    expect(outcome.projectSaved).toBeTrue(); expect(outcome.recoverySource?.origin).toBe('runtime-snapshot');
+    expect(JSON.parse(files.get(`${target}/project.abi`)!)).toEqual(before);
+    const archive = JSON.parse(files.get([...files.keys()].find(name => name.startsWith(`${target}/recovery-source-`))!)!);
+    expect(archive.files['project.abs']).toBe('new unapplied candidate after failed reconstruction');
+    expect(archive.retainedSourceFiles.files['project.abs']).toBe('original pre-rebuild draft');
+    expect(files.get(`${path}/project.abi`)).toBe(disk); expect(editor.isWorkspaceEditBlocked()).toBeTrue(); capture.dispose();
+  });
+
+  for (const file of ['project.abs', 'project.abs.map.json'])
+    it(`preserves a new ${file} independently while restoring the exact complete native snapshot`, async () => {
+      files.set(`${path}/${file}`, 'original candidate sidecar');
+      field().setFieldValue('unsaved retained canvas', 'TEXT'); const before = editor.getProjectAbiForSave();
+      failOneNativeLoad(); await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+      files.set(`${path}/${file}`, 'new candidate sidecar after failed load');
+      const offer = (await project.inspectLibraryRuntimeRecovery())!;
+      expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, false)).status).toBe('completed');
+      expect(editor.getProjectAbiForSave()).toEqual(before);
+      expect(files.get(`${path}/${file}`)).toBe('new candidate sidecar after failed load');
+    });
+
+  it('still refuses runtime restoration and retained-source copy if the authoritative saved ABI changed', async () => {
+    failOneNativeLoad(); await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+    const offer = (await project.inspectLibraryRuntimeRecovery())!, attempts = load.calls.count();
+    files.set(`${path}/project.abi`, '{"externalSavedProgram":true}');
+    await expectAsync(project.recoverLibraryRuntime(offer.token, offer.requestId, false)).toBeRejected();
+    await expectAsync(project.captureLibraryRuntimeRecoveryCopy(path)).toBeRejected();
+    expect(load.calls.count()).toBe(attempts); expect(editor.isWorkspaceEditBlocked()).toBeTrue();
+    expect(files.get(`${path}/project.abi`)).toBe('{"externalSavedProgram":true}');
+  });
+
+  it('renews available/failed capabilities only for changed runtime inputs and keeps old failed requests observation-only', async () => {
+    failOneNativeLoad(); await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+    const first = (await project.inspectLibraryRuntimeRecovery())!, generatorPath = `${path}/node_modules/test-library/generator.js`;
+    files.set(generatorPath, 'changed runtime input before admission');
+    const second = (await project.inspectLibraryRuntimeRecovery())!;
+    expect(second.requestId).not.toBe(first.requestId); expect(second.token).not.toBe(first.token);
+    const attempts = load.calls.count();
+    expect((await project.recoverLibraryRuntime(first.token, first.requestId, false)).status).toBe('unavailable');
+    expect(load.calls.count()).toBe(attempts);
+    load.and.rejectWith(Error('same input still invalid'));
+    expect((await project.recoverLibraryRuntime(second.token, second.requestId, false)).status).toBe('failed');
+    expect((await project.inspectLibraryRuntimeRecovery())?.requestId).toBe(second.requestId);
+    const failedAttempts = load.calls.count();
+    expect((await project.recoverLibraryRuntime(second.token, second.requestId, false)).status).toBe('failed');
+    expect(load.calls.count()).toBe(failedAttempts);
+    files.set(generatorPath, 'fixed runtime input'); load.and.resolveTo();
+    const fixed = (await project.inspectLibraryRuntimeRecovery())!;
+    expect(fixed.requestId).not.toBe(second.requestId);
+    expect((await project.recoverLibraryRuntime(second.token, second.requestId, true)).status).toBe('failed');
+    expect(load.calls.count()).toBe(failedAttempts);
+    expect((await project.recoverLibraryRuntime(fixed.token, fixed.requestId, false)).status).toBe('completed');
+    expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+  });
+
+  it('never reports an old completed restoration as ready for a replacement project', async () => {
+    failOneNativeLoad(); await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+    const offer = (await project.inspectLibraryRuntimeRecovery())!;
+    expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, false)).status).toBe('completed');
+    project.currentProjectPath = 'D:/replacement-project';
+    let observed: any;
+    try { observed = await project.recoverLibraryRuntime(offer.token, offer.requestId, true); }
+    catch (error) { observed = { status: 'rejected', error }; }
+    expect(observed.status).not.toBe('completed');
+    expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+  });
+
+  it('does not let a historical completed snapshot block ordinary inspection after later source persistence', async () => {
+    failOneNativeLoad(); await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejected();
+    const offer = (await project.inspectLibraryRuntimeRecovery())!;
+    expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, false)).status).toBe('completed');
+    files.set(`${path}/project.abi`, JSON.stringify({ laterLegitimateSavedDocument: true }));
+    expect(await project.inspectLibraryRuntimeRecovery()).toBeUndefined();
   });
   it('does not replace or quarantine another project when a queued operation becomes stale', async () => {
     const rebuilding = project.rebuildLibraryRuntime(options()); project.currentProjectPath = 'D:/other';

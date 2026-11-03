@@ -50,7 +50,8 @@ import { BlocklyProjectRevision } from './blockly-project-revision';
 import { BlocklyProjectDirtyState } from './blockly-project-dirty-state';
 import { assertProjectLoadPreserved } from './blockly-project-clean-state';
 import { BlocklyCodePreparationInvalidatedError, BlocklyProjectCodePreparation, type PreparedBlocklyCode } from './prepared-project-code';
-import { BlocklyEditError, BlocklyWorkspaceEditGate, BlocklyWorkspaceEditLease, fenceBlocklyWorkspaceInput } from './blockly-workspace-edit-lease';
+import { BlocklyEditError, BlocklyWorkspaceEditGate, BlocklyWorkspaceEditLease, BlocklyWorkspaceRecoveryGrant,
+  BlocklyWorkspaceRecoveryLease, fenceBlocklyWorkspaceInput } from './blockly-workspace-edit-lease';
 import { assertAbsProjectSharedChange } from '../../../integrations/blockly/abs/abs-project-references';
 import { AbsReferenceContractCache } from '../../../integrations/blockly/abs/abs-reference-contract-cache';
 import { BlocklyDeclarativeBlockCatalog } from './blockly-declarative-block-catalog';
@@ -98,7 +99,7 @@ export interface BlocklyLibraryRuntimeRebuildOptions {
   projectPath: string;
   packageJson: any;
   libraryNames: string[];
-  projectService: unknown;
+  projectService?: unknown;
 }
 
 export const AILY_BLOCKLY_USED_LIBRARIES_FIELD = 'ailyBlocklyUsedLibraries';
@@ -1375,9 +1376,23 @@ export class BlocklyService {
 
   isWorkspaceEditBlocked(): boolean { return this.workspaceEditGate.blocked; }
   isWorkspaceEditInProgress(): boolean { return this.workspaceEditGate.busy; }
+  isLibraryRuntimeReady(): boolean { return this.generatorRuntime.isReady() && !this.workspaceEditGate.blocked; }
 
   acquireWorkspaceEditLease(): BlocklyWorkspaceEditLease {
-    const lease = this.workspaceEditGate.acquire();
+    return this.fenceEditLease(this.workspaceEditGate.acquire());
+  }
+
+  acquireWorkspaceRecoveryLease(grant: BlocklyWorkspaceRecoveryGrant): BlocklyWorkspaceRecoveryLease {
+    const retainedFence = this.releaseWorkspaceInputFence;
+    const lease = this.workspaceEditGate.acquireRecovery(grant);
+    const complete = lease.completeRecovery;
+    // The failed writer already owns a retained input fence. Do not stack a
+    // second fence per recovery attempt or release it on an unverified failure.
+    lease.completeRecovery = () => { complete(); retainedFence?.(); };
+    return lease;
+  }
+
+  private fenceEditLease<T extends BlocklyWorkspaceEditLease>(lease: T): T {
     const workspace = this.workspace;
     let quarantined = false;
     let cleanup = () => undefined;
@@ -1402,7 +1417,7 @@ export class BlocklyService {
     lease.quarantine = reason => {
       try { lease.assertCurrent(); } catch { return; } // Never quarantine a replacement workspace.
       quarantined = true;
-      quarantine(reason);
+      return quarantine(reason);
     };
     return lease;
   }
@@ -2021,7 +2036,7 @@ export class BlocklyService {
 
   /** Called by the project persistence coordinator under its queue and edit lease. */
   async rebuildLibraryRuntimeInPlace(options: BlocklyLibraryRuntimeRebuildOptions,
-    owner: BlocklyWorkspaceEditLease, assertCurrent: () => void): Promise<void> {
+    owner: BlocklyWorkspaceEditLease, assertCurrent: () => void, retainedDocument?: BlocklyProjectDocument): Promise<void> {
     this.assertWorkspaceEditAvailable(owner);
     assertCurrent();
     if (this.rebuildingLibraryRuntime) {
@@ -2029,7 +2044,7 @@ export class BlocklyService {
     }
 
     const snapshot = this.captureProjectSnapshot(owner);
-    const projectDocument = snapshot.document;
+    const projectDocument = retainedDocument ?? snapshot.document;
     this.hideChaff(true);
     this.rebuildingLibraryRuntime = true;
 
@@ -2041,7 +2056,7 @@ export class BlocklyService {
         projectPath: options.projectPath,
         packageJson: options.packageJson,
         boardConfig: this.boardConfig,
-        projectService: options.projectService,
+        ...(options.projectService !== undefined ? { projectService: options.projectService } : {}),
       });
       this.failedLibraryLoads.clear();
       this.clearLoadedLibraryStateForRuntimeRebuild();

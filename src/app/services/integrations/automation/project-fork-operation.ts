@@ -127,6 +127,8 @@ export async function forkProject(service: ForkProjectService, requestedProject:
         : '副本已保存，但尚未打开；原工作区保留。请等待当前宿主操作结束后打开副本，再继续校验或编译。',
       originalWorkspaceReleased: false,
       guidance: outcome.activationDeferred ? '不要在当前修复子进程直接打开新目标，不重新复制或解除源保护；通过已认证的目标宿主交接后 inspect/resume 新目标。'
+        : outcome.recoverySource?.origin === 'runtime-snapshot'
+        ? '副本来自运行时重建前保留的完整原生工程快照，不是半初始化画布；原工程、磁盘和未应用 ABS 草稿均保持保护。仅在目标准备就绪并读取新 ABS 基线后继续，不将旧草稿当作已应用，也不重放原运行时恢复。'
         : outcome.recoverySource?.kind === 'saved-document'
         ? outcome.activationBlocked
           ? '完整磁盘工程已保全，但半初始化画布未能归档；原视图继续保留，不得直接打开副本丢弃未保全视图。先读取 activationBlocked 和加载/依赖诊断，不清原工程保护。'

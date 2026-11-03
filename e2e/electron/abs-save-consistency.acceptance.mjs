@@ -9,6 +9,7 @@ import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { createRecoveredAgentHarness } from '../fixtures/abs-agent-tools.mjs'
 import { createAbsProviderSession } from '../fixtures/abs-provider-session.mjs'
 import { createAbsStepSubmissionBridge } from '../fixtures/abs-step-submission-bridge.mjs'
+import { runProjectSaveReceiptCases } from '../fixtures/project-save-receipt-cases.mjs'
 
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const root = path.resolve(process.env.AILY_SAVE_TEST_ROOT ?? '')
@@ -250,7 +251,7 @@ async function startHarness({ createStreaming } = {}) {
       if (['read', 'write', 'edit'].includes(request.toolName)) return typeof request.input?.path === 'string'
         && samePath(request.input.path, absPath)
       return samePath(request.input?.project ?? '', project)
-        && ['project_recover', 'project_save', 'abs_export', 'abs_validate', 'abs_apply'].includes(request.toolName)
+        && ['project_recover', 'project_save', 'project_build', 'abs_export', 'abs_validate', 'abs_apply'].includes(request.toolName)
     } })
 }
 async function actualSdkSaveOnlyCycle() {
@@ -396,6 +397,14 @@ try {
   const exported = (await harness.call('abs_export', { project })).structured
   assert.equal(exported.ok, true)
   await harness.settle(); await harness.dispose(); harness = undefined
+  if (process.env.AILY_SAVE_RECEIPT_ONLY === '1') {
+    evidence.receiptRecovery = await runProjectSaveReceiptCases({ page, app, project, createAgent: startHarness,
+      editNumber, assertSaved, chooseDialog })
+    app = undefined
+    const saved = JSON.parse(await fs.readFile(abiPath, 'utf8'))
+    assert.equal(Number(findBlock(saved, evidence.receiptRecovery.exit.savedNumberId)?.fields?.NUM), 63)
+    evidence.ok = true
+  } else {
   for (const [index, kind] of ['root-layout', 'viewport'].entries()) {
     await diskDrift(kind)
     const value = 37 + index, id = await editNumber(value)
@@ -518,6 +527,7 @@ try {
   evidence.nativeConflictQuit = { keepViewSavedAndClosedOwnedHost: true, nativeValueSaved: 43,
     originalDiskValueArchived: 4301, archiveVerified: true }
   evidence.ok = true
+  }
 } catch (error) {
   evidence.failure = { message: error.message, stack: error.stack }; process.exitCode = 1
   if (page && !page.isClosed()) {
