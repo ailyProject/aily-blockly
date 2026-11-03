@@ -359,6 +359,17 @@ export class ProjectService {
   }
 
   private async restoreLibraryMutation(mutation: NonNullable<ProjectService['libraryMutation']>, forward: boolean,
+    documents: { before: unknown; after: unknown }): Promise<boolean> {
+    if (this.currentProjectPath !== mutation.projectPath || this.libraryMutation) throw new Error('当前项目忙碌，库撤销未执行。');
+    if (!this.application.confirmBlocklyLibraryRestore || !window['libraryDependencies']?.historyPreview) {
+      throw new Error('库撤销确认通道尚未就绪，请重新启动软件。');
+    }
+    const offer = await window['libraryDependencies'].historyPreview(mutation.projectPath, { token: mutation.token, forward });
+    return this.application.confirmBlocklyLibraryRestore({ ...offer, forward },
+      () => this.applyLibraryMutationHistory(mutation, forward, documents));
+  }
+
+  private async applyLibraryMutationHistory(mutation: NonNullable<ProjectService['libraryMutation']>, forward: boolean,
     documents: { before: unknown; after: unknown }): Promise<void> {
     if (this.currentProjectPath !== mutation.projectPath || this.libraryMutation
       || this.application.hasActiveBlocklyBuildOrUpload(mutation.projectPath)) throw new Error('当前项目忙碌，库撤销未执行。');

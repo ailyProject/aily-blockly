@@ -493,8 +493,11 @@ export class AbsWorkspaceSyncService {
         // A stale candidate cannot be applied, but a clean mirror can be replaced
         // from the current canvas. Save + projection share one lease and journal;
         // no inspection of the OLD runtime contract grants or denies this operation.
-        prepared ??= await this.project.prepareSave(snapshot.document, assertCurrent);
-        if (options.save || expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
+        // A normal save always prepares code (which may register models). Seal
+        // the complete document after that phase instead of externalizing and
+        // validating the same project twice before every save.
+        if (!options.save) prepared ??= await this.project.prepareSave(snapshot.document, assertCurrent);
+        if (options.save || expected.abi === null || !sameAbsProgram(JSON.parse(prepared!.abiText), JSON.parse(expected.abi))) {
           assertCurrent();
           generated = await this.withViewChecks(() => this.editor.prepareProjectCode(context.assertCurrent, lease));
           context.assertCurrent();
@@ -516,7 +519,11 @@ export class AbsWorkspaceSyncService {
         }
       }
       const compact = await this.compactDocument(snapshot.document, runtime.contracts, assertCurrent);
-      if (options.reuseCurrent && options.publish !== false && !inspection && committed
+      // Save may reuse only byte-identical ABI, including layout/inactive pages.
+      // Still verify current disk/contracts and republish derived outputs: a
+      // clean canvas does not prove generated files or dependencies are intact.
+      const unchangedSave = options.save && prepared?.abiText === expected.abi;
+      if ((options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)

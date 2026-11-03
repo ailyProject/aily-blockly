@@ -106,6 +106,7 @@ export class _BuilderService {
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
   private preprocessRunGeneration = 0;
   private preprocessSavePauses = 0;
+  private preprocessPreparations = new Set<number>();
   private pendingPrecompileTimer: ReturnType<typeof setTimeout> | null = null;
   private preprocessStop: Promise<void> | null = null;
   private pendingPrecompileBlockedLogged = false;
@@ -568,6 +569,8 @@ export class _BuilderService {
         debounceTime(500),
       ).subscribe(async (data) => {
       const runGeneration = ++this.preprocessRunGeneration;
+      (this.preprocessPreparations ??= new Set()).add(runGeneration);
+      try {
       if (this.isCloudBuild()) {
         this.pendingPrecompile = false;
         try { await this.stopPreprocess(); } catch (error) { console.warn('Stopping local preprocessing failed:', error); }
@@ -855,6 +858,7 @@ export class _BuilderService {
         if (error instanceof BlocklyCodePreparationInvalidatedError) return;
         console.warn('启动后台预处理失败:', error);
       }
+      } finally { this.preprocessPreparations.delete(runGeneration); }
       })
     ));
 
@@ -991,7 +995,7 @@ export class _BuilderService {
       if (released) return;
       released = true;
       --this.preprocessSavePauses;
-      if (!this.preprocessSavePauses && this.initialized && projectPath === this.projectService.currentProjectPath) {
+      if (!this.preprocessSavePauses && this.pendingPrecompile && this.initialized && projectPath === this.projectService.currentProjectPath) {
         this.triggerPendingPrecompile('save-complete', '项目保存完成，继续待处理的后台依赖分析');
       }
     };
@@ -1003,7 +1007,10 @@ export class _BuilderService {
       };
       assertCurrent();
       ++this.preprocessRunGeneration;
-      this.pendingPrecompile = true;
+      // An idle, unchanged save creates no analysis work. Preserve requests
+      // already queued, preparing, or running; dependency changes during the
+      // save will enqueue their own request through the normal subscription.
+      this.pendingPrecompile ||= this.isPreprocessing() || (this.preprocessPreparations?.size ?? 0) > 0;
       if (this.isPreprocessing()) await this.stopPreprocess();
       assertCurrent();
       return release;

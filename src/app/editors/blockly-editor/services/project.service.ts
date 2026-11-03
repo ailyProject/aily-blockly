@@ -443,9 +443,13 @@ export class _ProjectService {
   }
 
   async save(path: string): Promise<ProjectSaveOutcome> {
-    const release = await this.preprocessSaveGuard?.(path);
+    const release = await this.pauseBackgroundPreprocess(path);
     try { return await this.saveProjectAfterPreprocess(path); }
     finally { release?.(); }
+  }
+
+  pauseBackgroundPreprocess(path: string): Promise<() => void> | undefined {
+    return this.preprocessSaveGuard?.(path);
   }
 
   private saveProjectAfterPreprocess(path: string): Promise<ProjectSaveOutcome> {

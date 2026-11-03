@@ -637,6 +637,46 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(JSON.parse(disk.get(`baselines/${JSON.parse(disk.get('project.abs.map.json')!).generation}.json`)!).abi).toBeUndefined();
   });
 
+  it('reuses an unchanged saved generation while checking and publishing derived outputs again', async () => {
+    await baseline();
+    const before = [...disk];
+    const prepare = spyOn(project, 'prepareSave').and.callThrough();
+    const result = await service.exportGeneration({ save: true });
+    expect(result.reused).toBeTrue();
+    expect([...disk]).toEqual(before);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
+    expect(gate.blocked).toBeFalse();
+  });
+
+  it('publishes layout and inactive-page edits even when the active program is unchanged', async () => {
+    for (const edit of [() => editor.setViewState({ scale: 0.5, scrollX: 20, scrollY: 30 }),
+      () => editor.mutateOtherPage()]) {
+      const base = await baseline();
+      edit();
+      const result = await service.exportGeneration({ save: true });
+      expect(result.reused).not.toBeTrue();
+      expect(result.publication.generation).not.toBe(base.generation);
+      expect(JSON.parse(disk.get('project.abi')!)).toEqual(editor.captureProjectSnapshot().document);
+    }
+  });
+
+  it('does not reuse a save after model preparation changes the document or external mirrors change', async () => {
+    await baseline();
+    editor.prepareProjectCode.and.callFake(async (_assertCurrent, owner) => {
+      editor.mutateOtherPage();
+      return { revision: editor.captureProjectSnapshot(owner).revision, code: '', artifacts: null, blockCodeMapText: null };
+    });
+    const result = await service.exportGeneration({ save: true });
+    expect(result.reused).not.toBeTrue();
+    expect(JSON.parse(disk.get('project.abi')!).pages[1].custom.preserved).toBeFalse();
+    disk.set('project.abs', disk.get('project.abs')! + '\n# external candidate');
+    const before = [...disk];
+    await expectAsync(service.exportGeneration({ save: true })).toBeRejected();
+    expect([...disk]).toEqual(before);
+  });
+
   it('holds history input ownership until reload and keeps its caches derived', async () => {
     const base = await baseline(), before = [...disk];
     const { token } = await service.beginHistoryNavigation();

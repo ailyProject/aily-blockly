@@ -119,6 +119,7 @@ describe('complete project persistence around library edits', () => {
       hasActiveBlocklyBuildOrUpload: () => false, hasUnsavedBlocklyChanges: async () => false,
       prepareBlocklyLibraryEdit: async (_path: string, removed: string[]) => { application.removed = removed; calls.push('fence'); return { document: { pages: ['user-before-ai'] }, release, record: jasmine.createSpy('record') }; },
       captureBlocklyLibraryDocument: async () => ({ pages: ['after'] }),
+      confirmBlocklyLibraryRestore: async (_offer: unknown, apply: () => Promise<void>) => { await apply(); return true; },
     };
     Object.defineProperty(service, 'currentProjectPath', {value:'/project',writable:true});
     Object.assign(service, { libraryChangesChanged: new Subject(),
@@ -132,10 +133,27 @@ describe('complete project persistence around library edits', () => {
       historyBegin: async () => { calls.push('checkpoint'); return {token:'test-token'}; },
       prepare: async () => { calls.push('source-extraction'); },
       historyCommit: async () => { calls.push('commit'); return {changed:true}; },
+      historyPreview: async () => ({ packages: ['@aily-project/lib-test'], changes: [] }),
       historyDiscard: jasmine.createSpy('discard').and.resolveTo(),
     };
     return {service,application,calls,release,lifecycleRelease,restore:()=>{window['libraryDependencies']=previous;}};
   }
+
+  it('does not touch dependencies or the canvas when library undo confirmation is cancelled', async () => {
+    const f = fixture(), record = jasmine.createSpy('record');
+    f.application.prepareBlocklyLibraryEdit = async () => ({ document: { pages: ['before'] }, release: f.release, record });
+    f.application.confirmBlocklyLibraryRestore = jasmine.createSpy('confirm').and.resolveTo(false);
+    window['libraryDependencies'].historyRestore = jasmine.createSpy('restore');
+    try {
+      const { token } = await f.service.beginLibraryMutation(['@aily-project/lib-test']);
+      await f.service.finishLibraryMutation(token);
+      const restores = f.release.calls.count(), saves = f.calls.filter(call => call === 'save-project').length;
+      expect(await record.calls.mostRecent().args[0](false)).toBeFalse();
+      expect(window['libraryDependencies'].historyRestore).not.toHaveBeenCalled();
+      expect(f.release.calls.count()).toBe(restores);
+      expect(f.calls.filter(call => call === 'save-project').length).toBe(saves);
+    } finally { f.restore(); }
+  });
 
   it('saves before a checkpoint and after runtime synchronization, releasing both fences', async () => {
     const f=fixture();

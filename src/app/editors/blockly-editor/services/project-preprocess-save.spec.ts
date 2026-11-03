@@ -2,6 +2,9 @@ import { fakeAsync, tick } from '@angular/core/testing';
 import { _BuilderService } from './builder.service';
 import { _ProjectService } from './project.service';
 import { ProcessState } from '@core/app-shell/public-api';
+import { Subject, BehaviorSubject } from 'rxjs';
+import { BlocklyComponent } from '../components/blockly/blockly.component';
+import { ProjectApplicationAdapter } from '../../../integrations/project/project-application.adapter';
 
 describe('complete save and background preprocess handoff', () => {
   function builder() {
@@ -55,6 +58,27 @@ describe('complete save and background preprocess handoff', () => {
     expect(service.cmdService.kill).not.toHaveBeenCalled();
     expect(service.triggerPendingPrecompile).not.toHaveBeenCalled();
   }));
+
+  it('does not start preprocessing solely because an idle project was saved again', async () => {
+    const service = builder();
+    service.pendingPrecompile = false;
+    const release = await service.pauseBackgroundPreprocessForSave('/project');
+    release();
+    expect(service.pendingPrecompile).toBeFalse();
+    expect(service.cmdService.kill).not.toHaveBeenCalled();
+    expect(service.triggerPendingPrecompile).not.toHaveBeenCalled();
+  });
+
+  it('preserves a request still preparing before its command stream exists', async () => {
+    const service = builder();
+    service.preprocessPreparations = new Set([1]);
+    const release = await service.pauseBackgroundPreprocessForSave('/project');
+    service.preprocessPreparations.clear();
+    release();
+    expect(service.pendingPrecompile).toBeTrue();
+    expect(service.cmdService.kill).not.toHaveBeenCalled();
+    expect(service.triggerPendingPrecompile).toHaveBeenCalledTimes(1);
+  });
 
   it('retains ownership on an unconfirmed stop and permits a subsequent save retry', fakeAsync(() => {
     const service = builder();
@@ -144,5 +168,80 @@ describe('complete save and background preprocess handoff', () => {
     unbindNext();
     await project.save('/project');
     expect(nextGuard).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('background artifact publication during save and library undo', () => {
+  let component: any, oldBuilder: unknown, publish: jasmine.Spy;
+  beforeEach(() => {
+    oldBuilder = window['builder'];
+    publish = jasmine.createSpy('publish').and.returnValue({ changed: false });
+    window['builder'] = { publishArduinoGeneratedCode: publish };
+    component = Object.create(BlocklyComponent.prototype);
+    Object.assign(component, {
+      destroy$: new Subject(), generatedArtifactRetryToken: 0,
+      builderService: { isPreprocessing: () => false },
+      projectService: { currentProjectPath: '/project', stateSubject: new BehaviorSubject('saved'),
+        isProjectTransitionInProgress: () => false },
+      blocklyService: { workspace: null, getWorkspaceContentRevision: () => 3 },
+    });
+  });
+  afterEach(() => { component.clearGeneratedArtifactRetry(); component.destroy$.complete(); window['builder'] = oldBuilder; });
+
+  for (const reason of ['stopping', 'saving', 'library-restore']) {
+    it(`defers writes while ${reason}, then publishes the current revision after ownership is released`, fakeAsync(() => {
+      let blocked = true;
+      if (reason === 'stopping') component.builderService.isPreprocessing = () => blocked;
+      if (reason === 'saving') component.projectService.stateSubject.next('saving');
+      if (reason === 'library-restore') component.projectService.isProjectTransitionInProgress = () => blocked;
+      component.scheduleGeneratedArtifactRetry('/project', [], 3);
+      tick(1000);
+      expect(publish).not.toHaveBeenCalled();
+      blocked = false; component.projectService.stateSubject.next('saved');
+      tick(1000);
+      expect(publish).toHaveBeenCalledOnceWith('/project', { artifacts: [] });
+    }));
+  }
+
+  it('does not publish a superseded snapshot after the stop completes', fakeAsync(() => {
+    let blocked = true;
+    component.builderService.isPreprocessing = () => blocked;
+    component.scheduleGeneratedArtifactRetry('/project', [], 3);
+    tick(1000);
+    component.blocklyService.getWorkspaceContentRevision = () => 4;
+    blocked = false; tick(1000);
+    expect(publish).not.toHaveBeenCalled();
+  }));
+
+  it('still reports genuine abandoned workspace recovery instead of retrying or deleting its marker', fakeAsync(() => {
+    const error = Object.assign(new Error('BUILD_WORKSPACE_RECOVERY_REQUIRED: orphaned owner'), { code: 'BUILD_WORKSPACE_RECOVERY_REQUIRED' });
+    publish.and.throwError(error);
+    const report = spyOn(console, 'error');
+    component.scheduleGeneratedArtifactRetry('/project', [], 3);
+    tick(3000);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledWith('Code generation error:', error);
+  }));
+
+  it('waits for confirmed preprocess shutdown before reading a library checkpoint and holds it until release', async () => {
+    const adapter: any = Object.create(ProjectApplicationAdapter.prototype);
+    let stopped!: () => void;
+    const resume = jasmine.createSpy('resume');
+    const workspace = { getParentSvg: () => null, cancelCurrentGesture: jasmine.createSpy('cancel') };
+    Object.assign(adapter, {
+      blocklyService: { workspace, assertWorkspaceEditAvailable() {}, getProjectUsedLibraryManifest: () => ({}) },
+      projectService: { currentProjectPath: '/project', currentPackageData: {} },
+      blocklyEditorProjectService: { pauseBackgroundPreprocess: () => new Promise<() => void>(resolve => { stopped = () => resolve(resume); }) },
+      isBlocklyLibraryRuntimeReady: () => true,
+      captureBlocklyLibraryDocument: jasmine.createSpy('capture').and.resolveTo({ pages: [] }),
+    });
+    const pending = adapter.prepareBlocklyLibraryEdit('/project');
+    expect(adapter.captureBlocklyLibraryDocument).not.toHaveBeenCalled();
+    stopped();
+    const edit = await pending;
+    expect(adapter.captureBlocklyLibraryDocument).toHaveBeenCalledTimes(1);
+    expect(resume).not.toHaveBeenCalled();
+    edit.release();
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 });

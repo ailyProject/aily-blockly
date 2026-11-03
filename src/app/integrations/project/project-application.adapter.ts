@@ -25,6 +25,9 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
 import { fenceBlocklyWorkspaceInput } from '../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { NzModalService } from 'ng-zorro-antd/modal';
+import { firstValueFrom } from 'rxjs';
+import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 
@@ -195,17 +198,43 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     const workspace = this.blocklyService.workspace;
     if (!workspace || !this.isBlocklyLibraryRuntimeReady(projectPath)) throw new Error('Blockly library runtime is not ready.');
     this.blocklyService.assertWorkspaceEditAvailable();
-    const release = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined, { allowNavigation: true });
+    const releaseInput = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined, { allowNavigation: true });
+    let resumePreprocess: (() => void) | undefined;
+    const release = () => { releaseInput(); resumePreprocess?.(); };
     try {
+      resumePreprocess = await this.blocklyEditorProjectService.pauseBackgroundPreprocess(projectPath);
+      if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) {
+        throw new Error('Project changed before the library transaction could start.');
+      }
       workspace.cancelCurrentGesture();
       const document = await this.captureBlocklyLibraryDocument();
       const used = this.blocklyService.getProjectUsedLibraryManifest(this.projectService.currentPackageData, document as BlocklyProjectDocument);
       if (removedPackages.some(name => used[name])) throw Object.assign(new Error('项目仍在使用待卸载库的积木，请先删除或替换这些积木。'), {code:'LIBRARY_IN_USE'});
-      return { document, release, record: (restore: (forward: boolean) => Promise<void>) => {
+      return { document, release, record: (restore: (forward: boolean) => Promise<void | boolean>) => {
         if (workspace !== this.blocklyService.workspace) throw new Error('Blockly workspace changed before recording library history.');
         recordLibraryMutation(workspace, restore, error => this.updateFooterState({ state: 'error', text: String(error instanceof Error ? error.message : error) }));
       } };
     } catch (error) { release(); throw error; }
+  }
+
+  async confirmBlocklyLibraryRestore(offer: { forward: boolean; packages: string[];
+    changes: { name: string; field?: string; before: string | null; after: string | null }[] }, apply: () => Promise<void>): Promise<boolean> {
+    const action = offer.forward ? '重做' : '撤销';
+    const changes: typeof offer.changes = offer.changes.length ? offer.changes : offer.packages.map(name => ({ name, after: '锁定版本', before: null }));
+    const modal = this.injector.get(NzModalService).create({
+      nzContent: PasteInstallDialogComponent, nzFooter: null, nzClosable: false,
+      nzMaskClosable: false, nzKeyboard: false, nzWidth: 560,
+      nzData: {
+        title: `${action}库变更`,
+        message: '此操作需要重新安装或移除以下依赖，成功后恢复积木。可能需要联网；不会还原库目录中的手工修改。',
+        confirmText: `恢复依赖并${action}`,
+        missingLibs: changes.map(change => ({ name: changes.filter(item => item.name === change.name).length > 1
+          ? `${change.name}（${change.field}）` : change.name, blockType: '',
+          version: change.after === null ? `移除（当前 ${change.before}）` : `安装 ${change.after}` })),
+        installFn: apply,
+      },
+    });
+    return (await firstValueFrom(modal.afterClose))?.result === 'installed';
   }
 
   isBlocklyLibraryRuntimeReady(path: string): boolean {

@@ -372,7 +372,7 @@ test('real registry resolution pins pending versions, retains transitives and sa
 });
 
 
-test('library undo and redo restore exact dependencies, lock and project-owned sources, retaining unrelated settings', async t => {
+test('confirmed library undo and redo reinstall exact dependencies and lock, retaining unrelated settings', async t => {
   const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
   const { token } = await sessions.run('historyBegin', f.root, { packages: ['test-b', 'test-c@file:local-libraries/c'] });
   t.after(() => f.api.history.entries.has(token) && f.api.history.discard(f.root, token));
@@ -392,7 +392,7 @@ test('library undo and redo restore exact dependencies, lock and project-owned s
   }
 });
 
-test('library undo refuses newer dependency/source edits and keeps its checkpoint retryable', async t => {
+test('library undo refuses newer dependency edits and leaves canonical local source edits alone', async t => {
   const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
   const { token } = await sessions.run('historyBegin', f.root, { packages: ['test-b'] });
   t.after(() => f.api.history.discard(f.root, token));
@@ -404,9 +404,10 @@ test('library undo refuses newer dependency/source edits and keeps its checkpoin
   assert.equal(JSON.parse(f.read('package.json')).dependencies['test-c'], 'file:local-libraries/c');
   f.write('package.json', manifest);
   await sessions.run('historyRestore', f.root, { token, forward: false });
-  fs.writeFileSync(path.join(f.root, 'node_modules/test-b/user-edit.h'), 'new user source');
-  await assert.rejects(sessions.run('historyRestore', f.root, { token, forward: true }), { code: 'LIBRARY_HISTORY_CONFLICT' });
-  assert.equal(fs.readFileSync(path.join(f.root, 'node_modules/test-b/user-edit.h'), 'utf8'), 'new user source');
+  const localEdit = path.join(f.root, 'local-libraries/b/user-edit.h');
+  fs.writeFileSync(localEdit, 'new user source');
+  await sessions.run('historyRestore', f.root, { token, forward: true });
+  assert.equal(fs.readFileSync(localEdit, 'utf8'), 'new user source');
 });
 
 
