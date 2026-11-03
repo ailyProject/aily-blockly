@@ -249,6 +249,31 @@
     overflow-x: auto;
     white-space: nowrap;
     scrollbar-width: thin;
+    scrollbar-color: var(--aily-scrollbar-thumb) var(--aily-scrollbar-track);
+
+    &::-webkit-scrollbar {
+        height: 4px;
+    }
+
+    &::-webkit-scrollbar-track {
+        background: var(--aily-scrollbar-track);
+    }
+
+    &::-webkit-scrollbar-thumb {
+        background: var(--aily-scrollbar-thumb);
+        border-radius: 2px;
+
+        &:hover {
+            background: var(--aily-scrollbar-thumb-hover);
+        }
+    }
+
+    // Chromium's standard scrollbar properties override the pseudo-element
+    // size and hover rules; use the custom scrollbar where it is supported.
+    @supports selector(::-webkit-scrollbar) {
+        scrollbar-width: auto;
+        scrollbar-color: auto;
+    }
 
     .tag-separator { color: var(--aily-text-tertiary); }
 
