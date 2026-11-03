@@ -174,7 +174,7 @@ async function terminateWindowsProcessTree(pid, label, startedAt) {
   return success;
 }
 
-function killRegisteredProcessTree(pid, label) {
+function killRegisteredProcessTree(pid, label, options = {}) {
   if (!Number.isInteger(pid) || pid <= 0) {
     return Promise.resolve(false);
   }
@@ -182,7 +182,18 @@ function killRegisteredProcessTree(pid, label) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     if (isWin32) {
-      void terminateWindowsProcessTree(pid, label, startedAt).then(resolve, () => resolve(false));
+      if (options?.preferNativeAck === true) {
+        // An owned advisory process must yield to save without a full CIM scan.
+        // Native /T success attests the tree; failure stays unconfirmed so the
+        // command supervisor retains its resources and workspace ownership.
+        void windowsTaskkill(pid).then(result => {
+          console.info('[PROC_TRACE][PROCESS_TREE_KILL]', { label, pid, method: 'taskkill-native-ack',
+            success: result.success, durationMs: Date.now() - startedAt, error: result.error, stderr: result.stderr });
+          resolve(result.success);
+        }, () => resolve(false));
+      } else {
+        void terminateWindowsProcessTree(pid, label, startedAt).then(resolve, () => resolve(false));
+      }
       return;
     }
 

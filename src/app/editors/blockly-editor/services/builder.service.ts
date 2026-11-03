@@ -771,7 +771,7 @@ export class _BuilderService {
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
-          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath },
+          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath, backgroundPreprocess: true },
           true,
         ).subscribe({
           next: (output) => {

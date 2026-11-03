@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const test = require('node:test');
 
 function fixture(snapshots, kills = []) {
-  const called = [], logs = [];
+  const called = [], logs = [], snapshotCalls = [];
   const context = { module: { exports: {} }, process: { env: { SystemRoot: 'C:\\Windows' } },
     console: { info: (_tag, value) => logs.push(value), warn() {} },
     setTimeout: callback => setImmediate(callback),
@@ -20,6 +20,7 @@ function fixture(snapshots, kills = []) {
           callback(ok ? null : new Error('native child exited during taskkill'), '', '');
         },
         execFile(_exe, _args, _options, callback) {
+          snapshotCalls.push(true);
           const next = snapshots.shift();
           callback(next instanceof Error ? next : null, next instanceof Error ? '' : JSON.stringify(next));
         },
@@ -28,7 +29,7 @@ function fixture(snapshots, kills = []) {
     },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../electron/process-tree.js'), 'utf8'), context);
-  return { stop: () => context.module.exports.killRegisteredProcessTree(10, 'cmd:build'), called, logs };
+  return { stop: options => context.module.exports.killRegisteredProcessTree(10, 'cmd:build', options), called, logs, snapshotCalls };
 }
 const root = { pid: 10, parent: 1, created: '100' }, child = { pid: 11, parent: 10, created: '101' };
 
@@ -58,4 +59,18 @@ test('a surviving descendant or an unavailable verification cannot release owner
 test('native taskkill success retains its normal acknowledgement if CIM is unavailable', async () => {
   const f = fixture([new Error('CIM unavailable')], [true]);
   assert.equal(await f.stop(), true);
+});
+
+
+test('foreground background-preprocess cancellation accepts native tree success without CIM enumeration', async () => {
+  const f = fixture([], [true]);
+  assert.equal(await f.stop({ preferNativeAck: true }), true);
+  assert.deepEqual(f.called, [10]);
+  assert.equal(f.snapshotCalls.length, 0);
+});
+
+test('fast native failure stays unconfirmed without guessing from parent exit or removing ownership', async () => {
+  const f = fixture([], [false]);
+  assert.equal(await f.stop({ preferNativeAck: true }), false);
+  assert.equal(f.snapshotCalls.length, 0);
 });
