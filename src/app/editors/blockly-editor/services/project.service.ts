@@ -9,16 +9,24 @@ import {
   canonicalProjectJsonStringify,
   materializeGenericProjectDataValues,
   type AilyDataRef,
+  type BlocklySaveAsSnapshot,
+  type ProjectSaveOutcome,
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
+import { isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts,
+  type GeneratedSourcePublicationOptions, type GeneratedSourcePublicationReceipt } from './generated-code-artifacts';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
-import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave } from './prepared-project-save';
+import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave, ProjectSaveDataRuntime } from './prepared-project-save';
 import type { BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
+import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
 
+const actionFailure = (error: unknown): { error: string; code?: string } => {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return { error: error instanceof Error ? error.message : String(error), ...(typeof code === 'string' ? { code } : {}) };
+};
 
 @Injectable({
   providedIn: 'root'
@@ -57,11 +65,19 @@ export class _ProjectService {
       this.blocklyService.aiWriting$,
     ).subscribe(() => this.blocklyService.projectDirtyState?.invalidate()));
 
-    this.actionService.listen('project-save', async (action) => {
-      await this.save(action.payload.path);
+    this.actionService.listen('project-save', async action => {
+      try { return await this.save(action.payload.path); }
+      catch (error) {
+        return { projectSaved: false, generatedCodePublished: false, partial: false,
+          ...actionFailure(error) };
+      }
     }, 'project-save-handler');
-    this.actionService.listen('project-check-unsaved', async () =>
-      ({ hasUnsavedChanges: await this.hasUnsavedChanges() }), 'project-check-unsaved-handler');
+    this.actionService.listen('project-check-unsaved', async () => {
+      try { return { hasUnsavedChanges: await this.hasUnsavedChanges() }; }
+      catch (error) {
+        return actionFailure(error);
+      }
+    }, 'project-check-unsaved-handler');
   }
 
   destroy() {
@@ -218,7 +234,45 @@ export class _ProjectService {
     };
   }
 
-  save(path: string): Promise<void> {
+  private absSaveHandler?: (path: string) => Promise<ProjectSaveOutcome>;
+  private absSaveAsHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
+  private absRecoveryCopyHandler?: (path: string) => Promise<BlocklySaveAsSnapshot>;
+  private absLoadNormalizationHandler?: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>;
+
+  setAbsSaveHandler(handler: (path: string) => Promise<ProjectSaveOutcome>): void { this.absSaveHandler = handler; }
+  setAbsSaveAsHandler(handler: (path: string) => Promise<BlocklySaveAsSnapshot>): void { this.absSaveAsHandler = handler; }
+  setAbsRecoveryCopyHandler(handler: (path: string) => Promise<BlocklySaveAsSnapshot>): void { this.absRecoveryCopyHandler = handler; }
+  setAbsLoadNormalizationHandler(handler: (input: AbsLoadNormalizationInput) => Promise<AbsLoadNormalizationOutcome>): void {
+    this.absLoadNormalizationHandler = handler;
+  }
+
+  publishLoadedNormalization(input: AbsLoadNormalizationInput): Promise<AbsLoadNormalizationOutcome> {
+    input.assertCurrent();
+    if (input.projectPath !== this.currentProjectPath || !this.absLoadNormalizationHandler) {
+      return Promise.resolve({ status: 'DEFERRED', code: 'ABS_LOAD_NORMALIZATION_UNAVAILABLE', recovery: {
+        tool: 'project_recover', arguments: { action: 'inspect', project: input.projectPath },
+        guidance: 'The original files were retained; inspect this exact project and use its verified preserving repair or independent fork. No load-normalization writer is available.',
+      } });
+    }
+    return this.absLoadNormalizationHandler(input);
+  }
+
+  captureRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+    if (path !== this.currentProjectPath || !this.absRecoveryCopyHandler) {
+      return Promise.reject(new Error('The active Blockly editor cannot capture a recovery copy.'));
+    }
+    return this.absRecoveryCopyHandler(path);
+  }
+
+  captureSaveAsSnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+    if (path !== this.currentProjectPath || !this.absSaveAsHandler) {
+      return Promise.reject(new Error('The active Blockly editor cannot capture a Save As snapshot. Update and reopen the host.'));
+    }
+    return this.absSaveAsHandler(path);
+  }
+
+  save(path: string): Promise<ProjectSaveOutcome> {
+    if (this.absSaveHandler) return this.absSaveHandler(path);
     const context = this.captureSaveContext(path);
     return this.blocklyService.runProjectOperation(async () => {
       context.assertCurrent();
@@ -249,20 +303,42 @@ export class _ProjectService {
           throw error;
         });
         if (publication?.warnings?.length) console.warn('Project ABI committed with host cleanup warnings:', publication.warnings);
-        await window['libraryDependencies']?.save(path);
         // ABI is now committed. Later derived-code failures must not imply it was rolled back.
         try {
+          await window['libraryDependencies']?.save(path);
           assertRevision();
           await this.publishPreparedSaveOutputs(path, prepared, generated, assertRevision);
+          const generatedCodePublished = generated?.code !== null && generated?.code !== undefined;
+          return { projectSaved: true, generatedCodePublished, partial: !generatedCodePublished,
+            ...(!generatedCodePublished ? { code: 'PROJECT_CODE_NOT_PUBLISHED', error: generated?.error || 'Project file saved; generated code is not available.' } : {}) };
         } catch (error) {
           console.warn('Project ABI is saved; skipped stale derived metadata/code updates:', error);
+          const detail = error instanceof Error ? error.message : String(error);
+          return { projectSaved: true, generatedCodePublished: false, partial: true,
+            code: isBuildWorkspaceRecoveryRequiredError(error) ? 'BUILD_WORKSPACE_RECOVERY_REQUIRED' : 'PROJECT_CODE_NOT_PUBLISHED',
+            error: `Project file saved, but generated code could not be updated. ${detail}` };
         }
       } finally { lease.release(); }
     });
   }
 
-  prepareSave(document: BlocklyProjectDocument, assertCurrent: () => void): Promise<PreparedBlocklySave> {
-    return prepareBlocklySave(document, snapshot => this.blocklyService.getProjectAbiForSave(snapshot), assertCurrent);
+  prepareSave(document: BlocklyProjectDocument, assertCurrent: () => void, runtime?: ProjectSaveDataRuntime): Promise<PreparedBlocklySave> {
+    return prepareBlocklySave(document, snapshot => this.blocklyService.getProjectAbiForSave(snapshot), assertCurrent, runtime);
+  }
+
+  /** Derived outputs for a new project, without changing the source editor's clean baseline. */
+  async publishCopyOutputs(path: string, document: BlocklyProjectDocument, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+    assertCurrent();
+    const manifestPath = window['path'].join(path, 'package.json');
+    const manifest = JSON.parse(window['fs'].readFileSync(manifestPath, 'utf8'));
+    manifest[AILY_BLOCKLY_USED_LIBRARIES_FIELD] = this.blocklyService.getProjectUsedLibraryManifest(manifest, document);
+    window['fs'].writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    if (generated?.code != null) {
+      await publishGeneratorMacros(path, generated.projectMacros, assertCurrent);
+      await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts,
+        generated.artifacts === null ? undefined : generated.code);
+      assertCurrent();
+    }
   }
 
   commitPreparedSave(path: string, prepared: PreparedBlocklySave, expectedAbi: string | null, assertCurrent: () => void) {
@@ -270,7 +346,8 @@ export class _ProjectService {
   }
 
   /** Acknowledge the committed snapshot before publishing fallible derived outputs. */
-  async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+  async publishPreparedSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode | null, assertCurrent: () => void,
+    options: GeneratedSourcePublicationOptions = {}): Promise<GeneratedSourcePublicationReceipt | void> {
     assertCurrent();
     if (path !== this.currentProjectPath || window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== prepared.abiText) {
       throw new Error('Cannot acknowledge a stale project save.');
@@ -280,7 +357,7 @@ export class _ProjectService {
     this.blocklyService.projectDirtyState?.remember(JSON.parse(prepared.documentText));
     if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
     this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
-    await this.publishPreparedCode(path, generated, assertCurrent);
+    return this.publishPreparedCode(path, generated, assertCurrent, options);
   }
 
   private captureSaveContext(path: string) {
@@ -326,7 +403,8 @@ export class _ProjectService {
   }
 
   /** Post-commit work consumes immutable code/artifacts; never calls a Generator. */
-  private async publishPreparedCode(path: string, generated: PreparedBlocklyCode | null, assertCurrent: () => void) {
+  private async publishPreparedCode(path: string, generated: PreparedBlocklyCode | null, assertCurrent: () => void,
+    options: GeneratedSourcePublicationOptions = {}) {
     if (!generated || generated.code === null) {
       if (generated?.error) console.warn('Project ABI is saved; code generation failed:', generated.error);
       return;
@@ -340,14 +418,15 @@ export class _ProjectService {
     // Publish its sketch and headers together, as startup/build already do;
     // otherwise a successful ABS save leaves the on-disk sketch one edit behind.
     // Other generators have null artifacts and must not write Python into .ino.
-    await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts,
-      generated.artifacts === null ? undefined : generated.code);
+    const publication = await writePreparedArduinoGeneratedArtifacts(path, generated.artifacts,
+      generated.artifacts === null ? undefined : generated.code, options);
     assertCurrent();
     if (this.electronService?.calculateHash) {
       const codeHash = await this.electronService.calculateHash(generated.code);
       assertCurrent();
       patchBuildMetadata(path, { codeHash });
     }
+    return publication;
   }
 
 }

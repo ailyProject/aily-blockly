@@ -17,10 +17,12 @@ function attachProjectDependencies(service: any, projectPath = '/tmp/project') {
 }
 
 describe('NpmService shared dependency operations', () => {
-  let oldPath: any, oldFs: any, oldFsp: any, oldIpc: any, oldNpm: any, service: any;
+  let oldPath: any, oldFs: any, oldFsp: any, oldIpc: any, oldNpm: any, oldEnv: any, service: any;
   beforeEach(() => {
     oldPath = window['path']; oldFs = window['fs']; oldNpm = window['npm'];
     oldFsp = window['fsp']; oldIpc = window['ipcRenderer'];
+    oldEnv = window['env'];
+    window['env'] = { get: jasmine.createSpy('envGet').and.resolveTo(undefined) } as any;
     window['path'] = { getAppDataPath: () => '/app', isExists: () => true,
       join: (...parts: string[]) => parts.join('/'), basename: (s: string) => s.split('/').pop(),
       resolve: (s: string) => s, relative: (root: string, target: string) => target.slice(root.length + 1),
@@ -37,6 +39,7 @@ describe('NpmService shared dependency operations', () => {
   afterEach(() => {
     window['path'] = oldPath; window['fs'] = oldFs; window['npm'] = oldNpm;
     window['fsp'] = oldFsp; window['ipcRenderer'] = oldIpc;
+    window['env'] = oldEnv;
   });
 
   it('runs board and package installs directly', async () => {
@@ -62,6 +65,27 @@ describe('NpmService shared dependency operations', () => {
     await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true);
     expect(service.cmdService.runAsyncChecked.calls.first().args[0]).toBe('npm run postinstall');
     expect(window['npm'].run).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing or forced platform installation in an independent read-only repair environment', async () => {
+    window['env'].get.and.resolveTo('/parent/managed-tools');
+    service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
+    service.isPlatformPackageOnDisk = () => false;
+    await expectAsync(service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true))
+      .toBeRejectedWithError(/read-only/);
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
+  });
+
+  it('checks existing platform packages against shared resource roots without reinstalling them in a repair environment', async () => {
+    const roots = { AILY_SDK_PATH: '/parent/sdk', AILY_COMPILERS_PATH: '/parent/compilers',
+      AILY_TOOLS_PATH: '/parent/tools', AILY_REPAIR_READONLY_NPM_PREFIX: '/parent/managed-tools' };
+    window['env'].get.and.callFake(async key => roots[key]);
+    service.isPlatformPackageOnDisk = jasmine.createSpy('existingResource').and.returnValue(true);
+    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false);
+    expect(service.isPlatformPackageOnDisk).toHaveBeenCalledOnceWith('@aily-project/sdk-test', '1.0.0',
+      { sdkBase: roots.AILY_SDK_PATH, compilersBase: roots.AILY_COMPILERS_PATH, toolsBase: roots.AILY_TOOLS_PATH });
+    expect(window['npm'].run).not.toHaveBeenCalled(); expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
   });
 
   it('continues checking later dependencies after an installed dependency is skipped', async () => {
@@ -341,7 +365,7 @@ describe('NpmService installBoardDeps', () => {
       })
     };
 
-    service.configService = { isCoderProduct: () => coder };
+    service.configService = { isCoderProduct: () => coder, getCompileBackend: () => 'local' };
     service.isInstalling = false;
     service.boardDepsInstallPromise = undefined;
     service.boardDependencyInstallProgress = undefined;
@@ -391,7 +415,7 @@ describe('NpmService installBoardDeps', () => {
       service.prjService.getProjectDependencySession(),
       true,
     );
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(true, undefined);
     expect(service.isInstalling).toBeFalse();
   });
 
@@ -414,7 +438,23 @@ describe('NpmService installBoardDeps', () => {
     expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
       { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(), true,
     );
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(true);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(true, undefined);
+  });
+
+  it('uses the full local platform installer when the support lookup falls back from cloud', async () => {
+    const { service } = createService(false);
+    service.configService.getCompileBackend = () => 'cloud';
+    let cloud = true;
+    service.prjService.isCloudBuild = () => cloud;
+    service.prjService.resolveCompileBackend = jasmine.createSpy('support').and.callFake(async () => { cloud = false; return 'local'; });
+    service.prjService.getCloudBoardProfile = jasmine.createSpy('cloudTarget');
+    await service.installBoardDeps();
+    expect(service.prjService.resolveCompileBackend).toHaveBeenCalled();
+    expect(service.prjService.getCloudBoardProfile).not.toHaveBeenCalled();
+    expect(service.installBoardDependencies).toHaveBeenCalledOnceWith(
+      { boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true, service.prjService.getProjectDependencySession(), true,
+    );
+    expect(service.configService.getCompileBackend()).toBe('cloud');
   });
 
   it('waits through platform installation and its final refresh before reporting ready', fakeAsync(() => {
@@ -481,7 +521,7 @@ describe('NpmService installBoardDeps', () => {
     lifecycle.cancel(session.projectPath);
     finish();
     flushMicrotasks();
-    expect(application.finishInstall).toHaveBeenCalledOnceWith(false);
+    expect(application.finishInstall).toHaveBeenCalledOnceWith(false, undefined);
     expect(service.isInstalling).toBeFalse();
   }));
 });

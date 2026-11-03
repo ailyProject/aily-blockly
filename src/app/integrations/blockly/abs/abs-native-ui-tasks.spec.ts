@@ -3,6 +3,7 @@ import { NativeUiTasks, nativeUiSemanticSnapshot } from '../../../editors/blockl
 import { evaluateNativeCandidate } from '../../../editors/blockly-editor/services/blockly-native-candidate';
 import type { NativeCandidateRequest } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
 import { assertNativeGenerationStable } from '../../../editors/blockly-editor/services/blockly-native-generation-evidence';
+import type { AbsNativeUiTiming } from './abs-diagnostics';
 
 describe('native deferred UI effect boundary', () => {
   it('does not treat layout-different generation inputs as identical program output evidence', () => {
@@ -36,6 +37,39 @@ describe('native deferred UI effect boundary', () => {
     tasks.drain(() => { snapshots++; return 'same'; });
     expect(calls).toBe(80);
     expect(snapshots).toBe(81);
+  });
+  it('keeps due-time and insertion order without sorting the whole queue', () => {
+    const tasks = new NativeUiTasks(), order: string[] = [];
+    tasks.set(() => { order.push('first'); tasks.set(() => order.push('nested'), 0); }, 10);
+    const cancelled = tasks.set(() => order.push('cancelled'), 5); tasks.clear(cancelled);
+    tasks.set(() => order.push('same-due'), 10);
+    tasks.set(() => order.push('early'), 1);
+    tasks.set(() => order.push('late'), 20);
+    const sort = spyOn(Array.prototype, 'sort').and.callThrough();
+    tasks.drain(() => 'same');
+    expect(sort).not.toHaveBeenCalled();
+    expect(order).toEqual(['early', 'first', 'same-due', 'nested', 'late']);
+  });
+  it('reports bounded aggregate callback/snapshot costs without skipping any readback', () => {
+    let now = 0;
+    const observations: AbsNativeUiTiming[] = [];
+    const tasks = new NativeUiTasks(value => observations.push(value), () => now);
+    for (let i = 0; i < 512; i++) tasks.set(() => { now += 2; });
+    tasks.drain(() => { now += 3; return 'same'; });
+    expect(observations.length).toBeLessThanOrEqual(10);
+    expect(observations[0]).toEqual({ callbacks: 0, pending: 512, snapshots: 0, callbackMs: 0, snapshotMs: 0 });
+    expect(observations[observations.length - 1]).toEqual({ callbacks: 512, pending: 0, snapshots: 513, callbackMs: 1024, snapshotMs: 1539 });
+    const count = observations.length;
+    tasks.drain(() => { throw Error('must not snapshot an empty queue'); });
+    expect(observations.length).toBe(count);
+  });
+  it('retains cost evidence when a callback changes persisted meaning', () => {
+    let now = 0, state = 'before';
+    const observations: AbsNativeUiTiming[] = [];
+    const tasks = new NativeUiTasks(value => observations.push(value), () => now);
+    tasks.set(() => { now += 7; state = 'changed'; });
+    expect(() => tasks.drain(() => { now += 3; return state; })).toThrowError(/changed persisted state/);
+    expect(observations[observations.length - 1]).toEqual({ callbacks: 1, pending: 0, snapshots: 2, callbackMs: 7, snapshotMs: 6 });
   });
   it('still bounds serial virtual time and individual timers with capacity diagnostics', () => {
     const tasks = new NativeUiTasks(); let calls = 0;

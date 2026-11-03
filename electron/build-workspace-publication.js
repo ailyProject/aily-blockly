@@ -1,19 +1,23 @@
-const path = require('node:path');
+const { childScriptPath } = require('./child-script-path');
 
 function publisher() {
-  const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
-  return require(path.join(childRoot, 'scripts/build-workspace-publication.js'));
+  return require(childScriptPath('build-workspace-publication.js'));
 }
 
 module.exports = {
   canReuseBlocklyUpload: config => {
-    const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
-    return require(path.join(childRoot, 'scripts/blockly-upload-state.js')).canReuseBlocklyUpload(config);
+    return require(childScriptPath('blockly-upload-state.js')).canReuseBlocklyUpload(config);
   },
   captureBuildSource: (config, workspace) => {
-    const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
-    return require(path.join(childRoot, 'scripts/build-source-capture.js')).captureBuildSource(config, workspace);
+    return require(childScriptPath('build-source-capture.js')).captureBuildSource(config, workspace);
   },
-  publishArduinoGeneratedCode: (projectPath, request) => publisher().publishArduinoGeneratedCode(projectPath, request),
+  GENERATED_SOURCE_ARCHIVE_VERSION: 1,
+  publishArduinoGeneratedCode: (projectPath, request) => {
+    const implementation = publisher();
+    if (request?.preserveSuperseded === true && implementation.generatedSourceArchiveVersion !== 1) {
+      throw new Error('Generated source preservation bridge unavailable; restart the host to load matching scripts.');
+    }
+    return implementation.publishArduinoGeneratedCode(projectPath, request);
+  },
   patchBuildMetadata: (projectPath, patch) => publisher().patchBuildMetadata(projectPath, patch),
 };

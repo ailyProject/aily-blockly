@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Subapp activity dock",
+    "TITLE": "Subapps",
+    "OPEN_FULL": "Open full subapp",
+    "OPEN_EMBEDDED": "Open embedded in main app",
+    "OPEN_WINDOW": "Open in separate window",
+    "COLLAPSE": "Collapse",
+    "CALL_COUNT": "Calls: {{count}}",
+    "RUNTIME_READY": "Runtime ready",
+    "RUNTIME_STARTING": "Runtime starting",
+    "RUNTIME_ERROR": "Runtime error",
+    "RUNTIME_STOPPED": "Runtime stopped",
+    "RUNTIME_UNKNOWN": "Runtime status unknown",
+    "INVOCATION_RUNNING": "Agent running",
+    "INVOCATION_SUCCEEDED": "Last call succeeded",
+    "INVOCATION_FAILED": "Last call failed",
+    "INVOCATION_CANCELLED": "Last call cancelled",
+    "INVOCATION_IDLE": "No active call",
+    "WAITING_RUNTIME": "Waiting for runtime",
+    "LOADING_SURFACE": "Loading compact view",
+    "RUNTIME_NOT_RETAINED": "The Dock does not start or retain the subapp runtime.",
+    "SURFACE_ERROR": "Compact view unavailable",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} view"
+  },
   "BLOCKLY_FUNCTION_VIEW": {
     "LABEL": "View a function or the whole file",
     "ALL": "Whole file",
@@ -209,6 +233,7 @@
         "SPONSORS_DESC": "This project is sponsored by the following companies/individuals",
         "NEWS": "News",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Describe what you need in natural language. The AI assistant can help create projects and answer questions.",
             "STEP1_TITLE": "Create New Project",
             "STEP1_DESC": "Click here to create a new programming project. Choose your board and programming language to start your creative journey.",
             "STEP2_TITLE": "Open Existing Project",
@@ -235,6 +260,7 @@
         "WORKSPACE_SELECT_ALL": "Select all blocks",
         "EXPLAIN_BLOCK": "Explain with AI",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "The AI assistant can help understand your project, generate code, explain programs, and fix errors.",
             "TOOLBOX_TITLE": "Block Toolbox",
             "TOOLBOX_DESC": "Find all available blocks here. Drag and drop blocks to the workspace to build your program.",
             "WORKSPACE_TITLE": "Workspace",
@@ -406,6 +432,14 @@
             "CACHE": "Cache Management"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Cloud compilation",
+            "CLOUD_COMPILATION_DESC": "Compile in the cloud and upload to the board locally. The service is checked when enabling.",
+            "CLOUD_PRO_REQUIRED": "Sign in with a Pro account to use",
+            "CLOUD_ENABLE_CHECKING": "Checking the cloud compilation service…",
+            "CLOUD_ENABLE_SUCCESS": "Cloud compilation enabled.",
+            "CLOUD_ENABLE_FAILED": "Could not enable cloud compilation. Please try again later.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Could not enable cloud compilation. Fully quit and restart the application, then try again.",
+            "CLOUD_DISABLE_FAILED": "Could not disable cloud compilation. Please try again.",
             "PROJECT_FOLDER": "Project Folder",
             "LANGUAGE": "Language",
             "DEVELOPMENT_MODE_PREFERENCE": "Default Dev Mode",
@@ -415,6 +449,7 @@
             "UI_THEME": "UI Theme",
             "BLOCKLY_THEME": "Blockly Theme",
             "BLOCKLY_MINIMAP": "Blockly Minimap",
+            "BLOCKLY_SOUNDS": "Interaction sounds",
             "FLYOUT_AUTO_CLOSE": "Auto Close Toolbox",
             "COMPILATION_OPTIONS": "Compilation Options",
             "REGION": "Service Region",
@@ -1010,6 +1045,9 @@
         "SAFE_LOGOUT_CONFIRM": "Log out",
         "CANCEL": "Cancel",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "App Store",
+            "APP_STORE_DESC": "Browse and install AI tools to extend the AI assistant's capabilities. Add other apps and manage toolbar entries.",
+            "AI_TOOLS_TITLE": "AI Assistant",
             "SKIP": "Skip",
             "PREV": "Previous",
             "NEXT": "Next",
@@ -1189,6 +1227,7 @@
         "NO_TUTORIAL_PROVIDED": "No tutorial provided by the library author"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "An AI task is running. Please wait for it to finish before saving as a new project.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1212,6 +1251,11 @@
         "PATH_NOT_EXIST": "Project path does not exist, please select another project",
         "DEPENDENCY_TASKS_STOPPED": "Project dependency tasks have been stopped",
         "SWITCHING_BOARD_CONFIG": "Switching board configuration...",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "The cloud compilation component is out of date. Fully quit and restart the application, then try again; reloading the page is not enough.",
+        "CLOUD_TARGET_UNAVAILABLE": "This board version or content is not registered as an available cloud target.",
+        "CLOUD_BOARD_NOT_ENABLED": "Cloud compilation is not enabled for this board version.",
+        "CLOUD_BOARD_UNSUPPORTED": "This board version does not support cloud compilation.",
+        "CLOUD_BOARD_OFFLINE": "The cloud compiler for this board is offline. Please try again later.",
         "SDK_CONFIG_NOT_READY": "SDK is not ready. Some board settings are temporarily unavailable.",
         "BOARD_SWITCH_COMPLETE": "Board switch complete",
         "BOARD_SWITCH_SUCCESS": "Board switched successfully",
@@ -1416,5 +1460,29 @@
         "ERR_PATH_EXISTS": "A folder with the same name already exists",
         "ERR_PATH_INVALID": "Save path contains invalid characters",
         "ERR_CREATE_FAILED": "Failed to create project. Please try again."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Switch to local compilation",
+        "SWITCH_TO_CLOUD": "Switch back to cloud compilation",
+        "SWITCHING_TO_CLOUD": "Stopping local compilation to switch back to the cloud…",
+        "SWITCHING_TO_LOCAL": "Cancelling cloud compilation to continue locally…",
+        "PREPARING_LOCAL": "Preparing local compilation…",
+        "REUSED_RESULT": "Reused verified cloud build result (time: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Cloud build complete (time: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Preparing cloud build inputs",
+            "UPLOADING": "Uploading cloud build inputs",
+            "QUEUED": "Waiting in the cloud build queue",
+            "DISPATCHING": "Assigning a cloud build server",
+            "PREPARING": "Preparing the cloud build environment",
+            "RESOURCES": "Preparing cloud build resources",
+            "ANALYZING": "Analyzing the project",
+            "COMPILING": "Compiling in the cloud",
+            "FINALIZING": "Checking cloud build outputs",
+            "DOWNLOADING": "Downloading cloud build outputs",
+            "VERIFYING": "Verifying cloud build outputs",
+            "RECONNECTING": "Reconnecting to the gateway",
+            "COMPLETE": "Cloud build complete"
+        }
     }
 }

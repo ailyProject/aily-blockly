@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Painel de atividade de subaplicativos",
+    "TITLE": "Subaplicativos",
+    "OPEN_FULL": "Abrir o subaplicativo completo",
+    "OPEN_EMBEDDED": "Abrir integrado no aplicativo principal",
+    "OPEN_WINDOW": "Abrir em uma janela separada",
+    "COLLAPSE": "Recolher",
+    "CALL_COUNT": "Chamadas: {{count}}",
+    "RUNTIME_READY": "Ambiente de execução pronto",
+    "RUNTIME_STARTING": "Iniciando o ambiente de execução",
+    "RUNTIME_ERROR": "Erro no ambiente de execução",
+    "RUNTIME_STOPPED": "Ambiente de execução parado",
+    "RUNTIME_UNKNOWN": "Estado de execução desconhecido",
+    "INVOCATION_RUNNING": "Agente em execução",
+    "INVOCATION_SUCCEEDED": "Última chamada concluída",
+    "INVOCATION_FAILED": "Última chamada falhou",
+    "INVOCATION_CANCELLED": "Última chamada cancelada",
+    "INVOCATION_IDLE": "Nenhuma chamada ativa",
+    "WAITING_RUNTIME": "Aguardando o ambiente de execução",
+    "LOADING_SURFACE": "Carregando a visualização compacta",
+    "RUNTIME_NOT_RETAINED": "O painel não inicia nem mantém ativo o ambiente de execução do subaplicativo.",
+    "SURFACE_ERROR": "Visualização compacta indisponível",
+    "SURFACE_TITLE": "Visualização {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Falha ao publicar o projeto",
         "WORKSPACE_PROJECT_NOT_FOUND": "Projeto não encontrado",
@@ -156,6 +180,7 @@
         "SPONSORS_DESC": "Este projeto é patrocinado pelas seguintes empresas/indivíduos",
         "NEWS": "Notícias",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Descreva o que precisa em linguagem natural. O assistente de IA pode ajudar a criar projetos e esclarecer dúvidas.",
             "STEP1_TITLE": "Criar novo projeto",
             "STEP1_DESC": "Clique aqui para criar um novo projeto de programação. Escolha sua placa e linguagem de programação para começar sua jornada criativa.",
             "STEP2_TITLE": "Abrir projeto existente",
@@ -182,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "Selecionar todos os blocos",
         "EXPLAIN_BLOCK": "Explicar com IA",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "O assistente de IA pode ajudar a entender seu projeto, gerar código, explicar programas e corrigir erros.",
             "TOOLBOX_TITLE": "Caixa de ferramentas de blocos",
             "TOOLBOX_DESC": "Aqui ficam as categorias de blocos. Clique nas categorias para encontrar blocos de função e arraste-os para a área de trabalho à direita.",
             "WORKSPACE_TITLE": "Área de trabalho",
@@ -341,6 +367,14 @@
             "CACHE": "Gerenciamento de cache"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Compilação na nuvem",
+            "CLOUD_COMPILATION_DESC": "Compile na nuvem e envie para a placa neste computador. O serviço é verificado ao ativar.",
+            "CLOUD_PRO_REQUIRED": "Entre com uma conta Pro",
+            "CLOUD_ENABLE_CHECKING": "Verificando o serviço de compilação na nuvem…",
+            "CLOUD_ENABLE_SUCCESS": "Compilação na nuvem ativada.",
+            "CLOUD_ENABLE_FAILED": "Não foi possível ativar a compilação na nuvem. Tente novamente mais tarde.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Não foi possível ativar. Feche completamente o aplicativo, reinicie-o e tente novamente.",
+            "CLOUD_DISABLE_FAILED": "Não foi possível desativar a compilação na nuvem. Tente novamente.",
             "PROJECT_FOLDER": "Pasta do projeto",
             "LANGUAGE": "Idioma",
             "DEVELOPMENT_MODE_PREFERENCE": "Modo de desenvolvimento padrão",
@@ -350,6 +384,7 @@
             "UI_THEME": "Tema da interface",
             "BLOCKLY_THEME": "Tema do Blockly",
             "BLOCKLY_MINIMAP": "Minimapa do Blockly",
+            "BLOCKLY_SOUNDS": "Sons de interação",
             "FLYOUT_AUTO_CLOSE": "Fechar a caixa de ferramentas automaticamente",
             "COMPILATION_OPTIONS": "Opções de compilação",
             "REGION": "Região de serviço",
@@ -872,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "Sair",
         "CANCEL": "Cancelar",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "Loja de aplicativos",
+            "APP_STORE_DESC": "Explore e instale ferramentas de IA para ampliar as capacidades do assistente. Adicione outros aplicativos e gerencie os atalhos da barra de ferramentas.",
+            "AI_TOOLS_TITLE": "Assistente de IA",
             "SKIP": "Pular",
             "PREV": "Anterior",
             "NEXT": "Próximo",
@@ -1041,6 +1079,7 @@
         "NO_TUTORIAL_PROVIDED": "O autor da biblioteca não forneceu um tutorial"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "Uma tarefa de IA está em execução. Aguarde sua conclusão antes de salvar o projeto com outro nome.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1049,6 +1088,11 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "O componente de compilação na nuvem está desatualizado. Feche completamente e reinicie o aplicativo antes de tentar novamente; recarregar a página não é suficiente.",
+        "CLOUD_TARGET_UNAVAILABLE": "Esta versão ou conteúdo da placa não está registrado como destino disponível na nuvem.",
+        "CLOUD_BOARD_NOT_ENABLED": "A compilação na nuvem não está ativada para esta versão da placa.",
+        "CLOUD_BOARD_UNSUPPORTED": "Esta versão da placa não suporta compilação na nuvem.",
+        "CLOUD_BOARD_OFFLINE": "O compilador na nuvem desta placa está offline. Tente novamente mais tarde.",
       "MODE_UNKNOWN": "Tipo de projeto desconhecido. Selecione um projeto válido do Aily Blockly ou Aily Coder.",
       "MODE_CREATE_RESTRICTED": "O modo atual do {{application}} não pode criar este tipo de projeto. Use {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Modo do projeto incompatível",
@@ -1259,5 +1303,29 @@
         "ERR_PATH_EXISTS": "Já existe uma pasta com o mesmo nome",
         "ERR_PATH_INVALID": "O caminho de salvamento contém caracteres inválidos",
         "ERR_CREATE_FAILED": "Falha ao criar o projeto. Tente novamente."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Compilar localmente",
+        "SWITCH_TO_CLOUD": "Voltar à compilação na nuvem",
+        "SWITCHING_TO_CLOUD": "Parando a compilação local para voltar à nuvem…",
+        "SWITCHING_TO_LOCAL": "Cancelando a compilação na nuvem para continuar localmente…",
+        "PREPARING_LOCAL": "Preparando a compilação local…",
+        "REUSED_RESULT": "Resultado de compilação na nuvem verificado reutilizado (tempo: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Compilação na nuvem concluída (tempo: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Preparando as entradas de compilação na nuvem",
+            "UPLOADING": "Enviando as entradas de compilação na nuvem",
+            "QUEUED": "Aguardando na fila de compilação na nuvem",
+            "DISPATCHING": "Atribuindo um servidor de compilação na nuvem",
+            "PREPARING": "Preparando o ambiente de compilação na nuvem",
+            "RESOURCES": "Preparando os recursos de compilação na nuvem",
+            "ANALYZING": "Analisando o projeto",
+            "COMPILING": "Compilando na nuvem",
+            "FINALIZING": "Conferindo os resultados da compilação na nuvem",
+            "DOWNLOADING": "Baixando os resultados da compilação na nuvem",
+            "VERIFYING": "Verificando os resultados da compilação na nuvem",
+            "RECONNECTING": "Reconectando ao gateway",
+            "COMPLETE": "Compilação na nuvem concluída"
+        }
     }
 }

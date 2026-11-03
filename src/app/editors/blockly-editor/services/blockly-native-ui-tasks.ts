@@ -3,6 +3,10 @@ import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { absProgramWorkspace } from '../../../integrations/blockly/abs/abs-program-state';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
+import { createBlocklyBlockActivity } from './blockly-block-activity';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
+import type { AbsNativeUiTiming } from '../../../integrations/blockly/abs/abs-diagnostics';
+import { nativeSemanticChange } from './blockly-native-semantic-diagnostic';
 
 /** Candidate-local, virtual one-shot tasks. No event loop, waiting or arbitrary
  * async completion. Tasks are admitted by their observed semantic effects,
@@ -13,6 +17,25 @@ export class NativeUiTasks {
   private now = 0;
   private forbidden = false;
   private failure?: Error;
+  private readonly timing: Omit<AbsNativeUiTiming, 'pending'> = { callbacks: 0, snapshots: 0, callbackMs: 0, snapshotMs: 0 };
+  private reportedCallbacks = 0;
+  private reportedAt = 0;
+
+  constructor(private readonly observe?: (timing: AbsNativeUiTiming) => void, private readonly clock = () => performance.now()) {}
+
+  private report(force = false): void {
+    if (!this.observe) return;
+    const now = this.clock();
+    if (!force && (this.timing.callbacks - this.reportedCallbacks < 64 || now - this.reportedAt < 50)) return;
+    this.reportedAt = now; this.reportedCallbacks = this.timing.callbacks;
+    this.observe({ ...this.timing, pending: this.pending.size });
+  }
+  private snapshot(read: () => string): string {
+    const started = this.observe ? this.clock() : 0;
+    this.timing.snapshots++;
+    try { return this.withoutScheduling(read); }
+    finally { if (this.observe) this.timing.snapshotMs += Math.max(0, this.clock() - started); }
+  }
 
   get hasPending(): boolean { return this.pending.size > 0; }
   assertClean(): void { if (this.failure) throw this.failure; }
@@ -56,21 +79,37 @@ export class NativeUiTasks {
     try { const value = action(); this.assertClean(); return value; }
     finally { this.forbidden = previous; }
   }
-  drain(snapshot: () => string): void {
+  drain(snapshot: () => string, phase: 'initialization' | 'ui' = 'ui'): void {
     this.assertClean();
+    if (!this.pending.size) return;
+    this.report(true);
+    try { this.drainPending(snapshot, phase); }
+    finally { this.report(true); }
+  }
+  private drainPending(snapshot: () => string, phase: 'initialization' | 'ui'): void {
     // No event can interleave this synchronous queue. Reuse each verified
     // post-callback snapshot as the next precondition, without skipping a task.
-    let before = this.pending.size ? this.withoutScheduling(snapshot) : '';
+    let before = this.snapshot(snapshot);
     while (this.pending.size) {
       // Stable Map order breaks ties; nested tasks use virtual due time.
-      const [id, task] = [...this.pending].sort((a, b) => a[1].due - b[1].due)[0];
+      // Select the minimum without allocating and sorting the entire queue for
+      // every callback. Equal due times retain insertion order, including nested work.
+      let selected: [number, { due: number; callback: () => unknown }] | undefined;
+      for (const entry of this.pending) if (!selected || entry[1].due < selected[1].due) selected = entry;
+      const [id, task] = selected!;
       this.pending.delete(id); this.now = task.due;
       try {
-        const value: any = task.callback(); this.assertClean();
+        const started = this.observe ? this.clock() : 0;
+        this.timing.callbacks++;
+        let value: any;
+        try { value = task.callback(); }
+        finally { if (this.observe) this.timing.callbackMs += Math.max(0, this.clock() - started); }
+        this.assertClean();
         if (value && typeof value.then === 'function') this.reject('Native candidate does not support asynchronous UI callbacks.');
-        const after = this.withoutScheduling(snapshot);
-        if (after !== before) this.reject('Native deferred UI task changed persisted state, structure or field constraints' + semanticDifferencePath(before, after) + '.');
+        const after = this.snapshot(snapshot);
+        if (after !== before) this.reject(nativeSemanticChange(before, after, phase));
         before = after;
+        this.report();
       } catch (error) { this.reject(error instanceof Error ? error : String(error)); }
     }
     this.assertClean();
@@ -78,30 +117,25 @@ export class NativeUiTasks {
   dispose(): void { this.pending.clear(); }
 }
 
-/** Report location only, never serialized field/resource contents. */
-function semanticDifferencePath(before: string, after: string): string {
-  const difference = (left: any, right: any, path: string): string | undefined => {
-    if (Object.is(left, right)) return undefined;
-    if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return path;
-    for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
-      const found = difference(left[key], right[key], `${path}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`);
-      if (found !== undefined) return found;
-    }
-    return undefined;
-  };
-  try { return ` at ${difference(JSON.parse(before), JSON.parse(after), '') || '/'}`; }
-  catch { return ''; }
-}
-
 /** Exclude display labels/tooltips, but include empty sockets, option keys,
  * checks, and all serializers. Empty inputs are not necessarily present in ABI. */
 export function nativeUiSemanticSnapshot(native: typeof Blockly, workspace: Blockly.Workspace): string {
-  return absJson({ state: absProgramWorkspace(native.serialization.workspaces.save(workspace)),
-    shapes: workspace.getAllBlocks(false).map(block => ({ id: block.id,
+  captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace);
+  const active = createBlocklyBlockActivity();
+  const state = absProgramWorkspace(native.serialization.workspaces.save(workspace));
+  // The built-in variable table is keyed by ID, just as in complete ABI
+  // readback. Canonicalize the detached snapshot, retaining complete records
+  // and duplicates. Never sort roots, connections or arbitrary extraState.
+  if (Array.isArray(state['variables']) && state['variables'].every(value => value
+    && typeof value === 'object' && !Array.isArray(value) && typeof value.id === 'string')) {
+    state['variables'] = [...state['variables']].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  }
+  return absJson({ state,
+    shapes: workspace.getAllBlocks(false).map(block => ({ id: block.id, type: block.type,
       connections: [block.outputConnection, block.previousConnection, block.nextConnection].map(value => value && [value.type, value.getCheck()]),
       inputs: block.inputList.map(input => ({ name: input.name, connection: input.connection && [input.connection.type, input.connection.getCheck()],
         fields: input.fieldRow.filter(field => field.name && field.SERIALIZABLE !== false).map(field => {
-          const contract = serializeRuntimeFieldContract(field, field.saveState());
+          const contract = serializeRuntimeFieldContract(field, field.saveState(), { preserveDropdownValue: !active(block) });
           return { name: field.name, ...contract,
             ...(contract.options ? { options: contract.options.map(option => option[1]) } : {}) };
         }) })),

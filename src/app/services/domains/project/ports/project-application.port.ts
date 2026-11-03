@@ -1,4 +1,7 @@
 import { InjectionToken } from '@angular/core';
+import type { BlocklySaveAsSnapshot, ProjectSaveOutcome } from '../project-save-outcome';
+import type { ProjectRecoveryFragment } from '../project-disk-recovery';
+import type { ProjectConflictChoice, ProjectConflictOffer, ProjectConflictResolution } from '../project-conflict';
 
 export interface ProjectFooterState {
   state: string;
@@ -6,9 +9,17 @@ export interface ProjectFooterState {
   timeout?: number;
 }
 
-export interface ProjectSaveDispatchResult {
+export interface ProjectSaveDispatchResult extends Partial<ProjectSaveOutcome> {
   success: boolean;
   error?: string;
+}
+
+/** A retained editor revision. Writing a copy must never acknowledge/save the source. */
+export interface ProjectCopySnapshot {
+  write(targetPath: string): Promise<void>;
+  assertCurrent(): Promise<void>;
+  complete?(): Promise<void>;
+  release(): void;
 }
 
 export interface BlocklyLibraryRuntimeRebuildInput {
@@ -30,7 +41,17 @@ export interface ProjectApplicationPort {
   closeTerminal(): void;
   closeConnectionGraphWindows(): Promise<boolean>;
   hasActiveProjectMutation(projectPath: string): boolean;
+  /** Only the selected Blockly runtime; does not inspect or stop other projects. */
+  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean;
+  hasRunningAi(): boolean;
+  prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
+  inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
+  resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;
+  captureBlocklySaveAsSnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
+  captureBlocklyRecoveryCopySnapshot(sourcePath: string): Promise<BlocklySaveAsSnapshot>;
+  /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
+  captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;

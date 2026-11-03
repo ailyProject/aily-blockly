@@ -1,3 +1,5 @@
+import { SubappOwnerRecovery } from './subapp-owner-recovery';
+
 export interface SubappAgentOwnerLease {
   ownerLeaseId: string;
   sessionId: string;
@@ -10,13 +12,27 @@ export class SubappAgentOwnerLeases {
   private readonly releasing = new Map<string, Promise<Record<string, unknown>>>();
   private readonly cancellations = new Map<string, Map<string, number>>();
   private timer: ReturnType<typeof setInterval> | undefined;
+  private readonly recovery: SubappOwnerRecovery;
   readonly ttlMs = 45_000;
   readonly heartbeatMs = 10_000;
 
   constructor(
     private readonly onRelease: (lease: SubappAgentOwnerLease) => Promise<Record<string, unknown>>,
     private readonly now: () => number = Date.now,
-  ) {}
+    pendingRequests: (ownerLeaseId: string) => number = () => 0,
+  ) {
+    this.recovery = new SubappOwnerRecovery({ active: id => this.leases.get(id),
+      release: (id, session) => this.release(id, session), acquire: session => this.acquire(session),
+      pending: pendingRequests, now });
+  }
+
+  inspect(ownerLeaseId: string, sessionId: string): Record<string, unknown> {
+    return this.recovery.inspect(ownerLeaseId, sessionId);
+  }
+
+  recover(ownerLeaseId: string, sessionId: string, requestId: string): Record<string, unknown> {
+    return this.recovery.recover(ownerLeaseId, sessionId, requestId);
+  }
 
   acquire(sessionId: string): SubappAgentOwnerLease {
     if (!sessionId || sessionId.length > 256) throw this.error('SUBAPP_SESSION_REQUIRED', 'A valid session id is required');
@@ -79,6 +95,7 @@ export class SubappAgentOwnerLeases {
     if (!this.leases.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
     const cleanup = Promise.resolve().then(() => this.onRelease(lease)).finally(() => this.releasing.delete(ownerLeaseId));
     this.releasing.set(ownerLeaseId, cleanup);
+    this.recovery.remember(lease, cleanup);
     return cleanup;
   }
 
@@ -96,6 +113,7 @@ export class SubappAgentOwnerLeases {
     this.timer = undefined;
     this.leases.clear();
     this.cancellations.clear();
+    this.recovery.clear();
   }
 
   private error(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }

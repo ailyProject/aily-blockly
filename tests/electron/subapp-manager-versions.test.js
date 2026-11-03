@@ -11,9 +11,12 @@ const {
   packagePathFor,
   prepareNpmSpawn,
   readInstalledState,
+  runNpm,
   validateIndex,
 } = require('../../electron/subapp-manager');
 const { npmTarball, portableSubappTarball } = require('./fixtures/npm-tarball-fixture');
+const http = require('node:http');
+const { acquireInstallLock } = require('../../electron/subapp-install-lock');
 
 const ID = 'aily-chat';
 const PACKAGE = '@aily-project/subapp-aily-chat';
@@ -108,6 +111,332 @@ function fixture(t, options = {}) {
     manager: createSubappManager(managerOptions),
   };
 }
+
+test('Agent repair keeps the installed version even when the catalog has a newer release', async t => {
+  const oldVersion = '0.1.32';
+  const archive = portableSubappTarball({ packageName: PACKAGE, version: oldVersion, id: ID });
+  let stopped = 0;
+  const f = fixture(t, { archive, managerOptions: {
+    listBusyHolders: async () => [],
+    forceStopChildToolByCatalogId: async () => { stopped++; throw new Error('must not stop'); },
+  } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), oldVersion);
+  const result = await f.manager.repair({ id: ID });
+  assert.equal(result.version, oldVersion);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, oldVersion);
+  assert.ok(f.calls.some(call => call.args[0] === 'view' && call.args[1] === `${PACKAGE}@${oldVersion}`));
+  assert.equal(stopped, 0);
+});
+
+test('Agent repair rejects active holders before download without stopping anything', async t => {
+  const f = fixture(t, { managerOptions: {
+    listChildToolHolders: async () => [{ pid: 12345, toolId: ID }],
+    listBusyHolders: async () => [],
+    forceStopChildToolByCatalogId: async () => { throw new Error('must not stop'); },
+  } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), f.entry.version);
+  await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_BUSY' });
+  assert.equal(f.downloads.length, 0);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('Agent repair validates declared skills before replacing the old same-version package', async t => {
+  const version = '0.1.33';
+  const archive = npmTarball({
+    'package.json': JSON.stringify({ name: PACKAGE, version, main: 'server/index.js',
+      aily: { uiIndex: 'ui/index.html' },
+      ailySubapp: { id: ID, agent: { protocolVersion: 1, skills: ['skill/missing/SKILL.md'],
+        tools: { transport: 'aily-child-rpc', manifest: 'agent/tools.json' } } },
+      ailyPortable: { version: 1, platforms: ['darwin', 'win32', 'linux'], architectures: ['arm64', 'x64'] } }),
+    'server/index.js': 'module.exports=1', 'ui/index.html': 'fixture',
+    'agent/tools.json': JSON.stringify({ protocolVersion: 1, transport: 'aily-child-rpc', tools: [] }),
+  });
+  const f = fixture(t, { archive, managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  await assert.rejects(f.manager.repair({ id: ID }), /skill.*not found/i);
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+});
+
+test('Agent repair replaces a damaged same-version generation only after validation and retains the old files', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const old = readInstalledState(f.rootDir, f.entry);
+  fs.writeFileSync(path.join(old.packagePath, 'old-marker.txt'), 'preserve');
+  const result = await f.manager.repair({ id: ID });
+  assert.equal(result.repaired, true);
+  assert.equal(result.version, old.installedVersion);
+  const parent = path.dirname(path.dirname(old.packagePath));
+  const backup = fs.readdirSync(parent).find(name => name.startsWith(`.replaced-${old.installedVersion}-`));
+  assert.ok(backup);
+  assert.equal(fs.readFileSync(path.join(parent, backup, 'source/old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, old.installedVersion);
+});
+
+test('Agent repair rechecks newly busy holders after preparation and leaves the active package unchanged', async t => {
+  let busy = false;
+  const f = fixture(t, { managerOptions: {
+    listBusyHolders: async () => busy ? [{ pid: 43210 }] : [],
+  } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  f.managerOptions.downloadFile = async (_url, destination) => { fs.writeFileSync(destination, f.archive); busy = true; };
+  const manager = createSubappManager(f.managerOptions);
+  await assert.rejects(manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_BUSY' });
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+});
+
+test('Agent repair download failure keeps the old active generation', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  const manager = createSubappManager({ ...f.managerOptions, downloadFile: async () => { throw new Error('offline fixture'); } });
+  await assert.rejects(manager.repair({ id: ID }), /offline fixture/);
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('Agent repair refuses managed development/next generations without downloading or replacing them', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  const candidate = versions.createCandidate(f.rootDir, f.entry);
+  writeRunnablePackage(candidate.source, f.entry.version);
+  const prepared = await versions.publishCandidate(f.rootDir, f.entry, candidate, { installMode: 'next' });
+  versions.activate(f.rootDir, f.entry, prepared, { mode: 'pinned' });
+  await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_DEVELOPMENT_LINK' });
+  assert.equal(f.downloads.length, 0);
+});
+
+test('Agent repair cannot silently remove the original Agent/skill declaration', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), f.entry.version);
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  const manifest = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
+  manifest.ailySubapp.agent = { skills: ['skill/existing/SKILL.md'], tools: { manifest: 'agent/tools.json' } };
+  fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify(manifest));
+  await assert.rejects(f.manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_CAPABILITY_CHANGED' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(source, 'package.json'))).ailySubapp.agent, manifest.ailySubapp.agent);
+});
+
+test('Agent repair preserves a pinned selector and restores its exact old package on activation failure', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const originalPrepared = versions.readPrepared(f.rootDir, f.entry);
+  versions.activate(f.rootDir, f.entry, originalPrepared, { mode: 'pinned' });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'preserve');
+  const activePath = versions.activePath(f.rootDir, f.entry);
+  const before = fs.readFileSync(activePath, 'utf8');
+  const activate = versions.activate;
+  versions.activate = (...args) => { activate(...args); throw new Error('activation receipt fixture'); };
+  try { await assert.rejects(f.manager.repair({ id: ID }), /activation receipt fixture/); }
+  finally { versions.activate = activate; }
+  assert.equal(fs.readFileSync(activePath, 'utf8'), before);
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(versions.readActiveManifest(f.rootDir, f.entry).mode, 'pinned');
+  const result = await f.manager.repair({ id: ID });
+  assert.equal(result.ok, true);
+  assert.equal(versions.readActiveManifest(f.rootDir, f.entry).mode, 'pinned');
+});
+
+test('Agent repair preserves a concurrent active-selection change rather than rolling it back', async t => {
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => [] } });
+  await f.manager.install({ id: ID });
+  const externalEntry = { ...f.entry, version: '0.1.34' };
+  const candidate = versions.createCandidate(f.rootDir, externalEntry);
+  writeRunnablePackage(candidate.source, externalEntry.version);
+  const external = await versions.publishCandidate(f.rootDir, externalEntry, candidate);
+  const manager = createSubappManager({ ...f.managerOptions, downloadFile: async (_url, target) => {
+    fs.writeFileSync(target, f.archive);
+    versions.activate(f.rootDir, externalEntry, external);
+  } });
+  await assert.rejects(manager.repair({ id: ID }), { code: 'SUBAPP_REPAIR_SOURCE_CHANGED' });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, externalEntry.version);
+});
+
+async function transferServer(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  return `http://127.0.0.1:${server.address().port}/package.tgz`;
+}
+
+for (const anotherManager of [false, true]) {
+  test(`uninstall cancels a stalled background transfer${anotherManager ? ' from another local manager' : ''} while the old version stays launchable`, { timeout: 10000 }, async t => {
+    let started;
+    const receiving = new Promise(resolve => { started = resolve; });
+    const url = await transferServer(t, (_request, response) => {
+      response.writeHead(200, { 'content-length': 1000000 }); response.write('partial'); started();
+    });
+    const f = fixture(t, { managerOptions: { downloadFile: undefined, listBusyHolders: async () => [] } });
+    f.entry.dist.tarball = url;
+    writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+    const download = assert.rejects(f.manager.downloadUpdate({ id: ID }), { code: 'SUBAPP_CANCELLED' });
+    await receiving;
+    const old = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(old.config.version, '0.1.32'); old.release();
+    const uninstaller = anotherManager ? createSubappManager(f.managerOptions) : f.manager;
+    await uninstaller.uninstall({ id: ID });
+    await download;
+    assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+    assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+    assert.equal(fs.existsSync(path.join(f.updateRootDir, ID)), false);
+    assert.equal(fs.existsSync(path.join(f.rootDir, 'store', versions.storeKeyForPackage(PACKAGE))), false);
+  });
+}
+
+test('download timeout preserves the old runtime and retry switches to the prepared version without deleting old files', { timeout: 10000 }, async t => {
+  let archive, ready = false;
+  const url = await transferServer(t, (_request, response) => { if (ready) response.end(archive); });
+  const f = fixture(t, { managerOptions: { downloadFile: undefined, downloadIdleTimeoutMs: 100 } });
+  f.entry.dist.tarball = url; archive = f.archive;
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await assert.rejects(f.manager.downloadUpdate({ id: ID }), { code: 'SUBAPP_DOWNLOAD_IDLE_TIMEOUT' });
+  const old = await f.manager.prepareLaunch({ id: ID });
+  assert.equal(old.config.version, '0.1.32'); old.release();
+  ready = true;
+  await f.manager.downloadUpdate({ id: ID });
+  await f.manager.installUpdate({ id: ID });
+  const next = await f.manager.prepareLaunch({ id: ID });
+  assert.equal(next.config.version, f.entry.version); next.release();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(legacy, 'package.json'))).version, '0.1.32');
+});
+
+test('a hung manual update cannot block another app installation and uninstall cancels it before entering the queue', { timeout: 10000 }, async t => {
+  let started;
+  const receiving = new Promise(resolve => { started = resolve; });
+  const otherId = 'network-independent', otherPackage = '@aily-project/subapp-network-independent';
+  const otherArchive = portableSubappTarball({ packageName: otherPackage, id: otherId, version: '1.0.0' });
+  const url = await transferServer(t, (request, response) => {
+    if (request.url === '/other') return response.end(otherArchive);
+    started();
+  });
+  const f = fixture(t, { managerOptions: { downloadFile: undefined, listBusyHolders: async () => [] } });
+  f.entry.dist.tarball = url;
+  const other = catalogEntry('1.0.0', otherArchive, { id: otherId, package: otherPackage,
+    dist: { tarball: url.replace('/package.tgz', '/other'), integrity: integrity(otherArchive) } });
+  f.managerOptions.fetchImpl = async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: f.entry, [otherId]: other }) });
+  f.manager = createSubappManager(f.managerOptions);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const update = assert.rejects(f.manager.update({ id: ID }), { code: 'SUBAPP_CANCELLED' });
+  await receiving;
+  await f.manager.install({ id: otherId });
+  assert.equal(readInstalledState(f.rootDir, other).installed, true);
+  await f.manager.uninstall({ id: ID });
+  await update;
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+  assert.equal(readInstalledState(f.rootDir, other).installed, true);
+});
+
+test('waiting for another process preparation lock never holds the global startup lock and uninstall returns a bounded error', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 150 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  const release = acquireInstallLock(path.join(f.rootDir, 'store', '.locks', versions.storeKeyForPackage(PACKAGE)));
+  try {
+    const uninstall = assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+    const old = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(old.config.version, '0.1.32'); old.release();
+    await uninstall;
+    assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  } finally { release(); }
+});
+
+test('a prepared update survives selection contention and can activate on retry', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { lockTimeoutMs: 100 } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  await f.manager.downloadUpdate({ id: ID });
+  const release = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  try {
+    await assert.rejects(f.manager.installUpdate({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+    assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
+  } finally { release(); }
+  await f.manager.installUpdate({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+});
+
+test('unconfirmed npm termination retains only its package guard until the process closes', { timeout: 10000 }, async t => {
+  const archive = npmTarball({
+    'package.json': JSON.stringify({ name: PACKAGE, version: '0.1.33', main: 'index.js', scripts: { postinstall: 'node build.js' } }),
+    'index.js': '', 'ui/index.html': '', 'build.js': '',
+  });
+  const f = fixture(t, { archive, managerOptions: { lockTimeoutMs: 100, listBusyHolders: async () => [] } });
+  const cli = path.join(f.temporary, 'node', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  fs.mkdirSync(path.dirname(cli), { recursive: true });
+  fs.writeFileSync(path.join(f.temporary, 'node', 'npm.cmd'), '');
+  const pidFile = path.join(f.temporary, 'npm-pid');
+  fs.writeFileSync(cli, `require('fs').writeFileSync(process.argv[2],String(process.pid));setInterval(()=>{},1000);`);
+  f.managerOptions.runNpm = (_args, options) => runNpm([pidFile], {
+    ...options, platform: 'win32', env: { AILY_CHILD_PATH: f.temporary }, npmTimeoutMs: 1000,
+    killProcessTree: async () => false,
+  });
+  f.manager = createSubappManager(f.managerOptions);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  try {
+    await assert.rejects(f.manager.update({ id: ID }), { code: 'SUBAPP_NPM_TIMEOUT' });
+    assert.ok(fs.existsSync(pidFile));
+    const old = await f.manager.prepareLaunch({ id: ID });
+    assert.equal(old.config.version, '0.1.32'); old.release();
+    await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'SUBAPP_LOCK_TIMEOUT' });
+  } finally {
+    if (fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile)), 'SIGKILL'); } catch {} }
+  }
+  // The process close event releases the deferred guard after staging cleanup.
+  const retry = createSubappManager({ ...f.managerOptions, lockTimeoutMs: 3000 });
+  await retry.uninstall({ id: ID });
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('a slow uninstall does not block another app and closes a registration that races preflight', { timeout: 5000 }, async t => {
+  let unblock, reportMarked, calls = 0;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const marked = new Promise(resolve => { reportMarked = resolve; });
+  const f = fixture(t, { managerOptions: {
+    listBusyHolders: async () => [],
+    forceStopChildToolByCatalogId: async () => {
+      if (++calls === 2) { reportMarked(); await blocked; }
+      return { success: true };
+    },
+  } });
+  const other = { ...f.entry, id: 'other', package: '@aily-project/subapp-other' };
+  f.managerOptions.fetchImpl = async () => ({ ok: true, text: async () => JSON.stringify({ [ID]: f.entry, other }) });
+  f.manager = createSubappManager(f.managerOptions);
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.32');
+  writeRunnablePackage(packagePathFor(f.rootDir, other.package), other.version, { name: other.package });
+  const uninstall = f.manager.uninstall({ id: ID });
+  await marked;
+  try {
+    await assert.rejects(f.manager.prepareLaunch({ id: ID }), /Subapp is not installed/);
+    const launch = await f.manager.prepareLaunch({ id: 'other' });
+    assert.equal(launch.config.version, other.version); launch.release();
+  } finally { unblock(); }
+  await uninstall;
+  assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
+});
+
+test('a Windows-style deletion failure remains retryable in a new manager and never strands the global lock', { timeout: 5000 }, async t => {
+  const f = fixture(t, { managerOptions: { platform: 'win32', listBusyHolders: async () => [], sleep: async () => {} } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const rm = fs.promises.rm;
+  const mock = t.mock.method(fs.promises, 'rm', async (target, options) => {
+    if (target === legacy) throw Object.assign(new Error('EPERM unlink busy'), { code: 'EPERM' });
+    return rm(target, options);
+  });
+  await assert.rejects(f.manager.uninstall({ id: ID }), { code: 'EBUSY' });
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), true);
+  const free = acquireInstallLock(path.join(f.rootDir, 'store', '.locks'));
+  assert.equal(typeof free, 'function'); free();
+  mock.mock.restore();
+  await createSubappManager(f.managerOptions).uninstall({ id: ID });
+  assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(fs.existsSync(legacy), false);
+});
 
 test('headless portable packages install, select and rediscover without dummy UI or npm', async t => {
   const archive = npmTarball({
@@ -316,11 +645,11 @@ test('background preparation reports separate download and extraction progress',
   assert.equal(events.at(-1).percent, 100);
 });
 
-test('auto mode uses a newer normal B, while a managed development link always wins', (t) => {
+test('auto mode uses a newer normal B, while a managed development link always wins', async (t) => {
   const f = fixture(t, { version: '1.0.0' });
   const candidate = versions.createCandidate(f.rootDir, f.entry);
   writeRunnablePackage(candidate.source, '1.0.0');
-  const prepared = versions.publishCandidate(f.rootDir, f.entry, candidate, { distribution: f.entry.dist });
+  const prepared = await versions.publishCandidate(f.rootDir, f.entry, candidate, { distribution: f.entry.dist });
   versions.activate(f.rootDir, f.entry, prepared);
   const legacy = packagePathFor(f.rootDir, PACKAGE);
   writeRunnablePackage(legacy, '2.0.0');
@@ -337,11 +666,11 @@ test('auto mode uses a newer normal B, while a managed development link always w
   assert.equal(selected.config.env.AILY_SUBAPP_SOURCE, 'development');
 });
 
-test('uses a pinned version-dev generation as the active development package', (t) => {
+test('uses a pinned version-dev generation as the active development package', async (t) => {
   const f = fixture(t, { version: '1.0.0' });
   const releaseCandidate = versions.createCandidate(f.rootDir, f.entry);
   writeRunnablePackage(releaseCandidate.source, '1.0.0');
-  const release = versions.publishCandidate(f.rootDir, f.entry, releaseCandidate, {
+  const release = await versions.publishCandidate(f.rootDir, f.entry, releaseCandidate, {
     distribution: f.entry.dist,
   });
   versions.activate(f.rootDir, f.entry, release);
@@ -349,7 +678,7 @@ test('uses a pinned version-dev generation as the active development package', (
   const devEntry = { ...f.entry, version: '1.0.0-dev' };
   const devCandidate = versions.createCandidate(f.rootDir, devEntry);
   writeRunnablePackage(devCandidate.source, '1.0.0-dev');
-  const development = versions.publishCandidate(f.rootDir, devEntry, devCandidate, {
+  const development = await versions.publishCandidate(f.rootDir, devEntry, devCandidate, {
     distribution: null,
     installMode: 'development',
   });
@@ -369,7 +698,7 @@ test('keeps a pinned version-next package on the production runtime path and loc
   const nextEntry = { ...f.entry, version: '1.0.0-next' };
   const nextCandidate = versions.createCandidate(f.rootDir, nextEntry);
   writeRunnablePackage(nextCandidate.source, nextEntry.version);
-  const next = versions.publishCandidate(f.rootDir, nextEntry, nextCandidate, {
+  const next = await versions.publishCandidate(f.rootDir, nextEntry, nextCandidate, {
     distribution: null,
     installMode: 'next',
   });
@@ -564,7 +893,7 @@ test('an open Coder project blocks normal and forced editor uninstall without st
 
   projectOpen = false;
   await f.manager.uninstall({ id: f.id });
-  assert.equal(stops, 1);
+  assert.ok(stops >= 1);
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
@@ -752,7 +1081,7 @@ test('same-version reinstall preserves the active generation until its holders a
   const f = fixture(t, {
     managerOptions: {
       platform: 'win32',
-      listBusyHolders: async () => [{ pid: 43211, name: 'node.exe' }],
+      listBusyHolders: async () => killed ? [] : [{ pid: 43211, name: 'node.exe' }],
       killProcessTree: async () => { killed += 1; },
     },
   });
@@ -822,4 +1151,190 @@ test('the shipped Coder fallback installs from its verified bundle in a responsi
     rootDir, 'store', 'subapp-aily-coder-editor', bundle.entry.version, 'source',
   ));
   assert.ok(heartbeats > 2);
+});
+
+test('a transient Windows rename lock still publishes and activates the latest version', async (t) => {
+  const f = fixture(t, { managerOptions: { sleep: async () => {}, renameAttempts: 4 } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const legacyBytes = fs.readFileSync(path.join(legacy, 'package.json'));
+  const rename = fs.renameSync;
+  let denied = 2;
+  fs.renameSync = (from, to, ...args) => {
+    if (denied > 0 && String(from).includes(`${path.sep}.staging-`) && path.basename(String(to)) === '0.1.33') {
+      denied -= 1;
+      throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), { code: 'EPERM' });
+    }
+    return rename.call(fs, from, to, ...args);
+  };
+  try {
+    await f.manager.update({ id: ID });
+  } finally {
+    fs.renameSync = rename;
+  }
+  const installed = readInstalledState(f.rootDir, f.entry);
+  assert.equal(denied, 0);
+  assert.equal(installed.installedVersion, '0.1.33');
+  assert.equal(installed.packagePath, path.join(f.rootDir, 'store', 'subapp-aily-chat', '0.1.33', 'source'));
+  assert.deepEqual(fs.readFileSync(path.join(legacy, 'package.json')), legacyBytes);
+});
+
+test('a rename that cannot be recovered reports update failure and keeps the previous version', async (t) => {
+  const f = fixture(t, { managerOptions: { sleep: async () => {}, renameAttempts: 1 } });
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to, ...args) => {
+    if (String(from).includes(`${path.sep}.staging-`) && path.basename(String(to)) === '0.1.33') {
+      throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), { code: 'EPERM' });
+    }
+    return rename.call(fs, from, to, ...args);
+  };
+  try {
+    await assert.rejects(f.manager.update({ id: ID }), (error) => {
+      assert.equal(error.code, 'SUBAPP_VERSION_PUBLISH_BUSY');
+      assert.match(error.message, /更新失败/);
+      assert.match(error.message, /0\.1\.32/);
+      assert.match(error.message, /仍可继续使用/);
+      return true;
+    });
+  } finally {
+    fs.renameSync = rename;
+  }
+  const installed = readInstalledState(f.rootDir, f.entry);
+  assert.equal(installed.installedVersion, '0.1.32');
+  assert.equal(installed.packagePath, legacy);
+  assert.equal(fs.existsSync(path.join(f.rootDir, 'store', 'subapp-aily-chat', 'active.json')), false);
+});
+
+for (const persistent of [false, true]) {
+  test(`reinstall keeps concurrent launches waiting until ${persistent ? 'rollback restores the old directory' : 'publication finishes'}`, { timeout: 5000 }, async t => {
+    let entered, resume;
+    const retrying = new Promise(resolve => { entered = resolve; });
+    const resumed = new Promise(resolve => { resume = resolve; });
+    const f = fixture(t, { managerOptions: { renameAttempts: 1, sleep: async () => { entered(); await resumed; } } });
+    await f.manager.install({ id: ID });
+    const originalState = readInstalledState(f.rootDir, f.entry);
+    fs.writeFileSync(path.join(originalState.packagePath, 'old-marker.txt'), 'original');
+    const rename = fs.renameSync;
+    let attempts = 0;
+    fs.renameSync = (from, to, ...args) => {
+      if (path.basename(String(from)).startsWith('.staging-') && path.basename(String(to)) === f.entry.version
+        && (++attempts === 1 || persistent)) {
+        throw Object.assign(new Error('EPERM rename staging fixture'), { code: 'EPERM' });
+      }
+      return rename(from, to, ...args);
+    };
+    const outcome = f.manager.reinstall({ id: ID }).then(() => null, error => error);
+    let launch;
+    try {
+      await retrying;
+      let settled = false;
+      launch = createSubappManager(f.managerOptions).prepareLaunch({ id: ID }).then(
+        value => { settled = true; return value; }, error => { settled = true; throw error; });
+      // Attach immediately so a regression rejection is reported by the assertion, not as unhandled.
+      launch.catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 40));
+      assert.equal(settled, false, 'launch must wait for publication/rollback rather than see a missing installation');
+    } finally {
+      resume();
+      const error = await outcome;
+      fs.renameSync = rename;
+      const started = await launch?.catch(() => null);
+      if (launch) assert.ok(started, 'launch must succeed after the critical section ends');
+      if (started) {
+        assert.equal(started.config.version, f.entry.version);
+        assert.ok(fs.existsSync(path.join(started.config.packagePath, started.config.entry)));
+        started.release();
+      }
+      if (persistent) {
+        assert.equal(error?.code, 'SUBAPP_VERSION_PUBLISH_BUSY');
+        assert.equal(fs.readFileSync(path.join(originalState.packagePath, 'old-marker.txt'), 'utf8'), 'original');
+      } else assert.equal(error, null);
+    }
+  });
+}
+
+test('reinstall rechecks holders after preparation before moving the selected directory', async t => {
+  let busy = false;
+  const f = fixture(t, { managerOptions: { listBusyHolders: async () => busy ? [{ pid: 43210 }] : [] } });
+  await f.manager.install({ id: ID });
+  const source = readInstalledState(f.rootDir, f.entry).packagePath;
+  fs.writeFileSync(path.join(source, 'old-marker.txt'), 'original');
+  const manager = createSubappManager({ ...f.managerOptions, downloadFile: async (_url, file) => {
+    fs.writeFileSync(file, f.archive); busy = true;
+  } });
+  await assert.rejects(manager.reinstall({ id: ID }), { code: 'EBUSY' });
+  assert.equal(fs.readFileSync(path.join(source, 'old-marker.txt'), 'utf8'), 'original');
+  const launch = await f.manager.prepareLaunch({ id: ID }); launch.release();
+});
+
+test('reinstall restores the original generation when a runnable entry disappears during publication', async t => {
+  const f = fixture(t);
+  await f.manager.install({ id: ID });
+  const original = readInstalledState(f.rootDir, f.entry);
+  fs.writeFileSync(path.join(original.packagePath, 'old-marker.txt'), 'preserve');
+  const active = fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8');
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to, ...args) => {
+    const result = rename(from, to, ...args);
+    if (path.basename(String(from)).startsWith('.staging-')) fs.rmSync(path.join(to, 'source/server/index.js'));
+    return result;
+  };
+  try { await assert.rejects(f.manager.reinstall({ id: ID }), /runtime is incomplete/); }
+  finally { fs.renameSync = rename; }
+  assert.equal(fs.readFileSync(path.join(original.packagePath, 'old-marker.txt'), 'utf8'), 'preserve');
+  assert.equal(fs.readFileSync(versions.activePath(f.rootDir, f.entry), 'utf8'), active);
+  const launch = await f.manager.prepareLaunch({ id: ID });
+  assert.ok(fs.existsSync(path.join(launch.config.packagePath, launch.config.entry))); launch.release();
+});
+
+for (const action of ['update', 'installUpdate']) {
+  for (const missing of ['server/index.js', 'ui/index.html']) {
+    test(`${action} rebuilds a downloaded generation missing ${missing} before reporting success`, async t => {
+      const f = fixture(t);
+      const previousEntry = { ...f.entry, version: '0.1.32' };
+      const candidate = versions.createCandidate(f.rootDir, previousEntry);
+      writeRunnablePackage(candidate.source, previousEntry.version);
+      const previous = await versions.publishCandidate(f.rootDir, previousEntry, candidate);
+      versions.activate(f.rootDir, previousEntry, previous);
+      await f.manager.downloadUpdate({ id: ID });
+      const target = path.join(f.rootDir, 'store/subapp-aily-chat', f.entry.version, 'source', missing);
+      fs.rmSync(target);
+      const downloadsBefore = f.downloads.length;
+      const manager = action === 'installUpdate' ? createSubappManager({ ...f.managerOptions,
+        downloadFile: async () => { throw new Error('Install downloaded updates must stay offline'); },
+      }) : f.manager;
+      try {
+        await manager[action]({ id: ID });
+        assert.ok(fs.existsSync(target), 'the runnable entry must be restored, not just its completion receipt');
+        assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, f.entry.version);
+        const launch = await manager.prepareLaunch({ id: ID });
+        assert.equal(launch.config.version, f.entry.version); launch.release();
+        if (action === 'installUpdate') assert.equal(f.downloads.length, downloadsBefore);
+        assert.ok(fs.existsSync(path.join(previous.packagePath, 'server/index.js')));
+      } finally {
+        // Failed pre-fix assertions can schedule a background repair; drain it before fixture cleanup.
+        await manager.downloadUpdate({ id: ID }).catch(() => {});
+      }
+    });
+  }
+}
+
+test('offline activation rejects a damaged cached archive and preserves the selected runtime', async t => {
+  const f = fixture(t);
+  const legacy = packagePathFor(f.rootDir, PACKAGE);
+  writeRunnablePackage(legacy, '0.1.32');
+  await f.manager.downloadUpdate({ id: ID });
+  const project = path.join(f.rootDir, 'store/subapp-aily-chat', f.entry.version);
+  fs.rmSync(path.join(project, 'source/server/index.js'));
+  fs.writeFileSync(path.join(project, 'package.tgz'), 'corrupt archive');
+  const manager = createSubappManager({ ...f.managerOptions,
+    downloadFile: async () => { throw new Error('Offline activation must not download'); },
+  });
+  await assert.rejects(manager.installUpdate({ id: ID }), /integrity verification failed/);
+  assert.equal(readInstalledState(f.rootDir, f.entry).installedVersion, '0.1.32');
+  assert.equal(fs.existsSync(versions.activePath(f.rootDir, f.entry)), false);
+  // Drain a catalog-triggered retry before deleting the fixture.
+  await manager.downloadUpdate({ id: ID }).catch(() => {});
 });

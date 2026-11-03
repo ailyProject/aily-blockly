@@ -15,3 +15,7 @@
 - 移动脚本时同步 npm 命令、CI、文档、模块解析、preload 和子进程路径；共享构建入口 `scripts/run-angular.cjs` 保留原位。
 - 根 `package.json` 的 scripts 只保留主软件运行、构建、资源准备和发布相关命令。单元/集成/架构检查由 `tests/package.json` 管理，端到端与性能验收由 `e2e/package.json` 管理；在根目录使用 `npm --prefix tests run <命令>` 或 `npm --prefix e2e run <命令>`。依赖仍在根目录统一安装。
 - 测试报告、截图、trace、覆盖率及测试编译输出放在所属 `tests/` 或 `e2e/` 内并加入 Git 忽略规则；不同套件使用独立输出目录，避免相互清空结果。调整输出路径时同步 CI 附件收集与执行文档。
+
+# 打包路径与启动审查
+
+- 新增或修改 Electron 跨目录运行时依赖（模块导入、依赖资源读取、子进程入口）时，须依据 `files`、`extraResources`、`asarUnpack` 核对开发态与打包态的实际位置及原生依赖分发，复用已有路径解析（主进程访问 `child/scripts` 使用 `electron/child-script-path.js`），不得把源码目录布局当作安装包布局，也不得在顶层导入时依赖稍后初始化的环境变量。审查须覆盖同类引用及代码指纹读取；涉及 ASAR 边界或打包资源重定位的变更，须隔离验收用户目录，清除验收进程继承的 `AILY_CHILD_PATH`、`NODE_PATH`、`ELECTRON_RUN_AS_NODE`，验证真实 ASAR 与外置资源布局及最终产物冷启动，源码启动、单测或构建成功不能替代该验证。

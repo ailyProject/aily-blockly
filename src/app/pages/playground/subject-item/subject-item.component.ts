@@ -105,7 +105,7 @@ export class SubjectItemComponent {
       const targetPath = `${this.projectService.projectRootPath}${separator}${targetPathName}`;
       console.log('目标路径: ', targetPath);
       this.projectService.importProjectDirectory(examplePath, targetPath);
-      await this.projectService.initializeProjectDataSchema(targetPath);
+      await this.projectService.initializeProjectDataSchema(targetPath, undefined, undefined, { deferToLoad: true });
       this.uiService.updateFooterState({ state: 'done', text: this.translate.instant('PLAYGROUND.EXAMPLE_LOAD_SUCCESS') });
       await this.projectService.projectOpen(targetPath);
     } catch (error) {

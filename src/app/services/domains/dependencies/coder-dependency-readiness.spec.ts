@@ -10,7 +10,8 @@ describe('Coder dependency installation and recovery', () => {
   let original: Record<string, any>;
 
   beforeEach(() => {
-    original = { path: window['path'], fs: window['fs'], npm: window['npm'], ipcRenderer: window['ipcRenderer'] };
+    original = { path: window['path'], fs: window['fs'], npm: window['npm'], ipcRenderer: window['ipcRenderer'], env: window['env'] };
+    window['env'] = { get: jasmine.createSpy('envGet').and.resolveTo(undefined) };
     window['path'] = { join: (...parts: string[]) => parts.join('/'), getAppDataPath: () => '/app', isExists: () => true,
       basename: (path: string) => path.split('/').pop() };
     window['fs'] = { readFileSync: () => JSON.stringify({ version: '1.0.0' }) };
@@ -30,7 +31,7 @@ describe('Coder dependency installation and recovery', () => {
     npm = Object.create(NpmService.prototype);
     npm.prjService = project;
     npm.translate = project.translate;
-    project.configService = { isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(true) };
+    project.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', isCoderProduct: jasmine.createSpy('isCoderProduct').and.returnValue(true) };
     npm.configService = { ...project.configService, withProjectNpmRegistry: (cmd: string) => cmd, getNpmRegistryForProject: () => '' };
     npm.application = {
       updateNotice: jasmine.createSpy('notice'),
@@ -45,6 +46,16 @@ describe('Coder dependency installation and recovery', () => {
   });
 
   afterEach(() => Object.assign(window, original));
+
+  it('repairs an error dependency session completely before a local retry can compile', async () => {
+    project.setProjectDependencyResult(session, false);
+    expect(project.getProjectDependencyStatus('/project')).toBe('error');
+    await npm.prepareLocalCompileBackend('/project', () => false, () => {});
+    expect(npm.installBoardDeps).toHaveBeenCalledTimes(1);
+    expect(npm.application.materializeCoderProjectLibraries).toHaveBeenCalledTimes(1);
+    expect(project.getProjectDependencyStatus('/project')).toBe('ready');
+    expect(project.getProjectDependencyBlockMessage('/project')).toBeUndefined();
+  });
 
   it('keeps every build entry blocked through platform install, source preparation and refresh', fakeAsync(() => {
     let platformDone!: () => void;

@@ -63,7 +63,7 @@ test('bounded manifest lookup rejects empty and oversized files', t => {
     }
 });
 
-test('default discovery honors pinned version-store selection over legacy npm', t => {
+test('default discovery honors pinned version-store selection over legacy npm', async t => {
     const f = fixture(t); f.install();
     const entry = { id: 'aily-simulator', package: '@aily-project/aily-simulator', version: '0.1.0-dev' };
     const candidate = versions.createCandidate(f.options.subappRoot, entry);
@@ -71,7 +71,7 @@ test('default discovery honors pinned version-store selection over legacy npm', 
     put('package.json', JSON.stringify({ name: entry.package, version: entry.version, main: 'index.js', ailySubapp: { runtime: { headless: true } } }));
     put('index.js', 'throw new Error("Lookup must never execute Runtime package code");');
     put('aily-simulator-runtime.json', '{}');
-    const prepared = versions.publishCandidate(f.options.subappRoot, entry, candidate, { distribution: null, installMode: 'development' });
+    const prepared = await versions.publishCandidate(f.options.subappRoot, entry, candidate, { distribution: null, installMode: 'development' });
     versions.activate(f.options.subappRoot, entry, prepared, { mode: 'pinned' });
     const result = resolveDebuggerRuntime(f.options);
     assert.ok(result.manifestPath.includes(path.join('store', 'aily-simulator', '0.1.0-dev')));

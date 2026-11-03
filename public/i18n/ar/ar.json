@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "لوحة نشاط التطبيقات الفرعية",
+    "TITLE": "التطبيقات الفرعية",
+    "OPEN_FULL": "فتح التطبيق الفرعي الكامل",
+    "OPEN_EMBEDDED": "فتح مضمّنًا في التطبيق الرئيسي",
+    "OPEN_WINDOW": "فتح في نافذة مستقلة",
+    "COLLAPSE": "طي",
+    "CALL_COUNT": "عدد الاستدعاءات: {{count}}",
+    "RUNTIME_READY": "بيئة التشغيل جاهزة",
+    "RUNTIME_STARTING": "جارٍ بدء بيئة التشغيل",
+    "RUNTIME_ERROR": "خطأ في بيئة التشغيل",
+    "RUNTIME_STOPPED": "بيئة التشغيل متوقفة",
+    "RUNTIME_UNKNOWN": "حالة بيئة التشغيل غير معروفة",
+    "INVOCATION_RUNNING": "الوكيل قيد التشغيل",
+    "INVOCATION_SUCCEEDED": "نجح الاستدعاء الأخير",
+    "INVOCATION_FAILED": "فشل الاستدعاء الأخير",
+    "INVOCATION_CANCELLED": "أُلغي الاستدعاء الأخير",
+    "INVOCATION_IDLE": "لا يوجد استدعاء نشط",
+    "WAITING_RUNTIME": "في انتظار بيئة التشغيل",
+    "LOADING_SURFACE": "جارٍ تحميل العرض المصغّر",
+    "RUNTIME_NOT_RETAINED": "لا تبدأ اللوحة بيئة تشغيل التطبيق الفرعي ولا تُبقيها قيد التشغيل.",
+    "SURFACE_ERROR": "العرض المصغّر غير متاح",
+    "SURFACE_TITLE": "عرض {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "تعذر نشر المشروع",
         "WORKSPACE_PROJECT_NOT_FOUND": "المشروع غير موجود",
@@ -156,6 +180,7 @@
         "SPONSORS_DESC": "هذا المشروع مدعوم من قبل الشركات/الأفراد التاليين",
         "NEWS": "أخبار",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "صِف ما تحتاج إليه بلغة طبيعية. يمكن لمساعد الذكاء الاصطناعي المساعدة في إنشاء المشاريع والإجابة عن الأسئلة.",
             "STEP1_TITLE": "إنشاء مشروع جديد",
             "STEP1_DESC": "انقر هنا لإنشاء مشروع برمجة جديد. اختر لوحتك ولغة البرمجة لبدء رحلتك الإبداعية.",
             "STEP2_TITLE": "فتح مشروع موجود",
@@ -182,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "تحديد كل الكتل",
         "EXPLAIN_BLOCK": "شرح بالذكاء الاصطناعي",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "يمكن لمساعد الذكاء الاصطناعي المساعدة في فهم المشروع وإنشاء التعليمات البرمجية وشرح البرامج وإصلاح الأخطاء.",
             "TOOLBOX_TITLE": "صندوق أدوات الكتل",
             "TOOLBOX_DESC": "هنا تجد تصنيفات الكتل. انقر على التصنيفات المختلفة للعثور على كتل الوظائف واسحبها إلى مساحة العمل على اليمين لاستخدامها.",
             "WORKSPACE_TITLE": "مساحة العمل",
@@ -341,6 +367,14 @@
             "CACHE": "إدارة ذاكرة التخزين المؤقتة"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "التجميع السحابي",
+            "CLOUD_COMPILATION_DESC": "التجميع في السحابة، والرفع إلى اللوحة على هذا الكمبيوتر. يتم فحص الخدمة عند التفعيل.",
+            "CLOUD_PRO_REQUIRED": "سجّل الدخول بحساب Pro للاستخدام",
+            "CLOUD_ENABLE_CHECKING": "جارٍ فحص خدمة التجميع السحابي…",
+            "CLOUD_ENABLE_SUCCESS": "تم تفعيل التجميع السحابي.",
+            "CLOUD_ENABLE_FAILED": "تعذر التفعيل. تحقق من الخدمة وحاول مجددًا.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "تعذر التفعيل. أغلق التطبيق بالكامل ثم أعد تشغيله وحاول مجددًا.",
+            "CLOUD_DISABLE_FAILED": "تعذر إيقاف التجميع السحابي. حاول مجددًا.",
             "PROJECT_FOLDER": "مجلد المشروع",
             "LANGUAGE": "اللغة",
             "DEVELOPMENT_MODE_PREFERENCE": "وضع التطوير الافتراضي",
@@ -350,6 +384,7 @@
             "UI_THEME": "مظهر واجهة المستخدم",
             "BLOCKLY_THEME": "مظهر Blockly",
             "BLOCKLY_MINIMAP": "خريطة Blockly المصغرة",
+            "BLOCKLY_SOUNDS": "أصوات التفاعل",
             "FLYOUT_AUTO_CLOSE": "إغلاق صندوق الأدوات تلقائيًا",
             "COMPILATION_OPTIONS": "خيارات التجميع",
             "REGION": "منطقة الخدمة",
@@ -872,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "تسجيل الخروج",
         "CANCEL": "إلغاء",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "متجر التطبيقات",
+            "APP_STORE_DESC": "تصفح أدوات الذكاء الاصطناعي وثبّتها لتوسيع قدرات المساعد. يمكنك أيضًا إضافة تطبيقات أخرى وإدارة اختصارات شريط الأدوات.",
+            "AI_TOOLS_TITLE": "مساعد الذكاء الاصطناعي",
             "SKIP": "تخطي",
             "PREV": "السابق",
             "NEXT": "التالي",
@@ -1041,6 +1079,7 @@
         "NO_TUTORIAL_PROVIDED": "لم يقدم مؤلف المكتبة أي دليل تعليمي"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "هناك مهمة ذكاء اصطناعي قيد التشغيل. يُرجى انتظار اكتمالها قبل حفظ المشروع باسم جديد.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1049,6 +1088,11 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "مكوّن التجميع السحابي غير محدّث. أغلق التطبيق بالكامل وأعد تشغيله، ثم حاول مجددًا؛ تحديث الصفحة وحده لا يكفي.",
+        "CLOUD_TARGET_UNAVAILABLE": "لم يُسجل هذا الإصدار أو المحتوى للوحة كهدف سحابي متاح.",
+        "CLOUD_BOARD_NOT_ENABLED": "لم يتم تفعيل الترجمة البرمجية السحابية لهذا الإصدار من اللوحة.",
+        "CLOUD_BOARD_UNSUPPORTED": "لا يدعم هذا الإصدار من اللوحة الترجمة البرمجية السحابية.",
+        "CLOUD_BOARD_OFFLINE": "المترجم البرمجي السحابي لهذه اللوحة غير متصل. يرجى المحاولة لاحقًا.",
       "MODE_UNKNOWN": "نوع المشروع غير معروف. اختر مشروع Aily Blockly أو Aily Coder صالحًا.",
       "MODE_CREATE_RESTRICTED": "لا يمكن لوضع {{application}} الحالي إنشاء هذا النوع من المشاريع. استخدم {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "وضع المشروع غير متوافق",
@@ -1259,5 +1303,29 @@
         "ERR_PATH_EXISTS": "مجلد بنفس الاسم موجود بالفعل",
         "ERR_PATH_INVALID": "مسار الحفظ يحتوي على أحرف غير صالحة",
         "ERR_CREATE_FAILED": "فشل إنشاء المشروع. يرجى المحاولة مرة أخرى."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "التبديل إلى الترجمة المحلية",
+        "SWITCH_TO_CLOUD": "العودة إلى التجميع السحابي",
+        "SWITCHING_TO_CLOUD": "جارٍ إيقاف التجميع المحلي للعودة إلى السحابة…",
+        "SWITCHING_TO_LOCAL": "جارٍ إلغاء الترجمة السحابية للمتابعة محليًا…",
+        "PREPARING_LOCAL": "جارٍ إعداد الترجمة المحلية…",
+        "REUSED_RESULT": "تمت إعادة استخدام نتيجة البناء السحابي المتحقق منها (الوقت: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "اكتمل البناء السحابي (الوقت: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "جارٍ تجهيز ملفات البناء السحابي",
+            "UPLOADING": "جارٍ رفع ملفات البناء السحابي",
+            "QUEUED": "في انتظار دور البناء السحابي",
+            "DISPATCHING": "جارٍ تعيين خادم البناء السحابي",
+            "PREPARING": "جارٍ تجهيز بيئة البناء السحابي",
+            "RESOURCES": "جارٍ تجهيز موارد البناء السحابي",
+            "ANALYZING": "جارٍ تحليل المشروع",
+            "COMPILING": "جارٍ الترجمة البرمجية في السحابة",
+            "FINALIZING": "جارٍ فحص نتائج البناء السحابي",
+            "DOWNLOADING": "جارٍ تنزيل نتائج البناء السحابي",
+            "VERIFYING": "جارٍ التحقق من سلامة نتائج البناء السحابي",
+            "RECONNECTING": "جارٍ إعادة الاتصال بالبوابة",
+            "COMPLETE": "اكتمل البناء السحابي"
+        }
     }
 }

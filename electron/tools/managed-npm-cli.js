@@ -6,6 +6,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const semver = require('semver');
 
 const { isWin32 } = require('../platform');
+const { markToolRefreshedForAppVersion, shouldRefreshToolForAppVersion } = require('./aily-tools-install-state');
 
 // npm mutates shared files below a global prefix. Keep every managed tool using
 // the same prefix on one queue, including mutations requested through separate
@@ -13,7 +14,7 @@ const { isWin32 } = require('../platform');
 const prefixMutationTails = new Map();
 
 function getManagedNpmPrefix() {
-  return process.env.AILY_NPM_PREFIX
+  return process.env.AILY_REPAIR_READONLY_NPM_PREFIX || process.env.AILY_NPM_PREFIX
     || (process.env.AILY_APPDATA_PATH
       ? path.join(process.env.AILY_APPDATA_PATH, 'npm-global')
       : '');
@@ -266,6 +267,7 @@ function installManagedPackage({
   onLog,
   logMessages,
 }) {
+  if (process.env.AILY_REPAIR_READONLY_NPM_PREFIX) return Promise.reject(new Error('Independent repair environments reuse existing managed tools read-only; tool installation or refresh is not permitted.'));
   const args = [
     'install',
     '--global',
@@ -409,7 +411,10 @@ function createManagedToolLifecycle(config, hooks = {}) {
   let activeMutationCount = 0;
   let checkPromise = null;
   const mutationFlights = new Map();
+  const readinessFlights = new Map();
   let prerequisiteBarrier = Promise.resolve();
+  let readinessPolicy = null;
+  let readinessGeneration = 0;
 
   function getChildPath() {
     return childPath
@@ -425,7 +430,33 @@ function createManagedToolLifecycle(config, hooks = {}) {
       toolKey: config.toolKey,
       packageName: config.packageName,
       options,
+      // 配置可能在安装排队时变化，保留请求发起时的版本，不能把旧安装记作新版本已完成。
+      readinessPolicy,
+      readinessGeneration,
     };
+  }
+
+  function configure(nextChildPath, options = {}) {
+    const previousChildPath = getChildPath();
+    childPath = nextChildPath || childPath;
+    const nextPolicy = {
+      configPath: options.configPath ? path.resolve(options.configPath) : '',
+      appVersion: String(options.appVersion || '').trim(),
+      refreshEnabled: options.refreshEnabled !== false,
+      installIfMissing: options.installIfMissing !== false,
+    };
+    nextPolicy.key = JSON.stringify(nextPolicy);
+    if (readinessPolicy?.key !== nextPolicy.key || previousChildPath !== getChildPath()) {
+      readinessPolicy = nextPolicy;
+      // A→B→A 也是新的配置轮次，不能复用仍在等待的旧 A 请求，避免 Promise 等待自身。
+      readinessGeneration++;
+    }
+  }
+
+  function isCurrentReadinessContext(context) {
+    return context.readinessGeneration === readinessGeneration
+      && normalizePrefixKey(context.prefix) === normalizePrefixKey(getPrefix())
+      && context.childPath === getChildPath();
   }
 
   function getEmptyState() {
@@ -507,27 +538,44 @@ function createManagedToolLifecycle(config, hooks = {}) {
       if (!context.childPath && config.requireChildPath !== false) {
         throw new Error(config.missingChildPathError || 'AILY_CHILD_PATH is not configured');
       }
-      const installPackage = hooks.installPackage || installManagedPackage;
-      await installPackage({
-        packageSpec: typeof config.packageSpec === 'function'
-          ? config.packageSpec(options)
-          : `${config.packageName}@${options.targetVersion || 'latest'}`,
-        childPath: context.childPath,
-        prefix: context.prefix,
-        force: options.force === true,
-        onLog: hooks.onNpmLog,
-        logMessages: config.npmLogMessages,
-      }, context);
-      await hooks.afterInstall?.(context);
-      readyResult = probe(context);
-      installResult = readyResult.ok
-        ? { ...readyResult, installed: true, error: '' }
-        : {
-          ...readyResult,
-          installed: false,
-          error: readyResult.error || config.installIncompleteError
-            || `${config.packageName} installation is incomplete`,
-        };
+      let targetVersion = options.targetVersion || 'latest';
+      if (config.preserveNewerThanLatest === true && targetVersion === 'latest') {
+        const currentState = probe(context);
+        const currentVersion = semver.clean(String(currentState.version || '').trim());
+        if (currentState.ok && currentVersion) {
+          targetVersion = await (hooks.getLatestVersion || getLatestManagedPackageVersion)({
+            packageName: config.packageName, childPath: context.childPath, prefix: context.prefix,
+            onLog: hooks.onNpmLog, logMessages: config.npmLogMessages,
+          }, context);
+          if (semver.gt(currentVersion, targetVersion)) {
+            readyResult = currentState;
+            installResult = { ...currentState, installed: false, skipped: true, preservedNewer: true };
+          }
+        }
+      }
+      if (!installResult) {
+        const installPackage = hooks.installPackage || installManagedPackage;
+        await installPackage({
+          packageSpec: typeof config.packageSpec === 'function'
+            ? config.packageSpec(options)
+            : `${config.packageName}@${targetVersion}`,
+          childPath: context.childPath,
+          prefix: context.prefix,
+          force: options.force === true,
+          onLog: hooks.onNpmLog,
+          logMessages: config.npmLogMessages,
+        }, context);
+        await hooks.afterInstall?.(context);
+        readyResult = probe(context);
+        installResult = readyResult.ok
+          ? { ...readyResult, installed: true, error: '' }
+          : {
+            ...readyResult,
+            installed: false,
+            error: readyResult.error || config.installIncompleteError
+              || `${config.packageName} installation is incomplete`,
+          };
+      }
     } catch (error) {
       installResult = failureState(error);
       readyResult = probe(context);
@@ -541,13 +589,24 @@ function createManagedToolLifecycle(config, hooks = {}) {
         error: installResult.error || readyResult.error,
       };
     rememberReadyResult(effectiveReadyResult);
+    if (installResult.ok && (installResult.installed || installResult.preservedNewer === true) && readyResult.ok
+      && context.readinessPolicy?.configPath && context.readinessPolicy.appVersion
+      && isCurrentReadinessContext(context)) {
+      try {
+        markToolRefreshedForAppVersion(context.readinessPolicy.configPath, config.toolKey, context.readinessPolicy.appVersion);
+      } catch (error) {
+        // 工具已经可用；配置写入失败不应阻断编译，未写入的刷新标记允许下次重试。
+        console.warn(`${config.toolKey} refresh marker could not be saved:`, error);
+      }
+    }
     const mutationResult = { installResult, readyResult: startupResult };
     await hooks.afterMutation?.(mutationResult, context);
     return mutationResult;
   }
 
-  function performInstallMutation(options = {}) {
-    const context = getContext(options);
+  function performInstallMutation(options = {}, capturedContext) {
+    if (process.env.AILY_REPAIR_READONLY_NPM_PREFIX) throw new Error('Independent repair environments cannot mutate shared managed tools.');
+    const context = capturedContext || getContext(options);
     if (typeof hooks.preflightMutation === 'function') {
       try {
         hooks.preflightMutation(context);
@@ -648,7 +707,7 @@ function createManagedToolLifecycle(config, hooks = {}) {
       : true;
   }
 
-  async function waitForReady() {
+  async function waitForOperations() {
     let initializedResult = startupResult;
     if (startupPromise) initializedResult = await startupPromise;
     while (mutationTail) {
@@ -664,7 +723,11 @@ function createManagedToolLifecycle(config, hooks = {}) {
       if (mutationTail === pendingMutation) break;
     }
 
-    const lastKnownResult = startupResult || initializedResult;
+    return startupResult || initializedResult;
+  }
+
+  async function waitForReady() {
+    const lastKnownResult = await waitForOperations();
     if (lastKnownResult && canReuseReadyState(lastKnownResult)) {
       return lastKnownResult;
     }
@@ -680,8 +743,51 @@ function createManagedToolLifecycle(config, hooks = {}) {
     });
   }
 
+  function ensureReady(options = {}) {
+    const context = getContext(options);
+    const key = JSON.stringify([
+      normalizePrefixKey(context.prefix), context.childPath, context.readinessPolicy?.key || '',
+      context.readinessGeneration,
+      options.installIfMissing ?? context.readinessPolicy?.installIfMissing ?? true,
+    ]);
+    if (readinessFlights.has(key)) return readinessFlights.get(key);
+    let trackedReadiness;
+    trackedReadiness = (async () => {
+      await waitForOperations();
+      await prerequisiteBarrier;
+      // 等待期间若切换了运行目录或应用版本，改用当前配置，避免写错版本完成标记。
+      if (!isCurrentReadinessContext(context)) return ensureReady(options);
+      await hooks.prepareEnvironment?.(context);
+      if (!isCurrentReadinessContext(context)) return ensureReady(options);
+      const currentState = probe(context);
+      const policy = context.readinessPolicy;
+      const refresh = policy && shouldRefreshToolForAppVersion(policy.configPath, config.toolKey, policy.appVersion, policy);
+      const installIfMissing = options.installIfMissing ?? policy?.installIfMissing ?? true;
+      if (!refresh && (currentState.ok || !installIfMissing)) return rememberReadyResult(currentState);
+
+      // 探测包含平台正确的包目录、CLI 入口和 --version；不以 package.json 存在代替可用性。
+      const installOptions = {
+        targetVersion: 'latest', force: true, reason: 'ensure-ready',
+      };
+      const { installResult, readyResult } = await performInstallMutation(installOptions, { ...context, options: installOptions });
+      return rememberReadyResult({
+        ...readyResult,
+        startupInstallAttempted: true,
+        startupInstallSucceeded: !!installResult.ok && !!installResult.installed && !!readyResult.ok,
+        startupInstallError: installResult.ok ? '' : (installResult.error || readyResult.error),
+      });
+    })().catch(error => rememberReadyResult(failureState(error))).finally(() => {
+      if (readinessFlights.get(key) === trackedReadiness) readinessFlights.delete(key);
+    });
+    // 只合并正在进行的请求，失败不会永久锁存在 startupPromise，下一次实际请求可重新安装。
+    readinessFlights.set(key, trackedReadiness);
+    return trackedReadiness;
+  }
+
   function getEffectiveStatusState() {
-    const state = startupResult || getEmptyState();
+    // 云模式首次读取时探测真实 CLI；后续轮询复用状态与廉价文件检查，避免反复同步启动进程。
+    const state = readinessPolicy && !startupResult && !startupPending && pendingMutationCount === 0 && readinessFlights.size === 0
+      ? rememberReadyResult(probe()) : (startupResult || getEmptyState());
     if (!state.ok || isStatusStateValid(state)) return state;
     return normalizeState({
       ...state,
@@ -699,7 +805,7 @@ function createManagedToolLifecycle(config, hooks = {}) {
       packageName: config.packageName,
       installed: !!state.ok,
       installedVersion: state.version,
-      installing: pendingMutationCount > 0 || startupPending,
+      installing: pendingMutationCount > 0 || startupPending || readinessFlights.size > 0,
       installingKey: activeMutationCount > 0 ? config.toolKey : null,
       configLoaded: true,
       error: state.ok ? '' : state.error,
@@ -764,6 +870,8 @@ function createManagedToolLifecycle(config, hooks = {}) {
 
   return {
     checkForUpdate,
+    configure,
+    ensureReady,
     getStatus,
     initialize,
     performInstallMutation,
@@ -794,6 +902,8 @@ function mutationSignature(context) {
     context.packageName,
     context.options.targetVersion || 'latest',
     context.options.force === true,
+    context.readinessPolicy?.key || '',
+    context.readinessGeneration,
   ]);
 }
 

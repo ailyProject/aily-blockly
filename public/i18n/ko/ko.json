@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "하위 앱 활동 패널",
+    "TITLE": "하위 앱",
+    "OPEN_FULL": "전체 하위 앱 열기",
+    "OPEN_EMBEDDED": "메인 앱에 내장하여 열기",
+    "OPEN_WINDOW": "별도 창에서 열기",
+    "COLLAPSE": "접기",
+    "CALL_COUNT": "호출 횟수: {{count}}",
+    "RUNTIME_READY": "런타임 준비 완료",
+    "RUNTIME_STARTING": "런타임 시작 중",
+    "RUNTIME_ERROR": "런타임 오류",
+    "RUNTIME_STOPPED": "런타임 중지됨",
+    "RUNTIME_UNKNOWN": "런타임 상태 알 수 없음",
+    "INVOCATION_RUNNING": "에이전트 실행 중",
+    "INVOCATION_SUCCEEDED": "마지막 호출 성공",
+    "INVOCATION_FAILED": "마지막 호출 실패",
+    "INVOCATION_CANCELLED": "마지막 호출 취소됨",
+    "INVOCATION_IDLE": "진행 중인 호출 없음",
+    "WAITING_RUNTIME": "런타임 대기 중",
+    "LOADING_SURFACE": "간략 보기 로드 중",
+    "RUNTIME_NOT_RETAINED": "이 패널은 하위 앱 런타임을 시작하거나 계속 실행하지 않습니다.",
+    "SURFACE_ERROR": "간략 보기를 사용할 수 없음",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} 보기"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "프로젝트 공개에 실패했습니다",
         "WORKSPACE_PROJECT_NOT_FOUND": "프로젝트를 찾을 수 없습니다",
@@ -156,6 +180,7 @@
         "SPONSORS_DESC": "이 프로젝트는 다음 회사/개인들의 후원을 받고 있습니다",
         "NEWS": "뉴스",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "원하는 작업을 자연어로 설명하면 AI 도우미가 프로젝트 생성이나 질문에 대한 답변을 도와줍니다.",
             "STEP1_TITLE": "새 프로젝트 만들기",
             "STEP1_DESC": "여기를 클릭하여 새 프로그래밍 프로젝트를 만드세요. 보드와 프로그래밍 언어를 선택하여 창작 여정을 시작하세요.",
             "STEP2_TITLE": "기존 프로젝트 열기",
@@ -182,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "모든 블록 선택",
         "EXPLAIN_BLOCK": "AI 설명",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "AI 도우미가 프로젝트 이해, 코드 생성, 프로그램 설명과 오류 수정을 도와줍니다.",
             "TOOLBOX_TITLE": "블록 도구 상자",
             "TOOLBOX_DESC": "여기는 블록 분류 영역입니다. 분류를 클릭해 기능 블록을 찾고 오른쪽 작업 영역으로 끌어다 놓아 사용하세요.",
             "WORKSPACE_TITLE": "작업 영역",
@@ -341,6 +367,14 @@
             "CACHE": "캐시 관리"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "클라우드 컴파일",
+            "CLOUD_COMPILATION_DESC": "클라우드에서 컴파일하고 이 컴퓨터에서 보드에 업로드합니다. 활성화할 때 서비스를 확인합니다.",
+            "CLOUD_PRO_REQUIRED": "Pro 계정으로 로그인하면 이용할 수 있습니다",
+            "CLOUD_ENABLE_CHECKING": "클라우드 컴파일 서비스 확인 중…",
+            "CLOUD_ENABLE_SUCCESS": "클라우드 컴파일이 활성화되었습니다.",
+            "CLOUD_ENABLE_FAILED": "활성화하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "활성화하지 못했습니다. 앱을 완전히 종료한 후 다시 시작하고 재시도하세요.",
+            "CLOUD_DISABLE_FAILED": "비활성화하지 못했습니다. 다시 시도하세요.",
             "PROJECT_FOLDER": "프로젝트 폴더",
             "LANGUAGE": "언어",
             "DEVELOPMENT_MODE_PREFERENCE": "기본 개발 모드",
@@ -350,6 +384,7 @@
             "UI_THEME": "인터페이스 테마",
             "BLOCKLY_THEME": "Blockly 테마",
             "BLOCKLY_MINIMAP": "Blockly 미니맵",
+            "BLOCKLY_SOUNDS": "조작 효과음",
             "FLYOUT_AUTO_CLOSE": "도구 상자 자동 닫기",
             "COMPILATION_OPTIONS": "컴파일 옵션",
             "REGION": "서비스 지역",
@@ -872,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "로그아웃",
         "CANCEL": "취소",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "앱 스토어",
+            "APP_STORE_DESC": "AI 도구를 찾아 설치해 AI 도우미의 기능을 확장할 수 있습니다. 다른 앱을 추가하고 도구 모음 항목도 관리할 수 있습니다.",
+            "AI_TOOLS_TITLE": "AI 도우미",
             "SKIP": "건너뛰기",
             "PREV": "이전",
             "NEXT": "다음",
@@ -1041,6 +1079,7 @@
         "NO_TUTORIAL_PROVIDED": "라이브러리 작성자가 튜토리얼을 제공하지 않았습니다"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 작업이 실행 중입니다. 완료된 후 다른 이름으로 저장해 주세요.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1049,6 +1088,11 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "클라우드 컴파일 구성 요소가 최신 버전이 아닙니다. 앱을 완전히 종료한 후 다시 시작하고 재시도하세요. 페이지 새로고침만으로는 업데이트되지 않습니다.",
+        "CLOUD_TARGET_UNAVAILABLE": "이 보드 버전 또는 내용은 사용 가능한 클라우드 대상으로 등록되지 않았습니다.",
+        "CLOUD_BOARD_NOT_ENABLED": "이 보드 버전의 클라우드 컴파일이 활성화되지 않았습니다.",
+        "CLOUD_BOARD_UNSUPPORTED": "이 보드 버전은 클라우드 컴파일을 지원하지 않습니다.",
+        "CLOUD_BOARD_OFFLINE": "이 보드의 클라우드 컴파일러가 오프라인입니다. 나중에 다시 시도하세요.",
       "MODE_UNKNOWN": "프로젝트 유형을 확인할 수 없습니다. 유효한 Aily Blockly 또는 Aily Coder 프로젝트를 선택하세요.",
       "MODE_CREATE_RESTRICTED": "현재 {{application}} 모드에서는 이 유형의 프로젝트를 만들 수 없습니다. {{targetApplication}}을 사용하세요.",
       "MODE_MISMATCH_TITLE": "프로젝트 모드 불일치",
@@ -1259,5 +1303,29 @@
         "ERR_PATH_EXISTS": "같은 이름의 폴더가 이미 있습니다",
         "ERR_PATH_INVALID": "저장 경로에 잘못된 문자가 포함되어 있습니다",
         "ERR_CREATE_FAILED": "프로젝트 생성에 실패했습니다. 다시 시도해 주세요."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "로컬 컴파일로 전환",
+        "SWITCH_TO_CLOUD": "클라우드 컴파일로 돌아가기",
+        "SWITCHING_TO_CLOUD": "클라우드로 돌아가기 위해 로컬 컴파일을 중지하는 중…",
+        "SWITCHING_TO_LOCAL": "로컬에서 계속하기 위해 클라우드 컴파일을 취소하는 중…",
+        "PREPARING_LOCAL": "로컬 컴파일 준비 중…",
+        "REUSED_RESULT": "검증된 클라우드 빌드 결과를 재사용했습니다 (소요 시간: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "클라우드 빌드 완료 (소요 시간: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "클라우드 빌드 파일 준비 중",
+            "UPLOADING": "클라우드 빌드 파일 업로드 중",
+            "QUEUED": "클라우드 빌드 대기열에서 대기 중",
+            "DISPATCHING": "클라우드 빌드 서버 할당 중",
+            "PREPARING": "클라우드 빌드 환경 준비 중",
+            "RESOURCES": "클라우드 빌드 리소스 준비 중",
+            "ANALYZING": "프로젝트 분석 중",
+            "COMPILING": "클라우드에서 컴파일 중",
+            "FINALIZING": "클라우드 빌드 결과 확인 중",
+            "DOWNLOADING": "클라우드 빌드 결과 다운로드 중",
+            "VERIFYING": "클라우드 빌드 결과 검증 중",
+            "RECONNECTING": "게이트웨이에 다시 연결 중",
+            "COMPLETE": "클라우드 빌드 완료"
+        }
     }
 }

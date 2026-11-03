@@ -18,6 +18,7 @@ describe('legacy Aily icon archive loading', () => {
     it(`preserves ${typeof icon} icon state together with interactive comments across save and reopen`, () => {
       const catalog = new BlocklyDeclarativeBlockCatalog();
       const service = {
+        prepareWorkspaceLoad: (BlocklyService.prototype as any).prepareWorkspaceLoad,
         workspace, iconsMap: new Map([[type, { ailyIcon: 'library default' }]]),
         adaptWorkspaceToRuntime: BlocklyService.prototype.adaptWorkspaceToRuntime,
         cloneJson: value => structuredClone(value), assertWorkspaceEditAvailable() {},

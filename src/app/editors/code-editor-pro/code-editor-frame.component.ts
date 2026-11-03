@@ -245,6 +245,21 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       }
       return result.dirtyAfter > 0;
     },
+    captureCopy: async () => {
+      const result = await this.requestCoderLifecycle('copy-snapshot');
+      if (!result.ok || !result.snapshotToken || !Array.isArray(result.files)) {
+        throw new Error(result.message || 'Coder 编辑器不支持项目快照，请更新编辑器后重试。');
+      }
+      return { token: result.snapshotToken, files: result.files };
+    },
+    checkCopy: async snapshotToken => {
+      const result = await this.requestCoderLifecycle('check-copy-snapshot', 10_000, snapshotToken);
+      if (!result.ok) throw new Error(result.message || 'Coder 编辑内容已变化，请重新执行另存为。');
+    },
+    completeCopy: async snapshotToken => {
+      const result = await this.requestCoderLifecycle('complete-copy-snapshot', 10_000, snapshotToken);
+      if (!result.ok) throw new Error(result.message || '副本已保存，原编辑器有新修改，已保留这些修改。');
+    },
   };
 
   /** Worker 内扩展通过 BroadcastChannel 请求访达/资源管理器高亮 */
@@ -434,6 +449,20 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         if (root) void this.pushAilyCoderHostContext(root);
       }),
     );
+    // 切换编译后端时只重建依赖上下文，保留正在运行的编辑器及尚未保存的代码。
+    let compileSettingsKey = this.configService.getCompileSettingsKey();
+    this.componentSubscriptions.add(this.configService.configReloaded$.subscribe(() => {
+      const nextKey = this.configService.getCompileSettingsKey();
+      if (nextKey === compileSettingsKey) return;
+      compileSettingsKey = nextKey;
+      const root = this.coderEmbedWorkspaceRoot;
+      if (!root || this.destroyed) return;
+      const session = this.projectService.getProjectDependencySession(root);
+      this.dependencySession = session;
+      if (this.projectService.isCloudBuild()) this.codeSuggestionHostBridge.registerDeclarationRoots([]);
+      void this.ensureNpmDepsWithRetry(root, session);
+      void this.pushAilyCoderHostContext(root, session);
+    }));
 
     void this.bootstrap(this.projectPath);
 
@@ -561,9 +590,11 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private requestCoderLifecycle(
-    action: 'status' | 'save-all',
+    action: 'status' | 'save-all' | 'copy-snapshot' | 'check-copy-snapshot' | 'complete-copy-snapshot',
     timeoutMs = 10_000,
-  ): Promise<{ ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }> {
+    snapshotToken?: string,
+  ): Promise<{ ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string;
+    snapshotToken?: string; files?: Array<{ path: string; bytes: Uint8Array }> }> {
     const target = this.coderEmbedFrame?.nativeElement?.contentWindow;
     if (!target || !this.coderWorkbenchReady) {
       return Promise.resolve({
@@ -577,7 +608,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     const requestId = `aily-coder-editor-lifecycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     return new Promise(resolve => {
       let settled = false;
-      const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string }) => {
+      const finish = (result: { ok: boolean; dirtyBefore: number; dirtyAfter: number; message?: string;
+        snapshotToken?: string; files?: Array<{ path: string; bytes: Uint8Array }> }) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -593,6 +625,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           dirtyBefore?: number;
           dirtyAfter?: number;
           message?: string;
+          snapshotToken?: string;
+          files?: Array<{ path: string; bytes: Uint8Array }>;
         };
         if (
           payload?.channel !== AILY_CODER_EDITOR_HOST_LIFECYCLE_RESPONSE_CHANNEL ||
@@ -604,6 +638,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
           ok: payload.ok === true,
           dirtyBefore: Number.isFinite(payload.dirtyBefore) ? Number(payload.dirtyBefore) : 0,
           dirtyAfter: Number.isFinite(payload.dirtyAfter) ? Number(payload.dirtyAfter) : 0,
+          ...(typeof payload.snapshotToken === 'string' ? { snapshotToken: payload.snapshotToken } : {}),
+          ...(Array.isArray(payload.files) ? { files: payload.files } : {}),
           ...(typeof payload.message === 'string' && payload.message ? { message: payload.message } : {}),
         });
       };
@@ -619,6 +655,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         channel: AILY_CODER_EDITOR_HOST_LIFECYCLE_REQUEST_CHANNEL,
         requestId,
         action,
+        snapshotToken,
       }, '*');
     });
   }
@@ -1180,7 +1217,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
               ...(mainHexAbs ? { mainHexAbs, ...(mainHexRelPath ? { mainHexRelPath } : {}) } : {}),
             }
           : {}),
-        ...(platformPackages.length > 0 ? { platformPackages } : {}),
+        // 切入云模式时显式清空，防止子应用合并上下文后仍使用旧的本机 SDK 路径。
+        platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
       };
       if (!this.isCurrentCoderWorkspace(projectRoot, session)) return;
@@ -1251,7 +1289,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                 : {}),
             }
           : {}),
-        ...(platformPackages.length > 0 ? { platformPackages } : {}),
+        platformPackages,
         ...(boardProfile ? { boardProfile } : {}),
         meta: { theme: this.themeService.theme(), lang: hostLanguage },
       };
@@ -1359,6 +1397,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
 
   /** 从当前主板包的依赖声明解析全局 sdk/tools 目录。 */
   private async loadPlatformPackagesForEmbed() {
+    // 云模式使用已注册的开发板元数据，不向代码编辑器发布本机不存在的 SDK 路径。
+    if (this.projectService.isCloudBuild()) return [];
     try {
       return await resolvePlatformPackagesForCurrentProject(async () => {
         return this.projectService.getBoardDependencies();

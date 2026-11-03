@@ -55,6 +55,8 @@ export interface SubappActivity {
   dockAutoOpened?: boolean;
   presentation?: SubappActivityPresentation;
   summary?: SubappActivitySummary;
+  /** Runtime session explicitly returned by this chat's MQTT operation. */
+  resourceSessionId?: string;
 }
 
 export interface SubappInvocationStarted {
@@ -76,6 +78,8 @@ export interface SubappInvocationCompleted {
   state: 'succeeded' | 'failed' | 'cancelled';
   runtimeState?: SubappRuntimeState;
   error?: string;
+  openedResourceSessionId?: string;
+  closedResourceSessionId?: string;
   now?: number;
 }
 
@@ -183,6 +187,7 @@ export class SubappActivityService {
       ...(shouldAutoOpen || current?.dockAutoOpened ? { dockAutoOpened: true } : {}),
       ...(presentation ? { presentation } : {}),
       ...(current?.summary ? { summary: { ...current.summary } } : {}),
+      ...(current?.resourceSessionId ? { resourceSessionId: current.resourceSessionId } : {}),
     };
     this.records.set(key, next);
     this.emit();
@@ -225,6 +230,10 @@ export class SubappActivityService {
       next.lastError = error;
     } else if (input.state === 'succeeded') {
       delete next.lastError;
+      if (input.openedResourceSessionId && /^[A-Za-z0-9_.:-]{1,128}$/.test(input.openedResourceSessionId)) {
+        next.resourceSessionId = input.openedResourceSessionId;
+      }
+      if (input.closedResourceSessionId === next.resourceSessionId) delete next.resourceSessionId;
     }
     this.records.set(key, next);
     this.emit();
@@ -247,6 +256,7 @@ export class SubappActivityService {
       lastUsedAt: this.normalizeTimestamp(input.now),
     };
     if (error) next.lastError = error;
+    if (input.state === 'stopped') delete next.resourceSessionId;
     this.records.set(key, next);
     this.emit();
     return this.copyActivity(next);
@@ -281,6 +291,7 @@ export class SubappActivityService {
         ...current,
         invocationState: current.activeInvocationCount > 0 ? 'cancelled' : current.invocationState,
         runtimeState: 'stopped',
+        resourceSessionId: undefined,
         activeInvocationCount: 0,
         lastUsedAt: now,
         ...(current.activeInvocationCount > 0 ? { lastCompletedAt: now } : {}),
@@ -379,6 +390,7 @@ export class SubappActivityService {
         && activity.runtimeState === candidate.runtimeState
         && activity.surfaceState === candidate.surfaceState
         && activity.activeInvocationCount === candidate.activeInvocationCount
+        && activity.resourceSessionId === candidate.resourceSessionId
         && activity.summary?.updatedAt === candidate.summary?.updatedAt;
     });
   };

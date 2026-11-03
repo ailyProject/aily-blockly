@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "子應用活動面板",
+    "TITLE": "子應用",
+    "OPEN_FULL": "開啟完整子應用",
+    "OPEN_EMBEDDED": "以內嵌模式開啟",
+    "OPEN_WINDOW": "在獨立視窗中開啟",
+    "COLLAPSE": "收起",
+    "CALL_COUNT": "調用次數：{{count}}",
+    "RUNTIME_READY": "執行服務已就緒",
+    "RUNTIME_STARTING": "執行服務正在啟動",
+    "RUNTIME_ERROR": "執行服務出錯",
+    "RUNTIME_STOPPED": "執行服務已停止",
+    "RUNTIME_UNKNOWN": "執行服務狀態未知",
+    "INVOCATION_RUNNING": "智能體正在調用",
+    "INVOCATION_SUCCEEDED": "上次調用成功",
+    "INVOCATION_FAILED": "上次調用失敗",
+    "INVOCATION_CANCELLED": "上次調用已取消",
+    "INVOCATION_IDLE": "無進行中的調用",
+    "WAITING_RUNTIME": "等待執行服務",
+    "LOADING_SURFACE": "正在載入精簡檢視",
+    "RUNTIME_NOT_RETAINED": "此面板不會啟動或保留子應用執行服務。",
+    "SURFACE_ERROR": "精簡檢視無法使用",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} 檢視"
+  },
   "BLOCKLY_FUNCTION_VIEW": {
     "LABEL": "查看函數或整個檔案",
     "ALL": "整個檔案",
@@ -172,6 +196,7 @@
         "SPONSORS_DESC": "本專案得到了以下企業/個人的贊助",
         "NEWS": "動態",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "用自然語言描述需求，AI 助手可協助建立專案、解答問題。",
             "STEP1_TITLE": "建立新專案",
             "STEP1_DESC": "點擊這裡可以建立一個新的程式設計專案，選擇開發板和程式語言開始您的創作之旅。",
             "STEP2_TITLE": "開啟現有專案",
@@ -198,6 +223,7 @@
         "WORKSPACE_SELECT_ALL": "全選積木",
         "EXPLAIN_BLOCK": "AI 解釋",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "AI 助手可協助理解專案、產生程式碼、解釋程式和修復錯誤。",
             "TOOLBOX_TITLE": "積木工具箱",
             "TOOLBOX_DESC": "這裡是積木分類區域，點擊不同分類可以找到各種功能積木，拖曳到右側工作區使用。",
             "WORKSPACE_TITLE": "工作區",
@@ -369,6 +395,14 @@
             "CACHE": "緩存管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "雲端編譯",
+            "CLOUD_COMPILATION_DESC": "在雲端編譯，燒錄仍在本機進行。開啟時自動檢查服務。",
+            "CLOUD_PRO_REQUIRED": "登入 Pro 帳戶後可用",
+            "CLOUD_ENABLE_CHECKING": "正在檢查雲端編譯服務…",
+            "CLOUD_ENABLE_SUCCESS": "開啟成功",
+            "CLOUD_ENABLE_FAILED": "開啟失敗，請稍後重試。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "開啟失敗，請完全結束並重新啟動軟件後重試。",
+            "CLOUD_DISABLE_FAILED": "關閉失敗，請重試。",
             "PROJECT_FOLDER": "專案資料夾",
             "LANGUAGE": "語言",
             "DEVELOPMENT_MODE_PREFERENCE": "預設開發模式",
@@ -378,6 +412,7 @@
             "UI_THEME": "介面主題",
             "BLOCKLY_THEME": "Blockly主題",
             "BLOCKLY_MINIMAP": "Blockly縮略圖",
+            "BLOCKLY_SOUNDS": "操作音效",
             "FLYOUT_AUTO_CLOSE": "自動關閉工具箱",
             "COMPILATION_OPTIONS": "編譯選項",
             "REGION": "服務區域",
@@ -959,6 +994,9 @@
         "SAFE_LOGOUT_CONFIRM": "登出",
         "CANCEL": "取消",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "應用商店",
+            "APP_STORE_DESC": "瀏覽和安裝 AI 工具，擴展 AI 助手的能力；亦可新增其他應用、管理工具列入口。",
+            "AI_TOOLS_TITLE": "AI 助手",
             "SKIP": "跳過",
             "PREV": "上一步",
             "NEXT": "下一步",
@@ -1118,6 +1156,7 @@
         "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 任務正在執行，請等待完成後再另存為。",
       "OPEN_IN_CODER": "使用 Aily Coder 開啟",
       "CONVERT_CODER_TITLE": "轉換為 Coder 專案",
       "CONVERT_CODER_CONTENT": "此檔案屬於 Blockly 專案。將建立 Coder 副本並安裝依賴；副本可能無法再使用積木編輯。原專案保留。",
@@ -1126,6 +1165,11 @@
       "CONVERT_CODER_INSTALLING": "正在安裝 Coder 專案依賴",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "依賴準備失敗，請檢查安裝日誌後重試",
       "CONVERT_CODER_OPEN_FAILED": "Coder 專案已儲存至 {{path}}，請使用 Aily Coder 開啟。",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "雲編譯元件尚未更新，請完整退出並重新啟動軟件後重試；僅重新整理頁面無效。",
+        "CLOUD_TARGET_UNAVAILABLE": "此開發板版本或內容尚未註冊為可用的雲端編譯目標。",
+        "CLOUD_BOARD_NOT_ENABLED": "此開發板版本尚未啟用雲端編譯。",
+        "CLOUD_BOARD_UNSUPPORTED": "此開發板版本暫不支援雲端編譯。",
+        "CLOUD_BOARD_OFFLINE": "此開發板的雲端編譯節點暫時離線，請稍後重試。",
       "MODE_UNKNOWN": "無法識別專案類型，請選擇有效的 Aily Blockly 或 Aily Coder 專案。",
       "MODE_CREATE_RESTRICTED": "目前 {{application}} 模式無法建立此類專案，請使用 {{targetApplication}} 建立。",
       "MODE_MISMATCH_TITLE": "專案模式不符",
@@ -1363,5 +1407,29 @@
         "ERR_PATH_EXISTS": "同名目錄已存在，請更換專案名",
         "ERR_PATH_INVALID": "儲存路徑包含非法字元",
         "ERR_CREATE_FAILED": "建立失敗，請稍後重試"
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "切換本機編譯",
+        "SWITCH_TO_CLOUD": "切回雲端編譯",
+        "SWITCHING_TO_CLOUD": "正在停止本機編譯，準備切回雲端編譯…",
+        "SWITCHING_TO_LOCAL": "正在取消雲端編譯，準備切換到本機…",
+        "PREPARING_LOCAL": "正在準備本機編譯環境…",
+        "REUSED_RESULT": "已重用雲端編譯結果 (耗時: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "雲端編譯完成 (耗時: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "正在準備雲端編譯檔案",
+            "UPLOADING": "正在上傳雲端編譯檔案",
+            "QUEUED": "正在排隊等候雲端編譯",
+            "DISPATCHING": "正在分配雲端編譯伺服器",
+            "PREPARING": "正在準備雲端編譯環境",
+            "RESOURCES": "正在準備雲端編譯資源",
+            "ANALYZING": "正在分析專案",
+            "COMPILING": "正在雲端編譯",
+            "FINALIZING": "正在檢查雲端編譯產物",
+            "DOWNLOADING": "正在下載雲端編譯產物",
+            "VERIFYING": "正在驗證雲端編譯產物",
+            "RECONNECTING": "正在重新連接閘道",
+            "COMPLETE": "雲端編譯完成"
+        }
     }
 }

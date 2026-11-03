@@ -1,6 +1,9 @@
 export type { NoticeOptions } from './models/notice';
 export * from './development-resource-routing';
 export * from './linux-board-project-route';
+export * from './project-recovery-files';
 export * from './abs/abs-json-tokens';
 export * from './concurrency/serial-operation-queue';
 export { createBrowserFrameBudget } from './concurrency/browser-frame-budget';
+export * from './partitions/partition-layout';
+export * from './partitions/partition-paths';

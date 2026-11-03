@@ -1,12 +1,10 @@
 // 远端子应用目录与用户级 npm 安装管理。
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
 const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { execFile, spawn } = require('child_process');
-const { URL } = require('url');
 const semver = require('semver');
 const { killRegisteredProcessTree } = require('./process-tree');
 const versions = require('./subapp-version-store');
@@ -14,6 +12,7 @@ const { acquireInstallLock: acquireUpdateLock } = require('./subapp-install-lock
 const { extractNpmTarballInBackground } = require('./subapp-package-worker-client');
 const { resolveAilyNpmPrefix } = require('./appdata-path');
 const subappBinRouter = require('./subapp-bin-router');
+const { downloadFileWithProgress, fault, duration } = require('./subapp-download');
 
 const INDEX_CACHE_FILE = 'subapp-index.json';
 const INDEX_CACHE_META_FILE = 'subapp-index.meta.json';
@@ -32,6 +31,18 @@ const STARTUP_TIMEOUTS = Object.freeze({
 const BUNDLED_CODER_ID = 'aily-coder-editor';
 const BUNDLED_CODER_PACKAGE = '@aily-project/subapp-aily-coder-editor';
 const mutationQueues = new Map();
+const preparationControllers = new Map();
+const pendingUninstalls = new Map();
+const operationKey = (rootDir, id) => `${path.resolve(rootDir)}\0${id}`;
+
+async function bounded(operation, milliseconds, code, message) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(fault(code, message)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 
 function buildSubappIndexUrl(resourceUrl) {
   const normalizedResourceUrl = String(resourceUrl || '').trim().replace(/\/+$/, '');
@@ -1056,6 +1067,7 @@ function prepareNpmSpawn(args, options = {}) {
 
 function runNpm(args, options = {}) {
   return new Promise((resolve, reject) => {
+    options.signal?.throwIfAborted();
     const { command, args: spawnArgs, shell, env: spawnEnv } = prepareNpmSpawn(args, options);
     const env = { ...process.env };
     for (const [key, value] of Object.entries({ ...(options.env || {}), ...spawnEnv })) {
@@ -1072,6 +1084,31 @@ function runNpm(args, options = {}) {
       shell,
       windowsHide: true,
     });
+    const processClosed = new Promise(resolve => child.once('close', resolve));
+    let settled = false, stopping = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
+      if (error) reject(error); else resolve(value);
+    };
+    const stop = async error => {
+      if (settled || stopping) return;
+      stopping = true;
+      try {
+        const stopped = child.pid && await bounded(
+          (options.killProcessTree || killRegisteredProcessTree)(child.pid, 'subapp-npm'),
+          15000, 'SUBAPP_STOP_TIMEOUT', 'Timed out stopping subapp npm');
+        if (!stopped) error.processClosed = processClosed;
+      } catch { error.processClosed = processClosed; }
+      finish(error);
+    };
+    const abort = () => { void stop(options.signal.reason || fault('SUBAPP_CANCELLED', 'Subapp npm cancelled')); };
+    const timer = setTimeout(() => { void stop(fault('SUBAPP_NPM_TIMEOUT', 'Subapp npm exceeded its time limit')); },
+      duration(options.npmTimeoutMs, 5 * 60 * 1000));
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
     let stdout = '';
     let stderr = '';
     const handleChunk = (chunk, stream) => {
@@ -1079,17 +1116,18 @@ function runNpm(args, options = {}) {
       if (stream === 'stdout') stdout += text;
       else stderr += text;
       if (typeof options.onOutput === 'function') {
-        options.onOutput(text, stream);
+        try { options.onOutput(text, stream); } catch (error) { void stop(error); }
       }
     };
     child.stdout?.on('data', (chunk) => handleChunk(chunk, 'stdout'));
     child.stderr?.on('data', (chunk) => handleChunk(chunk, 'stderr'));
-    child.once('error', reject);
+    child.once('error', error => { if (!stopping) finish(error); });
     child.once('close', (code) => {
+      if (stopping) return; // wait for descendant termination before deleting staging
       if (code === 0) {
-        resolve({ code, stdout, stderr });
+        finish(null, { code, stdout, stderr });
       } else {
-        reject(new Error(stderr.trim() || stdout.trim() || `npm exited with ${code}`));
+        finish(new Error(stderr.trim() || stdout.trim() || `npm exited with ${code}`));
       }
     });
   });
@@ -1233,90 +1271,6 @@ async function resolvePackageDistribution(entry, npmRunner, options = {}) {
   return validateDistribution(dist, entry.id);
 }
 
-function downloadFileWithProgress(fileUrl, destination, onProgress, options = {}) {
-  const fetchImpl = options.downloadFetch || ((url, requestOptions) => {
-    const parsed = new URL(url);
-    const transport = parsed.protocol === 'http:' ? http : https;
-    return transport.get(url, requestOptions);
-  });
-  const maxRedirects = Number.isInteger(options.maxRedirects) ? options.maxRedirects : 5;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-    const succeed = () => {
-      if (settled) return;
-      settled = true;
-      resolve(destination);
-    };
-
-    const request = (currentUrl, redirectsLeft) => {
-      let requestRef;
-      try {
-        requestRef = fetchImpl(currentUrl, {
-          headers: { Accept: '*/*' },
-        });
-      } catch (error) {
-        fail(error);
-        return;
-      }
-
-      requestRef.on('error', fail);
-      requestRef.on('response', (response) => {
-        const status = response.statusCode || 0;
-        if ([301, 302, 303, 307, 308].includes(status) && response.headers.location) {
-          response.resume();
-          if (redirectsLeft <= 0) {
-            fail(new Error(`Too many redirects while downloading ${fileUrl}`));
-            return;
-          }
-          const nextUrl = new URL(response.headers.location, currentUrl).toString();
-          request(nextUrl, redirectsLeft - 1);
-          return;
-        }
-        if (status < 200 || status >= 300) {
-          response.resume();
-          fail(new Error(`Download failed: HTTP ${status}`));
-          return;
-        }
-
-        const total = Number(response.headers['content-length']) || 0;
-        let downloaded = 0;
-        let lastPercent = -1;
-        const file = fs.createWriteStream(destination);
-        file.on('error', fail);
-        response.on('error', fail);
-        response.on('data', (chunk) => {
-          downloaded += chunk.length;
-          if (!total || typeof onProgress !== 'function') return;
-          const percent = clampProgress((downloaded / total) * 100);
-          if (percent !== lastPercent) {
-            lastPercent = percent;
-            onProgress(percent);
-          }
-        });
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close((error) => {
-            if (error) {
-              fail(error);
-              return;
-            }
-            if (typeof onProgress === 'function') onProgress(100);
-            succeed();
-          });
-        });
-      });
-    };
-
-    request(fileUrl, maxRedirects);
-  });
-}
-
 async function fetchRemoteIndex(indexUrl, fetchImpl = globalThis.fetch) {
   if (typeof fetchImpl !== 'function') throw new Error('Fetch API is not available');
   const controller = new AbortController();
@@ -1456,13 +1410,23 @@ function readUpdateRecord(updateRootDir, entry) {
   }
 }
 
-function verifyStagedAssets(updateRootDir, record) {
+function verifyStagedAssets(updateRootDir, record, rootDir = null) {
   const paths = stagedManifestPaths(updateRootDir, record.id, record.version);
   if (!record.distribution) {
     throw new Error('Staged update metadata is incomplete');
   }
   const distribution = validateDistribution(record.distribution, record.id);
+  // Version-store preparations keep the verified archive beside source, not in
+  // the legacy update cache. Rebuild damaged entries locally before activation.
+  if (rootDir && record.versionStore === true && !fs.existsSync(paths.package)) {
+    const preparedRoot = versions.versionRoot(rootDir, {
+      id: record.id, package: record.packageName, version: record.version,
+    }, { optional: true });
+    if (preparedRoot) paths.package = path.join(preparedRoot, UPDATE_PACKAGE_FILE);
+  }
   if (!fs.existsSync(paths.package)) throw new Error('Staged update package is missing');
+  const stat = fs.lstatSync(paths.package);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Staged update package is not a regular file');
   return paths;
 }
 
@@ -1506,7 +1470,7 @@ function readSubappUpdateStatus(updateRootDir, entry, installedState, operation 
     };
   }
   try {
-    verifyStagedAssets(updateRootDir, record);
+    verifyStagedAssets(updateRootDir, record, rootDir);
     if (record.state === 'failed') {
       return {
         state: 'failed',
@@ -1600,11 +1564,26 @@ function readPreparedVersion(rootDir, entry) {
 }
 
 async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
+  const key = operationKey(rootDir, entry.id);
+  if (pendingUninstalls.has(key)) throw fault('SUBAPP_UNINSTALLING', `Subapp uninstall is in progress: ${entry.id}`);
+  const controller = new AbortController();
+  const parentSignal = options.signal;
+  const abort = () => controller.abort(parentSignal.reason);
+  parentSignal?.addEventListener('abort', abort, { once: true });
+  if (parentSignal?.aborted) abort();
+  const controllers = preparationControllers.get(key) || new Set();
+  controllers.add(controller);
+  preparationControllers.set(key, controllers);
+  options = { ...options, signal: controller.signal };
   const lockRoot = path.join(rootDir, 'store', '.locks', versions.storeKeyForPackage(entry.package));
-  const release = await waitForUpdateLock(lockRoot);
+  let release;
   let candidate;
   let published = false;
+  let processClosed;
+  let failure;
   try {
+    release = await waitForUpdateLock(lockRoot, options);
+    options.signal.throwIfAborted();
     if (versions.isUninstalling(rootDir, entry)) {
       throw new Error(`Subapp uninstall is still being completed: ${entry.id}`);
     }
@@ -1633,6 +1612,8 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
     await extractNpmTarballInBackground(tarball, candidate.source, {
       integrity: bundle?.integrity || distribution.integrity,
       onProgress: percent => tracker?.setExtract(percent),
+      signal: options.signal,
+      timeoutMs: options.extractTimeoutMs,
     });
     let { manifest } = validatePreparedPackage(candidate.source, entry);
     let portability = portablePackageStatus(candidate.source, manifest, options);
@@ -1658,26 +1639,60 @@ async function prepareVersionPackage(rootDir, entry, npmRunner, options = {}) {
         throw new Error('Bundled Aily Coder Editor is not a complete self-contained package');
       }
     }
+    options.signal.throwIfAborted();
     if (versions.isUninstalling(rootDir, entry)) {
       throw new Error(`Subapp was uninstalled while preparing: ${entry.id}`);
     }
-    const prepared = versions.publishCandidate(rootDir, entry, candidate, {
+    await options.beforePublish?.(candidate.source);
+    const prepared = await versions.publishCandidate(rootDir, entry, candidate, {
       distribution,
       integrity: bundle?.integrity || distribution?.integrity,
       installMode: portability.portable ? 'portable' : 'legacy-npm',
       replace: options.reinstall === true,
+      retainPrevious: options.retainPrevious === true,
+      replacementTransaction: options.replacementTransaction,
+      renameAttempts: options.renameAttempts,
+      sleep: options.sleep,
+      validatePrepared: prepared => validatePreparedPackage(prepared.packagePath, entry),
     });
     published = true;
     tracker?.setExtract(100);
     return prepared;
+  } catch (error) {
+    processClosed = error.processClosed;
+    failure = error;
   } finally {
     // Published generations are immutable, including when progress delivery throws.
+    // A cleanup failure must not replace the publish error the caller reports.
+    let cleanupError;
     try {
-      if (candidate && !published) fs.rmSync(candidate.project, { recursive: true, force: true });
+      if (candidate && !published && !processClosed) {
+        await fs.promises.rm(candidate.project, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    } catch (error) {
+      cleanupError = error;
     } finally {
-      release();
+      parentSignal?.removeEventListener('abort', abort);
+      controllers.delete(controller);
+      if (!controllers.size) preparationControllers.delete(key);
+      if (processClosed && release) {
+        // Failed termination must not authorize uninstall/replacement while npm
+        // still writes staging. Return the timeout to UI but retain the package
+        // guard until stdio/process closure; other packages and old launches work.
+        const held = release;
+        void processClosed.then(async () => {
+          try {
+            if (candidate && !published) await fs.promises.rm(candidate.project,
+              { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+          } finally { held(); }
+        }).catch(error => console.warn('[subapp-manager] deferred npm cleanup failed:', error.message));
+      } else release?.();
+    }
+    if (failure && cleanupError) {
+      failure.message += `\n暂存目录清理失败: ${cleanupError.message}`;
     }
   }
+  if (failure) throw failure;
 }
 
 async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, options = {}) {
@@ -1696,7 +1711,7 @@ async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, optio
     // Accept tarballs downloaded by old hosts, without depending on the old shared npm cache.
     if (existing) {
       try {
-        const paths = verifyStagedAssets(updateRootDir, existing);
+        const paths = verifyStagedAssets(updateRootDir, existing, rootDir);
         stagedOptions = { ...options, tarballPath: paths.package, distribution: existing.distribution };
       } catch { /* Re-download an incomplete legacy cache. */ }
     }
@@ -1710,21 +1725,31 @@ async function stageSubappUpdate(rootDir, updateRootDir, entry, npmRunner, optio
     tracker?.complete();
     return record;
   } catch (error) {
+    if (error.code === 'SUBAPP_CANCELLED') throw error;
+    const reported = explainKeptVersion(
+      'download-update',
+      installedState.installed ? installedState.installedVersion : null,
+      false,
+      error,
+    );
     writeJsonAtomic(updateStatePath(updateRootDir, entry.id, entry.version), {
       schemaVersion: UPDATE_SCHEMA_VERSION, id: entry.id, packageName: entry.package,
       version: entry.version, state: 'failed', phase: 'download', entry,
-      failedAt: new Date().toISOString(), error: error.message || String(error),
+      failedAt: new Date().toISOString(), error: reported.message || String(reported),
     });
-    throw error;
+    throw reported;
   }
 }
 
-async function waitForUpdateLock(directory) {
-  const deadline = Date.now() + 120000;
+async function waitForUpdateLock(directory, options = {}) {
+  const deadline = Date.now() + duration(options.lockTimeoutMs, 120000);
   let release;
-  while (!(release = acquireUpdateLock(directory))) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for subapp installation');
-    await sleep(100);
+  while (true) {
+    options.signal?.throwIfAborted();
+    release = acquireUpdateLock(directory);
+    if (release) break;
+    if (Date.now() >= deadline) throw fault('SUBAPP_LOCK_TIMEOUT', `Timed out waiting for subapp installation lock: ${directory}`);
+    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
   }
   return release;
 }
@@ -1777,6 +1802,19 @@ function formatBusyCancelledError(packagePath) {
   );
   error.code = 'EBUSY_CANCELLED';
   return error;
+}
+
+function explainKeptVersion(action, previousVersion, switched, error) {
+  if (!error || switched || !previousVersion) return error;
+  if (!['install', 'update', 'install-update', 'download-update'].includes(action)) return error;
+  if (error.code === 'SUBAPP_CANCELLED' || error.code === 'EBUSY_CANCELLED' || error.code === 'EBUSY') return error;
+  if (error.requiresForceClose === true) return error;
+  if (String(error.message || '').includes('仍可继续使用')) return error;
+  const wrapped = new Error(`更新失败，当前版本 ${previousVersion} 仍可继续使用。\n${error.message}`);
+  wrapped.code = error.code || 'SUBAPP_UPDATE_FAILED';
+  wrapped.cause = error;
+  wrapped.keepsPreviousVersion = true;
+  return wrapped;
 }
 
 function formatBusyNeedsForceError(packagePath, holders = [], cause) {
@@ -2114,7 +2152,7 @@ async function rmWithBusyRetry(targetPath, options = {}) {
   let lastError;
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
-      fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      await fs.promises.rm(targetPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       return;
     } catch (error) {
       lastError = error;
@@ -2236,54 +2274,73 @@ function assertSubappCanBeUninstalled(id, options) {
 }
 
 async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = {}) {
+  options = { ...options, lockTimeoutMs: duration(options.lockTimeoutMs, 15000) };
   const legacyPath = packagePathFor(rootDir, entry.package);
   const storeKey = versions.storeKeyForPackage(entry.package);
   const storeRoot = path.join(rootDir, 'store');
   const versionStoreRoot = path.join(storeRoot, storeKey);
-  const binNames = declaredBinNames(legacyPath, entry.package);
-
-  const preparationLocks = [];
   const lockDirectory = path.join(storeRoot, '.locks');
-  try {
-    preparationLocks.push(await waitForUpdateLock(path.join(lockDirectory, storeKey)));
-    assertSubappCanBeUninstalled(entry.id, options);
-    if (typeof options.forceStopChildToolByCatalogId === 'function') {
-      const stopped = await options.forceStopChildToolByCatalogId(entry.id);
-      if (stopped?.success === false && stopped.reason !== 'not-found') {
-        throw new Error(`Unable to stop the running subapp before uninstalling: ${entry.id}`);
-      }
+  const releasePreparation = await waitForUpdateLock(path.join(lockDirectory, storeKey), options);
+  let marked = false, alreadyMarked = false, cleanupStarted = false;
+  const select = async operation => {
+    const release = await waitForUpdateLock(lockDirectory, options);
+    try { return operation(); } finally { release(); }
+  };
+  const stop = async () => {
+    if (typeof options.forceStopChildToolByCatalogId !== 'function') return;
+    const stopped = await bounded(options.forceStopChildToolByCatalogId(entry.id),
+      duration(options.stopTimeoutMs, 15000), 'SUBAPP_STOP_TIMEOUT', `Timed out stopping subapp: ${entry.id}`);
+    if (stopped?.success === false && stopped.reason !== 'not-found') {
+      throw new Error(`Unable to stop the running subapp before uninstalling: ${entry.id}`);
     }
-
+  };
+  try {
+    assertSubappCanBeUninstalled(entry.id, options);
+    const binNames = declaredBinNames(legacyPath, entry.package);
+    await stop();
     const targets = [legacyPath, versionStoreRoot];
+    // No global selection lock while stopping, inspecting or deleting files.
     for (const target of targets) {
-      const holders = await collectBusyHolders(target, entry, options);
+      const holders = await bounded(collectBusyHolders(target, entry, options), 20000,
+        'SUBAPP_INSPECT_TIMEOUT', `Timed out inspecting subapp processes: ${entry.id}`);
       if (holders.length) {
         assertSubappCanBeUninstalled(entry.id, options);
         if (options.forceClose !== true) throw formatBusyNeedsForceError(target, holders);
-        await forceCloseBusyHolders(target, entry, holders, options);
+        await bounded(forceCloseBusyHolders(target, entry, holders, options), 30000,
+          'SUBAPP_STOP_TIMEOUT', `Timed out stopping subapp holders: ${entry.id}`);
       }
       if ((options.platform || process.platform) !== 'win32'
         && await (options.hasProcessesUsingPath || hasProcessesUsingPackagePath)(target, options.platform || process.platform)) {
         throw formatBusyNeedsForceError(target, holders);
       }
     }
-
-    // The marker is written only when destructive cleanup is about to start. A busy
-    // preflight must leave the existing installation visible and retryable.
+    await select(() => {
+      assertSubappCanBeUninstalled(entry.id, options);
+      alreadyMarked = versions.isUninstalling(rootDir, entry);
+      versions.beginUninstall(rootDir, entry);
+      marked = true;
+    });
+    // A launch may have completed during preflight. The persisted marker now
+    // prevents new launches, so stop that last registration before cleanup.
+    await stop();
     assertSubappCanBeUninstalled(entry.id, options);
-    versions.beginUninstall(rootDir, entry);
+    cleanupStarted = true;
     removeOwnedBinLinks(rootDir, legacyPath, entry.package, binNames);
     for (const target of targets) await rmWithBusyRetry(target, options);
-
     const updateCachePath = path.join(updateRootDir, validateId(entry.id));
     await rmWithBusyRetry(updateCachePath, options);
-    removePackageFromRootManifests(rootDir, entry.package);
-    assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
-    restoreCatalogAfterUninstall(rootDir, entry);
-    versions.finishUninstall(rootDir, entry);
-  } finally {
-    for (const release of preparationLocks.reverse()) release();
-  }
+    await select(() => {
+      removePackageFromRootManifests(rootDir, entry.package);
+      assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
+      restoreCatalogAfterUninstall(rootDir, entry);
+      versions.finishUninstall(rootDir, entry);
+    });
+  } catch (error) {
+    if (marked && !alreadyMarked && !cleanupStarted) {
+      await select(() => versions.finishUninstall(rootDir, entry));
+    }
+    throw error;
+  } finally { releasePreparation(); }
 }
 
 async function renamePackagePathWithForceClose(src, dest, entry, options = {}) {
@@ -2332,12 +2389,12 @@ async function activateStagedSubappUpdate(rootDir, updateRootDir, entry, npmRunn
   if (!prepared) {
     const record = readUpdateRecord(updateRootDir, entry);
     if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
-    const paths = verifyStagedAssets(updateRootDir, record);
+    const paths = verifyStagedAssets(updateRootDir, record, rootDir);
     prepared = await prepareVersionPackage(rootDir, entry, npmRunner, {
       ...options, tarballPath: paths.package, distribution: record.distribution,
     });
   }
-  const release = options.lockHeld ? () => {} : await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+  const release = options.lockHeld ? () => {} : await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
   try {
     const installed = readInstalledState(rootDir, entry);
     if (installed.development || installed.localNext) {
@@ -2368,7 +2425,6 @@ function createSubappManager(options = {}) {
   const updateOperations = new Map();
   const backgroundAttempts = new Set();
   const backgroundDownloads = new Map();
-  const pendingUninstallCounts = new Map();
   let currentIndex = null;
   let currentMeta = null;
   let currentIndexUrl = null;
@@ -2544,7 +2600,7 @@ function createSubappManager(options = {}) {
   }
 
   function assertNotUninstalling(id, entry = null) {
-    if ((pendingUninstallCounts.get(id) || 0) <= 0
+    if ((pendingUninstalls.get(operationKey(rootDir, id)) || 0) <= 0
       && (!entry || !versions.isUninstalling(rootDir, entry))) {
       return;
     }
@@ -2578,6 +2634,7 @@ function createSubappManager(options = {}) {
   }
 
   async function downloadUpdateEntry(entry, payload = {}) {
+    assertNotUninstalling(entry.id, entry);
     const key = updateKey(entry);
     const existingDownload = backgroundDownloads.get(key);
     if (existingDownload) return existingDownload;
@@ -2631,7 +2688,8 @@ function createSubappManager(options = {}) {
       if (id === 'dev' || !entry.update || entry.app.enabled === false) continue;
       const installedState = readInstalledState(rootDir, entry);
       if (
-        !installedState.installed
+        pendingUninstalls.has(operationKey(rootDir, entry.id))
+        || !installedState.installed
         || installedState.development
         || installedState.localNext
         || !hasUpdate(installedState.installedVersion, entry.version)
@@ -2650,13 +2708,14 @@ function createSubappManager(options = {}) {
     }
   }
 
-  function enqueueMutation(operation) {
-    const previous = mutationQueues.get(rootDir) || Promise.resolve();
+  function enqueueMutation(id, operation) {
+    const key = operationKey(rootDir, id);
+    const previous = mutationQueues.get(key) || Promise.resolve();
     const next = previous.catch(() => undefined).then(operation);
     const queued = next.then(() => undefined, () => undefined).finally(() => {
-      if (mutationQueues.get(rootDir) === queued) mutationQueues.delete(rootDir);
+      if (mutationQueues.get(key) === queued) mutationQueues.delete(key);
     });
-    mutationQueues.set(rootDir, queued);
+    mutationQueues.set(key, queued);
     return next;
   }
 
@@ -2665,7 +2724,7 @@ function createSubappManager(options = {}) {
     const entry = index[validateId(payload.id)];
     if (!entry) throw new Error('Subapp is not present in the catalog');
     // Only serialize the tiny selection/start handshake, never npm extraction.
-    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
     try {
       let installed = readInstalledState(rootDir, entry);
       const runningConfig = options.getRunningSubappConfig?.(entry.id) || null;
@@ -2696,11 +2755,16 @@ function createSubappManager(options = {}) {
     if (action === 'uninstall') assertSubappCanBeUninstalled(requestedId, options);
     if (action !== 'uninstall') assertNotUninstalling(requestedId);
     const tracksUninstall = action === 'uninstall';
+    const key = operationKey(rootDir, requestedId);
     if (tracksUninstall) {
-      pendingUninstallCounts.set(requestedId, (pendingUninstallCounts.get(requestedId) || 0) + 1);
+      pendingUninstalls.set(key, (pendingUninstalls.get(key) || 0) + 1);
+      for (const controller of preparationControllers.get(key) || []) {
+        controller.abort(fault('SUBAPP_CANCELLED', `Subapp preparation cancelled for uninstall: ${requestedId}`));
+      }
     }
     try {
-      return await enqueueMutation(async () => {
+      return await enqueueMutation(requestedId, async () => {
+      if (action !== 'uninstall') assertNotUninstalling(requestedId);
       const { index } = await loadIndex('cache-first');
       const id = requestedId;
       const entry = index[id];
@@ -2729,6 +2793,8 @@ function createSubappManager(options = {}) {
       };
 
       let releaseLock = null;
+      let previousInstalledVersion = null;
+      let switched = false;
       try {
         if (action === 'uninstall') {
           const downloads = [...backgroundDownloads.entries()]
@@ -2737,6 +2803,7 @@ function createSubappManager(options = {}) {
           await Promise.all(downloads);
         }
         const installed = readInstalledState(rootDir, entry);
+        previousInstalledVersion = installed.installed ? installed.installedVersion : null;
 
         if (action !== 'uninstall'
           && (installed.development || installed.localNext || index.dev === true)) {
@@ -2759,11 +2826,17 @@ function createSubappManager(options = {}) {
           const downloading = backgroundDownloads.get(updateKey(entry));
           if (downloading) await downloading;
           if (action === 'install-update') {
-            prepared = readPreparedVersion(rootDir, entry);
+            try {
+              prepared = readPreparedVersion(rootDir, entry);
+            } catch (error) {
+              // A damaged downloaded generation is rebuilt. The selected version stays until publish succeeds.
+              console.warn('[subapp-manager] prepared version will be published again:', error.message);
+              prepared = null;
+            }
             if (!prepared) {
               const record = readUpdateRecord(updateRootDir, entry);
               if (!record) throw new Error(`Downloaded update is not available: ${entry.id}`);
-              const staged = verifyStagedAssets(updateRootDir, record);
+              const staged = verifyStagedAssets(updateRootDir, record, rootDir);
               prepared = await prepareVersionPackage(rootDir, entry, options.runNpm || runNpm, {
                 ...mutationOptions, tarballPath: staged.package, distribution: record.distribution,
               });
@@ -2783,10 +2856,34 @@ function createSubappManager(options = {}) {
             }
             prepared = await prepareVersionPackage(rootDir, targetEntry, options.runNpm || runNpm, {
               ...mutationOptions, reinstall: action === 'reinstall', bundledCoderFallback: bundle,
+              ...(action === 'reinstall' ? { beforePublish: async source => {
+                await mutationOptions.beforePublish?.(source);
+                // Package lock -> selection lock, matching repair/uninstall. Keep
+                // launches out until the replacement (or rollback) is complete.
+                releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+                assertNotUninstalling(requestedId, entry);
+                const current = readInstalledState(rootDir, entry);
+                if (current.development || current.localNext) throw new Error('Local subapps cannot be changed');
+                // A launch may have completed during download. Do not stop holders
+                // while owning their launch lock; leave the selected files intact.
+                await ensureVersionReplacementIsIdle(rootDir, targetEntry, { ...mutationOptions, forceClose: false });
+              } } : {}),
             });
           }
         }
-        releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+        // Uninstall takes the package preparation lock BEFORE the global
+        // selection lock. Waiting for another host's download cannot block
+        // launches of installed versions or updates to unrelated packages.
+        if (action === 'uninstall') {
+          await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
+          currentIndex = null;
+          currentMeta = null;
+          progressTracker.complete();
+          return list({ locale: payload.locale || 'en' });
+        }
+        assertNotUninstalling(requestedId, entry);
+        if (!releaseLock) releaseLock = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+        assertNotUninstalling(requestedId, entry);
         // A local dev/next selection may have been added for this app while
         // downloading; other local apps must not block this install.
         const current = readInstalledState(rootDir, entry);
@@ -2795,17 +2892,16 @@ function createSubappManager(options = {}) {
           && (current.development || current.localNext)) {
           throw new Error('Local subapps cannot be changed');
         }
-        if (action === 'uninstall') {
-          await uninstallSubappVersions(rootDir, updateRootDir, entry, mutationOptions);
-
-          currentIndex = null;
-          currentMeta = null;
-        } else if (!current.installed || !semver.valid(current.installedVersion)
+        if (!prepared) throw new Error(`Subapp package was not published: ${entry.id}`);
+        if (!current.installed || !semver.valid(current.installedVersion)
           || semver.gte(targetEntry.version, current.installedVersion)) {
+          validatePreparedPackage(prepared.packagePath, targetEntry);
           versions.activate(rootDir, targetEntry, prepared);
+          switched = true;
         }
         progressTracker.complete();
       } catch (error) {
+        const reported = explainKeptVersion(action, previousInstalledVersion, switched, error);
         if (typeof onProgress === 'function') {
           onProgress({
             id,
@@ -2814,10 +2910,10 @@ function createSubappManager(options = {}) {
             percent: progressTracker.percent,
             downloadProgress: 0,
             extractProgress: 0,
-            error: error.message || String(error),
+            error: reported.message || String(reported),
           });
         }
-        throw error;
+        throw reported;
       } finally {
         releaseLock?.();
         updateOperations.delete(updateKey(entry));
@@ -2826,9 +2922,9 @@ function createSubappManager(options = {}) {
       });
     } finally {
       if (tracksUninstall) {
-        const remaining = (pendingUninstallCounts.get(requestedId) || 1) - 1;
-        if (remaining > 0) pendingUninstallCounts.set(requestedId, remaining);
-        else pendingUninstallCounts.delete(requestedId);
+        const remaining = (pendingUninstalls.get(key) || 1) - 1;
+        if (remaining > 0) pendingUninstalls.set(key, remaining);
+        else pendingUninstalls.delete(key);
       }
     }
   }
@@ -2845,6 +2941,98 @@ function createSubappManager(options = {}) {
     return list({ locale: payload.locale || 'en' });
   }
 
+  /** Agent recovery is not reinstall: keep version and holders, never stop/upgrade. */
+  async function repair(payload = {}) {
+    const id = validateId(payload.id);
+    return enqueueMutation(id, async () => {
+      const { index } = await loadIndex('cache-first');
+      const entry = index[id];
+      if (!entry) throw fault('SUBAPP_REPAIR_UNAVAILABLE', 'Subapp is not present in the managed catalog');
+      assertNotUninstalling(id, entry);
+      const original = readInstalledState(rootDir, entry);
+      if (index.dev === true || original.development || original.localNext)
+        throw fault('SUBAPP_REPAIR_DEVELOPMENT_LINK', 'Development/next links are read-only. Refresh the active locator; do not rewrite the link.');
+      if (!semver.valid(original.installedVersion))
+        throw fault('SUBAPP_REPAIR_IDENTITY_REQUIRED', 'A verifiable installed version is required; repair will not install a guessed or latest version.');
+      const originalManifest = readJson(path.join(original.packagePath, 'package.json'));
+      const activeFile = () => versions.activePath(rootDir, entry);
+      const activeBytes = () => {
+        const file = activeFile();
+        return file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+      };
+      const originalActive = activeBytes();
+      const selectionMode = versions.readActiveManifest(rootDir, entry)?.mode || 'auto';
+      const selection = versions.readSelection(rootDir, entry);
+      const selectedDistribution = selection?.version === original.installedVersion
+        && (original.packagePath === selection.packagePath || original.packagePath.startsWith(`${selection.packagePath}${path.sep}`))
+        ? selection.distribution : null;
+      const identity = () => {
+        const current = readInstalledState(rootDir, entry);
+        return JSON.stringify([current.packagePath, current.installedVersion, current.development, current.localNext,
+          fs.readFileSync(path.join(current.packagePath, 'package.json'), 'utf8'), activeBytes()]);
+      };
+      const expected = identity();
+      const assertIdle = async () => {
+        if (options.getRunningSubappConfig?.(id))
+          throw fault('SUBAPP_REPAIR_BUSY', 'Subapp is running; wait for it to become idle. Recovery never stops it.');
+        const holders = typeof options.listChildToolHolders === 'function'
+          ? await options.listChildToolHolders(id) : [];
+        const processes = typeof options.listBusyHolders === 'function'
+          ? await options.listBusyHolders(original.packagePath) : await listProcessesUsingPath(original.packagePath, options);
+        const busy = options.hasProcessesUsingPath || hasProcessesUsingPackagePath;
+        if (holders?.length || processes?.length || await busy(original.packagePath, options.platform || process.platform))
+          throw fault('SUBAPP_REPAIR_BUSY', 'Subapp has active process/session holders; wait before retrying repair. No processes were stopped.');
+      };
+      await assertIdle();
+      // Catalog distribution belongs to its catalog version, not necessarily this installed version.
+      const target = { ...entry, version: original.installedVersion,
+        dist: selectedDistribution || (entry.version === original.installedVersion ? entry.dist : undefined) };
+      let release;
+      let prepared;
+      let activationAttempted = false;
+      const transaction = {};
+      try {
+        prepared = await prepareVersionPackage(rootDir, target, options.runNpm || runNpm, {
+          ...options, forceClose: false, reinstall: true, retainPrevious: true,
+          replacementTransaction: transaction,
+          beforePublish: async source => {
+            const manifest = readJson(path.join(source, 'package.json'));
+            const runnable = resolveRunnablePackage(source, id, manifest);
+            if (!isDeepStrictEqual(originalManifest.ailySubapp?.agent ?? null, runnable.packageJson.ailySubapp?.agent ?? null))
+              throw fault('SUBAPP_REPAIR_CAPABILITY_CHANGED', 'Same-version repair must preserve the original Agent declaration and skill list.');
+            const agent = readSubappAgentConfig(runnable.packagePath, runnable.packageJson);
+            for (const relative of agent?.skills || []) {
+              const file = resolvePackageRelativePath(runnable.packagePath, relative, 'Subapp Agent skill');
+              const realRoot = fs.realpathSync(runnable.packagePath);
+              if (!fs.existsSync(file.resolved) || !fs.statSync(file.resolved).isFile())
+                throw fault('SUBAPP_SKILL_MISSING', `Subapp Agent skill not found: ${relative}`);
+              const realFile = fs.realpathSync(file.resolved);
+              if (!realFile.startsWith(`${realRoot}${path.sep}`))
+                throw fault('SUBAPP_SKILL_INVALID', 'Subapp Agent skill escapes its installed package');
+            }
+            release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'), options);
+            assertNotUninstalling(id, entry);
+            if (identity() !== expected) throw fault('SUBAPP_REPAIR_SOURCE_CHANGED', 'Active installation changed while preparing repair. Refresh before retrying.');
+            await assertIdle();
+          },
+        });
+        activationAttempted = true;
+        versions.activate(rootDir, target, prepared, { mode: selectionMode });
+        return { ok: true, operation: 'child_app_recover', action: 'repair', id,
+          version: target.version, packagePath: prepared.packagePath, repaired: true,
+          previousPackagePreserved: true };
+      } catch (error) {
+        // The launch lock remains held while the exact old directory is restored.
+        await transaction.rollback?.();
+        if (activationAttempted && activeBytes() !== originalActive) {
+          if (originalActive === null) fs.rmSync(activeFile(), { force: true });
+          else writeJsonAtomic(activeFile(), JSON.parse(originalActive));
+        }
+        throw error;
+      } finally { release?.(); }
+    });
+  }
+
   return {
     rootDir,
     get indexUrl() {
@@ -2853,6 +3041,7 @@ function createSubappManager(options = {}) {
     list,
     install: (payload) => mutate('install', payload),
     reinstall: (payload) => mutate('reinstall', payload),
+    repair,
     update: (payload) => mutate('update', payload),
     downloadUpdate,
     prepareLaunch,
@@ -2972,6 +3161,15 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
   ipcMain.handle('subapp-manager-reinstall', handleMutation('reinstall'));
+  ipcMain.handle('subapp-manager-repair', async (_event, payload = {}) => {
+    try {
+      const result = await defaultManager.repair(payload);
+      sendChanged({ action: 'repair', id: payload.id });
+      return result;
+    } catch (error) {
+      return { ok: false, code: error.code || 'SUBAPP_RECOVERY_FAILED', error: error.message || String(error) };
+    }
+  });
   ipcMain.handle('subapp-manager-update', handleMutation('update'));
   ipcMain.handle('subapp-manager-download-update', handleMutation('downloadUpdate'));
   ipcMain.handle('subapp-manager-install-update', handleMutation('installUpdate'));
@@ -2999,6 +3197,7 @@ module.exports = {
   packagePathFor,
   parseDependencyProgressLog,
   prepareNpmSpawn,
+  runNpm,
   quoteWindowsShellPath,
   registerSubappManagerHandlers,
   renamePackagePathWithForceClose,

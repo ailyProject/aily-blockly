@@ -410,3 +410,9 @@ nz-sider {
     border-color: var(--aily-border-subtle) !important;
   }
 }
+
+// Blockly mouse gestures belong to the host until release/cancel. Electron's
+// iframe routing can bypass pointer capture; restore child hit testing at end.
+html.aily-blockly-mouse-drag iframe {
+  pointer-events: none !important;
+}

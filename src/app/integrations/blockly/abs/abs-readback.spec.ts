@@ -9,6 +9,51 @@ describe('ABS complete readback and explicit defaults', () => {
       INPUT: { block: { type: 'child', id: 'c', fields: { TEXT: 'same' } }, shadow: { type: 'child', id: 's', fields: { TEXT: 'shadow' } } },
     }, next: { block: { type: 'tail', id: 't' } } }] }, customSerializer: { data: [1, false] } });
   const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+  it('admits only native finite bubble coordinates omitted by an open comment', () => {
+    const expected = graph();
+    Object.assign((expected.blocks.blocks[0]['icons'] as any).comment, { pinned: true });
+    const actual = clone(expected);
+    Object.assign((actual.blocks.blocks[0]['icons'] as any).comment, { x: 18.5, y: -25 });
+    expect(() => assertAbsReadback(expected, actual)).not.toThrow();
+    const changes: Array<(value: any) => void> = [
+      value => value.x = '18.5', value => value.y = Infinity, value => delete value.y,
+      value => value.text = 'changed', value => value.extra = { x: 18.5 },
+    ];
+    for (const change of changes) {
+      const changed = clone(actual); change((changed.blocks.blocks[0]['icons'] as any).comment);
+      expect(() => assertAbsReadback(expected, changed)).toThrow();
+    }
+    expect((expected.blocks.blocks[0]['icons'] as any).comment.x).toBeUndefined();
+    expect((actual.blocks.blocks[0]['icons'] as any).comment.x).toBe(18.5);
+  });
+  it('preserves explicit, partially specified and unrelated icon coordinates', () => {
+    for (const initial of [{ pinned: false }, { pinned: true, x: 18.5 }, { pinned: true, x: 18.5, y: 12 }]) {
+      const expected = graph(); Object.assign((expected.blocks.blocks[0]['icons'] as any).comment, initial);
+      const actual = clone(expected); Object.assign((actual.blocks.blocks[0]['icons'] as any).comment, { x: 19, y: 12 });
+      expect(() => assertAbsReadback(expected, actual)).toThrow();
+    }
+    const expected = graph(), actual = graph();
+    (expected.blocks.blocks[0]['icons'] as any).custom = { x: 1 };
+    (actual.blocks.blocks[0]['icons'] as any).custom = { x: 2 };
+    expect(() => assertAbsReadback(expected, actual)).toThrow();
+  });
+  it('identifies the missing nested serialized value without weakening the complete comparison', () => {
+    const expected = graph();
+    expected.blocks.blocks[0].extraState = { params: [{ name: 'n', type: 'int' }] };
+    const actual = clone(expected); actual.blocks.blocks[0].extraState = {};
+    expect(() => assertAbsReadback(expected, actual)).toThrowMatching(error =>
+      error.code === 'ABS_READBACK_MISMATCH' && error.diagnostic.blockType === 'root'
+      && error.diagnostic.field === '/attributes/extraState/params'
+      && error.diagnostic.received === 'undefined' && error.diagnostic.hint.includes('"name":"n"'));
+    expect(() => assertAbsReadback(expected, clone(expected))).not.toThrow();
+  });
+  it('escapes diagnostic paths and bounds previews for mismatching persisted metadata', () => {
+    const expected = graph(); expected.blocks.blocks[0].extraState = { 'a/b~': 'x'.repeat(1000) };
+    const actual = clone(expected); actual.blocks.blocks[0].extraState = { 'a/b~': 'y'.repeat(1000) };
+    expect(() => assertAbsReadback(expected, actual)).toThrowMatching(error =>
+      error.diagnostic.field === '/attributes/extraState/a~1b~0'
+      && error.diagnostic.received.length === 256 && error.diagnostic.hint.length < 300);
+  });
   it('owns the expected graph and options independently of callers and previously verified readbacks', () => {
     const expected = graph(), actual = graph();
     const options = { mode: 'complete' as const };

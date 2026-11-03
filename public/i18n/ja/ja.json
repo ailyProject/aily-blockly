@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "サブアプリのアクティビティパネル",
+    "TITLE": "サブアプリ",
+    "OPEN_FULL": "サブアプリ全体を開く",
+    "OPEN_EMBEDDED": "メインアプリ内に埋め込んで開く",
+    "OPEN_WINDOW": "別のウィンドウで開く",
+    "COLLAPSE": "折りたたむ",
+    "CALL_COUNT": "呼び出し回数：{{count}}",
+    "RUNTIME_READY": "ランタイム準備完了",
+    "RUNTIME_STARTING": "ランタイム起動中",
+    "RUNTIME_ERROR": "ランタイムエラー",
+    "RUNTIME_STOPPED": "ランタイム停止",
+    "RUNTIME_UNKNOWN": "ランタイム状態不明",
+    "INVOCATION_RUNNING": "エージェント実行中",
+    "INVOCATION_SUCCEEDED": "前回の呼び出し成功",
+    "INVOCATION_FAILED": "前回の呼び出し失敗",
+    "INVOCATION_CANCELLED": "前回の呼び出しキャンセル済み",
+    "INVOCATION_IDLE": "実行中の呼び出しなし",
+    "WAITING_RUNTIME": "ランタイムを待機中",
+    "LOADING_SURFACE": "コンパクト表示を読み込み中",
+    "RUNTIME_NOT_RETAINED": "このパネルはサブアプリのランタイムを起動したり、維持したりしません。",
+    "SURFACE_ERROR": "コンパクト表示を利用できません",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} ビュー"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "プロジェクトの公開に失敗しました",
         "WORKSPACE_PROJECT_NOT_FOUND": "プロジェクトが見つかりません",
@@ -156,6 +180,7 @@
         "SPONSORS_DESC": "このプロジェクトは以下の企業/個人にスポンサーされています",
         "NEWS": "ニュース",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "やりたいことを自然な言葉で伝えると、AI アシスタントがプロジェクトの作成や質問への回答を手伝います。",
             "STEP1_TITLE": "新規プロジェクトを作成",
             "STEP1_DESC": "ここをクリックして新しいプログラミングプロジェクトを作成します。ボードとプログラミング言語を選択して、創作の旅を始めましょう。",
             "STEP2_TITLE": "既存のプロジェクトを開く",
@@ -182,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "すべてのブロックを選択",
         "EXPLAIN_BLOCK": "AIで解説",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "AI アシスタントがプロジェクトの理解、コードの生成、プログラムの説明、エラーの修正を手伝います。",
             "TOOLBOX_TITLE": "ブロックツールボックス",
             "TOOLBOX_DESC": "ここはブロックのカテゴリ領域です。カテゴリをクリックして機能ブロックを探し、右側のワークスペースへドラッグして使用します。",
             "WORKSPACE_TITLE": "ワークスペース",
@@ -341,6 +367,14 @@
             "CACHE": "キャッシュ管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "クラウドコンパイル",
+            "CLOUD_COMPILATION_DESC": "クラウドでコンパイルし、このコンピューターからボードに書き込みます。有効化時にサービスを確認します。",
+            "CLOUD_PRO_REQUIRED": "Pro アカウントでログインすると利用できます",
+            "CLOUD_ENABLE_CHECKING": "クラウドコンパイルサービスを確認中…",
+            "CLOUD_ENABLE_SUCCESS": "クラウドコンパイルを有効にしました。",
+            "CLOUD_ENABLE_FAILED": "有効化に失敗しました。しばらくしてから再試行してください。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "有効化に失敗しました。アプリを完全に終了して再起動し、もう一度お試しください。",
+            "CLOUD_DISABLE_FAILED": "無効化に失敗しました。再試行してください。",
             "PROJECT_FOLDER": "プロジェクトフォルダ",
             "LANGUAGE": "言語",
             "DEVELOPMENT_MODE_PREFERENCE": "既定の開発モード",
@@ -350,6 +384,7 @@
             "UI_THEME": "UIテーマ",
             "BLOCKLY_THEME": "Blocklyテーマ",
             "BLOCKLY_MINIMAP": "Blocklyミニマップ",
+            "BLOCKLY_SOUNDS": "操作音",
             "FLYOUT_AUTO_CLOSE": "ツールボックスを自動的に閉じる",
             "COMPILATION_OPTIONS": "コンパイルオプション",
             "REGION": "サービスリージョン",
@@ -872,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "ログアウト",
         "CANCEL": "キャンセル",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "アプリストア",
+            "APP_STORE_DESC": "AI ツールを探してインストールし、AI アシスタントの機能を拡張できます。ほかのアプリの追加やツールバーの項目管理もできます。",
+            "AI_TOOLS_TITLE": "AI アシスタント",
             "SKIP": "スキップ",
             "PREV": "前へ",
             "NEXT": "次へ",
@@ -1041,6 +1079,7 @@
         "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI タスクを実行中です。完了してから名前を付けて保存してください。",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1049,6 +1088,11 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "クラウドコンパイルのコンポーネントが更新されていません。アプリを完全に終了して再起動してから、もう一度お試しください。ページの再読み込みだけでは更新されません。",
+        "CLOUD_TARGET_UNAVAILABLE": "このボードのバージョンまたは内容は利用可能なクラウドターゲットとして登録されていません。",
+        "CLOUD_BOARD_NOT_ENABLED": "このボードのバージョンではクラウドコンパイルが有効になっていません。",
+        "CLOUD_BOARD_UNSUPPORTED": "このボードのバージョンはクラウドコンパイルに対応していません。",
+        "CLOUD_BOARD_OFFLINE": "このボードのクラウドコンパイラはオフラインです。しばらくしてから再試行してください。",
       "MODE_UNKNOWN": "プロジェクトの種類を識別できません。有効な Aily Blockly または Aily Coder プロジェクトを選択してください。",
       "MODE_CREATE_RESTRICTED": "現在の {{application}} モードではこの種類のプロジェクトを作成できません。{{targetApplication}} を使用してください。",
       "MODE_MISMATCH_TITLE": "プロジェクトモードが一致しません",
@@ -1259,5 +1303,29 @@
         "ERR_PATH_EXISTS": "同名のフォルダが既に存在します",
         "ERR_PATH_INVALID": "保存パスに無効な文字が含まれています",
         "ERR_CREATE_FAILED": "プロジェクトの作成に失敗しました。もう一度お試しください。"
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "ローカルコンパイルに切り替え",
+        "SWITCH_TO_CLOUD": "クラウドコンパイルに戻す",
+        "SWITCHING_TO_CLOUD": "ローカルコンパイルを停止し、クラウドに戻しています…",
+        "SWITCHING_TO_LOCAL": "クラウドコンパイルをキャンセルしてローカルに切り替えています…",
+        "PREPARING_LOCAL": "ローカルコンパイルの準備中…",
+        "REUSED_RESULT": "検証済みのクラウドビルド結果を再利用しました (所要時間: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "クラウドビルドが完了しました (所要時間: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "クラウドビルド用ファイルを準備中",
+            "UPLOADING": "クラウドビルド用ファイルをアップロード中",
+            "QUEUED": "クラウドビルドの順番待ち",
+            "DISPATCHING": "クラウドビルドサーバーを割り当て中",
+            "PREPARING": "クラウドビルド環境を準備中",
+            "RESOURCES": "クラウドビルドリソースを準備中",
+            "ANALYZING": "プロジェクトを解析中",
+            "COMPILING": "クラウドでコンパイル中",
+            "FINALIZING": "クラウドビルド成果物を確認中",
+            "DOWNLOADING": "クラウドビルド成果物をダウンロード中",
+            "VERIFYING": "クラウドビルド成果物を検証中",
+            "RECONNECTING": "ゲートウェイに再接続中",
+            "COMPLETE": "クラウドビルドが完了しました"
+        }
     }
 }

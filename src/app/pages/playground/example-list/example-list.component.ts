@@ -320,7 +320,7 @@ export class ExampleListComponent implements OnInit, AfterViewInit, OnDestroy {
             packageJson.cloudId = item.id;
 
             this.electronService.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
-            await this.projectService.initializeProjectDataSchema(actualProjectPath, assertCurrent, fieldUpdates);
+            await this.projectService.initializeProjectDataSchema(actualProjectPath, assertCurrent, fieldUpdates, { deferToLoad: true });
             assertCurrent();
             await this.projectService.projectOpen(actualProjectPath);
             assertCurrent();

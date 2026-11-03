@@ -1,6 +1,7 @@
 import { GeneratorProjectEffects } from '../../../editors/blockly-editor/services/generator-project-effects';
 import { mergeGeneratorMacros } from '../../../editors/blockly-editor/services/prepared-generator-config';
 import { evaluateNativeCandidate } from '../../../editors/blockly-editor/services/blockly-native-candidate';
+import * as Blockly from 'blockly';
 
 describe('owned generator project effects', () => {
   const workspace = (ids = ['init']) => ({ getAllBlocks: () => ids.map(id => ({ id, isEnabled: () => true })) }) as any;
@@ -71,6 +72,44 @@ describe('owned generator project effects', () => {
     expect(effects.capture(ws)).toEqual([]);
   });
 
+  it('keeps an enabled next statement macro after its disabled predecessor through real Blockly connections', () => {
+    const type = 'macro_activity_next';
+    Blockly.Blocks[type] = { init() { this.setPreviousStatement(true); this.setNextStatement(true); } };
+    const ws = new Blockly.Workspace(), realm: any = { Promise, projectService: {} }, effects = new GeneratorProjectEffects(realm);
+    try {
+      const previous = ws.newBlock(type, 'disabled-previous'), next = ws.newBlock(type, 'enabled-next');
+      previous.nextConnection!.connect(next.previousConnection!);
+      previous.setDisabledReason(true, 'MANUALLY_DISABLED');
+      effects.run(previous.id, () => { realm.projectService.addMacro('PREVIOUS=1'); });
+      effects.run(next.id, () => { realm.projectService.addMacro('NEXT=1'); });
+      expect(next.getParent()).toBe(previous);
+      expect(next.getSurroundParent()).toBeNull();
+      expect(effects.capture(ws)).toEqual([{ name: 'NEXT', value: 'NEXT=1' }]);
+      previous.setDisabledReason(false, 'MANUALLY_DISABLED');
+      expect(effects.capture(ws)).toHaveSize(2);
+    } finally { ws.dispose(); delete Blockly.Blocks[type]; }
+  });
+
+  it('filters macros inside disabled containers but keeps their enabled outside next statement', () => {
+    const containerType = 'macro_activity_container', statementType = 'macro_activity_statement';
+    Blockly.Blocks[containerType] = { init() { this.appendStatementInput('DO'); this.setPreviousStatement(true); this.setNextStatement(true); } };
+    Blockly.Blocks[statementType] = { init() { this.setPreviousStatement(true); this.setNextStatement(true); } };
+    const ws = new Blockly.Workspace(), realm: any = { Promise, projectService: {} }, effects = new GeneratorProjectEffects(realm);
+    try {
+      const container = ws.newBlock(containerType, 'container'), first = ws.newBlock(statementType, 'first'), second = ws.newBlock(statementType, 'second');
+      const outside = ws.newBlock(statementType, 'outside');
+      container.getInput('DO')!.connection!.connect(first.previousConnection!);
+      first.nextConnection!.connect(second.previousConnection!);
+      container.nextConnection!.connect(outside.previousConnection!);
+      for (const block of [container, first, second, outside]) effects.run(block.id, () => { realm.projectService.addMacro(`${block.id.toUpperCase()}=1`); });
+      container.setDisabledReason(true, 'MANUALLY_DISABLED');
+      expect(second.getSurroundParent()).toBe(container);
+      expect(effects.capture(ws)).toEqual([{ name: 'OUTSIDE', value: 'OUTSIDE=1' }]);
+      container.setDisabledReason(false, 'MANUALLY_DISABLED');
+      expect(effects.capture(ws)).toHaveSize(4);
+    } finally { ws.dispose(); delete Blockly.Blocks[containerType]; delete Blockly.Blocks[statementType]; }
+  });
+
   it('wraps once and attributes nested generator calls to their own blocks', () => {
     const realm: any = { Promise, projectService: {} }, effects = new GeneratorProjectEffects(realm);
     const generator: any = { forBlock: {
@@ -104,7 +143,9 @@ describe('owned generator project effects', () => {
     expect(reads).toBe(6000);
     blocks[0].isEnabled = () => false; reads = 0;
     expect(effects.capture({getAllBlocks: () => blocks} as any)).toEqual([]);
-    expect(reads).toBe(6000);
+    // An own-disabled root need not query another parent. The shared walk is
+    // still bounded by the number of blocks, not owners times stack depth.
+    expect(reads).toBeLessThanOrEqual(6000);
   });
 
   it('validates a real isolated generator using the legacy Promise/macro interface', async () => {

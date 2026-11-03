@@ -297,6 +297,56 @@ test('expiry cancels a long-running call and final owner teardown releases its p
   assert.equal((await h.service.manageOwnerLease({ action: 'renew', ...lease })).errorCode, 'SUBAPP_OWNER_EXPIRED');
 });
 
+test('explicit owner recovery is bound, idempotent and never repeats a domain RPC', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const h = await harness(t), old = await h.acquire('chat-a');
+  await h.execute(old);
+  assert.equal((await h.service.manageOwnerLease({ action: 'inspect', ...old })).errorCode, 'SUBAPP_OWNER_PROTOCOL_REQUIRED');
+  t.mock.timers.setTime(46000);
+  const request = { action: 'recover', version: 1, ...old, recoveryRequestId: crypto.randomUUID() };
+  assert.equal((await h.service.manageOwnerLease({ action: 'inspect', version: 1, ...old })).state, 'expired');
+  assert.equal((await h.service.manageOwnerLease(request)).errorCode, 'SUBAPP_OWNER_RETIRING');
+  await h.release(old);
+  const recovered = await h.service.manageOwnerLease(request);
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.cleanup, 'confirmed');
+  assert.equal(recovered.pendingRequests, 0);
+  assert.equal(recovered.ttlMs, 45000);
+  assert.equal(recovered.heartbeatMs, 10000);
+  assert.equal(recovered.recoveryReceipt.requestId, request.recoveryRequestId);
+  assert.equal(recovered.recoveryReceipt.previousOwnerLeaseId, old.ownerLeaseId);
+  assert.equal(recovered.notResumed, true);
+  assert.equal((await h.service.manageOwnerLease(request)).ownerLeaseId, recovered.ownerLeaseId);
+  assert.equal(h.messages.filter(item => item.method === 'fixture.work').length, 1);
+  assert.equal((await h.execute(old, 'old-request')).errorCode, 'SUBAPP_OWNER_EXPIRED');
+  assert.equal((await h.execute(recovered, 'new-request')).ok, true);
+  assert.equal(h.messages.filter(item => item.method === 'fixture.work').length, 2);
+  await h.release(recovered);
+});
+
+test('owner recovery waits for cancelled presentation discovery instead of opening a late runtime', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const lookup = deferred();
+  let opened = 0;
+  const h = await harness(t, { presentation: { mode: 'window' }, automation: {
+    isChildAppWindowOpen: () => lookup.promise,
+    async openChildApp() { opened++; return { ok: true }; },
+  } });
+  const old = await h.acquire('chat-a'), running = h.execute(old);
+  t.mock.timers.setTime(46000);
+  await h.service.ownerLeases.expire();
+  const request = { action: 'recover', version: 1, ...old, recoveryRequestId: crypto.randomUUID() };
+  const blocked = await h.service.manageOwnerLease(request);
+  assert.equal(blocked.errorCode, 'SUBAPP_OWNER_PENDING_REQUESTS');
+  lookup.resolve(false);
+  assert.equal((await running).errorCode, 'SUBAPP_RPC_CANCELLED');
+  const recovered = await h.service.manageOwnerLease(request);
+  assert.equal(recovered.ok, true);
+  assert.equal(opened, 0);
+  assert.equal(h.acquired, 0);
+  await h.release(recovered);
+});
+
 test('concurrent release acknowledgements await the same Runtime cleanup', async t => {
   const h = await harness(t, { hold: item => item.method === lifecycle.ownerRelease.method });
   const lease = await h.acquire('chat-a');

@@ -18,6 +18,7 @@ import { absSyntaxOptions } from './abs-syntax-contracts';
 import { retireEmptyProjectModels } from './abs-empty-project-models';
 import { orderAbsSharedRoots } from './abs-program-state';
 import { retainedAbsNativeModelCalls } from './abs-retained-native-models';
+import { retainedInactiveAbsCalls } from './abs-native-preservation';
 
 export type AbsNativeExecutor = (request: Omit<NativeCandidateRequest, 'steps'>) => Promise<NativeCandidateResult>;
 
@@ -29,8 +30,9 @@ export async function prepareAbsNativeReconciliation(reconciler: ReturnType<type
   const baseline = reconciler.snapshot();
   const parseOptions = absSyntaxOptions(baseline.workspace, baseline.contracts, options);
   const readDefinitions = options.withSynchronousRead ?? (<T>(read: () => T) => read());
-  const hostCalls: NonNullable<NativeCandidateRequest['hostCalls']> = [];
-  readDefinitions(() => { for (const { node } of walkAbsRawSyntax(syntax)) if (options.prepareBlock && options.hostPrepared?.(node.type)) {
+  const hostCalls: NonNullable<NativeCandidateRequest['hostCalls']> = retainedInactiveAbsCalls(baseline, syntax);
+  const preserved = new Set(hostCalls.map(call => call.start));
+  readDefinitions(() => { for (const { node } of walkAbsRawSyntax(syntax)) if (!preserved.has(node.start) && options.prepareBlock && options.hostPrepared?.(node.type)) {
     const fields = Object.fromEntries(node.parameters.filter(parameter => parameter.name && parameter.token)
       .map(parameter => [parameter.name!, parameter.token!.value]));
     const extraState = Object.hasOwn(node, 'extraState') ? node.extraState : parseOptions.prepareExtraState?.(node);

@@ -57,6 +57,17 @@ describe('ABS immutable baseline and commit recovery', () => {
     expect(host.writes).toEqual([absBaselineKey('g1')]);
   });
 
+  it('stores one complete ABS snapshot without an independent ABI or projection copy', async () => {
+    await store.stage(input);
+    const record = JSON.parse(host.files.get(absBaselineKey('g1'))!);
+    expect(record.schemaVersion).toBe(2);
+    expect(record.snapshot).toBe(input.projection.abs);
+    expect(record.abi).toBeUndefined();
+    expect(record.projection).toBeUndefined();
+    expect(JSON.stringify(record.abiRecipe)).not.toContain('edited');
+    expect(await store.load('g1')).toEqual(input.projection);
+  });
+
   it('refuses generation overwrites and path traversal', async () => {
     await store.stage(input);
     input.inputAbs += '\n# new input';

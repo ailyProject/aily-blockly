@@ -45,12 +45,13 @@ function writePackage(packageRoot, version, options = {}) {
   }
 }
 
-function publish(rootDir, version, options = {}) {
+async function publish(rootDir, version, options = {}) {
   const targetEntry = entry(version);
   const candidate = versions.createCandidate(rootDir, targetEntry);
   writePackage(candidate.source, version, options);
   return versions.publishCandidate(rootDir, targetEntry, candidate, {
     installMode: options.installMode,
+    sleep: async () => {},
   });
 }
 
@@ -66,13 +67,13 @@ test('installs one versionless router path and keeps it stable across refreshes'
   assert.doesNotMatch(first, /\d+\.\d+\.\d+/);
 });
 
-test('resolves each new connection through active.json without changing the router path', (t) => {
+test('resolves each new connection through active.json without changing the router path', async (t) => {
   const f = fixture(t);
   const router = ensureStableRouter(f.rootDir);
-  const first = publish(f.rootDir, '1.0.0');
+  const first = await publish(f.rootDir, '1.0.0');
   versions.activate(f.rootDir, entry('1.0.0'), first);
   const firstTarget = resolveStableBin(f.rootDir, PACKAGE, BIN);
-  const second = publish(f.rootDir, '1.1.0');
+  const second = await publish(f.rootDir, '1.1.0');
   versions.activate(f.rootDir, entry('1.1.0'), second);
   const secondTarget = resolveStableBin(f.rootDir, PACKAGE, BIN);
 
@@ -83,11 +84,11 @@ test('resolves each new connection through active.json without changing the rout
   assert.match(secondTarget.targetPath, /1\.1\.0[/\\]source[/\\]runtime[/\\]mcp[/\\]cli\.js$/);
 });
 
-test('uses the verified previous MCP entry when the selected generation is damaged', (t) => {
+test('uses the verified previous MCP entry when the selected generation is damaged', async (t) => {
   const f = fixture(t);
-  const first = publish(f.rootDir, '1.0.0');
+  const first = await publish(f.rootDir, '1.0.0');
   versions.activate(f.rootDir, entry('1.0.0'), first);
-  const second = publish(f.rootDir, '1.1.0');
+  const second = await publish(f.rootDir, '1.1.0');
   versions.activate(f.rootDir, entry('1.1.0'), second);
   fs.rmSync(path.join(second.packagePath, 'runtime', 'mcp', 'cli.js'));
 
@@ -96,9 +97,9 @@ test('uses the verified previous MCP entry when the selected generation is damag
   assert.equal(resolved.fallback, true);
 });
 
-test('routes a pinned version-dev generation as development', (t) => {
+test('routes a pinned version-dev generation as development', async (t) => {
   const f = fixture(t);
-  const selected = publish(f.rootDir, '1.2.3-dev', { installMode: 'development' });
+  const selected = await publish(f.rootDir, '1.2.3-dev', { installMode: 'development' });
   versions.activate(f.rootDir, entry('1.2.3-dev'), selected, { mode: 'pinned' });
 
   const resolved = resolveStableBin(f.rootDir, PACKAGE, BIN);
@@ -107,9 +108,9 @@ test('routes a pinned version-dev generation as development', (t) => {
   assert.match(resolved.packagePath, /1\.2\.3-dev[/\\]source$/);
 });
 
-test('routes a pinned version-next generation with production version-store semantics', (t) => {
+test('routes a pinned version-next generation with production version-store semantics', async (t) => {
   const f = fixture(t);
-  const selected = publish(f.rootDir, '1.2.3-next', { installMode: 'next' });
+  const selected = await publish(f.rootDir, '1.2.3-next', { installMode: 'next' });
   versions.activate(f.rootDir, entry('1.2.3-next'), selected, { mode: 'pinned' });
 
   const resolved = resolveStableBin(f.rootDir, PACKAGE, BIN);
@@ -117,11 +118,11 @@ test('routes a pinned version-next generation with production version-store sema
   assert.equal(resolved.source, 'version-store');
 });
 
-test('the stable router delegates stdio without changing the client working directory', (t) => {
+test('the stable router delegates stdio without changing the client working directory', async (t) => {
   const f = fixture(t);
   const expectedCwd = path.join(f.temporary, 'third-party workspace');
   fs.mkdirSync(expectedCwd);
-  const selected = publish(f.rootDir, '1.2.3', {
+  const selected = await publish(f.rootDir, '1.2.3', {
     binSource: [
       "const payload = { cwd: process.cwd(), args: process.argv.slice(2), version: process.env.AILY_SUBAPP_VERSION, source: process.env.AILY_SUBAPP_SOURCE };",
       "process.stdout.write(`${JSON.stringify(payload)}\\n`);",
@@ -143,9 +144,9 @@ test('the stable router delegates stdio without changing the client working dire
   });
 });
 
-test('matches host selection rules for pinned, newer legacy and development packages', (t) => {
+test('matches host selection rules for pinned, newer legacy and development packages', async (t) => {
   const f = fixture(t);
-  const selected = publish(f.rootDir, '1.0.0');
+  const selected = await publish(f.rootDir, '1.0.0');
   versions.activate(f.rootDir, entry('1.0.0'), selected);
   const legacy = path.join(f.rootDir, 'node_modules', '@aily-project', 'subapp-aily-chat');
   writePackage(legacy, '2.0.0');
@@ -167,9 +168,9 @@ test('matches host selection rules for pinned, newer legacy and development pack
   assert.equal(resolved.source, 'development');
 });
 
-test('blocks uninstalling packages and rejects escaped or undeclared bin targets', (t) => {
+test('blocks uninstalling packages and rejects escaped or undeclared bin targets', async (t) => {
   const f = fixture(t);
-  const selected = publish(f.rootDir, '1.0.0');
+  const selected = await publish(f.rootDir, '1.0.0');
   versions.activate(f.rootDir, entry('1.0.0'), selected);
   versions.beginUninstall(f.rootDir, entry('1.0.0'));
   assert.throws(

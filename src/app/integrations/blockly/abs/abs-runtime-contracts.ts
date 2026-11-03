@@ -6,6 +6,7 @@ import { indexAbsAbi } from './abs-identity-map';
 import type { DeclarativeBlockSnapshot } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { captureAbsDeclarativeContracts } from './abs-declarative-contracts';
 import { nativeAbsArgumentOrder } from './abs-native-arguments';
+import { createBlocklyBlockActivity } from '../../../editors/blockly-editor/services/blockly-block-activity';
 
 /** Captures existing instances only. No probe blocks, global cache, library edits or Runtime rebuild. */
 export function captureAbsRuntimeContracts(
@@ -15,6 +16,7 @@ export function captureAbsRuntimeContracts(
   const states = indexAbsAbi(serialized);
   const contracts: AbsProjectionContracts = { fields: Object.create(null) };
   const declared = definitions && captureAbsDeclarativeContracts(definitions);
+  const active = createBlocklyBlockActivity();
   for (const block of workspace.getAllBlocks(false)) {
     const state = states.get(block.id);
     if (!state) continue;
@@ -23,7 +25,7 @@ export function captureAbsRuntimeContracts(
       for (const field of input.fieldRow) {
         if (!field.name || field.SERIALIZABLE === false) continue;
         try {
-          fields[field.name] = captureAbsFieldContract(field, state.fields?.[field.name]);
+          fields[field.name] = captureAbsFieldContract(field, state.fields?.[field.name], { preserveDropdownValue: !active(block) });
         } catch (error) {
           throw new AbsSyncError('ABS_FIELD_CONTRACT_UNAVAILABLE', `${block.type}.${field.name}: ${String(error)}`, undefined, [block.id]);
         }

@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "子应用活动面板",
+    "TITLE": "子应用",
+    "OPEN_FULL": "打开完整子应用",
+    "OPEN_EMBEDDED": "以内嵌模式打开",
+    "OPEN_WINDOW": "在独立窗口中打开",
+    "COLLAPSE": "收起",
+    "CALL_COUNT": "调用次数：{{count}}",
+    "RUNTIME_READY": "运行服务已就绪",
+    "RUNTIME_STARTING": "运行服务正在启动",
+    "RUNTIME_ERROR": "运行服务出错",
+    "RUNTIME_STOPPED": "运行服务已停止",
+    "RUNTIME_UNKNOWN": "运行服务状态未知",
+    "INVOCATION_RUNNING": "智能体正在调用",
+    "INVOCATION_SUCCEEDED": "上次调用成功",
+    "INVOCATION_FAILED": "上次调用失败",
+    "INVOCATION_CANCELLED": "上次调用已取消",
+    "INVOCATION_IDLE": "无进行中的调用",
+    "WAITING_RUNTIME": "等待运行服务",
+    "LOADING_SURFACE": "正在加载紧凑视图",
+    "RUNTIME_NOT_RETAINED": "此面板不会启动或保持子应用运行服务。",
+    "SURFACE_ERROR": "紧凑视图不可用",
+    "SURFACE_TITLE": "{{toolId}} {{surface}} 视图"
+  },
   "BLOCKLY_FUNCTION_VIEW": {
     "LABEL": "查看函数或整个文件",
     "ALL": "整个文件",
@@ -205,6 +229,7 @@
         "SPONSORS_DESC": "本项目得到了以下企业/个人的赞助",
         "NEWS": "动态",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "用自然语言描述需求，AI 助手可协助创建项目、解答问题。",
             "STEP1_TITLE": "创建新项目",
             "STEP1_DESC": "点击这里可以创建一个新的编程项目，选择开发板和编程语言开始您的创作之旅。",
             "STEP2_TITLE": "打开已有项目",
@@ -231,6 +256,7 @@
         "WORKSPACE_SELECT_ALL": "全选积木",
         "EXPLAIN_BLOCK": "AI 解释",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "AI 助手可协助理解项目、生成代码、解释程序和修复错误。",
             "TOOLBOX_TITLE": "积木工具箱",
             "TOOLBOX_DESC": "这里是积木分类区域，点击不同的分类可以找到各种功能积木块，拖拽到右边工作区使用。",
             "WORKSPACE_TITLE": "工作区",
@@ -402,6 +428,14 @@
             "CACHE": "缓存管理"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "云编译",
+            "CLOUD_COMPILATION_DESC": "在云端编译，烧录仍在本机进行。开启时自动检测服务。",
+            "CLOUD_PRO_REQUIRED": "登录 Pro 账号后可用",
+            "CLOUD_ENABLE_CHECKING": "正在检测云编译服务…",
+            "CLOUD_ENABLE_SUCCESS": "开启成功",
+            "CLOUD_ENABLE_FAILED": "开启失败，请稍后重试。",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "开启失败，请完整退出并重新启动软件后重试。",
+            "CLOUD_DISABLE_FAILED": "关闭失败，请重试。",
             "PROJECT_FOLDER": "项目文件夹",
             "LANGUAGE": "语言",
             "DEVELOPMENT_MODE_PREFERENCE": "默认开发模式",
@@ -411,6 +445,7 @@
             "UI_THEME": "界面主题",
             "BLOCKLY_THEME": "Blockly主题",
             "BLOCKLY_MINIMAP": "Blockly缩略图",
+            "BLOCKLY_SOUNDS": "操作音效",
             "FLYOUT_AUTO_CLOSE": "自动关闭工具箱",
             "COMPILATION_OPTIONS": "编译选项",
             "REGION": "服务区域",
@@ -1006,6 +1041,9 @@
         "SAFE_LOGOUT_CONFIRM": "退出登录",
         "CANCEL": "取消",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "应用商店",
+            "APP_STORE_DESC": "浏览和安装 AI 工具，扩展 AI 助手的能力；也可添加其他应用、管理工具栏入口。",
+            "AI_TOOLS_TITLE": "AI 助手",
             "SKIP": "跳过",
             "PREV": "上一步",
             "NEXT": "下一步",
@@ -1185,6 +1223,7 @@
         "NO_TUTORIAL_PROVIDED": "库作者未提供教程"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "AI 任务正在运行，请等待完成后再另存为。",
       "OPEN_IN_CODER": "使用 Aily Coder 打开",
       "CONVERT_CODER_TITLE": "转换为 Coder 项目",
       "CONVERT_CODER_CONTENT": "此文件属于 Blockly 项目。将创建 Coder 副本并安装依赖；副本可能无法再使用积木编辑。原项目保留。",
@@ -1208,6 +1247,11 @@
         "PATH_NOT_EXIST": "项目路径不存在，请重新选择项目",
         "DEPENDENCY_TASKS_STOPPED": "项目依赖任务已停止",
         "SWITCHING_BOARD_CONFIG": "正在切换开发板配置...",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "云编译组件尚未更新，请完整退出并重新启动软件后重试；仅刷新页面无效。",
+        "CLOUD_TARGET_UNAVAILABLE": "此开发板版本或内容尚未注册为可用的云编译目标。",
+        "CLOUD_BOARD_NOT_ENABLED": "此开发板版本尚未启用云编译。",
+        "CLOUD_BOARD_UNSUPPORTED": "此开发板版本暂不支持云编译。",
+        "CLOUD_BOARD_OFFLINE": "此开发板的云编译节点暂时离线，请稍后重试。",
         "SDK_CONFIG_NOT_READY": "SDK 尚未就绪，部分开发板配置暂不可用",
         "BOARD_SWITCH_COMPLETE": "开发板切换完成",
         "BOARD_SWITCH_SUCCESS": "开发板切换成功",
@@ -1412,5 +1456,29 @@
         "ERR_PATH_EXISTS": "同名目录已存在，请更换项目名",
         "ERR_PATH_INVALID": "保存路径包含非法字符",
         "ERR_CREATE_FAILED": "创建失败，请稍后重试"
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "切换本地编译",
+        "SWITCH_TO_CLOUD": "切回云编译",
+        "SWITCHING_TO_CLOUD": "正在停止本地编译，准备切回云编译…",
+        "SWITCHING_TO_LOCAL": "正在取消云编译，准备切换到本地…",
+        "PREPARING_LOCAL": "正在准备本地编译环境…",
+        "REUSED_RESULT": "已复用云编译结果 (耗时: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "云编译完成 (耗时: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "正在准备云编译文件",
+            "UPLOADING": "正在上传云编译文件",
+            "QUEUED": "正在排队等待云编译",
+            "DISPATCHING": "正在分配云编译服务器",
+            "PREPARING": "正在准备云编译环境",
+            "RESOURCES": "正在准备云编译资源",
+            "ANALYZING": "正在分析项目",
+            "COMPILING": "正在云编译",
+            "FINALIZING": "正在检查云编译产物",
+            "DOWNLOADING": "正在下载云编译产物",
+            "VERIFYING": "正在校验云编译产物",
+            "RECONNECTING": "正在重新连接网关",
+            "COMPLETE": "云编译完成"
+        }
     }
 }

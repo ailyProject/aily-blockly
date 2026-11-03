@@ -3,9 +3,39 @@ import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 import { AiOperationRegistryService, BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 
+describe('library discard before application quit', () => {
+  function fixture() {
+    const service: any = Object.create(ProjectService.prototype);
+    Object.defineProperty(service, 'currentProjectPath', { value: '/broken' });
+    Object.defineProperty(service, 'coderProjects', { value: [{ path: '/healthy' }, { path: '/healthy' }] });
+    service.libraryChanges = new Map([['/broken', {}]]);
+    service.normalizeProjectPath = (path: string) => path;
+    service.getProjectMode = () => 'blockly';
+    service.getBlocklyProjectLoadStatus = () => ({ ready: true });
+    service.rebuildBlocklyRuntimeAfterLibraryChange = jasmine.createSpy('rebuild').and.resolveTo();
+    service.discardLibraryChanges = jasmine.createSpy('discard').and.callFake(async (path: string) => {
+      if (path === '/broken') throw new Error('ENOENT package.json');
+    });
+    return service;
+  }
+  it('attempts every open project once and reports failures to the quit decision', async () => {
+    const service = fixture();
+    await expectAsync(service.discardLibraryChangesBeforeQuit()).toBeRejectedWithError(AggregateError);
+    expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken'], ['/healthy']]);
+    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+  });
+  it('does not rebuild the editor that is about to quit after successful recovery', async () => {
+    const service = fixture(); service.discardLibraryChanges.and.resolveTo();
+    await service.discardLibraryChangesBeforeQuit();
+    expect(service.discardLibraryChanges).toHaveBeenCalledTimes(2);
+    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+  });
+});
+
 describe('dirty checks after a rejected Blockly open', () => {
   function fixture(mode: string | null, status: { ready: boolean; error?: string }) {
     const service: any = Object.create(ProjectService.prototype);
+    service.configService = { getCompileSettingsKey: () => 'local' };
     service.currentProjectPathSubject = new BehaviorSubject('/failed');
     service.stateSubject = new BehaviorSubject('error');
     service.getProjectMode = () => mode;
@@ -72,12 +102,14 @@ describe('project lifecycle admission across sessions', () => {
     service.coderProjectsSubject = new BehaviorSubject([]);
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
+    service.stateSubject = new BehaviorSubject('loaded');
+    Object.defineProperty(service, 'router', { value: { url: '/main/guide' } });
     service.getProjectMode = () => 'blockly';
     service.save = jasmine.createSpy('save').and.resolveTo({ success: true });
     service.projectOpenInternal = jasmine.createSpy('open').and.resolveTo(true);
     service.closeInternal = jasmine.createSpy('close').and.resolveTo(true);
     service.stopProjectCommands = jasmine.createSpy('stopCommands').and.resolveTo();
-    Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path) } });
+    Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path), closeConnectionGraphWindows: async () => true } });
     return { service, registry };
   }
 

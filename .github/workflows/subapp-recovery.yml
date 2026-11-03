@@ -1,0 +1,42 @@
+name: Subapp recovery regression
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'electron/subapp-*.js'
+      - 'child/scripts/native-file-lock.js'
+      - 'scripts/package-build-lock-runtime.cjs'
+      - 'tests/electron/subapp-*.test.js'
+      - 'tests/package-build-lock-runtime.test.cjs'
+      - 'tests/package.json'
+      - 'e2e/electron/subapp-publication.acceptance.mjs'
+      - 'e2e/electron/subapp-publish-lock.acceptance.mjs'
+      - 'e2e/electron/fixtures/subapp-publication-*'
+      - 'e2e/package.json'
+      - 'src/app/services/integrations/subapps/subapp-manager.service.ts'
+      - 'package-lock.json'
+      - '.github/workflows/subapp-recovery.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  recovery:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix tests run test:subapp-recovery
+      - run: npm --prefix e2e run test:subapp-publication
+      - if: runner.os == 'Windows'
+        run: npm --prefix e2e run test:subapp-publish-lock

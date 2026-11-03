@@ -140,6 +140,17 @@ function isDevServeSubWindow() {
     return process.env.DEV === 'true' || process.env.DEV === true;
 }
 
+// 设置窗口只在仍停留于本应用的完整来源和路由时，才能读取部署信息或检测云连接。
+function isAppSettingsWindowUrl(actual, expected) {
+    try {
+        const source = new URL(actual), application = new URL(expected);
+        return ['http:', 'https:'].includes(application.protocol)
+            && !application.username && !application.password && !source.username && !source.password && source.origin === application.origin
+            && source.pathname === application.pathname && source.search === application.search
+            && /^#\/settings(?:\?[^#]*)?$/u.test(source.hash);
+    } catch { return false; }
+}
+
 /**
  * 与正式子窗口一致的 webPreferences，用于预热池与即用窗口�?
  */
@@ -199,6 +210,14 @@ function cancelChildToolRelease(session) {
     clearTimeout(session.releaseTimer);
     session.releaseTimer = null;
 }
+
+const stopAllChildToolSessions = require('./child-tool-session-shutdown').createChildToolSessionShutdown({
+    beginShutdown: beginWindowShutdown,
+    drainOwners: options => subappOwnerSupervisor.shutdown(options),
+    getSessions: () => childToolSessions.values(),
+    cancelRelease: cancelChildToolRelease,
+    stopSession: stopChildToolSessionProcess,
+});
 
 async function stopChildToolSessionProcess(session) {
     if (!session) return false;
@@ -1874,6 +1893,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.handle("child-tool-session-acquire", (event, toolIdOrPayload) => {
+        if (applicationIsQuitting) return null;
         const payload = toolIdOrPayload && typeof toolIdOrPayload === 'object'
             ? toolIdOrPayload
             : { toolId: toolIdOrPayload, leaseId: 'legacy-renderer' };
@@ -1906,6 +1926,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     ipcMain.handle("child-tool-session-register", async (event, payload = {}) => {
+        if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
         const toolId = sanitizeChildToolId(payload.toolId);
         if (!toolId || !payload.hostInfo || !payload.streamId) {
             return { success: false, reason: 'invalid-payload' };
@@ -1950,6 +1971,7 @@ function registerWindowHandlers(mainWindow, options = {}) {
             pendingChildToolProcessMessages.delete(existing.streamId);
         }
 
+        if (applicationIsQuitting) return { success: false, reason: 'application-quitting' };
         const session = {
             hostInfo: payload.hostInfo,
             streamId: payload.streamId,
@@ -2245,11 +2267,22 @@ function registerWindowHandlers(mainWindow, options = {}) {
     });
 
     scheduleReplenishSubWindowPool(loadSubWindowBasePage);
+
+    return {
+        isSettingsWindowSender(sender) {
+            // 只有当前设置窗口本人且仍停留在设置路由，才能读取云部署信息和检测连接。
+            const win = settingsWarmWindow;
+            if (!win || win.isDestroyed() || win.webContents.isDestroyed()
+                || sender !== win.webContents || sender.isDestroyed()) return false;
+            return isAppSettingsWindowUrl(sender.getURL(), resolveSubWindowRouteUrl('settings'));
+        },
+    };
 }
 
 
 module.exports = {
     beginWindowShutdown,
+    stopAllChildToolSessions,
     registerWindowHandlers,
     forceStopChildToolByCatalogId,
     listChildToolHoldersForCatalogId,
@@ -2257,6 +2290,9 @@ module.exports = {
     nativeSubappRegistry: {
         supervisor: subappOwnerSupervisor,
         register(sender, { toolId, streamId, publicInfo, stop, packageDependencies = [] }) {
+            if (applicationIsQuitting) {
+                throw Object.assign(new Error('Application is quitting.'), { code: 'SUBAPP_HOST_SHUTTING_DOWN' });
+            }
             const processInfo = getActiveCmdProcesses().find(info => info.streamId === streamId);
             if (sender.isDestroyed() || !processInfo || processInfo.pid !== publicInfo.pid || typeof stop !== 'function') {
                 throw new Error('Native Runtime must belong to a live supervised process.');

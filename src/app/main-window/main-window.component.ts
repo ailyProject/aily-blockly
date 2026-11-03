@@ -35,6 +35,7 @@ import {
 } from '@core/auth/public-api';
 import { extractApiErrorDetails } from '../utils/api-error.utils';
 import { ElectronService } from '@core/platform/public-api';
+import { MetricsService } from '@core/metrics/public-api';
 import {
   SubappManagerService,
   ChildToolProcessService,
@@ -158,6 +159,7 @@ export class MainWindowComponent implements OnDestroy {
     private coderEditorUpdates: CoderEditorUpdateService,
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
+    private metrics: MetricsService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -198,6 +200,7 @@ export class MainWindowComponent implements OnDestroy {
     this.setupGlobalOAuthListener();
     this.setupExampleListListener();
     void this.electronService.sendRendererReady();
+    this.metrics.record('app_opened');
     void this.initializeAuthAndPromptIfNeeded();
     void this.ensureDefaultSubapps();
     // 重置 footer 状态

@@ -53,19 +53,29 @@ export interface RuntimeFieldContract {
   precision?: number;
   valueType?: 'string' | 'number' | 'boolean' | 'json';
   variableTypes?: string[];
+  /** A dormant serialized value, not an available dropdown domain. */
+  preservedValue?: { value?: unknown };
 }
 
 /** Actual field contract, not a field-name heuristic or a probe block's defaults. */
-export function serializeRuntimeFieldContract(field: any, serializedValue?: unknown): RuntimeFieldContract {
+export function serializeRuntimeFieldContract(field: any, serializedValue?: unknown,
+  options: { preserveDropdownValue?: boolean } = {}): RuntimeFieldContract {
   let type = runtimeFieldType(field);
   // Custom serializers may return structured state even when extending a text/dropdown widget.
   if (serializedValue !== null && typeof serializedValue === 'object' && type !== 'field_variable') type = 'field_custom';
   const result: RuntimeFieldContract = { type };
   if (type === 'field_variable' && Array.isArray(field.variableTypes)) result.variableTypes = [...field.variableTypes];
   if (type === 'field_dropdown') {
-    const options: unknown = field.getOptions(false);
-    if (!Array.isArray(options)) throw new Error('Dropdown options are not an array.');
-    result.options = options.filter(option => option !== 'separator').map(option => {
+    // Disabled content remains editable project data, even when its initializer
+    // no longer supplies options. Do not execute a provider merely to preserve
+    // that value; this contract grants no authority to choose another option.
+    if (options.preserveDropdownValue) {
+      result.preservedValue = serializedValue === undefined ? {} : { value: serializedValue };
+      return result;
+    }
+    const available: unknown = field.getOptions(false);
+    if (!Array.isArray(available)) throw new Error('Dropdown options are not an array.');
+    result.options = available.filter(option => option !== 'separator').map(option => {
       if (!Array.isArray(option) || option.length < 2 || !['string', 'number', 'boolean'].includes(typeof option[1])) {
         throw new Error('Dropdown option has an invalid serialized value.');
       }

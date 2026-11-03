@@ -1,3 +1,4 @@
+import { splitAbsState } from './abs-full-state';
 import * as Blockly from 'blockly';
 import 'blockly/blocks';
 import { AilyDataRef, assertNoOversizedInlineValues, canonicalJsonStringify, createAilyProjectDataValue } from '@domain/project/public-api';
@@ -74,7 +75,7 @@ describe('ABS v2 source-bound resource preparation', () => {
     expect(result.added.length).toBe(5);
     expect(id).toBe(5); // No second reconciliation/identity allocation during compaction.
     expect(result.externalized.length).toBe(5);
-    expect(result.abs.match(/\$ailyProjectDataValue/g)?.length).toBe(5);
+    expect(splitAbsState(result.abs).program.match(/\$ailyProjectDataValue/g)?.length).toBe(5);
     expect((await result.materialize()).blocks.blocks[0].next!.block.fields!['TEXT']).toBe(text);
   });
 
@@ -102,7 +103,7 @@ describe('ABS v2 source-bound resource preparation', () => {
     }
   });
 
-  it('keeps dormant shadow and opaque workspace state in the baseline, not the ABS source', async () => {
+  it('keeps dormant shadow and opaque workspace state in the full snapshot, outside the readable program', async () => {
     const ref = await runtime.put({ codec: 'utf8-v1', value: text });
     const envelope = createAilyProjectDataValue(ref);
     const workspace: AbsAbiWorkspace = { blocks: { blocks: [{ type: 'root', id: 'r', inputs: {
@@ -111,8 +112,8 @@ describe('ABS v2 source-bound resource preparation', () => {
     } }] }, customSerializer: { value: envelope } };
     const baseline = await projection(workspace);
     const result = await prepareAbsReconciliation(baseline, baseline.abs.replace('TEXT="old"', `TEXT=${JSON.stringify(text)}`), assertCurrent, {}, runtime);
-    expect(result.abs).not.toContain('customSerializer');
-    expect(result.abs.match(/\$ailyProjectDataValue/g)?.length).toBe(1);
+    expect(splitAbsState(result.abs).program).not.toContain('customSerializer');
+    expect(splitAbsState(result.abs).program.match(/\$ailyProjectDataValue/g)?.length).toBe(1);
     const actual = await result.materialize();
     expect(actual.blocks.blocks[0].inputs!['VALUE'].shadow!.fields!['TEXT']).toBe(text);
     expect(actual['customSerializer']).toEqual({ value: text });

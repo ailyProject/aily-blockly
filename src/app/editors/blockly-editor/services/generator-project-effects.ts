@@ -1,4 +1,5 @@
 import type * as Blockly from 'blockly';
+import { createBlocklyBlockActivity } from './blockly-block-activity';
 
 export interface GeneratorMacroEffect { name: string; value: string | null }
 const scopes = new WeakMap<object, GeneratorProjectEffects>();
@@ -112,16 +113,11 @@ export class GeneratorProjectEffects {
     // Most blocks have no project effects. Only inspect owners and share their
     // ancestor results for this capture; edits/disabled parents are checked anew
     // next time, and the workspace's original merge order remains authoritative.
-    const enabled = new Map<Blockly.Block, boolean>();
+    const isActive = createBlocklyBlockActivity();
     for (const block of workspace.getAllBlocks(false)) {
       const effects = this.effects.get(block.id);
       if (!effects?.size) continue;
-      const parents: Blockly.Block[] = [];
-      let current: Blockly.Block | null = block;
-      while (current && !enabled.has(current)) { parents.push(current); current = current.getParent?.() ?? null; }
-      let active = current ? enabled.get(current)! : true;
-      for (let i = parents.length - 1; i >= 0; i--) { active = active && parents[i].isEnabled(); enabled.set(parents[i], active); }
-      if (!enabled.get(block)) continue;
+      if (!isActive(block)) continue;
       for (const [name, effect] of effects) merged.set(name, effect);
     }
     return Object.freeze([...merged.values()].sort((a, b) => a.name.localeCompare(b.name)).map(value => Object.freeze({ ...value })));

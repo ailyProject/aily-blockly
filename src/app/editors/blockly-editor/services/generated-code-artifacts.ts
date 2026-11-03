@@ -6,6 +6,12 @@ interface ArduinoGeneratedArtifactSource {
   getGeneratedArtifacts(): readonly ArduinoGeneratedArtifact[];
 }
 
+export interface GeneratedSourcePublicationOptions { readonly preserveSuperseded?: true }
+export interface GeneratedSourcePublicationReceipt {
+  changed: boolean;
+  sourceArchive?: { version: 1; manifest: string; hash: string; fileCount: number; bytes: number };
+}
+
 function isArduinoGeneratedArtifactSource(
   generator: unknown,
 ): generator is ArduinoGeneratedArtifactSource {
@@ -36,20 +42,33 @@ export function captureArduinoGeneratedArtifacts(generator: unknown): readonly A
  */
 /** True when another host build/preprocess/publish still owns the project workspace. */
 export function isBuildWorkspaceBusyError(error: unknown): boolean {
+  return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_BUSY');
+}
+
+export function isBuildWorkspaceRecoveryRequiredError(error: unknown): boolean {
+  return hasBuildWorkspaceErrorCode(error, 'BUILD_WORKSPACE_RECOVERY_REQUIRED');
+}
+
+function hasBuildWorkspaceErrorCode(error: unknown, expected: string): boolean {
   const code = error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code ?? '')
     : '';
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return code === 'BUILD_WORKSPACE_BUSY' || message.startsWith('BUILD_WORKSPACE_BUSY:');
+  return code === expected || message.startsWith(`${expected}:`);
 }
 
 export async function writePreparedArduinoGeneratedArtifacts(
   projectPath: string | null | undefined,
   artifacts: readonly ArduinoGeneratedArtifact[] | null,
   sketchCode?: string,
-): Promise<void> {
+  options: GeneratedSourcePublicationOptions = {},
+): Promise<GeneratedSourcePublicationReceipt | undefined> {
   if (!projectPath || (artifacts === null && sketchCode === undefined)) return;
   const publish = window['builder']?.publishArduinoGeneratedCode;
   if (typeof publish !== 'function') throw new Error('Build publication bridge unavailable; restart the host to load matching scripts.');
-  publish(projectPath, { artifacts, ...(sketchCode !== undefined ? { sketchCode } : {}) });
+  if (options.preserveSuperseded && window['builder']?.generatedSourceArchiveVersion !== 1) {
+    throw new Error('Generated source preservation bridge unavailable; restart the host to load matching scripts.');
+  }
+  return publish(projectPath, { artifacts, ...(sketchCode !== undefined ? { sketchCode } : {}),
+    ...(options.preserveSuperseded ? { preserveSuperseded: true } : {}) });
 }

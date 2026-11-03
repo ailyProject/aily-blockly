@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Panneau d’activité des sous-applications",
+    "TITLE": "Sous-applications",
+    "OPEN_FULL": "Ouvrir la sous-application complète",
+    "OPEN_EMBEDDED": "Ouvrir dans l’application principale",
+    "OPEN_WINDOW": "Ouvrir dans une fenêtre séparée",
+    "COLLAPSE": "Réduire",
+    "CALL_COUNT": "Appels : {{count}}",
+    "RUNTIME_READY": "Environnement d’exécution prêt",
+    "RUNTIME_STARTING": "Démarrage de l’environnement d’exécution",
+    "RUNTIME_ERROR": "Erreur de l’environnement d’exécution",
+    "RUNTIME_STOPPED": "Environnement d’exécution arrêté",
+    "RUNTIME_UNKNOWN": "État d’exécution inconnu",
+    "INVOCATION_RUNNING": "Agent en cours d’exécution",
+    "INVOCATION_SUCCEEDED": "Dernier appel réussi",
+    "INVOCATION_FAILED": "Dernier appel échoué",
+    "INVOCATION_CANCELLED": "Dernier appel annulé",
+    "INVOCATION_IDLE": "Aucun appel actif",
+    "WAITING_RUNTIME": "En attente de l’environnement d’exécution",
+    "LOADING_SURFACE": "Chargement de la vue compacte",
+    "RUNTIME_NOT_RETAINED": "Le panneau ne démarre pas et ne maintient pas actif l’environnement d’exécution de la sous-application.",
+    "SURFACE_ERROR": "Vue compacte indisponible",
+    "SURFACE_TITLE": "Vue {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Échec de la publication du projet",
         "WORKSPACE_PROJECT_NOT_FOUND": "Projet introuvable",
@@ -156,6 +180,7 @@
         "SPONSORS_DESC": "Ce projet est sponsorisé par les entreprises/individus suivants",
         "NEWS": "Actualités",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Décrivez vos besoins en langage naturel. L’assistant IA peut vous aider à créer des projets et répondre à vos questions.",
             "STEP1_TITLE": "Créer un nouveau projet",
             "STEP1_DESC": "Cliquez ici pour créer un nouveau projet de programmation. Choisissez votre carte et le langage de programmation pour commencer votre voyage créatif.",
             "STEP2_TITLE": "Ouvrir un projet existant",
@@ -182,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "Sélectionner tous les blocs",
         "EXPLAIN_BLOCK": "Expliquer avec l'IA",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "L’assistant IA peut vous aider à comprendre votre projet, générer du code, expliquer des programmes et corriger des erreurs.",
             "TOOLBOX_TITLE": "Boîte à outils des blocs",
             "TOOLBOX_DESC": "Vous trouverez ici les catégories de blocs. Cliquez sur les différentes catégories pour trouver des blocs de fonction, puis faites-les glisser vers l'espace de travail à droite.",
             "WORKSPACE_TITLE": "Espace de travail",
@@ -341,6 +367,14 @@
             "CACHE": "Gestion du cache"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Compilation dans le cloud",
+            "CLOUD_COMPILATION_DESC": "Compilez dans le cloud et téléversez sur la carte depuis cet ordinateur. Le service est vérifié à l’activation.",
+            "CLOUD_PRO_REQUIRED": "Connectez-vous avec un compte Pro",
+            "CLOUD_ENABLE_CHECKING": "Vérification du service de compilation cloud…",
+            "CLOUD_ENABLE_SUCCESS": "Compilation cloud activée.",
+            "CLOUD_ENABLE_FAILED": "Impossible d’activer la compilation cloud. Réessayez plus tard.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Activation impossible. Quittez complètement l’application, redémarrez-la et réessayez.",
+            "CLOUD_DISABLE_FAILED": "Impossible de désactiver la compilation cloud. Réessayez.",
             "PROJECT_FOLDER": "Dossier du Projet",
             "LANGUAGE": "Langue",
             "DEVELOPMENT_MODE_PREFERENCE": "Mode de développement par défaut",
@@ -350,6 +384,7 @@
             "UI_THEME": "Thème d'Interface",
             "BLOCKLY_THEME": "Thème Blockly",
             "BLOCKLY_MINIMAP": "Miniature Blockly",
+            "BLOCKLY_SOUNDS": "Sons des interactions",
             "FLYOUT_AUTO_CLOSE": "Fermer automatiquement la boîte à outils",
             "COMPILATION_OPTIONS": "Options de Compilation",
             "REGION": "Région de service",
@@ -872,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "Se déconnecter",
         "CANCEL": "Annuler",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "Boutique d’applications",
+            "APP_STORE_DESC": "Parcourez et installez des outils IA pour enrichir les capacités de l’assistant. Ajoutez d’autres applications et gérez les raccourcis de la barre d’outils.",
+            "AI_TOOLS_TITLE": "Assistant IA",
             "SKIP": "Ignorer",
             "PREV": "Précédent",
             "NEXT": "Suivant",
@@ -1041,6 +1079,7 @@
         "NO_TUTORIAL_PROVIDED": "L'auteur de la bibliothèque n'a pas fourni de tutoriel"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "Une tâche IA est en cours. Attendez sa fin avant d’enregistrer le projet sous un autre nom.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1049,6 +1088,11 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Le composant de compilation dans le cloud est obsolète. Quittez complètement puis redémarrez l’application avant de réessayer ; recharger la page ne suffit pas.",
+        "CLOUD_TARGET_UNAVAILABLE": "Cette version ou ce contenu de carte ne figure pas parmi les cibles cloud disponibles.",
+        "CLOUD_BOARD_NOT_ENABLED": "La compilation cloud n’est pas activée pour cette version de carte.",
+        "CLOUD_BOARD_UNSUPPORTED": "Cette version de carte ne prend pas en charge la compilation cloud.",
+        "CLOUD_BOARD_OFFLINE": "Le compilateur cloud de cette carte est hors ligne. Veuillez réessayer plus tard.",
       "MODE_UNKNOWN": "Type de projet inconnu. Sélectionnez un projet Aily Blockly ou Aily Coder valide.",
       "MODE_CREATE_RESTRICTED": "Le mode actuel de {{application}} ne peut pas créer ce type de projet. Utilisez {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Mode de projet incompatible",
@@ -1259,5 +1303,29 @@
         "ERR_PATH_EXISTS": "Un dossier du même nom existe déjà",
         "ERR_PATH_INVALID": "Le chemin d'enregistrement contient des caractères invalides",
         "ERR_CREATE_FAILED": "Échec de la création du projet. Veuillez réessayer."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Compiler en local",
+        "SWITCH_TO_CLOUD": "Revenir à la compilation cloud",
+        "SWITCHING_TO_CLOUD": "Arrêt de la compilation locale pour revenir au cloud…",
+        "SWITCHING_TO_LOCAL": "Annulation de la compilation cloud pour continuer en local…",
+        "PREPARING_LOCAL": "Préparation de la compilation locale…",
+        "REUSED_RESULT": "Résultat de compilation cloud vérifié réutilisé (durée: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Compilation cloud terminée (durée: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Préparation des données de compilation cloud",
+            "UPLOADING": "Envoi des données de compilation cloud",
+            "QUEUED": "En attente dans la file de compilation cloud",
+            "DISPATCHING": "Attribution d’un serveur de compilation cloud",
+            "PREPARING": "Préparation de l’environnement de compilation cloud",
+            "RESOURCES": "Préparation des ressources de compilation cloud",
+            "ANALYZING": "Analyse du projet",
+            "COMPILING": "Compilation dans le cloud",
+            "FINALIZING": "Contrôle des résultats de compilation cloud",
+            "DOWNLOADING": "Téléchargement des résultats de compilation cloud",
+            "VERIFYING": "Vérification des résultats de compilation cloud",
+            "RECONNECTING": "Reconnexion à la passerelle",
+            "COMPLETE": "Compilation cloud terminée"
+        }
     }
 }

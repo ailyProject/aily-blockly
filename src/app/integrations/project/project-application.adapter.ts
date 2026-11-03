@@ -1,10 +1,19 @@
 import { Injectable, Injector } from '@angular/core';
-import { ActionService, UiService } from '@core/app-shell/public-api';
+import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
 import {
   BlocklyLibraryRuntimeRebuildInput,
   ProjectApplicationPort,
   ProjectService,
+  type BlocklySaveAsSnapshot,
+  type ProjectSaveDispatchResult,
+  type ProjectRecoveryFragment,
+  type ProjectConflictChoice,
+  type ProjectConflictResolution,
+  type AilyDataRef,
+  canonicalProjectJsonStringify,
+  materializeGenericProjectDataValues,
+  projectDataRuntime,
 } from '@domain/project/public-api';
 import { AiOperationRegistryService } from '@integration/automation/public-api';
 import { isAilyLibraryPackageName } from '@shared/public-api';
@@ -12,7 +21,10 @@ import { applyCdcSerialPortOverrides } from '../../editors/blockly-editor/compon
 import { BlocklyGeneratorRuntimeService } from '../../editors/blockly-editor/services/blockly-generator-runtime.service';
 import { BlocklyService } from '../../editors/blockly-editor/services/blockly.service';
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
+import { fenceBlocklyWorkspaceInput } from '../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
+import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -50,12 +62,100 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         && this.generatorRuntime.isActive() && this.blocklyService.isWorkspaceEditInProgress();
   }
 
-  dispatchProjectSave(path: string, timeoutMs: number): Promise<{ success: boolean; error?: string }> {
+  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean {
+    if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) return false;
+    return [ProcessState.BUILDING, ProcessState.UPLOADING, ProcessState.INSTALLING]
+      .includes(this.injector.get(WorkflowService).currentState);
+  }
+
+  captureBlocklySaveAsSnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+    return this.blocklyEditorProjectService.captureSaveAsSnapshot(path);
+  }
+
+  captureBlocklyRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+    return this.blocklyEditorProjectService.captureRecoveryCopySnapshot(path);
+  }
+
+  async captureBlocklyRecoveryFragment(path: string): Promise<ProjectRecoveryFragment> {
+    const workspace = this.blocklyService.workspace, token = projectDataRuntime.getSessionToken();
+    const assertCurrent = () => {
+      if (!this.isSameProjectPath(path, this.projectService.currentProjectPath)
+        || !this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
+        || workspace !== this.blocklyService.workspace || token !== projectDataRuntime.getSessionToken()
+        || this.blocklyService.isWorkspaceEditInProgress()) {
+        throw new Error('The partial native view changed or belongs to another project.');
+      }
+    };
+    try {
+      assertCurrent();
+      const snapshot = this.blocklyService.captureRecoverySnapshot();
+      const document = await materializeGenericProjectDataValues(snapshot.document, {
+        resolve: async <TValue>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<TValue>(ref); assertCurrent(); return value; },
+      });
+      assertCurrent();
+      if (this.blocklyService.captureRecoverySnapshot().documentText !== snapshot.documentText) {
+        throw new Error('The partial native view changed while its data references were read.');
+      }
+      const isCurrent = () => {
+        try { assertCurrent(); return this.blocklyService.captureRecoverySnapshot().documentText === snapshot.documentText; }
+        catch { return false; }
+      };
+      return { documentText: canonicalProjectJsonStringify(document), isCurrent,
+        freezeForActivation: () => {
+          if (!isCurrent()) throw new Error('The partial native view changed before activation.');
+          return fenceBlocklyWorkspaceInput(workspace?.getParentSvg?.()?.parentElement ?? undefined);
+        } };
+    } catch (error) {
+      return { error: (error instanceof Error ? error.message : String(error)).slice(0, 2000) };
+    }
+  }
+
+  hasRunningAi(): boolean {
+    return this.aiOperationRegistry.readActive().some(operation => operation.source.startsWith('child-chat-run:')
+      || operation.source.startsWith('child-tool:'));
+  }
+
+  prepareProjectCopy(projectPath: string) {
+    return this.projectService.getProjectMode(projectPath) === 'coder'
+      ? this.injector.get(CodeEditorProProjectService).prepareCopy(projectPath)
+      : this.injector.get(AbsWorkspaceSyncService).prepareCopy();
+  }
+
+  dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult> {
     return new Promise((resolve) => {
       this.actionService.dispatch('project-save', { path }, (result) => {
-        resolve({ success: result.success, error: result.error });
+        const outcome = result.data;
+        const structured = outcome && typeof outcome.projectSaved === 'boolean'
+          && typeof outcome.generatedCodePublished === 'boolean' && typeof outcome.partial === 'boolean'
+          ? outcome : undefined;
+        resolve({ ...structured, success: result.success && (!structured || structured.projectSaved && !structured.partial),
+          error: structured?.error || (structured?.partial ? '项目文件已保存，但生成代码未完整发布。' : result.error) });
       }, timeoutMs);
     });
+  }
+
+  async inspectBlocklyConflict(path: string) {
+    this.assertConflictProject(path);
+    return this.injector.get(AbsWorkspaceSyncService).inspectViewConflict();
+  }
+
+  async resolveBlocklyConflict(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution> {
+    this.assertConflictProject(path);
+    const outcome = await this.injector.get(AbsWorkspaceSyncService).resolveViewConflict(choice, token);
+    const projectSaved = outcome.publication.status === 'COMMITTED' && !outcome.requiresReload;
+    const generatedCodePublished = outcome.derivedOutputs?.published ?? outcome.warnings.length === 0;
+    return { project: path, choice, refreshed: outcome.refreshed, generation: outcome.publication.generation,
+      projectSaved, generatedCodePublished, partial: !projectSaved || !generatedCodePublished,
+      ...(!projectSaved || !generatedCodePublished ? { code: outcome.derivedOutputs?.code ?? 'ABS_VIEW_RESOLUTION_INCOMPLETE',
+        error: outcome.derivedOutputs?.error ?? outcome.publication.error ?? outcome.warnings.join('\n') } : {}) };
+  }
+
+  private assertConflictProject(path: string): void {
+    if (!this.isSameProjectPath(path, this.projectService.currentProjectPath)
+      || this.projectService.getProjectMode(path) !== 'blockly'
+      || !this.projectService.getBlocklyProjectLoadStatus(path)?.ready) {
+      throw Object.assign(new Error('Conflict resolution requires this fully loaded Blockly project.'), { code: 'ABS_CONTEXT_STALE' });
+    }
   }
 
   hasUnsavedBlocklyChanges(): Promise<boolean> {
@@ -64,7 +164,8 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       this.actionService.dispatch('project-check-unsaved', {}, (result) => {
         if (path !== this.projectService.currentProjectPath) return reject(new Error('Project changed during the unsaved-state check.'));
         if (!result.success || typeof result.data?.hasUnsavedChanges !== 'boolean') {
-          return reject(new Error(result.error || 'The editor did not return a valid unsaved-state result.'));
+          return reject(Object.assign(new Error(result.data?.error || result.error || 'The editor did not return a valid unsaved-state result.'),
+            typeof result.data?.code === 'string' ? { code: result.data.code } : {}));
         }
         resolve(result.data.hasUnsavedChanges);
       }, 15000);

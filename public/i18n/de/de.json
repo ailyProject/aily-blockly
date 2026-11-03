@@ -1,4 +1,28 @@
 {
+  "SUBAPP_DOCK": {
+    "LABEL": "Aktivitätsbereich für Unteranwendungen",
+    "TITLE": "Unteranwendungen",
+    "OPEN_FULL": "Vollständige Unteranwendung öffnen",
+    "OPEN_EMBEDDED": "In der Hauptanwendung eingebettet öffnen",
+    "OPEN_WINDOW": "In separatem Fenster öffnen",
+    "COLLAPSE": "Einklappen",
+    "CALL_COUNT": "Aufrufe: {{count}}",
+    "RUNTIME_READY": "Laufzeit bereit",
+    "RUNTIME_STARTING": "Laufzeit startet",
+    "RUNTIME_ERROR": "Laufzeitfehler",
+    "RUNTIME_STOPPED": "Laufzeit angehalten",
+    "RUNTIME_UNKNOWN": "Laufzeitstatus unbekannt",
+    "INVOCATION_RUNNING": "Agent wird ausgeführt",
+    "INVOCATION_SUCCEEDED": "Letzter Aufruf erfolgreich",
+    "INVOCATION_FAILED": "Letzter Aufruf fehlgeschlagen",
+    "INVOCATION_CANCELLED": "Letzter Aufruf abgebrochen",
+    "INVOCATION_IDLE": "Kein aktiver Aufruf",
+    "WAITING_RUNTIME": "Warten auf die Laufzeit",
+    "LOADING_SURFACE": "Kompaktansicht wird geladen",
+    "RUNTIME_NOT_RETAINED": "Der Bereich startet die Laufzeit der Unteranwendung nicht und hält sie nicht aktiv.",
+    "SURFACE_ERROR": "Kompaktansicht nicht verfügbar",
+    "SURFACE_TITLE": "Ansicht {{toolId}} {{surface}}"
+  },
     "CLOUD_SPACE_ERRORS": {
         "PUBLISH_FAILED": "Projekt konnte nicht veröffentlicht werden",
         "WORKSPACE_PROJECT_NOT_FOUND": "Projekt nicht gefunden",
@@ -156,6 +180,7 @@
         "SPONSORS_DESC": "Dieses Projekt wird von den folgenden Unternehmen/Personen gesponsert",
         "NEWS": "Neuigkeiten",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Beschreiben Sie Ihr Anliegen in natürlicher Sprache. Der KI-Assistent hilft beim Erstellen von Projekten und beantwortet Fragen.",
             "STEP1_TITLE": "Neues Projekt erstellen",
             "STEP1_DESC": "Klicken Sie hier, um ein neues Programmierprojekt zu erstellen. Wählen Sie Ihr Board und die Programmiersprache, um Ihre kreative Reise zu beginnen.",
             "STEP2_TITLE": "Vorhandenes Projekt öffnen",
@@ -182,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "Alle Blöcke auswählen",
         "EXPLAIN_BLOCK": "Mit KI erklären",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Der KI-Assistent hilft, Ihr Projekt zu verstehen, Code zu generieren, Programme zu erklären und Fehler zu beheben.",
             "TOOLBOX_TITLE": "Block-Werkzeugkasten",
             "TOOLBOX_DESC": "Hier befinden sich die Blockkategorien. Klicken Sie auf eine Kategorie, um Funktionsblöcke zu finden, und ziehen Sie sie zur Verwendung in den Arbeitsbereich rechts.",
             "WORKSPACE_TITLE": "Arbeitsbereich",
@@ -341,6 +367,14 @@
             "CACHE": "Cache-Verwaltung"
         },
         "FIELDS": {
+            "CLOUD_COMPILATION": "Cloud-Kompilierung",
+            "CLOUD_COMPILATION_DESC": "In der Cloud kompilieren und auf diesem Computer auf das Board übertragen. Der Dienst wird beim Aktivieren geprüft.",
+            "CLOUD_PRO_REQUIRED": "Mit einem Pro-Konto anmelden",
+            "CLOUD_ENABLE_CHECKING": "Cloud-Kompilierungsdienst wird geprüft…",
+            "CLOUD_ENABLE_SUCCESS": "Cloud-Kompilierung aktiviert.",
+            "CLOUD_ENABLE_FAILED": "Aktivierung fehlgeschlagen. Bitte später erneut versuchen.",
+            "CLOUD_ENABLE_RESTART_REQUIRED": "Aktivierung fehlgeschlagen. Bitte die Anwendung vollständig beenden, neu starten und erneut versuchen.",
+            "CLOUD_DISABLE_FAILED": "Deaktivierung fehlgeschlagen. Bitte erneut versuchen.",
             "PROJECT_FOLDER": "Projektordner",
             "LANGUAGE": "Sprache",
             "DEVELOPMENT_MODE_PREFERENCE": "Standard-Entwicklungsmodus",
@@ -350,6 +384,7 @@
             "UI_THEME": "UI-Theme",
             "BLOCKLY_THEME": "Blockly-Theme",
             "BLOCKLY_MINIMAP": "Blockly-Miniaturansicht",
+            "BLOCKLY_SOUNDS": "Interaktionsklänge",
             "FLYOUT_AUTO_CLOSE": "Werkzeugkasten automatisch schließen",
             "COMPILATION_OPTIONS": "Kompilierungsoptionen",
             "REGION": "Service-Region",
@@ -872,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "Abmelden",
         "CANCEL": "Abbrechen",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "App Store",
+            "APP_STORE_DESC": "KI-Werkzeuge durchsuchen und installieren, um die Fähigkeiten des KI-Assistenten zu erweitern. Weitere Apps hinzufügen und Einträge in der Symbolleiste verwalten.",
+            "AI_TOOLS_TITLE": "KI-Assistent",
             "SKIP": "Überspringen",
             "PREV": "Zurück",
             "NEXT": "Weiter",
@@ -1041,6 +1079,7 @@
         "NO_TUTORIAL_PROVIDED": "Der Bibliotheksautor hat kein Tutorial bereitgestellt"
     },
     "PROJECT": {
+        "SAVE_AS_AI_BUSY": "Eine KI-Aufgabe läuft. Warten Sie, bis sie abgeschlossen ist, bevor Sie das Projekt unter einem neuen Namen speichern.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",
       "CONVERT_CODER_CONTENT": "This file belongs to a Blockly project. A Coder copy will be created with its dependencies. The copy may no longer support block editing. The original project will be kept.",
@@ -1049,6 +1088,11 @@
       "CONVERT_CODER_INSTALLING": "Installing Coder project dependencies",
       "CONVERT_CODER_DEPENDENCIES_FAILED": "Dependency preparation failed. Check the installation log and try again.",
       "CONVERT_CODER_OPEN_FAILED": "The Coder project was saved to {{path}}. Open it with Aily Coder.",
+        "CLOUD_BRIDGE_RESTART_REQUIRED": "Die Cloud-Kompilierungskomponente ist veraltet. Beenden und starten Sie die Anwendung vollständig neu und versuchen Sie es erneut; das Neuladen der Seite reicht nicht aus.",
+        "CLOUD_TARGET_UNAVAILABLE": "Diese Board-Version oder dieser Inhalt ist nicht als verfügbares Cloud-Ziel registriert.",
+        "CLOUD_BOARD_NOT_ENABLED": "Die Cloud-Kompilierung ist für diese Board-Version nicht aktiviert.",
+        "CLOUD_BOARD_UNSUPPORTED": "Diese Board-Version unterstützt keine Cloud-Kompilierung.",
+        "CLOUD_BOARD_OFFLINE": "Der Cloud-Compiler für dieses Board ist offline. Bitte versuchen Sie es später erneut.",
       "MODE_UNKNOWN": "Unbekannter Projekttyp. Wählen Sie ein gültiges Aily Blockly- oder Aily Coder-Projekt.",
       "MODE_CREATE_RESTRICTED": "Der aktuelle Modus {{application}} kann diesen Projekttyp nicht erstellen. Verwenden Sie {{targetApplication}}.",
       "MODE_MISMATCH_TITLE": "Projektmodus stimmt nicht überein",
@@ -1259,5 +1303,29 @@
         "ERR_PATH_EXISTS": "Ein Ordner mit demselben Namen existiert bereits",
         "ERR_PATH_INVALID": "Speicherpfad enthält ungültige Zeichen",
         "ERR_CREATE_FAILED": "Projekt konnte nicht erstellt werden. Bitte erneut versuchen."
+    },
+    "CLOUD_BUILD": {
+        "SWITCH_TO_LOCAL": "Lokal kompilieren",
+        "SWITCH_TO_CLOUD": "Zur Cloud-Kompilierung zurückkehren",
+        "SWITCHING_TO_CLOUD": "Lokale Kompilierung wird für den Wechsel zur Cloud beendet…",
+        "SWITCHING_TO_LOCAL": "Cloud-Kompilierung wird abgebrochen, um lokal fortzufahren…",
+        "PREPARING_LOCAL": "Lokale Kompilierung wird vorbereitet…",
+        "REUSED_RESULT": "Geprüftes Cloud-Build-Ergebnis wiederverwendet (Dauer: {{seconds}}s)",
+        "COMPLETE_WITH_TIME": "Cloud-Build abgeschlossen (Dauer: {{seconds}}s)",
+        "STAGES": {
+            "CAPTURING": "Cloud-Build-Eingaben werden vorbereitet",
+            "UPLOADING": "Cloud-Build-Eingaben werden hochgeladen",
+            "QUEUED": "Warten in der Cloud-Build-Warteschlange",
+            "DISPATCHING": "Cloud-Build-Server wird zugewiesen",
+            "PREPARING": "Cloud-Build-Umgebung wird vorbereitet",
+            "RESOURCES": "Cloud-Build-Ressourcen werden vorbereitet",
+            "ANALYZING": "Projekt wird analysiert",
+            "COMPILING": "Kompilierung in der Cloud",
+            "FINALIZING": "Cloud-Build-Ausgaben werden geprüft",
+            "DOWNLOADING": "Cloud-Build-Ausgaben werden heruntergeladen",
+            "VERIFYING": "Cloud-Build-Ausgaben werden verifiziert",
+            "RECONNECTING": "Verbindung zum Gateway wird wiederhergestellt",
+            "COMPLETE": "Cloud-Build abgeschlossen"
+        }
     }
 }

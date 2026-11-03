@@ -1,3 +1,7 @@
+import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
+import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
+import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback,
+  type AbsLoadNormalizationInput, type AbsLoadNormalizationDeferred } from '../../integrations/blockly/abs/abs-load-normalization';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { LibManagerComponent } from './components/lib-manager/lib-manager.component';
 import { NotificationComponent } from '../../components/notification/notification.component';
@@ -21,7 +25,7 @@ import { _ProjectService } from './services/project.service';
 import { _UploaderService } from './services/uploader.service';
 import { _BuilderService } from './services/builder.service';
 import { BitmapUploadService } from './services/bitmap-upload.service';
-import { ProjectService, projectDataRuntime, ProjectDataError } from '@domain/project/public-api';
+import { ProjectService, projectDataRuntime, ProjectDataError, type DeferredProjectDataNormalization } from '@domain/project/public-api';
 import { DevToolComponent } from './components/dev-tool/dev-tool.component';
 import { BLOCKLY_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { CodeViewerIpcService } from './services/code-viewer-ipc.service';
@@ -169,7 +173,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
           // An old normalization/publication may finish after navigation. It must
           // neither load into nor tear down the new project's workspace/Realm.
           if (!isCurrent() || (dataSession !== null && this.projectService.currentProjectPath !== requestedProjectPath)) return;
-          if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
+          const cancellation = error as { code?: string; reason?: string };
+          if (cancellation?.code === 'PROJECT_DEPENDENCY_CANCELLED'
+            && cancellation.reason !== 'compile-settings-changed') return;
           console.error('加载项目失败', error);
           const detail = this.formatProjectLoadError(error);
           if (error instanceof ProjectToolboxOnlyLoadError || this.toolboxReadyProjectPath === requestedProjectPath) {
@@ -265,6 +271,11 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   async loadProject(projectPath, assertCurrent: () => void = () => {}) {
+    // Ctrl/Cmd+R enters this route directly, before AppComponent's async init
+    // completes. Capture dependency settings only after the shared local config
+    // is loaded; warm project opens reuse the same resolved promise.
+    await this.configService.init();
+    assertCurrent();
     const session = this.projectService.getProjectDependencySession(projectPath);
     const assertSession = () => {
       assertCurrent();
@@ -395,7 +406,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       state: 'doing',
       text: this.translate.instant('BLOCKLY_EDITOR.LOADING_BOARD_CONFIG'),
     });
-    const boardJson = await this.projectService.resolveBoardConfigForRuntime();
+    let boardJson = await this.projectService.resolveBoardConfigForRuntime();
     assertCurrent();
 
     this.projectService.currentBoardConfig = boardJson;
@@ -403,6 +414,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     window['boardConfig'] = boardJson;
     await this.projectService.loadBoardMenuConfig();
     assertCurrent();
+    if (this.projectService.isCloudBuild()) {
+      // Restore the saved/effective pin selection before generators or source
+      // captures observe this board. Opening Upload later must not change it.
+      await this.projectService.getBoardConfigMenu();
+      assertCurrent();
+      boardJson = this.projectService.currentBoardConfig || boardJson;
+      this.blocklyService.boardConfig = boardJson;
+      window['boardConfig'] = boardJson;
+    }
     this.runtimeCdcEnabled = !!boardJson?._cdcEnabled;
     // 4. 加载blockly library
     this.uiService.updateFooterState({
@@ -446,7 +466,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
-      diskText,
+      diskText, completeAbs, loadNormalization, deferredNormalization,
     } = await this.loadProjectAbiDocument(projectPath, assertCurrent, session.signal);
     assertCurrent();
 
@@ -483,10 +503,28 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       assertCurrent();
       loadLease.assertCurrent();
       this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
+      if (loadNormalization && !bindAbsLoadNormalizationReadback(loadNormalization,
+        this.blocklyService.captureProjectSnapshot(loadLease))) {
+        throw new Error('The normalized native load acknowledgement could not be bound to its original snapshot.');
+      }
     } finally {
       loadLease.release();
     }
-    if (!usedBoardTemplateAbi) {
+    if (loadNormalization) {
+      const outcome = await this._projectService.publishLoadedNormalization(loadNormalization);
+      assertCurrent();
+      if (outcome.status === 'DEFERRED') {
+        console.warn('[ProjectAbi] Normalization was loaded without replacing the original ABS generation.', outcome);
+      }
+      // A successful handler acknowledges its new ABI under its own FIFO lease.
+      // Never remember the old diskText again after that journal has committed.
+    } else if (deferredNormalization) {
+      console.warn('[ProjectAbi] Original ABS/draft retained; normalization publication needs inspected recovery.', deferredNormalization);
+    }
+    // Even an older plain-ABS generation, or a deferred load, can retain resource
+    // roots absent from the current canvas. A successful normalization also just
+    // published complete history; never GC only the active document afterwards.
+    if (!usedBoardTemplateAbi && !completeAbs && !loadNormalization && !deferredNormalization) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -532,6 +570,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     try {
       await this.npmService.installBoardDeps(session);
     } catch (error) {
+      // 项目和生成器已经就绪。登录或切换编译设置仅使旧依赖任务失效，
+      // 不能把已打开的项目改成加载失败；下次编译会按新会话重新准备依赖。
+      if ((error as { code?: string })?.code === 'PROJECT_DEPENDENCY_CANCELLED') return;
       assertCurrent();
       console.error('install board dependencies error', error);
     }
@@ -571,25 +612,35 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   private async loadProjectAbiDocument(projectPath: string, assertCurrent: () => void, signal?: AbortSignal): Promise<{
     document: BlocklyProjectDocument;
     usedBoardTemplate: boolean;
+    completeAbs: boolean;
+    loadNormalization?: AbsLoadNormalizationInput;
+    deferredNormalization?: AbsLoadNormalizationDeferred;
     diskText: string;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
-    let abiContent = await this.electronService.readFileAsync(abiPath);
+    const absPort = await openAbsHostStorage(projectPath, assertCurrent);
+    const derivedAbi = await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
+    let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
     let diskText = abiContent;
+    let normalization: DeferredProjectDataNormalization | undefined;
     projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
       abiContent,
       assertCurrent,
       text => { diskText = text; },
+      prepared => { normalization = prepared; },
     );
     assertCurrent();
     // Anchor the exact acknowledged publication, not a later external writer.
     abiContent = '';
+    const normalizationPreparation = normalization
+      ? await prepareAbsLoadNormalization(projectPath, normalization, absPort, assertCurrent) : undefined;
+    assertCurrent();
 
     let usedBoardTemplate = false;
     if (this.hasEmptyLegacyWorkspace(projectAbi)) {
@@ -611,7 +662,9 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     return {
       document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
       usedBoardTemplate,
-      diskText,
+      diskText, completeAbs: derivedAbi !== null,
+      ...(normalizationPreparation?.input ? { loadNormalization: normalizationPreparation.input } : {}),
+      ...(normalizationPreparation?.outcome ? { deferredNormalization: normalizationPreparation.outcome } : {}),
     };
   }
 
@@ -1475,6 +1528,15 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
   }
 
   private async restoreMissingProjectLibraries(projectPath: string, missingLibraries: MissingLibInfo[], session: ProjectDependencySession): Promise<boolean> {
+    this.projectService.assertProjectDependencySession(session);
+    // A verified recovery target must settle loading before managed Agent
+    // tools can repair its dependencies. Awaiting a human-only dialog here
+    // would leave its independent host permanently in STARTING.
+    if (this.projectService.hasSavedRecoveryTarget(projectPath)) {
+      throw Object.assign(new ProjectToolboxOnlyLoadError(
+        `修复副本缺少可用积木库：${missingLibraries.map(lib => lib.name).join(', ')}。请通过库工具恢复依赖后重新加载此副本。`,
+      ), { code: 'PROJECT_RECOVERY_LIBRARIES_REQUIRED' });
+    }
     try {
       this.projectService.assertProjectDependencySession(session);
       await new Promise<void>((resolve, reject) => {

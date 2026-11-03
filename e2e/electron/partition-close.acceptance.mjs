@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { connectAgent } from './fixtures/subapp-product-agent.mjs';
 
 // Start the host dev renderer on port 4200 before running this script.
 // FFS_CLOSE_MODE=window, FFS_CLOSE_QUIT=1 and FFS_CLOSE_ENTRY=host select paths.
@@ -20,7 +20,13 @@ const requireFfs = createRequire(path.join(ffsRoot, 'package.json'));
 const { _electron, expect } = requireHost('@playwright/test');
 const { startFfsManagerServer } = requireFfs('./server');
 const { appCommand } = await import(pathToFileURL(path.join(chatRoot, 'dist/blockly/services/app/command.js')));
-const output = fs.mkdtempSync(path.join(os.tmpdir(), 'partition-close-product-'));
+const { SubappAgentSession } = await import(pathToFileURL(path.join(chatRoot, 'dist/blockly/subapp-agent-session.js')));
+// FFS_PRESENTATION_TEST=1 exercises real AI calls and the Chat Dock instead of close confirmation.
+const presentationTest = process.env.FFS_PRESENTATION_TEST === '1';
+const artifactRoot = path.join(hostRoot, 'e2e/.artifacts/partition-dock');
+fs.mkdirSync(artifactRoot, { recursive: true });
+const output = fs.mkdtempSync(path.join(artifactRoot, 'run-'));
+let testProject;
 const report = { output, product: 'full-blockly-dev-renderer', checks: [] };
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value, null, 2)); };
 const link = (target, dest) => { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.symlinkSync(target, dest, process.platform === 'win32' ? 'junction' : 'dir'); };
@@ -30,7 +36,7 @@ async function until(probe, name, timeout = 45000) {
   throw new Error('Timed out: ' + name);
 }
 console.log('Evidence: '+output);
-let application, backend, catalog, main;
+let application, backend, catalog, main, agent, scope;
 const logs = fs.createWriteStream(path.join(output, 'process.log'));
 try {
   const stage = path.join(output, 'app'), appdata = path.join(output, 'appdata'), appRoot = path.join(appdata, 'npm-global/app');
@@ -39,6 +45,21 @@ try {
   link(path.join(hostRoot, 'node_modules'), path.join(stage, 'node_modules'));
   link(path.join(hostRoot, 'electron/node_modules'), path.join(stage, 'electron/node_modules'));
   link(path.join(hostRoot, 'child'), path.join(stage, 'child'));
+  if (presentationTest && process.env.FFS_PROJECT_SEED) {
+    const source = path.resolve(process.env.FFS_PROJECT_SEED);
+    testProject = path.join(output, 'project');
+    fs.cpSync(source, testProject, { recursive: true, filter: file =>
+      !['.build', '.temp', '.aily', '.log', '.workspace-history'].includes(path.relative(source, file).split(path.sep)[0]) });
+    const ts = requireHost('typescript');
+    requireHost.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    }).outputText, filename);
+    const { seedPlatform } = requireHost('./e2e/fixtures/platform-seed.ts');
+    assert.ok(process.env.AILY_E2E_TOOLCHAIN_SEED, 'A matching isolated toolchain seed is required');
+    await seedPlatform(testProject, appdata, process.env.AILY_E2E_TOOLCHAIN_SEED);
+    for (const relative of ['npm-global/bin', 'npm-global/lib']) fs.cpSync(path.join(process.env.AILY_E2E_TOOLCHAIN_SEED, relative), path.join(appdata, relative), { recursive: true });
+  }
+
   fs.copyFileSync(path.join(hostRoot, 'e2e/electron/fixtures/subapp-product-bootstrap.cjs'), path.join(stage, 'electron/bootstrap.cjs'));
   write(path.join(stage, 'package.json'), { ...requireHost('./package.json'), main: 'electron/bootstrap.cjs' });
   backend = await startFfsManagerServer();
@@ -52,8 +73,25 @@ try {
   const toolId = 'ffs-manager-child';
   const index = { dev: true, [toolId]: { id: toolId, namespace: 'FFS_MANAGER', titleKey: 'FFS_MANAGER.TITLE',
     package: manifest.name, version: manifest.version, app: { ...manifest.ailySubapp.app, autoInstall: false }, ui: manifest.ailySubapp.ui } };
+  if (presentationTest) {
+    const chatSource = path.resolve(chatRoot, '../aily-chat');
+    const chatFixture = path.join(output, 'chat-fixture');
+    const chatManifest = JSON.parse(fs.readFileSync(path.join(chatSource, 'package.json')));
+    // Same development source as pnpm dev, with isolated state and no dev supervisor.
+    fs.mkdirSync(chatFixture);
+    for (const entry of fs.readdirSync(chatSource, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.name === 'package.json') continue;
+      if (entry.isDirectory() || entry.isSymbolicLink()) link(path.join(chatSource, entry.name), path.join(chatFixture, entry.name));
+      else fs.copyFileSync(path.join(chatSource, entry.name), path.join(chatFixture, entry.name));
+    }
+    write(path.join(chatFixture, 'package.json'), { ...chatManifest, name: '@aily-project/subapp-aily-chat' });
+    link(chatFixture, path.join(appRoot, 'node_modules/@aily-project/subapp-aily-chat'));
+    index['aily-chat'] = { id: 'aily-chat', namespace: 'AILY_CHAT', titleKey: 'AILY_CHAT.TITLE',
+      package: '@aily-project/subapp-aily-chat', version: chatManifest.version, app: { ...chatManifest.ailySubapp.app, autoInstall: false } };
+  }
   write(path.join(appRoot, 'subapp-index.json'), index);
-  write(path.join(appRoot, 'package.json'), { name: 'isolated-partition-close', private: true, dependencies: { [manifest.name]: manifest.version } });
+  write(path.join(appRoot, 'package.json'), { name: 'isolated-partition-close', private: true,
+    dependencies: Object.fromEntries(Object.values(index).filter(entry => entry.package).map(entry => [entry.package, entry.version])) });
   catalog = http.createServer((req,res) => {
     res.setHeader('content-type','application/json'); res.setHeader('access-control-allow-origin',req.headers.origin || '*');
     res.setHeader('access-control-allow-headers','*');
@@ -71,6 +109,7 @@ try {
     args: [stage, '--serve', `--user-data-dir=${path.join(output,'profile')}`],
     env: { ...env, ...(process.platform === 'win32' ? { USERPROFILE: testHome } : { HOME: testHome }),
       AILY_E2E: '1', AILY_APPDATA_PATH: appdata, AILY_PRODUCT_ACCEPTANCE_ROOT: output, AILY_BUILD_PRODUCT: 'blockly',
+      AILY_AGENT_HOME: path.join(output, 'agent-home'), PI_CODING_AGENT_DIR: path.join(output, 'agent-home'),
       AILY_SUBAPP_INSTALL_ROOT: appRoot, AILY_PRODUCT_RUNTIME_DESCRIPTOR: descriptor, AILY_SUBAPP_INDEX_URL: origin+'/subapp-index.json' } });
   application.process().stdout?.on('data', data => logs.write(data)); application.process().stderr?.on('data', data => logs.write(data));
   const pid = await application.evaluate(() => process.pid); report.pid = pid;
@@ -85,6 +124,75 @@ try {
   await main.addLocatorHandler(main.getByText('跳过',{exact:true}), locator => locator.click());
   await until(async () => { const result = await command('child_app_list'); return result.ok && JSON.stringify(result).includes(toolId); }, 'partition discovery');
   console.log('Host ready');
+  if (testProject) {
+    await main.evaluate(project => window.ng.getComponent(document.querySelector('app-header')).projectService.projectOpen(project), testProject);
+    await main.waitForFunction(project => {
+      const service = window.ng.getComponent(document.querySelector('app-header')).projectService;
+      const status = service.getBlocklyProjectLoadStatus(project);
+      if (status?.state === 'error') throw new Error(JSON.stringify(status));
+      return service.currentProjectPath === project && status?.ready;
+    }, testProject, { timeout: 240000 });
+    report.project = testProject;
+  }
+
+  if (presentationTest) {
+    const opened = await command('child_app_open', { toolId: 'aily-chat', mode: 'embedded' });
+    assert.equal(opened.ok, true, JSON.stringify(opened));
+    const chatFrame = await until(() => main.frames().find(frame => frame.parentFrame() && frame.url().includes('token=')), 'Chat frame');
+    const chatUrl = new URL(chatFrame.url());
+    const wsUrl = new URL('/ws', chatUrl); wsUrl.protocol = 'ws:'; wsUrl.search = chatUrl.search;
+    agent = await connectAgent(requireHost('ws'), wsUrl.href);
+    const { cwd: workspace } = await agent.call({ type: 'workspace.resolve', ...(testProject ? { cwd: testProject } : { mode: 'global' }) });
+    assert.ok(path.resolve(workspace).startsWith(output + path.sep) || path.resolve(workspace).startsWith(fs.realpathSync(output) + path.sep), workspace);
+    fs.mkdirSync(workspace, { recursive: true });
+    const { snapshot } = await agent.call({ type: 'session.create', options: { cwd: workspace, developmentMode: 'blockly' } });
+    await agent.call({ type: 'setName', sessionId: snapshot.sessionId, name: 'Partition Dock acceptance' });
+    await chatFrame.goto(chatFrame.url());
+    await chatFrame.getByText('Partition Dock acceptance', { exact: true }).filter({ visible: true }).first().click();
+    scope = new SubappAgentSession((operation, params, options) => appCommand('blockly-live-operation', undefined,
+      { operation, params }, { ...options, target }));
+    const invoke = async (tool, params = {}) => {
+      const response = await scope.call({ toolId, tool, params, sessionId: snapshot.sessionId });
+      assert.equal(response.ok, true, JSON.stringify(response));
+      return response.result;
+    };
+    await invoke('partition_snapshot');
+    const frame = await until(() => application.windows().flatMap(page => page.frames()).find(frame => frame.url().startsWith(backend.origin)), 'partition presentation');
+    await expect(frame.locator('#preset-large')).toBeVisible();
+    const detached = application.windows().filter(page => page.url().includes('child-tool/ffs-manager-child'));
+    report.detachedWindows = detached.length;
+    await main.screenshot({ path: path.join(output, 'partition-presentation.png') });
+    assert.equal(detached.length, 0, 'AI partition tools must not open an independent window');
+    await expect(main.locator('.subapp-dock')).toBeVisible();
+    let latest = await invoke('partition_snapshot');
+    if (testProject) latest = await invoke('partition_load', { projectPath: testProject, expectedRevision: latest.revision });
+    const changed = await invoke('partition_preset', { preset: 'large', expectedRevision: latest.revision });
+    assert.equal(changed.state.draft.ota, false);
+    await expect(frame.locator('#preset-large')).toHaveAttribute('aria-pressed', 'true');
+    await frame.locator('#preset-iot').click();
+    await until(() => backend.core.snapshot().state.draft.preset === 'iot', 'manual Dock edit');
+    const shared = await invoke('partition_snapshot');
+    assert.equal(shared.state.draft.preset, 'iot');
+    assert.ok(shared.revision > changed.revision);
+    assert.equal(application.windows().filter(page => page.url().includes('child-tool/ffs-manager-child')).length, 0);
+    report.checks.push('ai-partition-opens-dock-without-window', 'ai-and-dock-share-editable-draft');
+    if (testProject) {
+      const saved = await invoke('partition_save', { expectedRevision: shared.revision });
+      assert.equal(saved.dirty, false, JSON.stringify(saved));
+      const pkg = JSON.parse(fs.readFileSync(path.join(testProject, 'package.json')));
+      assert.equal(pkg.projectConfig.PartitionScheme, 'custom');
+      const csv = fs.readFileSync(path.join(testProject, 'src/partitions.csv'), 'utf8');
+      assert.equal(csv, pkg.ailyPartitionManager.csv);
+      assert.equal(pkg.ailyPartitionManager.draft.preset, 'iot');
+      report.checks.push('dock-ai-load-edit-save-persists-source-csv');
+      // Let the host own cancellation and cleanup of its optional background preprocess.
+      await main.evaluate(async () => {
+        const editor = window.ng.getComponent(document.querySelector('app-blockly-editor'));
+        await editor?.builderService?.stopPreprocess?.();
+      });
+    }
+
+  } else {
   const mode = process.env.FFS_CLOSE_MODE || 'embedded';
   const offline = process.env.FFS_CLOSE_OFFLINE !== '0';
   report.mode = mode; report.offline = offline; report.quit = process.env.FFS_CLOSE_QUIT === '1';
@@ -146,12 +254,22 @@ try {
     if (!offline) assert.equal(backend.core.snapshot().dirty, false);
     report.checks.push('confirmed-child-closes-with-host-alive');
   }
+  }
   report.passed=true;
 } catch (error) {
   report.error=error.stack; process.exitCode=1;
   if (main && !main.isClosed()) { await main.screenshot({path:path.join(output,'failure.png')}).catch(()=>{}); fs.writeFileSync(path.join(output,'failure.txt'), await main.locator('body').innerText().catch(()=>'')); }
 } finally {
+  await scope?.close().catch(() => {});
+  agent?.close();
+  // app.exit bypasses quit cleanup; retain only PIDs registered by this isolated host.
+  const runtimePids = main && !main.isClosed()
+    ? await main.evaluate(async () => (await window.childToolSession?.list?.() || []).map(session => session.pid ?? session.hostInfo?.pid)).catch(() => [])
+    : [];
   if (application) await application.evaluate(({app}) => app.exit(0)).catch(()=>{}); // only test-owned process cleanup
+  for (const pid of runtimePids) if (Number.isInteger(pid) && pid > 0) {
+    try { process.kill(pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  }
   await backend?.stop();
   if (catalog) { catalog.closeAllConnections(); await new Promise(resolve=>catalog.close(resolve)); }
   await new Promise(resolve=>logs.end(resolve));

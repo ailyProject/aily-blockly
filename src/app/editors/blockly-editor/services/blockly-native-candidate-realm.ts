@@ -10,13 +10,17 @@ import { NativeCandidateModels } from './blockly-native-models';
 import { nativeCandidateValues } from './blockly-native-values';
 import { adaptBundledArduinoProcedureCalls } from './blockly-bundled-procedure-generator';
 import { adaptArduinoTextLiterals } from './blockly-arduino-text-literals';
+import { adaptXiaozhiParameterDeclarations } from './blockly-xiaozhi-parameter-declarations';
 import { NativeRegistrationTasks } from './blockly-native-registration-tasks';
 import { GeneratorProjectEffects } from './generator-project-effects';
 import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tasks';
+import { NativeCommentPreparation } from './blockly-native-comment-preparation';
 import { createNativeCandidateGraphics } from './blockly-native-graphics';
 import type { NativeCandidateProgress } from './blockly-native-progress';
+import { NativeCandidateProgressReporter } from './blockly-native-observation';
 import type { NativeReplayEvent } from './blockly-native-replay-diagnostics';
-import { withNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { beginNativeFieldDependencies } from './blockly-native-field-dependencies';
+import { registerCustomFunctionContract, captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 import { isAilyDataRef, projectDataFieldReference, registerProjectDataBlockDefinition, wrapProjectDataGeneratorFunctions, installProjectDataImageCache } from '@domain/project/project-data/public-api';
 import { decodeNativeCandidateRequest, encodeNativeCandidateResult, type NativeCandidateWireRequest } from './blockly-native-transfer';
 
@@ -34,15 +38,18 @@ export function installNativeCandidateRealm(): void {
     // work finishes. Timing is diagnostic only, never candidate authority.
     const send = (value: Record<string, unknown>) => port.postMessage({ ...value, elapsedMs: performance.now() - started });
     const request = decodeNativeCandidateRequest(event.data);
-    const progress: NativeCandidateProgress = phase => send({ phase });
+    const reporter = new NativeCandidateProgressReporter(send);
+    const progress: NativeCandidateProgress = reporter.progress;
     const errors: Error[] = [];
     let workspace: any;
+    let construction: ReturnType<typeof beginNativeFieldDependencies> | undefined;
     let phase = 'initialization';
     let registering = true;
     let replayStep = 0;
     const observeReplay = (replay: NativeReplayEvent) => send({ phase: 'replay', replay });
     const tasks = new NativeRegistrationTasks(realm.setTimeout.bind(realm), realm.clearTimeout.bind(realm));
-    const uiTasks = new NativeUiTasks();
+    const uiTasks = new NativeUiTasks(timing => reporter.ui(timing));
+    const comments = new NativeCommentPreparation(native, uiTasks);
     const deny = (name: string) => () => {
       const message = `Native candidate does not support ${name}. Phase: ${phase}`;
       const error = Object.assign(new Error(message), { code: 'ABS_NATIVE_EFFECT_UNSUPPORTED', diagnostic: {
@@ -70,12 +77,15 @@ export function installNativeCandidateRealm(): void {
       'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Worker', 'SharedWorker', 'BroadcastChannel', 'open']) {
       Object.defineProperty(realm, name, { value: deny(name), configurable: false, writable: false });
     }
-    Object.defineProperty(Promise.prototype, 'then', { value: deny('Promise continuations'), configurable: false, writable: false });
+    const denyContinuation = deny('Promise continuations');
+    Object.defineProperty(Promise.prototype, 'then', { value: function(fulfilled, rejected) {
+      return comments.ownsContinuation ? comments.continue(this, fulfilled, rejected) : denyContinuation();
+    }, configurable: false, writable: false });
     realm.projectService = new Proxy(Object.create(null), { get: (_target, name) => deny(`projectService.${String(name)}`)() });
     const onError = (event: ErrorEvent) => { const error = event.error instanceof Error ? event.error : new Error(event.message); errors.push(error); tasks.fail(error); event.preventDefault(); };
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', event => { tasks.fail(event.reason); event.preventDefault(); });
-    const assertClean = () => { if (errors.length) throw errors[0]; tasks.assertClean(); uiTasks.assertClean(); };
+    const assertClean = () => { if (errors.length) throw errors[0]; tasks.assertClean(); uiTasks.assertClean(); comments.assertClean(); };
     // Registration is replay input. A configuration/generator callback cannot add
     // another registry effect and silently promote it to transaction-owned state.
     const assertRegistration = () => { if (!registering) deny('block registration after replay')(); };
@@ -132,6 +142,8 @@ export function installNativeCandidateRealm(): void {
           if (mode === 'arduino') {
             adaptBundledArduinoProcedureCalls(generator);
             adaptArduinoTextLiterals(generator);
+            adaptXiaozhiParameterDeclarations(generator, realm);
+            await registerCustomFunctionContract(step.source, realm, native.Blocks, workspace, () => !!workspace);
           }
         } else if (step.kind === 'definitions') {
           for (const definition of step.definitions) registerProjectDataBlockDefinition(definition, step.libraryName);
@@ -178,18 +190,29 @@ export function installNativeCandidateRealm(): void {
       if (!request.verify) models.load();
       const execution = new NativeCandidateWorkspace(native, workspace, observer, assertClean, models, request.creations, declarations);
       progress('binding');
-      const binding = request.abs !== undefined ? withNativeFieldDependencies(native, workspace, () => bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
+      if (!request.verify) {
+        // Hosted calls have no native instance in discovery; explicit block info
+        // is likewise only a fragment. Neither may announce a complete project
+        // to library cleanup listeners while retaining its full model table.
+        const completeTopology = request.abs !== undefined && !request.hostCalls?.length;
+        construction = beginNativeFieldDependencies(native, workspace, uiTasks, 'settled', completeTopology);
+      }
+      const binding = request.abs !== undefined ? bindNativeAbs(request.abs!, execution, declarations, request.identities, values.materialize, request.hostCalls,
         request.modelRequestId && generator
-          ? { generator, requestId: request.modelRequestId, retainedCalls: request.retainedModelCalls, retainedIds: request.retainedModelIds } : undefined), uiTasks) : undefined;
+          ? { generator, requestId: request.modelRequestId, retainedCalls: request.retainedModelCalls, retainedIds: request.retainedModelIds } : undefined) : undefined;
       if (!request.verify && !binding) for (const operation of request.blocks) execution.create(operation);
       if (!request.verify) {
+        construction!.prepare();
+        captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);
         progress('views');
         execution.initializeViews();
+        await comments.drain();
+        construction!.finish(); construction!.dispose(); construction = undefined;
         progress('ui');
         uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
       }
       progress('readback');
-      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress)
+      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress, () => comments.drain())
         : uiTasks.withoutScheduling(() => binding ? binding() : execution.result());
       assertClean();
       values.assertReferences(result.state);
@@ -200,6 +223,6 @@ export function installNativeCandidateRealm(): void {
     } catch (error) {
       try { workspace?.dispose(); } catch { /* The entire independent Realm is discarded by the host. */ }
       send({ ok: false, error: serializeAbsFailure(error) });
-    } finally { tasks.dispose(); uiTasks.dispose(); port.close(); }
+    } finally { construction?.dispose(); tasks.dispose(); uiTasks.dispose(); port.close(); }
   });
 }
