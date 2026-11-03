@@ -162,4 +162,49 @@ describe('complete project persistence around library edits', () => {
       expect(window['libraryDependencies'].historyDiscard).toHaveBeenCalledTimes(1);
     } finally {f.restore();}
   });
+
+  it('native redo restores the latest canvas from immediately before undo, including later AI edits', async () => {
+    const f = fixture();
+    let current = { pages: ['user-before-ai'] };
+    const record = jasmine.createSpy('record');
+    f.application.prepareBlocklyLibraryEdit = async () => ({ document: structuredClone(current), release: f.release, record });
+    f.application.captureBlocklyLibraryDocument = async () => structuredClone(current);
+    Object.assign(f.service, {
+      acceptLibraryStatus: () => {}, getPackageJson: async () => {}, getEffectivePackageText: () => '{}',
+      getBlocklyLibraryRuntimeSignature: () => 'same-runtime', markBlocklyLibraryRuntimeReady: () => {},
+      rebuildActiveBlocklyLibraryRuntime: async (_path: string, _text: string, _signature: string, document: typeof current) => {
+        current = structuredClone(document);
+      },
+    });
+    window['libraryDependencies'].historyRestore = jasmine.createSpy('restore').and.resolveTo({});
+    try {
+      const { token } = await f.service.beginLibraryMutation(['@aily-project/lib-test']);
+      await f.service.finishLibraryMutation(token);
+      // abs_apply may add library blocks after lib_add has completed; it does
+      // not create a separate native Blockly event above the library event.
+      const aiDocument = { pages: ['user-before-ai', 'json-parse-and-serial-output'] };
+      current = structuredClone(aiDocument);
+      const restore = record.calls.mostRecent().args[0];
+      await restore(false);
+      expect(current).toEqual({ pages: ['user-before-ai'] });
+      await restore(true);
+      expect(current).toEqual(aiDocument);
+      await restore(false);
+      await restore(true);
+      expect(current).toEqual(aiDocument);
+      await restore(false);
+      const save = f.service.save;
+      let failSave = true;
+      f.service.save = async () => {
+        if (failSave) { failSave = false; return { success: false, error: 'disk busy' }; }
+        return save();
+      };
+      await expectAsync(restore(true)).toBeRejectedWithError('disk busy');
+      expect(current).toEqual({ pages: ['user-before-ai'] });
+      expect(f.service.isLibraryMutationInProgress()).toBeFalse();
+      await restore(true);
+      expect(current).toEqual(aiDocument);
+    } finally { f.restore(); }
+  });
+
 });

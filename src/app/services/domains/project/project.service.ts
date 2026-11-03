@@ -337,7 +337,10 @@ export class ProjectService {
       if (!saved.success || saved.generatedCodePublished === false) throw new Error(saved.error || '库文件已变更，但项目保存未完成。');
       const after = await this.application.captureBlocklyLibraryDocument!();
       const committed = await window['libraryDependencies'].historyCommit(mutation.projectPath, { token });
-      if (committed.changed) mutation.edit.record(forward => this.restoreLibraryMutation(mutation, forward, after));
+      if (committed.changed) {
+        const documents = { before: mutation.before, after };
+        mutation.edit.record(forward => this.restoreLibraryMutation(mutation, forward, documents));
+      }
       else await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token });
     } catch (error) {
       // Keep the installed files and native recovery evidence; never hide a partial outcome.
@@ -349,7 +352,8 @@ export class ProjectService {
     }
   }
 
-  private async restoreLibraryMutation(mutation: NonNullable<ProjectService['libraryMutation']>, forward: boolean, after: unknown): Promise<void> {
+  private async restoreLibraryMutation(mutation: NonNullable<ProjectService['libraryMutation']>, forward: boolean,
+    documents: { before: unknown; after: unknown }): Promise<void> {
     if (this.currentProjectPath !== mutation.projectPath || this.libraryMutation
       || this.application.hasActiveBlocklyBuildOrUpload(mutation.projectPath)) throw new Error('当前项目忙碌，库撤销未执行。');
     const lease = this.acquireProjectLifecycle([mutation.projectPath], undefined, false);
@@ -361,10 +365,15 @@ export class ProjectService {
       restored = true;
       await this.getPackageJson(mutation.projectPath);
       await this.rebuildActiveBlocklyLibraryRuntime(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath),
-        this.getBlocklyLibraryRuntimeSignature(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath)), forward ? after : mutation.before);
+        this.getBlocklyLibraryRuntimeSignature(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath)), forward ? documents.after : documents.before);
       const saved = await this.save(mutation.projectPath);
       if (!saved.success || saved.generatedCodePublished === false) throw new Error(saved.error || '库撤销后的项目保存未完成。');
       this.markBlocklyLibraryRuntimeReady(mutation.projectPath);
+      // ABS/AI edits after lib_add need not create a native Blockly event.
+      // Capture the view we actually left only after successful restoration,
+      // so redo returns to the full pre-undo canvas rather than install time.
+      if (forward) documents.before = edit.document;
+      else documents.after = edit.document;
     } catch (error) {
       if (restored) {
         try {
