@@ -53,7 +53,7 @@ type BlocklyLiveOperationPayload = {
 
 const PROJECT_MUTATIONS = new Set([
   'abs_apply', 'abs_projection', 'abs_validate', 'abs_recovery',
-  'library_runtime_sync', 'set_board_config', 'project_save', 'blocks_tidy',
+  'library_runtime_sync', 'library_mutation_prepare', 'library_mutation_abort', 'set_board_config', 'project_save', 'blocks_tidy',
   'project_build', 'project_upload',
   'project_media_import',
 ]);
@@ -309,7 +309,9 @@ export class BlocklyLiveOperationBridgeService {
     if (journalReopen || recoveryInspection || runtimeRecovery || recoveryDependencyReload || (!PROJECT_MUTATIONS.has(payload.operation || '')
       && !(payload.operation === 'blocks_set_state' && payload.params?.['action'] === 'update'))) return this.executeOperation(payload);
     const projectPath = payload.path || this.projectService.currentProjectPath;
-    if (this.projectService.isProjectTransitionInProgress(projectPath)) {
+    if (this.projectService.isProjectTransitionInProgress(projectPath)
+      && !(this.projectService.isLibraryMutationInProgress(projectPath)
+        && ['library_runtime_sync', 'library_mutation_abort'].includes(payload.operation || ''))) {
       return { ok: false, operation: payload.operation, project: projectPath, reason: 'project_lifecycle_busy',
         ...(payload.operation === 'project_build' ? { buildOutcome: 'not-started' } : {}),
         message: '项目正在切换、重载或关闭；本次写入尚未开始，请等待该宿主操作完成。' };
@@ -554,6 +556,11 @@ export class BlocklyLiveOperationBridgeService {
       }
     }
 
+    if (this.projectService.isLibraryMutationInProgress(currentProject)
+      && !['library_runtime_sync', 'library_mutation_abort', 'project_abi_check'].includes(payload.operation || '')) {
+      return { ok: false, code: 'LIBRARY_MUTATION_BUSY', project: currentProject,
+        message: '库安装或卸载正在完成，请等待保存和运行时同步结束。' };
+    }
     switch (payload.operation) {
       case 'blocks_set_state':
         return payload.params?.['action'] === 'inspect'
@@ -580,6 +587,14 @@ export class BlocklyLiveOperationBridgeService {
           documentation: checkAbsDocumentation(payload.params) };
       case 'block_metadata_snapshot':
         return this.executeBlockMetadataSnapshot();
+      case 'library_mutation_prepare': {
+        const params = payload.params || {};
+        const result = await this.projectService.beginLibraryMutation(params['packages'], params['savedHashes'], params['removedPackages']);
+        return { ok: true, operation: payload.operation, project: currentProject, ...result };
+      }
+      case 'library_mutation_abort':
+        await this.projectService.abortLibraryMutation(payload.params?.['token']);
+        return { ok: true, operation: payload.operation, project: currentProject };
       case 'library_runtime_sync':
         // The native rebuild owns its workspace edit lease. Discovery and
         // dependency waits must leave the existing canvas interactive.
@@ -649,6 +664,8 @@ export class BlocklyLiveOperationBridgeService {
       'abs_precheck',
       'block_metadata_snapshot',
       'library_runtime_sync',
+      'library_mutation_prepare',
+      'library_mutation_abort',
       'blocks_tidy',
       'blocks_set_state',
       'project_save',
@@ -892,7 +909,8 @@ export class BlocklyLiveOperationBridgeService {
       ready: false, reason: 'library_runtime_not_ready',
       nextAction: { tool: 'project_recover', input: { project: projectPath, action: 'inspect' } },
       message: recovery.message || recovery.loadStatus?.error || 'The independent recovery target has not completed loading; installed files were retained.' };
-    if (!recovery) await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
+    if (!recovery && params['mutationToken']) await this.projectService.finishLibraryMutation(params['mutationToken'], true);
+    else if (!recovery) await this.projectService.ensureBlocklyLibraryRuntimeReady(projectPath);
 
     const loadStatus = this.projectService.getBlocklyProjectLoadStatus(projectPath);
     const runtime = this.blocklyEditor.getLibraryRuntimeSnapshot();

@@ -1,3 +1,4 @@
+import { retainBlocklyHistory } from './blockly-library-history';
 import { Injectable, Optional } from '@angular/core';
 import { Subscription, merge } from 'rxjs';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyLibraryRuntimeRebuildOptions, BlocklyProjectDocument, BlocklyService } from './blockly.service';
@@ -148,7 +149,7 @@ export class _ProjectService {
   }
 
   /** Library reload shares the save/ABS queue, but never saves the user's edits. */
-  rebuildLibraryRuntime(options: BlocklyLibraryRuntimeRebuildOptions, admit: (lease?: BlocklyWorkspaceEditLease) => void = () => {}): Promise<void> {
+  rebuildLibraryRuntime(options: BlocklyLibraryRuntimeRebuildOptions, admit: (lease?: BlocklyWorkspaceEditLease) => void = () => {}, retainedDocument?: BlocklyProjectDocument): Promise<void> {
     // A quarantined rebuild has its own retained full document and private
     // grant. Ordinary library synchronization must not recapture a partial canvas.
     if (this.hasLibraryRuntimeRecovery()) {
@@ -197,7 +198,9 @@ export class _ProjectService {
           restoreCheckpoint: this.cleanState.captureCheckpoint() };
         admit(lease);
         runtimeChanged = true;
-        await this.blocklyService.rebuildLibraryRuntimeInPlace(options, lease, assertCurrent);
+        const restoreHistory = retainBlocklyHistory(this.blocklyService.workspace);
+        try { await this.blocklyService.rebuildLibraryRuntimeInPlace(options, lease, assertCurrent, retainedDocument); }
+        finally { if (this.blocklyService.workspace) restoreHistory(); }
         assertCurrent();
         if (fs.readFileSync(abiPath, 'utf8') !== disk) throw new Error('project.abi changed during library runtime rebuild.');
         // The editor's load/readback boundary preserved content; page hydration may

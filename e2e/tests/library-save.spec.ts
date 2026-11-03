@@ -1,6 +1,6 @@
 import { cp, mkdir, mkdtemp, readFile, writeFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, getMainWindow, launchAilyElectron, openBlocklyProject, readAilyHostOperation, test } from '../fixtures/electron-app';
@@ -55,7 +55,19 @@ test('automatic library save and archive extraction preserve canvas edits across
   const ready = () => expect.poll(async () => {
     try { return (await readAilyHostOperation(launched.app,'project_load_status',project)).ready; } catch { return false; }
   },{timeout:90000}).toBe(true);
+  const saveProject = async () => {
+    const result=await win.evaluate(async () => {const w=window as any;return w.ng.getComponent(document.querySelector('app-header')).projectService.save();});
+    expect(result.success,JSON.stringify(result)).toBe(true);
+  };
   const status = () => win.evaluate(project => (window as any).libraryDependencies.status(project),project);
+  const recordUndo = async (step: string) => snapshots.push({step, history: await win.evaluate(() => {
+    const w=window as any, view=(events:any[])=>events.map(e=>({type:e.type,group:e.group,blockId:e.blockId,recordUndo:e.recordUndo,ids:e.ids}));
+    return {undo:view(w.blocklyWorkspace.getUndoStack()),redo:view(w.blocklyWorkspace.getRedoStack()),recordUndo:w.Blockly.Events.getRecordUndo()};
+  })});
+  const libraryIdle = () => expect.poll(() => win.evaluate(() => {
+    const w=window as any, main=w.ng.getComponent(document.querySelector('blockly-main'));
+    return !main.projectService.isLibraryMutationInProgress() && !main.blocklyService.isWorkspaceEditBlocked();
+  })).toBe(true);
   const legacyPath = path.join(project, '.temp', 'package.json');
   let legacyContent: string | undefined;
   const record = async (step: string) => {
@@ -80,7 +92,7 @@ test('automatic library save and archive extraction preserve canvas edits across
     const row = win.locator('app-lib-manager .lib-item').filter({hasText:`Save test ${name}`});
     await row.getByRole('button',{name:action==='install'?/安装|Install/:/移除|卸载|Remove/,exact:true}).click();
     await expect.poll(()=>win.evaluate(()=>!(window as any).ng.getComponent(document.querySelector('app-lib-manager')).isProcessingLibraryOperationQueue),{timeout:45000}).toBe(true);
-    expect(installed().includes(name)).toBe(action==='install');
+    expect(installed().includes(name), await win.locator('body').innerText()).toBe(action==='install');
     const live=await runtime(); expect(live.libraries.includes(packageName(name))).toBe(action==='install');
     await expectDirtyTitle(canvasDirty);
     expect((await status()).dirty).toBe(false);
@@ -103,15 +115,51 @@ test('automatic library save and archive extraction preserve canvas edits across
     await win.evaluate(() => (window as any).blocklyWorkspace.getBlockById('global').moveBy(40, 0));
     await expectDirtyTitle(true);
     for (const name of ['c','d']) {
-      await change(name,'install',true);
+      await change(name,'install',false);
       expect(existsSync(path.join(project,'node_modules',packageName(name),'src/Save.h'))).toBe(true);
       const disk=JSON.parse(await manifest());
       expect(disk.dependencies[packageName(name)]).toBeTruthy();
       expect(JSON.parse(await readFile(path.join(project,'package-lock.json'),'utf8')).packages[''].dependencies).toEqual(disk.dependencies);
-      expect(await readFile(path.join(project,'project.abi'),'utf8')).toBe(baselineAbi);
+      expect(await readFile(path.join(project,'project.abi'),'utf8')).not.toBe(baselineAbi);
       await record(`auto-install-${name}-canvas-retained`);
     }
-    await win.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
+    // Native Ctrl+Z restores one library transaction, retaining edits made before installation.
+    const beforeUndo = await runtime();
+    if(await win.locator('app-lib-manager').count())await win.locator('app-lib-manager .header .btn').click();
+    await win.locator('blockly-main .blocklySvg').first().click({position:{x:500,y:400}});
+    await win.keyboard.press(process.platform==='darwin'?'Meta+z':'Control+z');
+    await expect.poll(() => installed()).toEqual(['c']);
+    await expect.poll(async () => (await runtime()).libraries.includes(packageName('d'))).toBe(false);
+    await libraryIdle();
+    expect((await runtime()).blocks).toEqual(beforeUndo.blocks);
+    await expectDirtyTitle(false);
+    await win.keyboard.press(process.platform==='darwin'?'Meta+Shift+z':'Control+Shift+z');
+    await expect.poll(() => installed()).toEqual(['c','d']);
+    await expect.poll(async () => (await runtime()).libraries.includes(packageName('d'))).toBe(true);
+    await libraryIdle();
+    await expectDirtyTitle(false);
+    // Removing a library is a native undo step too. Undo it before undoing a
+    // deleted block from that library, so Blockly can recreate its definition.
+    await win.evaluate(() => {
+      const w=window as any;w.Blockly.Events.setGroup(true);
+      try {const block=w.blocklyWorkspace.newBlock('save_test_d','library-undo-block'); block.initSvg();block.render();}
+      finally {w.Blockly.Events.setGroup(false);}
+    });
+    await expectDirtyTitle(true);
+    await win.evaluate(() => {const w=window as any;w.Blockly.Events.setGroup(true);try{w.blocklyWorkspace.getBlockById('library-undo-block').dispose(true);}finally{w.Blockly.Events.setGroup(false);}});
+    await recordUndo('before-remove-d');
+    await change('d','remove');
+    await recordUndo('after-remove-d');
+    await win.evaluate(() => (window as any).blocklyWorkspace.undo(false));
+    await expect.poll(() => installed()).toEqual(['c','d']);
+    await expect.poll(async () => (await runtime()).libraries.includes(packageName('d'))).toBe(true);
+    await libraryIdle();
+    await recordUndo('after-undo-remove-d');
+    await win.evaluate(() => (window as any).blocklyWorkspace.undo(false));
+    await recordUndo('after-undo-delete-block');
+    await expect.poll(() => win.evaluate(() => !!(window as any).blocklyWorkspace.getBlockById('library-undo-block'))).toBe(true);
+    await win.evaluate(() => {const w=window as any;w.Blockly.Events.setGroup(true);try{w.blocklyWorkspace.getBlockById('library-undo-block').dispose(true);}finally{w.Blockly.Events.setGroup(false);}});
+    await saveProject();
     await expectDirtyTitle(false);
     await removeFromToolbox('c');
     expect(JSON.parse(await manifest()).dependencies[packageName('c')]).toBeUndefined();
@@ -131,7 +179,7 @@ test('automatic library save and archive extraction preserve canvas edits across
     await removeFromToolbox('b');
     expect(JSON.parse(await manifest()).dependencies[packageName('b')]).toBeUndefined();
     await win.screenshot({path:info.outputPath('automatic-toolbox-removal.png')});
-    await win.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
+    await saveProject();
     await expect.poll(async () => (await status()).dirty).toBe(false); await expectDirtyTitle(false);
     expect(JSON.parse(await manifest()).dependencies[packageName('b')]).toBeUndefined();
     await win.reload(); await ready();
@@ -144,11 +192,35 @@ test('automatic library save and archive extraction preserve canvas edits across
     await expectDirtyTitle(false);
     await win.evaluate(() => (window as any).blocklyWorkspace.getBlockById('global').moveBy(40, 0));
     await expectDirtyTitle(true);
-    await win.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
+    await saveProject();
     await expectDirtyTitle(false); await record('saved-canvas-edit');
+    if (process.env['AILY_E2E_AGENT_ROOT']) {
+      // Leave a native user edit unsaved before the actual Agent tool starts.
+      await win.evaluate(() => (window as any).blocklyWorkspace.getBlockById('global').moveBy(55, 0));
+      await expectDirtyTitle(true);
+      const userCanvas = (await runtime()).blocks;
+      const agentReport = info.outputPath('agent-library-history.json');
+      const child = spawn(path.resolve('child/node/bin/node'), [path.resolve('e2e/fixtures/library-agent-history.mjs'),
+        process.env['AILY_E2E_AGENT_ROOT']!,project,path.join(root,'agent-profile'),agentReport], {env:{...process.env,AILY_APPDATA_PATH:launched.userDataDir}});
+      let output = ''; child.stdout.on('data', data => { output += data; });child.stderr.on('data',data=>{output+=data;});
+      const exit = await new Promise(resolve => child.on('close',resolve));
+      expect(exit,output).toBe(0);
+      await ready();
+      const report = JSON.parse(await readFile(agentReport,'utf8'));
+      expect(report.error).toBeUndefined();
+      expect(report.undo.dependencies[packageName('c')]).toBeTruthy();
+      expect(report.redo.dependencies[packageName('c')]).toBeUndefined();
+      for(const state of ['undo','redo','installUndo','installRedo'])expect(report[state].abi.pages[0].content).toEqual(userCanvas);
+      expect(report.installUndo.dependencies[packageName('b')]).toBeUndefined();
+      expect(report.installRedo.dependencies[packageName('b')]).toBeTruthy();
+      expect((await runtime()).blocks).toEqual(userCanvas);
+      expect(installed()).toEqual(['b','d']);
+      await expectDirtyTitle(false);
+      await record('agent-remove-undo-redo-preserves-user-edit');
+    }
     expect(errors.filter(e=>/library|generator|circular dependency/i.test(e))).toEqual([]);
   } finally {
-    await writeFile(info.outputPath('evidence.json'),JSON.stringify({root,project,snapshots,errors},null,2));
+    await writeFile(info.outputPath('evidence.json'),JSON.stringify({root,project,snapshots,errors,body:await win.locator('body').innerText()},null,2));
     await win.screenshot({path:info.outputPath('final.png')}).catch(()=>{});
     await launched.close();
   }

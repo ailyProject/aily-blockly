@@ -67,7 +67,7 @@ class LibraryDependencySessions {
       this.finish(root, session);
       return this.libraries.status(root);
     }
-    if (!['mutate', 'patch', 'removeLocal', 'prepare', 'save', 'discard'].includes(operation)) throw new Error('Invalid library operation');
+    if (!['mutate', 'patch', 'removeLocal', 'prepare', 'save', 'discard', 'historyBegin', 'historyCommit', 'historyRestore', 'historyDiscard'].includes(operation)) throw new Error('Invalid library operation');
     if (token && !['mutate', 'patch', 'removeLocal'].includes(operation)) throw new Error('Invalid transaction operation');
     if (session && !token) {
       await session.done;

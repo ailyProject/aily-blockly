@@ -1,4 +1,4 @@
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { ProjectService } from './project.service';
 import { ProjectLifecycleGate } from './project-lifecycle-gate';
 
@@ -81,5 +81,85 @@ describe('Blockly dependency discard belongs to editor disposal', () => {
     service.discardLibraryChanges.and.resolveTo();
     expect(await service.close()).toBeTrue();
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('complete project persistence around library edits', () => {
+  function fixture() {
+    const service: any = Object.create(ProjectService.prototype), calls: string[] = [];
+    const release = jasmine.createSpy('release'), lifecycleRelease = jasmine.createSpy('lifecycle release');
+    const application: any = {
+      hasActiveBlocklyBuildOrUpload: () => false, hasUnsavedBlocklyChanges: async () => false,
+      prepareBlocklyLibraryEdit: async (_path: string, removed: string[]) => { application.removed = removed; calls.push('fence'); return { document: { pages: ['user-before-ai'] }, release, record: jasmine.createSpy('record') }; },
+      captureBlocklyLibraryDocument: async () => ({ pages: ['after'] }),
+    };
+    Object.defineProperty(service, 'currentProjectPath', {value:'/project',writable:true});
+    Object.assign(service, { libraryChangesChanged: new Subject(),
+      acquireProjectLifecycle: () => ({ release: lifecycleRelease }),
+      save: async () => { calls.push('save-project'); return {success: true, projectSaved: true, generatedCodePublished: true}; },
+      ensureBlocklyLibraryRuntimeReady: async () => { calls.push('runtime'); },
+    });
+    Object.defineProperty(service, 'application', {value: application});
+    const previous = window['libraryDependencies'];
+    window['libraryDependencies'] = {
+      historyBegin: async () => { calls.push('checkpoint'); return {token:'test-token'}; },
+      prepare: async () => { calls.push('source-extraction'); },
+      historyCommit: async () => { calls.push('commit'); return {changed:true}; },
+      historyDiscard: jasmine.createSpy('discard').and.resolveTo(),
+    };
+    return {service,application,calls,release,lifecycleRelease,restore:()=>{window['libraryDependencies']=previous;}};
+  }
+
+  it('saves before a checkpoint and after runtime synchronization, releasing both fences', async () => {
+    const f=fixture();
+    try {
+      const {token}=await f.service.beginLibraryMutation(['@aily-project/lib-test']);
+      expect(f.calls).toEqual(['save-project','fence','checkpoint']);
+      expect(f.service.isLibraryMutationInProgress()).toBeTrue();
+      await f.service.finishLibraryMutation(token);
+      expect(f.calls).toEqual(['save-project','fence','checkpoint','source-extraction','runtime','save-project','commit']);
+      expect(f.release).toHaveBeenCalledTimes(1);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
+      expect(f.service.isLibraryMutationInProgress()).toBeFalse();
+    } finally {f.restore();}
+  });
+
+  it('accepts only an awaited, unchanged save-hash proof without saving the canvas twice', async () => {
+    const f=fixture(), previousFs=window['fs'];
+    window['fs']={readFileSync:()=> 'hello'};
+    const hash='sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
+    try {
+      const {token}=await f.service.beginLibraryMutation(['@aily-project/lib-test'],{abi:hash,abs:hash,map:hash});
+      expect(f.calls).toEqual(['fence','checkpoint']);
+      await f.service.abortLibraryMutation(token);
+      expect(f.release).toHaveBeenCalledTimes(1);
+    } finally {window['fs']=previousFs;f.restore();}
+  });
+
+  it('checks removal usage with normalized package names before npm starts', async () => {
+    const f=fixture();
+    try {
+      const {token}=await f.service.beginLibraryMutation(['@aily-project/lib-test@1.0.0'],undefined,['@aily-project/lib-test@1.0.0']);
+      expect(f.application.removed).toEqual(['@aily-project/lib-test']);
+      await f.service.abortLibraryMutation(token);
+    } finally {f.restore();}
+  });
+
+  it('does not admit npm after an incomplete save', async () => {
+    const f=fixture();f.service.save=async()=>({success:false,error:'build occupied',generatedCodePublished:false});
+    try {
+      await expectAsync(f.service.beginLibraryMutation(['@aily-project/lib-test'])).toBeRejectedWithError(/build occupied/);
+      expect(f.calls).toEqual([]);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
+    } finally {f.restore();}
+  });
+
+  it('releases input and lifecycle after runtime failure without hiding the error', async () => {
+    const f=fixture();f.service.ensureBlocklyLibraryRuntimeReady=async()=>{throw new Error('runtime failure');};
+    try {
+      const {token}=await f.service.beginLibraryMutation(['@aily-project/lib-test']);
+      await expectAsync(f.service.finishLibraryMutation(token)).toBeRejectedWithError('runtime failure');
+      expect(f.release).toHaveBeenCalledTimes(1);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
+      expect(f.service.isLibraryMutationInProgress()).toBeFalse();
+      expect(window['libraryDependencies'].historyDiscard).toHaveBeenCalledTimes(1);
+    } finally {f.restore();}
   });
 });

@@ -253,19 +253,151 @@ export class ProjectService {
     return true;
   }
 
-  async changeLibraries(action: 'install' | 'remove', packages: string[], localSources?: Record<string, string>): Promise<void> {
+  private libraryMutation?: {
+    projectPath: string; token: string; before: unknown;
+    edit: Awaited<ReturnType<NonNullable<ProjectApplicationPort['prepareBlocklyLibraryEdit']>>>;
+    lease: ProjectLifecycleLease;
+    timer?: ReturnType<typeof setTimeout>;
+  };
+
+  isLibraryMutationInProgress(projectPath = this.currentProjectPath): boolean {
+    return !!this.libraryMutation && this.isSameProjectPath(projectPath, this.libraryMutation.projectPath);
+  }
+
+  async beginLibraryMutation(packages: string[], savedHashes?: Record<string, string>, removedPackages: string[] = []): Promise<{ token: string }> {
     const projectPath = this.currentProjectPath;
+    if (!Array.isArray(packages) || !packages.length || packages.some(spec => typeof spec !== 'string'
+      || !isAilyLibraryPackageName(spec.indexOf('@', 1) < 0 ? spec : spec.slice(0, spec.indexOf('@', 1))))) {
+      throw new Error('请提供有效的库包名。');
+    }
+    const packageName = (spec: string) => spec.indexOf('@', 1) < 0 ? spec : spec.slice(0, spec.indexOf('@', 1));
+    if (!Array.isArray(removedPackages) || removedPackages.some(spec => typeof spec !== 'string'
+      || !packages.map(packageName).includes(packageName(spec)))) throw new Error('待卸载库与事务包名不匹配。');
+    const removedNames = removedPackages.map(packageName);
     if (!window['libraryDependencies']) throw new Error('库管理通道尚未就绪，请重新启动软件。');
-    const registry = this.configService.getNpmRegistryForProject(this.currentPackageData);
-    const options = { installLinks: false, ...(registry ? { [AILY_LINUX_NPM_SCOPE + ':registry']: registry } : {}) };
+    if (this.libraryMutation || this.application.hasActiveBlocklyBuildOrUpload(projectPath, true)) {
+      throw new ProjectLifecycleError('PROJECT_OPERATION_BUSY', '请等待当前库操作或编译上传完成。');
+    }
+    const lease = this.acquireProjectLifecycle([projectPath], undefined, false);
+    let edit: Awaited<ReturnType<NonNullable<ProjectApplicationPort['prepareBlocklyLibraryEdit']>>> | undefined;
     try {
-      this.acceptLibraryStatus(projectPath, await window['libraryDependencies'].mutate(projectPath, { action, packages, options, localSources }));
+      // Save the complete native document before npm can change its block definitions.
+      if (savedHashes) {
+        const files = { abi: 'project.abi', abs: 'project.abs', map: 'project.abs.map.json' };
+        const matches = await Promise.all(Object.entries(files).map(async ([key, file]) => {
+          const text = window['fs'].readFileSync(`${projectPath}/${file}`, 'utf8');
+          const hash = `sha256:${await sha256Hex(text)}`;
+          return savedHashes[key] === hash && text === window['fs'].readFileSync(`${projectPath}/${file}`, 'utf8');
+        }));
+        if (await this.application.hasUnsavedBlocklyChanges() || matches.some(match => !match)) {
+          throw new Error('Project changed after the verified pre-install save.');
+        }
+      }
+      const saved: ProjectSaveDispatchResult = savedHashes ? { success: true } : await this.save(projectPath);
+      if (!saved.success || saved.projectSaved === false || saved.generatedCodePublished === false) {
+        throw Object.assign(new Error(saved.error || '安装或卸载前未能完整保存项目。'), { code: saved.code || 'LIBRARY_PROJECT_SAVE_FAILED' });
+      }
+      edit = await this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames);
+      if (await this.application.hasUnsavedBlocklyChanges()) {
+        if (savedHashes) throw new Error('Canvas changed before library input was fenced.');
+        const latest = await this.save(projectPath);
+        if (!latest.success || latest.generatedCodePublished === false) throw new Error(latest.error || '安装前保存未完成。');
+      }
+      const { token } = await window['libraryDependencies'].historyBegin(projectPath, { packages });
+      this.libraryMutation = { projectPath, token, before: edit.document, edit, lease };
+      // A disconnected AI transport must never leave input blocked forever.
+      this.libraryMutation.timer = setTimeout(() => { void this.abortLibraryMutation(token).catch(error => console.warn('Library transaction expiry:', error)); }, 300_000);
+      return { token };
+    } catch (error) { edit?.release(); lease.release(); throw error; }
+  }
+
+  async abortLibraryMutation(token: string): Promise<void> {
+    const mutation = this.libraryMutation;
+    if (!mutation || mutation.token !== token) return;
+    clearTimeout(mutation.timer);
+    this.libraryMutation = undefined;
+    try { await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token }); }
+    finally { mutation.edit.release(); mutation.lease.release(); this.libraryChangesChanged?.next(); }
+  }
+
+  async finishLibraryMutation(token: string, reconcile = false): Promise<void> {
+    const mutation = this.libraryMutation;
+    if (!mutation || mutation.token !== token || mutation.projectPath !== this.currentProjectPath) {
+      throw new Error('Library mutation expired or belongs to another project.');
+    }
+    clearTimeout(mutation.timer);
+    try {
+      // AI's npm runs against its candidate tree. History publishes manifests,
+      // while the host must reify its own node_modules before scanning libraries.
+      if (reconcile) this.acceptLibraryStatus(mutation.projectPath,
+        await window['libraryDependencies'].discard(mutation.projectPath, {reconcile:true,historyRestored:true}));
+      await window['libraryDependencies'].prepare(mutation.projectPath);
+      await this.ensureBlocklyLibraryRuntimeReady(mutation.projectPath);
+      const saved = await this.save(mutation.projectPath);
+      if (!saved.success || saved.generatedCodePublished === false) throw new Error(saved.error || '库文件已变更，但项目保存未完成。');
+      const after = await this.application.captureBlocklyLibraryDocument!();
+      const committed = await window['libraryDependencies'].historyCommit(mutation.projectPath, { token });
+      if (committed.changed) mutation.edit.record(forward => this.restoreLibraryMutation(mutation, forward, after));
+      else await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token });
     } catch (error) {
-      await this.hasUnsavedLibraryChanges(projectPath);
+      // Keep the installed files and native recovery evidence; never hide a partial outcome.
+      try { await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token }); } catch {}
       throw error;
     } finally {
-      this.libraryChangesChanged?.next();
+      this.libraryMutation = undefined;
+      mutation.edit.release(); mutation.lease.release(); this.libraryChangesChanged?.next();
     }
+  }
+
+  private async restoreLibraryMutation(mutation: NonNullable<ProjectService['libraryMutation']>, forward: boolean, after: unknown): Promise<void> {
+    if (this.currentProjectPath !== mutation.projectPath || this.libraryMutation
+      || this.application.hasActiveBlocklyBuildOrUpload(mutation.projectPath)) throw new Error('当前项目忙碌，库撤销未执行。');
+    const lease = this.acquireProjectLifecycle([mutation.projectPath], undefined, false);
+    const edit = await this.application.prepareBlocklyLibraryEdit!(mutation.projectPath).catch(error => { lease.release(); throw error; });
+    this.libraryMutation = { ...mutation, lease, edit };
+    let restored = false;
+    try {
+      this.acceptLibraryStatus(mutation.projectPath, await window['libraryDependencies'].historyRestore(mutation.projectPath, { token: mutation.token, forward }));
+      restored = true;
+      await this.getPackageJson(mutation.projectPath);
+      await this.rebuildActiveBlocklyLibraryRuntime(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath),
+        this.getBlocklyLibraryRuntimeSignature(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath)), forward ? after : mutation.before);
+      const saved = await this.save(mutation.projectPath);
+      if (!saved.success || saved.generatedCodePublished === false) throw new Error(saved.error || '库撤销后的项目保存未完成。');
+      this.markBlocklyLibraryRuntimeReady(mutation.projectPath);
+    } catch (error) {
+      if (restored) {
+        try {
+          this.acceptLibraryStatus(mutation.projectPath, await window['libraryDependencies'].historyRestore(mutation.projectPath,
+            { token: mutation.token, forward: !forward }));
+          // A failed runtime has a private recovery grant. Do not bypass it.
+          if (!this.application.hasBlocklyRuntimeRecovery?.(mutation.projectPath)) {
+            await this.getPackageJson(mutation.projectPath);
+            await this.rebuildActiveBlocklyLibraryRuntime(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath),
+              this.getBlocklyLibraryRuntimeSignature(mutation.projectPath, this.getEffectivePackageText(mutation.projectPath)), edit.document);
+            const rollback = await this.save(mutation.projectPath);
+            if (!rollback.success) throw new Error(rollback.error || '库撤销失败后的项目恢复未完成。');
+          }
+        } catch (rollback) { throw new AggregateError([error, rollback], '库撤销与恢复未完成，请保留当前项目并检查恢复状态。'); }
+      }
+      throw error;
+    } finally { this.libraryMutation = undefined; edit.release(); lease.release(); this.libraryChangesChanged?.next(); }
+  }
+
+  async changeLibraries(action: 'install' | 'remove', packages: string[], localSources?: Record<string, string>): Promise<void> {
+    const projectPath = this.currentProjectPath;
+    const registry = this.configService.getNpmRegistryForProject(this.currentPackageData);
+    const options = { installLinks: false, ...(registry ? { [AILY_LINUX_NPM_SCOPE + ':registry']: registry } : {}) };
+    // Coder's editor session retains its own persistence contract.
+    if (this.getProjectMode(projectPath) === 'coder') {
+      this.acceptLibraryStatus(projectPath, await window['libraryDependencies'].mutate(projectPath, { action, packages, options, localSources }));
+      return;
+    }
+    const { token } = await this.beginLibraryMutation(packages, undefined, action === 'remove' ? packages : []);
+    try {
+      this.acceptLibraryStatus(projectPath, await window['libraryDependencies'].mutate(projectPath, { action, packages, options, localSources }));
+      await this.finishLibraryMutation(token);
+    } catch (error) { await this.abortLibraryMutation(token); throw error; }
   }
 
   async saveLibraryChanges(projectPath = this.currentProjectPath): Promise<void> {
@@ -1753,12 +1885,14 @@ export class ProjectService {
     projectPath: string,
     packageContent: string,
     runtimeSignature: string,
+    retainedDocument?: unknown,
   ): Promise<boolean> {
     return this.application.rebuildActiveBlocklyLibraryRuntime({
       projectPath,
       packageContent,
       runtimeSignature,
       previousRuntimeSignature: this.blocklyLibraryRuntimeSignatures.get(projectPath),
+      retainedDocument,
     });
   }
 

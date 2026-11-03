@@ -27,6 +27,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
   packageContent: string;
   runtimeSignature: string;
   previousRuntimeSignature?: string;
+  retainedDocument?: unknown;
 }
 
 /**
@@ -42,7 +43,7 @@ export interface ProjectApplicationPort {
   closeConnectionGraphWindows(): Promise<boolean>;
   hasActiveProjectMutation(projectPath: string): boolean;
   /** Only the selected Blockly runtime; does not inspect or stop other projects. */
-  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean;
+  hasActiveBlocklyBuildOrUpload(projectPath: string, libraryOperation?: boolean): boolean;
   hasRunningAi(): boolean;
   prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
   /** A zero feedback budget retains the original editor completion. Transport
@@ -55,6 +56,12 @@ export interface ProjectApplicationPort {
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
+  prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[]): Promise<{
+    document: unknown;
+    release(): void;
+    record(restore: (forward: boolean) => Promise<void>): void;
+  }>;
+  captureBlocklyLibraryDocument?(): Promise<unknown>;
   /** File equality alone is not evidence that a failed Realm became ready. */
   isBlocklyLibraryRuntimeReady?(projectPath: string): boolean;
   hasBlocklyRuntimeRecovery?(projectPath: string): boolean;

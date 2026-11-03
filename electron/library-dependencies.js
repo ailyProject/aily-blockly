@@ -31,6 +31,7 @@ class LibraryDependencies {
     this.queues = new Map();
     this.locals = new (require('./library-local-changes').LocalLibraryChanges)({ trash: trashLocalDirectory });
     this.conflicts = new LibraryDependencyConflicts();
+    this.history = new (require('./library-history').LibraryHistory)();
   }
 
   root(project) { return fs.realpathSync(project); }
@@ -285,6 +286,57 @@ class LibraryDependencies {
       finally { fs.rmSync(temp, { force: true }); }
       this.states.delete(root);
       this.locals.save(root);
+      return this.status(root);
+    }));
+  }
+
+  historyBegin(project, { packages }) {
+    return this.queue(project, root => this.locked(root, () => {
+      if (this.status(root).dirty) throw new Error('Save pending dependencies before a library checkpoint.');
+      return this.history.begin(root, packages);
+    }));
+  }
+
+  historyCommit(project, { token }) {
+    return this.queue(project, root => this.locked(root, () => this.history.commit(root, token)));
+  }
+
+  historyDiscard(project, { token }) {
+    return this.history.discard(this.root(project), token);
+  }
+
+  historyRestore(project, { token, forward }) {
+    return this.queue(project, root => this.locked(root, async assertCurrent => {
+      if (this.status(root).dirty) throw new Error('Save pending dependencies before library undo.');
+      const { target, expected } = this.history.prepare(root, token, forward);
+      const packageFile = path.join(root, 'package.json'), lockFile = path.join(root, 'package-lock.json');
+      const apply = async snapshot => {
+        assertCurrent();
+        const manifest = this.history.patch(this.read(root), snapshot);
+        fs.writeFileSync(packageFile, JSON.stringify(manifest, null, 2) + '\n');
+        if (snapshot.lock === null) fs.rmSync(lockFile, { force: true });
+        else fs.writeFileSync(lockFile, snapshot.lock);
+        this.history.restoreSources(root, snapshot, snapshot === target ? expected : target, false);
+        await this.run(root, { add: [], remove: [], options: { installLinks: false } });
+        assertCurrent();
+        const current = this.history.capture(root, []);
+        if (!same(current.dependencies, snapshot.dependencies) || current.lock !== snapshot.lock) throw conflict();
+        this.history.restoreSources(root, snapshot, snapshot === target ? expected : target, true);
+        this.history.restoreLinks(root, snapshot);
+        await this.prepareSources(root, assertCurrent);
+        // npm's no-save reify must leave the saved lock and dependency inputs exact.
+        const actual = this.history.capture(root, snapshot.sources.map(source => source.name));
+        if (!same(this.history.identity(actual), this.history.identity(snapshot))) {
+          throw new Error('Library undo could not verify the restored dependency tree.');
+        }
+      };
+      try { await apply(target); }
+      catch (error) {
+        if (['LIBRARY_DEPENDENCY_INPUT_CHANGED', 'LIBRARY_HISTORY_CONFLICT'].includes(error.code)) throw error;
+        try { await apply(expected); }
+        catch (rollback) { throw new AggregateError([error, rollback], '库撤销与恢复均未完成，请保留项目并检查依赖。'); }
+        throw error;
+      }
       return this.status(root);
     }));
   }

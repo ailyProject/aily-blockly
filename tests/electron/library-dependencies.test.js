@@ -370,3 +370,76 @@ test('real registry resolution pins pending versions, retains transitives and sa
   await fresh.discard(f.root, { reconcile: true });
   assert.deepEqual(f.installed(), ['registry-b']);
 });
+
+
+test('library undo and redo restore exact dependencies, lock and project-owned sources, retaining unrelated settings', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  const { token } = await sessions.run('historyBegin', f.root, { packages: ['test-b', 'test-c@file:local-libraries/c'] });
+  t.after(() => f.api.history.entries.has(token) && f.api.history.discard(f.root, token));
+  const before = f.read('package-lock.json');
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  await sessions.run('mutate', f.root, { action: 'install', packages: ['test-c@file:local-libraries/c'] });
+  const after = f.read('package-lock.json');
+  assert.equal((await sessions.run('historyCommit', f.root, { token })).changed, true);
+  f.write('package.json', { ...JSON.parse(f.read('package.json')), nickname: 'retained user setting', codeHash: 'latest-build' });
+  for (const forward of [false, true, false, true]) {
+    await sessions.run('historyRestore', f.root, { token, forward });
+    assert.deepEqual(f.installed(), forward ? ['test-a', 'test-c'] : ['test-a', 'test-b']);
+    assert.equal(f.read('package-lock.json'), forward ? after : before);
+    assert.equal(JSON.parse(f.read('package.json')).nickname, 'retained user setting');
+    assert.equal(JSON.parse(f.read('package.json')).codeHash, 'latest-build');
+    assert.equal(f.api.status(f.root).busy, false);
+  }
+});
+
+test('library undo refuses newer dependency/source edits and keeps its checkpoint retryable', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  const { token } = await sessions.run('historyBegin', f.root, { packages: ['test-b'] });
+  t.after(() => f.api.history.discard(f.root, token));
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  await sessions.run('historyCommit', f.root, { token });
+  const manifest = f.read('package.json');
+  f.write('package.json', { ...JSON.parse(manifest), dependencies: { 'test-a': 'file:local-libraries/a', 'test-c': 'file:local-libraries/c' } });
+  await assert.rejects(sessions.run('historyRestore', f.root, { token, forward: false }), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  assert.equal(JSON.parse(f.read('package.json')).dependencies['test-c'], 'file:local-libraries/c');
+  f.write('package.json', manifest);
+  await sessions.run('historyRestore', f.root, { token, forward: false });
+  fs.writeFileSync(path.join(f.root, 'node_modules/test-b/user-edit.h'), 'new user source');
+  await assert.rejects(sessions.run('historyRestore', f.root, { token, forward: true }), { code: 'LIBRARY_HISTORY_CONFLICT' });
+  assert.equal(fs.readFileSync(path.join(f.root, 'node_modules/test-b/user-edit.h'), 'utf8'), 'new user source');
+});
+
+
+test('local library undo preserves link topology and never deletes preexisting canonical source', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  const logical = path.join(f.root, 'node_modules', 'test-b'), source = path.join(f.root, 'local-libraries', 'b');
+  fs.rmSync(logical, { force: true, recursive: true });
+  fs.symlinkSync(source, logical, process.platform === 'win32' ? 'junction' : 'dir');
+  const { token } = await sessions.run('historyBegin', f.root, { packages: ['test-b'] });
+  t.after(() => f.api.history.discard(f.root, token));
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  await sessions.run('historyCommit', f.root, { token });
+  await sessions.run('historyRestore', f.root, { token, forward: false });
+  assert.equal(fs.realpathSync(logical), fs.realpathSync(source));
+  assert.ok(fs.lstatSync(logical).isSymbolicLink());
+  await sessions.run('historyRestore', f.root, { token, forward: true });
+  assert.ok(fs.existsSync(path.join(source, 'package.json')));
+  assert.equal(fs.existsSync(logical), false);
+});
+
+
+test('library undo never rolls back over dependency edits made by an external writer during npm', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  const { token } = await sessions.run('historyBegin', f.root, { packages: ['test-b'] });
+  t.after(() => f.api.history.discard(f.root, token));
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  await sessions.run('historyCommit', f.root, { token });
+  const run = f.api.run;
+  f.api.run = async (root, request) => {
+    const result = await run(root, request);
+    f.write('package.json', {...f.api.read(root), dependencies:{...f.api.read(root).dependencies, 'test-c':'file:local-libraries/c'}});
+    return result;
+  };
+  await assert.rejects(sessions.run('historyRestore', f.root, { token, forward: false }), {code:'LIBRARY_DEPENDENCY_INPUT_CHANGED'});
+  assert.equal(f.api.read(f.root).dependencies['test-c'], 'file:local-libraries/c');
+});

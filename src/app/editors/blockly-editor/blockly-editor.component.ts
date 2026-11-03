@@ -947,11 +947,20 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }, this.packageJsonWatchDebounceMs);
   }
 
+  private async libraryMutationBusy(projectPath: string): Promise<boolean> {
+    return this.projectService.isLibraryMutationInProgress(projectPath)
+      || !!(await window['libraryDependencies']?.status(projectPath))?.busy;
+  }
+
   private async handlePackageJsonDependencyChange(projectPath: string): Promise<void> {
     if (this.watchedPackageJsonProjectPath !== projectPath) {
       return;
     }
 
+    if (await this.libraryMutationBusy(projectPath)) {
+      this.schedulePackageJsonDependencyCheck(projectPath);
+      return;
+    }
     // 监视 package.json 时按与首次加载相同的规则比较模式，缺失值仍视为 Arduino。
     const previousProjectMode = normalizeProjectMode(
       this.projectService.currentPackageData,
@@ -1065,6 +1074,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (await this.libraryMutationBusy(projectPath)) { this.scheduleRemovedLibrarySettle(projectPath); return; }
     const candidateNames = Array.from(this.pendingRemovedLibraryDependencies)
       .sort((a, b) => this.compareBlocklyLibraryNames(a, b));
     this.pendingRemovedLibraryDependencies.clear();
@@ -1303,6 +1313,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (await this.libraryMutationBusy(projectPath)) { this.schedulePendingLibraryLoad(projectPath, this.pendingLibraryLoadRetryMs); return; }
     this.pendingLibraryLoadInProgress = true;
     let shouldLoadInstalledLibraries = false;
     try {

@@ -1,3 +1,5 @@
+import { recordLibraryMutation } from '../../editors/blockly-editor/services/blockly-library-history';
+import type { BlocklyProjectDocument } from '../../editors/blockly-editor/services/blockly.service';
 import { Injectable, Injector } from '@angular/core';
 import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
@@ -62,9 +64,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         && this.generatorRuntime.isActive() && this.blocklyService.isWorkspaceEditInProgress();
   }
 
-  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean {
+  hasActiveBlocklyBuildOrUpload(projectPath: string, libraryOperation = false): boolean {
     if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) return false;
-    return [ProcessState.BUILDING, ProcessState.UPLOADING, ProcessState.INSTALLING]
+    return [ProcessState.BUILDING, ProcessState.UPLOADING, ...(!libraryOperation ? [ProcessState.INSTALLING] : [])]
       .includes(this.injector.get(WorkflowService).currentState);
   }
 
@@ -177,6 +179,35 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     });
   }
 
+  async captureBlocklyLibraryDocument(): Promise<unknown> {
+    const workspace = this.blocklyService.workspace, session = projectDataRuntime.getSessionToken();
+    const document = this.blocklyService.getProjectAbiForSave(this.blocklyService.getProjectDocument());
+    const materialized = await materializeGenericProjectDataValues(document, {
+      resolve: async <T>(ref: AilyDataRef) => projectDataRuntime.resolve<T>(ref),
+    });
+    if (workspace !== this.blocklyService.workspace || session !== projectDataRuntime.getSessionToken()) {
+      throw new Error('Project changed while capturing library history.');
+    }
+    return materialized;
+  }
+
+  async prepareBlocklyLibraryEdit(projectPath: string, removedPackages: string[] = []) {
+    const workspace = this.blocklyService.workspace;
+    if (!workspace || !this.isBlocklyLibraryRuntimeReady(projectPath)) throw new Error('Blockly library runtime is not ready.');
+    this.blocklyService.assertWorkspaceEditAvailable();
+    const release = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined);
+    try {
+      workspace.cancelCurrentGesture();
+      const document = await this.captureBlocklyLibraryDocument();
+      const used = this.blocklyService.getProjectUsedLibraryManifest(this.projectService.currentPackageData, document as BlocklyProjectDocument);
+      if (removedPackages.some(name => used[name])) throw Object.assign(new Error('项目仍在使用待卸载库的积木，请先删除或替换这些积木。'), {code:'LIBRARY_IN_USE'});
+      return { document, release, record: (restore: (forward: boolean) => Promise<void>) => {
+        if (workspace !== this.blocklyService.workspace) throw new Error('Blockly workspace changed before recording library history.');
+        recordLibraryMutation(workspace, restore, error => this.updateFooterState({ state: 'error', text: String(error instanceof Error ? error.message : error) }));
+      } };
+    } catch (error) { release(); throw error; }
+  }
+
   isBlocklyLibraryRuntimeReady(path: string): boolean {
     return this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
       && this.blocklyService.isLibraryRuntimeReady();
@@ -240,7 +271,8 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     const normalizedLibraryNames = [...orderedLibraryNames].sort((a, b) => a.localeCompare(b));
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
-      previousRuntimeSignature === runtimeSignature
+      input.retainedDocument === undefined
+      && previousRuntimeSignature === runtimeSignature
       && this.isBlocklyLibraryRuntimeReady(projectPath)
       && JSON.stringify(normalizedLoadedLibraryNames) === JSON.stringify(normalizedLibraryNames)
     ) {
@@ -256,7 +288,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       packageJson,
       libraryNames: orderedLibraryNames,
       projectService: this.projectService,
-    });
+    }, undefined, input.retainedDocument as BlocklyProjectDocument | undefined);
     return true;
   }
 
