@@ -23,7 +23,7 @@ test('cold packaged Electron prepares archives and persists libraries through th
     const resources = path.join(bundle, 'Contents/Resources');
     const source = path.join(root, 'source');
     await fs.mkdir(path.join(source, 'electron'), { recursive: true });
-    for (const name of ['library-dependencies.js', 'library-history.js', 'library-dependency-sessions.js', 'library-dependency-worker.js',
+    for (const name of ['library-dependencies.js', 'library-history.js', 'library-history-io.js', 'library-dependency-sessions.js', 'library-dependency-worker.js',
       'library-dependency-conflicts.js', 'library-local-changes.js', 'project-file-access.js', 'project-companion.js', 'child-script-path.js']) {
       await fs.copyFile(path.join(workspace, 'electron', name), path.join(source, 'electron', name));
     }
@@ -56,11 +56,18 @@ test('cold packaged Electron prepares archives and persists libraries through th
         const libraries = new LibraryDependencies(), sessions = new LibraryDependencySessions(libraries);
         const read = file => JSON.parse(fs.readFileSync(path.join(project, file), 'utf8'));
         const name = '@aily-project/lib-packaged-fixture';
+        const { token } = await sessions.run('historyBegin', project, { packages: [name] });
         await sessions.run('mutate', project, { action: 'install', packages: [name + '@file:local-library'], options: { installLinks: false } });
         assert.equal(libraries.status(project).dirty, false);
         assert.ok(read('package.json').dependencies[name]);
         assert.deepEqual(read('package-lock.json').packages[''].dependencies, read('package.json').dependencies);
         assert.equal(fs.readFileSync(path.join(project, 'node_modules', name, 'src/Packaged.h'), 'utf8'), '// packaged source\\n');
+        assert.equal((await sessions.run('historyCommit', project, { token })).changed, true);
+        await sessions.run('historyRestore', project, { token, forward: false });
+        assert.equal(read('package.json').dependencies?.[name], undefined);
+        await sessions.run('historyRestore', project, { token, forward: true });
+        assert.equal(fs.readFileSync(path.join(project, 'node_modules', name, 'src/Packaged.h'), 'utf8'), '// packaged source\\n');
+        await sessions.run('historyDiscard', project, { token });
         await sessions.run('mutate', project, { action: 'remove', packages: [name] });
         assert.equal(read('package.json').dependencies?.[name], undefined);
         assert.equal(fs.existsSync(path.join(project, 'node_modules', name)), false);

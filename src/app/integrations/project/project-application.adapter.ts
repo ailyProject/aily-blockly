@@ -195,7 +195,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     const workspace = this.blocklyService.workspace;
     if (!workspace || !this.isBlocklyLibraryRuntimeReady(projectPath)) throw new Error('Blockly library runtime is not ready.');
     this.blocklyService.assertWorkspaceEditAvailable();
-    const release = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined);
+    const release = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined, { allowNavigation: true });
     try {
       workspace.cancelCurrentGesture();
       const document = await this.captureBlocklyLibraryDocument();

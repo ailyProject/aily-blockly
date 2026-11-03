@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test:save-contention": "cd .. && node scripts/run-angular.cjs test --configuration=abs-sync --watch=false --browsers=ChromeHeadless --ts-config=tests/tsconfig.save-contention.spec.json --include=**/abs-prepared-save.spec.ts --include=**/abs-derived-outputs.spec.ts --include=**/abs-live-save.spec.ts --include=**/header-save-receipt.spec.ts",
-    "test:library-dependencies": "cd .. && node --test tests/electron/library-dependencies.test.js tests/electron/library-dependency-recovery.test.js tests/electron/library-dependencies-packaged.test.cjs child/scripts/preprocess.blockly-libraries.test.js child/scripts/preprocess.coder-libraries.test.js",
+    "test:library-dependencies": "cd .. && node --test tests/electron/library-dependencies.test.js tests/electron/library-dependency-recovery.test.js tests/electron/library-history-responsive.test.js tests/electron/library-dependencies-packaged.test.cjs child/scripts/preprocess.blockly-libraries.test.js child/scripts/preprocess.coder-libraries.test.js",
     "test:notifications": "cd .. && node --expose-gc --test tests/electron/notification.test.cjs tests/electron/notification-activation.test.cjs",
     "test:build-notifications": "cd .. && node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless --ts-config=tests/tsconfig.notifications.spec.json --include=src/app/services/domains/build/builder-notification.spec.ts --include=src/app/services/domains/build/builder.service.spec.ts",
     "test:windows-installer-compile": "cd .. && node --test tests/electron/windows-installer-compile.test.cjs",

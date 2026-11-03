@@ -117,10 +117,21 @@ describe('complete project persistence around library edits', () => {
       expect(f.calls).toEqual(['save-project','fence','checkpoint']);
       expect(f.service.isLibraryMutationInProgress()).toBeTrue();
       await f.service.finishLibraryMutation(token);
-      expect(f.calls).toEqual(['save-project','fence','checkpoint','source-extraction','runtime','save-project','commit']);
+      expect(f.calls).toEqual(['save-project','fence','checkpoint','runtime','save-project','commit']);
       expect(f.release).toHaveBeenCalledTimes(1);expect(f.lifecycleRelease).toHaveBeenCalledTimes(1);
       expect(f.service.isLibraryMutationInProgress()).toBeFalse();
     } finally {f.restore();}
+  });
+
+  it('prepares AI-reconciled sources once before the runtime and final full save', async () => {
+    const f = fixture();
+    window['libraryDependencies'].discard = async () => { f.calls.push('reconcile'); return {}; };
+    (f.service as any).acceptLibraryStatus = () => {};
+    try {
+      const { token } = await f.service.beginLibraryMutation(['@aily-project/lib-test']);
+      await f.service.finishLibraryMutation(token, true);
+      expect(f.calls).toEqual(['save-project','fence','checkpoint','reconcile','source-extraction','runtime','save-project','commit']);
+    } finally { f.restore(); }
   });
 
   it('accepts only an awaited, unchanged save-hash proof without saving the canvas twice', async () => {

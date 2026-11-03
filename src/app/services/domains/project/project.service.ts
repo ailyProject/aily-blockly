@@ -329,9 +329,13 @@ export class ProjectService {
     try {
       // AI's npm runs against its candidate tree. History publishes manifests,
       // while the host must reify its own node_modules before scanning libraries.
-      if (reconcile) this.acceptLibraryStatus(mutation.projectPath,
-        await window['libraryDependencies'].discard(mutation.projectPath, {reconcile:true,historyRestored:true}));
-      await window['libraryDependencies'].prepare(mutation.projectPath);
+      if (reconcile) {
+        this.acceptLibraryStatus(mutation.projectPath,
+          await window['libraryDependencies'].discard(mutation.projectPath, {reconcile:true,historyRestored:true}));
+        await window['libraryDependencies'].prepare(mutation.projectPath);
+      }
+      // Native library sessions already await source expansion before publishing
+      // their manifest. Only AI's separately reconciled host tree needs this pass.
       await this.ensureBlocklyLibraryRuntimeReady(mutation.projectPath);
       const saved = await this.save(mutation.projectPath);
       if (!saved.success || saved.generatedCodePublished === false) throw new Error(saved.error || '库文件已变更，但项目保存未完成。');

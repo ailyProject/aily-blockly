@@ -77,10 +77,19 @@ export class BlocklyWorkspaceEditGate {
 }
 
 /** Input fence only: never changes block flags or workspace.readOnly, which affect serialization. */
-export function fenceBlocklyWorkspaceInput(root: Element | undefined): () => void {
+export function fenceBlocklyWorkspaceInput(root: Element | undefined, options: { allowNavigation?: boolean } = {}): () => void {
   if (!root) return () => undefined;
   const document = root.ownerDocument;
   const block = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation(); };
+  const pointer = (event: Event) => {
+    const target = event.target as Element | null;
+    // npm/history I/O does not replace the canvas. Keep its background pan,
+    // scrollbars and zoom usable while editing its soon-to-change definitions
+    // is fenced. Save/ABS/runtime replacement retain the default strict fence.
+    if (options.allowNavigation && target?.closest && ['pointerdown', 'mousedown', 'touchstart', 'click', 'wheel'].includes(event.type)
+      && target.closest('.blocklyMainBackground, .blocklyScrollbarHandle, .blocklyScrollbarBackground, .blocklyZoom')) return;
+    block(event);
+  };
   const keys = (event: Event) => {
     const key = event as KeyboardEvent;
     // Saving is admitted by the project coordinator, not Blockly editing.
@@ -91,14 +100,14 @@ export function fenceBlocklyWorkspaceInput(root: Element | undefined): () => voi
     if (target === document || target === document.body || (target && root.contains(target))) block(event);
   };
   const events = ['pointerdown', 'mousedown', 'touchstart', 'wheel', 'click', 'dblclick', 'contextmenu', 'drop', 'paste', 'cut'];
-  events.forEach(name => root.addEventListener(name, block, { capture: true, passive: false }));
+  events.forEach(name => root.addEventListener(name, pointer, { capture: true, passive: false }));
   // Fence before document-level shortcut dispatch. Use an explicitly
   // non-passive capture listener so keyboard defaults are cancelled as well
   // as propagation, including in the Electron/Zone event bridge.
   const keyboardTarget = document.defaultView ?? document;
   keyboardTarget.addEventListener('keydown', keys, { capture: true, passive: false });
   return () => {
-    events.forEach(name => root.removeEventListener(name, block, true));
+    events.forEach(name => root.removeEventListener(name, pointer, true));
     keyboardTarget.removeEventListener('keydown', keys, true);
   };
 }
