@@ -1142,7 +1142,7 @@ export class _BuilderService {
 
 
   // 添加这个错误处理方法
-  private handleCompileError(errorMessage: string, sendToLog: boolean = true, details?: string, onRetryLocally?: () => void): void {
+  private handleCompileError(errorMessage: string, sendToLog: boolean = true, details?: string, onRetryLocally?: () => void, logSummaryOnly = false): void {
     // 计算编译耗时
     const buildEndTime = Date.now();
     const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
@@ -1159,8 +1159,11 @@ export class _BuilderService {
       detail: cleanDetailMessage,
       onRetryLocally,
       setTimeout: 600000,
-      sendToLog: sendToLog
+      sendToLog: sendToLog && !logSummaryOnly
     });
+    if (sendToLog && logSummaryOnly) {
+      this.logService.update({ title: this.t('FAILED_TITLE'), detail: cleanErrorMessage, state: 'error' });
+    }
 
     this.passed = false;
     this.isErrored = true;
@@ -1470,6 +1473,8 @@ export class _BuilderService {
             const outputLineBuffer = new AilyBuilderOutputLineBuffer();
             let lastStdErr = '';
             let fullStdErr = '';
+            let fullOutput = '';
+            let hasStreamedStdout = false;
             let outputComplete = false;
             let lastLogLines: string[] = [];
             let processExitCode: number | null = null;
@@ -1514,7 +1519,7 @@ export class _BuilderService {
                   buildWorkspace: this.currentProjectPath,
                   ...(buildConfig.recordProjectDelivery ? { buildDeliveryRequest: configFilePath } : {}),
                   streamId,
-                });
+                }, true); // This build owns its diagnostic log; suppress CmdService's close-tail replay.
                 const output = allowCloudSwitch ? withLocalBuildSwitch(command, {
                   isCurrent: () => {
                     try { assertCurrent(); return !this.cancelled && this.configService.getCompileBackend() === 'cloud'; }
@@ -1534,44 +1539,8 @@ export class _BuilderService {
                       setTimeout: 0, stop: () => this.cancel(requestId) });
                   },
                 }) : command;
-                this.buildSubscription = output.subscribe({
-                  next: (output: CmdOutput) => {
-                    // 第一时间检查取消状态
-                    if (this.cancelled) {
-                      return;
-                    }
-
-                    // 尽早捕获 streamId
-                    if (!this.streamId && output.streamId) {
-                      this.streamId = output.streamId;
-                      console.log('捕获到 streamId:', this.streamId);
-                    }
-
-                    let outputLines: Array<{ line: string; type: 'stdout' | 'stderr' }> = [];
-
-                    if (output.type === 'close') {
-                      processExitCode = output.code ?? (output.signal ? 1 : 0);
-                      processSignal = output.signal || null;
-
-                      // A process may exit without a final newline.
-                      outputLines = outputLineBuffer.flush();
-                    }
-
-                    if (output.type === 'error') {
-                      this.isErrored = true;
-                      const processErrorMessage = output.error || this.t('PROCESS_START_FAILED');
-                      lastStdErr = lastStdErr || processErrorMessage;
-                      if (!fullStdErr) {
-                        fullStdErr = processErrorMessage;
-                      }
-                      return;
-                    }
-
-                    if ((output.type === 'stdout' || output.type === 'stderr') && output.data) {
-                      outputLines = outputLineBuffer.append(output.type, output.data);
-                    }
-
-                    outputLines.forEach(({ line, type: outputType }) => {
+                const consumeOutputLines = (lines: Array<{ line: string; type: 'stdout' | 'stderr' }>) => {
+                    lines.forEach(({ line, type: outputType }) => {
                           let trimmedLine = line.trim();
                           if (!trimmedLine) return;
 
@@ -1680,11 +1649,52 @@ export class _BuilderService {
                             }
                           }
 
+                          fullOutput += trimmedLine + '\n';
                           lastLogLines.push(trimmedLine);
                           if (lastLogLines.length > 30) {
                             lastLogLines.shift();
                           }
                     });
+                };
+                this.buildSubscription = output.subscribe({
+                  next: (output: CmdOutput) => {
+                    // 第一时间检查取消状态
+                    if (this.cancelled) {
+                      return;
+                    }
+
+                    // 尽早捕获 streamId
+                    if (!this.streamId && output.streamId) {
+                      this.streamId = output.streamId;
+                      console.log('捕获到 streamId:', this.streamId);
+                    }
+
+                    let outputLines: Array<{ line: string; type: 'stdout' | 'stderr' }> = [];
+
+                    if (output.type === 'close') {
+                      processExitCode = output.code ?? (output.signal ? 1 : 0);
+                      processSignal = output.signal || null;
+
+                      // A process may exit without a final newline.
+                      outputLines = outputLineBuffer.flush();
+                    }
+
+                    if (output.type === 'error') {
+                      this.isErrored = true;
+                      consumeOutputLines(outputLineBuffer.flush());
+                      const processErrorMessage = output.error || this.t('PROCESS_START_FAILED');
+                      lastStdErr = lastStdErr || processErrorMessage;
+                      fullStdErr += (fullStdErr && !fullStdErr.endsWith('\n') ? '\n' : '') + processErrorMessage + '\n';
+                      fullOutput += processErrorMessage + '\n';
+                      return;
+                    }
+
+                    if ((output.type === 'stdout' || output.type === 'stderr') && output.data) {
+                      if (output.type === 'stdout') hasStreamedStdout = true;
+                      outputLines = outputLineBuffer.append(output.type, output.data);
+                    }
+
+                    consumeOutputLines(outputLines);
 
                     if (output.type === 'close' && (processExitCode !== 0 || processSignal)) {
                       this.isErrored = true;
@@ -1696,7 +1706,7 @@ export class _BuilderService {
                       // the close event without duplicating output already received.
                       fullStdErr = fullStdErr.trim()
                         || output.stderr?.trim()
-                        || output.stdout?.trim()
+                        || (!hasStreamedStdout ? output.stdout?.trim() : '')
                         || processErrorMessage;
                     }
                   },
@@ -1705,10 +1715,16 @@ export class _BuilderService {
                     this.isErrored = true;
                     this.buildSubscription = null; // 清理订阅引用
                     this.buildPromiseReject = null; // 清理 reject 引用
+                    consumeOutputLines(outputLineBuffer.flush());
                     const fullErrorMessage = (error?.error || error?.stack || error?.message || String(error)).toString();
-                    this.handleCompileError(error.message, true, fullErrorMessage);
+                    const detail = [fullOutput.trim(), fullErrorMessage].filter(Boolean).join('\n');
+                    if (fullStdErr.trim()) {
+                      this.logService.update({ detail: fullStdErr.trim(), state: 'error' });
+                      this.appendCompileLog(fullStdErr.trim(), 'ERROR');
+                    }
+                    this.handleCompileError(error.message || String(error), true, detail, undefined, true);
                     this.workflowService.finishBuild(false, error.message || 'Build error'); // 确保完成工作流状态
-                    reject({ state: 'error', text: error.message });
+                    reject({ state: 'error', text: error.message, fullStdErr: detail });
                   },
                   complete: () => {
                     this.clearProgressTimer(); // 清理定时器
@@ -1774,7 +1790,8 @@ export class _BuilderService {
                       console.log(`编译失败，耗时: ${buildDuration} 秒`);
 
                       lastStdErr = lastStdErr.replace(/\[\d+(;\d+)*m/g, '');
-                      this.handleCompileError(lastStdErr || this.t('INCOMPLETE'), false, fullStdErr || lastStdErr || this.t('INCOMPLETE'));
+                      const diagnosticDetail = fullOutput.trim() || fullStdErr || lastStdErr || this.t('INCOMPLETE');
+                      this.handleCompileError(lastStdErr || this.t('INCOMPLETE'), false, diagnosticDetail);
                       this.logService.update({ detail: fullStdErr, state: 'error' });
                       this.appendCompileLog(fullStdErr || lastStdErr || this.t('INCOMPLETE'), 'ERROR');
                       this.passed = false;
@@ -1785,7 +1802,7 @@ export class _BuilderService {
                       });
 
                       this.workflowService.finishBuild(false, 'Compilation failed');
-                      reject({ state: 'error', text: this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: fullStdErr || lastStdErr });
+                      reject({ state: 'error', text: this.t('FAILED_WITH_TIME', { seconds: buildDuration }), fullStdErr: diagnosticDetail });
                     } else if (this.cancelled) {
                       console.warn("编译中断")
                       console.log(`编译已取消，耗时: ${buildDuration} 秒`);
@@ -1860,7 +1877,7 @@ export class _BuilderService {
           return;
         }
         const fullErrorMessage = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
-        this.handleCompileError(error.message || error.text || String(error), true, fullErrorMessage, cloudBuild ? retry : undefined);
+        this.handleCompileError(error.message || error.text || String(error), true, fullErrorMessage, cloudBuild ? retry : undefined, cloudBuild);
         this.workflowService.finishBuild(false, error.message);
         reject({ state: 'error', text: error.message, fullStdErr: fullErrorMessage });
       }

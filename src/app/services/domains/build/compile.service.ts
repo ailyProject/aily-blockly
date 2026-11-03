@@ -430,6 +430,7 @@ export class CompileService {
                 this.t('PRECOMPILE_FAILED_TITLE'),
                 this.t('PRECOMPILE_FAILED_DETAIL'),
                 detail,
+                undefined, true,
               );
               return {
                 success: false,
@@ -486,7 +487,7 @@ export class CompileService {
             const detail = cmp.combined || cmp.stderr + cmp.stdout;
             finishReason = 'Compile failed';
             const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
-            this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
+            this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail, undefined, true);
             return {
               success: false,
               result: { state: 'error', text, fullStdErr: detail },
@@ -540,7 +541,7 @@ export class CompileService {
       }
       this.message.error(msg);
       const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined);
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
       return { success: false, result: { state: 'error', text: msg, fullStdErr: detail } };
     } finally {
       // Cancellation resolves the UI command promptly, but metadata is another
@@ -840,8 +841,10 @@ export class CompileService {
     text: string,
     detail: string,
     onRetryLocally?: () => void,
+    logSummaryOnly = false,
   ): void {
-    const clean = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim().slice(0, 8000);
+    const fullDetail = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim();
+    const clean = logSummaryOnly ? fullDetail : fullDetail.slice(0, 8000);
     appendProjectLog(projectPath, 'compile', 'ERROR', text || clean || '(no logs)');
     this.application.updateNotice({
       title,
@@ -850,8 +853,11 @@ export class CompileService {
       detail: clean || '(no logs)',
       onRetryLocally,
       setTimeout: 600000,
-      sendToLog: true,
+      sendToLog: !logSummaryOnly,
     });
+    if (logSummaryOnly) {
+      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
+    }
   }
 
   private runOneShotCommand(
@@ -908,7 +914,7 @@ export class CompileService {
       const command = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
         cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId,
         ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
-      });
+      }, true); // onLine owns the build log; CmdService must not replay its close-tail.
       const output = localSwitch ? withLocalBuildSwitch(command, {
         isCurrent: localSwitch.isCurrent,
         stop: () => this.cmdService.kill(streamId),
@@ -959,7 +965,17 @@ export class CompileService {
             return;
           }
           settled = true;
-          if (err?.code !== CLOUD_BUILD_CLOUD_REQUESTED) emitLines(lineBuffer.flush());
+          if (err?.code !== CLOUD_BUILD_CLOUD_REQUESTED) {
+            emitLines(lineBuffer.flush());
+            const message = err?.message || String(err);
+            const reported = typeof err?.fullStdErr === 'string' ? err.fullStdErr : '';
+            const output = reported || combined;
+            const detail = output ? (output.includes(message) ? output : output + '\n' + message) : message;
+            const alreadyLogged = !!combined && (!reported || combined.includes(reported));
+            cleanup(cancelCommand);
+            reject(Object.assign(new Error(message), err, { fullStdErr: detail, buildOutputAlreadyLogged: alreadyLogged }));
+            return;
+          }
           cleanup(cancelCommand);
           reject(err);
         },

@@ -1,6 +1,8 @@
+import { localCompileDiagnostic, localCompileErrorEvents } from '../../../../../tests/fixtures/local-compile-error-events';
 import { fakeAsync, tick } from '@angular/core/testing';
 import { Subject } from 'rxjs';
-import { ProcessState } from '@core/app-shell/public-api';
+import { CmdService } from '@core/platform/public-api';
+import { ProcessState, NoticeService } from '@core/app-shell/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
 import { _BuilderService } from './builder.service';
 import { _UploaderService } from './uploader.service';
@@ -8,12 +10,12 @@ import { CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress
 import { NpmService } from '../../../services/domains/dependencies/public-api';
 
 describe('Blockly compile and upload handoff', () => {
-  let originalFs: any, originalPath: any, originalBuilder: any;
+  let originalFs: any, originalPath: any, originalBuilder: any, originalCmd: any;
   beforeEach(() => {
-    originalFs = window['fs']; originalPath = window['path']; originalBuilder = window['builder'];
+    originalFs = window['fs']; originalPath = window['path']; originalBuilder = window['builder']; originalCmd = window['cmd'];
   });
   afterEach(() => {
-    window['fs'] = originalFs; window['path'] = originalPath; window['builder'] = originalBuilder;
+    window['fs'] = originalFs; window['path'] = originalPath; window['builder'] = originalBuilder; window['cmd'] = originalCmd;
   });
 
   function uploadFixture() {
@@ -204,6 +206,61 @@ describe('Blockly compile and upload handoff', () => {
     expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true);
     expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
     expect(f.service.passed).toBeFalse();
+  });
+
+  for (const scenario of [
+    { name: 'stdout-typed-error', stream: 'stdout', newline: true, ending: 'typed-error', noWarning: true },
+    { name: 'stderr-tail-typed-error', stream: 'stderr', newline: false, ending: 'typed-error' },
+    { name: 'captured-native-error', stream: 'stderr', newline: true, ending: 'close', native: true },
+    { name: 'silent-stderr-close', stream: 'stderr', newline: true, ending: 'close', silent: true },
+    { name: 'stderr-close', stream: 'stderr', newline: true, ending: 'close' },
+    { name: 'stderr-tail-close', stream: 'stderr', newline: false, ending: 'close' },
+    { name: 'stdout-close-fallback', stream: 'stdout', newline: true, ending: 'close' },
+    { name: 'stderr-tail-observable-error', stream: 'stderr', newline: false, ending: 'observable-error' },
+  ]) it('local Blockly diagnostic appears once: ' + scenario.name, async () => {
+    const f = compileFixture(), entries: any[] = [], notices: any[] = [];
+    const logService = { update: (entry: any) => entries.push(entry) };
+    const noticeService = new NoticeService(logService as any);
+    noticeService.stateSubject.subscribe(notice => notices.push(notice));
+    let listener: any, rejectRun!: (reason: unknown) => void;
+    window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },
+      run: () => new Promise((_resolve, reject) => { rejectRun = reject; }) };
+    const cmd = new CmdService(logService as any), spawn = cmd.spawn.bind(cmd);
+    spyOn(cmd, 'spawn').and.callFake((command, args, options, silent) => spawn(command, args, options, scenario.silent || silent));
+    f.service.cmdService = cmd;
+    f.service.logService = logService; f.service.noticeService = noticeService;
+    f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
+    f.service.npmService.prepareCompileBackend = async () => {};
+    const normal = scenario.native ? 'Starting compilation of' : 'LOCAL_BLOCKLY_NORMAL_' + scenario.name;
+    const warning = 'warning: LOCAL_BLOCKLY_WARNING_' + scenario.name;
+    const diagnostic = scenario.native ? localCompileDiagnostic : '[ERROR] source.cpp:4:3: LOCAL_BLOCKLY_DIAGNOSTIC_' + scenario.name;
+    const transport = 'LOCAL_BLOCKLY_TRANSPORT_' + scenario.name;
+    const { result } = await f.start();
+    expect(f.service.cmdService.spawn).toHaveBeenCalledTimes(1);
+    if (scenario.native) localCompileErrorEvents.forEach(event => listener({ ...event }));
+    else {
+    listener({ type: 'stdout', data: normal + '\n' });
+    if (!scenario.noWarning) listener({ type: 'stderr', data: warning + '\n' });
+    listener({ type: scenario.stream, data: diagnostic + (scenario.newline ? '\n' : '') });
+    }
+    if (scenario.ending === 'observable-error') rejectRun(new Error(transport));
+    else if (scenario.ending === 'typed-error') listener({ type: 'error', error: transport });
+    else {
+      listener({ type: 'close', code: 1 });
+    }
+    const outcome = await result;
+    f.service.clearProgressTimer();
+    expect(outcome.state).toBe('error');
+    const count = (marker: string) => entries.reduce((n, entry) => n + String(entry.detail || '').split(marker).length - 1, 0);
+    console.log('LOCAL_LOG_REPRO ' + JSON.stringify({ editor: 'Blockly', scenario: scenario.name,
+      normal: count(normal), warning: count(warning), diagnostic: count(diagnostic),
+      errorEntries: entries.filter(entry => entry.state === 'error').length,
+      finalNoticeHasDiagnostic: notices.filter(notice => notice.state === 'error').at(-1)?.detail?.includes(diagnostic) || false }));
+    expect(count(normal)).withContext('normal stdout replayed after local failure').toBe(1);
+    if (!scenario.native && !scenario.noWarning) expect(count(warning)).withContext('warning missing or replayed after local failure').toBe(1);
+    expect(count(diagnostic)).withContext('diagnostic missing or replayed after local failure').toBe(1);
+    expect(notices.filter(notice => notice.state === 'error').at(-1)?.detail).toContain(diagnostic);
+    if (scenario.ending === 'typed-error') expect(notices.filter(notice => notice.state === 'error').at(-1)?.detail).toContain(transport);
   });
 
   for (const stage of ['preflight', 'cloud-execution']) it(`offers an explicit new local Blockly task after ${stage} fails`, async () => {
