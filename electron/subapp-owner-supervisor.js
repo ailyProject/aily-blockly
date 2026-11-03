@@ -6,7 +6,7 @@ const { SubappOwnerProcessLeases } = require('./subapp-owner-process-lease');
 
 /** Failover record for renderer-owned Agent resources. No device or UI business logic. */
 class SubappOwnerSupervisor {
-    constructor({ resolveRuntime, send = sendLifecycleRequest, onError = console.warn, processLeases = new SubappOwnerProcessLeases() }) {
+    constructor({ resolveRuntime, send = sendLifecycleRequest, onError = console.warn, processLeases = new SubappOwnerProcessLeases(), now = Date.now }) {
         this.resolveRuntime = resolveRuntime;
         this.send = send;
         this.onError = onError;
@@ -18,6 +18,9 @@ class SubappOwnerSupervisor {
         this.quitting = false;
         this.shutdownWork = null;
         this.abortReason = null;
+        this.now = now;
+        this.agentOwners = new Map();
+        this.latestAgentOwner = new Map();
     }
 
     connect(contents) {
@@ -53,6 +56,16 @@ class SubappOwnerSupervisor {
         const state = this.require(contents, input.generation);
         const ownerSessionId = String(input.ownerSessionId || '').trim();
         if (!ownerSessionId || ownerSessionId.length > 256) throw new Error('Invalid Subapp owner identity');
+        // Controlled owners may not acquire resources after retirement, even
+        // when a late renderer RPC already passed its old local lease check.
+        const controlledOwner = this.agentOwners.get(ownerSessionId);
+        if (controlledOwner) {
+            const owner = controlledOwner;
+            if (owner.senderId !== contents.id || owner.generation !== state.generation
+                || owner.state !== 'active' || owner.expiresAt <= this.now()) {
+                throw this.ownerError('SUBAPP_OWNER_EXPIRED', 'The original Agent owner is no longer active.');
+            }
+        }
         // Endpoints and callback methods come only from the registered process,
         // never from an IPC-supplied URL or method.
         const runtime = this.resolveRuntime(String(input.toolId || ''), contents.id);
@@ -105,12 +118,165 @@ class SubappOwnerSupervisor {
             errors: results.filter(result => !result.ok).map(result => result.error) };
     }
 
+    /** Main-process issuance is independent of a replaceable renderer registry.
+     * Capabilities only travel over the private owner-control RPC, never tools. */
+    acquireAgentOwner(contents, input) {
+        const state = this.require(contents, input.generation);
+        const sessionId = String(input.sessionId || '');
+        if (!sessionId || sessionId.length > 256) throw this.ownerError('SUBAPP_SESSION_REQUIRED', 'An exact session is required.');
+        const senderPid = contents.getOSProcessId?.();
+        if (!Number.isSafeInteger(senderPid) || senderPid <= 0) throw this.ownerError('SUBAPP_RENDERER_EXPIRED', 'Renderer incarnation is unavailable.');
+        if (this.agentOwners.size >= 2048) {
+            for (const [id, value] of this.agentOwners) {
+                // Keep controlled-owner tombstones for this entire sender
+                // incarnation. Name prefixes cannot distinguish legacy owners.
+                if (value.cleanup === 'confirmed' && !value.cleanupWork
+                    && this.renderers.get(value.senderId)?.generation !== value.generation) {
+                    this.agentOwners.delete(id);
+                    if (this.latestAgentOwner.get(value.sessionKey) === id) this.latestAgentOwner.delete(value.sessionKey);
+                    break;
+                }
+            }
+        }
+        if (this.agentOwners.size >= 2048) throw this.ownerError('SUBAPP_OWNER_LIMIT', 'Owner evidence capacity is full.');
+        const ownerLeaseId = `owner-${randomUUID()}`;
+        const record = { ownerLeaseId, sessionId, senderId: contents.id, senderPid, generation: state.generation,
+            capability: `owner-control-${randomUUID()}`, expiresAt: this.now() + 45_000,
+            sessionKey: JSON.stringify([contents.id, state.generation, sessionId]), state: 'active', cleanup: 'unknown' };
+        this.agentOwners.set(ownerLeaseId, record);
+        this.latestAgentOwner.set(record.sessionKey, ownerLeaseId);
+        return { ok: true, ...this.agentLease(record) };
+    }
+
+    requireAgentOwner(contents, input) {
+        const state = this.require(contents, input.generation);
+        const control = input.ownerControl;
+        const owner = this.agentOwners.get(String(input.ownerLeaseId || ''));
+        if (!owner || !control || control.version !== 1 || control.capability !== owner.capability
+            || control.generation !== owner.generation || control.ownerLeaseId !== owner.ownerLeaseId
+            || control.sessionId !== owner.sessionId || input.sessionId !== owner.sessionId
+            || owner.senderId !== contents.id || owner.senderPid !== contents.getOSProcessId?.()
+            || owner.generation !== state.generation) {
+            throw this.ownerError('SUBAPP_OWNER_CONTROL_INVALID', 'The original private owner capability is not valid for this sender incarnation.');
+        }
+        return owner;
+    }
+
+    renewAgentOwner(contents, input) {
+        const owner = this.requireAgentOwner(contents, input);
+        if (owner.state !== 'active' || owner.expiresAt <= this.now()) throw this.ownerError('SUBAPP_OWNER_EXPIRED', 'The original owner expired.');
+        owner.expiresAt = this.now() + 45_000;
+        return { ok: true, ...this.agentLease(owner) };
+    }
+
+    inspectAgentOwner(contents, input) {
+        const owner = this.requireAgentOwner(contents, input);
+        return this.agentInspection(owner);
+    }
+
+    async retireAgentOwner(contents, input) {
+        const owner = this.requireAgentOwner(contents, input);
+        await this.retireAgentRecord(owner);
+        return { ...this.agentInspection(owner), ok: owner.cleanup === 'confirmed',
+            ...(owner.cleanup !== 'confirmed' ? { errorCode: 'SUBAPP_OWNER_CLEANUP_FAILED', error: 'Original Runtime cleanup has not been confirmed.' } : {}) };
+    }
+
+    async retireAgentRecord(owner) {
+        if (owner.cleanupWork) return owner.cleanupWork;
+        if (owner.cleanup === 'confirmed') return;
+        // Fence acquisition before taking a snapshot of actual owned resources.
+        owner.state = 'retiring'; owner.cleanup = 'pending';
+        const state = this.renderers.get(owner.senderId);
+        owner.bindings ??= [...(state?.bindings.values() || [])].filter(binding => binding.ownerSessionId === owner.ownerLeaseId);
+        owner.cleanupWork = Promise.all(owner.bindings.map(binding => this.cleanup(binding))).then(results => {
+            owner.cleanup = results.every(result => result.ok) && owner.bindings.every(binding => binding.cleanups.size === 0)
+                ? 'confirmed' : 'failed';
+            owner.state = 'retired';
+            for (let index = 0; index < owner.bindings.length; index++) {
+                const binding = owner.bindings[index];
+                if (results[index].ok && state?.bindings.get(binding.key) === binding) state.bindings.delete(binding.key);
+            }
+        }).finally(() => { owner.cleanupWork = undefined; });
+        return owner.cleanupWork;
+    }
+
+    async recoverAgentOwner(contents, input) {
+        const owner = this.requireAgentOwner(contents, input);
+        const nonce = String(input.recoveryRequestId || '');
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(nonce)) {
+            throw this.ownerError('SUBAPP_OWNER_RECOVERY_REQUEST_INVALID', 'Recovery requires its original private request ID.');
+        }
+        if (owner.recoveryRequestId && owner.recoveryRequestId !== nonce) throw this.ownerError('SUBAPP_OWNER_RECOVERY_REQUEST_MISMATCH', 'Observe the original recovery request.');
+        const latest = this.latestAgentOwner.get(owner.sessionKey);
+        if (latest !== owner.ownerLeaseId && latest !== owner.successor?.ownerLeaseId) {
+            throw this.ownerError('SUBAPP_OWNER_SUPERSEDED', 'Historical owner credentials cannot change a newer session incarnation.');
+        }
+        if (owner.successor) {
+            const active = owner.successor.state === 'active' && owner.successor.expiresAt > this.now();
+            return this.agentRecovery(owner, !active, true);
+        }
+        if (owner.state === 'active' && owner.expiresAt > this.now()) throw this.ownerError('SUBAPP_OWNER_ACTIVE', 'The original owner is still active.');
+        owner.recoveryRequestId = nonce;
+        await this.retireAgentRecord(owner);
+        this.requireAgentOwner(contents, input);
+        if (owner.successor) return this.agentRecovery(owner, owner.successor.expiresAt <= this.now(), true);
+        if (this.latestAgentOwner.get(owner.sessionKey) !== owner.ownerLeaseId) {
+            throw this.ownerError('SUBAPP_OWNER_SUPERSEDED', 'The session acquired another owner while cleanup was pending.');
+        }
+        // The renderer joins transport cancellations; the independent native
+        // ledger joins all resource-owning cleanup callbacks above.
+        if (input.pendingRequests !== 0) throw this.ownerError('SUBAPP_OWNER_PENDING_REQUESTS', 'Original requests have not finished.');
+        if (input.rendererCleanupConfirmed !== true || owner.cleanup !== 'confirmed'
+            || owner.bindings.some(binding => binding.cleanups.size || this.pending.has(binding.key))) {
+            throw this.ownerError('SUBAPP_OWNER_CLEANUP_FAILED', 'Original renderer and Runtime resource cleanup is not confirmed.');
+        }
+        owner.successor = this.agentOwners.get(this.acquireAgentOwner(contents, { generation: owner.generation, sessionId: owner.sessionId }).ownerLeaseId);
+        return this.agentRecovery(owner, false, false);
+    }
+
+    agentLease(owner) {
+        return { ownerLeaseId: owner.ownerLeaseId, sessionId: owner.sessionId, expiresAt: owner.expiresAt,
+            ownerControl: { version: 1, capability: owner.capability, generation: owner.generation,
+                ownerLeaseId: owner.ownerLeaseId, sessionId: owner.sessionId } };
+    }
+
+    agentInspection(owner) {
+        const bindings = owner.bindings || [...(this.renderers.get(owner.senderId)?.bindings.values() || [])]
+            .filter(binding => binding.ownerSessionId === owner.ownerLeaseId);
+        const pendingRequests = bindings.reduce((count, binding) => count + binding.cleanups.size
+            + (this.pending.has(binding.key) ? 1 : 0), 0);
+        return { ok: true, version: 1, action: 'inspect', sessionId: owner.sessionId, ownerLeaseId: owner.ownerLeaseId,
+            state: owner.state === 'active' && owner.expiresAt <= this.now() ? 'expired' : owner.state,
+            cleanup: owner.cleanup, pendingRequests,
+            currentOwner: this.latestAgentOwner.get(owner.sessionKey) === owner.ownerLeaseId, leaseExpiresAt: owner.expiresAt,
+            recoverable: owner.state === 'retired' && owner.cleanup === 'confirmed' && pendingRequests === 0,
+            canRetryCleanup: owner.cleanup === 'failed' };
+    }
+
+    agentRecovery(owner, expired, reused) {
+        return { ok: !expired, version: 1, action: 'recover', ...this.agentLease(owner.successor),
+            ...(expired ? { errorCode: 'SUBAPP_OWNER_RECOVERY_RECEIPT_EXPIRED', error: 'The original acknowledged successor is no longer active.' } : {}),
+            cleanup: 'confirmed', pendingRequests: 0, notResumed: true, deviceResourcesRestored: false, reused,
+            recoveryReceipt: { version: 1, requestId: owner.recoveryRequestId, sessionId: owner.sessionId,
+                previousOwnerLeaseId: owner.ownerLeaseId, ownerLeaseId: owner.successor.ownerLeaseId, domainOperationsReplayed: false } };
+    }
+
+    ownerError(code, message) { return Object.assign(new Error(message), { code }); }
+
     async invalidate(rendererId) {
         const state = this.renderers.get(rendererId);
         if (!state) return [];
         const bindings = [...state.bindings.values()];
         state.bindings.clear();
+        const oldGeneration = state.generation;
         state.generation = randomUUID(); // Fence old document IPC synchronously.
+        for (const [id, owner] of this.agentOwners) {
+            if (owner.senderId !== rendererId || owner.generation !== oldGeneration) continue;
+            // Old-generation capabilities can no longer address this sender;
+            // actual cleanup remains owned by the captured binding references.
+            this.agentOwners.delete(id);
+            if (this.latestAgentOwner.get(owner.sessionKey) === id) this.latestAgentOwner.delete(owner.sessionKey);
+        }
         const recovery = Promise.all(bindings.map(async binding => {
             // Idempotent owner release is retryable; domain commands are never replayed.
             let result;
@@ -238,6 +404,11 @@ function registerSubappOwnerSupervisor(ipcMain, supervisor) {
                 case 'connect': return supervisor.connect(event.sender);
                 case 'track': return await supervisor.track(event.sender, input);
                 case 'release': return await supervisor.release(event.sender, input);
+                case 'agent-acquire': return supervisor.acquireAgentOwner(event.sender, input);
+                case 'agent-renew': return supervisor.renewAgentOwner(event.sender, input);
+                case 'agent-inspect': return supervisor.inspectAgentOwner(event.sender, input);
+                case 'agent-retire': return await supervisor.retireAgentOwner(event.sender, input);
+                case 'agent-recover': return await supervisor.recoverAgentOwner(event.sender, input);
                 case 'dispose':
                     supervisor.require(event.sender, input.generation);
                     await supervisor.invalidate(event.sender.id);

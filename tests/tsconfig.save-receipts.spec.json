@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/services/core/app-shell/action-save-feedback.spec.ts",
+    "../src/app/services/integrations/automation/project-save-receipts.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-live-save.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-leave.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-native-ui-tasks.spec.ts",
+    "../src/app/main-window/components/header/header-save-receipt.spec.ts",
+    "../src/app/main-window/components/header/header-save-as.spec.ts",
+    "../src/app/services/domains/project/project-lifecycle-operation.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

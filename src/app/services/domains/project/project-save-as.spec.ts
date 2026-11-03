@@ -859,6 +859,38 @@ describe('ProjectService save as mode isolation', () => {
     expect(service.save).not.toHaveBeenCalled();
   });
 
+  it('prefers the retained complete runtime snapshot over older disk and partial canvas after failed reconstruction', async () => {
+    const f = dirtyBlocklySnapshot();
+    (f.application as any).hasBlocklyRuntimeRecovery = jasmine.createSpy('retained full runtime snapshot').and.returnValue(true);
+    service.getBlocklyProjectLoadStatus.and.returnValue({ project: source, ready: false, state: 'error', error: 'runtime reconstruction failed' });
+    f.snapshot.publish.and.callFake(async (path: string) => {
+      files.set(`${path}/project.abi`, f.captured);
+      return { projectSaved: true, generatedCodePublished: false, partial: true, projectionPending: true,
+        recoverySource: { version: 1, kind: 'workspace', origin: 'runtime-snapshot', complete: true,
+          loadFailed: false, partialCanvas: 'not-applicable' } };
+    });
+    const before = [...files], outcome = await service.saveRecoveryAs(target);
+    expect(outcome.recoverySource?.origin).toBe('runtime-snapshot');
+    expect(files.get(`${target}/project.abi`)).toBe(f.captured);
+    expect(f.application.captureBlocklyRecoveryCopySnapshot).toHaveBeenCalledOnceWith(source);
+    expect(f.application.captureBlocklyRecoveryFragment).not.toHaveBeenCalled();
+    expect(f.application.captureBlocklySaveAsSnapshot).not.toHaveBeenCalled();
+    for (const [path, content] of before) expect(files.get(path)).toBe(content);
+    expect(service.save).not.toHaveBeenCalled();
+  });
+
+  it('never falls back to saved disk or partial canvas when a registered complete runtime snapshot cannot be captured', async () => {
+    const f = dirtyBlocklySnapshot();
+    (f.application as any).hasBlocklyRuntimeRecovery = jasmine.createSpy('retained snapshot').and.returnValue(true);
+    service.getBlocklyProjectLoadStatus.and.returnValue({ project: source, ready: false, state: 'error', error: 'runtime reconstruction failed' });
+    f.application.captureBlocklyRecoveryCopySnapshot.and.rejectWith(Error('retained snapshot changed'));
+    const before = [...files];
+    await expectAsync(service.saveRecoveryAs(target)).toBeRejectedWithError('retained snapshot changed');
+    expect([...files]).toEqual(before); expect(f.application.captureBlocklyRecoveryFragment).not.toHaveBeenCalled();
+    expect(fsp.mkdir).not.toHaveBeenCalled(); expect(fsp.rm).not.toHaveBeenCalled();
+    expect(service.projectOpen).not.toHaveBeenCalled(); expect(service.save).not.toHaveBeenCalled();
+  });
+
   it('saves a disk-based recovery without disposing an unserializable partial view', async () => {
     const f = dirtyBlocklySnapshot();
     service.getBlocklyProjectLoadStatus.and.returnValue({ project: source, ready: false, state: 'error', error: 'load timeout' });

@@ -2,13 +2,17 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 
 // A read-only source archive and a fresh suite-owned target. Never follow a
 // junction, reuse an old workspace or rewrite a copied ABS/map credential.
 const root = path.resolve(process.env.AILY_STEP_ROOT ?? '')
 const output = path.resolve(process.env.AILY_STEP_OUTPUT ?? '')
 assert.match(root.replaceAll('\\', '/'), /^C:\/.*\/aily-project\/dev-tests\/abs-serial-analysis-20261028$/i)
-assert.match(output.replaceAll('\\', '/'), /\/aily-blockly\/e2e\/test-results\/abs-semantic-identity-20261029(?:\/|$)/i)
+const results = fileURLToPath(new URL('../test-results/', import.meta.url))
+const relativeOutput = path.relative(results, output)
+assert.ok(relativeOutput && relativeOutput !== '..' && !relativeOutput.startsWith('..' + path.sep)
+  && !path.isAbsolute(relativeOutput), 'Preparation evidence must stay in a suite-owned E2E results directory')
 assert.equal((await fs.realpath(root)).toLowerCase(), root.toLowerCase())
 const seed = path.join(root, 'archive-user-project/esp32-c3-HANTAI')
 const target = path.join(root, `serial-agent-identity-${randomUUID()}`, 'project')

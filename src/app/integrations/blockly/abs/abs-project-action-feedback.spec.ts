@@ -12,6 +12,9 @@ describe('real unsaved-state Action feedback boundary', () => {
     const project: any = Object.create(ProjectService.prototype);
     Object.defineProperty(project, 'currentProjectPath', { value: '/project', writable: true });
     project.configService = { getCompileSettingsKey: () => 'local' };
+    // This Action boundary fixture has no editor/application injector and no
+    // failed runtime snapshot; keep the new readiness query explicit.
+    project.hasBlocklyRuntimeRecovery = () => false;
     project.discardLibraryChangesBeforeQuit = jasmine.createSpy('discard').and.resolveTo();
     project.getProjectMode = () => 'blockly'; project.getProjectDependencySession();
     const adapter: any = Object.assign(Object.create(ProjectApplicationAdapter.prototype), { actionService: actions, projectService: project });

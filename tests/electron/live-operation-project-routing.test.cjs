@@ -3,7 +3,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { routeLiveOperationProject } = require('../../electron/live-operation-project-routing');
 
-for (const operation of ['project_fork_status', 'project_recovery_open']) {
+for (const operation of ['project_fork_status', 'project_recovery_open', 'project_save_status']) {
   test(`${operation} keeps params.project authority after the active view has changed`, () => {
     const result = routeLiveOperationProject(operation, undefined, '/isolated/already-activated-target');
     assert.deepEqual(result, { path: '', parameterScoped: true });

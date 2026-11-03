@@ -21,7 +21,7 @@ import { captureCustomFunctionRegistration } from './blockly-custom-function-con
 export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly.Workspace,
   request: NonNullable<NativeCandidateRequest['verify']>, generator: Blockly.Generator | undefined,
   assertClean: () => void, readPrepared: PreparedDataReader, uiTasks = new NativeUiTasks(), progress: NativeCandidateProgress = () => {},
-  prepareComments: () => Promise<void> = async () => {}): Promise<NativeCandidateResult> {
+  prepareComments: () => Promise<void> = async () => {}, yieldUi?: () => Promise<void>): Promise<NativeCandidateResult> {
   const expected = cloneBlocklyJson(request.state);
   const verify = createAbsReadbackVerifier(expected, { fieldDefinition: (_type, name, id) => request.contracts.fields[id]?.[name] });
   // Variable identities are explicit inputs; other serializers still need ownership.
@@ -64,10 +64,16 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
       layoutAbsNewRoots(cloneBlocklyJson(expected), request.newRootIds, workspace as Blockly.WorkspaceSvg, assertClean, native);
       capture(); // Moving a block must not change fields, connections or models.
     }
-    construction.finish();
+    if (yieldUi) await construction.finishCooperatively(yieldUi, assertClean);
+    else construction.finish();
     const deferredUi = uiTasks.hasPending;
     progress('ui');
-    if (request.uiPhase !== 'before-ui') uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
+    const settleUi = async () => {
+      const snapshot = () => nativeUiSemanticSnapshot(native, workspace);
+      if (yieldUi) await uiTasks.drainCooperatively(snapshot, yieldUi, assertClean);
+      else uiTasks.drain(snapshot);
+    };
+    if (request.uiPhase !== 'before-ui') await settleUi();
     let generatedState: ReturnType<typeof capture> | undefined;
     const generate = () => uiTasks.withoutScheduling(() => {
       progress('generate');
@@ -80,7 +86,7 @@ export async function verifyNativeAbi(native: typeof Blockly, workspace: Blockly
     const generationEvidence = verifyNativeModelRegistrations(window, generator, request.modelDeclarations ?? [], workspace, generate);
     progress('ui');
     const settlesAfterGeneration = request.uiPhase !== 'before-ui' && uiTasks.hasPending;
-    if (request.uiPhase !== 'before-ui') uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
+    if (request.uiPhase !== 'before-ui') await settleUi();
     assertClean();
     progress('readback');
     // Generation already captured a complete verified state. Only intervening
