@@ -2,6 +2,7 @@
   "name": "aily-blockly-tests",
   "private": true,
   "scripts": {
+    "test:chat-auto-open": "cd .. && node --test tests/main-window-chat-auto-open.test.cjs tests/electron/aily-chat-offline-auth.test.js",
     "test:notifications": "cd .. && node --expose-gc --test tests/electron/notification.test.cjs tests/electron/notification-activation.test.cjs",
     "test:build-notifications": "cd .. && node scripts/run-angular.cjs test --watch=false --browsers=ChromeHeadless --ts-config=tests/tsconfig.notifications.spec.json --include=src/app/services/domains/build/builder-notification.spec.ts --include=src/app/services/domains/build/builder.service.spec.ts",
     "test:windows-installer-compile": "cd .. && node --test tests/electron/windows-installer-compile.test.cjs",
