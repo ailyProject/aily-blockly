@@ -202,7 +202,7 @@ describe('Coder build metadata', () => {
     const pending = retry(); await retry(); await pending;
     expect(compiler.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
     expect(compiler.runOneShotCommand.calls.count()).toBe(stage === 'cancel-preparation' ? 0 : 1);
-    if (stage !== 'cancel-preparation') expect(readManifest().buildInfo.lastBuildStatus).toBe(stage === 'local-error' ? 'failed' : 'success');
+    expect(readManifest().buildInfo.lastBuildStatus).toBe(stage === 'cancel-preparation' ? 'cancelled' : stage === 'local-error' ? 'failed' : 'success');
     expect(JSON.parse(files.get(`${root}/.log/compile/latest-result.json`)!)).toEqual(jasmine.objectContaining({
       success: stage !== 'local-error' && stage !== 'cancel-preparation', source: 'manual',
     }));

@@ -19,7 +19,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 import { BlocklyService } from './blockly.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { CompileValidationService, persistBuildResult, type BuildCheckpoint } from '@domain/build/public-api';
+import { CompileValidationService, persistBuildResult, buildCancelledResult, type BuildCheckpoint } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -1269,6 +1269,7 @@ export class _BuilderService {
     });
     const cancellation = new AbortController();
     this.buildCancellation = cancellation;
+    let capturedCode: string | undefined;
     let preparing: Promise<void>;
     const result = new Promise<ActionState>((resolve, reject) => {
       // 保存 reject 函数，以便在 cancel 时使用
@@ -1393,6 +1394,7 @@ export class _BuilderService {
           // all configuration, including those macros, must remain unchanged.
           assertPackage = captureBuildRequestGuard(() => readManifest());
           this.lastCode = code;
+          capturedCode = code;
           
           const boardName = boardJson.name;
           const savedConfigPath = this.electronService.pathJoin(tempPath, 'build-config.json');
@@ -1791,13 +1793,7 @@ export class _BuilderService {
                       this.updateCancelledNotice(buildDuration, 55000);
                       this.passed = false;
 
-                      // 记录编译取消状态（不阻塞）
-                      this.electronService.calculateHash(code).then(codeHash => {
-                        this.saveBuildInfo(buildConfig.currentProjectPath, 'cancelled', buildDuration, codeHash);
-                      });
-
-                      this.workflowService.finishBuild(false, 'Cancelled');
-                      reject({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
+                      reject(buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
                     } else {
                       // 处理未知状态：进程异常结束但没有设置任何标志
                       console.error('编译进程异常结束，未知状态，lastProgress:', lastProgress);
@@ -1851,9 +1847,8 @@ export class _BuilderService {
 
             this.updateCancelledNotice(buildDuration);
             this.cancelled = true;
-            this.workflowService.finishBuild(false, 'Cancelled');
-
-            reject({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
+            cancellation.abort();
+            reject(buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
             return;
           }
           throw error;
@@ -1861,8 +1856,7 @@ export class _BuilderService {
       } catch (error) {
         if (cancellation.signal.aborted) {
           this.passed = false;
-          this.workflowService.finishBuild(false, 'Cancelled');
-          reject({ state: 'warn', text: this.t('CANCELLED_TITLE') });
+          reject(buildCancelledResult(this.t('CANCELLED_TITLE')));
           return;
         }
         const fullErrorMessage = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
@@ -1873,11 +1867,25 @@ export class _BuilderService {
       })().catch(reject);
       });
     // Wait for asynchronous preparation to stop before completing cancellation.
-    const completion = result.finally(async () => { await preparing; await this.localStopPending; });
+    const completion = result.finally(async () => {
+      await preparing;
+      await this.localStopPending;
+      await this.cloudCancelPromise;
+      if (cancellation.signal.aborted) {
+        // Unsubscribe suppresses the command's completion callback. Persist the
+        // stop once here, including cancellation before source capture, while
+        // this build still owns the workflow and before a new build can start.
+        const codeHash = capturedCode === undefined ? '' : await this.electronService.calculateHash(capturedCode);
+        await this.saveBuildInfo(requestedProjectPath, 'cancelled',
+          ((Date.now() - checkpoint.startedAt!) / 1000).toFixed(2), codeHash, true);
+      }
+    });
     return completion.catch(error => {
       if (this.buildCancellation === cancellation && this.workflowService.currentState === ProcessState.BUILDING) {
         this.workflowService.finishBuild(false, error?.message || error?.text || 'Build preparation failed');
       }
+      // A metadata/cleanup failure must remain visible instead of being
+      // disguised as a successfully recorded cancellation.
       throw error;
     }).finally(() => {
       backendOperation.release();
@@ -2280,7 +2288,7 @@ export class _BuilderService {
       
       // 使用 setTimeout 确保同步操作完成后再 reject
       setTimeout(() => {
-        rejectFunc({ state: 'warn', text: this.t('CANCELLED_WITH_TIME', { seconds: buildDuration }) });
+        rejectFunc(buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
       }, 0);
     } else {
       console.log('Promise 已完成，仅清理资源');

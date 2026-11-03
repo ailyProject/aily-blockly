@@ -1037,6 +1037,7 @@ export class BlocklyLiveOperationBridgeService {
       message: this.extractToolContent(toolResult),
       metadata: toolResult.metadata,
       buildOutcome: toolResult.metadata?.['buildOutcome'],
+      code: toolResult.metadata?.['code'],
       result: toolResult.metadata?.['buildResult'],
       toolResult,
     };

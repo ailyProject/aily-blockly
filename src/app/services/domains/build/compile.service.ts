@@ -17,6 +17,7 @@ import { MetricsService } from '@core/metrics/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { persistBuildResult } from './build-result-snapshot';
+import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
 import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
@@ -163,6 +164,7 @@ export class CompileService {
     }
 
     const attempt = this.buildAttempt = (this.buildAttempt || 0) + 1;
+    const attemptStartedAt = Date.now();
     let projectCurrent = () => false;
     let settled!: () => void;
     const cleanup = new Promise<void>(resolve => { settled = resolve; });
@@ -216,10 +218,14 @@ export class CompileService {
       return await this.runCompile(root, options, context);
     } catch (error: any) {
       const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
+      if (this.cancelled && !options.preprocessOnly) {
+        await Promise.all([this.stopPending, this.localSwitchPending]);
+        await this.coderBuildInfo.saveBuildInfo(root, '', 'cancelled', (Date.now() - attemptStartedAt) / 1000);
+      }
       this.application.finishBuild(false, text);
       if (this.cancelled) this.updateCancelledNotice(text);
       else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
-      return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text } };
+      return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text } };
     } finally {
       if (this.application.currentProcessState === 'BUILDING') this.application.finishBuild(false, 'Build preparation failed');
       context.backendOperation?.release();
@@ -530,7 +536,7 @@ export class CompileService {
         const text = this.t('CANCELLED_WITH_TIME', { seconds: ((Date.now() - started) / 1000).toFixed(2) });
         this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
         this.updateCancelledNotice(text);
-        return { success: false, result: { state: 'warn', text } };
+        return { success: false, result: buildCancelledResult(text) };
       }
       this.message.error(msg);
       const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
@@ -541,11 +547,11 @@ export class CompileService {
       // workspace writer: wait for supervised process-tree cleanup first.
       await Promise.all([this.stopPending, this.localSwitchPending]);
       let metadataError: string | undefined;
-      if (compiledHash) {
+      if (compiledHash || this.cancelled) {
         try {
           await this.coderBuildInfo.saveBuildInfo(
             root,
-            compiledHash,
+            compiledHash || '',
             this.cancelled ? 'cancelled' : buildStatus,
             Number(((Date.now() - started) / 1000).toFixed(2)),
           );

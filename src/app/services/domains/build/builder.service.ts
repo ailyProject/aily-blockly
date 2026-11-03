@@ -7,6 +7,7 @@ import {
   ElectronService,
 } from '@core/platform/public-api';
 import { CompileService } from './compile.service';
+import { isBuildCancelled } from './build-cancellation';
 import { persistBuildResult, type BuildCheckpoint, type BuildResultSnapshot } from './build-result-snapshot';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
 import { BLOCKLY_BUILD_PORT, type BlocklyBuildPort, type BlocklyBuildOutcome } from './ports/blockly-build.port';
@@ -158,6 +159,7 @@ export class BuilderService {
         error.text = error.message;
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildResult = buildResult;
+        if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
         throw error;
       }
 
@@ -196,6 +198,7 @@ export class BuilderService {
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
       error.buildResult = buildResult;
+      if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
       if (!options.preprocessOnly) persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
       this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
       throw error;
