@@ -23,6 +23,7 @@ import { BlocklyLibraryPackageService } from './blockly-library-package.service'
 import { ConfigService } from '@core/preferences/public-api';
 import { getCloudEditorDependencies } from '../../../utils/cloud-build-settings.utils';
 import { scanCloudDependencyInventory, type CloudDependencyInventory, type CloudDependencyPackage } from './cloud-dependency-inventory';
+import { findCompilerIntegrityProblem } from '../../../utils/compiler-integrity.utils';
 
 import {
   appendScopedNpmRegistry,
@@ -1352,11 +1353,58 @@ export class NpmService {
   ): boolean {
     const directory = resolvePlatformPackageDirOnDisk(packageName, version, bases);
     if (!directory) return false;
+    if (packageName.startsWith('@aily-project/compiler-')) {
+      return !this.compilerIntegrityProblem(packageName, directory);
+    }
     // Arduino SDK extraction can leave a directory behind after a failed install.
     if (this.configService.isCoderProduct() && packageName.startsWith('@aily-project/sdk-')) {
       return ['boards.txt', 'platform.txt'].every(name => window['path'].isExists(window['path'].join(directory, name)));
     }
     return true;
+  }
+
+  private compilerIntegrityProblem(packageName: string, directory: string): string | undefined {
+    return findCompilerIntegrityProblem(packageName, directory, window['fs'],
+      (...parts) => window['path'].join(...parts), window['platform']?.isWindows === true);
+  }
+
+  /** Also recheck after project opening: files may have been removed while the app was running. */
+  async ensureLocalCompilerDependencies(projectPath: string): Promise<void> {
+    if (this.isCloudBuild(projectPath)) return;
+    const session = this.prjService.getProjectDependencySession(projectPath);
+    this.assertDependencySession(session);
+    const board = await this.getDependencyProject(session).getBoardPackageJson();
+    this.assertDependencySession(session);
+    const compilers = Object.fromEntries(Object.entries(board?.boardDependencies || {})
+      .filter(([name]) => name.startsWith('@aily-project/compiler-'))) as Record<string, string>;
+    if (!Object.keys(compilers).length) return;
+    const ready = await this.areBoardPlatformDepsReady(compilers);
+    this.assertDependencySession(session);
+    if (ready) return;
+    await this.installBoardDeps(session, { showSuccessNotice: false });
+    this.assertDependencySession(session);
+    if (!await this.areBoardPlatformDepsReady(compilers)) {
+      throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: Object.keys(compilers).join(', ') }));
+    }
+    this.assertDependencySession(session);
+  }
+
+  private async removeIncompleteCompilerDirectory(
+    packageName: string, version: string,
+    bases: { sdkBase: string; compilersBase: string; toolsBase: string },
+    session?: ProjectDependencySession,
+  ): Promise<void> {
+    if (!packageName.startsWith('@aily-project/compiler-')) return;
+    const directory = resolvePlatformPackageDirOnDisk(packageName, version, bases);
+    if (!directory) return;
+    const problem = this.compilerIntegrityProblem(packageName, directory);
+    if (!problem) return;
+    this.assertDependencySession(session);
+    this.traceToAppLog('COMPILER_REPAIR', { name: packageName, version, directory, problem });
+    // The existing main-process allowlist rejects roots, escapes and symlink/junction resources.
+    const result = await window['ipcRenderer'].invoke('appdata-resource-remove', { target: directory });
+    this.assertDependencySession(session);
+    if (result?.ok !== true) throw new Error(result?.error || `Compiler repair failed: ${problem}`);
   }
 
   private async removeIncompleteSdkDirectory(
@@ -1511,6 +1559,8 @@ export class NpmService {
           await this.removeIncompleteSdkDirectory(key, versionStr, platformBases, session);
           this.assertDependencySession(session);
         }
+        await this.removeIncompleteCompilerDirectory(key, versionStr, platformBases, session);
+        this.assertDependencySession(session);
 
         // npm 包版本满足声明时，仍须检查 sdk/tools 解压目录（postinstall 可能未跑）
         if (window['path'].isExists(depPathPackageJson)) {
@@ -1610,7 +1660,16 @@ export class NpmService {
           projectPath: session.projectPath, projectSessionId: session.projectSessionId,
         } : {}) });
         this.assertDependencySession(session);
-        if (this.configService.isCoderProduct()) {
+        if (key.startsWith('@aily-project/compiler-') && !this.isPlatformPackageOnDisk(key, versionStr, platformBases)) {
+          // npm can say "up to date" without rerunning a failed lifecycle script.
+          // A failed extraction may also have deleted its cached archive. Retry
+          // postinstall once after clearing any new partial output, then verify.
+          await this.removeIncompleteCompilerDirectory(key, versionStr, platformBases, session);
+          this.assertDependencySession(session);
+          await this.cmdService.runAsyncChecked('npm run postinstall', depPath, true, false, session);
+          this.assertDependencySession(session);
+        }
+        if (this.configService.isCoderProduct() || key.startsWith('@aily-project/compiler-')) {
           if (!await this.areBoardPlatformDepsReady({ [key]: versionStr })) {
             throw new Error(this.translate.instant('NPM.DEPENDENCY_INCOMPLETE', { name: key }));
           }
@@ -2111,7 +2170,7 @@ export class NpmService {
 
   /**
    * Blockly / Aily Code 打开工程共用：package.json 声明的依赖与 node_modules 不一致时执行 npm install。
-   * Coder 随后将库包 src.7z 解到包内同级 src，供编译和 Aily View 映射；不会复制到 sketch/libraries。
+   * 依赖完整后仍等待 src.7z 在包内展开；Coder 使用自己的源码映射入口，不复制到 sketch/libraries。
    * @param projectPath 项目根路径
    * @param options.onRetryInstall 若设置，安装失败时通知条展示「重试」并调用此回调（由调用方再次传入本方法以复跑安装）
    * @returns 依赖已就绪 true；安装失败 false
@@ -2294,8 +2353,6 @@ export class NpmService {
     session?: ProjectDependencySession,
     inventory?: CloudDependencyInventory,
   ): Promise<boolean> {
-    if (!this.isCloudBuild(projectPath) && !this.isAilyCodeProjectRoot(projectPath)) return true;
-
     try {
       if (this.configService.isCoderProduct()) {
         this.assertDependencySession(session);
@@ -2308,7 +2365,8 @@ export class NpmService {
         });
       }
       if (this.isCloudBuild(projectPath)) await this.ensureCloudLibrarySources(projectPath, session, inventory);
-      else await this.application.materializeCoderProjectLibraries(projectPath);
+      else if (this.isAilyCodeProjectRoot(projectPath)) await this.application.materializeCoderProjectLibraries(projectPath);
+      else await window['libraryDependencies'].prepare(projectPath);
       this.assertDependencySession(session);
 
       return true;

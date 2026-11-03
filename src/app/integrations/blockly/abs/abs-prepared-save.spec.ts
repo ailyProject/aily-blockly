@@ -129,7 +129,7 @@ describe('prepared Blockly save boundary', () => {
       spyOn(service, 'syncUsedLibraryManifest').and.returnValue(false);
       spyOn(service as any, 'publishPreparedCode').and.resolveTo();
     });
-    afterEach(() => { window['fs'] = oldFiles; });
+    afterEach(() => { (service as any).cancelDeferredSaveOutputs(); window['fs'] = oldFiles; });
     it('detects edits to other pages even without a generated-code revision change', async () => {
       (service.prepareSave as jasmine.Spy).and.callFake(async value => {
         source.pages[1].title = 'changed';
@@ -195,9 +195,84 @@ describe('prepared Blockly save boundary', () => {
     it('reports ordinary build contention as partial without denying the ABI commit', async () => {
       (service as any).publishPreparedCode.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: compilation in progress'));
       expect(await service.save('D:/project')).toEqual(jasmine.objectContaining({ projectSaved: true,
-        generatedCodePublished: false, partial: true }));
+        generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_BUSY' }));
       expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
       expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+    });
+
+    describe('deferred derived outputs', () => {
+      let notice: any;
+      beforeEach(() => {
+        jasmine.clock().install();
+        notice = { update: jasmine.createSpy('notice') };
+        (service as any).noticeService = notice;
+        editor.publishPreparedCodeView = jasmine.createSpy('codeView');
+        editor.prepareProjectCode.and.callFake(async () => ({ code: 'saved code', artifacts: null,
+          blockCodeMapText: null, revision: editor.captureProjectSnapshot().revision }));
+      });
+      afterEach(() => jasmine.clock().uninstall());
+      const retry = async (delay = 250) => {
+        jasmine.clock().tick(delay);
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      };
+      it('waits outside the input lease and publishes the exact capture without re-saving or regenerating', async () => {
+        const publish = (service as any).publishPreparedCode as jasmine.Spy;
+        publish.and.callFake(async (_path, _generated, guard) => {
+          guard();
+          if (publish.calls.count() < 3) throw new Error('BUILD_WORKSPACE_BUSY: preprocessing');
+        });
+        const result = await service.save('D:/project');
+        expect(result.projectSaved).toBeTrue(); expect(result.generatedCodePublished).toBeFalse();
+        expect(editor.isWorkspaceEditBlocked()).toBeFalse();
+        await retry(); expect(publish).toHaveBeenCalledTimes(2);
+        await retry(500); expect(publish).toHaveBeenCalledTimes(3);
+        expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+        expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+        expect((service as any).deferredSaveOutputs).toBeUndefined();
+        expect(notice.update).not.toHaveBeenCalled();
+      });
+      it('replaces an older pending save rather than replaying both captures', async () => {
+        const publish = (service as any).publishPreparedCode as jasmine.Spy;
+        publish.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: preprocessing'));
+        await service.save('D:/project');
+        source.pages[1].title = 'new saved document';
+        await service.save('D:/project');
+        const latestCapture = publish.calls.mostRecent().args[1];
+        publish.and.resolveTo();
+        await retry();
+        expect(publish).toHaveBeenCalledTimes(3);
+        expect(publish.calls.mostRecent().args[1]).toBe(latestCapture);
+        expect(files.replaceProjectText).toHaveBeenCalledTimes(2);
+        expect(editor.prepareProjectCode).toHaveBeenCalledTimes(2);
+      });
+      for (const change of ['canvas', 'disk', 'project', 'destroy'] as const) {
+        it(`cancels the pending capture after ${change} changes`, async () => {
+          const publish = (service as any).publishPreparedCode as jasmine.Spy;
+          publish.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: preprocessing'));
+          await service.save('D:/project');
+          if (change === 'canvas') source.pages[1].title = 'newer unsaved edit';
+          if (change === 'disk') disk.set('D:/project/project.abi', 'external document');
+          if (change === 'project') service.currentProjectPath = 'D:/other';
+          if (change === 'destroy') {
+            (service as any).actionService = { unlisten: () => {} };
+            service.destroy();
+          }
+          await retry();
+          expect(publish).toHaveBeenCalledTimes(1);
+          expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+          expect(notice.update).not.toHaveBeenCalled();
+        });
+      }
+      it('reports genuine errors from a deferred write while keeping the saved document', async () => {
+        const publish = (service as any).publishPreparedCode as jasmine.Spy;
+        publish.and.rejectWith(new Error('BUILD_WORKSPACE_BUSY: preprocessing'));
+        await service.save('D:/project');
+        publish.and.rejectWith(new Error('disk full'));
+        await retry();
+        expect(notice.update).toHaveBeenCalledOnceWith(jasmine.objectContaining({ state: 'error', detail: 'disk full' }));
+        expect(JSON.parse(disk.get('D:/project/project.abi')!)).toEqual(source);
+        expect(files.replaceProjectText).toHaveBeenCalledTimes(1);
+      });
     });
     it('rejects stale queued saves after switching project/page', async () => {
       const pending = service.save('D:/project');
@@ -310,6 +385,7 @@ describe('prepared Blockly save boundary', () => {
       expect(disk.get('D:/project/.temp/sketch/sketch.ino')).toBe('last complete code');
     });
     it('keeps the committed view current even if artifact publication is busy', async () => {
+      spyOn(service as any, 'deferSaveOutputs').and.stub();
       publishArtifacts.and.throwError('BUILD_WORKSPACE_BUSY: preprocessing');
       await expectAsync(service.publishPreparedSaveOutputs('D:/project', prepared, generated, () => undefined))
         .toBeRejectedWithError('BUILD_WORKSPACE_BUSY: preprocessing');

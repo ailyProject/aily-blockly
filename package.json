@@ -1,7 +1,7 @@
 {
   "name": "aily-blockly",
   "productName": "aily blockly",
-  "version": "0.9.110",
+  "version": "0.9.111",
   "author": "coloz",
   "description": "aily blockly dev",
   "main": "electron/main.js",
@@ -129,7 +129,7 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": false,
+      "createDesktopShortcut": true,
       "perMachine": true,
       "allowElevation": true,
       "deleteAppDataOnUninstall": true,

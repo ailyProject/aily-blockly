@@ -9,3 +9,4 @@ export * from './probe-rs.service';
 
 export type { BuildCheckpoint } from './build-result-snapshot';
 export { persistBuildResult } from './build-result-snapshot';
+export { buildCancelledResult, isBuildCancelled } from './build-cancellation';

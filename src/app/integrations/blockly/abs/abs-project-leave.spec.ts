@@ -5,7 +5,8 @@ import { HeaderComponent } from '../../../main-window/components/header/header.c
 import { ProjectNewComponent } from '../../../pages/project-new/project-new.component';
 
 function projectFixture(overrides: Record<string, unknown>) {
-  const project: any = Object.assign(Object.create(ProjectService.prototype), { configService: { getCompileSettingsKey: () => 'local' } }, overrides);
+  const project: any = Object.assign(Object.create(ProjectService.prototype), { configService: { getCompileSettingsKey: () => 'local' },
+    hasBlocklyRuntimeRecovery: () => false }, overrides);
   Object.defineProperty(project, 'currentProjectPath', { value: '/original', writable: true });
   project.getProjectDependencySession();
   return project;
@@ -23,7 +24,7 @@ describe('save-before-leaving confirmation', () => {
       const dialog = new Subject<any>();
       const project = projectFixture({ getProjectMode: () => 'blockly',
         hasUnsavedChanges: jasmine.createSpy('dirty').and.resolveTo(true),
-        discardAllLibraryChanges: jasmine.createSpy('discard').and.resolveTo(),
+        discardLibraryChangesBeforeQuit: jasmine.createSpy('discard').and.resolveTo(),
         save: jasmine.createSpy('save').and.resolveTo({ success: true }) });
       const view: any = Object.create(entry === 'header' ? HeaderComponent.prototype : ProjectNewComponent.prototype);
       view.projectService = project;
@@ -39,7 +40,7 @@ describe('save-before-leaving confirmation', () => {
         const { project, view, dialog, confirm } = fixture(); project.save.and.resolveTo(result);
         const pending = confirm(); await Promise.resolve(); dialog.next({ result: 'save' });
         expect(await pending).toBeFalse(); expect(view.message.error).toHaveBeenCalled();
-        expect(project.save).toHaveBeenCalledOnceWith('/original', 15_000);
+      expect(project.save).toHaveBeenCalledOnceWith('/original');
       });
     }
     for (const action of ['save', 'continue', 'cancel']) it(`${entry} retains the normal ${action} choice`, async () => {
@@ -104,7 +105,9 @@ describe('domain save completion and project ownership', () => {
     const { service, dispatch } = fixture();
     const operation = stage === 'dispatch' ? dispatch : service.getPackageJson;
     operation.and.rejectWith(new Error(`${stage} unavailable`));
-    expect(await service.save()).toEqual({ success: false, error: `${stage} unavailable`, path: '/original' });
+    const { saveReceipt, ...result } = await service.save();
+    expect(result).toEqual({ success: false, error: `${stage} unavailable`, path: '/original' });
+    expect(saveReceipt).toEqual(jasmine.objectContaining({ version: 1, project: '/original', operation: 'project_save', state: 'completed' }));
     expect(service.stateSubject.value).toBe('error');
   });
   it('requires an explicit successful acknowledgement', async () => {

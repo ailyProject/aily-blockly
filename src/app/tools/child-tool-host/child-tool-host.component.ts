@@ -565,6 +565,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
     const previousApiServer = this.lastKnownApiServer;
     this.lastKnownApiServer = nextApiServer;
+
     if (!this.initialized || !this.acquired || !this.isAilyChatTool()) {
       return;
     }
@@ -989,6 +990,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     this.unregisterHostController?.();
     this.unregisterHostController = this.childHostRegistry.register(this.resolvedToolId, {
       status: () => this.hostAutomationStatus(),
+      reportIssue: () => this.reportChatSessionIssue(),
       restart: () => this.restart(),
       close: () => this.close(),
       detach: options => this.detach(options),
@@ -1012,6 +1014,19 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       pid: this.serverInfo?.pid ?? null,
       port: this.serverInfo?.port ?? null,
     };
+  }
+
+  private async reportChatSessionIssue(): Promise<Record<string, unknown>> {
+    const sessionId = this.ailyChatSessionId;
+    if (!this.isAilyChatTool() || !sessionId || typeof this.remoteApi?.reportSessionIssue !== 'function') {
+      return { ok: true, skipped: true };
+    }
+    try {
+      return await this.remoteApi.reportSessionIssue({ sessionId });
+    } catch {
+      // Supplementary diagnostics must not affect the host or the active turn.
+      return { ok: false };
+    }
   }
 
   private async startServer(restart: boolean): Promise<void> {
@@ -1177,6 +1192,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         },
         startGithubLogin: (payload: { inviteCode?: string } = {}) => this.startGithubLogin(payload),
         requestLogin: (payload: { reason?: string } = {}) => this.requestHostLogin(payload),
+        requestServiceRegion: (payload: { regionKey?: string } = {}) => this.requestHostServiceRegion(payload),
         openUserSubscription: () => this.openUserSubscription(),
         selectChatResources: (payload: ChatResourcePickerRequest = {}) => this.selectChatResources(payload),
         listChildApps: (payload: { limit?: number } = {}) => this.listChatChildApps(payload),
@@ -1814,6 +1830,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
 
   private createHostContext(): Record<string, unknown> {
     const isAilyChat = this.isAilyChatTool();
+    const hostAuthentication = this.hasHostAuthentication();
     const launch = this.resolveLaunchContext();
     const workspace = this.resolveHostWorkspace();
     const developmentModeContext = resolveDevelopmentModeContext({
@@ -1829,6 +1846,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       theme: this.normalizeTheme(this.themeService.theme()),
       platform: (window as any).electronAPI?.platform?.type || 'browser',
       embedded: !this.isStandalone,
+      active: this.isStandalone || this.active,
       ...developmentModeContext,
       surface: launch.surface,
       surfaceParams: launch.params,
@@ -1840,10 +1858,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
         snapshotRefresh: true,
         // Detached renderers receive the same token-free, host-owned auth
         // snapshot through Electron IPC. Older hosts retain the child fallback.
-        authStateRefresh: isAilyChat && (!this.isStandalone || this.standaloneAuthSnapshot !== null),
+        authStateRefresh: hostAuthentication && (!this.isStandalone || this.standaloneAuthSnapshot !== null),
         userInteractionNotifications: true,
         hostGithubLogin: isAilyChat,
-        hostLoginDialog: isAilyChat,
+        hostLoginDialog: hostAuthentication,
+        hostServiceRegion: hostAuthentication,
         userSubscription: isAilyChat,
         resourcePicker: isAilyChat
           && typeof (window as any).dialog?.selectFiles === 'function',
@@ -2192,6 +2211,10 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return this.resolvedToolId === 'aily-chat';
   }
 
+  private hasHostAuthentication(): boolean {
+    return this.isAilyChatTool() || this.resolvedToolId === 'device-manager';
+  }
+
   private async writeClipboardText(payload: { text?: string }): Promise<Record<string, unknown>> {
     const text = typeof payload?.text === 'string' ? payload.text : '';
     if (!text) {
@@ -2394,14 +2417,37 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     return { ok: true, state: response.state };
   }
 
+  private async requestHostServiceRegion(payload: { regionKey?: string }): Promise<Record<string, unknown>> {
+    if (!this.hasHostAuthentication()) return { ok: false, message: 'Service region access is unavailable' };
+
+    try {
+      const regionKey = typeof payload.regionKey === 'string' ? payload.regionKey.trim() : '';
+      if (!regionKey) throw new Error('Service region key is required');
+
+      if (this.isStandalone) {
+        const response = await window['iWindow']?.send?.({
+          to: 'main', data: { action: 'switch-service-region', regionKey }, timeout: 30000,
+        });
+
+        if (response?.success !== true) throw new Error(response?.error || '服务区域切换失败');
+      } else {
+        await this.uiService.switchHostServiceRegion(regionKey);
+      }
+
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private async requestHostLogin(payload: { reason?: string } = {}): Promise<Record<string, unknown>> {
-    if (!this.isAilyChatTool()) {
+    if (!this.hasHostAuthentication()) {
       return { ok: false, message: 'The main-window login dialog is unavailable' };
     }
 
     const reason = typeof payload.reason === 'string' && payload.reason.trim()
       ? payload.reason.trim().slice(0, 80)
-      : 'aily-chat';
+      : this.resolvedToolId;
 
     if (this.isStandalone) {
       const sendToMain = window['iWindow']?.send;

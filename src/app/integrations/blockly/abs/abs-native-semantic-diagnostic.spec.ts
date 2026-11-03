@@ -57,6 +57,7 @@ describe('native semantic failure context', () => {
     let after = false, applies = 0;
     const tasks = new NativeUiTasks(); tasks.set(() => { after = true; });
     const sync = { validateGeneration: async () => tasks.drain(() => snapshot(after ? ['B'] : ['A']), 'initialization'),
+      describeNativeCandidateFailure: async () => undefined,
       applyGeneration: async () => { applies++; } };
     const result: any = await new AbsGenerationToolsService(sync as any).execute('abs_validate', { version: 2,
       requestId: 'native-contract-diagnostic', base: { generation: 'baseline-generation',

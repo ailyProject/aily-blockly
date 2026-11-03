@@ -29,6 +29,11 @@ for (const packaged of [false, true]) {
       'project-recovery-receipts.js', 'project-repair-environment.js', 'project-repair-commit.js']) {
       await fs.copyFile(path.join(__dirname, '../../electron', name), path.join(source, 'electron', name));
     }
+    // Match build.files: production Electron dependencies live inside app.asar,
+    // not in the source checkout's root node_modules.
+    const electronModules = path.resolve(__dirname, '../../electron/node_modules');
+    await fs.cp(path.dirname(require.resolve('semver/package.json', { paths: [electronModules] })),
+      path.join(source, 'electron/node_modules/semver'), { recursive: true });
     const appRoot = packaged ? path.join(resources, 'app.asar') : source;
     if (packaged) {
       await fs.mkdir(resources);

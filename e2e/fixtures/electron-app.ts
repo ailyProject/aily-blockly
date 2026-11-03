@@ -70,6 +70,13 @@ export async function launchAilyElectron(options: {
         await cp(source, destination, {recursive: true, mode: constants.COPYFILE_FICLONE});
       }
     }
+    // Seed before Electron starts: copying over an active subapp installation
+    // races its startup/update publication and can invalidate both versions.
+    const coderStoreSeed = options.environment?.['AILY_E2E_CODER_STORE_SEED'];
+    if (coderStoreSeed) {
+      await cp(coderStoreSeed, path.join(userDataDir, 'npm-global/app/store/subapp-aily-coder-editor'),
+        {recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE});
+    }
     if (options.config) {
       await writeFile(path.join(userDataDir, 'config.json'), JSON.stringify(options.config), 'utf8');
     }

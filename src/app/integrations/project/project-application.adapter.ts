@@ -1,3 +1,5 @@
+import { recordLibraryMutation } from '../../editors/blockly-editor/services/blockly-library-history';
+import type { BlocklyProjectDocument } from '../../editors/blockly-editor/services/blockly.service';
 import { Injectable, Injector } from '@angular/core';
 import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { DEPENDENCY_APPLICATION_PORT, NpmService } from '@domain/dependencies/public-api';
@@ -23,6 +25,9 @@ import { BlocklyService } from '../../editors/blockly-editor/services/blockly.se
 import { _ProjectService as BlocklyEditorProjectService } from '../../editors/blockly-editor/services/project.service';
 import { fenceBlocklyWorkspaceInput } from '../../editors/blockly-editor/services/blockly-workspace-edit-lease';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { NzModalService } from 'ng-zorro-antd/modal';
+import { firstValueFrom } from 'rxjs';
+import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 
@@ -62,9 +67,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         && this.generatorRuntime.isActive() && this.blocklyService.isWorkspaceEditInProgress();
   }
 
-  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean {
+  hasActiveBlocklyBuildOrUpload(projectPath: string, libraryOperation = false): boolean {
     if (!this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)) return false;
-    return [ProcessState.BUILDING, ProcessState.UPLOADING, ProcessState.INSTALLING]
+    return [ProcessState.BUILDING, ProcessState.UPLOADING, ...(!libraryOperation ? [ProcessState.INSTALLING] : [])]
       .includes(this.injector.get(WorkflowService).currentState);
   }
 
@@ -125,12 +130,17 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return new Promise((resolve) => {
       this.actionService.dispatch('project-save', { path }, (result) => {
         const outcome = result.data;
+        if (outcome?.code === 'ACTION_HANDLER_UNAVAILABLE') {
+          resolve({ success: false, code: 'PROJECT_SAVE_HANDLER_UNAVAILABLE', projectSaved: false,
+            generatedCodePublished: false, partial: false, error: '保存处理器尚未就绪，未开始保存。' });
+          return;
+        }
         const structured = outcome && typeof outcome.projectSaved === 'boolean'
           && typeof outcome.generatedCodePublished === 'boolean' && typeof outcome.partial === 'boolean'
           ? outcome : undefined;
         resolve({ ...structured, success: result.success && (!structured || structured.projectSaved && !structured.partial),
           error: structured?.error || (structured?.partial ? '项目文件已保存，但生成代码未完整发布。' : result.error) });
-      }, timeoutMs);
+      }, timeoutMs, { requireHandler: true });
     });
   }
 
@@ -170,6 +180,71 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         resolve(result.data.hasUnsavedChanges);
       }, 15000);
     });
+  }
+
+  async captureBlocklyLibraryDocument(): Promise<unknown> {
+    const workspace = this.blocklyService.workspace, session = projectDataRuntime.getSessionToken();
+    const document = this.blocklyService.getProjectAbiForSave(this.blocklyService.getProjectDocument());
+    const materialized = await materializeGenericProjectDataValues(document, {
+      resolve: async <T>(ref: AilyDataRef) => projectDataRuntime.resolve<T>(ref),
+    });
+    if (workspace !== this.blocklyService.workspace || session !== projectDataRuntime.getSessionToken()) {
+      throw new Error('Project changed while capturing library history.');
+    }
+    return materialized;
+  }
+
+  async prepareBlocklyLibraryEdit(projectPath: string, removedPackages: string[] = []) {
+    const workspace = this.blocklyService.workspace;
+    if (!workspace || !this.isBlocklyLibraryRuntimeReady(projectPath)) throw new Error('Blockly library runtime is not ready.');
+    this.blocklyService.assertWorkspaceEditAvailable();
+    const releaseInput = fenceBlocklyWorkspaceInput(workspace.getParentSvg()?.parentElement ?? undefined, { allowNavigation: true });
+    let resumePreprocess: (() => void) | undefined;
+    const release = () => { releaseInput(); resumePreprocess?.(); };
+    try {
+      resumePreprocess = await this.blocklyEditorProjectService.pauseBackgroundPreprocess(projectPath);
+      if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) {
+        throw new Error('Project changed before the library transaction could start.');
+      }
+      workspace.cancelCurrentGesture();
+      const document = await this.captureBlocklyLibraryDocument();
+      const used = this.blocklyService.getProjectUsedLibraryManifest(this.projectService.currentPackageData, document as BlocklyProjectDocument);
+      if (removedPackages.some(name => used[name])) throw Object.assign(new Error('项目仍在使用待卸载库的积木，请先删除或替换这些积木。'), {code:'LIBRARY_IN_USE'});
+      return { document, usedLibraries: Object.keys(used), release, record: (restore: (forward: boolean) => Promise<void | boolean>) => {
+        if (workspace !== this.blocklyService.workspace) throw new Error('Blockly workspace changed before recording library history.');
+        recordLibraryMutation(workspace, restore, error => this.updateFooterState({ state: 'error', text: String(error instanceof Error ? error.message : error) }));
+      } };
+    } catch (error) { release(); throw error; }
+  }
+
+  async confirmBlocklyLibraryRestore(offer: { forward: boolean; packages: string[];
+    changes: { name: string; field?: string; before: string | null; after: string | null }[] }, apply: () => Promise<void>): Promise<boolean> {
+    const action = offer.forward ? '重做' : '撤销';
+    const changes: typeof offer.changes = offer.changes.length ? offer.changes : offer.packages.map(name => ({ name, after: '锁定版本', before: null }));
+    const modal = this.injector.get(NzModalService).create({
+      nzContent: PasteInstallDialogComponent, nzFooter: null, nzClosable: false,
+      nzMaskClosable: false, nzKeyboard: false, nzWidth: 560,
+      nzData: {
+        title: `${action}库变更`,
+        message: '此操作需要重新安装或移除以下依赖，成功后恢复积木。画布不会自动保存，可能需要联网。',
+        confirmText: `恢复依赖并${action}`,
+        missingLibs: changes.map(change => ({ name: changes.filter(item => item.name === change.name).length > 1
+          ? `${change.name}（${change.field}）` : change.name, blockType: '',
+          version: change.after === null ? `移除（当前 ${change.before}）` : `安装 ${change.after}` })),
+        installFn: apply,
+      },
+    });
+    return (await firstValueFrom(modal.afterClose))?.result === 'installed';
+  }
+
+  isBlocklyLibraryRuntimeReady(path: string): boolean {
+    return this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
+      && this.blocklyService.isLibraryRuntimeReady();
+  }
+
+  hasBlocklyRuntimeRecovery(path: string): boolean {
+    return this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
+      && this.blocklyEditorProjectService.hasLibraryRuntimeRecovery();
   }
 
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any {
@@ -225,7 +300,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     const normalizedLibraryNames = [...orderedLibraryNames].sort((a, b) => a.localeCompare(b));
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
-      previousRuntimeSignature === runtimeSignature
+      input.retainedDocument === undefined
+      && previousRuntimeSignature === runtimeSignature
+      && this.isBlocklyLibraryRuntimeReady(projectPath)
       && JSON.stringify(normalizedLoadedLibraryNames) === JSON.stringify(normalizedLibraryNames)
     ) {
       return false;
@@ -240,7 +317,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       packageJson,
       libraryNames: orderedLibraryNames,
       projectService: this.projectService,
-    });
+    }, undefined, input.retainedDocument as BlocklyProjectDocument | undefined);
     return true;
   }
 

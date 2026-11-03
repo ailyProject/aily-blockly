@@ -4,6 +4,7 @@ import { evaluateNativeCandidate } from '../../../editors/blockly-editor/service
 import type { NativeCandidateRequest } from '../../../editors/blockly-editor/services/blockly-native-candidate-protocol';
 import { assertNativeGenerationStable } from '../../../editors/blockly-editor/services/blockly-native-generation-evidence';
 import type { AbsNativeUiTiming } from './abs-diagnostics';
+import { beginNativeFieldDependencies } from '../../../editors/blockly-editor/services/blockly-native-field-dependencies';
 
 describe('native deferred UI effect boundary', () => {
   it('does not treat layout-different generation inputs as identical program output evidence', () => {
@@ -38,6 +39,133 @@ describe('native deferred UI effect boundary', () => {
     expect(calls).toBe(80);
     expect(snapshots).toBe(81);
   });
+  it('cooperatively yields a real host macrotask while retaining every callback and complete readback', async () => {
+    const tasks = new NativeUiTasks(undefined, () => 0), order: number[] = [];
+    let snapshots = 0, yields = 0, hostObservedAfter = -1;
+    for (let i = 0; i < 20; i++) tasks.set(() => { order.push(i); });
+    const schedule = window.setTimeout.bind(window);
+    schedule(() => { hostObservedAfter = order.length; }, 0);
+    await tasks.drainCooperatively(() => { snapshots++; return 'same'; }, () => {
+      yields++; return new Promise(resolve => { schedule(resolve, 0); });
+    }, () => {});
+    expect(order).toEqual(Array.from({ length: 20 }, (_, i) => i));
+    expect(hostObservedAfter).toBe(8); expect(yields).toBe(2);
+    expect(snapshots).toBe(21 + yields);
+  });
+  it('uses elapsed slice work as well as callback count to offer the host a turn', async () => {
+    let now = 0, callbacks = 0, yields = 0, snapshots = 0;
+    const tasks = new NativeUiTasks(undefined, () => now);
+    for (let i = 0; i < 4; i++) tasks.set(() => { now += 9; callbacks++; });
+    await tasks.drainCooperatively(() => { snapshots++; return 'same'; }, async () => { yields++; }, () => {});
+    expect(callbacks).toBe(4); expect(yields).toBe(3); expect(snapshots).toBe(5 + yields);
+  });
+  it('preserves virtual due time, cancellation and insertion order across cooperative slices', async () => {
+    const expected: string[] = [], actual: string[] = [];
+    const configure = (tasks: NativeUiTasks, order: string[]) => {
+      for (let i = 0; i < 9; i++) tasks.set(() => { order.push('parallel-' + i); }, 0);
+      tasks.set(() => { order.push('first'); tasks.set(() => order.push('nested'), 0); }, 10);
+      tasks.set(() => { order.push('same-due'); }, 10);
+      const cancelled = tasks.set(() => { order.push('cancelled'); }, 5); tasks.clear(cancelled);
+      tasks.set(() => { order.push('late'); }, 20);
+    };
+    const sync = new NativeUiTasks(), cooperative = new NativeUiTasks(undefined, () => 0);
+    configure(sync, expected); configure(cooperative, actual);
+    sync.drain(() => 'same');
+    await cooperative.drainCooperatively(() => 'same', async () => {}, () => {});
+    expect(actual).toEqual(expected);
+  });
+  it('still rejects an individual callback mutation before a later callback can restore it', async () => {
+    const tasks = new NativeUiTasks(), yieldToHost = jasmine.createSpy().and.resolveTo();
+    let state = 'before', callbacks = 0;
+    tasks.set(() => { state = 'changed'; callbacks++; });
+    tasks.set(() => { state = 'before'; callbacks++; });
+    await expectAsync(tasks.drainCooperatively(() => state, yieldToHost, () => {})).toBeRejectedWithError(/changed persisted state/);
+    expect(callbacks).toBe(1); expect(yieldToHost).not.toHaveBeenCalled();
+  });
+  it('rejects out-of-band semantic changes during a host turn before another callback can hide them', async () => {
+    const tasks = new NativeUiTasks(undefined, () => 0); let state = 'before', callbacks = 0, snapshots = 0;
+    for (let i = 0; i < 8; i++) tasks.set(() => { callbacks++; });
+    tasks.set(() => { state = 'before'; callbacks++; });
+    await expectAsync(tasks.drainCooperatively(() => { snapshots++; return state; }, async () => {
+      state = 'observer changed';
+    }, () => {})).toBeRejectedWithError(/changed persisted state/);
+    expect(callbacks).toBe(8); expect(snapshots).toBe(10); expect(tasks.hasPending).toBeFalse();
+  });
+  it('rechecks the host-owned guard after a yield and does not consume another callback', async () => {
+    const tasks = new NativeUiTasks(undefined, () => 0); let current = true, callbacks = 0;
+    for (let i = 0; i < 9; i++) tasks.set(() => { callbacks++; });
+    await expectAsync(tasks.drainCooperatively(() => 'same', async () => { current = false; }, () => {
+      if (!current) throw Error('candidate scope changed');
+    })).toBeRejectedWithError('candidate scope changed');
+    expect(callbacks).toBe(8); expect(tasks.hasPending).toBeFalse();
+  });
+  it('does not resume or report success after disposal during an owned scheduler wait', async () => {
+    const tasks = new NativeUiTasks(undefined, () => 0); let finish!: () => void, callbacks = 0;
+    for (let i = 0; i < 9; i++) tasks.set(() => { callbacks++; });
+    const pending = tasks.drainCooperatively(() => 'same', () => new Promise(resolve => { finish = resolve; }), () => {});
+    expect(callbacks).toBe(8); tasks.dispose(); finish();
+    await expectAsync(pending).toBeRejectedWithError(/disposed/);
+    expect(callbacks).toBe(8); expect(tasks.hasPending).toBeFalse();
+  });
+  it('keeps rejected host scheduling sticky and never reopens the virtual queue', async () => {
+    const tasks = new NativeUiTasks(undefined, () => 0), failure = Error('owned scheduler failed');
+    for (let i = 0; i < 9; i++) tasks.set(() => {});
+    await expectAsync(tasks.drainCooperatively(() => 'same', async () => { throw failure; }, () => {})).toBeRejectedWith(failure);
+    expect(() => tasks.set(() => {})).toThrow(failure); expect(tasks.hasPending).toBeFalse();
+  });
+  it('does not grant Promise-returning callbacks or bypass the finite callback allowance', async () => {
+    const tasks = new NativeUiTasks(undefined, () => 0);
+    tasks.set(() => Promise.resolve());
+    await expectAsync(tasks.drainCooperatively(() => 'same', async () => {}, () => {})).toBeRejectedWithError(/asynchronous UI callbacks/);
+    const bounded = new NativeUiTasks(undefined, () => 0); let callbacks = 0, snapshots = 0, yields = 0;
+    for (let i = 0; i < 512; i++) bounded.set(() => { callbacks++; });
+    await bounded.drainCooperatively(() => { snapshots++; return 'same'; }, async () => { yields++; }, () => {});
+    expect(callbacks).toBe(512); expect(yields).toBe(63); expect(snapshots).toBe(513 + yields);
+    expect(() => bounded.set(() => {})).toThrowError(/finite callback/);
+  });
+  it('settles the outer construction queue cooperatively while retaining synchronous preparation', async () => {
+    const workspace = new Blockly.Workspace(), tasks = new NativeUiTasks(undefined, () => 0);
+    const scope = beginNativeFieldDependencies(Blockly, workspace, tasks, 'settled', false);
+    let callbacks = 0, yields = 0;
+    try {
+      for (let i = 0; i < 20; i++) tasks.set(() => { callbacks++; });
+      scope.prepare(); expect(callbacks).toBe(0);
+      await scope.finishCooperatively(async () => { yields++; }, () => {});
+      expect(callbacks).toBe(20); expect(yields).toBe(2);
+    } finally { scope.dispose(); tasks.dispose(); workspace.dispose(); }
+  });
+  it('delivers real realm initialization progress and lets the host run before the candidate finishes', async () => {
+    const Channel = window.MessageChannel, schedule = window.setTimeout.bind(window);
+    let partialProgress = false, hostTurnDuringPreparation = false, completed = false;
+    spyOn(window, 'MessageChannel').and.callFake(function () {
+      const channel = new Channel();
+      channel.port1.addEventListener('message', event => {
+        const ui = event.data?.ui;
+        if (!partialProgress && ui?.callbacks > 0 && ui.pending > 0) {
+          partialProgress = true;
+          schedule(() => { if (!completed) hostTurnDuringPreparation = true; }, 0);
+        }
+      });
+      return channel;
+    });
+    const input: NativeCandidateRequest = { blocks: [{ id: 'owner', type: 'cooperative_realm_probe', fields: [] }], steps: [
+      { kind: 'context', mode: 'arduino' }, { kind: 'script', label: 'cooperative-ui-probe', source: `
+        Blockly.Blocks.cooperative_realm_probe = { init() {
+          this.appendDummyInput();
+          for (let i = 0; i < 32; i++) setTimeout(() => {
+            const end = performance.now() + 2;
+            while (performance.now() < end) {}
+            this.setTooltip('ready');
+          }, 0);
+        } };
+        Arduino.forBlock.cooperative_realm_probe = () => '';
+      ` },
+    ] };
+    const result = await evaluateNativeCandidate(input, { assertCurrent() {} }); completed = true;
+    expect(result.state['blocks'].blocks[0].type).toBe('cooperative_realm_probe');
+    expect(partialProgress).toBeTrue(); expect(hostTurnDuringPreparation).toBeTrue();
+    expect(document.querySelectorAll('[data-blockly-native-candidate]').length).toBe(0);
+  });
   it('keeps due-time and insertion order without sorting the whole queue', () => {
     const tasks = new NativeUiTasks(), order: string[] = [];
     tasks.set(() => { order.push('first'); tasks.set(() => order.push('nested'), 0); }, 10);
@@ -56,12 +184,30 @@ describe('native deferred UI effect boundary', () => {
     const tasks = new NativeUiTasks(value => observations.push(value), () => now);
     for (let i = 0; i < 512; i++) tasks.set(() => { now += 2; });
     tasks.drain(() => { now += 3; return 'same'; });
-    expect(observations.length).toBeLessThanOrEqual(10);
+    expect(observations.length).toBeLessThanOrEqual(54);
     expect(observations[0]).toEqual({ callbacks: 0, pending: 512, snapshots: 0, callbackMs: 0, snapshotMs: 0 });
     expect(observations[observations.length - 1]).toEqual({ callbacks: 512, pending: 0, snapshots: 513, callbackMs: 1024, snapshotMs: 1539 });
     const count = observations.length;
     tasks.drain(() => { throw Error('must not snapshot an empty queue'); });
     expect(observations.length).toBe(count);
+  });
+  it('reports elapsed work before a 53-callback queue finishes without changing its readbacks', () => {
+    let now = 0;
+    const observations: AbsNativeUiTiming[] = [];
+    const tasks = new NativeUiTasks(value => observations.push(value), () => now);
+    for (let i = 0; i < 53; i++) tasks.set(() => { now += 2; });
+    tasks.drain(() => { now += 7; return 'same'; });
+    expect(observations.some(value => value.callbacks > 0 && value.callbacks < 53)).toBeTrue();
+    expect(observations.length).toBeLessThanOrEqual(12);
+    expect(observations[observations.length - 1]).toEqual({ callbacks: 53, pending: 0, snapshots: 54, callbackMs: 106, snapshotMs: 378 });
+  });
+  it('reports the callback threshold even when elapsed time has not advanced', () => {
+    const observations: AbsNativeUiTiming[] = [];
+    const tasks = new NativeUiTasks(value => observations.push(value), () => 0);
+    for (let i = 0; i < 65; i++) tasks.set(() => {});
+    tasks.drain(() => 'same');
+    expect(observations.some(value => value.callbacks === 64 && value.pending === 1)).toBeTrue();
+    expect(observations.length).toBe(3);
   });
   it('retains cost evidence when a callback changes persisted meaning', () => {
     let now = 0, state = 'before';

@@ -1,3 +1,5 @@
+import { isBuildCancelled } from './build-cancellation';
+
 export interface BuildCheckpoint {
   startedAt?: number;
   inputCapturedAt?: number;
@@ -14,6 +16,8 @@ export interface BuildResultSnapshot {
   previousCheckpoint?: BuildCheckpoint;
   message: string;
   fullStdErr: string;
+  code?: 'BUILD_CANCELLED';
+  buildOutcome?: 'cancelled';
 }
 
 /** Retain the actual completed build result independently of the rolling log. */
@@ -35,6 +39,8 @@ export function persistBuildResult(
     ...(checkpoint?.startedAt ? { checkpoint } : {}),
     message: result?.text || error?.text || error?.message || '',
     fullStdErr: result?.fullStdErr || error?.fullStdErr || '',
+    ...(isBuildCancelled(result) || isBuildCancelled(error)
+      ? { code: 'BUILD_CANCELLED' as const, buildOutcome: 'cancelled' as const } : {}),
   };
 
   try {

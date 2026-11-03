@@ -18,8 +18,10 @@ export function isDetachedAilyChatRenderer(
     .split('?', 1)[0]
     .replace(/^\/+/, '/')
     .replace(/\/+$/u, '');
-  if (hashRoute === '/child-tool/aily-chat') return true;
 
-  return String(location.pathname || '')
-    .replace(/\/+$/u, '') === '/child-tool/aily-chat';
+  if (hashRoute === '/child-tool/aily-chat' || hashRoute === '/child-tool/device-manager') return true;
+
+  const pathname = String(location.pathname || '').replace(/\/+$/u, '');
+
+  return pathname === '/child-tool/aily-chat' || pathname === '/child-tool/device-manager';
 }

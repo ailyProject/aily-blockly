@@ -1,119 +1,171 @@
 // 提供系统通知和窗口注意提醒功能。
 const { Notification, ipcMain, BrowserWindow, app } = require('electron');
+const { randomUUID } = require('node:crypto');
 const { requestWindowAttention } = require('./window-attention');
+const { createActivationServer, createWindowsToastXml } = require('./notification-activation');
 
-/** @type {import('electron').BrowserWindow | null} */
+const MAX_RETAINED_NOTIFICATIONS = 128;
+// Electron 35 的原生通知只弱引用 JS delegate。Windows 横幅超时后，
+// 通知中心仍可点击，因而 close 不能成为释放 JS 对象的时机。
+const notifications = new Map();
+const owners = new Map();
 let cachedMainWindow = null;
+let notificationProduct = 'blockly';
+let activationServer;
+let shuttingDown = false;
+
+function activateNotification(id) {
+  const record = notifications.get(id);
+  if (!record) return false;
+  try {
+    const win = record.window;
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show(); win.focus(); win.flashFrame(false);
+    }
+    if (app.dock) app.dock.setBadge('');
+  } catch (error) { console.warn('恢复通知所属窗口失败:', error.message); }
+  record.emit('click');
+  record.resolve({ event: 'click', notificationId: id });
+  releaseNotification(record, { close: true, settle: false });
+  return true;
+}
+
+function releaseNotification(record, { close = false, reason, settle = true } = {}) {
+  if (!notifications.delete(record.id)) return;
+  const owner = owners.get(record.window);
+  if (owner) {
+    owner.records.delete(record);
+    if (!owner.records.size) {
+      record.window.removeListener('closed', owner.onClosed);
+      owners.delete(record.window);
+    }
+  }
+  record.notification.removeAllListeners();
+  if (close) {
+    // 移除系统通知后才丢弃引用，避免留下已无回调的通知中心条目。
+    try { record.notification.close(); } catch (error) {
+      console.warn('关闭系统通知失败:', error.message);
+    }
+    if (settle) {
+      record.emit('close', { reason });
+      record.resolve({ event: 'close', notificationId: record.id, reason });
+    }
+  }
+}
+
+function retainNotification(record) {
+  notifications.set(record.id, record);
+  if (record.window && !record.window.isDestroyed()) {
+    let owner = owners.get(record.window);
+    if (!owner) {
+      owner = {
+        records: new Set(),
+        onClosed() {
+          for (const item of [...owner.records]) {
+            releaseNotification(item, { close: true, reason: 'window-closed' });
+          }
+        },
+      };
+      owners.set(record.window, owner);
+      record.window.once('closed', owner.onClosed);
+    }
+    owner.records.add(record);
+  }
+  while (notifications.size > MAX_RETAINED_NOTIFICATIONS) {
+    releaseNotification(notifications.values().next().value, {
+      close: true, reason: 'history-limit',
+    });
+  }
+}
+
+app.once('will-quit', () => {
+  shuttingDown = true;
+  for (const record of [...notifications.values()]) {
+    releaseNotification(record, { close: true, reason: 'app-quit' });
+  }
+  activationServer?.close();
+});
 
 /**
- * 显示系统通知
- * @param {Object} options - 通知选项
- * @param {string} options.title - 通知标题
- * @param {string} options.body - 通知内容
- * @param {string} options.icon - 通知图标路径（可选）
- * @param {boolean} options.silent - 是否静音（可选，默认 false）
- * @param {string} options.timeoutType - 超时类型（可选，'default' | 'never'）
- * @param {string} options.urgency - 紧急程度（可选，'normal' | 'critical' | 'low'）
- * @param {import('electron').BrowserWindow | null | undefined} browserWindow - 用于平台级注意提示
- * @returns {Promise<void>}
+ * 返回第一次 click/close；Windows 历史通知的后续 click 通过 onEvent 发送。
+ * @returns {Promise<{event: string, notificationId: string}>}
  */
-function showNotification(options, browserWindow) {
+async function showNotification(options = {}, browserWindow, onEvent) {
+  if (!Notification.isSupported()) throw new Error('当前系统不支持通知功能');
+  if (process.platform === 'win32') {
+    activationServer ||= createActivationServer({ product: notificationProduct, onActivate: activateNotification });
+    await activationServer.ready;
+  }
+  if (shuttingDown) throw new Error('应用正在退出');
   return new Promise((resolve, reject) => {
+    let record;
     try {
-      // 检查是否支持通知
-      if (!Notification.isSupported()) {
-        reject(new Error('当前系统不支持通知功能'));
-        return;
-      }
-
+      if (browserWindow?.isDestroyed()) throw new Error('通知所属窗口已关闭');
+      const id = randomUUID();
       const notificationOptions = {
         title: options.title || '通知',
         body: options.body || '',
         silent: options.silent || false,
         timeoutType: options.timeoutType || 'default',
       };
-
-      // 如果提供了图标路径，添加到选项中
-      if (options.icon) {
-        notificationOptions.icon = options.icon;
-      }
-
-      // Linux 系统支持 urgency 属性
+      if (options.icon) notificationOptions.icon = options.icon;
+      if (activationServer) notificationOptions.toastXml = createWindowsToastXml(notificationOptions, activationServer.url(id));
       if (process.platform === 'linux' && options.urgency) {
         notificationOptions.urgency = options.urgency;
       }
-
       const notification = new Notification(notificationOptions);
-
-      // 监听通知点击事件
-      notification.on('click', () => {
-        if (browserWindow && !browserWindow.isDestroyed()) {
-          if (browserWindow.isMinimized()) {
-            browserWindow.restore();
-          }
-          browserWindow.show();
-          browserWindow.focus();
-          browserWindow.flashFrame(false);
-        }
-        if (app.dock) app.dock.setBadge('');
-        resolve({ event: 'click' });
-      });
-
-      // 监听通知关闭事件
+      record = {
+        id, notification, window: browserWindow, resolve,
+        emit(event, extra = {}) {
+          try { onEvent?.({ notificationId: record.id, event, ...extra }); }
+          catch (error) { console.warn('发送系统通知事件失败:', error.message); }
+        },
+      };
+      retainNotification(record);
+      notification.on('click', () => activateNotification(record.id));
       notification.on('close', () => {
-        resolve({ event: 'close' });
+        record.emit('close');
+        resolve({ event: 'close', notificationId: record.id });
+        if (process.platform !== 'win32') releaseNotification(record);
       });
-
-      // 监听通知显示事件
-      notification.on('show', () => {
-        // 通知已显示，但不立即 resolve，等待用户交互或关闭
-      });
-
-      // 监听通知失败事件
-      notification.on('failed', (error) => {
+      notification.on('show', () => record.emit('show'));
+      notification.on('failed', (_event, message) => {
+        const error = new Error(message || '显示系统通知失败');
+        record.emit('failed', { error: error.message });
+        releaseNotification(record);
         reject(error);
       });
-
-      // 与 window-request-attention 一致：任务栏/Dock 等持久提示，避免仅依赖短时气泡
       requestWindowAttention(browserWindow);
-
-      // 显示通知
       notification.show();
-
     } catch (error) {
+      if (record) {
+        record.emit('failed', { error: error.message });
+        releaseNotification(record, { close: true, reason: 'show-failed', settle: false });
+      }
       reject(error);
     }
   });
 }
 
-/**
- * 初始化通知模块的 IPC 监听器
- */
-function registerNotificationHandlers(mainWindow) {
+function registerNotificationHandlers(mainWindow, product = 'blockly') {
   cachedMainWindow = mainWindow;
-
-  // 处理来自渲染进程的通知请求
+  notificationProduct = product;
   ipcMain.handle('notification-show', async (event, options) => {
     try {
       const senderWindow = BrowserWindow.fromWebContents(event.sender);
       const targetWindow = senderWindow && !senderWindow.isDestroyed()
-        ? senderWindow
-        : cachedMainWindow;
-      const result = await showNotification(options, targetWindow);
+        ? senderWindow : cachedMainWindow;
+      const result = await showNotification(options, targetWindow, payload => {
+        if (!event.sender.isDestroyed()) event.sender.send('notification-event', payload);
+      });
       return { success: true, result };
     } catch (error) {
       console.error('显示通知失败:', error);
       return { success: false, error: error.message };
     }
   });
-
-  // 检查是否支持通知
-  ipcMain.handle('notification-is-supported', () => {
-    return Notification.isSupported();
-  });
+  ipcMain.handle('notification-is-supported', () => Notification.isSupported());
 }
 
-module.exports = {
-  showNotification,
-  registerNotificationHandlers
-};
+module.exports = { showNotification, registerNotificationHandlers };

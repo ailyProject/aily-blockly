@@ -3,6 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+// Resolve the same physical identity without JS re-walking every ancestor for
+// each source file (particularly expensive on Windows and deep library trees).
+const realpath = fs.realpathSync.native || fs.realpathSync;
 // A project-local graphics library can legitimately contain more than 256 MiB
 // of fonts and images. Keep capture bounded without rejecting that source tree.
 const MAX_LIBRARY_SOURCE_BYTES = 512 * 1024 * 1024;
@@ -18,12 +21,12 @@ const identity = filename => hash(process.platform === 'win32' ? filename.toLowe
 
 /** Preserves the existing library cache fingerprint; adds bounded race evidence. */
 function captureLibrarySource(sourcePath) {
-    const root = fs.realpathSync(sourcePath), active = new Set(), digest = crypto.createHash('sha256');
+    const root = realpath(sourcePath), active = new Set(), digest = crypto.createHash('sha256');
     const states = [];
     let fileCount = 0, sizeBytes = 0;
     const visit = (filename, relative, depth) => {
         if (depth > 64) fail('Source depth exceeds limit.');
-        const real = fs.realpathSync(filename);
+        const real = realpath(filename);
         if (!within(root, real)) fail(`Library source link escapes its root: ${filename}`);
         const before = fs.statSync(filename), normalized = relative.split(path.sep).join('/');
         if (before.isDirectory()) {

@@ -16,17 +16,20 @@ export class NativeUiTasks {
   private sequence = 0;
   private now = 0;
   private forbidden = false;
+  private disposed = false;
   private failure?: Error;
   private readonly timing: Omit<AbsNativeUiTiming, 'pending'> = { callbacks: 0, snapshots: 0, callbackMs: 0, snapshotMs: 0 };
   private reportedCallbacks = 0;
   private reportedAt = 0;
 
-  constructor(private readonly observe?: (timing: AbsNativeUiTiming) => void, private readonly clock = () => performance.now()) {}
+  constructor(private readonly observe?: (timing: AbsNativeUiTiming) => void, private readonly clock = performance.now.bind(performance)) {}
 
   private report(force = false): void {
     if (!this.observe) return;
     const now = this.clock();
-    if (!force && (this.timing.callbacks - this.reportedCallbacks < 64 || now - this.reportedAt < 50)) return;
+    // Either bound can publish progress: a slow queue shorter than 64 tasks
+    // must not stay silent until its final callback finishes.
+    if (!force && this.timing.callbacks - this.reportedCallbacks < 64 && now - this.reportedAt < 50) return;
     this.reportedAt = now; this.reportedCallbacks = this.timing.callbacks;
     this.observe({ ...this.timing, pending: this.pending.size });
   }
@@ -38,7 +41,10 @@ export class NativeUiTasks {
   }
 
   get hasPending(): boolean { return this.pending.size > 0; }
-  assertClean(): void { if (this.failure) throw this.failure; }
+  assertClean(): void {
+    if (this.failure) throw this.failure;
+    if (this.disposed) throw new Error('Native UI tasks are disposed.');
+  }
   private reject(error: string | Error): never {
     this.failure ??= typeof error === 'string' ? new Error(error) : error;
     this.pending.clear(); throw this.failure;
@@ -90,31 +96,59 @@ export class NativeUiTasks {
     // No event can interleave this synchronous queue. Reuse each verified
     // post-callback snapshot as the next precondition, without skipping a task.
     let before = this.snapshot(snapshot);
-    while (this.pending.size) {
-      // Stable Map order breaks ties; nested tasks use virtual due time.
-      // Select the minimum without allocating and sorting the entire queue for
-      // every callback. Equal due times retain insertion order, including nested work.
-      let selected: [number, { due: number; callback: () => unknown }] | undefined;
-      for (const entry of this.pending) if (!selected || entry[1].due < selected[1].due) selected = entry;
-      const [id, task] = selected!;
-      this.pending.delete(id); this.now = task.due;
-      try {
-        const started = this.observe ? this.clock() : 0;
-        this.timing.callbacks++;
-        let value: any;
-        try { value = task.callback(); }
-        finally { if (this.observe) this.timing.callbackMs += Math.max(0, this.clock() - started); }
-        this.assertClean();
-        if (value && typeof value.then === 'function') this.reject('Native candidate does not support asynchronous UI callbacks.');
-        const after = this.snapshot(snapshot);
-        if (after !== before) this.reject(nativeSemanticChange(before, after, phase));
-        before = after;
-        this.report();
-      } catch (error) { this.reject(error instanceof Error ? error : String(error)); }
-    }
+    while (this.pending.size) before = this.drainNext(snapshot, phase, before);
     this.assertClean();
   }
-  dispose(): void { this.pending.clear(); }
+
+  /** Only the host supplies this macrotask scheduler, captured before replay.
+   * Library callbacks remain synchronous and each still gets full readback.
+   * Yield boundaries get an additional read: browser observers must not alter
+   * state between tasks and have a later callback silently restore it. */
+  async drainCooperatively(snapshot: () => string, yieldToHost: () => Promise<void>,
+    assertCurrent: () => void, phase: 'initialization' | 'ui' = 'ui'): Promise<void> {
+    this.assertClean(); assertCurrent();
+    if (!this.pending.size) return;
+    this.report(true);
+    try {
+      let before = this.snapshot(snapshot), sliceStarted = this.clock(), count = 0;
+      while (this.pending.size) {
+        before = this.drainNext(snapshot, phase, before);
+        if (this.pending.size && (++count >= 8 || this.clock() - sliceStarted >= 8)) {
+          this.report(true);
+          this.assertClean(); assertCurrent();
+          await yieldToHost();
+          this.assertClean(); assertCurrent();
+          const resumed = this.snapshot(snapshot);
+          if (resumed !== before) this.reject(nativeSemanticChange(before, resumed, phase));
+          before = resumed; sliceStarted = this.clock(); count = 0;
+        }
+      }
+      this.assertClean(); assertCurrent();
+    } catch (error) { this.reject(error instanceof Error ? error : String(error)); }
+    finally { this.report(true); }
+  }
+
+  private drainNext(snapshot: () => string, phase: 'initialization' | 'ui', before: string): string {
+    // Equal due times retain insertion order, including nested work.
+    let selected: [number, { due: number; callback: () => unknown }] | undefined;
+    for (const entry of this.pending) if (!selected || entry[1].due < selected[1].due) selected = entry;
+    const [id, task] = selected!;
+    this.pending.delete(id); this.now = task.due;
+    try {
+      const started = this.observe ? this.clock() : 0;
+      this.timing.callbacks++;
+      let value: any;
+      try { value = task.callback(); }
+      finally { if (this.observe) this.timing.callbackMs += Math.max(0, this.clock() - started); }
+      this.assertClean();
+      if (value && typeof value.then === 'function') this.reject('Native candidate does not support asynchronous UI callbacks.');
+      const after = this.snapshot(snapshot);
+      if (after !== before) this.reject(nativeSemanticChange(before, after, phase));
+      this.report();
+      return after;
+    } catch (error) { return this.reject(error instanceof Error ? error : String(error)); }
+  }
+  dispose(): void { this.disposed = true; this.pending.clear(); }
 }
 
 /** Exclude display labels/tooltips, but include empty sockets, option keys,

@@ -495,6 +495,89 @@ describe('v2 actual workspace generation coordinator', () => {
     return replay;
   };
 
+  for (const changed of [undefined, 'canvas', 'disk', 'inactive-page']) it(`records an exact native failure and guards recovery; changed=${changed ?? 'none'}`, async () => {
+    enableNative();
+    const runtime = new BlocklyGeneratorRuntimeService();
+    runtime.activate({ mode: 'arduino', getWorkspace: () => editor.workspace });
+    try {
+      const base = await baseline(), source = base.source + '\nnative_commit_shape(A, math_number(7))\n';
+      const committed = (await new AbsBaselineStore(port, scope).loadCommitted())!;
+      const { generationEvidence } = await import('./abs-generation-protocol');
+      const request = { version: 2 as const, requestId: crypto.randomUUID(),
+        base: (await generationEvidence(committed, disk.get('project.abi') ?? null)).binding,
+        candidate: { hash: await hashAbsText(source), bytes: new TextEncoder().encode(source).byteLength } };
+      disk.set('project.abs', source);
+      const originalFiles = [...disk], originalView = absJson(editor.captureProjectSnapshot().document);
+      const initialInspection: any = await service.inspectGeneration();
+      const tools = new AbsGenerationToolsService(service);
+      const Channel = window.MessageChannel, schedule = window.setTimeout.bind(window);
+      const timers = spyOn(window, 'setTimeout').and.callThrough();
+      let broken = true, realms = 0;
+      spyOn(window, 'MessageChannel').and.callFake(function () {
+        const channel = new Channel(); realms++;
+        let fired = false;
+        channel.port1.addEventListener('message', event => {
+          if (!broken || fired || event.data.replay?.event !== 'drain-start') return;
+          fired = true;
+          const timer = timers.calls.allArgs().filter(args => args[1] === 10000 || args[1] === 30000).at(-1)?.[0];
+          if (typeof timer !== 'function') throw Error('missing candidate watchdog');
+          schedule(() => timer(), 0);
+        });
+        return channel;
+      });
+      const rebuild = spyOn(project, 'rebuildNativeCandidateRuntime').and.callFake(async admit => {
+        // The real runtime epoch changes. The complete rebuild/data preservation
+        // implementation is covered separately by abs-project-runtime-rebuild.
+        admit(); broken = false; runtime.rebuild();
+      });
+      const failed: any = await tools.execute('abs_validate', request, source);
+      expect(failed.code).withContext(JSON.stringify(failed)).toBe('ABS_NATIVE_TIMEOUT');
+      expect(failed.nativeCandidateFailure.candidate).toEqual(request.candidate);
+      const offer = failed.nativeCandidateFailure.recovery;
+      expect(offer.action).toBe('prepare_native');
+      const stoppedAt = realms;
+      const again: any = await tools.execute('abs_validate', { ...request, requestId: crypto.randomUUID() }, source);
+      expect(again.nativeCandidateFailure.recovery.token).toBe(offer.token);
+      expect(realms).toBe(stoppedAt);
+      const inspected: any = await service.inspectGeneration();
+      expect(inspected.diagnostics.draft?.canValidate).toBeFalse();
+      expect(inspected.diagnostics.nativeCandidateFailure?.code).toBe('ABS_NATIVE_TIMEOUT');
+      expect(inspected.diagnostics.repair).toEqual(initialInspection.diagnostics.repair);
+      const recovery = { version: 2, action: 'prepare_native', token: offer.token, requestId: offer.requestId };
+      if (changed) {
+        if (changed === 'canvas') roots().setFieldValue('new manual edit', 'TEXT');
+        else if (changed === 'disk') disk.set('project.abs', source + '\n# newer candidate');
+        else editor.mutateOtherPage();
+        const files = [...disk], canvas = absJson(editor.captureProjectSnapshot().document);
+        const refused: any = await tools.execute('abs_recovery', recovery);
+        expect(refused.ok).toBeFalse(); expect(refused.code).toBe('ABS_NATIVE_RECOVERY_STALE');
+        expect((await tools.execute('abs_recovery', { ...recovery, observe: true })).ok).toBeFalse();
+        expect(rebuild).not.toHaveBeenCalled(); expect(realms).toBe(stoppedAt);
+        expect([...disk]).toEqual(files); expect(absJson(editor.captureProjectSnapshot().document)).toBe(canvas);
+        return;
+      }
+      const recovered: any = await tools.execute('abs_recovery', recovery);
+      expect(recovered.ok).withContext(JSON.stringify(recovered)).toBeTrue();
+      expect(recovered.receipt.candidateApplied).toBeFalse();
+      expect(recovered.receipt.prepared.candidate).toEqual(request.candidate);
+      expect(recovered.receipt.prepared.requestId).toBe(request.requestId);
+      expect(rebuild).toHaveBeenCalledTimes(1);
+      expect([...disk]).toEqual(originalFiles); expect(absJson(editor.captureProjectSnapshot().document)).toBe(originalView);
+      expect(editor.prepareProjectCode).not.toHaveBeenCalled();
+      const preparedRealms = realms;
+      const observed: any = await tools.execute('abs_recovery', { ...recovery, observe: true });
+      expect(observed.receipt.prepared).toEqual(recovered.receipt.prepared);
+      expect((await tools.execute('abs_recovery', recovery)).ok).toBeTrue();
+      expect(rebuild).toHaveBeenCalledTimes(1); expect(realms).toBe(preparedRealms);
+      const applied: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId,
+        validation: recovered.receipt.prepared }, source);
+      expect(applied.ok).withContext(JSON.stringify(applied)).toBeTrue();
+      expect(editor.workspace.getBlocksByType('native_commit_shape', false).length).toBe(1);
+      expect(roots().isDeletable()).toBeFalse();
+      expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
+    } finally { runtime.destroy(); }
+  });
+
   it('externalizes only the authoritative native draft when a declarative new block needs native preparation', async () => {
     const replay = enableNative();
     replay.steps.push({ kind: 'definitions', definitions: [catalog.capture(Blockly.Blocks).get('abs_declared_text')!] });
@@ -552,6 +635,46 @@ describe('v2 actual workspace generation coordinator', () => {
     const decoded = await decodeAbsState(disk.get('project.abs')!);
     expect(absJson(decoded.document)).toBe(absJson(JSON.parse(disk.get('project.abi')!)));
     expect(JSON.parse(disk.get(`baselines/${JSON.parse(disk.get('project.abs.map.json')!).generation}.json`)!).abi).toBeUndefined();
+  });
+
+  it('reuses an unchanged saved generation while checking and publishing derived outputs again', async () => {
+    await baseline();
+    const before = [...disk];
+    const prepare = spyOn(project, 'prepareSave').and.callThrough();
+    const result = await service.exportGeneration({ save: true });
+    expect(result.reused).toBeTrue();
+    expect([...disk]).toEqual(before);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
+    expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
+    expect(gate.blocked).toBeFalse();
+  });
+
+  it('publishes layout and inactive-page edits even when the active program is unchanged', async () => {
+    for (const edit of [() => editor.setViewState({ scale: 0.5, scrollX: 20, scrollY: 30 }),
+      () => editor.mutateOtherPage()]) {
+      const base = await baseline();
+      edit();
+      const result = await service.exportGeneration({ save: true });
+      expect(result.reused).not.toBeTrue();
+      expect(result.publication.generation).not.toBe(base.generation);
+      expect(JSON.parse(disk.get('project.abi')!)).toEqual(editor.captureProjectSnapshot().document);
+    }
+  });
+
+  it('does not reuse a save after model preparation changes the document or external mirrors change', async () => {
+    await baseline();
+    editor.prepareProjectCode.and.callFake(async (_assertCurrent, owner) => {
+      editor.mutateOtherPage();
+      return { revision: editor.captureProjectSnapshot(owner).revision, code: '', artifacts: null, blockCodeMapText: null };
+    });
+    const result = await service.exportGeneration({ save: true });
+    expect(result.reused).not.toBeTrue();
+    expect(JSON.parse(disk.get('project.abi')!).pages[1].custom.preserved).toBeFalse();
+    disk.set('project.abs', disk.get('project.abs')! + '\n# external candidate');
+    const before = [...disk];
+    await expectAsync(service.exportGeneration({ save: true })).toBeRejected();
+    expect([...disk]).toEqual(before);
   });
 
   it('holds history input ownership until reload and keeps its caches derived', async () => {

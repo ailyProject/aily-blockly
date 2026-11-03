@@ -23,6 +23,10 @@ describe('ABS source and derived artifact outcome separation', () => {
     expect(result.output).toEqual({ published: false, code: error.code, error: error.message });
     expect(result.warnings.length).toBe(1);
   });
+  it('recognizes native build contention even when the bridge only preserves its message', () => {
+    const result = describeAbsDerivedOutputs({ code: 'saved code' }, { error: new Error('BUILD_WORKSPACE_BUSY: native owner') });
+    expect(result.output).toEqual({ published: false, code: 'BUILD_WORKSPACE_BUSY', error: 'BUILD_WORKSPACE_BUSY: native owner' });
+  });
   it('does not lose the generator error when a second artifact publication error occurs', () => {
     const result = describeAbsDerivedOutputs({ code: null, error: 'generator failure' }, { error: new Error('header write failure') });
     expect(result.output!.published).toBeFalse(); expect(result.output!.code).toBe('PROJECT_CODE_GENERATION_FAILED');

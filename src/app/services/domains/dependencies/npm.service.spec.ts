@@ -234,6 +234,12 @@ describe('NpmService global cleanup progress', () => {
 });
 
 describe('NpmService Coder dependency sources', () => {
+  let previousLibraries: any;
+  beforeEach(() => {
+    previousLibraries = window['libraryDependencies'];
+    window['libraryDependencies'] = { prepare: jasmine.createSpy('prepare').and.resolveTo() };
+  });
+  afterEach(() => { window['libraryDependencies'] = previousLibraries; });
   function createService(coder = true, alreadyInstalled = false) {
     const service = Object.create(NpmService.prototype) as any;
     service.installedOk = jasmine.createSpy('installedOk').and.returnValues(
@@ -298,6 +304,17 @@ describe('NpmService Coder dependency sources', () => {
     expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeTrue();
     expect(service.cmdService.runAsync).toHaveBeenCalled();
     expect(service.application.materializeCoderProjectLibraries).not.toHaveBeenCalled();
+    expect(window['libraryDependencies'].prepare).toHaveBeenCalledOnceWith('/tmp/blockly-template');
+  });
+
+  it('prepares existing Blockly sources without npm and reports extraction failure as retryable', async () => {
+    const service = createService(false, true);
+    window['libraryDependencies'].prepare.and.rejectWith(new Error('invalid Blockly archive'));
+    expect(await service.ensureProjectDependenciesInstalled('/tmp/blockly-template')).toBeFalse();
+    expect(service.cmdService.runAsync).not.toHaveBeenCalled();
+    expect(service.application.updateNotice.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+      state: 'error', detail: 'invalid Blockly archive', sendToLog: true,
+    }));
   });
 
   it('preserves Blockly installation notices at the existing 0 and 100 ms delays', async () => {

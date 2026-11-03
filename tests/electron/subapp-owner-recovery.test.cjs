@@ -90,14 +90,26 @@ test('unjoined cancelled requests remain counted until they actually finish', as
   assert.equal(f.leases.recover(owner.ownerLeaseId, owner.sessionId, requestId).ok, true);
 });
 
-test('failed cleanup never becomes success after a second release sees no active lease', async t => {
+test('failed cleanup retries the original callback, never fabricates success from an absent lease', async t => {
   const f = fixture(t, async () => ({ ok: false, cleanupErrors: ['stop not confirmed'] }));
   const old = f.leases.acquire('session-a'), requestId = randomUUID();
   await f.leases.release(old.ownerLeaseId, old.sessionId);
-  assert.equal(f.leases.recover(old.ownerLeaseId, old.sessionId, requestId).errorCode, 'SUBAPP_OWNER_CLEANUP_FAILED');
+  assert.equal(f.leases.inspect(old.ownerLeaseId, old.sessionId).canRetryCleanup, true);
+  assert.equal(f.leases.recover(old.ownerLeaseId, old.sessionId, requestId).errorCode, 'SUBAPP_OWNER_RETIRING');
   await f.leases.release(old.ownerLeaseId, old.sessionId);
-  assert.equal(f.leases.recover(old.ownerLeaseId, old.sessionId, requestId).errorCode, 'SUBAPP_OWNER_CLEANUP_FAILED');
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.leases.inspect(old.ownerLeaseId, old.sessionId).cleanup, 'failed');
+  assert.equal(f.calls.length, 2);
+});
+
+test('a transient cleanup failure can recover with the original request after actual retry succeeds', async t => {
+  let broken = true;
+  const f = fixture(t, async () => ({ ok: !broken })), old = f.leases.acquire('session-a'), requestId = randomUUID();
+  await f.leases.release(old.ownerLeaseId, old.sessionId);
+  broken = false;
+  assert.equal(f.leases.recover(old.ownerLeaseId, old.sessionId, requestId).errorCode, 'SUBAPP_OWNER_RETIRING');
+  await f.leases.release(old.ownerLeaseId, old.sessionId);
+  assert.equal(f.leases.recover(old.ownerLeaseId, old.sessionId, requestId).ok, true);
+  assert.equal(f.calls.length, 2);
 });
 
 test('an expired successor has an exact receipt, not another implicit incarnation', async t => {

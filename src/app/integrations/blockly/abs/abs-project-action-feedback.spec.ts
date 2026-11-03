@@ -12,7 +12,10 @@ describe('real unsaved-state Action feedback boundary', () => {
     const project: any = Object.create(ProjectService.prototype);
     Object.defineProperty(project, 'currentProjectPath', { value: '/project', writable: true });
     project.configService = { getCompileSettingsKey: () => 'local' };
-    project.discardAllLibraryChanges = jasmine.createSpy('discard').and.resolveTo();
+    // This Action boundary fixture has no editor/application injector and no
+    // failed runtime snapshot; keep the new readiness query explicit.
+    project.hasBlocklyRuntimeRecovery = () => false;
+    project.discardLibraryChangesBeforeQuit = jasmine.createSpy('discard').and.resolveTo();
     project.getProjectMode = () => 'blockly'; project.getProjectDependencySession();
     const adapter: any = Object.assign(Object.create(ProjectApplicationAdapter.prototype), { actionService: actions, projectService: project });
     project.hasUnsavedChanges = () => adapter.hasUnsavedBlocklyChanges();
@@ -103,7 +106,7 @@ describe('real unsaved-state Action feedback boundary', () => {
     dialog.next({ result: 'cancel' }); flushMicrotasks();
     expect(settled).toHaveBeenCalledOnceWith(false);
     expect(view.unsaveDialogOpen).toBeFalse();
-    expect(view.projectService.discardAllLibraryChanges).not.toHaveBeenCalled();
+    expect(view.projectService.discardLibraryChangesBeforeQuit).not.toHaveBeenCalled();
     stop();
   }));
 
@@ -113,29 +116,29 @@ describe('real unsaved-state Action feedback boundary', () => {
     window['iWindow'] = { confirmClose: jasmine.createSpy('confirm') };
     spyOn(console, 'warn');
     const stop = actions.listen('project-check-unsaved', () => { throw new Error('missing manifest'); });
-    project.discardAllLibraryChanges.and.callFake(async () => {
+    project.discardLibraryChangesBeforeQuit.and.callFake(async () => {
       if (replaced) project.currentProjectPath = '/replacement';
       throw new Error('ENOENT package.json');
     });
     try {
       view.confirmWindowClose({ requestId: 'native-close' }); flushMicrotasks();
       dialog.next({ result: 'continue' }); flushMicrotasks();
-      expect(project.discardAllLibraryChanges).toHaveBeenCalledOnceWith({ quitting: true });
+      expect(project.discardLibraryChangesBeforeQuit).toHaveBeenCalledOnceWith();
       expect(window['iWindow'].confirmClose).toHaveBeenCalledOnceWith('native-close', !replaced);
       expect(view.message.error).not.toHaveBeenCalled();
       expect(console.warn).toHaveBeenCalled();
     } finally { stop(); window['iWindow'] = original; }
   }));
 
-  it('still blocks a project-only close when dependency recovery fails', fakeAsync(() => {
+  it('defers project-only discard to the actual lifecycle operation', fakeAsync(() => {
     const { actions, view, project, dialog, confirm } = fixture();
     const stop = actions.listen('project-check-unsaved', () => { throw new Error('missing manifest'); });
-    project.discardAllLibraryChanges.and.rejectWith(new Error('ENOENT package.json'));
+    project.discardLibraryChangesBeforeQuit.and.rejectWith(new Error('ENOENT package.json'));
     const settled = jasmine.createSpy('settled'); confirm().then(settled); flushMicrotasks();
     dialog.next({ result: 'continue' }); flushMicrotasks();
-    expect(settled).toHaveBeenCalledOnceWith(false);
-    expect(project.discardAllLibraryChanges).toHaveBeenCalledOnceWith({ quitting: false });
-    expect(view.message.error).toHaveBeenCalledWith('ENOENT package.json');
+    expect(settled).toHaveBeenCalledOnceWith(true);
+    expect(project.discardLibraryChangesBeforeQuit).not.toHaveBeenCalled();
+    expect(view.message.error).not.toHaveBeenCalled();
     stop();
   }));
 

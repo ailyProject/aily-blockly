@@ -17,6 +17,7 @@ import { MetricsService } from '@core/metrics/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { persistBuildResult } from './build-result-snapshot';
+import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
 import { runCloudBuildWithProgress, cloudBuildProgressPresentation, CLOUD_BUILD_LOCAL_REQUESTED } from '../../../utils/cloud-build-progress.utils';
@@ -144,7 +145,7 @@ export class CompileService {
 
     // Ordinary local builds retain the existing readiness-before-admission flow.
     if (!context.cloud && !retryLocally) {
-      const blocked = await this.checkCompileDependencies(root);
+      const blocked = await this.checkCompileDependencies(root, false);
       if (blocked) return blocked;
     }
 
@@ -163,6 +164,7 @@ export class CompileService {
     }
 
     const attempt = this.buildAttempt = (this.buildAttempt || 0) + 1;
+    const attemptStartedAt = Date.now();
     let projectCurrent = () => false;
     let settled!: () => void;
     const cleanup = new Promise<void>(resolve => { settled = resolve; });
@@ -208,7 +210,7 @@ export class CompileService {
       }
 
       if (context.cloud || retryLocally) {
-        const blocked = await this.checkCompileDependencies(root);
+        const blocked = await this.checkCompileDependencies(root, context.cloud);
         if (blocked) return blocked;
       }
 
@@ -216,10 +218,14 @@ export class CompileService {
       return await this.runCompile(root, options, context);
     } catch (error: any) {
       const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
+      if (this.cancelled && !options.preprocessOnly) {
+        await Promise.all([this.stopPending, this.localSwitchPending]);
+        await this.coderBuildInfo.saveBuildInfo(root, '', 'cancelled', (Date.now() - attemptStartedAt) / 1000);
+      }
       this.application.finishBuild(false, text);
       if (this.cancelled) this.updateCancelledNotice(text);
       else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
-      return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text } };
+      return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text } };
     } finally {
       if (this.application.currentProcessState === 'BUILDING') this.application.finishBuild(false, 'Build preparation failed');
       context.backendOperation?.release();
@@ -227,21 +233,22 @@ export class CompileService {
     }
   }
 
-  private async checkCompileDependencies(root: string) {
+  private async checkCompileDependencies(root: string, cloud = false) {
     const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
     if (dependencyBlock) {
       this.message.warning(dependencyBlock);
       return { success: false, result: { state: 'warn', text: dependencyBlock } };
     }
 
-    if (this.configService.isCoderProduct()) {
-      try {
+    try {
+      if (!cloud) await this.npmService.ensureLocalCompilerDependencies(root);
+      if (this.configService.isCoderProduct()) {
         await this.npmService.assertCoderDependenciesReady(root);
-      } catch (error) {
-        const text = error instanceof Error ? error.message : String(error);
-        this.message.warning(text);
-        return { success: false, result: { state: 'warn', text } };
       }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      this.message.warning(text);
+      return { success: false, result: { state: 'warn', text } };
     }
 
     return undefined;
@@ -423,6 +430,7 @@ export class CompileService {
                 this.t('PRECOMPILE_FAILED_TITLE'),
                 this.t('PRECOMPILE_FAILED_DETAIL'),
                 detail,
+                undefined, true,
               );
               return {
                 success: false,
@@ -479,7 +487,7 @@ export class CompileService {
             const detail = cmp.combined || cmp.stderr + cmp.stdout;
             finishReason = 'Compile failed';
             const text = this.t('FAILED_WITH_TIME', { seconds: buildDuration });
-            this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail);
+            this.handleFailNotice(root, this.t('FAILED_TITLE'), text, detail, undefined, true);
             return {
               success: false,
               result: { state: 'error', text, fullStdErr: detail },
@@ -529,22 +537,22 @@ export class CompileService {
         const text = this.t('CANCELLED_WITH_TIME', { seconds: ((Date.now() - started) / 1000).toFixed(2) });
         this.publishBuildLog(root, text, 'stdout', 'warn', this.t('CANCELLED_TITLE'));
         this.updateCancelledNotice(text);
-        return { success: false, result: { state: 'warn', text } };
+        return { success: false, result: buildCancelledResult(text) };
       }
       this.message.error(msg);
       const detail = typeof e?.fullStdErr === 'string' && e.fullStdErr ? e.fullStdErr : msg;
-      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined);
+      this.handleFailNotice(root, this.t('FAILED_TITLE'), msg, detail, context.cloud ? context.retryLocally : undefined, context.cloud || e?.buildOutputAlreadyLogged === true);
       return { success: false, result: { state: 'error', text: msg, fullStdErr: detail } };
     } finally {
       // Cancellation resolves the UI command promptly, but metadata is another
       // workspace writer: wait for supervised process-tree cleanup first.
       await Promise.all([this.stopPending, this.localSwitchPending]);
       let metadataError: string | undefined;
-      if (compiledHash) {
+      if (compiledHash || this.cancelled) {
         try {
           await this.coderBuildInfo.saveBuildInfo(
             root,
-            compiledHash,
+            compiledHash || '',
             this.cancelled ? 'cancelled' : buildStatus,
             Number(((Date.now() - started) / 1000).toFixed(2)),
           );
@@ -833,8 +841,10 @@ export class CompileService {
     text: string,
     detail: string,
     onRetryLocally?: () => void,
+    logSummaryOnly = false,
   ): void {
-    const clean = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim().slice(0, 8000);
+    const fullDetail = (detail || '').replace(/\[\d+(;\d+)*m/g, '').trim();
+    const clean = logSummaryOnly ? fullDetail : fullDetail.slice(0, 8000);
     appendProjectLog(projectPath, 'compile', 'ERROR', text || clean || '(no logs)');
     this.application.updateNotice({
       title,
@@ -843,8 +853,11 @@ export class CompileService {
       detail: clean || '(no logs)',
       onRetryLocally,
       setTimeout: 600000,
-      sendToLog: true,
+      sendToLog: !logSummaryOnly,
     });
+    if (logSummaryOnly) {
+      this.logService.update({ title, detail: text || '(no logs)', state: 'error' });
+    }
   }
 
   private runOneShotCommand(
@@ -901,7 +914,7 @@ export class CompileService {
       const command = this.cmdService.spawn('node', [request.scriptPath, request.configFilePath], {
         cwd: buildWorkspace, shellProfile: false, buildWorkspace, streamId,
         ...(request.buildDeliveryRequest ? { buildDeliveryRequest: request.buildDeliveryRequest } : {}),
-      });
+      }, true); // onLine owns the build log; CmdService must not replay its close-tail.
       const output = localSwitch ? withLocalBuildSwitch(command, {
         isCurrent: localSwitch.isCurrent,
         stop: () => this.cmdService.kill(streamId),
@@ -952,7 +965,17 @@ export class CompileService {
             return;
           }
           settled = true;
-          if (err?.code !== CLOUD_BUILD_CLOUD_REQUESTED) emitLines(lineBuffer.flush());
+          if (err?.code !== CLOUD_BUILD_CLOUD_REQUESTED) {
+            emitLines(lineBuffer.flush());
+            const message = err?.message || String(err);
+            const reported = typeof err?.fullStdErr === 'string' ? err.fullStdErr : '';
+            const output = reported || combined;
+            const detail = output ? (output.includes(message) ? output : output + '\n' + message) : message;
+            const alreadyLogged = !!combined && (!reported || combined.includes(reported));
+            cleanup(cancelCommand);
+            reject(Object.assign(new Error(message), err, { fullStdErr: detail, buildOutputAlreadyLogged: alreadyLogged }));
+            return;
+          }
           cleanup(cancelCommand);
           reject(err);
         },
