@@ -27,8 +27,9 @@ export class SubappOwnerRecovery {
   constructor(private readonly ports: RecoveryPorts) {}
 
   remember(lease: SubappRecoveryLease, completion: Promise<Record<string, unknown>>): void {
-    if (this.retired.has(lease.ownerLeaseId)) return;
-    if (this.retired.size >= this.limit) {
+    const previous = this.retired.get(lease.ownerLeaseId);
+    if (previous && previous.cleanup !== 'failed') return;
+    if (!previous && this.retired.size >= this.limit) {
       for (const [id, record] of this.retired) {
         if (record.cleanup === 'confirmed' && this.ports.pending(id) === 0) {
           this.retired.delete(id);
@@ -37,11 +38,18 @@ export class SubappOwnerRecovery {
       }
     }
     // Cleanup still runs when bookkeeping is full. Missing evidence cannot recover.
-    if (this.retired.size >= this.limit) return;
-    const record: Retirement = { lease: { ...lease }, cleanup: 'pending' };
+    if (!previous && this.retired.size >= this.limit) return;
+    const record: Retirement = previous ?? { lease: { ...lease }, cleanup: 'pending' };
+    record.cleanup = 'pending';
     this.retired.set(lease.ownerLeaseId, record);
     void completion.then(result => { record.cleanup = result['ok'] === true ? 'confirmed' : 'failed'; },
       () => { record.cleanup = 'failed'; });
+  }
+
+  retryLease(ownerLeaseId: string, sessionId?: string): SubappRecoveryLease | undefined {
+    const record = this.retired.get(ownerLeaseId);
+    if (record && sessionId && record.lease.sessionId !== sessionId) throw this.error('SUBAPP_OWNER_MISMATCH', 'Owner belongs to another session.');
+    return record?.cleanup === 'failed' && !record.successor ? { ...record.lease } : undefined;
   }
 
   inspect(ownerLeaseId: string, sessionId: string): Record<string, unknown> {
@@ -55,6 +63,7 @@ export class SubappOwnerRecovery {
     return { version: 1, action: 'inspect', sessionId, ownerLeaseId, state,
       cleanup: record?.cleanup ?? 'unknown', pendingRequests,
       recoverable: !active && record?.cleanup === 'confirmed' && pendingRequests === 0,
+      canRetryCleanup: !active && record?.cleanup === 'failed' && pendingRequests === 0,
       ...(record?.receipt ? { recoveryReceipt: { ...record.receipt } } : {}) };
   }
 
@@ -84,7 +93,10 @@ export class SubappOwnerRecovery {
         errorCode: 'SUBAPP_OWNER_RECOVERY_RECEIPT_EXPIRED', error: 'The acknowledged successor is no longer active.' };
     }
     if (record.cleanup === 'pending') return this.failure('SUBAPP_OWNER_RETIRING', 'The old owner is still retiring.');
-    if (record.cleanup !== 'confirmed') return this.failure('SUBAPP_OWNER_CLEANUP_FAILED', 'Old resource cleanup is not confirmed.');
+    if (record.cleanup !== 'confirmed') {
+      void this.ports.release(ownerLeaseId, sessionId).catch(() => {});
+      return this.failure('SUBAPP_OWNER_RETIRING', 'The exact failed cleanup is being retried. Observe this original recovery request.');
+    }
     if (this.ports.pending(ownerLeaseId) !== 0) {
       return this.failure('SUBAPP_OWNER_PENDING_REQUESTS', 'Old cancelled requests have not finished.');
     }

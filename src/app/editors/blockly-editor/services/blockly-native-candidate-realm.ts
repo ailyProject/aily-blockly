@@ -47,7 +47,14 @@ export function installNativeCandidateRealm(): void {
     let registering = true;
     let replayStep = 0;
     const observeReplay = (replay: NativeReplayEvent) => send({ phase: 'replay', replay });
-    const tasks = new NativeRegistrationTasks(realm.setTimeout.bind(realm), realm.clearTimeout.bind(realm));
+    // These closures are never exposed to replayed libraries. A cooperative
+    // UI yield is host scheduling, not a new asynchronous generator capability.
+    const nativeSchedule = realm.setTimeout.bind(realm), nativeCancel = realm.clearTimeout.bind(realm), NativePromise = Promise;
+    let pendingUiYield: number | undefined;
+    const yieldUi = () => new NativePromise<void>(resolve => {
+      pendingUiYield = nativeSchedule(() => { pendingUiYield = undefined; resolve(); }, 0);
+    });
+    const tasks = new NativeRegistrationTasks(nativeSchedule, nativeCancel);
     const uiTasks = new NativeUiTasks(timing => reporter.ui(timing));
     const comments = new NativeCommentPreparation(native, uiTasks);
     const deny = (name: string) => () => {
@@ -207,12 +214,13 @@ export function installNativeCandidateRealm(): void {
         progress('views');
         execution.initializeViews();
         await comments.drain();
-        construction!.finish(); construction!.dispose(); construction = undefined;
+        await construction!.finishCooperatively(yieldUi, assertClean);
+        construction!.dispose(); construction = undefined;
         progress('ui');
-        uiTasks.drain(() => nativeUiSemanticSnapshot(native, workspace));
+        await uiTasks.drainCooperatively(() => nativeUiSemanticSnapshot(native, workspace), yieldUi, assertClean);
       }
       progress('readback');
-      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress, () => comments.drain())
+      const result = request.verify ? await verifyNativeAbi(native, workspace, request.verify, generator, assertClean, readPrepared, uiTasks, progress, () => comments.drain(), yieldUi)
         : uiTasks.withoutScheduling(() => binding ? binding() : execution.result());
       assertClean();
       values.assertReferences(result.state);
@@ -223,6 +231,9 @@ export function installNativeCandidateRealm(): void {
     } catch (error) {
       try { workspace?.dispose(); } catch { /* The entire independent Realm is discarded by the host. */ }
       send({ ok: false, error: serializeAbsFailure(error) });
-    } finally { construction?.dispose(); tasks.dispose(); uiTasks.dispose(); port.close(); }
+    } finally {
+      if (pendingUiYield !== undefined) nativeCancel(pendingUiYield);
+      construction?.dispose(); tasks.dispose(); uiTasks.dispose(); port.close();
+    }
   });
 }

@@ -19,9 +19,13 @@ import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
 import { publishGeneratorMacros } from './prepared-generator-config';
 import { PreparedBlocklySave, prepareBlocklySave, commitPreparedBlocklySave, ProjectSaveDataRuntime } from './prepared-project-save';
-import type { BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
+import { fenceBlocklyWorkspaceInput, type BlocklyWorkspaceEditLease } from './blockly-workspace-edit-lease';
 import { assertProjectLoadPreserved, BlocklyProjectCleanState } from './blockly-project-clean-state';
 import type { AbsLoadNormalizationInput, AbsLoadNormalizationOutcome } from '../../../integrations/blockly/abs/abs-load-normalization';
+import { captureProjectRecoveryFiles, assertProjectRecoveryFilesCurrent } from '@shared/public-api';
+import { publishAbsRecoveryCopy } from '../../../integrations/blockly/abs/abs-recovery-copy';
+import { describeRuntimeRecovery, runtimeRecoveryInput, runtimeRecoveryLibraries, type RuntimeRecoveryDescription,
+  type RuntimeRecoveryRecord } from './blockly-library-runtime-recovery';
 
 const actionFailure = (error: unknown): { error: string; code?: string } => {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
@@ -38,6 +42,7 @@ export class _ProjectService {
   private initialized = false; // 防止重复初始化
   private readonly cleanState = new BlocklyProjectCleanState(workspace => this.blocklyService.getWorkspaceLoadReadbackView(workspace));
   private hydration?: Subscription;
+  private runtimeRecovery?: RuntimeRecoveryRecord;
 
   constructor(
     private blocklyService: BlocklyService,
@@ -86,6 +91,7 @@ export class _ProjectService {
     this.hydration?.unsubscribe();
     this.blocklyService.projectDirtyState?.reset();
     this.cleanState.clear();
+    this.runtimeRecovery = undefined;
     this.initialized = false; // 重置初始化状态
   }
 
@@ -139,9 +145,16 @@ export class _ProjectService {
   }
 
   /** Library reload shares the save/ABS queue, but never saves the user's edits. */
-  rebuildLibraryRuntime(options: BlocklyLibraryRuntimeRebuildOptions): Promise<void> {
+  rebuildLibraryRuntime(options: BlocklyLibraryRuntimeRebuildOptions, admit: (lease?: BlocklyWorkspaceEditLease) => void = () => {}): Promise<void> {
+    // A quarantined rebuild has its own retained full document and private
+    // grant. Ordinary library synchronization must not recapture a partial canvas.
+    if (this.hasLibraryRuntimeRecovery()) {
+      return Promise.reject(Object.assign(new Error('Inspect the retained runtime snapshot and use recover_runtime; no rebuild was replayed.'),
+        { code: 'BLOCKLY_RUNTIME_RECOVERY_REQUIRED' }));
+    }
     const context = this.captureSaveContext(options.projectPath);
     return this.blocklyService.runProjectOperation(async () => {
+      admit();
       context.assertCurrent();
       await this.blocklyService.whenLibraryLoadsSettled();
       context.assertCurrent();
@@ -154,7 +167,7 @@ export class _ProjectService {
           throw new Error('Project changed during library runtime rebuild.');
         }
       };
-      let recoveryPath: string | undefined;
+      let recovery: RuntimeRecoveryRecord | undefined;
       let runtimeChanged = false;
       try {
         await projectDataRuntime.flushPending();
@@ -163,26 +176,172 @@ export class _ProjectService {
         const fs = window['fs'], abiPath = `${options.projectPath}/project.abi`;
         const disk = fs.readFileSync(abiPath, 'utf8');
         this.cleanState.compare(scope, disk, before);
+        const sourceFiles = await captureProjectRecoveryFiles(options.projectPath,
+          ['project.abi', 'project.abs', 'project.abs.map.json'], assertCurrent);
+        const materialized = await materializeGenericProjectDataValues(before, {
+          resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); assertCurrent(); return value; },
+        });
+        assertCurrent(); assertProjectRecoveryFilesCurrent(options.projectPath, sourceFiles);
         const directory = `${options.projectPath}/.temp`;
         fs.mkdirSync(directory, { recursive: true });
-        recoveryPath = `${directory}/library-runtime-${crypto.randomUUID()}.recovery.json`;
+        const recoveryPath = `${directory}/library-runtime-${crypto.randomUUID()}.recovery.json`;
         // A detached, materialized document is recoverable even if a new library cannot load it.
-        fs.writeFileSync(recoveryPath, JSON.stringify(before), { encoding: 'utf8', flag: 'wx' });
+        const documentText = JSON.stringify(materialized);
+        fs.writeFileSync(recoveryPath, documentText, { encoding: 'utf8', flag: 'wx' });
+        recovery = { project: options.projectPath, path: recoveryPath, documentText, sourceFiles, scope,
+          options: { ...options, libraryNames: [...new Set([...options.libraryNames,
+            ...Array.from(this.blocklyService.loadedLibraryInfos.values(), item => item.packageName)])] },
+          restoreCheckpoint: this.cleanState.captureCheckpoint() };
+        admit(lease);
         runtimeChanged = true;
         await this.blocklyService.rebuildLibraryRuntimeInPlace(options, lease, assertCurrent);
         assertCurrent();
         if (fs.readFileSync(abiPath, 'utf8') !== disk) throw new Error('project.abi changed during library runtime rebuild.');
         // The editor's load/readback boundary preserved content; page hydration may
         // acknowledge native defaults only. Never remember() this unsaved snapshot.
+        this.runtimeRecovery = undefined;
         try { fs.unlinkSync(recoveryPath); } catch (error) { console.warn('Could not remove completed runtime recovery snapshot:', error); }
       } catch (error) {
         if (!runtimeChanged) throw error;
         const message = `Library runtime rebuild failed: ${String((error as Error)?.message || error)}. `
-          + `Unsaved project snapshot: ${recoveryPath}. Original project.abi was not saved; repair the library before restoring this snapshot.`;
-        try { assertCurrent(); this.cleanState.reject(new Error(message)); lease.quarantine(message); } catch { /* Never quarantine a replacement project. */ }
-        throw new Error(message);
+          + `The complete pre-rebuild snapshot is retained. Inspect project recovery to restore its runtime or save an independent recovery copy; source files and ABS candidate were not changed.`;
+        try {
+          assertCurrent();
+          const grant = lease.quarantine(message);
+          if (grant && recovery) { recovery.grant = grant; this.runtimeRecovery = recovery; }
+          this.cleanState.reject(new Error(message));
+        } catch { /* Never quarantine a replacement project. */ }
+        throw Object.assign(new Error(message), { code: 'BLOCKLY_RUNTIME_RECOVERY_REQUIRED' });
       } finally { lease.release(); }
     });
+  }
+
+  private assertRuntimeRecoveryScope(record: RuntimeRecoveryRecord): void {
+    const scope = this.cleanScope();
+    if (this.runtimeRecovery !== record || !record.scope.every((value, index) => value === scope[index])) {
+      throw Object.assign(new Error('The retained runtime snapshot or its project activation changed.'), { code: 'PROJECT_RECOVERY_SOURCE_CHANGED' });
+    }
+  }
+
+  private assertRuntimeRecovery(record: RuntimeRecoveryRecord): void {
+    this.assertRuntimeRecoveryScope(record);
+    if (window['fs'].readFileSync(record.path, 'utf8') !== record.documentText) {
+      throw Object.assign(new Error('The retained full snapshot changed; no partial canvas may replace it.'), { code: 'PROJECT_RECOVERY_SOURCE_CHANGED' });
+    }
+    // ABS/map are unapplied candidates, independent of restoring the retained
+    // canvas. New draft bytes must survive, not revoke this recovery forever.
+    // A changed authoritative ABI still requires explicit conflict resolution.
+    assertProjectRecoveryFilesCurrent(record.project, {
+      files: { 'project.abi': record.sourceFiles.files['project.abi'] },
+      rawFiles: { 'project.abi': record.sourceFiles.rawFiles['project.abi'] },
+    });
+  }
+
+  async inspectLibraryRuntimeRecovery(): Promise<RuntimeRecoveryDescription | undefined> {
+    const record = this.runtimeRecovery;
+    // Keep the original completion receipt for exact-ID observation, but never
+    // let its old disk capture obstruct a later legitimate save or inspection.
+    if (!record || !this.hasLibraryRuntimeRecovery()) return;
+    this.assertRuntimeRecovery(record);
+    const description = await describeRuntimeRecovery(record, runtimeRecoveryInput(record));
+    this.assertRuntimeRecovery(record);
+    return description;
+  }
+
+  hasLibraryRuntimeRecovery(): boolean {
+    const record = this.runtimeRecovery, scope = this.cleanScope();
+    return !!record && record.description?.status !== 'completed'
+      && record.scope.every((value, index) => value === scope[index]);
+  }
+
+  async recoverLibraryRuntime(token: string, requestId: string, observe: boolean): Promise<{
+    status: 'running' | 'completed' | 'failed' | 'unavailable'; value?: RuntimeRecoveryDescription;
+    freshCompletion?: boolean;
+    failure?: { code: string; message: string };
+  }> {
+    const record = this.runtimeRecovery;
+    if (record) this.assertRuntimeRecoveryScope(record);
+    const original = record?.previous;
+    if (observe && original?.token === token && original?.requestId === requestId) {
+      return { status: original.status === 'failed' ? 'failed' : 'unavailable',
+        value: { ...original, requiredLibraries: [...original.requiredLibraries] } };
+    }
+    const offered = record?.description;
+    if (!record || !offered || token !== offered.token || requestId !== offered.requestId) {
+      return { status: 'unavailable', failure: { code: 'BLOCKLY_RUNTIME_RECOVERY_STALE', message: 'Inspect the current host recovery offer; no operation was started.' } };
+    }
+    const result = () => ({ status: offered.status === 'available' ? 'unavailable' as const : offered.status,
+      value: { ...offered, requiredLibraries: [...offered.requiredLibraries] } });
+    if (observe || offered.status !== 'available') return result();
+    this.assertRuntimeRecovery(record);
+    const input = runtimeRecoveryInput(record);
+    if (input !== record.offeredInput || !record.grant) return { status: 'unavailable',
+      failure: { code: 'BLOCKLY_RUNTIME_RECOVERY_STALE', message: 'Runtime inputs changed after inspection. Inspect again before recovery.' } };
+    record.attemptedInput = input; offered.status = 'running';
+    try {
+      await this.blocklyService.runRecoveryCopyOperation(async () => {
+        this.assertRuntimeRecovery(record);
+        const lease = this.blocklyService.acquireWorkspaceRecoveryLease(record.grant!);
+        const guard = () => { lease.assertCurrent(); this.assertRuntimeRecoveryScope(record); };
+        try {
+          guard();
+          const packagePath = `${record.project}/package.json`, fs = window['fs'];
+          const packageJson = fs.existsSync(packagePath) ? JSON.parse(fs.readFileSync(packagePath, 'utf8')) : record.options.packageJson;
+          await this.blocklyService.rebuildLibraryRuntimeInPlace({ ...record.options, packageJson,
+            libraryNames: runtimeRecoveryLibraries(record) }, lease, guard, JSON.parse(record.documentText));
+          guard(); this.assertRuntimeRecovery(record);
+          if (runtimeRecoveryInput(record) !== input) throw new Error('Runtime dependencies changed during restoration.');
+          record.restoreCheckpoint();
+          this.currentPackageData = packageJson;
+          // Only the recovery owner can clear this quarantine, after full native readback.
+          lease.completeRecovery();
+          offered.status = 'completed'; offered.ready = true; delete offered.failure;
+        } finally { lease.release(); }
+      });
+    } catch (error) {
+      offered.status = 'failed'; offered.ready = false;
+      offered.failure = { code: 'BLOCKLY_RUNTIME_RECOVERY_FAILED', message: String((error as Error)?.message || error) };
+    }
+    const outcome = result();
+    return { ...outcome, ...(outcome.status === 'completed' ? { freshCompletion: true } : {}) };
+  }
+
+  /** Registered full snapshot wins over any partial live reconstruction. */
+  async captureLibraryRuntimeRecoveryCopy(path: string): Promise<BlocklySaveAsSnapshot | undefined> {
+    const record = this.runtimeRecovery;
+    if (!record || !this.hasLibraryRuntimeRecovery()) return;
+    if (path !== record.project) throw new Error('Runtime recovery belongs to another project.');
+    return this.blocklyService.runRecoveryCopyOperation(async () => {
+      this.assertRuntimeRecovery(record);
+      const currentFiles = await captureProjectRecoveryFiles(path,
+        ['project.abi', 'project.abs', 'project.abs.map.json'], () => this.assertRuntimeRecovery(record));
+      let disposed = false;
+      const guard = () => { if (disposed) throw new Error('Recovery capture was disposed.'); this.assertRuntimeRecovery(record);
+        assertProjectRecoveryFilesCurrent(path, currentFiles); };
+      return {
+        publish: async target => {
+          guard();
+          const outcome = await publishAbsRecoveryCopy(target, { sourceProject: record.project,
+            documentText: record.documentText, abiShapeText: record.documentText,
+            sourceFiles: currentFiles, retainedSourceFiles: record.sourceFiles }, guard);
+          return { ...outcome, recoverySource: { version: 1, kind: 'workspace', origin: 'runtime-snapshot',
+            complete: true, loadFailed: false, partialCanvas: 'not-applicable' } };
+        },
+        isCurrent: () => { try { guard(); return true; } catch { return false; } },
+        freezeForActivation: () => { guard(); return fenceBlocklyWorkspaceInput(this.blocklyService.workspace?.getParentSvg?.()?.parentElement ?? undefined); },
+        dispose: () => { disposed = true; },
+      };
+    });
+  }
+
+  /** Recovery reloads exactly the already loaded libraries. It neither installs
+   * dependencies nor saves/rebinds the user's canvas or ABS draft. */
+  rebuildNativeCandidateRuntime(admit: (lease?: BlocklyWorkspaceEditLease) => void): Promise<void> {
+    admit();
+    return this.rebuildLibraryRuntime({ projectPath: this.currentProjectPath,
+      packageJson: this.currentPackageData,
+      libraryNames: Array.from(this.blocklyService.loadedLibraryInfos.values(), item => item.packageName),
+    }, admit);
   }
 
   async getAbiRevisionSnapshot(): Promise<{

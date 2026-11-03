@@ -8,6 +8,12 @@ import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { prepareInstalledChatProfile, assertInstalledChatLoaded } from '../fixtures/installed-chat-ui.mjs'
 import { createOnlineOperationFaultProxy } from '../fixtures/online-operation-fault-proxy.mjs'
 import { createReadLineCoverage, grepCoversSourceLines } from '../fixtures/read-line-coverage.mjs'
+import { onlineSaveServiceToolEvidence, prepareOnlineProjectSaveReceipt } from '../fixtures/online-project-save-receipt.mjs'
+import { prepareExternalLinkedLibrary, prepareLinkedDependencyConflict, verifyExternalLinkedLibrary } from '../fixtures/external-linked-library.mjs'
+import { assertCumulativeGeneratedBehavior } from '../fixtures/abs-cumulative-behavior.mjs'
+import { assertCumulativeNativeEditChain } from '../fixtures/abs-cumulative-edit-chain.mjs'
+import repairEnvironment from '../../electron/project-repair-environment.js'
+import { assertSelectedOnlineModel, explicitOnlineModelId, observeOnlineModelCatalog, resolveOnlineModelPreset, selectOnlineModelFromUi } from '../fixtures/online-model-selection.mjs'
 
 // Explicit paid acceptance only. Real installed UI/provider, real upstream
 // model, native tools and compiler; the proxy never manufactures model output.
@@ -29,8 +35,10 @@ const output = path.join(outputRoot, path.basename(suite))
 const reuseProject = process.env.AILY_ONLINE_PROJECT
 const project = path.resolve(reuseProject || path.join(suite, 'project')), appData = path.join(suite, 'appdata')
 const scenario = process.env.AILY_ONLINE_SCENARIO ?? 'new-counter'
-assert.ok(['new-counter', 'counter-boundary', 'review-only'].includes(scenario))
+assert.ok(['new-counter', 'counter-boundary', 'review-only', 'save-receipt', 'linked-library', 'dependency-conflict', 'cumulative-edits'].includes(scenario))
 const readOnly = scenario === 'review-only'
+const saveReceipt = scenario === 'save-receipt'
+const cumulativeEdits = scenario === 'cumulative-edits'
 const home = path.join(suite, 'home'), agentProfile = path.join(suite, 'agent-profile')
 const agentTemp = path.join(suite, 'agent-temp')
 const seed = path.join(testRoot, 'archive-user-project/esp32-c3-HANTAI')
@@ -47,8 +55,9 @@ assert.ok(connection && typeof connection === 'object' && !Array.isArray(connect
   && path.isAbsolute(connection.configFile ?? ''), 'Explicit profile requires apiBase, authFile and configFile')
 const configFile = connection.configFile, authFile = connection.authFile
 assert.notEqual(path.resolve(authFile).toLowerCase(), path.resolve(dailyAuthFile).toLowerCase(), 'Never use the daily account credential file for isolated online acceptance')
-const mode = process.env.AILY_ONLINE_FAULT_MODE ?? 'unclaimed-retry-ack'
+const mode = process.env.AILY_ONLINE_FAULT_MODE ?? (saveReceipt ? 'live-disconnect' : 'unclaimed-retry-ack')
 assert.ok(['unclaimed-retry-ack', 'live-disconnect'].includes(mode))
+assert.ok(!saveReceipt || mode === 'live-disconnect', 'Save receipt acceptance observes a passive proxy, not SSE retry faults')
 const lexRoot = process.env.AILY_ONLINE_LEX_ROOT ?? path.resolve(repo, '../aily-lex-pro')
 const sha = value => createHash('sha256').update(value).digest('hex')
 const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
@@ -59,6 +68,10 @@ const evidence = { ok: false, onlineLlm: false, localSyntheticModel: false, hard
   simulatorUsed: false, userProjectsModified: false, backendDeployed: false, mode, scenario, suite, project, tools: [] }
 let app, renderer, proxy, page, loaded, hostPid, sessionId, baseline, baselineDocument, snapshot, installedRoot, installedEvidence, verifyPortableBuild
 let sourceHash, baselineAbiBytes, baselineSketchBytes, baselineAbsProgram, absCoverage
+let saveReceiptCase, ownedHostClosed = false
+let selectedModelPreset
+let modelCatalogObserver
+let linkedLibrary
 const programOf = value => String(value).split('\n# @project-state:')[0]
 const requiredReads = new Set(readOnly ? ['project.abs', 'abs-syntax.md', 'sketch.ino'] : ['abs-syntax.md'])
 const completedReads = new Set()
@@ -142,11 +155,17 @@ try {
       await fs.cp(source, destination, { recursive: true, force: false, errorOnExist: true })
     }
   }
+  if (['linked-library', 'dependency-conflict'].includes(scenario)) {
+    linkedLibrary = await prepareExternalLinkedLibrary(suite, project)
+    evidence.linkedLibrary = linkedLibrary
+  }
   proxy = await createOnlineOperationFaultProxy({ upstreamOrigin: apiUrl.origin, mode,
-    armNow: false, armAfterToolNames: ['edit', 'write'], requireResumedThinkingSpan: mode === 'live-disconnect',
-    firstDisconnectAfterThinkingMs: mode === 'live-disconnect' ? 5000 : 0 })
+    armNow: false, armAfterToolNames: saveReceipt ? ['__save_receipt_has_no_sse_fault__'] : ['edit', 'write'],
+    requireResumedThinkingSpan: !saveReceipt && mode === 'live-disconnect',
+    firstDisconnectAfterThinkingMs: !saveReceipt && mode === 'live-disconnect' ? 5000 : 0 })
   const profile = await prepareInstalledChatProfile({ appData, installedRoot, apiBase: proxy.origin,
     baseConfigPath: configFile, token: auth.access_token })
+  evidence.platformManifests = repairEnvironment.seedPlatformManifests(appData, project, appDataSource)
   // Keep sensitive credentials inaccessible to model-visible tools. Mutating
   // shell/device/other-project tools are denied before execution, not by a
   // post-hoc snapshot assertion. Only this fresh ABS file is writable.
@@ -159,8 +178,14 @@ try {
       [dailyAuthFile]: 'deny', ...(connectionFile ? { [connectionFile]: 'deny' } : {}) } }
   for (const name of ['abs_export', 'abs_validate', 'abs_apply', 'project_build', 'library_docs', 'block_info', 'block_list',
     'board_info', 'get_board_config', 'project_status', 'app_info', 'app_status', 'app_reload', 'todo']) permission[name] = 'allow'
+  if (scenario === 'dependency-conflict') for (const name of ['project_save', 'project_recover']) permission[name] = 'allow'
   if (readOnly) for (const name of ['write', 'edit', 'abs_export', 'abs_validate', 'abs_apply', 'project_build', 'app_reload'])
     permission[name] = 'deny'
+  if (saveReceipt) {
+    for (const name of ['write', 'edit', 'abs_export', 'abs_validate', 'abs_apply', 'project_build', 'blocks_tidy', 'project_upload', 'app_reload'])
+      permission[name] = 'deny'
+    permission.project_save = 'allow'
+  }
   const policy = path.join(agentProfile, 'extensions/pi-permission-system/config.json')
   await fs.mkdir(path.dirname(policy), { recursive: true })
   await fs.writeFile(policy, JSON.stringify({ permission }), { flag: 'wx' })
@@ -193,6 +218,7 @@ try {
     if (!page) await new Promise(resolve => setTimeout(resolve, 200))
   }
   assert.ok(page); page.on('dialog', dialog => dialog.dismiss())
+  if (explicitOnlineModelId(connection.model)) modelCatalogObserver = observeOnlineModelCatalog(page, project)
   evidence.browserSockets = []
   page.on('websocket', socket => {
     const url = new URL(socket.url())
@@ -219,6 +245,16 @@ try {
     expectedInputHash: installedEvidence.inputHash, expectedOutputHash: installedEvidence.outputHash })
   evidence.chat = { ...loaded.evidence, syntheticIdentity: false, realModelInvoked: false }
   delete evidence.chat.buildEvidence // Full sealed source lists are not a test report.
+  if (cumulativeEdits) {
+    evidence.cumulativeBaseline = assertCumulativeGeneratedBehavior(
+      await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'), 'utf8'), {
+        absent: [{ id: 'first-increment', pin: '12', value: 'HIGH' }, { id: 'second-increment', pin: '13', value: 'LOW' }]
+      })
+  }
+  if (scenario === 'dependency-conflict') {
+    phase('prepare-real-dependency-conflict')
+    evidence.dependencyConflict = await prepareLinkedDependencyConflict(page, suite, project, linkedLibrary)
+  }
   await page.screenshot({ path: path.join(output, 'installed-chat.png'), fullPage: true })
   if (readOnly) {
     baselineAbiBytes = await fs.readFile(path.join(project, 'project.abi'))
@@ -226,19 +262,50 @@ try {
     baselineAbsProgram = programOf(await fs.readFile(path.join(project, 'project.abs'), 'utf8'))
     absCoverage = createReadLineCoverage(baselineAbsProgram.split('\n').length)
   }
-  // Use the real composer's own existing transport and product-default model,
-  // not a second control connection that can obscure the actual UI behavior.
+  if (saveReceipt) {
+    phase('manual-save-receipt')
+    saveReceiptCase = await prepareOnlineProjectSaveReceipt({ page, app, project })
+    evidence.saveReceipts = { manual: saveReceiptCase.manual }
+    baseline = await page.evaluate(() => JSON.parse(JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))))
+    baselineDocument = saveReceiptCase.baselineDocument
+    baselineAbiBytes = await fs.readFile(path.join(project, 'project.abi'))
+    baselineSketchBytes = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'))
+    baselineAbsProgram = programOf(await fs.readFile(path.join(project, 'project.abs'), 'utf8'))
+    evidence.scope = { manualSave: true, agentSave: true, normalExitSave: true, sseDisconnect: false,
+      longThinkingAndSecondDisconnect: false, compilation: false, fileEdit: false }
+  }
+  // Use the real composer's own transport and default model unless an explicit
+  // catalog preset is selected through its normal UI; never a second control.
   evidence.controlTransport = { protocol: 'embedded-composer' }
+  if (explicitOnlineModelId(connection.model)) {
+    phase('select-explicit-online-model')
+    const response = await fetch(proxy.origin + '/api/v2/model_catalog', {
+      headers: { authorization: 'Bearer ' + auth.access_token }, signal: AbortSignal.timeout(15000) })
+    assert.equal(response.status, 200, 'Explicit model selection requires the real authenticated model catalog')
+    selectedModelPreset = resolveOnlineModelPreset(await response.json(), connection.model)
+    phase('wait-online-model-catalog')
+    evidence.modelCatalogReadiness = await modelCatalogObserver.waitUntilReady(selectedModelPreset, { deadline: startDeadline })
+    phase('select-explicit-online-model')
+    evidence.selectedModel = await selectOnlineModelFromUi(loaded.frame, selectedModelPreset)
+  }
   phase('real-llm-prompt')
   const marker = 'ONLINE_RECOVERY_' + randomUUID().slice(0, 8)
-  if (!readOnly) evidence.marker = marker
+  if (!readOnly && !saveReceipt) evidence.marker = marker
   evidence.startedAt = Date.now()
-  const requirement = readOnly
+  const requirement = saveReceipt
+    ? `本轮只保存当前画布。请实际调用一次 project_save(project="${project}") 并根据该调用最终回执报告保存结果；不修改任何文件或图形块，不调用 abs_export/abs_validate/abs_apply、blocks_tidy、project_build、project_upload 或 app_reload，不编译、不烧录、不整理、不运行脚本。工作区代码已由本验收人工保存，无需再研究或重写程序；本轮仍需实际调用一次保存工具验证原请求回执。保存工具内部会自动观察原请求，慢保存或丢失回执时不要再次发出保存工具调用。`
+    : readOnly
     ? `本轮只读审查，不改任何文件。请实际read当前project.abs的程序主体（不必读取很长的宿主元数据行）、ABS语法参考abs-syntax.md，以及本项目.temp/sketch/sketch.ino，三者读完后再作完整结论。依据真实代码而非仅复述注释，分析setup到loop的执行顺序、首次计数与32位millis回绕、长时间loop滞后时计数语义、原串口readStringUntil和delay对阻塞性的影响、禁用块是否进入生成代码、UART引脚的实际设置与注释差异。区分真实缺陷、保留旧逻辑的限制，以及静态代码和已有编译回执无法证明的硬件行为。给出有代码依据的评审结论，但不提出或执行本轮修补。必要时只读查询相关库文档，不创建文件、修改ABS或C++、编译、烧录、运行脚本或操作仿真/串口。`
+    : scenario === 'dependency-conflict'
+    ? `本工程已安装本地库 ${linkedLibrary.packageName}，但同一依赖有 GUI 待保存的 v0.0.2 和外部 npm 写入的 v0.0.3 冲突。本轮明确保留待保存的 v0.0.2 意图，保全双方原数据。请通过 project_recover 的依赖检查和受保护逐项选择工具自行解决，再通过正常 project_save 保存；不要直接改manifest/lock、丢弃变更或重新调用安装工具。完成后调用 project_status 核对，并用该库 linked_library_probe 块在 setup 最后输出 ${marker}，保留原逻辑。`
+    : scenario === 'linked-library'
+    ? `这个工程已通过手动 npm 安装外部本地库 ${linkedLibrary.packageName}。先实际调用一次 project_status 核对该库状态，再用该库的 linked_library_probe 块在 setup 最后输出一次 ${marker}。只增加这一条语句，保持原有逻辑不变。查询必要的该库文档；不要重新安装、迁移或改写外部库源码。`
+    : cumulativeEdits
+    ? `本轮验收连续增量修改，按顺序做三次独立原生edit（每次完成后再做下一次），不要用脚本或旧临时文件重建。第一步在setup末尾增加io_digitalwrite(math_number(12), io_state(HIGH))，为这一新块写ABS块注释 @comment:"${marker} phase-one"。第二步在其后再增加io_digitalwrite(math_number(13), io_state(LOW))，保留第一步新增块。第三步只将第一块的注释改成"${marker} comments-only"，不改变任何程序调用。保持原有所有逻辑。第三次edit后，用普通read读取该次回执的previousDraft只读引用，核对它保留第二步的两项新增行为；不要把旧副本回写。三次编辑都完成后只对最终完整候选做一次abs_validate、abs_apply与project_build；这是不烧录的源码累计行为验收，不是实际引脚功能测试。最终检查生成sketch中两条digitalWrite都仍存在。`
     : scenario === 'counter-boundary'
     ? `当前隔离工程已存在counterMark和counterValue计数逻辑。只修正首次计时边界：在setup最后追加counterMark=millis()，保证setup完成后再满1000ms才首次输出0；不能仅依赖全局counterMark初值0。setup中同时追加一条新的串口打印，输出本轮标记 ${marker}；上一轮的标记字符串及原打印块都必须保持不动，不得替换。保留已有计数、风扇及串口代码，不新增重复计数逻辑、不重配串口。`
     : `用现有库增量增加：setup输出一次串口标记 ${marker}；再增加一个用millis差值而非delay的非阻塞1秒计数输出，计数0..9循环。必须在setup最后保存millis计时基准，保证setup完成后再满1000ms才首次输出0，不能只靠全局时间变量初值0。保持原有风扇/串口处理不变、不重配现有串口。`
-  const editProtocol = readOnly ? '' : `必须保留原有块ID、变量/对象模型与禁用/折叠/不可删除属性。专门验收文件编辑通道：先read磁盘 ${path.join(project, 'project.abs')} 及必要库文档，必须使用原生edit或write工具把修改实际写入该文件；然后abs_validate与abs_apply读取磁盘候选，不要给它们传inline abs字符串，不要用它们替代文件编辑。最后实际project_build编译并检查本次成功回执。`
+  const editProtocol = readOnly || saveReceipt ? '' : `必须保留原有块ID、变量/对象模型与禁用/折叠/不可删除属性。专门验收文件编辑通道：${scenario === 'dependency-conflict' ? '先完成上述依赖恢复和保存，再' : '先'}read磁盘 ${path.join(project, 'project.abs')} 及必要库文档，必须使用原生edit或write工具把修改实际写入该文件；然后abs_validate与abs_apply读取磁盘候选，不要给它们传inline abs字符串，不要用它们替代文件编辑。最后实际project_build编译并检查本次成功回执。`
   await loaded.frame.locator('.aily-chat-composer-input[role="textbox"]').fill(`这是已授权的隔离验收工程 ${project}，不是用户原工程。${requirement} ${editProtocol} 不访问其他工程或凭据。若服务短暂断线，沿用原会话状态和已完成工具回执，不重复任何已完成工具。`)
   await loaded.frame.locator('button.primary-action.send-action').click()
   const observed = new Set(), deadline = Date.now() + 12 * 60 * 1000
@@ -264,7 +331,7 @@ try {
         if (!observed.has(message.toolCallId)) {
           observed.add(message.toolCallId)
           evidence.tools.push({ name: message.toolName, id: message.toolCallId, isError: message.isError === true, at: Date.now() })
-          if (mode === 'live-disconnect' && ['read', 'grep'].includes(message.toolName) && message.isError !== true) {
+          if (!saveReceipt && mode === 'live-disconnect' && ['read', 'grep'].includes(message.toolName) && message.isError !== true) {
             const call = snapshot.messages.filter(item => item.role === 'assistant').flatMap(item => item.content ?? [])
               .find(item => item.type === 'toolCall' && item.id === message.toolCallId)
             const name = typeof call?.arguments?.path === 'string' ? path.basename(call.arguments.path).toLowerCase() : ''
@@ -296,9 +363,17 @@ try {
     await new Promise(resolve => setTimeout(resolve, 750))
   }
   assert.equal(evidence.final?.stopReason, 'stop', 'Actual online turn must settle normally')
+  assertSelectedOnlineModel(snapshot, selectedModelPreset)
   assert.equal(snapshot.messages.filter(item => item.role === 'user').length, 1)
   evidence.fileEditObserved = evidence.tools.some(tool => ['edit', 'write'].includes(tool.name) && !tool.isError)
-  if (readOnly) {
+  if (saveReceipt) {
+    evidence.saveReceipts.agent = await saveReceiptCase.verifyAgent(snapshot)
+    assert.deepEqual(await fs.readFile(path.join(project, 'project.abi')), baselineAbiBytes)
+    assert.deepEqual(await fs.readFile(path.join(project, '.temp/sketch/sketch.ino')), baselineSketchBytes)
+    assert.equal(programOf(await fs.readFile(path.join(project, 'project.abs'), 'utf8')), baselineAbsProgram)
+    evidence.programUnchangedDuringAgentSave = true
+    evidence.compiled = false
+  } else if (readOnly) {
     assert.equal(evidence.tools.some(tool => ['write', 'edit', 'abs_export', 'abs_apply', 'project_build', 'app_reload'].includes(tool.name) && !tool.isError), false)
     assert.deepEqual(await fs.readFile(path.join(project, 'project.abi')), baselineAbiBytes)
     assert.deepEqual(await fs.readFile(path.join(project, '.temp/sketch/sketch.ino')), baselineSketchBytes)
@@ -309,7 +384,53 @@ try {
     const compile = JSON.parse(await fs.readFile(path.join(project, '.log/compile/latest-result.json'), 'utf8'))
     assert.equal(compile.success, true); assert.ok(compile.finishedAt >= evidence.startedAt)
     evidence.compiled = true; evidence.build = { requestId: compile.requestId, finishedAt: compile.finishedAt }
-    const code = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'), 'utf8'); assert.ok(code.includes(marker))
+    const code = await fs.readFile(path.join(project, '.temp/sketch/sketch.ino'), 'utf8')
+    if (cumulativeEdits) {
+      evidence.cumulativeBehavior = assertCumulativeGeneratedBehavior(code, {
+        required: [{ id: 'first-increment', pin: '12', value: 'HIGH' }, { id: 'second-increment', pin: '13', value: 'LOW' }]
+      })
+      assert.equal(evidence.tools.filter(tool => tool.name === 'edit' && !tool.isError).length, 3,
+        'Exercise two cumulative native edits followed by a comment-only edit')
+      assert.equal(evidence.tools.some(tool => ['bash', 'powershell', 'write'].includes(tool.name)), false,
+        'Do not replace this native incremental-edit acceptance with a script or full reconstruction')
+      const candidate = await fs.readFile(path.join(project, 'project.abs'), 'utf8')
+      evidence.cumulativeEditChain = await assertCumulativeNativeEditChain({ session: snapshot, agentProfile, marker, candidate })
+    } else assert.ok(code.includes(marker))
+    if (linkedLibrary) {
+      assert.ok(String(await fs.readFile(path.join(project, 'project.abs'))).includes(linkedLibrary.blockType + '('),
+        'Use the actual installed external block, not a replacement serial block')
+      assert.equal(evidence.tools.some(tool => ['lib_add', 'lib_install_local', 'lib_remove', 'lib_reset'].includes(tool.name)), false)
+      const statusMessage = snapshot.messages.find(message => message.role === 'toolResult' && message.toolName === 'project_status' && !message.isError)
+      assert.ok(statusMessage, 'Exercise the actual installed status tool')
+      const status = JSON.parse(textOf(statusMessage))
+      assert.ok(status.libraries.visible.includes(linkedLibrary.packageName), 'The external local library must not be misdiagnosed as invisible')
+      assert.equal(status.libraries.declaredButInvisible.some(item => item.packageName === linkedLibrary.packageName), false)
+      if (scenario === 'dependency-conflict') {
+        const calls = snapshot.messages.filter(message => message.role === 'assistant').flatMap(message => message.content ?? [])
+          .filter(item => item.type === 'toolCall' && item.name === 'project_recover')
+        const decisions = calls.filter(item => item.arguments?.action === 'resolve_dependencies')
+        const decisionResults = decisions.map(call => {
+          const message = snapshot.messages.find(item => item.role === 'toolResult' && item.toolCallId === call.id)
+          assert.ok(message, 'Every decision call needs its own receipt')
+          return { call, result: JSON.parse(textOf(message)) }
+        })
+        const executed = decisionResults.filter(item => item.result.commandDispatched !== false)
+        assert.equal(executed.length, 1, 'Execute the actual decision once; a pre-dispatch parameter refusal is not a replay')
+        assert.equal(executed[0].result.ok, true)
+        const refused = decisionResults.filter(item => item.result.commandDispatched === false)
+        assert.ok(refused.every(item => item.result.code === 'LIBRARY_DEPENDENCY_RECOVERY_INVALID'))
+        assert.equal(new Set(decisions.map(item => JSON.stringify(item.arguments))).size, decisions.length,
+          'Do not repeat unchanged invalid arguments')
+        assert.equal(evidence.tools.filter(tool => tool.name === 'project_save').length, 1, 'Normal save must not be repeated')
+        const archives = await fs.readdir(path.join(project, '.aily/dependency-recovery'))
+        assert.equal(archives.filter(name => name.endsWith('.json')).length, 1, 'Repeated observations must not multiply backups')
+        evidence.dependencyConflict.verified = true
+        evidence.dependencyConflict.decisionExecutions = executed.length
+        evidence.dependencyConflict.preDispatchRefusals = refused.length
+      }
+      await verifyExternalLinkedLibrary(linkedLibrary)
+      evidence.linkedLibrary.verified = true
+    }
   }
   const after = await page.evaluate(() => JSON.parse(JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))))
   const beforeBlocks = blocks(baseline), afterBlocks = blocks(after)
@@ -328,10 +449,17 @@ try {
     originalModels: baseline.variables?.length, allPageAndProcedureBlocks: oldDocumentBlocks.size,
     originalPages: baselineDocument.pages.length }
   evidence.transport = proxy.snapshot()
-  if (!readOnly) assert.ok(evidence.fileEditObserved, 'The file-edit acceptance requires actual native edit/write, not inline ABS submission')
+  if (!readOnly && !saveReceipt) assert.ok(evidence.fileEditObserved, 'The file-edit acceptance requires actual native edit/write, not inline ABS submission')
   assert.equal(evidence.transport.duplicatePosts, 0); assert.equal(evidence.transport.interruptCount, 0)
   assert.deepEqual(evidence.transport.failures, [])
-  if (mode === 'unclaimed-retry-ack') {
+  if (saveReceipt) {
+    assert.equal(evidence.transport.armed, false)
+    assert.deepEqual(evidence.transport.faults, [], 'This case drops a host save receipt, never a model SSE response')
+    for (const operation of evidence.transport.operations) {
+      assert.equal(operation.posts, 1); assert.equal(operation.forwardedPosts, 1)
+    }
+    evidence.saveReceipts.agent.serviceTool = onlineSaveServiceToolEvidence(evidence.transport, evidence.saveReceipts.agent)
+  } else if (mode === 'unclaimed-retry-ack') {
     assert.equal(evidence.transport.unclaimedRecoveryCovered, true, 'Both original-unreceived and accepted-retry-ACK faults must actually occur')
     const operation = evidence.transport.operations.find(item => item.operationId === evidence.transport.selectedOperation)
     assert.equal(operation.posts, 2); assert.equal(operation.forwardedPosts, 1)
@@ -376,13 +504,25 @@ try {
   evidence.canonicalAnswer = { operationId: result.operationId, hash: result.hash, bytes: result.bytes,
     responseGeneration: result.responseGeneration, sdkMatchesOriginal: true }
   evidence.unclaimedRecoveryCovered = evidence.transport.unclaimedRecoveryCovered
+  if (saveReceipt) {
+    phase('normal-exit-save-receipt')
+    evidence.saveReceipts.exit = await saveReceiptCase.finishExit()
+    ownedHostClosed = true
+    evidence.ownedHostClosed = true
+    app = undefined
+  }
   evidence.completedAt = Date.now(); evidence.ok = true
   phase('complete')
 } catch (error) {
+  if (error.catalogReadiness) evidence.modelCatalogReadiness = error.catalogReadiness
   evidence.failure = { name: error.name, message: error.message, causeCode: error.cause?.code,
     stack: String(error.stack).split('\n').slice(0, 6).join('\n') }
   console.error('ACCEPTANCE_FAILED', error.message); process.exitCode = 1
 } finally {
+  if (modelCatalogObserver) {
+    evidence.modelCatalogReadiness ??= modelCatalogObserver.snapshot()
+    modelCatalogObserver.close()
+  }
   const finish = async (label, action) => {
     try { await action() } catch (error) {
       evidence.cleanupFailures ??= []
@@ -402,7 +542,7 @@ try {
       evidence.cleanupAbortRequested = true
     }
   })
-  if (app) await finish('close-owned-host', () => app.evaluate(({ app }, owned) => {
+  if (app && !ownedHostClosed) await finish('close-owned-host', () => app.evaluate(({ app }, owned) => {
     if (process.pid !== owned.pid || process.env.AILY_APPDATA_PATH !== owned.appData) throw new Error('Refuse unrelated host shutdown')
     app.exit(0)
   }, { pid: hostPid, appData }))

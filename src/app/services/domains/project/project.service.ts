@@ -72,6 +72,7 @@ import { withProjectCopySourceLock } from './project-copy-source-lock';
 import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
 import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
+import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import { resolveVariantPaths } from '../../../utils/board-variant.utils';
@@ -185,7 +186,9 @@ export class ProjectService {
   readonly libraryChangesChanged = new Subject<void>();
   private disposeLibraryChanges?: () => void;
 
-  private acceptLibraryStatus(projectPath: string, status: { dirty: boolean; manifest: any }): any {
+  private acceptLibraryStatus(projectPath: string, status: { dirty: boolean; manifest: any; dependencyConflict?: unknown }): any {
+    if (status.dependencyConflict) throw Object.assign(new Error('Conflicting dependency edits were retained. Inspect dependency recovery before saving or installing.'),
+      { code: 'LIBRARY_DEPENDENCY_CONFLICT', dependencyConflict: status.dependencyConflict });
     const key = this.normalizeProjectPath(projectPath);
     const wasDirty = this.libraryChanges.has(key);
     if (status.dirty) this.libraryChanges.set(key, status.manifest);
@@ -215,8 +218,39 @@ export class ProjectService {
   async hasUnsavedLibraryChanges(projectPath = this.currentProjectPath): Promise<boolean> {
     if (!projectPath || !window['libraryDependencies']) return false;
     const status = await window['libraryDependencies'].status(projectPath);
+    if (status.dependencyConflict) return true;
     this.acceptLibraryStatus(projectPath, status);
     return status.dirty || status.busy;
+  }
+
+  async recoverLibraryDependencies(request: Record<string, unknown>): Promise<Record<string, any>> {
+    const project = this.currentProjectPath, unchanged = this.captureCurrentProjectGuard();
+    if (!project || !window['libraryDependencies']?.recover) throw new Error('Dependency recovery requires the current matching host.');
+    if (request['action'] === 'resolve' && (this.isProjectOpening || this.isProjectTransitionInProgress(project)
+      || this.application.hasActiveProjectMutation(project) || this.application.hasActiveBlocklyBuildOrUpload(project)
+      || this.dependencyLifecycle.isBusy(project))) return { ok: false, code: 'LIBRARY_DEPENDENCY_RECOVERY_BUSY',
+      message: 'An existing project operation owns these inputs; no dependency decision was applied.' };
+    const result = await window['libraryDependencies'].recover(project, request);
+    if (!unchanged()) throw Object.assign(new Error('Project activation changed while observing dependency recovery.'), { code: 'LIBRARY_DEPENDENCY_RECOVERY_STALE' });
+    if (result.ok && !result.dependencyConflict) this.acceptLibraryStatus(project, result);
+    if (request['action'] === 'resolve' && result.freshCompletion === true
+      && result.dependencyRecovery?.status === 'completed') this.blocklyLibraryRuntimeSignatures.delete(project);
+    return result;
+  }
+
+  /** A resolved decision changes no files. The original normal-save request
+   * owns its one dependency reconciliation before native code preparation. */
+  async prepareResolvedLibraryChangesForSave(projectPath = this.currentProjectPath): Promise<boolean> {
+    if (!window['libraryDependencies']) return false;
+    const unchanged = this.captureCurrentProjectGuard();
+    const status = await window['libraryDependencies'].status(projectPath);
+    if (!unchanged()) throw new Error('Project changed before dependency-save preparation.');
+    this.acceptLibraryStatus(projectPath, status);
+    if (!status.treeNeedsReconcile) return false;
+    await this.saveLibraryChanges(projectPath);
+    if (!unchanged()) throw new Error('Project changed while saving the resolved dependencies.');
+    this.blocklyLibraryRuntimeSignatures.delete(projectPath);
+    return true;
   }
 
   async changeLibraries(action: 'install' | 'remove', packages: string[], localSources?: Record<string, string>): Promise<void> {
@@ -885,7 +919,9 @@ export class ProjectService {
     private metrics: MetricsService,
   ) {
     this.disposeLibraryChanges = window['libraryDependencies']?.onChanged?.(status => {
-      this.acceptLibraryStatus(status.projectPath, status);
+      // Conflict broadcasts are observations, not a usable effective manifest.
+      // Keep the prior view; ordinary get/save admission reports the diagnosis.
+      if (!status.dependencyConflict) this.acceptLibraryStatus(status.projectPath, status);
       this.libraryChangesChanged.next();
     });
     this.translate.onLangChange.subscribe((event) => {
@@ -1615,6 +1651,9 @@ export class ProjectService {
       if (await promise) {
         this.blocklyLibraryRuntimeSignatures.set(projectPath, runtimeSignature);
       }
+    } catch (error) {
+      this.blocklyLibraryRuntimeSignatures.delete(projectPath);
+      throw error;
     } finally {
       if (this.blocklyLibraryRuntimeRebuildTask?.promise === promise) {
         this.blocklyLibraryRuntimeRebuildTask = null;
@@ -1642,11 +1681,14 @@ export class ProjectService {
   /** Read-only check for operations that must retain their validated runtime. */
   async getBlocklyLibraryRuntimeFingerprint(projectPath = this.currentProjectPath): Promise<string | null> {
     if (!projectPath || !this.isSameProjectPath(projectPath, this.currentProjectPath)
-      || this.blocklyLibraryRuntimeRebuildTask?.path === projectPath) {
+      || this.blocklyLibraryRuntimeRebuildTask?.path === projectPath
+      || this.application.isBlocklyLibraryRuntimeReady?.(projectPath) === false) {
       return null;
     }
 
     await this.getPackageJson(projectPath);
+    if (!this.isSameProjectPath(projectPath, this.currentProjectPath)
+      || this.application.isBlocklyLibraryRuntimeReady?.(projectPath) === false) return null;
     const packageContent = this.getEffectivePackageText(projectPath);
     const signature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
 
@@ -1659,6 +1701,12 @@ export class ProjectService {
       return;
     }
 
+    if (window['libraryDependencies']) {
+      const state = await window['libraryDependencies'].status(projectPath);
+      this.acceptLibraryStatus(projectPath, state);
+      if (state.treeNeedsReconcile) throw Object.assign(new Error('The dependency choice is retained but not saved. Complete the normal project save before runtime or ABS operations.'),
+        { code: 'LIBRARY_DEPENDENCY_SAVE_REQUIRED' });
+    }
     await this.getPackageJson(projectPath);
     const packageContent = this.getEffectivePackageText(projectPath);
     const runtimeSignature = this.getBlocklyLibraryRuntimeSignature(projectPath, packageContent);
@@ -1668,11 +1716,37 @@ export class ProjectService {
       return;
     }
 
-    if (this.blocklyLibraryRuntimeSignatures.get(projectPath) === runtimeSignature) {
+    if (this.blocklyLibraryRuntimeSignatures.get(projectPath) === runtimeSignature
+      && this.application.isBlocklyLibraryRuntimeReady?.(projectPath) !== false) {
       return;
     }
 
     await this.rebuildBlocklyRuntimeAfterLibraryChange(projectPath);
+  }
+
+  hasBlocklyRuntimeRecovery(projectPath = this.currentProjectPath): boolean {
+    return !!projectPath && this.application?.hasBlocklyRuntimeRecovery?.(projectPath) === true;
+  }
+
+  /** A host-private, single-use acknowledgement for one actual reconstruction.
+   * Never certify the current disk from a historical completion receipt. */
+  async captureBlocklyRuntimeRecoveryAcknowledgement(projectPath = this.currentProjectPath): Promise<() => boolean> {
+    const current = this.captureCurrentProjectGuard();
+    await this.getPackageJson(projectPath);
+    if (!current() || !this.isSameProjectPath(projectPath, this.currentProjectPath)) throw new Error('Runtime recovery project changed.');
+    const signature = this.getBlocklyLibraryRuntimeSignature(projectPath, this.getEffectivePackageText(projectPath));
+    let consumed = false;
+    return () => {
+      if (consumed) return false;
+      consumed = true;
+      if (!current() || !this.isSameProjectPath(projectPath, this.currentProjectPath)
+        || this.application.isBlocklyLibraryRuntimeReady?.(projectPath) !== true) return false;
+      try {
+        if (signature !== this.getBlocklyLibraryRuntimeSignature(projectPath, this.getEffectivePackageText(projectPath))) return false;
+        this.blocklyLibraryRuntimeSignatures.set(projectPath, signature);
+        return true;
+      } catch { return false; }
+    };
   }
 
   private async rebuildActiveBlocklyLibraryRuntime(
@@ -2019,8 +2093,53 @@ export class ProjectService {
     });
   }
 
-  // 保存项目
-  async save(path = this.currentProjectPath, feedbackTimeoutMs = 5000): Promise<ProjectSaveDispatchResult & { path?: string }> {
+  private saveReceipts?: ProjectSaveReceipts;
+  private saveRequestSequence = 0;
+
+  private get projectSaveReceipts(): ProjectSaveReceipts {
+    return this.saveReceipts ??= new ProjectSaveReceipts();
+  }
+
+  private saveContext(path: string): readonly unknown[] {
+    const session = this.dependencyLifecycle.get(path);
+    return [session, session?.signal.aborted, this.getProjectMode(path)];
+  }
+
+  /** The observer may disconnect; the admitted task still owns its real save. */
+  startProjectSaveReceipt(path: string, request: ProjectSaveRequest,
+    run: () => Promise<Record<string, any>>): Promise<ProjectSaveReceiptResponse> {
+    const context = this.saveContext(path);
+    return this.projectSaveReceipts.start(path, request, context, this.guardSaveContext(path, context, run));
+  }
+
+  getProjectSaveReceipt(path: string, request: ProjectSaveRequest): Promise<ProjectSaveReceiptResponse> {
+    return this.projectSaveReceipts.status(path, request);
+  }
+
+  private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>) {
+    return async () => {
+      const current = this.saveContext(path);
+      if (current[1] === true || context.some((value, i) => value !== current[i])) throw Object.assign(
+        new Error('The original save project session changed before execution. No save was started.'),
+        { code: 'PROJECT_SAVE_RECEIPT_CONTEXT_STALE' });
+      return run();
+    };
+  }
+
+  // Manual save and exit retain their original completion, not an Action timer.
+  async save(path = this.currentProjectPath, _feedbackTimeoutMs?: number): Promise<ProjectSaveDispatchResult & { path?: string; saveReceipt?: ProjectSaveReceipt }> {
+    if (!path) return { success: false, error: '没有可保存的项目', path };
+    const context = this.saveContext(path);
+    this.saveRequestSequence = (this.saveRequestSequence ?? 0) + 1;
+    const request: ProjectSaveRequest = { version: 1, operation: 'project_save',
+      requestId: `ui-save-${Date.now().toString(36)}-${this.saveRequestSequence}` };
+    const response = await this.projectSaveReceipts.execute(path, request, context,
+      this.guardSaveContext(path, context, () => this.saveProjectActual(path)));
+    const result = response.result!;
+    return { ...result, success: result['success'] === true, path, saveReceipt: response.saveReceipt };
+  }
+
+  private async saveProjectActual(path: string): Promise<ProjectSaveDispatchResult & { path?: string }> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
     if (this.isProjectOpening && this.getProjectMode(path) !== 'coder') {
       return Promise.resolve({
@@ -2045,14 +2164,13 @@ export class ProjectService {
     }
 
     const session = this.dependencyLifecycle.get(path);
-    const current = () => this.currentProjectPath === path && this.dependencyLifecycle.get(path) === session;
+    const current = () => this.currentProjectPath === path && this.dependencyLifecycle.get(path) === session && !session?.signal.aborted;
     if (current()) this.stateSubject.next('saving');
     let outcome: Partial<ProjectSaveOutcome> = {};
     try {
-      const result = await this.application.dispatchProjectSave(path, feedbackTimeoutMs);
-      if (result?.projectSaved !== undefined) outcome = { projectSaved: result.projectSaved,
-        generatedCodePublished: result.generatedCodePublished, partial: result.partial,
-        ...(result.code ? { code: result.code } : {}) };
+      if (await this.prepareResolvedLibraryChangesForSave(path) && this.getProjectMode(path) !== 'coder') await this.ensureBlocklyLibraryRuntimeReady(path);
+      const result = await this.application.dispatchProjectSave(path, 0);
+      if (result?.projectSaved !== undefined) outcome = { ...result };
       if (result?.success !== true) throw Object.assign(new Error(result?.error || '编辑器未确认保存成功'),
         typeof result?.code === 'string' ? { code: result.code } : {});
       // Saving an inactive Coder tab is valid. Its acknowledgement must not
@@ -2278,7 +2396,8 @@ export class ProjectService {
     const session = projectDataRuntime.getSessionToken();
     const loadStatus = mode === 'recovery' && !closedSource ? this.getBlocklyProjectLoadStatus(sourceProjectPath) : undefined;
     const failedLoad = !!loadStatus?.error && !loadStatus.ready;
-    if (mode === 'recovery' && !closedSource && !loadStatus!.ready && !failedLoad) {
+    const runtimeSnapshot = mode === 'recovery' && !closedSource && this.hasBlocklyRuntimeRecovery(sourceProjectPath);
+    if (mode === 'recovery' && !closedSource && !loadStatus!.ready && !failedLoad && !runtimeSnapshot) {
       throw Object.assign(new Error('The source is still loading; observe its existing load status before creating a recovery copy.'),
         { code: 'PROJECT_RECOVERY_NOT_READY' });
     }
@@ -2288,6 +2407,10 @@ export class ProjectService {
       if (closedSource) { this.assertClosedRecoverySource(closedSource); assertNativeCopySource?.(); return; }
       if (this.currentProjectPath !== sourceProjectPath || projectDataRuntime.getSessionToken() !== session) {
         throw new Error('当前项目会话已切换，请重新执行另存为');
+      }
+      if (runtimeSnapshot && !this.hasBlocklyRuntimeRecovery(sourceProjectPath)) {
+        throw Object.assign(new Error('The retained full runtime snapshot changed; no partial-canvas fallback is allowed.'),
+          { code: 'PROJECT_RECOVERY_SOURCE_CHANGED' });
       }
       if (failedLoad) {
         const current = this.getBlocklyProjectLoadStatus(sourceProjectPath);
@@ -2305,6 +2428,7 @@ export class ProjectService {
     assertCurrent();
     const snapshot = await (closedSource
       ? captureProjectDiskRecovery(sourceProjectPath, assertCurrent, { notApplicable: true })
+      : runtimeSnapshot ? this.application.captureBlocklyRecoveryCopySnapshot(sourceProjectPath)
       : failedLoad ? (async () => {
       let fragment: ProjectRecoveryFragment;
       try { fragment = await this.application.captureBlocklyRecoveryFragment?.(sourceProjectPath)
@@ -2808,7 +2932,7 @@ export class ProjectService {
     try {
       lease = this.acquireProjectLifecycle([projectPath]);
       if (this.isSameProjectPath(projectPath, this.currentProjectPath)) {
-        const saved = await this.save(projectPath, 15_000);
+        const saved = await this.save(projectPath);
         if (!saved.success) throw new Error(saved.error || this.translate.instant('PROJECT.SAVE_FAILED'));
         if (!this.isSameProjectPath(projectPath, this.currentProjectPath)) throw new Error('当前项目已切换，请重试');
       }

@@ -102,9 +102,9 @@ export class NativeFieldDependencies {
     }
     return absJson(value);
   }
-  settle(required = true): void {
-    if (!this.pending.size && (!this.initializationQueue || !required)) return;
-    if (!this.pending.size && this.loadingNotified && !this.tasks.hasPending && !this.timers.size) return;
+  private beginSettlement(required: boolean): boolean {
+    if (!this.pending.size && (!this.initializationQueue || !required)) return false;
+    if (!this.pending.size && this.loadingNotified && !this.tasks.hasPending && !this.timers.size) return false;
     this.settling = true;
     try {
       for (const timer of this.timers.values()) {
@@ -125,11 +125,31 @@ export class NativeFieldDependencies {
       // first fresh realm. Keep the queued notification as deferred evidence:
       // the independent settled realm must reproduce its code/artifacts/macros.
       // Missing requested options still require the original recovery worklist.
-      if (!this.pending.size && this.initializationPhase === 'before-ui') return;
+      return this.pending.size > 0 || this.initializationPhase !== 'before-ui';
+    } catch (error) { this.settling = false; throw error; }
+  }
+  private finishSettlement(required: boolean): void {
+    const failure = this.retry();
+    if (required && this.pending.size) throw failure;
+  }
+  settle(required = true): void {
+    const previous = this.settling;
+    try {
+      if (!this.beginSettlement(required)) return;
       this.tasks.drain(() => this.snapshot(), 'initialization');
-      const failure = this.retry();
-      if (required && this.pending.size) throw failure;
-    } finally { this.settling = false; }
+      this.finishSettlement(required);
+    } finally { this.settling = previous; }
+  }
+  /** Only the outer completed-topology boundary may yield. Missing fields
+   * encountered during synchronous block construction still settle inline. */
+  async settleCooperatively(yieldToHost: () => Promise<void>, assertCurrent: () => void): Promise<void> {
+    const previous = this.settling;
+    try {
+      if (!this.beginSettlement(true)) return;
+      await this.tasks.drainCooperatively(() => this.snapshot(), yieldToHost, assertCurrent, 'initialization');
+      assertCurrent();
+      this.finishSettlement(true);
+    } finally { this.settling = previous; }
   }
   dispose(): void {
     for (const timer of this.timers.values()) if (timer.virtual !== undefined) {
@@ -149,9 +169,11 @@ export function withNativeFieldDependencies<T>(native: typeof Blockly, workspace
 /** A chunked load owns one scope across every fragment, not one per block. */
 export function beginNativeFieldDependencies(native: typeof Blockly, workspace: Blockly.Workspace, tasks?: NativeUiTasks,
   phase: 'before-ui' | 'settled' = 'settled', completeTopology = true) {
-  if (active.has(workspace)) return { prepare() {}, finish() {}, dispose() {} };
+  if (active.has(workspace)) return { prepare() {}, finish() {}, dispose() {},
+    async finishCooperatively(_yieldToHost: () => Promise<void>, _assertCurrent: () => void) {} };
   const scope = new NativeFieldDependencies(native, workspace, tasks, phase, completeTopology);
   active.set(workspace, scope);
   return { prepare: () => scope.settle(false), finish: () => scope.settle(),
+    finishCooperatively: (yieldToHost: () => Promise<void>, assertCurrent: () => void) => scope.settleCooperatively(yieldToHost, assertCurrent),
     dispose: () => { active.delete(workspace); scope.dispose(); } };
 }

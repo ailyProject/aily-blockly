@@ -31,7 +31,10 @@ describe('Project command lifecycle during close', () => {
     service.messageService = { warning: jasmine.createSpy('warning') };
     service.logService = { update: jasmine.createSpy('log') };
     service.translate = { instant: (key: string) => key };
-    service.routerService = { navigate: jasmine.createSpy('navigate').and.callFake(async () => { order.push('navigate'); return true; }) };
+    // These cases exercise command/session ordering, not mounted-editor
+    // disposal (covered by project-library-disposal.spec.ts).
+    service.routerService = { url: '/main/guide',
+      navigate: jasmine.createSpy('navigate').and.callFake(async () => { order.push('navigate'); return true; }) };
     Object.defineProperty(service, 'application', { value: {
       hasActiveProjectMutation: () => false, closeConnectionGraphWindows: async () => true, closeTerminal() {},
     } });
@@ -123,13 +126,16 @@ describe('Project command lifecycle during close', () => {
     expect(order).toEqual(['stop:/a', 'release:/a']);
   });
 
-  it('still stops dependency work when a child window prevents final disposal', async () => {
+  it('preserves dependency work when a child window vetoes close before native shutdown or editor disposal', async () => {
     service.application.closeConnectionGraphWindows = async () => false;
     spyOn(service, 'warnConnectionGraphWindowCloseFailure');
+    const discard = spyOn(service, 'discardLibraryChanges').and.resolveTo();
     const session = service.getProjectDependencySession('/active');
     expect(await service.close()).toBeFalse();
-    expect(session.signal.aborted).toBeTrue();
-    expect(order).toEqual(['stop:/active']);
+    // 9912bc4e4 deliberately moved every user-visible veto before cancelling
+    // the still-mounted editor's dependencies. A rejected close is no discard.
+    expect(session.signal.aborted).toBeFalse();
+    expect(order).toEqual([]); expect(discard).not.toHaveBeenCalled();
     expect(service.currentProjectPath).toBe('/active');
     expect(window['projectLock'].release).not.toHaveBeenCalled();
   });

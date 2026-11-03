@@ -3,6 +3,8 @@
 export async function captureProjectCopyLibraries(project: string) {
   const read = async () => {
     const state = await window['libraryDependencies']?.status(project);
+    if (state?.dependencyConflict) throw Object.assign(new Error('Resolve the retained dependency entries before copying this project.'),
+      { code: 'LIBRARY_DEPENDENCY_CONFLICT', dependencyConflict: state.dependencyConflict });
     if (!state || typeof state.dirty !== 'boolean' || typeof state.busy !== 'boolean'
       || !state.manifest || typeof state.manifest !== 'object' || Array.isArray(state.manifest)) {
       throw new Error('Project copy requires current library-manager facts; no source changes were saved or discarded.');

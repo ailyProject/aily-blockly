@@ -98,6 +98,15 @@ export class BlocklyProjectCleanState {
 
   clear(): void { this.accepted = undefined; this.failure = undefined; }
 
+  /** Retain the saved checkpoint, not the unsaved pre-rebuild canvas. This
+   * private closure is usable only by the persistence coordinator after readback. */
+  captureCheckpoint(): () => void {
+    const accepted = this.accepted && { ...this.accepted, scope: [...this.accepted.scope],
+      document: cloneProjectJson(this.accepted.document) };
+    const failure = this.failure;
+    return () => { this.accepted = accepted; this.failure = failure; };
+  }
+
   remember(scope: readonly unknown[], disk: string, document: BlocklyProjectDocument): void {
     this.accepted = { scope: [...scope], disk, document: cloneProjectJson(document) };
     this.failure = undefined;

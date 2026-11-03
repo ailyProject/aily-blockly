@@ -104,6 +104,21 @@ describe('quarantined complete recovery copy', () => {
     expect(editor.captureDeclarativeBlockDefinitions.calls.mostRecent().returnValue.blockContract).not.toHaveBeenCalled();
     expect(sourceFiles()).toEqual(before); expect(fs.writeFileSync).not.toHaveBeenCalled(); capture.dispose();
   });
+  it('copies the retained pre-runtime snapshot without reading the incomplete live canvas', async () => {
+    const retained = { publish: jasmine.createSpy('retained publish'), isCurrent: () => true,
+      dispose: jasmine.createSpy('retained dispose') };
+    (sync as any).project.captureLibraryRuntimeRecoveryCopy = jasmine.createSpy('retained recovery').and.resolveTo(retained);
+    const capture = spyOn(editor, 'captureRecoverySnapshot').and.throwError('partial canvas is not a complete source');
+    expect(await createCapture()).toBe(retained);
+    expect(capture).not.toHaveBeenCalled(); expect(resolved).not.toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled(); expect(fs.replaceProjectText).not.toHaveBeenCalled();
+  });
+  it('does not fall back to partial native capture when retained snapshot validation fails', async () => {
+    (sync as any).project.captureLibraryRuntimeRecoveryCopy = jasmine.createSpy('retained recovery').and.rejectWith(Error('retained source changed'));
+    const capture = spyOn(editor, 'captureRecoverySnapshot').and.throwError('must not read partial canvas');
+    await expectAsync(createCapture()).toBeRejectedWithError('retained source changed');
+    expect(capture).not.toHaveBeenCalled(); expect(fs.writeFileSync).not.toHaveBeenCalled();
+  });
   it('rejects active native writers before observing the canvas or resolving its resource cache', async () => {
     const lease = editor.workspaceEditGate.acquire();
     await expectAsync(createCapture()).toBeRejectedWithError(/writer is still active/);

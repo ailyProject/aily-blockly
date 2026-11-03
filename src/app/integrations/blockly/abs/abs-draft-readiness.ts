@@ -6,9 +6,11 @@ import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsAbiWorkspace, AbsProjectionContracts } from './abs-state';
 import { absProgramDocument, sameAbsProgram } from './abs-program-state';
 import type { describeAbsRepair } from './abs-generation-repair';
+import type { AbsNativeCandidateFailureDescription } from './abs-native-candidate-failures';
 
 type Inspection = Awaited<ReturnType<typeof inspectAbsGeneration>>;
 export interface AbsDraftReadiness {
+  nativeCandidateFailure?: AbsNativeCandidateFailureDescription;
   draft?: { hash: string; bytes: number; canValidate: boolean };
   baseline?: AbsGenerationEvidence;
   runtime?: ReturnType<typeof compareAbsContracts>;

@@ -45,6 +45,8 @@ export interface ProjectApplicationPort {
   hasActiveBlocklyBuildOrUpload(projectPath: string): boolean;
   hasRunningAi(): boolean;
   prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
+  /** A zero feedback budget retains the original editor completion. Transport
+   * observers use the domain receipt, never cancel or replay this save. */
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
   resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;
@@ -53,6 +55,9 @@ export interface ProjectApplicationPort {
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
+  /** File equality alone is not evidence that a failed Realm became ready. */
+  isBlocklyLibraryRuntimeReady?(projectPath: string): boolean;
+  hasBlocklyRuntimeRecovery?(projectPath: string): boolean;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;

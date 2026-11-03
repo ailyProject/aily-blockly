@@ -125,12 +125,17 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     return new Promise((resolve) => {
       this.actionService.dispatch('project-save', { path }, (result) => {
         const outcome = result.data;
+        if (outcome?.code === 'ACTION_HANDLER_UNAVAILABLE') {
+          resolve({ success: false, code: 'PROJECT_SAVE_HANDLER_UNAVAILABLE', projectSaved: false,
+            generatedCodePublished: false, partial: false, error: '保存处理器尚未就绪，未开始保存。' });
+          return;
+        }
         const structured = outcome && typeof outcome.projectSaved === 'boolean'
           && typeof outcome.generatedCodePublished === 'boolean' && typeof outcome.partial === 'boolean'
           ? outcome : undefined;
         resolve({ ...structured, success: result.success && (!structured || structured.projectSaved && !structured.partial),
           error: structured?.error || (structured?.partial ? '项目文件已保存，但生成代码未完整发布。' : result.error) });
-      }, timeoutMs);
+      }, timeoutMs, { requireHandler: true });
     });
   }
 
@@ -170,6 +175,16 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
         resolve(result.data.hasUnsavedChanges);
       }, 15000);
     });
+  }
+
+  isBlocklyLibraryRuntimeReady(path: string): boolean {
+    return this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
+      && this.blocklyService.isLibraryRuntimeReady();
+  }
+
+  hasBlocklyRuntimeRecovery(path: string): boolean {
+    return this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)
+      && this.blocklyEditorProjectService.hasLibraryRuntimeRecovery();
   }
 
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any {
@@ -226,6 +241,7 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     const normalizedLoadedLibraryNames = [...new Set(loadedLibraryNames)].sort((a, b) => a.localeCompare(b));
     if (
       previousRuntimeSignature === runtimeSignature
+      && this.isBlocklyLibraryRuntimeReady(projectPath)
       && JSON.stringify(normalizedLoadedLibraryNames) === JSON.stringify(normalizedLibraryNames)
     ) {
       return false;

@@ -14,6 +14,14 @@ export class AbsGenerationToolsService {
 
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
 
+  assertNativeRecoveryCurrent(input: Record<string, any>) {
+    this.sync.assertNativeRecoveryCurrent(input['token'], input['requestId']);
+  }
+
+  assertNativeRecoveryRequest(input: Record<string, any>) {
+    this.sync.assertNativeRecoveryRequest(input['token'], input['requestId']);
+  }
+
   async blockState(input: Record<string, unknown>) {
     try { return { ...await this.sync.setBlockState(input), operation: 'blocks_set_state' }; }
     catch (error) {
@@ -60,7 +68,48 @@ export class AbsGenerationToolsService {
           else this.sync.releaseHistoryNavigation(params['token']);
           return { ...reply, ok: true };
         }
-        if (params['action'] === 'inspect') return { ...reply, ok: true, ...await this.sync.inspectGeneration(), requiresReload: false };
+        if (params['action'] === 'inspect') {
+          const runtimeRecovery = await this.sync.inspectLibraryRuntimeRecovery?.();
+          if (runtimeRecovery && !runtimeRecovery.ready) return { ...reply, ok: true, project: runtimeRecovery.project, pending: null,
+            diagnostics: { runtimeRecovery }, requiresReload: false };
+          return { ...reply, ok: true, ...await this.sync.inspectGeneration(), requiresReload: false };
+        }
+        if (params['action'] === 'recover_runtime' && typeof params['token'] === 'string'
+          && /^sha256:[a-f0-9]{64}$/.test(params['token'])
+          && (params['observe'] === undefined || typeof params['observe'] === 'boolean')
+          && params['authority'] === undefined && params['generation'] === undefined) {
+          const result = await this.sync.recoverLibraryRuntime(params['token'], params.requestId, params['observe'] === true);
+          const receipt = { ...reply.receipt, token: params['token'], candidateApplied: false,
+            ...(params['observe'] === true ? { observe: true } : {}) };
+          if (result.status === 'completed' && result.value) return {
+            ...reply, ok: true, project: result.value.project, recoveryState: result.status, requiresReload: false,
+            runtimeRecovery: result.value, receipt, runtimeRecoveredNow: result.freshCompletion === true,
+          };
+          return { ...reply, ok: false, project: result.value?.project ?? requestedProject,
+            recoveryState: result.status, requiresReload: false, receipt,
+            ...(result.value ? { runtimeRecovery: result.value } : {}),
+            ...(result.failure ?? result.value?.failure ?? { code: result.status === 'running' ? 'PROJECT_RUNTIME_RECOVERY_PENDING' : 'PROJECT_RUNTIME_RECOVERY_STALE',
+              message: 'Observe the exact original runtime recovery; no ABS candidate was applied.' }),
+          };
+        }
+        if (params['action'] === 'prepare_native' && typeof params['token'] === 'string'
+          && /^sha256:[a-f0-9]{64}$/.test(params['token'])
+          && (params['observe'] === undefined || typeof params['observe'] === 'boolean')
+          && params['authority'] === undefined && params['generation'] === undefined) {
+          const result = await this.sync.prepareNativeCandidate(params['token'], params.requestId, params['observe'] === true);
+          const receipt = { ...reply.receipt, token: params['token'], candidateApplied: false,
+            ...(params['observe'] === true ? { observe: true } : {}) };
+          if (result.status === 'completed' && result.value) {
+            return { ...reply, ok: true, recoveryState: result.status, requiresReload: false,
+              project: result.value.base.scope.projectKey,
+              receipt: { ...receipt, prepared: { ...result.value, validation: { ok: true, scope: 'prepared-generation' } } } };
+          }
+          const nativeFailure = await this.sync.describeNativeCandidateFailure();
+          return { ...reply, ok: false, recoveryState: result.status, requiresReload: false, receipt,
+            ...(result.failure ?? { code: result.status === 'running' ? 'ABS_NATIVE_RECOVERY_PENDING' : 'ABS_NATIVE_RECOVERY_STALE',
+              message: 'Observe this exact recovery request; no candidate was applied.' }),
+            ...(nativeFailure ? { nativeCandidateFailure: nativeFailure } : {}) };
+        }
         if (params['action'] === 'resolve' && ['keep_view', 'replace_view'].includes(params['choice'])
           && typeof params['token'] === 'string' && /^sha256:[a-f0-9]{64}$/.test(params['token'])
           && (params['observe'] === undefined || typeof params['observe'] === 'boolean')
@@ -152,7 +201,10 @@ export class AbsGenerationToolsService {
           appliedRevision: result.appliedRevision, validation: { ok: true, scope: 'complete-generation' } } } : {}) };
     } catch (error) {
       const failure = serializeAbsFailure(error);
+      const nativeFailure = ['abs_validate', 'abs_apply'].includes(operation) && /^ABS_(NATIVE_|RUNTIME_|GENERATION_FAILED$)/.test(failure.code)
+        ? await this.sync.describeNativeCandidateFailure(source) : undefined;
       return { ok: false, operation, ...failure,
+        ...(nativeFailure ? { nativeCandidateFailure: nativeFailure } : {}),
         ...(operation === 'abs_recovery' && input['action'] === 'resolve' ? {
           ...(requestedProject ? { project: requestedProject } : {}),
           publication: { status: error instanceof AbsApplicationFailure && input['observe'] !== true ? 'NOT_COMMITTED' : 'UNKNOWN' },

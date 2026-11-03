@@ -1,7 +1,7 @@
 import { fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { Subject } from 'rxjs';
 import { UiService } from './ui.service';
-import { ChildAppHostRegistryService } from '../../integrations/subapps/child-app-host-registry.service';
+import { ChildAppHostRegistryService } from '@integration/subapps/public-api';
 import { ChildToolHostComponent } from '../../../tools/child-tool-host/child-tool-host.component';
 
 describe('host feedback background chat report', () => {
