@@ -159,7 +159,9 @@ try {
   await page.waitForTimeout(300);
   for (const width of [400,560,800]) {
     await page.evaluate(width => { const main=window.ng.getComponent(document.querySelector('app-main-window')); main.onSideResize({width}); window.ng.applyChanges(main); },width);
-    await settle(); await scroll(1); state=await read(); assert.ok(Math.abs(state.width-width)<15); assert.equal(state.columns,1); assert.ok(state.dom>0&&!state.overflow&&!state.clippedFooters&&!state.actionsClipped); assert.ok(state.names.includes(state.tail)); record(`panel-${width}`,state);
+    await settle(); await scroll(1); state=await read();
+    assert.ok(await manager().evaluate(el => el.querySelector('.lib-item').getBoundingClientRect().width >= el.querySelector('.lib-list').clientWidth - 17), 'Panel card fills the available width');
+    assert.ok(Math.abs(state.width-width)<15); assert.equal(state.columns,1); assert.ok(state.dom>0&&!state.overflow&&!state.clippedFooters&&!state.actionsClipped); assert.ok(state.names.includes(state.tail)); record(`panel-${width}`,state);
     await scroll(0); await page.screenshot({path:path.join(suite,`panel-${width}.png`)});
     assert.ok(await manager().evaluate(el => el.getBoundingClientRect().top >= el.closest('app-tool-container').querySelector('.header').getBoundingClientRect().bottom), 'Panel title remains visible');
   }

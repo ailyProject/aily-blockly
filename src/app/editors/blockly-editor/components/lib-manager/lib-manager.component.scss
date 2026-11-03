@@ -36,6 +36,7 @@
 
         .lib-list { padding: 8px; }
         .lib-row { column-gap: 10px; }
+        .lib-list .lib-item { max-width: none; }
     }
 
     .header .ant-input-suffix i.fa-xmark {

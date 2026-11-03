@@ -55,7 +55,7 @@
         <div class="lib-canvas" [style.height.px]="virtualizer.getTotalSize()">
         @for (row of virtualizer.getVirtualItems(); track row.index) {
         <div class="lib-row" [style.transform]="'translateY(' + row.start + 'px)'"
-            [style.grid-template-columns]="'repeat(' + columnCount() + ', minmax(0, 365px))'"
+            [style.grid-template-columns]="embedInPanel ? 'minmax(0, 1fr)' : 'repeat(' + columnCount() + ', minmax(0, 365px))'"
             [attr.data-row-index]="row.index">
         @for (lib of libraryRows()[row.index]; track lib.name) {
         <div class="lib-item">
