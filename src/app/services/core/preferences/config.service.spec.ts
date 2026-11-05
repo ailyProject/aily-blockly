@@ -177,3 +177,35 @@ describe('ConfigService Aily Coder product mode', () => {
     expect(service.getApplicationName()).toBe('aily blockly');
   });
 });
+
+describe('ConfigService Hub navigation', () => {
+  let service: ConfigService;
+
+  beforeEach(() => {
+    service = new ConfigService({} as any, {} as any, { isLoggedIn$: EMPTY, authSnapshot$: EMPTY, canUseCloudCompilation: false } as any);
+  });
+
+  it('uses the regional Hub and the product identity instead of the development mode', () => {
+    service.data = {
+      region: 'localhost',
+      regions: { localhost: { hub_web: 'http://localhost:4300/' } },
+      coder: { enabled: true },
+      developmentModePreference: 'coder',
+    };
+
+    expect(service.getHubWebUrl('/projects')).toBe('http://localhost:4300/projects?app=ailyblockly');
+
+    (service as any).runtimeBuildProduct = 'coder';
+    expect(service.getHubWebUrl('/projects')).toBe('http://localhost:4300/projects?app=ailycoder');
+  });
+
+  it('preserves the cloud project identifier when adding the app parameter', () => {
+    service.data = { regions: {} };
+    const hubUrl = new URL(service.getHubWebUrl(`/publish?cloudProject=${encodeURIComponent('cloud & project')}`));
+
+    expect(hubUrl.origin).toBe('https://hub.aily.pro');
+    expect(hubUrl.pathname).toBe('/publish');
+    expect(hubUrl.searchParams.get('cloudProject')).toBe('cloud & project');
+    expect(hubUrl.searchParams.get('app')).toBe('ailyblockly');
+  });
+});

@@ -40,7 +40,7 @@ describe('CloudSpace Hub publishing', () => {
     component.isStudent = false;
     component.authService = { userInfo: { id: 'author' } };
     component.electronService = { openUrl: jasmine.createSpy('openUrl') };
-    component.configService = { getHubWebUrl: () => 'https://hub.example' };
+    component.configService = { getHubWebUrl: jasmine.createSpy('getHubWebUrl').and.returnValue('https://hub.example/publish?cloudProject=cloud+%26+project&app=ailyblockly') };
     component.message = { info: jasmine.createSpy('info') };
     component.cloudService = {
       publishProject: jasmine.createSpy('publish'),
@@ -71,7 +71,8 @@ describe('CloudSpace Hub publishing', () => {
   it('opens the configured Hub with an encoded cloud UUID without changing publication state', () => {
     const item = { ...ownProject };
     component.publishToHub(item);
-    expect(component.electronService.openUrl).toHaveBeenCalledOnceWith('https://hub.example/publish?cloudProject=cloud%20%26%20project');
+    expect(component.configService.getHubWebUrl).toHaveBeenCalledOnceWith('/publish?cloudProject=cloud%20%26%20project');
+    expect(component.electronService.openUrl).toHaveBeenCalledOnceWith('https://hub.example/publish?cloudProject=cloud+%26+project&app=ailyblockly');
     expect(component.message.info).toHaveBeenCalledOnceWith('已发起打开 Hub，请在网页完善作品并提交审核');
     expect(component.cloudService.publishProject).not.toHaveBeenCalled();
     expect(component.cloudService.unpublishProject).not.toHaveBeenCalled();

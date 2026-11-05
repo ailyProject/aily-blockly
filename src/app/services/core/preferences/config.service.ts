@@ -1070,9 +1070,12 @@ export class ConfigService {
     return url.endsWith('/') ? url.slice(0, -1) : url;
   }
 
-  getHubWebUrl(): string {
+  getHubWebUrl(path = ''): string {
     const url = this.getCurrentRegionConfig()?.hub_web || 'https://hub.aily.pro';
-    return url.endsWith('/') ? url.slice(0, -1) : url;
+    const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+    const hubUrl = new URL(`${baseUrl}${path}`);
+    hubUrl.searchParams.set('app', this.isCoderProduct() ? 'ailycoder' : 'ailyblockly');
+    return hubUrl.toString();
   }
 
 
