@@ -166,7 +166,7 @@ export class CloudSpaceComponent {
   publishToHub(item): void {
     if (!this.canPublishToHub(item)) return;
     this.electronService.openUrl(this.configService.getHubWebUrl(`/publish?cloudProject=${encodeURIComponent(item.uuid)}`));
-    this.message.info('已发起打开 Hub，请在网页完善作品并提交审核');
+    this.message.info('已发起打开 Hub，请使用与客户端相同的 Aily 账号和区域登录，完善作品并提交审核');
   }
 
   async requestSync(): Promise<void> {

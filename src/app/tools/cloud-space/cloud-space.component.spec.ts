@@ -73,7 +73,7 @@ describe('CloudSpace Hub publishing', () => {
     component.publishToHub(item);
     expect(component.configService.getHubWebUrl).toHaveBeenCalledOnceWith('/publish?cloudProject=cloud%20%26%20project');
     expect(component.electronService.openUrl).toHaveBeenCalledOnceWith('https://hub.example/publish?cloudProject=cloud+%26+project&app=ailyblockly');
-    expect(component.message.info).toHaveBeenCalledOnceWith('已发起打开 Hub，请在网页完善作品并提交审核');
+    expect(component.message.info).toHaveBeenCalledOnceWith('已发起打开 Hub，请使用与客户端相同的 Aily 账号和区域登录，完善作品并提交审核');
     expect(component.cloudService.publishProject).not.toHaveBeenCalled();
     expect(component.cloudService.unpublishProject).not.toHaveBeenCalled();
     expect(item).toEqual(ownProject);
