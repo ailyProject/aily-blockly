@@ -3732,6 +3732,9 @@ ipcMain.on("host-project-context-changed", (event, data = {}) => {
   projectContextState = {
     workspace: rawWorkspace.trim() ? rawWorkspace : null,
     coderWorkspace,
+    serialPort: data.serialPort && typeof data.serialPort.path === 'string'
+      && /^(?:COM\d+|\/dev\/[^\s]+)$/i.test(data.serialPort.path)
+      ? { path: data.serialPort.path, revision: Number(data.serialPort.revision) || 0 } : null,
     version: projectContextState.version + 1,
   };
 

@@ -46,6 +46,11 @@
     <button class="project-title" type="button" [disabled]="!canEditProjectTitle"
       (click)="startEditingProjectTitle()">{{ projectTitle }}</button>
     }
+    @if (autoSaveState) {
+    <span class="project-save-status" role="status" [title]="autoSaveError" [class.failed]="autoSaveState === 'error'">
+      {{ ('PROJECT.AUTO_SAVE_' + autoSaveState.toUpperCase()) | translate }}
+    </span>
+    }
   </div>
   <div class="toolbox">
     <div class="zone ccenter">

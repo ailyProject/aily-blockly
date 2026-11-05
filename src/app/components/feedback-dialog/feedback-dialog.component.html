@@ -1,7 +1,14 @@
 <app-base-dialog [title]="'FEEDBACK_DIALOG.TITLE' | translate" [buttons]="buttons" [showCloseButton]="true" [showFooter]="true"
-    [loading]="isSubmitting" customClass="dialog-scrollable" (closeDialog)="onCloseDialog()" (buttonClick)="onButtonClick($event)">
+    [loading]="isSubmitting" customClass="dialog-scrollable" [showMinimizeButton]="standalone"
+    [minimizeButtonLabel]="'FEEDBACK_DIALOG.MINIMIZE' | translate" (minimizeDialog)="minimize()"
+    (closeDialog)="onCloseDialog()" (buttonClick)="onButtonClick($event)">
 
     <div class="feedback-form">
+        @if (contextError) {
+        <div class="context-error" role="alert">{{ contextError }}
+            <button type="button" nz-button nzSize="small" (click)="loadHostContext()">{{ 'FEEDBACK_DIALOG.CONTEXT_RETRY' | translate }}</button>
+        </div>
+        }
         <div class="form-item">
             <label class="form-label">{{ 'FEEDBACK_DIALOG.FEEDBACK_TYPE' | translate }}
                 <span class="required">*</span>

@@ -385,6 +385,8 @@
             "BLOCKLY_THEME": "Thème Blockly",
             "BLOCKLY_MINIMAP": "Miniature Blockly",
             "BLOCKLY_SOUNDS": "Sons des interactions",
+      "BLOCKLY_AUTO_SAVE": "Auto save",
+      "BLOCKLY_AUTO_SAVE_HINT": "Save the project 2 seconds after the last edit. Saved appears only after a successful write.",
             "FLYOUT_AUTO_CLOSE": "Fermer automatiquement la boîte à outils",
             "COMPILATION_OPTIONS": "Options de Compilation",
             "REGION": "Région de service",
@@ -573,6 +575,9 @@
         "SAVE_AND_CONTINUE": "Enregistrer et continuer"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "Could not read the main window project information. Please retry.",
+    "CONTEXT_RETRY": "Retry",
+    "MINIMIZE": "Minimize",
         "TITLE": "Retour d'information",
         "FEEDBACK_TYPE": "Type de retour",
         "TYPE_BUG": "Rapport de bug",
@@ -1079,6 +1084,10 @@
         "NO_TUTORIAL_PROVIDED": "L'auteur de la bibliothèque n'a pas fourni de tutoriel"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "Unsaved",
+    "AUTO_SAVE_SAVING": "Saving…",
+    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "Une tâche IA est en cours. Attendez sa fin avant d’enregistrer le projet sous un autre nom.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",

@@ -11,6 +11,7 @@ import { UiService, UpdateService, OnboardingService } from '@core/app-shell/pub
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '@domain/project/public-api';
+import { SerialService } from '@domain/device/public-api';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
@@ -162,6 +163,7 @@ export class MainWindowComponent implements OnDestroy {
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
     private metrics: MetricsService,
+    private serialService: SerialService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -192,10 +194,12 @@ export class MainWindowComponent implements OnDestroy {
     this.projectContextSubscription = combineLatest([
       this.projectService.currentProjectPath$,
       this.projectService.coderWorkspace$,
-    ]).subscribe(([workspace, coderWorkspace]) => {
+      this.serialService.selectedPort$,
+    ]).subscribe(([workspace, coderWorkspace, serialPort]) => {
       window['ipcRenderer']?.send?.('host-project-context-changed', {
         workspace: workspace || null,
         coderWorkspace,
+        serialPort,
       });
     });
     this.updateService.init();

@@ -81,6 +81,10 @@ export const routes: Routes = [
         loadComponent: () => import('./windows/about/about.component').then(m => m.AboutComponent)
     },
     {
+        path: 'feedback',
+        loadComponent: () => import('./components/feedback-dialog/feedback-dialog.component').then(m => m.FeedbackDialogComponent)
+    },
+    {
         path: "mqtt-debugger",
         redirectTo: "child-tool/mqtt-debugger",
         pathMatch: "full"

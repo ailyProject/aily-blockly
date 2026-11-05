@@ -385,6 +385,8 @@
             "BLOCKLY_THEME": "Blockly 테마",
             "BLOCKLY_MINIMAP": "Blockly 미니맵",
             "BLOCKLY_SOUNDS": "조작 효과음",
+      "BLOCKLY_AUTO_SAVE": "Auto save",
+      "BLOCKLY_AUTO_SAVE_HINT": "Save the project 2 seconds after the last edit. Saved appears only after a successful write.",
             "FLYOUT_AUTO_CLOSE": "도구 상자 자동 닫기",
             "COMPILATION_OPTIONS": "컴파일 옵션",
             "REGION": "서비스 지역",
@@ -573,6 +575,9 @@
         "SAVE_AND_CONTINUE": "저장 후 계속"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "Could not read the main window project information. Please retry.",
+    "CONTEXT_RETRY": "Retry",
+    "MINIMIZE": "Minimize",
         "TITLE": "사용자 피드백",
         "FEEDBACK_TYPE": "피드백 유형",
         "TYPE_BUG": "버그 리포트",
@@ -1079,6 +1084,10 @@
         "NO_TUTORIAL_PROVIDED": "라이브러리 작성자가 튜토리얼을 제공하지 않았습니다"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "Unsaved",
+    "AUTO_SAVE_SAVING": "Saving…",
+    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "AI 작업이 실행 중입니다. 완료된 후 다른 이름으로 저장해 주세요.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",

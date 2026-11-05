@@ -1,4 +1,4 @@
-import { Component, inject, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { Component, inject, OnDestroy, ViewChild, ElementRef, HostListener, NgZone } from '@angular/core';
 import { NZ_MODAL_DATA, NzModalRef } from 'ng-zorro-antd/modal';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -37,6 +37,17 @@ import {
 } from '../../utils/project-log.utils';
 
 type UnknownRecord = Record<string, unknown>;
+export interface FeedbackHostContext {
+  projectPath: string | null;
+  projectPackage: UnknownRecord | null;
+  boardName: string | null;
+  boardPackageName: string | null;
+  boardPackage: UnknownRecord | null;
+  serialPort: string | null;
+  logs: any[];
+  email: string;
+  accountStatusCode: string | null;
+}
 
 interface FeedbackResultSnapshot {
   result: UnknownRecord | null;
@@ -82,11 +93,18 @@ const UPLOAD_LOG_CORRELATION_TOLERANCE_MS = 250;
   ],
   templateUrl: './feedback-dialog.component.html',
   styleUrl: './feedback-dialog.component.scss',
-  providers: [FeedbackService]
+  providers: [FeedbackService],
+  host: { '[class.standalone]': 'standalone' },
 })
 export class FeedbackDialogComponent implements OnDestroy {
-  readonly modal = inject(NzModalRef);
-  readonly data: {
+  readonly modal = inject(NzModalRef, { optional: true });
+  readonly standalone = !this.modal;
+  private readonly zone = inject(NgZone);
+  private hostContext: FeedbackHostContext | null = null;
+  private stopInitData?: () => void;
+  contextLoading = this.standalone;
+  contextError = '';
+  data: {
     feedbackType?: string;
     feedbackTitle?: string;
     feedbackContent?: string;
@@ -148,6 +166,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       {
         text: 'FEEDBACK_DIALOG.SUBMIT',
         type: 'primary',
+        disabled: this.contextLoading || !!this.contextError,
         action: 'submit'
       }
     ];
@@ -177,9 +196,40 @@ export class FeedbackDialogComponent implements OnDestroy {
     this.userInfoSubscription = this.authService.userInfo$.subscribe(userInfo => {
       this.applyUserEmail(userInfo);
     });
+    if (this.standalone) {
+      let initialized = false;
+      this.stopInitData = window['subWindow']?.onInitData?.((payload: any) => this.zone.run(() => {
+        if (initialized) return;
+        initialized = true;
+        this.data = payload?.data || null;
+        this.applyInitialData();
+      }));
+      void this.loadHostContext();
+    }
   }
 
+  async loadHostContext(): Promise<void> {
+    this.contextLoading = true; this.contextError = '';
+    try {
+      const result = await window['iWindow']?.send?.({ to: 'main', data: { action: 'get-feedback-context' }, timeout: 10000 });
+      if (result?.success !== true || !result.context) throw new Error('Feedback context unavailable');
+      this.hostContext = result.context;
+      this.applyUserEmail({ email: this.hostContext?.email });
+    } catch {
+      this.contextError = this.translate.instant('FEEDBACK_DIALOG.CONTEXT_FAILED');
+    } finally { this.contextLoading = false; }
+  }
+
+  minimize(): void { window['iWindow']?.minimize?.(); }
+  private close(result: unknown): void {
+    if (this.modal) this.modal.close(result);
+    else window['iWindow']?.close?.();
+  }
+  @HostListener('window:beforeunload')
+  retainDraft(): void { if (!this.isSubmitted) this.saveDraft(); }
+
   ngOnDestroy(): void {
+    this.stopInitData?.();
     this.userInfoSubscription?.unsubscribe();
     // 组件销毁时，如果未成功提交，则保存草稿
     if (!this.isSubmitted) {
@@ -275,13 +325,13 @@ export class FeedbackDialogComponent implements OnDestroy {
 
   onCloseDialog(): void {
     this.saveDraft();
-    this.modal.close({ result: 'cancel' });
+    this.close({ result: 'cancel' });
   }
 
   onButtonClick(action: string): void {
     if (action === 'cancel') {
       this.saveDraft();
-      this.modal.close({ result: 'cancel' });
+      this.close({ result: 'cancel' });
     } else if (action === 'submit') {
       this.submitFeedback();
     }
@@ -329,7 +379,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       ['OS', operatingSystem],
       ['UI Language', uiLanguage],
       ['Feedback Time', feedbackTime],
-      ['Account Status Code', accountStatusCode],
+      ['Account Status Code', this.hostContext ? this.hostContext.accountStatusCode : accountStatusCode],
     ]);
   }
 
@@ -598,6 +648,7 @@ export class FeedbackDialogComponent implements OnDestroy {
 
   // 提交反馈
   async submitFeedback(): Promise<void> {
+    if (this.contextLoading || this.contextError || this.isSubmitting) return;
     // 验证反馈内容
     if (!this.feedbackContent || this.feedbackContent.trim() === '') {
       this.message.warning(this.translate.instant('FEEDBACK_DIALOG.WARNING_CONTENT_EMPTY'));
@@ -641,7 +692,7 @@ export class FeedbackDialogComponent implements OnDestroy {
         this.isSubmitted = true;
         this.clearDraft();
         this.resetForm();
-        this.modal.close({ result: 'success', data: feedbackData });
+        this.close({ result: 'success', data: feedbackData });
         this.isSubmitting = false;
       }, err => {
         console.warn('提交反馈失败:', err);
@@ -656,6 +707,7 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   private async readProjectPackage(): Promise<UnknownRecord | null> {
+    if (this.hostContext) return this.hostContext.projectPackage;
     try {
       return this.asRecord(await this.projectService.getPackageJson());
     } catch {
@@ -664,6 +716,7 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   private readCurrentProjectPath(): string | null {
+    if (this.hostContext) return this.hostContext.projectPath;
     try {
       const projectPath = this.projectService.currentProjectPath;
       return typeof projectPath === 'string' && projectPath.trim() ? projectPath.trim() : null;
@@ -684,6 +737,7 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   private readBoardName(): string | null {
+    if (this.hostContext) return this.hostContext.boardName;
     try {
       return this.readString(this.asRecord(this.projectService.currentBoardConfig)?.['name']);
     } catch {
@@ -692,6 +746,7 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   private async readBoardPackageName(): Promise<string | null> {
+    if (this.hostContext) return this.hostContext.boardPackageName;
     try {
       const packageName = this.readString(await this.projectService.getBoardModule());
       return packageName && (
@@ -704,6 +759,7 @@ export class FeedbackDialogComponent implements OnDestroy {
   }
 
   private async readBoardPackage(): Promise<UnknownRecord | null> {
+    if (this.hostContext) return this.hostContext.boardPackage;
     try {
       return this.asRecord(await this.projectService.getBoardPackageJson());
     } catch {
@@ -730,7 +786,7 @@ export class FeedbackDialogComponent implements OnDestroy {
 
   private readSafeSerialPort(): string | null {
     try {
-      const port = this.readString(this.serialService.currentPort);
+      const port = this.readString(this.hostContext ? this.hostContext.serialPort : this.serialService.currentPort);
       if (!port) {
         return null;
       }
@@ -861,7 +917,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       if (projectEntries.length === 0) {
         return { result: null, time: null, occurredAt: null };
       }
-      const logs = Array.isArray(this.logService.list) ? this.logService.list : [];
+      const logs = this.hostContext?.logs || (Array.isArray(this.logService.list) ? this.logService.list : []);
       const terminalLogs = logs
         .map((entry) => {
           const timestamp = typeof entry?.timestamp === 'number' ? entry.timestamp : Number.NaN;
@@ -935,6 +991,7 @@ export class FeedbackDialogComponent implements OnDestroy {
     state?: string;
     query?: string;
   }): Promise<DiagnosticLogSelection> {
+    if (this.hostContext) return selectRecentDiagnosticLogs(this.hostContext.logs, options);
     try {
       const page = await this.logService.readPage({
         mode: 'tail',

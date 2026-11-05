@@ -86,6 +86,11 @@ child/aily-builder*
 /e2e/logs
 /e2e/out-tsc/
 /e2e/.artifacts
+/e2e/.results/board-hover/
+/e2e/.results/board-advisor/
+/e2e/.results/serial-issues-build/
+/e2e/.results/serial-issues/
+/tests/.results/time-discovery/
 
 **/*.spec.ts
 !/src/**/*.spec.ts

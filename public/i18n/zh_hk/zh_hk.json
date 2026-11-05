@@ -413,6 +413,8 @@
             "BLOCKLY_THEME": "Blockly主題",
             "BLOCKLY_MINIMAP": "Blockly縮略圖",
             "BLOCKLY_SOUNDS": "操作音效",
+      "BLOCKLY_AUTO_SAVE": "自動儲存",
+      "BLOCKLY_AUTO_SAVE_HINT": "停止編輯 2 秒後儲存工程；僅在實際儲存成功後顯示已儲存。",
             "FLYOUT_AUTO_CLOSE": "自動關閉工具箱",
             "COMPILATION_OPTIONS": "編譯選項",
             "REGION": "服務區域",
@@ -620,6 +622,9 @@
         "CONFIRM": "是"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "無法取得主視窗的工程資訊，請重試。",
+    "CONTEXT_RETRY": "重新取得",
+    "MINIMIZE": "最小化",
         "TITLE": "用戶反饋",
         "FEEDBACK_TYPE": "反饋類型",
         "TYPE_BUG": "Bug反饋",
@@ -1156,6 +1161,10 @@
         "NO_TUTORIAL_PROVIDED": "庫作者未提供教程"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "待儲存",
+    "AUTO_SAVE_SAVING": "儲存中…",
+    "AUTO_SAVE_SAVED": "已儲存",
+    "AUTO_SAVE_ERROR": "自動儲存失敗",
         "SAVE_AS_AI_BUSY": "AI 任務正在執行，請等待完成後再另存為。",
       "OPEN_IN_CODER": "使用 Aily Coder 開啟",
       "CONVERT_CODER_TITLE": "轉換為 Coder 專案",

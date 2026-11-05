@@ -121,6 +121,12 @@
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.BLOCKLY' | translate }}</h2>
             <div class="right-inner">
               <div class="item">
+                <div><label for="blockly-autosave">{{ 'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE' | translate }}:</label></div>
+                <nz-switch nzId="blockly-autosave" [ngModel]="configData.blockly.autoSave !== false"
+                  (ngModelChange)="configData.blockly.autoSave = $event"
+                  nz-tooltip [nzTooltipTitle]="'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE_HINT' | translate"></nz-switch>
+              </div>
+              <div class="item">
                 <div>{{ 'SETTINGS.FIELDS.BLOCKLY_THEME' | translate }}:</div>
                 <nz-radio-group [(ngModel)]="configData.blockly.renderer" [nzSize]="'small'" nzButtonStyle="solid">
                   <label nz-radio-button nzValue="thrasos">Thrasos</label>

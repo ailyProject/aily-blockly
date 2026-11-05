@@ -800,6 +800,39 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     expect(component.isSubmitting).toBeFalse();
   });
 
+  it('uses the captured main-window project in an independent form without submitting on open', async () => {
+    const previous = window['iWindow'];
+    try {
+      window['iWindow'] = { send: jasmine.createSpy().and.resolveTo({ success: true, context: {
+        projectPath: '/captured/project', projectPackage: { dependencies: { '@aily-project/lib-core-time': '0.0.1' } },
+        boardName: 'Captured S3', boardPackageName: '@aily-project/board-esp32s3', boardPackage: { version: '1.0.0' },
+        serialPort: 'COM20', logs: [], email: 'owner@example.com', accountStatusCode: 'authenticated',
+      } }) } as any;
+      const component = createComponent();
+      await component.loadHostContext();
+      expect((component as any).readCurrentProjectPath()).toBe('/captured/project');
+      expect((component as any).readBoardName()).toBe('Captured S3');
+      expect((component as any).readSafeSerialPort()).toBe('COM20');
+      expect(component.email).toBe('owner@example.com');
+      expect(component.contextLoading).toBeFalse();
+      expect(feedbackService.submitFeedback).not.toHaveBeenCalled();
+      component.feedbackContent = 'Draft kept while operating the main app'; component.retainDraft();
+      expect(localStorage.getItem('feedback_dialog_draft')).toContain('Draft kept');
+    } finally { window['iWindow'] = previous; }
+  });
+
+  it('keeps a failed context read actionable and prevents submitting an incomplete snapshot', async () => {
+    const previous = window['iWindow'];
+    try {
+      window['iWindow'] = { send: jasmine.createSpy().and.resolveTo('timeout') } as any;
+      const component = createComponent(); prepareValidFeedback(component);
+      await component.loadHostContext(); await component.submitFeedback();
+      expect(component.contextError).toBeTruthy();
+      expect(component.buttons[0].disabled).toBeTrue();
+      expect(feedbackService.submitFeedback).not.toHaveBeenCalled();
+    } finally { window['iWindow'] = previous; }
+  });
+
   function createComponent(): FeedbackDialogComponent {
     return TestBed.createComponent(FeedbackDialogComponent).componentInstance;
   }

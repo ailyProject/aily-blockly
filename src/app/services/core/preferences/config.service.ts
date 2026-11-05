@@ -340,6 +340,11 @@ export class ConfigService {
     }
 
     ipcRenderer.on('setting-changed', (_event: unknown, message: any) => {
+      if (message?.action === 'blockly-autosave-changed' && typeof message.data === 'boolean') {
+        this.data.blockly = { ...this.data.blockly, autoSave: message.data };
+        this.configReloaded$.next();
+        return;
+      }
       // 主窗口与设置子窗口共享后端状态，同时使旧的项目准备和产物复用判断失效。
       if (message?.action === COMPILE_SETTINGS_CHANGED_ACTION) {
         try {
@@ -2149,6 +2154,7 @@ interface AppConfig {
   devToolPosition?: { x: number; y: number };
 
   blockly: {
+    autoSave?: boolean;
     renderer: string; // Blockly渲染器
     sounds?: boolean; // 操作音效，缺省时开启
     viewportRendering?: boolean;
