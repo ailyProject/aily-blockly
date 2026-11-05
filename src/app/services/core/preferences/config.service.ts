@@ -340,6 +340,15 @@ export class ConfigService {
     }
 
     ipcRenderer.on('setting-changed', (_event: unknown, message: any) => {
+      if (message?.action === 'blockly-preference-changed') {
+        const { key, value } = message.data || {};
+        if (['renderer', 'autoSave', 'minimap', 'sounds'].includes(key)) {
+          this.data.blockly = { ...this.data.blockly, [key]: value };
+          if (this.persistedDataSnapshot) this.persistedDataSnapshot.blockly = { ...this.persistedDataSnapshot.blockly, [key]: value };
+          this.configReloaded$.next();
+        }
+        return;
+      }
       if (message?.action === 'blockly-autosave-changed' && typeof message.data === 'boolean') {
         this.data.blockly = { ...this.data.blockly, autoSave: message.data };
         this.configReloaded$.next();
@@ -621,6 +630,24 @@ export class ConfigService {
     const operation = this.configSaveQueue.then(() => this.persistCurrentData());
     this.configSaveQueue = operation.catch(() => undefined);
     return operation;
+  }
+
+  /** Persist one Blockly preference without committing other settings drafts. */
+  async saveBlocklyPreference(key: 'renderer' | 'autoSave' | 'minimap' | 'sounds', value: string | boolean): Promise<void> {
+    if (key === 'renderer' ? !['thrasos', 'zelos'].includes(String(value)) : typeof value !== 'boolean') {
+      throw new Error('Invalid Blockly preference');
+    }
+    this.data.blockly = { ...this.data.blockly, [key]: value };
+    if (this.electronService.isElectron) {
+      const operation = this.configSaveQueue.then(() => {
+        const base = this.persistedDataSnapshot || {};
+        return this.persistCurrentData({ ...base, blockly: { ...base.blockly, [key]: value } });
+      });
+      this.configSaveQueue = operation.catch(() => undefined);
+      await operation;
+    }
+    window['ipcRenderer']?.send?.('setting-changed', { action: 'blockly-preference-changed', data: { key, value } });
+    this.configReloaded$.next();
   }
 
   /** Read credential-free SSH connection settings stored in a project package.json. */

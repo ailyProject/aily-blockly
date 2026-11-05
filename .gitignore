@@ -90,6 +90,9 @@ child/aily-builder*
 /e2e/.results/board-advisor/
 /e2e/.results/serial-issues-build/
 /e2e/.results/serial-issues/
+/e2e/.results/settings-persistence/
+/e2e/.results/serial-issues-build.log
+/tests/serial-issues-test.log
 /tests/.results/time-discovery/
 
 **/*.spec.ts

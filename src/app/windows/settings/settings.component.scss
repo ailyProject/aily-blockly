@@ -447,3 +447,6 @@ ngx-simplebar {
 .cloud-build-status:not(:empty) {
   margin-top: 6px;
 }
+
+.blockly-save-status { margin: -8px 0 12px; font-size: 12px; color: var(--aily-text-secondary); }
+.blockly-save-status.save-error { color: var(--aily-color-error, #e36a6a); }
