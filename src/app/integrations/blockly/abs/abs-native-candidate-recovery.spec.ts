@@ -48,6 +48,22 @@ describe('bounded disposable candidate recovery', () => {
     expect(budgets).toEqual([undefined, 30000]);
   });
 
+  it('uses one bounded allowance at the rendered-load boundary, including explicit native construction', async () => {
+    for (const size of [999, 1000, 1243]) {
+      const expected = size >= 1000 ? 30000 : undefined;
+      for (const input of [
+        { ...request(), abs: '# ABS Schema: 2\n' + 'probe()\n'.repeat(size) },
+        { ...request(), verify: { state: { blocks: { blocks: Array.from({ length: size }, (_, n) => ({ type: 'probe', id: String(n) })) } }, contracts: { fields: {} } } },
+        { ...request(), blocks: Array.from({ length: size }, (_, n) => ({ type: 'probe', id: String(n), fields: [] })) },
+      ]) {
+        const execute = jasmine.createSpy().and.resolveTo(result);
+        expect(await createNativeCandidateRecovery(execute, () => {})(input)).toBe(result);
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(execute.calls.first().args[1].timeoutMs).toBe(expected);
+      }
+    }
+  });
+
   it('shares the single allowance across binding and verification; never loops', async () => {
     let calls = 0;
     const error = nativeCandidateTimeout('ui', 10000);

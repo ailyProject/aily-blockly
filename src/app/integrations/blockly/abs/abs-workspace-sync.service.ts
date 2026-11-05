@@ -27,7 +27,6 @@ import { prepareAbsProjectData } from './abs-project-data';
 import { prepareAbsReconciledResources } from './abs-prepared-reconciliation';
 import { assertAbsResourceContracts } from './abs-resource-contracts';
 import { AbsWorkspaceLoadOptions, assertAbsProjectEnvelope, assertAbsRuntimeShapeSupported, assertAbsWorkspaceReadback, captureAbsWorkspaceState, loadAbsWorkspaceState } from './abs-workspace-state';
-import { BlocklyCommentLoading } from '../../../editors/blockly-editor/services/blockly-comment-loading';
 import { captureAbsDeclarativeContracts } from './abs-declarative-contracts';
 import { layoutAbsNewRoots } from './abs-new-root-layout';
 import { fenceBlocklyWorkspaceBumps } from '../../../editors/blockly-editor/services/blockly-workspace-layout-fence';
@@ -1024,11 +1023,10 @@ export class AbsWorkspaceSyncService {
       const restore = async () => {
         mutated = false; // Never retry a failed rollback.
         context.assertCurrent(); lease.assertCurrent();
-        const comments = new BlocklyCommentLoading(runtime, context.workspace);
         runtime.Events.disable();
         try {
-          comments.run(() => this.editor.restoreProjectWorkspaceSnapshot(before.document, lease, rollback.state.blocks.blocks.map(block => block.id)));
-          await comments.finish(() => { context.assertCurrent(); lease.assertCurrent(); });
+          await this.editor.restoreProjectWorkspaceSnapshotSettled(before.document, lease,
+            () => { context.assertCurrent(); lease.assertCurrent(); }, rollback.state.blocks.blocks.map(block => block.id));
         } finally { runtime.Events.enable(); }
         context.definitions.customFunctions?.synchronize(context.workspace, rollback.state);
         const restored = captureAbsWorkspaceState(context.workspace, context.assertCurrent, context.definitions);
@@ -1477,7 +1475,7 @@ export class AbsWorkspaceSyncService {
         await this.assertDisk(store, inspection.disk, guard);
         mutated = true;
         storageGuard = check;
-        this.withViewChecks(() => this.editor.loadProjectDocument(desired, true, lease));
+        await this.withViewChecks(() => this.editor.loadProjectDocumentSettled(desired, lease, check));
         check();
         const loaded = this.editor.captureProjectSnapshot(lease);
         assertProjectLoadPreserved(desired, loaded.document, state => this.editor.getWorkspaceLoadReadbackView(state));
@@ -1505,7 +1503,7 @@ export class AbsWorkspaceSyncService {
         if (publication.status !== 'COMMITTED') {
           if (publication.abiSaved) lease.quarantine('Source refresh committed ABI but needs journal completion.');
           else {
-            this.withViewChecks(() => this.editor.loadProjectDocument(before.document, true, lease));
+            await this.withViewChecks(() => this.editor.loadProjectDocumentSettled(before.document, lease, check));
             check(); assertProjectLoadPreserved(before.document, this.editor.captureProjectSnapshot(lease).document);
           }
           return { publication, requiresReload: publication.abiSaved, warnings: [], choice, refreshed: false, recoveryArchive: archive };
@@ -1535,7 +1533,7 @@ export class AbsWorkspaceSyncService {
           }
           else {
             try {
-              this.withViewChecks(() => this.editor.loadProjectDocument(before.document, true, lease));
+              await this.withViewChecks(() => this.editor.loadProjectDocumentSettled(before.document, lease, check));
               check(); assertProjectLoadPreserved(before.document, this.editor.captureProjectSnapshot(lease).document);
             } catch (rollbackError) {
               lease.quarantine(`Source refresh rollback could not be verified: ${String(rollbackError)}`);

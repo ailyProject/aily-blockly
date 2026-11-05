@@ -135,6 +135,10 @@ describe('v2 actual workspace generation coordinator', () => {
       normalizeProjectAbi: snapshot => snapshot,
       normalizeProjectAbiForLoad: snapshot => snapshot,
       getWorkspaceLoadReadbackView: state => state,
+      loadProjectDocumentSettled: async (snapshot, owner, check) => { check(); editor.loadProjectDocument(snapshot, true, owner); check(); },
+      restoreProjectWorkspaceSnapshotSettled: async (snapshot, owner, check, rootOrder) => {
+        check(); editor.restoreProjectWorkspaceSnapshot(snapshot, owner, rootOrder); check();
+      },
       loadProjectDocument: (snapshot, _clone, owner) => {
         gate.assertAvailable(owner); document = JSON.parse(absJson(snapshot));
         const state = composeBlocklyPage(document, document.activePageId);

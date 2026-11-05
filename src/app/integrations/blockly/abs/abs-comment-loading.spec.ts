@@ -41,6 +41,16 @@ describe('live workspace comment loading', () => {
     expect(Blockly.icons.CommentIcon.prototype.setBubbleVisible).toBe(hook);
   });
 
+  for (const chunk of [false, true]) it(`retains closed coordinates after the native ${chunk ? 'chunked' : 'normal'} loadState continuation`, async () => {
+    const expected = state(); expected.blocks.blocks[0].icons.comment.pinned = false;
+    const hook = Blockly.icons.CommentIcon.prototype.loadState;
+    await loadAbsWorkspaceState(expected, workspace, { chunk }, () => {});
+    assertAbsReadback(expected, Blockly.serialization.workspaces.save(workspace) as any);
+    expect(Blockly.icons.CommentIcon.prototype.loadState).toBe(hook);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assertAbsReadback(expected, Blockly.serialization.workspaces.save(workspace) as any);
+  });
+
   it('carries native default bubble placement through host readback, save and reopen', async () => {
     const expected: any = state();
     delete expected.blocks.blocks[0].icons.comment.x;

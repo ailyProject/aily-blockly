@@ -234,8 +234,8 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
     if (failure === 'load') load.and.rejectWith(new Error('library unavailable'));
     if (failure === 'missing-definition') spyOn<any>(editor, 'collectBlockTypesFromProjectDocument').and.returnValue(['missing-block']);
     if (failure === 'readback') {
-      const original = editor.loadProjectDocument.bind(editor);
-      spyOn(editor, 'loadProjectDocument').and.callFake((...args) => { original(...args); field().setDeletable(true); });
+      const original = internal.loadWorkspaceJson;
+      spyOn(internal, 'loadWorkspaceJson').and.callFake((...args) => { original(...args); field().setDeletable(true); });
     }
     await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejectedWithError(/complete pre-rebuild snapshot is retained/);
     expect(recoveryFiles().length).toBe(1); expect(JSON.parse(files.get(recoveryFiles()[0])!)).toEqual(before);
