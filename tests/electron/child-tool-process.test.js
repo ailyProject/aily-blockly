@@ -79,6 +79,51 @@ test('a second owner prevents a stale shared Runtime from being restarted', asyn
   } finally { await service.stop('fixture'); global.window = originalWindow; }
 });
 
+test('manual restart replaces a shared Runtime and retains the local lease count', async () => {
+  const processModule = await processModulePromise;
+  const originalWindow = global.window;
+  const harness = createHarness({ ready: true });
+  global.window = harness.window;
+  processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+  harness.share('shared-before-restart', {}, 2);
+  const service = createService(processModule);
+  harness.window.childToolSession.restart = async payload => {
+    harness.restartCalls.push(payload);
+    if (payload.restartShared !== true) return { success: false, reason: 'shared-runtime-in-use' };
+    assert.equal(payload.streamId, 'shared-before-restart');
+    assert.equal(typeof payload.leaseId, 'string');
+    await harness.window.childToolSession.unregister(payload);
+    return { success: true };
+  };
+  try {
+    await service.acquire('fixture');
+    const restarted = await service.restart('fixture');
+    assert.equal(restarted.port, 4100);
+    assert.equal(harness.restartCalls.length, 1);
+    assert.equal(harness.runCalls.length, 1);
+    assert.equal(harness.killCalls.length, 0);
+    assert.equal(service.getRuntimeSnapshot('fixture').refCount, 1);
+    assert.equal(service.getRuntimeSnapshot('fixture').state, 'ready');
+  } finally { await service.stop('fixture'); global.window = originalWindow; }
+});
+
+for (const reason of ['owner-not-authorized', 'stale-session']) {
+  test(`restart authorization failure (${reason}) cannot enter the process kill fallback`, async () => {
+    const processModule = await processModulePromise;
+    const originalWindow = global.window;
+    const harness = createHarness({ ready: true });
+    global.window = harness.window;
+    processModule.replaceChildToolConfigs([fixtureConfig(200)]);
+    const service = createService(processModule);
+    try {
+      await service.acquire('fixture');
+      harness.window.childToolSession.restart = async () => ({ success: false, reason });
+      await assert.rejects(service.restart('fixture'), new RegExp(reason));
+      assert.equal(harness.killCalls.length, 0);
+    } finally { await service.stop('fixture'); global.window = originalWindow; }
+  });
+}
+
 test('launch lock acquisition rechecks a Runtime registered by another renderer', async () => {
   const processModule = await processModulePromise;
   const originalWindow = global.window;
