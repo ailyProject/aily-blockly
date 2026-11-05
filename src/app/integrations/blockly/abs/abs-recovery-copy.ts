@@ -8,6 +8,9 @@ export interface AbsRecoveryCopyCapture {
   documentText: string;
   abiShapeText: string;
   sourceFiles: ProjectRecoveryFiles;
+  /** An earlier host capture may contain the draft present before runtime
+   * failure. Archive it separately; neither version is application authority. */
+  retainedSourceFiles?: ProjectRecoveryFiles;
 }
 
 /** Persist observed native state, not a claim that a quarantined generator or
@@ -27,6 +30,7 @@ export async function publishAbsRecoveryCopy(target: string, capture: AbsRecover
   // preserves their raw text without making an old map authoritative here.
   fs.writeFileSync(`${target}/recovery-source-${crypto.randomUUID()}.json`, JSON.stringify({
     version: 1, sourceProject: capture.sourceProject, ...capture.sourceFiles,
+    ...(capture.retainedSourceFiles ? { retainedSourceFiles: capture.retainedSourceFiles } : {}),
   }), { flag: 'wx' });
   await commitPreparedBlocklySave(target, prepared, expected, fs, assertCurrent);
   return { projectSaved: true, generatedCodePublished: false, partial: true,

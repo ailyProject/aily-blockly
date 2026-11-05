@@ -22,7 +22,7 @@ export function composeAbs(program: unknown, definitions: AbsAuthoringContracts)
   const block = (value: unknown, depth: number, pointer: string): AbsAbiBlock => {
     if (++count > 10000 || depth > 96) bad('Structured candidate exceeds 10000 blocks or 96 nesting levels.');
     if (!record(value) || Object.keys(value).some(key => !['type', 'fields', 'values', 'statements', 'extraState', 'disabled'].includes(key))
-      || typeof value['type'] !== 'string' || !/^[A-Za-z_]\w*$/.test(value['type'])
+      || typeof value['type'] !== 'string' || !/^[A-Za-z0-9_]+$/.test(value['type'])
       || value['disabled'] !== undefined && typeof value['disabled'] !== 'boolean') bad(`Invalid block at ${pointer}; IDs and raw ABS are not accepted.`);
     const node = value as Record<string, any>;
     for (const key of ['fields', 'values', 'statements']) if (node[key] !== undefined && !record(node[key])) bad(`${pointer}/${key} must be an object.`);

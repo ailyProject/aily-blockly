@@ -1,13 +1,13 @@
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { getProductAuthConfig } = require('../electron/build-product');
+const { getProductAppId, getProductAuthConfig } = require('../electron/build-product');
 
 const BUILD_PRODUCTS = Object.freeze({
   blockly: Object.freeze({
     id: 'blockly',
-    appId: 'blockly.aily.pro',
+    appId: getProductAppId('blockly'),
     productName: 'aily blockly',
-    appUserModelId: 'pro.aily.blockly',
+    appUserModelId: getProductAppId('blockly'),
     outputDirectory: 'dist/aily-blockly/',
     artifactBase: 'aily-blockly',
     artifactBaseCn: 'aily-blockly-CN',
@@ -16,9 +16,9 @@ const BUILD_PRODUCTS = Object.freeze({
   }),
   coder: Object.freeze({
     id: 'coder',
-    appId: 'coder.aily.pro',
+    appId: getProductAppId('coder'),
     productName: 'aily coder',
-    appUserModelId: 'pro.aily.coder',
+    appUserModelId: getProductAppId('coder'),
     outputDirectory: 'dist/aily-coder/',
     artifactBase: 'aily-coder',
     artifactBaseCn: 'aily-coder-CN',

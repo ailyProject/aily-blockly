@@ -229,16 +229,8 @@ export class UiService {
             const regionKey = typeof message.data?.regionKey === 'string'
               ? message.data.regionKey.trim()
               : '';
-            if (!this.configService.getEnabledRegionList().some((region) => region.key === regionKey)) {
-              throw new Error('Unknown or disabled service region');
-            }
-            await switchServiceRegionAndRequestLogin(regionKey, {
-              closeProtectedTools: () => this.closeAuthRequiredTools(),
-              clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
-              stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
-              setRegion: (nextRegionKey) => this.configService.setRegion(nextRegionKey),
-              requestLogin: (reason) => this.authService.requestLogin(reason),
-            });
+
+            await this.switchHostServiceRegion(regionKey);
             data = { success: true };
           } catch (error) {
             console.error('切换服务区域失败:', error);
@@ -528,6 +520,20 @@ export class UiService {
 
   getOpenAuthRequiredToolIds(): string[] {
     return collectOpenAuthRequiredToolIds(this.openToolList, this.openWindowPathList);
+  }
+
+  async switchHostServiceRegion(regionKey: string): Promise<void> {
+    if (!this.configService.getEnabledRegionList().some(region => region.key === regionKey)) {
+      throw new Error('Unknown or disabled service region');
+    }
+
+    await switchServiceRegionAndRequestLogin(regionKey, {
+      closeProtectedTools: () => this.closeAuthRequiredTools(),
+      clearLocalAuthSession: () => this.authService.clearLocalAuthSession(),
+      stopProtectedRuntime: () => this.stopDefaultAilyChatRuntime(),
+      setRegion: nextRegionKey => this.configService.setRegion(nextRegionKey),
+      requestLogin: reason => this.authService.requestLogin(reason),
+    });
   }
 
   async closeAuthRequiredTools(toolIds = this.getOpenAuthRequiredToolIds()): Promise<void> {
@@ -839,12 +845,26 @@ export class UiService {
       nzData: data,
     });
 
+    // Start independently of the dialog and its submit/cancel lifecycle.
+    void this.reportOpenChatIssue().catch(() => undefined);
+
     // 处理反馈结果
     modalRef.afterClose.subscribe(result => {
       if (result?.result === 'success') {
         console.log('反馈已提交:', result.data);
       }
     });
+  }
+
+  private async reportOpenChatIssue(): Promise<void> {
+    const toolId = DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID;
+    if (this.childHostRegistry.has(toolId)) {
+      await this.childHostRegistry.control(toolId, 'reportIssue');
+      return;
+    }
+    // The existing window command only reaches an already-open detached host.
+    const path = this.getToolWindowPath(toolId) || `/child-tool/${toolId}`;
+    await window['subWindow']?.command?.(path, { toolId, action: 'reportIssue' });
   }
 
   openProjectSettings() {

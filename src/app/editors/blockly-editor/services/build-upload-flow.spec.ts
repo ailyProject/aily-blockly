@@ -154,7 +154,11 @@ describe('Blockly compile and upload handoff', () => {
         getRuntimeBoardModule: () => '@aily-project/board-test', getBoardJson: async () => ({ name: 'board' }),
         getBoardConfigMenu: jasmine.createSpy('boardConfigMenu').and.resolveTo([]),
         ensureCustomPartitionFile: async (_path: string, assertCurrent: () => void) => { assertCurrent(); return null; } },
-      workflowService: { startBuild: () => true, finishBuild: jasmine.createSpy('finishBuild') },
+      workflowService: { currentState: ProcessState.IDLE,
+        startBuild() { this.currentState = ProcessState.BUILDING; return true; },
+        finishBuild: jasmine.createSpy('finishBuild').and.callFake((success: boolean) => {
+          service.workflowService.currentState = success ? ProcessState.IDLE : ProcessState.ERROR;
+        }) },
       electronService: { pathJoin: (...parts: string[]) => parts.join('/'), calculateHash: async () => 'hash' },
       platformService: { za7: '/tool' }, configService: { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} }, translate: { instant: (x: string) => x },
       blocklyService: { workspace: {}, isWorkspaceEditBlocked: () => false, getActivePageId: () => 'main',
@@ -163,6 +167,7 @@ describe('Blockly compile and upload handoff', () => {
       waitForOneIdleBoundary: async () => {}, runBuilderPreprocessPhase: (_tag: string, fn: any) => fn(),
       waitForAilyBuilderReady: async () => {}, writeCompileRequest: jasmine.createSpy('request').and.resolveTo('/request'),
       cmdService: { spawn: jasmine.createSpy('spawn').and.returnValue(command) },
+      npmService: { ensureLocalCompilerDependencies: jasmine.createSpy('compilerIntegrity').and.resolveTo() },
       noticeService: { update() {} }, logService: { update() {} }, message: { warning() {} },
       projectDebugConfigurationService: { updateWorkspaceGeneratedCode: async () => {} },
       compileValidationService: { triggerAfterSuccessfulCompile() {} },
@@ -180,7 +185,28 @@ describe('Blockly compile and upload handoff', () => {
     return { service, files, command, start };
   }
 
-
+  for (const early of [false, true]) it(`persists a cancelled Blockly request after cleanup and before releasing workflow (early=${early})`, async () => {
+    const f = compileFixture();
+    let stopped!: (value: boolean) => void, prepared!: () => void;
+    f.service.workflowService.currentState = ProcessState.BUILDING;
+    f.service.workflowService.finishBuild.and.callFake(() => { f.service.workflowService.currentState = ProcessState.ERROR; });
+    f.service.ensureCancelState = () => {};
+    f.service.saveBuildInfo = jasmine.createSpy('saveBuildInfo').and.resolveTo();
+    f.service.cmdService.kill = jasmine.createSpy('kill').and.returnValue(new Promise<boolean>(resolve => { stopped = resolve; }));
+    if (early) f.service.npmService.ensureLocalCompilerDependencies = () => new Promise<void>(resolve => { prepared = resolve; });
+    const result = f.service.build().catch((error: any) => error);
+    for (let n = 0; n < 100 && !(early ? prepared : f.service.streamId); n++) await new Promise(resolve => setTimeout(resolve, 1));
+    f.service.cancel();
+    await new Promise(resolve => setTimeout(resolve, 1));
+    expect(f.service.saveBuildInfo).not.toHaveBeenCalled();
+    expect(f.service.workflowService.finishBuild).not.toHaveBeenCalled();
+    if (early) prepared(); else stopped(true);
+    const completed = await result;
+    expect(completed).toEqual(jasmine.objectContaining({ code: 'BUILD_CANCELLED', buildOutcome: 'cancelled', state: 'warn', retryable: false }));
+    expect(f.service.saveBuildInfo).toHaveBeenCalledOnceWith('/project', 'cancelled', jasmine.any(String), early ? '' : 'hash', true);
+    expect(f.service.workflowService.finishBuild).toHaveBeenCalledTimes(1);
+    expect(f.service.passed).toBeFalse();
+  });
 
   for (const scenario of [
     { name: 'stdout-typed-error', stream: 'stdout', newline: true, ending: 'typed-error', noWarning: true },
@@ -204,7 +230,7 @@ describe('Blockly compile and upload handoff', () => {
     f.service.cmdService = cmd;
     f.service.logService = logService; f.service.noticeService = noticeService;
     f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
-    f.service.npmService = { prepareCompileBackend: async () => {} };
+    f.service.npmService.prepareCompileBackend = async () => {};
     const normal = scenario.native ? 'Starting compilation of' : 'LOCAL_BLOCKLY_NORMAL_' + scenario.name;
     const warning = 'warning: LOCAL_BLOCKLY_WARNING_' + scenario.name;
     const diagnostic = scenario.native ? localCompileDiagnostic : '[ERROR] source.cpp:4:3: LOCAL_BLOCKLY_DIAGNOSTIC_' + scenario.name;
@@ -254,7 +280,7 @@ describe('Blockly compile and upload handoff', () => {
     const notices: any[] = [];
     f.service.noticeService.update = (notice: any) => notices.push(notice);
     f.service.handleCompileError = _BuilderService.prototype['handleCompileError'];
-    f.service.npmService = { prepareCompileBackend: async () => {
+    f.service.npmService = { ensureLocalCompilerDependencies: async () => {}, prepareCompileBackend: async () => {
       if (!local && stage === 'preflight') throw new Error('unsupported board');
     }, prepareLocalCompileBackend: jasmine.createSpy('localDeps').and.callFake(async () => {
       expect(local).toBeTrue(); expect(owners).toBe(1);
@@ -399,6 +425,7 @@ describe('Blockly compile and upload handoff', () => {
       prjService: f.service.projectService, configService: { isCoderProduct: () => false },
       prepareCompileBackend: async () => {}, ensureCloudLibrarySources: async () => {},
       prepareLocalCompileBackend: async () => {},
+      ensureLocalCompilerDependencies: async () => {},
     });
     let clouds = 0;
     f.service.runCloudCompilation = jasmine.createSpy('cloud').and.callFake(async () => {

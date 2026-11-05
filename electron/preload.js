@@ -11,6 +11,7 @@ const { tmpdir } = require("os");
 const nodeFsp = require("node:fs/promises");
 const { calculateDirectoryStats } = require("./directory-stats");
 const { createSafeStorageBridge } = require("./safe-storage-bridge");
+const { createNotificationApi } = require('./notification-preload');
 const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION } = require("./project-file-writer");
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
@@ -738,7 +739,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     existsSync: (path) => require("fs").existsSync(path),
     statSync: (path) => {
       const s = require("fs").statSync(path);
-      return { size: s.size, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
+      return { size: s.size, mode: s.mode, mtime: s.mtime.toISOString(), birthtime: s.birthtime.toISOString(), _isDirectory: s.isDirectory(), _isFile: s.isFile() };
     },
     lstatSync: (path) => {
       const s = require("fs").lstatSync(path);
@@ -857,8 +858,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.on('library-dependencies:changed', listener);
       return () => ipcRenderer.removeListener('library-dependencies:changed', listener);
     },
+    historyBegin: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyBegin', projectPath, request }),
+    historyCommit: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyCommit', projectPath, request }),
+    historyRestore: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyRestore', projectPath, request }),
+    historyPreview: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyPreview', projectPath, request }),
+    historyDiscard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyDiscard', projectPath, request }),
     status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath }),
+    recover: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'recover', projectPath, request }),
     mutate: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'mutate', projectPath, request }),
+    prepare: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'prepare', projectPath }),
     patch: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'patch', projectPath, request }),
     save: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'save', projectPath }),
     discard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'discard', projectPath, request }),
@@ -1192,39 +1200,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     debugState: () => ipcRenderer.invoke('ble-debug-state'),
   },
   // 系统通知 API
-  notification: {
-    /**
-     * 显示系统通知
-     * @param {Object} options - 通知选项
-     * @param {string} options.title - 通知标题
-     * @param {string} options.body - 通知内容
-     * @param {string} [options.icon] - 通知图标路径（可选）
-     * @param {boolean} [options.silent=false] - 是否静音（可选）
-     * @param {string} [options.timeoutType='default'] - 超时类型（可选，'default' | 'never'）
-     * @param {string} [options.urgency] - 紧急程度（可选，'normal' | 'critical' | 'low'，仅 Linux）
-     * @returns {Promise<{success: boolean, result?: any, error?: string}>}
-     */
-    show: (options) => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke("notification-show", options)
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      });
-    },
-    /**
-     * 检查系统是否支持通知
-     * @returns {Promise<boolean>}
-     */
-    isSupported: () => {
-      return new Promise((resolve, reject) => {
-        ipcRenderer
-          .invoke("notification-is-supported")
-          .then((result) => resolve(result))
-          .catch((error) => reject(error));
-      });
-    }
-  },
+  notification: createNotificationApi(ipcRenderer),
   base64: {
     atob: (b64String) => Buffer.from(b64String, 'base64').toString('binary'),
   },

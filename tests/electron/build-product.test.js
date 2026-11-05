@@ -4,9 +4,33 @@ const { createBuildPlan, createBuilderConfig } = require('../../scripts/build-el
 const {
   createDevelopmentProtocolArgs,
   getProductAuthConfig,
+  getProductAppId,
   isProductProtocolUrl,
   resolveBuildProduct,
 } = require('../../electron/build-product');
+
+test('Windows process, packaged metadata and shortcut identities retain the original installer IDs', () => {
+  const base = require('../../package.json').build;
+  const config = require('../../electron/config/config.json');
+  assert.equal(base.appId, 'blockly.aily.pro');
+  assert.equal(base.nsis.createDesktopShortcut, true);
+  assert.equal(base.nsis.createStartMenuShortcut, true);
+  for (const product of ['blockly', 'coder']) {
+    for (const flavor of ['cn', 'global']) {
+      const plan = createBuildPlan(['--product', product, '--flavor', flavor], config);
+      const built = createBuilderConfig(plan, base);
+      const expected = `${product}.aily.pro`;
+      assert.equal(built.appId, expected);
+      assert.equal(built.extraMetadata.ailyAppUserModelId, expected);
+      assert.equal(getProductAppId(product), expected);
+      assert.equal(plan.product.appUserModelId, expected);
+      if (product === 'blockly') {
+        assert.ok(plan.builderArgs.includes(`-c.extraMetadata.ailyAppUserModelId=${expected}`));
+      }
+    }
+  }
+  assert.equal(getProductAppId(undefined), base.appId);
+});
 
 for (const product of ['coder', 'blockly']) {
   test(`${product} OAuth cold start retains product identity without launcher environment`, () => {

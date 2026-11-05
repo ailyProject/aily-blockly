@@ -2,6 +2,9 @@
 export interface ProjectRecoverySource {
   version: 1;
   kind: 'workspace' | 'saved-document';
+  /** A complete native capture retained before a failed runtime rebuild;
+   * never the partially reconstructed live canvas or an unapplied ABS draft. */
+  origin?: 'runtime-snapshot';
   /** The selected primary source was completely captured; not a promise of runtime validity. */
   complete: true;
   loadFailed: boolean;

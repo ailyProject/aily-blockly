@@ -2,6 +2,27 @@
 // The request/result travel over pipes; no project draft files are created.
 async function run(request) {
   const path = require('node:path');
+  if (request.materializeSources) {
+    const fs = require('node:fs');
+    const { collectLibraryPackages, extractLibrarySourceArchive, createLibrarySourceFingerprint } = require(request.preprocessPath);
+    const manifest = request.manifest;
+    const dependencies = Object.assign({}, ...['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].map(field => manifest[field]));
+    for (const library of collectLibraryPackages(dependencies, process.cwd())) {
+      const source = path.join(library.packagePath, 'src');
+      const archive = path.join(library.packagePath, 'src.7z');
+      if (!fs.existsSync(source) && fs.existsSync(archive)) {
+        try { extractLibrarySourceArchive(request.extractor, archive, source); }
+        catch (error) { throw new Error(`库 ${library.packageName} 解压失败: ${error.message}`); }
+      }
+      if (fs.existsSync(source)) {
+        if (!fs.statSync(source).isDirectory() || !fs.readdirSync(source).length) {
+          throw new Error(`库 ${library.packageName} 的 src 目录不完整`);
+        }
+        createLibrarySourceFingerprint(source);
+      }
+    }
+    return { manifest };
+  }
   const Arborist = require(path.join(request.npmRoot, 'node_modules/@npmcli/arborist'));
   const npa = require(path.join(request.npmRoot, 'node_modules/npm-package-arg'));
   if (request.reconcileOnly && !request.save && !request.add?.length && !request.remove?.length && !request.install?.length) {

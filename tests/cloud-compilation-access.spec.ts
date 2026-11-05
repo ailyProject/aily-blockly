@@ -119,6 +119,7 @@ describe('cloud compilation account access', () => {
     const runCompile = jasmine.createSpy('runCompile').and.resolveTo({ success: true, result: { state: 'done' } });
     const compile = Object.assign(Object.create(CompileService.prototype), {
       metrics: { record: () => {} },
+      npmService: { ensureLocalCompilerDependencies: async () => {} },
       configService: config,
       projectService: { captureCurrentProjectGuard: () => () => true, beginBuildBackendOperation: () => ({ release() {} }), currentProjectPath: '/project', getProjectDependencyBlockMessage: () => undefined },
       application: { startBuild: () => true, updateNotice: () => {} },

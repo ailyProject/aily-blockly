@@ -180,6 +180,7 @@
         "SPONSORS_DESC": "Dieses Projekt wird von den folgenden Unternehmen/Personen gesponsert",
         "NEWS": "Neuigkeiten",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Beschreiben Sie Ihr Anliegen in natürlicher Sprache. Der KI-Assistent hilft beim Erstellen von Projekten und beantwortet Fragen.",
             "STEP1_TITLE": "Neues Projekt erstellen",
             "STEP1_DESC": "Klicken Sie hier, um ein neues Programmierprojekt zu erstellen. Wählen Sie Ihr Board und die Programmiersprache, um Ihre kreative Reise zu beginnen.",
             "STEP2_TITLE": "Vorhandenes Projekt öffnen",
@@ -206,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "Alle Blöcke auswählen",
         "EXPLAIN_BLOCK": "Mit KI erklären",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "Der KI-Assistent hilft, Ihr Projekt zu verstehen, Code zu generieren, Programme zu erklären und Fehler zu beheben.",
             "TOOLBOX_TITLE": "Block-Werkzeugkasten",
             "TOOLBOX_DESC": "Hier befinden sich die Blockkategorien. Klicken Sie auf eine Kategorie, um Funktionsblöcke zu finden, und ziehen Sie sie zur Verwendung in den Arbeitsbereich rechts.",
             "WORKSPACE_TITLE": "Arbeitsbereich",
@@ -905,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "Abmelden",
         "CANCEL": "Abbrechen",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "App Store",
+            "APP_STORE_DESC": "KI-Werkzeuge durchsuchen und installieren, um die Fähigkeiten des KI-Assistenten zu erweitern. Weitere Apps hinzufügen und Einträge in der Symbolleiste verwalten.",
+            "AI_TOOLS_TITLE": "KI-Assistent",
             "SKIP": "Überspringen",
             "PREV": "Zurück",
             "NEXT": "Weiter",

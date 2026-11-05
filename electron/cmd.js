@@ -524,6 +524,7 @@ class CommandManager {
       messagePort,
       buildWorkspace,
       buildWorkspacePath: options.buildWorkspace,
+      backgroundPreprocess: options.backgroundPreprocess === true && !!options.buildWorkspace,
       startedAt,
       ownerWebContents: options.ownerWebContents,
       projectPath: options.projectPath,
@@ -634,7 +635,7 @@ class CommandManager {
       entry.stopPromise = (async () => {
         try {
           if (!entry.terminationConfirmed) {
-            const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`);
+            const stopped = await killRegisteredProcessTree(entry.process.pid, `cmd:${streamId}`, { preferNativeAck: entry.backgroundPreprocess === true });
             // A failed taskkill can race a supervised build's normal finish.
             // Its own marker cleanup confirms completion; parent close alone
             // cannot establish that installer/compiler descendants stopped.

@@ -54,6 +54,7 @@ const { registerSafeStorageIpc } = require("./safe-storage-ipc");
 const { refreshApplicationMenu } = require('./application-menu');
 const {
   createDevelopmentProtocolArgs,
+  getProductAppId,
   normalizeBuildProduct,
   resolveBuildProduct,
   getProductAuthConfig,
@@ -113,10 +114,7 @@ function applyAppIdentity(product) {
   const isCoderProduct = normalizeBuildProduct(product) === 'coder';
   app.setName(isCoderProduct ? 'Aily Coder' : 'aily blockly');
   if (isWin32) {
-    const configuredAppUserModelId = getPackagedMetadata()?.ailyAppUserModelId;
-    app.setAppUserModelId(
-      configuredAppUserModelId || (isCoderProduct ? 'pro.aily.coder' : 'pro.aily.blockly'),
-    );
+    app.setAppUserModelId(getProductAppId(product));
   }
 }
 
@@ -136,6 +134,17 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disk-cache-size', '104857600');
 const PROTOCOLS = getProductAuthConfig(getBuildProduct()).protocols;
 const isSupportedProtocolUrl = url => isProductProtocolUrl(getBuildProduct(), url);
+
+// 历史通知只转发给发起进程，不分配新 profile 或创建空窗口。
+const { isNotificationActivationUrl, forwardNotificationActivation } = require('./notification-activation');
+const notificationActivationUrl = isWin32 && process.argv.find(value => isNotificationActivationUrl(value, getBuildProduct()));
+if (notificationActivationUrl) {
+  forwardNotificationActivation(notificationActivationUrl, getBuildProduct()).then(
+    () => app.exit(0),
+    error => { console.warn('通知所属窗口已不可用:', error.message); app.exit(1); },
+  );
+  return;
+}
 
 // OAuth实例管理
 const OAUTH_STATE_FILE = 'oauth-instances.json';
@@ -2945,7 +2954,7 @@ function createWindow() {
   }
   registerMCPHandlers(mainWindow);
   registerToolsHandlers(mainWindow);
-  registerNotificationHandlers(mainWindow);
+  registerNotificationHandlers(mainWindow, getBuildProduct());
   registerProbeRsHandlers(mainWindow);
   registerBleHandlers();
   registerSubappManagerHandlers(() => mainWindow, {

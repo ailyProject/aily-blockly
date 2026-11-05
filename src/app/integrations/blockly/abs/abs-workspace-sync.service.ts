@@ -64,6 +64,7 @@ import { describeAbsViewConflict, type AbsViewConflictChoice } from './abs-view-
 import { assertProjectLoadPreserved } from '../../../editors/blockly-editor/services/blockly-project-clean-state';
 import { normalizeProjectDataDocument } from '@domain/project/public-api';
 import { captureAbsNativeValues } from './abs-native-resources';
+import { AbsNativeCandidateFailures } from './abs-native-candidate-failures';
 
 type AbsExportOptions = { initialize?: boolean; expectedAbiHash?: string; publish?: boolean; rebind?: string;
   reuseCurrent?: boolean; preserveDraft?: string; synchronize?: boolean; save?: boolean };
@@ -95,6 +96,13 @@ export class AbsWorkspaceSyncService {
   private readonly blockStateAdmission = new AbsBlockStateAdmission();
   private readonly journalReopen = new AbsJournalReopenAdmission();
   private readonly repairDerived = new AbsRepairDerivedReports();
+  private readonly nativeFailures = new AbsNativeCandidateFailures();
+  private nativeFailureContext?: {
+    key: string; source: string; request: AbsGenerationCandidateRequest;
+    context: ReturnType<AbsWorkspaceSyncService['context']>;
+    document: string; disk: AbsDiskSnapshot;
+  };
+  private nativeRecoveryCompletion?: { token: string; requestId: string; assertCurrent: () => void };
   private completedJournalReopen?: {
     generation: string; token: string; context: ReturnType<AbsWorkspaceSyncService['context']>;
     documentText: string; pointerHash: string; hashes: { abi: string | null; abs: string | null; map: string | null };
@@ -121,7 +129,7 @@ export class AbsWorkspaceSyncService {
       const generatedCodePublished = result.derivedOutputs?.published ?? result.warnings.length === 0;
       const partial = !generatedCodePublished || !!dependencyError;
       return { projectSaved: true, generatedCodePublished, partial,
-        ...(partial ? { code: result.derivedOutputs?.code ?? 'PROJECT_DERIVED_OUTPUT_PENDING',
+        ...(partial ? { code: dependencyError ? 'PROJECT_DEPENDENCY_SAVE_FAILED' : result.derivedOutputs?.code ?? 'PROJECT_DERIVED_OUTPUT_PENDING',
           error: [result.derivedOutputs?.error, dependencyError].filter(Boolean).join('\n') || result.warnings.join('\n') } : {}) };
     });
     this.project.setAbsSaveAsHandler?.(path => this.captureSaveAsSnapshot(path));
@@ -228,8 +236,13 @@ export class AbsWorkspaceSyncService {
     });
   }
 
-  private captureRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
+  private async captureRecoveryCopySnapshot(path: string): Promise<BlocklySaveAsSnapshot> {
     if (path !== this.project.currentProjectPath) return Promise.reject(new AbsSyncError('ABS_CONTEXT_STALE', 'Recovery copy belongs to another project.'));
+    // Runtime reconstruction may have left a partial live canvas. Its retained
+    // pre-rebuild document is authoritative for copying; never serialize that
+    // partial canvas and label it a complete recovery source.
+    const retained = await this.project.captureLibraryRuntimeRecoveryCopy?.(path);
+    if (retained) return retained;
     return this.editor.runRecoveryCopyOperation(async () => {
       const context = this.context(), snapshot = this.editor.captureRecoverySnapshot();
       const guard = () => {
@@ -480,8 +493,11 @@ export class AbsWorkspaceSyncService {
         // A stale candidate cannot be applied, but a clean mirror can be replaced
         // from the current canvas. Save + projection share one lease and journal;
         // no inspection of the OLD runtime contract grants or denies this operation.
-        prepared ??= await this.project.prepareSave(snapshot.document, assertCurrent);
-        if (options.save || expected.abi === null || !sameAbsProgram(JSON.parse(prepared.abiText), JSON.parse(expected.abi))) {
+        // A normal save always prepares code (which may register models). Seal
+        // the complete document after that phase instead of externalizing and
+        // validating the same project twice before every save.
+        if (!options.save) prepared ??= await this.project.prepareSave(snapshot.document, assertCurrent);
+        if (options.save || expected.abi === null || !sameAbsProgram(JSON.parse(prepared!.abiText), JSON.parse(expected.abi))) {
           assertCurrent();
           generated = await this.withViewChecks(() => this.editor.prepareProjectCode(context.assertCurrent, lease));
           context.assertCurrent();
@@ -503,7 +519,11 @@ export class AbsWorkspaceSyncService {
         }
       }
       const compact = await this.compactDocument(snapshot.document, runtime.contracts, assertCurrent);
-      if (options.reuseCurrent && options.publish !== false && !inspection && committed
+      // Save may reuse only byte-identical ABI, including layout/inactive pages.
+      // Still verify current disk/contracts and republish derived outputs: a
+      // clean canvas does not prove generated files or dependencies are intact.
+      const unchangedSave = options.save && prepared?.abiText === expected.abi;
+      if ((options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)
@@ -692,7 +712,7 @@ export class AbsWorkspaceSyncService {
     }, request.action !== 'inspect');
   }
 
-  validateGeneration(source: string, request: AbsGenerationCandidateRequest): Promise<AbsGenerationValidation & { syntaxAdvice: ReturnType<typeof describePreparedAbsSyntax> }> {
+  validateGeneration(source: string, request: AbsGenerationCandidateRequest, allowNativeRecovery = true): Promise<AbsGenerationValidation & { syntaxAdvice: ReturnType<typeof describePreparedAbsSyntax> }> {
     if (['preparedModels', 'preparedVariables', 'retiredModels', 'workspaceRevision'].some(key => Object.hasOwn(request, key))) {
       return Promise.reject(new AbsSyncError('ABS_REQUEST_INVALID', 'Preparation evidence is host output, not candidate input.'));
     }
@@ -711,7 +731,7 @@ export class AbsWorkspaceSyncService {
       // Include pure analysis/storage reads, not only the native iframe phase.
       const prepared = await this.withoutViewChecks(() => reuse
         ? this.prepareApplication(context, lease, store, source, request.base.generation, cached.validation)
-        : this.prepareGeneration(context, lease, store, source, request.base.generation, request));
+        : this.prepareGeneration(context, lease, store, source, request.base.generation, request, allowNativeRecovery));
       const result = { ...request, workspaceRevision: prepared.before.revision,
         ...(prepared.preparedModels.length ? { preparedModels: prepared.preparedModels } : {}),
         ...(prepared.candidate.retiredModels.length ? { retiredModels: prepared.candidate.retiredModels } : {}),
@@ -724,7 +744,8 @@ export class AbsWorkspaceSyncService {
   }
 
   private async prepareGeneration(context: ReturnType<AbsWorkspaceSyncService['context']>, lease: BlocklyWorkspaceEditLease,
-    store: AbsBaselineStore, source: string, generation: string, binding?: AbsGenerationCandidateRequest | AbsGenerationValidation) {
+    store: AbsBaselineStore, source: string, generation: string, binding?: AbsGenerationCandidateRequest | AbsGenerationValidation,
+    allowNativeRecovery = true) {
       const shapes = captureAbsDeclarativeContracts(context.definitions);
       const procedures = captureAbsBundledProcedures(context.definitions);
       const custom = captureAbsCustomFunctions(context.definitions);
@@ -834,6 +855,16 @@ export class AbsWorkspaceSyncService {
       }
       if (needsNative) {
         assertPreparing();
+        const { workspaceRevision, preparedModels: ignoredModels, preparedVariables, retiredModels, syntaxAdvice,
+          ...request } = (binding ?? {}) as AbsGenerationValidation & { syntaxAdvice?: unknown };
+        const { requestId: nativeNonce, ...nativeIntent } = request;
+        const failureKey = binding ? await hashAbsText(absJson({ request: { ...nativeIntent, ...(binding.createVariables?.length ? { requestId: nativeNonce } : {}) },
+          source, disk: expected, document: before.document, runtimeRevision: context.runtimeRevision, session: context.session })) : undefined;
+        assertPreparing();
+        if (failureKey) {
+          const previous = this.nativeFailures.matching(failureKey);
+          if (previous) throw previous;
+        }
         const replay = this.editor.captureNativeReplay();
         assertRuntimeCurrent = () => { context.assertCurrent(); replay.assertCurrent(); };
         const assertNative = () => { assertPreparing(); replay.assertCurrent(); };
@@ -845,9 +876,22 @@ export class AbsWorkspaceSyncService {
         const { evaluateNativeCandidate } = await import('../../../editors/blockly-editor/services/blockly-native-candidate');
         const execute = createNativeCandidateRecovery((request, options) =>
           evaluateNativeCandidate(request, { ...options, assertCurrent: assertNativeScope }), assertNative);
-        const prepared = await prepareAbsNativeReconciliation(reconciler, reconcileOptions,
-          request => execute({ ...request, steps: replay.steps, graphics: replay.graphics }), assertNative);
-        ({ candidate, materialized, instances, preparedModels } = prepared);
+        try {
+          const prepared = await prepareAbsNativeReconciliation(reconciler, reconcileOptions,
+            request => execute({ ...request, steps: replay.steps, graphics: replay.graphics }), assertNative);
+          ({ candidate, materialized, instances, preparedModels } = prepared);
+        } catch (error) {
+          // Only detached preparation is recoverable here. No apply/save is replayed.
+          assertNative();
+          if (failureKey && binding) {
+            const remembered = await this.nativeFailures.remember({ key: failureKey, source, request,
+              base: binding.base, candidate: binding.candidate, error, assertCurrent: context.assertCurrent,
+              allowRecovery: allowNativeRecovery });
+            if (remembered) this.nativeFailureContext = { key: failureKey, source, request,
+              context, document: absJson(before.document), disk: expected };
+          }
+          throw error;
+        }
       }
       if (binding && 'workspaceRevision' in binding && absJson(binding.preparedModels ?? []) !== absJson(preparedModels)) {
         throw new AbsSyncError('ABS_MODEL_DECLARATION_CHANGED', 'Native model preparation changed after validation. Validate the same candidate again.');
@@ -1083,8 +1127,77 @@ export class AbsWorkspaceSyncService {
     const result = await store.inspectPending(); context.assertCurrent(); return result;
   }
 
+  inspectLibraryRuntimeRecovery() {
+    return this.project.inspectLibraryRuntimeRecovery?.();
+  }
+
+  recoverLibraryRuntime(token: string, requestId: string, observe: boolean) {
+    return this.project.recoverLibraryRuntime(token, requestId, observe);
+  }
+
   /** Disk recovery remains available under quarantine. Draft readiness additionally
    * captures the current workspace under its lease, without flushing/writing assets. */
+  /** Read current failure evidence without granting baseline/map repair authority. */
+  async describeNativeCandidateFailure(source?: string) {
+    if (!this.nativeFailureContext || source !== undefined && this.nativeFailureContext.source !== source) return undefined;
+    try { return await this.run((context, lease, store) => this.inspectNativeFailure(context, lease, store), false); }
+    catch { return undefined; } // A replacement scope never inherits an old offer.
+  }
+
+  private async inspectNativeFailure(context: ReturnType<AbsWorkspaceSyncService['context']>,
+    lease: BlocklyWorkspaceEditLease, store: AbsBaselineStore) {
+    const capture = this.nativeFailureContext;
+    if (!capture) return undefined;
+    capture.context.assertCurrent(); context.assertCurrent(); lease.assertCurrent();
+    if (absJson(this.editor.captureProjectSnapshot(lease).document) !== capture.document
+      || absJson(await store.captureDisk()) !== absJson(capture.disk) || await store.inspectPending()) return undefined;
+    context.assertCurrent(); capture.context.assertCurrent();
+    return this.nativeFailures.describe(capture.key);
+  }
+
+  /** Runs outside the ABS FIFO: the existing runtime rebuild owns that FIFO and
+   * its edit lease. Never wait for a nested project operation while holding it. */
+  prepareNativeCandidate(token: string, requestId: string, observe: boolean) {
+    return this.nativeFailures.run(token, requestId, observe, async captured => {
+      const capture = this.nativeFailureContext;
+      if (!capture || capture.key !== captured.key) throw new AbsSyncError('ABS_NATIVE_RECOVERY_STALE', 'The failed candidate changed.');
+      const admitted = await this.run((context, lease, store) => this.inspectNativeFailure(context, lease, store), false);
+      if (!admitted) throw new AbsSyncError('ABS_NATIVE_RECOVERY_STALE', 'The candidate, canvas or files changed before recovery.');
+      const admit = (lease?: BlocklyWorkspaceEditLease) => {
+        capture.context.assertCurrent();
+        if (absJson(this.editor.captureProjectSnapshot(lease).document) !== capture.document) {
+          throw new AbsSyncError('ABS_NATIVE_RECOVERY_STALE', 'The canvas changed before runtime reconstruction.');
+        }
+      };
+      await this.project.rebuildNativeCandidateRuntime(admit);
+      // Rebuild preserves the canvas but intentionally replaces the runtime
+      // epoch. Guard its data/scope independently before normal preparation.
+      await this.run(async (context, lease, store) => {
+        if (context.path !== capture.context.path || context.workspace !== capture.context.workspace
+          || context.scope.pageId !== capture.context.scope.pageId || context.session !== capture.context.session) {
+          throw new AbsSyncError('ABS_NATIVE_RECOVERY_STALE', 'Project scope changed during runtime reconstruction.');
+        }
+        await this.assertDisk(store, capture.disk, () => { context.assertCurrent(); lease.assertCurrent(); });
+      }, false);
+      this.preparedValidation = undefined;
+      const result = await this.validateGeneration(captured.source, captured.request, false);
+      this.nativeRecoveryCompletion = { token, requestId, assertCurrent: this.context().assertCurrent };
+      return result;
+    });
+  }
+
+  assertNativeRecoveryCurrent(token: string, requestId: string): void {
+    const completed = this.nativeRecoveryCompletion;
+    if (!completed || completed.token !== token || completed.requestId !== requestId) {
+      throw new AbsSyncError('ABS_NATIVE_RECOVERY_STALE', 'The prepared native recovery belongs to another execution.');
+    }
+    completed.assertCurrent();
+  }
+
+  assertNativeRecoveryRequest(token: string, requestId: string): void {
+    this.nativeFailures.capture(token, requestId);
+  }
+
   async inspectGeneration() {
     const context = this.context();
     const inspection = await inspectAbsGenerationForRecovery(await this.store(context), context.scope)
@@ -1119,6 +1232,9 @@ export class AbsWorkspaceSyncService {
         const runtime = captureAbsWorkspaceState(context.workspace, assertCurrent, context.definitions,
           () => { context.assertCurrent(); lease.assertCurrent(); });
         const diagnostics = await inspectAbsDraft(current, snapshot.document, runtime);
+        const nativeFailure = await this.inspectNativeFailure(context, lease, store).catch(() => undefined);
+        if (nativeFailure) diagnostics.nativeCandidateFailure = nativeFailure;
+        if (diagnostics.draft && nativeFailure?.candidate.hash === diagnostics.draft.hash) diagnostics.draft.canValidate = false;
         diagnostics.repair = await describeAbsRepair({ ...current, diagnostics }, snapshot.document, runtime.contracts);
         const conflictResolution = current.committed ? await describeAbsViewConflict({ project: context.path,
           scope: context.scope, disk: current.disk, pointerHash: current.committed.pointerHash,

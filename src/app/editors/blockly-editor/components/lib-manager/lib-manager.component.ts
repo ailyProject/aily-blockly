@@ -1,4 +1,5 @@
-import { ChangeDetectorRef, Component, EventEmitter, Input, OnDestroy, Output } from '@angular/core';
+import { AfterViewInit, ChangeDetectorRef, Component, computed, ElementRef, EventEmitter, Input, NgZone, OnDestroy, Output, signal, viewChild } from '@angular/core';
+import { injectVirtualizer } from '@tanstack/angular-virtual';
 import { NzInputModule } from 'ng-zorro-antd/input';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
@@ -22,6 +23,7 @@ import { LibManagerService, type PackageInfo } from './lib-manager.service';
 
 @Component({
   selector: 'app-lib-manager',
+  host: { '[class.lib-manager-host--panel]': 'embedInPanel' },
   imports: [
     FormsModule,
     CommonModule,
@@ -35,17 +37,76 @@ import { LibManagerService, type PackageInfo } from './lib-manager.service';
   templateUrl: './lib-manager.component.html',
   styleUrl: './lib-manager.component.scss'
 })
-export class LibManagerComponent implements OnDestroy {
+export class LibManagerComponent implements AfterViewInit, OnDestroy {
 
   /** 嵌入主窗口右侧工具栏时为 true（非 Blockly 全屏遮罩） */
-  @Input() embedInPanel = false;
+  private readonly panelMode = signal(false);
+  @Input() set embedInPanel(value: boolean) { this.panelMode.set(value); }
+  get embedInPanel(): boolean { return this.panelMode(); }
+
+  readonly scrollElement = viewChild<ElementRef<HTMLDivElement>>('scrollElement');
+  private readonly viewportWidth = signal(0);
+  private readonly libraries = signal<PackageInfo[]>([]);
+  readonly columnCount = computed(() => this.panelMode() ? 1
+    : Math.max(1, Math.floor((this.viewportWidth() - 30 + 15) / (365 + 15))));
+  readonly rowSize = computed(() => 165 + (this.panelMode() ? 10 : 15));
+  readonly libraryRows = computed(() => {
+    const libraries = this.libraries();
+    const columns = this.columnCount();
+    const rows: PackageInfo[][] = [];
+    for (let index = 0; index < libraries.length; index += columns) {
+      rows.push(libraries.slice(index, index + columns));
+    }
+    return rows;
+  });
+  readonly virtualizer = injectVirtualizer(() => ({
+    scrollElement: this.scrollElement(),
+    count: this.libraryRows().length,
+    estimateSize: () => this.rowSize(),
+    overscan: 2,
+  }));
+  private resizeObserver?: ResizeObserver;
+  private resizeFrame?: number;
+
+  ngAfterViewInit(): void {
+    const element = this.scrollElement()?.nativeElement;
+    if (!element) return;
+    const resize = () => {
+      if (this.isDestroyed || element.clientWidth === this.viewportWidth()) return;
+      const previousColumns = this.columnCount();
+      const firstLibrary = Math.floor(element.scrollTop / this.rowSize()) * previousColumns;
+      this.zone.run(() => {
+        this.viewportWidth.set(element.clientWidth);
+        this.cd.detectChanges();
+        // Keep the first visible library in view when the grid changes columns.
+        if (this.resizeFrame !== undefined) cancelAnimationFrame(this.resizeFrame);
+        if (previousColumns !== this.columnCount() && firstLibrary > 0) {
+          this.resizeFrame = requestAnimationFrame(() => {
+            if (!this.isDestroyed && this.libraryRows().length) this.virtualizer.scrollToIndex(
+              Math.min(this.libraryRows().length - 1, Math.floor(firstLibrary / this.columnCount())),
+              { align: 'start' });
+          });
+        }
+      });
+    };
+    resize();
+    this.resizeObserver = new ResizeObserver(resize);
+    this.resizeObserver.observe(element);
+  }
+
+  private resetListScroll(): void {
+    if (this.resizeFrame !== undefined) cancelAnimationFrame(this.resizeFrame);
+    this.scrollElement()?.nativeElement.scrollTo({ top: 0 });
+    this.virtualizer.scrollToOffset(0);
+  }
 
   @Output() close = new EventEmitter();
 
   keyword: string = '';
   tagList: { key: string; label: string }[] = [];
   displayTagList: { key: string; label: string }[] = [];
-  libraryList: PackageInfo[] = [];
+  get libraryList(): PackageInfo[] { return this.libraries(); }
+  set libraryList(value: PackageInfo[]) { this.libraries.set(value); }
   _libraryList: PackageInfo[] = [];
   installedPackageList: string[] = [];
 
@@ -59,6 +120,7 @@ export class LibManagerComponent implements OnDestroy {
   private isDestroyed = false;
 
   constructor(
+    private zone: NgZone,
     private npmService: NpmService,
     private configService: ConfigService,
     private projectService: ProjectService,
@@ -76,6 +138,8 @@ export class LibManagerComponent implements OnDestroy {
 
   ngOnDestroy() {
     this.isDestroyed = true;
+    this.resizeObserver?.disconnect();
+    if (this.resizeFrame !== undefined) cancelAnimationFrame(this.resizeFrame);
     this.initialDataLoadToken++;
     this.searchRequestToken++;
     this.installedStateRefreshToken++;
@@ -231,6 +295,8 @@ export class LibManagerComponent implements OnDestroy {
 
   async search(keyword = this.keyword) {
     this.keyword = keyword;
+    // Invalidate in-flight searches immediately, before the debounce elapses.
+    this.searchRequestToken++;
     this.searchSubject.next(keyword);
   }
 
@@ -253,6 +319,7 @@ export class LibManagerComponent implements OnDestroy {
       }
 
       this.libraryList = libraryList;
+      this.resetListScroll();
       this.cd.detectChanges();
       return;
     }
@@ -267,6 +334,7 @@ export class LibManagerComponent implements OnDestroy {
     if (keywordLower === 'installed' || keywordLower === 'lib-core') {
       const matchedItems = this.libManagerService.filterByFulltext(libraryList, keywordLower);
       this.libraryList = this.libManagerService.applyLocalization(matchedItems, this.translate.currentLang);
+      this.resetListScroll();
       this.cd.detectChanges();
       return;
     }
@@ -282,6 +350,7 @@ export class LibManagerComponent implements OnDestroy {
     }
 
     this.libraryList = results;
+    this.resetListScroll();
     this.cd.detectChanges();
   }
 

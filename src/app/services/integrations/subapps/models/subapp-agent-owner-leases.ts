@@ -46,6 +46,23 @@ export class SubappAgentOwnerLeases {
     return { ...lease };
   }
 
+  /** Only the bridge may adopt a main-process-proven incarnation. */
+  adopt(lease: SubappAgentOwnerLease): SubappAgentOwnerLease {
+    if (!lease.ownerLeaseId || !lease.sessionId || !Number.isSafeInteger(lease.expiresAt)) {
+      throw this.error('SUBAPP_OWNER_CONTROL_INVALID', 'Invalid main-process owner lease.');
+    }
+    const current = this.leases.get(lease.ownerLeaseId);
+    if (current && current.sessionId !== lease.sessionId) throw this.error('SUBAPP_OWNER_MISMATCH', 'Owner belongs to another session.');
+    if (lease.expiresAt > this.now()) {
+      this.leases.set(lease.ownerLeaseId, { ...lease });
+      if (!this.timer) {
+        this.timer = setInterval(() => void this.expire(), 1000);
+        (this.timer as unknown as { unref?(): void }).unref?.();
+      }
+    }
+    return { ...lease };
+  }
+
   require(ownerLeaseId: string, sessionId: string, requestId = ''): SubappAgentOwnerLease {
     const lease = this.leases.get(ownerLeaseId);
     if (!lease || lease.expiresAt <= this.now()) {
@@ -82,9 +99,13 @@ export class SubappAgentOwnerLeases {
   hasSession(sessionId: string): boolean { return [...this.leases.values()].some(lease => lease.sessionId === sessionId); }
 
   release(ownerLeaseId: string, sessionId?: string): Promise<Record<string, unknown>> {
+    const known = this.leases.get(ownerLeaseId) ?? this.recovery.retryLease(ownerLeaseId, sessionId);
+    if (known && sessionId && sessionId !== known.sessionId) {
+      return Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'));
+    }
     const pending = this.releasing.get(ownerLeaseId);
     if (pending) return pending;
-    const lease = this.leases.get(ownerLeaseId);
+    const lease = known;
     if (!lease) return Promise.resolve({ ok: true, released: false });
     if (sessionId && sessionId !== lease.sessionId) {
       return Promise.reject(this.error('SUBAPP_OWNER_MISMATCH', 'Subapp owner belongs to another session'));

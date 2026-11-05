@@ -1,4 +1,5 @@
 import { BuilderService } from '@domain/build/public-api';
+import { isBuildCancelled } from '@domain/build/public-api';
 import type { HostToolResult } from './host-tool-result';
 
 export async function runProjectBuild(
@@ -30,6 +31,14 @@ export async function runProjectBuild(
     };
   } catch (error: any) {
     const buildResult = error?.buildResult;
+    if (isBuildCancelled(buildResult) || isBuildCancelled(error)) {
+      const cancelled = buildResult || error;
+      return {
+        is_error: true,
+        metadata: { buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', buildResult: cancelled },
+        content: JSON.stringify({ success: false, ...cancelled }),
+      };
+    }
     const stderr = stripAnsi(String(buildResult?.fullStdErr || ''));
     return {
       is_error: true,

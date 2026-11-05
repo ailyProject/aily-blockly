@@ -8,6 +8,7 @@ import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { createRecoveredAgentHarness } from '../fixtures/abs-agent-tools.mjs'
 import { createAbsProviderSession } from '../fixtures/abs-provider-session.mjs'
 import { createAbsStepSubmissionBridge } from '../fixtures/abs-step-submission-bridge.mjs'
+import { createAbsUnclaimedStepProxy } from '../fixtures/abs-unclaimed-step-proxy.mjs'
 
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const root = path.resolve(process.env.AILY_STEP_ROOT ?? '')
@@ -17,7 +18,9 @@ const build = path.resolve(process.env.AILY_STEP_HOST_BUILD ?? '')
 const output = path.resolve(process.env.AILY_STEP_OUTPUT ?? '')
 const duplicateOwners = process.env.AILY_STEP_DUPLICATE_OWNERS === '1'
 const liveRecovery = process.env.AILY_STEP_LIVE_RECOVERY === '1'
+const unclaimedRecovery = process.env.AILY_STEP_UNCLAIMED_RECOVERY === '1'
 assert.ok(!liveRecovery || !duplicateOwners, 'Keep distinct fault fixtures independently attributable')
+assert.ok(!unclaimedRecovery || (!liveRecovery && !duplicateOwners), 'Keep the unclaimed/accepted combination separately attributable')
 const inside = (parent, file) => { const r = path.relative(parent, file); return r && r !== '..'
   && !r.startsWith('..' + path.sep) && !path.isAbsolute(r) }
 const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
@@ -71,10 +74,12 @@ const evidence = { ok: false, llmInvoked: false, realAilyProvider: true, actualS
   hardwareUsed: false, simulatorUsed: false, userProjectsModified: false, dailyInstallReplaced: false,
   ...(duplicateOwners ? { duplicateOwners: true, insertionLineEnding: 'lone-CR', expectedSavedLineEnding: 'LF' } : {}),
   ...(liveRecovery ? { liveRecovery: true, productionRecoveryBudgetMs: 30_000, requiredHealthyStreamMs: 32_000 } : {}), tools: [] }
+if (unclaimedRecovery) evidence.unclaimedThenAcceptedAckLoss = true
 evidence.sourceSeed = { files: Object.keys(sourceBefore).length, sha256: sha(JSON.stringify(sourceBefore)) }
-let app, renderer, page, harness, bridge, hostPid, baseline, baselineBlocks, baselineDocument, exported, latestBuild, editResultSha256, observeProvenance
+let app, renderer, page, harness, bridge, unclaimedProxy, hostPid, baseline, baselineBlocks, baselineDocument, exported, latestBuild, editResultSha256, observeProvenance
 const documentBlocks = document => index([document.pages.map(page => page.content), document.sharedModel.procedureBlocks])
 const call = async (name, input) => {
+  if (unclaimedRecovery) console.log('HOST_TOOL', name)
   const result = await harness.call(name, input)
   return result.structured ?? result
 }
@@ -129,6 +134,7 @@ try {
   await page.evaluate(target => { location.hash = '#/main/blockly-editor?path=' + encodeURIComponent(target) }, project)
   await ready()
   await installSettled()
+  if (unclaimedRecovery) console.log('PHASE=native-project-ready')
   Object.assign(process.env, { AILY_LIBRARY_HOST_PID: String(hostPid), AILY_APPDATA_PATH: appData,
     PI_CODING_AGENT_DIR: profileRoot, HOME: home, USERPROFILE: home, PI_OFFLINE: '1', npm_config_offline: 'true', npm_config_audit: 'false' })
   const absPath = path.join(project, 'project.abs'), before = `step_before_${randomUUID().slice(0, 8)}`
@@ -152,6 +158,7 @@ try {
       assert.equal(latestBuild.buildReceipt?.state, 'completed')
       return undefined
     } })
+  if (unclaimedRecovery) unclaimedProxy = await createAbsUnclaimedStepProxy({ upstreamOrigin: bridge.origin, failAfterToolId: 'abs-edit-once' })
   const compileDeadline = Date.now() + 12 * 60 * 1000
   harness = await createRecoveredAgentHarness({ agentRoot, sourceProject: project, globalRoot: root, profileRoot,
     createStreaming: async context => {
@@ -177,10 +184,11 @@ try {
           await fs.appendFile(path.join(output, 'provenance-observations.jsonl'), JSON.stringify(observation) + '\n')
         }
       }
-      return createAbsProviderSession(context, { apiBase: bridge.origin,
+      return createAbsProviderSession(context, { apiBase: unclaimedProxy?.origin ?? bridge.origin,
       onToolResult: async event => {
         const result = resultOf(event)
         evidence.tools.push({ name: event.toolName, id: event.toolCallId, isError: event.isError === true })
+        if (unclaimedRecovery) console.log('AGENT_TOOL', event.toolName, event.isError === true ? 'ERROR' : 'OK')
         await fs.appendFile(path.join(output, 'tool-results.jsonl'), JSON.stringify({ name: event.toolName, ...event }) + '\n')
         assert.notEqual(event.isError, true, `Actual Agent tool ${event.toolName} must succeed`)
         if (event.toolCallId === 'abs-edit-once') editResultSha256 = sha(JSON.stringify({
@@ -224,10 +232,10 @@ try {
       assert.equal(request.permissionMode, 'default')
       if (['read', 'write', 'edit'].includes(request.toolName)) return same(request.input?.path ?? '', absPath)
       return ['abs_export', 'abs_validate', 'abs_apply', 'app_reload', 'project_build', 'app_close',
-        ...(duplicateOwners || liveRecovery ? ['project_recover'] : [])].includes(request.toolName)
+        ...(duplicateOwners || liveRecovery || unclaimedRecovery ? ['project_recover'] : [])].includes(request.toolName)
         && same(request.input?.project ?? '', project)
     } })
-  if (liveRecovery) {
+  if (liveRecovery || unclaimedRecovery) {
     const originalCanvas = await canvas()
     const inspected = await call('project_recover', { project, action: 'inspect' })
     assert.equal(inspected.ok, true)
@@ -350,6 +358,17 @@ try {
   assert.equal(lost.acceptedToolResultSha256, editResultSha256, 'The accepted POST must carry the actual SDK edit result unchanged')
   assert.equal(lost.postCount, 1)
   assert.equal(lost.providerInvocations, 1)
+  if (unclaimedRecovery) {
+    evidence.unclaimedTransport = unclaimedProxy.snapshot()
+    assert.deepEqual(evidence.unclaimedTransport.failures, [])
+    assert.equal(evidence.unclaimedTransport.droppedRequests, 1)
+    assert.equal(evidence.unclaimedTransport.negativeReads, 1)
+    assert.equal(evidence.unclaimedTransport.retryPosts, 1)
+    assert.equal(evidence.unclaimedTransport.forwardedTargetPosts, 1)
+    assert.equal(evidence.unclaimedTransport.originalBodyUnchanged, true)
+    assert.equal(evidence.transport.interruptCount, 0)
+    for (const tool of plan) assert.equal(evidence.tools.filter(actual => actual.id === tool.id).length, 1)
+  }
   if (liveRecovery) {
     assert.equal(lost.stateReads, 2, 'Reuse submission-state proof, then freeze the watermark again after the second disconnect')
     assert.equal(lost.eventReads, 2)
@@ -378,6 +397,7 @@ try {
 } catch (error) {
   evidence.failure = { message: error.message, stack: error.stack }
   evidence.transport = bridge?.snapshot()
+  evidence.unclaimedTransport = unclaimedProxy?.snapshot()
   process.exitCode = 1
 } finally {
   await harness?.dispose().catch(error => { evidence.cleanupFailure = error.message; process.exitCode = 1 })
@@ -386,6 +406,7 @@ try {
     app.exit(0)
   }, { pid: hostPid, appData }).catch(error => { evidence.cleanupFailure = error.message; process.exitCode = 1 })
   await renderer?.close()
+  await unclaimedProxy?.close()
   await bridge?.close()
   assert.deepEqual(await seedHashes(), sourceBefore)
   evidence.sourceSeedPreserved = true

@@ -31,6 +31,7 @@ export class ActionService {
   private actionSubject = new Subject<Action>();
   private feedbackSubject = new Subject<ActionFeedback>();
   private listenerMap = new Map<string, any>(); // 存储监听器
+  private readonly handledActions = new WeakSet<Action>();
 
   constructor() { }
 
@@ -45,7 +46,8 @@ export class ActionService {
     type: string,
     payload?: T,
     feedbackCallback?: FeedbackCallback<T>,
-    timeoutMs: number = 5000
+    timeoutMs: number = 5000,
+    options?: { requireHandler?: boolean }
   ): void {
     const actionId = this.generateActionId();
     const action: Action<T> = {
@@ -61,6 +63,11 @@ export class ActionService {
       this.waitForFeedback<T>(actionId, timeoutMs).subscribe(feedbackCallback);
     }
     this.actionSubject.next(action);
+    // Subject dispatch enters matching handlers synchronously, even when their
+    // work is asynchronous. Absence is not a timeout or an uncertain write.
+    if (feedbackCallback && options?.requireHandler && !this.handledActions.has(action)) {
+      this.sendFeedback(actionId, false, { code: 'ACTION_HANDLER_UNAVAILABLE' }, '动作处理器尚未就绪，未开始执行');
+    }
   }
 
   /**
@@ -132,6 +139,7 @@ export class ActionService {
       map(action => action as Action<T>)
     ).subscribe({
       next: async (action) => {
+        this.handledActions.add(action);
         // 无论是否需要反馈，都执行handler
         try {
           const result = await handler(action);
@@ -237,6 +245,7 @@ export class ActionService {
       map(action => action as Action<T>)
     ).subscribe({
       next: async (action) => {
+        this.handledActions.add(action);
         try {
           const result = await handler(action);
 

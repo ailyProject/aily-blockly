@@ -165,7 +165,8 @@ describe('Coder build metadata', () => {
       { triggerAfterSuccessfulCompile: () => {} } as any,
       { update: () => {} } as any,
       { instant: (key: string) => key } as any, metadata,
-      { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo() } as any,
+      { assertCoderDependenciesReady: jasmine.createSpy('preflight').and.resolveTo(),
+        ensureLocalCompilerDependencies: jasmine.createSpy('compilerIntegrity').and.resolveTo() } as any,
       { record: jasmine.createSpy('record') } as any,
     );
     let calls = 0;
@@ -262,7 +263,7 @@ describe('Coder build metadata', () => {
     const pending = retry(); await retry(); await pending;
     expect(compiler.npmService.prepareLocalCompileBackend).toHaveBeenCalledTimes(1);
     expect(compiler.runOneShotCommand.calls.count()).toBe(stage === 'cancel-preparation' ? 0 : 1);
-    if (stage !== 'cancel-preparation') expect(readManifest().buildInfo.lastBuildStatus).toBe(stage === 'local-error' ? 'failed' : 'success');
+    expect(readManifest().buildInfo.lastBuildStatus).toBe(stage === 'cancel-preparation' ? 'cancelled' : stage === 'local-error' ? 'failed' : 'success');
     expect(JSON.parse(files.get(`${root}/.log/compile/latest-result.json`)!)).toEqual(jasmine.objectContaining({
       success: stage !== 'local-error' && stage !== 'cancel-preparation', source: 'manual',
     }));
@@ -432,6 +433,26 @@ describe('Coder build metadata', () => {
     (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('must not run'));
     expect((await compiler.runCompileFromDisk()).success).toBeTrue();
     expect((compiler as any).npmService.assertCoderDependenciesReady).not.toHaveBeenCalled();
+  });
+
+  it('waits for automatic compiler repair before starting a local compilation', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    let repaired!: () => void;
+    (compiler as any).npmService.ensureLocalCompilerDependencies.and.returnValue(new Promise<void>(resolve => { repaired = resolve; }));
+    const running = compiler.runCompileFromDisk();
+    expect(command).not.toHaveBeenCalled();
+    repaired();
+    expect((await running).success).toBeTrue();
+    expect(command).toHaveBeenCalled();
+  });
+
+  it('does not launch compilation after automatic compiler repair fails', async () => {
+    const command = jasmine.createSpy('command').and.returnValue(0);
+    const compiler = createCompiler(command);
+    (compiler as any).npmService.ensureLocalCompilerDependencies.and.rejectWith(new Error('Compiler extraction incomplete'));
+    expect((await compiler.runCompileFromDisk()).success).toBeFalse();
+    expect(command).not.toHaveBeenCalled();
   });
 
   it('preserves compiler diagnostics when a cloud-style error reaches the shared failure handler', async () => {

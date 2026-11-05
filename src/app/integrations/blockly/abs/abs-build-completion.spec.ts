@@ -4,6 +4,7 @@ import { ActionService } from '@core/app-shell/public-api';
 import { BuilderService } from '@domain/build/public-api';
 import { BlocklyBuildAdapter } from '../../build/blockly-build.adapter';
 import { runProjectBuild } from '../project-build-operation';
+import { buildCancelledResult } from '@domain/build/public-api';
 
 describe('active Blockly compilation completion', () => {
   function fixture() {
@@ -92,6 +93,16 @@ describe('Blockly build execution adapter', () => {
 });
 
 describe('build failure reporting', () => {
+  it('preserves user cancellation without describing a compiler failure', async () => {
+    const cancelled = buildCancelledResult('编译已取消');
+    const builder = { build: async () => { throw Object.assign(new Error(cancelled.text), cancelled, { buildResult: cancelled }); } };
+    const result = await runProjectBuild(builder as any, {}, '/isolated');
+    expect(result.is_error).toBeTrue();
+    expect(result.metadata).toEqual(jasmine.objectContaining({ buildOutcome: 'cancelled', code: 'BUILD_CANCELLED', buildResult: cancelled }));
+    expect(JSON.parse(String(result.content))).toEqual(jasmine.objectContaining({ success: false, buildOutcome: 'cancelled', retryable: false }));
+    expect(String(result.content)).not.toContain('编译失败');
+  });
+
   for (const notStarted of [true, false]) it(`keeps admission rejection distinct from compiler failure (notStarted=${notStarted})`, async () => {
     const error = Object.assign(new Error('actual reason'), notStarted
       ? { buildOutcome: 'not-started' }

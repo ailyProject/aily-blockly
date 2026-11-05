@@ -27,6 +27,7 @@ export interface BlocklyLibraryRuntimeRebuildInput {
   packageContent: string;
   runtimeSignature: string;
   previousRuntimeSignature?: string;
+  retainedDocument?: unknown;
 }
 
 /**
@@ -42,9 +43,11 @@ export interface ProjectApplicationPort {
   closeConnectionGraphWindows(): Promise<boolean>;
   hasActiveProjectMutation(projectPath: string): boolean;
   /** Only the selected Blockly runtime; does not inspect or stop other projects. */
-  hasActiveBlocklyBuildOrUpload(projectPath: string): boolean;
+  hasActiveBlocklyBuildOrUpload(projectPath: string, libraryOperation?: boolean): boolean;
   hasRunningAi(): boolean;
   prepareProjectCopy(projectPath: string): Promise<ProjectCopySnapshot>;
+  /** A zero feedback budget retains the original editor completion. Transport
+   * observers use the domain receipt, never cancel or replay this save. */
   dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult>;
   inspectBlocklyConflict?(path: string): Promise<ProjectConflictOffer>;
   resolveBlocklyConflict?(path: string, choice: ProjectConflictChoice, token: string): Promise<ProjectConflictResolution>;
@@ -53,6 +56,18 @@ export interface ProjectApplicationPort {
   /** Only a non-authoritative native fragment; failed-load copies use disk as primary. */
   captureBlocklyRecoveryFragment?(sourcePath: string): Promise<ProjectRecoveryFragment>;
   hasUnsavedBlocklyChanges(): Promise<boolean>;
+  prepareBlocklyLibraryEdit?(projectPath: string, removedPackages?: string[]): Promise<{
+    document: unknown;
+    usedLibraries?: string[];
+    release(): void;
+    record(restore: (forward: boolean) => Promise<void | boolean>): void;
+  }>;
+  confirmBlocklyLibraryRestore?(offer: { forward: boolean; packages: string[];
+    changes: { name: string; before: string | null; after: string | null }[] }, apply: () => Promise<void>): Promise<boolean>;
+  captureBlocklyLibraryDocument?(): Promise<unknown>;
+  /** File equality alone is not evidence that a failed Realm became ready. */
+  isBlocklyLibraryRuntimeReady?(projectPath: string): boolean;
+  hasBlocklyRuntimeRecovery?(projectPath: string): boolean;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;

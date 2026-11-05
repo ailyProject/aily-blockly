@@ -16,6 +16,7 @@ export interface AilyHostAuthRuntimeResult {
   ok: boolean;
   authenticated?: boolean;
   accessToken?: string;
+  accountId?: string;
   apiServer?: string;
   generation: number;
   errorCode?: string;
@@ -25,6 +26,7 @@ export interface AilyHostAuthRuntimeResult {
 export interface AilyHostAuthRuntimeAuthService {
   readonly hasLocalAuthSession: boolean;
   readonly isSessionInvalidating: boolean;
+  readonly currentUser?: { readonly id?: string } | null;
   initializeAuth(): Promise<void>;
   getToken2(): Promise<string | null>;
   getAuthCredentialGeneration(): number;
@@ -62,6 +64,7 @@ export function createAilyHostAuthRequestHandler(
       ok: true,
       authenticated: true,
       accessToken,
+      ...(authService.currentUser?.id ? { accountId: authService.currentUser.id } : {}),
       apiServer,
       generation: authService.getAuthCredentialGeneration(),
     };

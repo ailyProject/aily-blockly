@@ -20,22 +20,15 @@ describe('library discard before application quit', () => {
   }
   it('attempts every open project once and reports failures to the quit decision', async () => {
     const service = fixture();
-    await expectAsync(service.discardAllLibraryChanges({ quitting: true })).toBeRejectedWithError(AggregateError);
+    await expectAsync(service.discardLibraryChangesBeforeQuit()).toBeRejectedWithError(AggregateError);
     expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken'], ['/healthy']]);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
   });
   it('does not rebuild the editor that is about to quit after successful recovery', async () => {
     const service = fixture(); service.discardLibraryChanges.and.resolveTo();
-    await service.discardAllLibraryChanges({ quitting: true });
+    await service.discardLibraryChangesBeforeQuit();
     expect(service.discardLibraryChanges).toHaveBeenCalledTimes(2);
     expect(service.rebuildBlocklyRuntimeAfterLibraryChange).not.toHaveBeenCalled();
-    await service.discardAllLibraryChanges();
-    expect(service.rebuildBlocklyRuntimeAfterLibraryChange).toHaveBeenCalledTimes(1);
-  });
-  it('keeps project switching strict when dependency recovery fails', async () => {
-    const service = fixture();
-    await expectAsync(service.discardAllLibraryChanges()).toBeRejectedWithError('ENOENT package.json');
-    expect(service.discardLibraryChanges.calls.allArgs()).toEqual([['/broken']]);
   });
 });
 
@@ -109,12 +102,14 @@ describe('project lifecycle admission across sessions', () => {
     service.coderProjectsSubject = new BehaviorSubject([]);
     service.coderOperationsSubject = new BehaviorSubject(new Map());
     service.messageService = { warning: jasmine.createSpy('warning') };
+    service.stateSubject = new BehaviorSubject('loaded');
+    Object.defineProperty(service, 'router', { value: { url: '/main/guide' } });
     service.getProjectMode = () => 'blockly';
     service.save = jasmine.createSpy('save').and.resolveTo({ success: true });
     service.projectOpenInternal = jasmine.createSpy('open').and.resolveTo(true);
     service.closeInternal = jasmine.createSpy('close').and.resolveTo(true);
     service.stopProjectCommands = jasmine.createSpy('stopCommands').and.resolveTo();
-    Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path) } });
+    Object.defineProperty(service, 'application', { value: { hasActiveProjectMutation: (path: string) => registry.hasBlocking(path), closeConnectionGraphWindows: async () => true } });
     return { service, registry };
   }
 
@@ -279,6 +274,39 @@ describe('project lifecycle admission across sessions', () => {
     expect(result.reason).toBe('project_lifecycle_busy');
     expect(bridge.executeOperation).not.toHaveBeenCalled();
     board.release();
+  });
+
+  it('admits only the owning dependency-history synchronization and always permits token cleanup', async () => {
+    const { service, registry } = fixture();
+    const lease = service.acquireProjectLifecycle(['/a']);
+    service.libraryHistoryNavigation = { token: 'history-owner', projectPath: '/a' };
+    const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
+    bridge.projectService = service; bridge.aiOperations = registry; bridge.mutationSequence = 0;
+    bridge.executeOperation = jasmine.createSpy('operation').and.resolveTo({ ok: true });
+    const call = (action: string, token = 'history-owner') => bridge.execute({ operation: 'library_history_navigation', path: '/a', params: { action, token } });
+    try {
+      expect((await call('synchronize', 'other')).reason).toBe('project_lifecycle_busy');
+      expect((await call('begin')).reason).toBe('project_lifecycle_busy');
+      expect(bridge.executeOperation).not.toHaveBeenCalled();
+      expect((await call('synchronize')).ok).toBeTrue();
+      expect((await call('release')).ok).toBeTrue();
+      expect(registry.hasBlocking('/a')).toBeFalse();
+    } finally { service.libraryHistoryNavigation = undefined; lease.release(); }
+  });
+
+  it('routes owned dependency synchronization through the mounted editor and releases after runtime failure', async () => {
+    const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
+    bridge.projectService = { currentProjectPath: '/a', getProjectMode: () => 'blockly',
+      isLibraryMutationInProgress: () => true, ownsLibraryHistoryNavigation: (token: string) => token === 'owned',
+      synchronizeLibraryHistoryNavigation: jasmine.createSpy('sync').and.resolveTo(),
+      releaseLibraryHistoryNavigation: jasmine.createSpy('release') };
+    bridge.getProjectRuntimeStatus = () => ({ ready: true });
+    const call = (action: string) => bridge.executeOperation({ operation: 'library_history_navigation', params: { action, token: 'owned', changedPaths: ['package.json'] } });
+    expect((await call('synchronize')).ok).toBeTrue();
+    expect(bridge.projectService.synchronizeLibraryHistoryNavigation).toHaveBeenCalledOnceWith('owned', ['package.json']);
+    bridge.getProjectRuntimeStatus = () => ({ ready: false });
+    expect((await call('release')).ok).toBeTrue();
+    expect(bridge.projectService.releaseLibraryHistoryNavigation).toHaveBeenCalledOnceWith('owned');
   });
 
   for (const sameBoard of [false, true]) {

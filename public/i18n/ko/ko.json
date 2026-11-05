@@ -180,6 +180,7 @@
         "SPONSORS_DESC": "이 프로젝트는 다음 회사/개인들의 후원을 받고 있습니다",
         "NEWS": "뉴스",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "원하는 작업을 자연어로 설명하면 AI 도우미가 프로젝트 생성이나 질문에 대한 답변을 도와줍니다.",
             "STEP1_TITLE": "새 프로젝트 만들기",
             "STEP1_DESC": "여기를 클릭하여 새 프로그래밍 프로젝트를 만드세요. 보드와 프로그래밍 언어를 선택하여 창작 여정을 시작하세요.",
             "STEP2_TITLE": "기존 프로젝트 열기",
@@ -206,6 +207,7 @@
         "WORKSPACE_SELECT_ALL": "모든 블록 선택",
         "EXPLAIN_BLOCK": "AI 설명",
         "ONBOARDING": {
+            "AI_TOOLS_DESC": "AI 도우미가 프로젝트 이해, 코드 생성, 프로그램 설명과 오류 수정을 도와줍니다.",
             "TOOLBOX_TITLE": "블록 도구 상자",
             "TOOLBOX_DESC": "여기는 블록 분류 영역입니다. 분류를 클릭해 기능 블록을 찾고 오른쪽 작업 영역으로 끌어다 놓아 사용하세요.",
             "WORKSPACE_TITLE": "작업 영역",
@@ -905,6 +907,9 @@
         "SAFE_LOGOUT_CONFIRM": "로그아웃",
         "CANCEL": "취소",
         "ONBOARDING": {
+            "APP_STORE_TITLE": "앱 스토어",
+            "APP_STORE_DESC": "AI 도구를 찾아 설치해 AI 도우미의 기능을 확장할 수 있습니다. 다른 앱을 추가하고 도구 모음 항목도 관리할 수 있습니다.",
+            "AI_TOOLS_TITLE": "AI 도우미",
             "SKIP": "건너뛰기",
             "PREV": "이전",
             "NEXT": "다음",
