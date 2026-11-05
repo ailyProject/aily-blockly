@@ -17,7 +17,7 @@ const {
 const {
     acquireOwner: acquireChildToolOwner,
     authorizeMessagePortSend: authorizeChildToolMessagePortSend,
-    authorizeExclusiveRestart: authorizeChildToolExclusiveRestart,
+    authorizeRestart: authorizeChildToolRestart,
     classifyRegistration: classifyChildToolSessionRegistration,
     electMessageControllerOwner: electChildToolMessageControllerOwner,
     ownerCount: childToolOwnerCount,
@@ -485,17 +485,26 @@ async function restartChildToolSession(toolIdOrPayload, ownerId) {
     if (!session) {
         return { success: false, reason: 'not-found' };
     }
-    const authorization = authorizeChildToolExclusiveRestart(session, ownerId, payload);
+    const authorization = authorizeChildToolRestart(session, ownerId, payload);
     if (!authorization.success) return authorization;
+    if (session.restartPromise) return session.restartPromise;
 
-    cancelChildToolRelease(session);
-    const stopped = await stopChildToolSessionProcess(session);
-    if (!stopped) {
-        return { success: false, reason: 'process-still-running' };
+    const task = (async () => {
+        cancelChildToolRelease(session);
+        const stopped = await stopChildToolSessionProcess(session);
+        if (!stopped) {
+            return { success: false, reason: 'process-still-running' };
+        }
+        pendingChildToolProcessMessages.delete(session.streamId);
+        if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
+        return { success: true };
+    })();
+    session.restartPromise = task;
+    try {
+        return await task;
+    } finally {
+        session.restartPromise = null;
     }
-    pendingChildToolProcessMessages.delete(session.streamId);
-    if (childToolSessions.get(normalizedToolId) === session) childToolSessions.delete(normalizedToolId);
-    return { success: true };
 }
 
 function resolveChildToolIdsForCatalogId(catalogId, includeDependencies = false) {

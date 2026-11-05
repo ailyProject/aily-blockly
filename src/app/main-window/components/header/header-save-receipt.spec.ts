@@ -51,4 +51,19 @@ describe('Header original save completion', () => {
     expect(header.projectService.save).toHaveBeenCalledTimes(1);
     expect(header.projectSavingFromUi).toBeFalse();
   });
+
+  it('accepts a committed document while its generated code waits for the active build', async () => {
+    header.projectService.save.and.resolveTo({ success: false, projectSaved: true,
+      generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_BUSY', error: 'BUILD_WORKSPACE_BUSY: busy' });
+    expect(await header.saveProjectFromUi()).toBeTrue();
+    expect(header.message.error).not.toHaveBeenCalled();
+    expect(header.projectService.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('still reports contention before any confirmed document commit', async () => {
+    header.projectService.save.and.resolveTo({ success: false, projectSaved: false,
+      code: 'BUILD_WORKSPACE_BUSY', error: 'document not saved' });
+    expect(await header.saveProjectFromUi()).toBeFalse();
+    expect(header.message.error).toHaveBeenCalledOnceWith('document not saved');
+  });
 });

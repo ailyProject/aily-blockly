@@ -36,6 +36,16 @@ describe('project title unsaved marker', () => {
     expect(view.projectService.getProjectMode).not.toHaveBeenCalled();
   });
 
+  it('clears the dirty title without querying the retired editor while closing', async () => {
+    const view = fixture();
+    view.hasUnsavedProjectChanges = true;
+    view.blocklyService.projectDirtyState.changed.next(true);
+    view.projectService.stateSubject.next('closing');
+    await view.refreshProjectUnsavedState();
+    expect(view.hasUnsavedProjectChanges).toBeFalse();
+    expect(view.projectService.hasCachedLibraryChanges).not.toHaveBeenCalled();
+  });
+
   it('keeps failed Coder checks dirty and ignores stale replies after save/switch/destroy', async () => {
     for (const changed of ['revision', 'project', 'destroyed']) {
       const view = fixture(); view.router.url = '/main/code-editor-pro';

@@ -2,6 +2,29 @@ import { fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import { BlocklyLiveOperationBridgeService } from '@integration/automation/public-api';
 import { BlocklyEditorAutomationAdapter } from '../blockly-editor-automation.adapter';
 import { ProjectApplicationAdapter } from '../../project/project-application.adapter';
+import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
+
+describe('ABS save with deferred generated code', () => {
+  let previousLibraries: any;
+  beforeEach(() => { previousLibraries = window['libraryDependencies']; });
+  afterEach(() => { window['libraryDependencies'] = previousLibraries; });
+  for (const dependencyFailure of [false, true]) it(`retains committed facts and separates dependency failure=${dependencyFailure}`, async () => {
+    let save!: (path: string) => Promise<any>;
+    const project = { currentProjectPath: '/isolated', setAbsSaveHandler: handler => { save = handler; } };
+    const service = new AbsWorkspaceSyncService({} as any, project as any);
+    const exportGeneration = spyOn(service, 'exportGeneration').and.resolveTo({
+      publication: { status: 'COMMITTED' }, requiresReload: false, warnings: ['busy'],
+      derivedOutputs: { published: false, code: 'BUILD_WORKSPACE_BUSY', error: 'active build' },
+    } as any);
+    window['libraryDependencies'] = { save: jasmine.createSpy('libraries').and.callFake(async () => {
+      if (dependencyFailure) throw new Error('dependency save failed');
+    }) };
+    expect(await save('/isolated')).toEqual(jasmine.objectContaining({ projectSaved: true,
+      generatedCodePublished: false, partial: true,
+      code: dependencyFailure ? 'PROJECT_DEPENDENCY_SAVE_FAILED' : 'BUILD_WORKSPACE_BUSY' }));
+    expect(exportGeneration).toHaveBeenCalledOnceWith({ save: true });
+  });
+});
 
 describe('live Blockly save completion', () => {
   function fixture() {

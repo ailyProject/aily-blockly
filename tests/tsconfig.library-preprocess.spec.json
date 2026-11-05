@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/editors/blockly-editor/services/project-preprocess-save.spec.ts",
+    "../src/app/editors/blockly-editor/services/builder.service.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-live-save.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-project-runtime-rebuild.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-derived-outputs.spec.ts",
+    "../src/app/main-window/components/header/header-save-receipt.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

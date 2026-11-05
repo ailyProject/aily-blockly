@@ -27,6 +27,8 @@ export interface CmdOptions {
   forwardStdout?: boolean;
   /** Bind a build marker to this registered command's confirmed tree cancellation. */
   buildWorkspace?: string;
+  /** Advisory preprocess only: foreground save may use native tree-stop acknowledgement. */
+  backgroundPreprocess?: boolean;
   /** Experimental full-delivery request; only the host compile entry may attest it. */
   buildDeliveryRequest?: string;
   projectPath?: string;

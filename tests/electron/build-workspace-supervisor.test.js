@@ -14,11 +14,12 @@ const { createRequire } = require('node:module');
 
 // Keep event ordering deterministic without killing real processes or exposing
 // test-only command APIs. Real process-tree/marker integration is covered below.
-function cancellationFixture({ terminate, workspace, viaIpc = false } = {}) {
+function cancellationFixture({ terminate, workspace, viaIpc = false, backgroundPreprocess = false } = {}) {
   const child = Object.assign(new EventEmitter(), { pid: 12345, stdout: new EventEmitter(), stderr: new EventEmitter() });
   const filename = require.resolve('../../electron/cmd');
   const sourceRequire = createRequire(filename);
   let killCalls = 0, spawnCalls = 0;
+  const killOptions = [];
   const timers = [], handlers = new Map();
   const context = { module: { exports: {} }, process, console: { info() {}, log() {}, warn() {}, error() {} },
     setTimeout: callback => { const timer = { callback, unref() {} }; timers.push(timer); return timer; },
@@ -27,15 +28,15 @@ function cancellationFixture({ terminate, workspace, viaIpc = false } = {}) {
       if (name === 'electron') return { ipcMain: { handle: (name, handler) => handlers.set(name, handler) } };
       if (name === 'child_process') return { spawn: () => { spawnCalls++; return child; } };
       if (name === './platform') return { isLinux: true };
-      if (name === './process-tree') return { killRegisteredProcessTree: () => { killCalls++; return terminate(); } };
+      if (name === './process-tree') return { killRegisteredProcessTree: (_pid, _label, options) => { killCalls++; killOptions.push(options); return terminate(); } };
       if (name === './build-workspace-supervisor') return { createBuildWorkspaceSupervisor: () => workspace };
       return sourceRequire(name);
     },
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   const api = context.module.exports, manager = new api.CommandManager();
-  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false });
-  return { manager, api, handlers, child, get killCalls() { return killCalls; }, get spawnCalls() { return spawnCalls; },
+  if (!viaIpc) manager.executeCommand({ command: process.execPath, streamId: 'cancel', shellProfile: false, backgroundPreprocess, buildWorkspace: backgroundPreprocess ? '/project' : undefined });
+  return { manager, api, handlers, child, killOptions, get killCalls() { return killCalls; }, get spawnCalls() { return spawnCalls; },
     retryCleanup: () => {
       const timer = timers.shift();
       if (timer && !timer.cancelled) timer.callback();
@@ -393,4 +394,11 @@ test('command shutdown refuses native launches', () => {
   const isolated = cancellationFixture({ viaIpc: true });
   isolated.api.beginCommandShutdown();
   assert.throws(() => isolated.manager.executeCommand({}), /SHUTDOWN/);
+});
+
+
+for (const backgroundPreprocess of [false, true]) test(`native-ack priority is scoped to the registered background flag (${backgroundPreprocess})`, async () => {
+  const f = cancellationFixture({ terminate: async () => true, backgroundPreprocess });
+  assert.equal(await f.manager.killProcess('cancel'), true);
+  assert.equal(f.killOptions[0]?.preferNativeAck, backgroundPreprocess);
 });

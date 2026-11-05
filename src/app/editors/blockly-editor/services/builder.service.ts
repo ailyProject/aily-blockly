@@ -105,6 +105,8 @@ export class _BuilderService {
   private preprocessFullError: string = ''; // 保存预编译完整错误日志
   private pendingPrecompile: boolean = false; // 标记是否有待处理的预编译
   private preprocessRunGeneration = 0;
+  private preprocessSavePauses = 0;
+  private preprocessPreparations = new Set<number>();
   private pendingPrecompileTimer: ReturnType<typeof setTimeout> | null = null;
   private preprocessStop: Promise<void> | null = null;
   private pendingPrecompileBlockedLogged = false;
@@ -163,7 +165,7 @@ export class _BuilderService {
   }
 
   private isInstallInProgress(): boolean {
-    return this.npmService.isInstalling || this.workflowService.currentState === ProcessState.INSTALLING;
+    return this.preprocessSavePauses > 0 || this.npmService.isInstalling || this.workflowService.currentState === ProcessState.INSTALLING;
   }
 
   private getPendingChatBackgroundOperationCount(): number {
@@ -567,6 +569,8 @@ export class _BuilderService {
         debounceTime(500),
       ).subscribe(async (data) => {
       const runGeneration = ++this.preprocessRunGeneration;
+      (this.preprocessPreparations ??= new Set()).add(runGeneration);
+      try {
       if (this.isCloudBuild()) {
         this.pendingPrecompile = false;
         try { await this.stopPreprocess(); } catch (error) { console.warn('Stopping local preprocessing failed:', error); }
@@ -591,6 +595,20 @@ export class _BuilderService {
         this.pendingPrecompile = true;
         return;
       }
+
+      // Unsaved canvas edits are foreground work. Keep one advisory request
+      // pending until a real save completes instead of racing its publication.
+      try {
+        if (await this.projectService.hasUnsavedChanges()) {
+          this.pendingPrecompile = true;
+          return;
+        }
+      } catch (error) {
+        this.pendingPrecompile = true;
+        console.info('[Builder][PreprocessSchedule] defer until the canvas can be saved', error);
+        return;
+      }
+      if (this.shouldCancelBackgroundPreprocess(runGeneration)) return;
 
       await this.waitForBackgroundPreprocessIdle(String(data || 'dependency'));
       if (this.shouldCancelBackgroundPreprocess(runGeneration)) {
@@ -756,7 +774,7 @@ export class _BuilderService {
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
-          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath },
+          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath, backgroundPreprocess: true },
           true,
         ).subscribe({
           next: (output) => {
@@ -840,6 +858,7 @@ export class _BuilderService {
         if (error instanceof BlocklyCodePreparationInvalidatedError) return;
         console.warn('启动后台预处理失败:', error);
       }
+      } finally { this.preprocessPreparations.delete(runGeneration); }
       })
     ));
 
@@ -964,6 +983,38 @@ export class _BuilderService {
       await this.waitForDelay(Math.min(100, budgetMs - (Date.now() - startedAt)));
     }
     assertCurrent();
+  }
+
+  /** Save/library operations outrank advisory preprocessing. Stop only our
+   * registered background command with confirmed tree cleanup, hold scheduling
+   * through the real save, then coalesce the deferred analysis. */
+  async pauseBackgroundPreprocessForSave(projectPath: string): Promise<() => void> {
+    this.preprocessSavePauses = (this.preprocessSavePauses || 0) + 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      --this.preprocessSavePauses;
+      if (!this.preprocessSavePauses && this.pendingPrecompile && this.initialized && projectPath === this.projectService.currentProjectPath) {
+        this.triggerPendingPrecompile('save-complete', '项目保存完成，继续待处理的后台依赖分析');
+      }
+    };
+    try {
+      const assertCurrent = () => {
+        if (!this.initialized || projectPath !== this.projectService.currentProjectPath) {
+          throw new Error('save cancelled or project changed before background preprocessing yielded.');
+        }
+      };
+      assertCurrent();
+      ++this.preprocessRunGeneration;
+      // An idle, unchanged save creates no analysis work. Preserve requests
+      // already queued, preparing, or running; dependency changes during the
+      // save will enqueue their own request through the normal subscription.
+      this.pendingPrecompile ||= this.isPreprocessing() || (this.preprocessPreparations?.size ?? 0) > 0;
+      if (this.isPreprocessing()) await this.stopPreprocess();
+      assertCurrent();
+      return release;
+    } catch (error) { release(); throw error; }
   }
 
   /** Upload owns scheduling before it owns the device. Let an already-running

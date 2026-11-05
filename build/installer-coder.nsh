@@ -1,1 +1,1 @@
-!include "${BUILD_RESOURCES_DIR}/installer-common.nsh"
+!include "installer-common.nsh"

@@ -98,7 +98,7 @@ class AbsSyntaxReader {
       type: '', parameters: [], sections: [],
       disabled: false, start: this.offset, end: this.offset,
     };
-    node.type = this.name();
+    node.type = this.name(true);
     this.space();
     if (this.source[this.offset] !== '(') {
       node.omittedParentheses = true; node.end = this.offset; this.depth--; return node;
@@ -243,8 +243,11 @@ class AbsSyntaxReader {
       });
   }
 
-  private name(): string {
-    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(this.source.slice(this.offset));
+  private name(blockType = false): string {
+    // Library block types (e.g. 74hc595_create) may start with a digit.
+    // Argument and annotation names retain the existing identifier grammar.
+    const pattern = blockType ? /^[A-Za-z0-9_]+/ : /^[A-Za-z_][A-Za-z0-9_]*/;
+    const match = pattern.exec(this.source.slice(this.offset));
     if (!match) this.fail('Expected an identifier.');
     this.offset += match[0].length;
     return match[0];

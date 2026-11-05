@@ -1,4 +1,4 @@
-import type { GeneratedSourcePublicationReceipt } from '../../../editors/blockly-editor/services/generated-code-artifacts';
+import { isBuildWorkspaceBusyError, type GeneratedSourcePublicationReceipt } from '../../../editors/blockly-editor/services/generated-code-artifacts';
 
 export interface AbsDerivedOutputs { published: boolean; code?: string; error?: string;
   sourceArchive?: GeneratedSourcePublicationReceipt['sourceArchive'] }
@@ -21,6 +21,7 @@ export function describeAbsDerivedOutputs(prepared?: PreparedCode | null, public
   const published = warnings.length === 0;
   const output: AbsDerivedOutputs | undefined = prepared === undefined && !publicationFailure ? undefined : { published, ...(!published ? {
     code: generationError ? 'PROJECT_CODE_GENERATION_FAILED'
+      : isBuildWorkspaceBusyError(failure) ? 'BUILD_WORKSPACE_BUSY'
       : typeof (failure as any)?.code === 'string' ? (failure as any).code : 'PROJECT_DERIVED_OUTPUT_PENDING',
     error: [generationError, publicationError].filter(value => value !== undefined).join('\n'),
   } : {}) };

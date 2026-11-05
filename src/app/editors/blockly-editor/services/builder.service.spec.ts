@@ -71,6 +71,7 @@ describe('BuilderService background preprocess ownership', () => {
       service.blocklyService = { workspace: {}, dependencySubject: new Subject(), aiExecutionActive$: new Subject() };
       service.workflowService.state$ = new Subject();
       service.projectService.stateSubject = { value: 'loaded' };
+      service.projectService.hasUnsavedChanges = async () => false;
       service.projectService.getBoardModule = async () => 'board';
       service.platformService = { za7: '7za' };
       service.configService = { getCompileBackend: () => 'local', getCompileSettingsKey: () => 'local', data: {} };
@@ -90,6 +91,26 @@ describe('BuilderService background preprocess ownership', () => {
       service.appendCompileLog = jasmine.createSpy('compileLog');
       return service;
     }
+
+    it('defers dirty-canvas preprocessing until save completes instead of making save wait for it', fakeAsync(() => {
+      const service = backgroundBuilder();
+      let dirty = true;
+      service.projectService.hasUnsavedChanges = async () => dirty;
+      service.init();
+      service.blocklyService.dependencySubject.next('user-delete');
+      tick(500);
+      expect(service.cmdService.spawn).not.toHaveBeenCalled();
+      expect(service.pendingPrecompile).toBeTrue();
+      dirty = false;
+      let release!: () => void;
+      service.pauseBackgroundPreprocessForSave('D:/owned').then((value: () => void) => { release = value; });
+      tick();
+      release();
+      tick(1300);
+      expect(service.cmdService.spawn).toHaveBeenCalledTimes(1);
+      service.destroy();
+      tick();
+    }));
 
     it('does not spawn after the project starts closing during preparation', fakeAsync(() => {
       const service = backgroundBuilder();

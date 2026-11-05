@@ -1,7 +1,8 @@
-import { Injectable } from '@angular/core';
+import { retainBlocklyHistory } from './blockly-library-history';
+import { Injectable, Optional } from '@angular/core';
 import { Subscription, merge } from 'rxjs';
 import { AILY_BLOCKLY_USED_LIBRARIES_FIELD, BlocklyLibraryRuntimeRebuildOptions, BlocklyProjectDocument, BlocklyService } from './blockly.service';
-import { ActionService } from '@core/app-shell/public-api';
+import { ActionService, NoticeService } from '@core/app-shell/public-api';
 import { getActiveProjectGenerator, getActiveProjectGeneratorRevision } from './blockly-generator-runtime.service';
 import { ElectronService, ProjectFilePublicationError } from '@core/platform/public-api';
 import {
@@ -13,7 +14,7 @@ import {
   type ProjectSaveOutcome,
 } from '@domain/project/public-api';
 import { sha256Hex } from '../../../utils/crypto.utils';
-import { isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts,
+import { isBuildWorkspaceBusyError, isBuildWorkspaceRecoveryRequiredError, writePreparedArduinoGeneratedArtifacts,
   type GeneratedSourcePublicationOptions, type GeneratedSourcePublicationReceipt } from './generated-code-artifacts';
 import { patchBuildMetadata } from '../../../utils/build-publication.utils';
 import type { PreparedBlocklyCode } from './prepared-project-code';
@@ -43,11 +44,14 @@ export class _ProjectService {
   private readonly cleanState = new BlocklyProjectCleanState(workspace => this.blocklyService.getWorkspaceLoadReadbackView(workspace));
   private hydration?: Subscription;
   private runtimeRecovery?: RuntimeRecoveryRecord;
+  private preprocessSaveGuard?: (path: string) => Promise<() => void>;
+  private deferredSaveOutputs?: { timer?: ReturnType<typeof setTimeout> };
 
   constructor(
     private blocklyService: BlocklyService,
     private actionService: ActionService,
-    private electronService: ElectronService
+    private electronService: ElectronService,
+    @Optional() private noticeService?: NoticeService,
   ) { }
 
   init() {
@@ -86,6 +90,7 @@ export class _ProjectService {
   }
 
   destroy() {
+    this.cancelDeferredSaveOutputs();
     this.actionService.unlisten('project-save-handler');
     this.actionService.unlisten('project-check-unsaved-handler');
     this.hydration?.unsubscribe();
@@ -145,7 +150,7 @@ export class _ProjectService {
   }
 
   /** Library reload shares the save/ABS queue, but never saves the user's edits. */
-  rebuildLibraryRuntime(options: BlocklyLibraryRuntimeRebuildOptions, admit: (lease?: BlocklyWorkspaceEditLease) => void = () => {}): Promise<void> {
+  rebuildLibraryRuntime(options: BlocklyLibraryRuntimeRebuildOptions, admit: (lease?: BlocklyWorkspaceEditLease) => void = () => {}, retainedDocument?: BlocklyProjectDocument): Promise<void> {
     // A quarantined rebuild has its own retained full document and private
     // grant. Ordinary library synchronization must not recapture a partial canvas.
     if (this.hasLibraryRuntimeRecovery()) {
@@ -194,7 +199,9 @@ export class _ProjectService {
           restoreCheckpoint: this.cleanState.captureCheckpoint() };
         admit(lease);
         runtimeChanged = true;
-        await this.blocklyService.rebuildLibraryRuntimeInPlace(options, lease, assertCurrent);
+        const restoreHistory = retainBlocklyHistory(this.blocklyService.workspace);
+        try { await this.blocklyService.rebuildLibraryRuntimeInPlace(options, lease, assertCurrent, retainedDocument); }
+        finally { if (this.blocklyService.workspace) restoreHistory(); }
         assertCurrent();
         if (fs.readFileSync(abiPath, 'utf8') !== disk) throw new Error('project.abi changed during library runtime rebuild.');
         // The editor's load/readback boundary preserved content; page hydration may
@@ -430,7 +437,22 @@ export class _ProjectService {
     return this.absSaveAsHandler(path);
   }
 
-  save(path: string): Promise<ProjectSaveOutcome> {
+  bindPreprocessSaveGuard(guard: (path: string) => Promise<() => void>): () => void {
+    this.preprocessSaveGuard = guard;
+    return () => { if (this.preprocessSaveGuard === guard) this.preprocessSaveGuard = undefined; };
+  }
+
+  async save(path: string): Promise<ProjectSaveOutcome> {
+    const release = await this.pauseBackgroundPreprocess(path);
+    try { return await this.saveProjectAfterPreprocess(path); }
+    finally { release?.(); }
+  }
+
+  pauseBackgroundPreprocess(path: string): Promise<() => void> | undefined {
+    return this.preprocessSaveGuard?.(path);
+  }
+
+  private saveProjectAfterPreprocess(path: string): Promise<ProjectSaveOutcome> {
     if (this.absSaveHandler) return this.absSaveHandler(path);
     const context = this.captureSaveContext(path);
     return this.blocklyService.runProjectOperation(async () => {
@@ -474,7 +496,8 @@ export class _ProjectService {
           console.warn('Project ABI is saved; skipped stale derived metadata/code updates:', error);
           const detail = error instanceof Error ? error.message : String(error);
           return { projectSaved: true, generatedCodePublished: false, partial: true,
-            code: isBuildWorkspaceRecoveryRequiredError(error) ? 'BUILD_WORKSPACE_RECOVERY_REQUIRED' : 'PROJECT_CODE_NOT_PUBLISHED',
+            code: isBuildWorkspaceBusyError(error) ? 'BUILD_WORKSPACE_BUSY'
+              : isBuildWorkspaceRecoveryRequiredError(error) ? 'BUILD_WORKSPACE_RECOVERY_REQUIRED' : 'PROJECT_CODE_NOT_PUBLISHED',
             error: `Project file saved, but generated code could not be updated. ${detail}` };
         }
       } finally { lease.release(); }
@@ -511,12 +534,77 @@ export class _ProjectService {
     if (path !== this.currentProjectPath || window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== prepared.abiText) {
       throw new Error('Cannot acknowledge a stale project save.');
     }
+    this.cancelDeferredSaveOutputs();
     this.cleanState.remember(this.cleanScope(), prepared.abiText,
       this.blocklyService.normalizeProjectAbi(this.blocklyService.getProjectAbiForSave(JSON.parse(prepared.documentText))));
     this.blocklyService.projectDirtyState?.remember(JSON.parse(prepared.documentText));
-    if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
-    this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
-    return this.publishPreparedCode(path, generated, assertCurrent, options);
+    try {
+      if (generated?.code !== null) await publishGeneratorMacros(path, generated?.projectMacros, assertCurrent);
+      this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
+      return await this.publishPreparedCode(path, generated, assertCurrent, options);
+    } catch (error) {
+      if (isBuildWorkspaceBusyError(error) && generated?.code != null) {
+        this.deferSaveOutputs(path, prepared, generated, options);
+      }
+      throw error;
+    }
+  }
+
+  private cancelDeferredSaveOutputs(): void {
+    if (this.deferredSaveOutputs?.timer) clearTimeout(this.deferredSaveOutputs.timer);
+    this.deferredSaveOutputs = undefined;
+  }
+
+  /** Retry only derived writes, outside the save's input lease. The source
+   * document is already committed; never save it again or regenerate a draft. */
+  private deferSaveOutputs(path: string, prepared: PreparedBlocklySave, generated: PreparedBlocklyCode,
+    options: GeneratedSourcePublicationOptions): void {
+    const context = this.captureSaveContext(path);
+    const pending: NonNullable<_ProjectService['deferredSaveOutputs']> = {};
+    this.deferredSaveOutputs = pending;
+    const current = () => this.deferredSaveOutputs === pending && context.isCurrent();
+    const assertCurrent = () => {
+      if (!current() || this.blocklyService.captureProjectSnapshot().revision !== generated.revision
+        || window['fs'].readFileSync(`${path}/project.abi`, 'utf8') !== prepared.abiText) {
+        throw Object.assign(new Error('Saved code publication was superseded.'), { code: 'PROJECT_CODE_PUBLICATION_STALE' });
+      }
+    };
+    let retryDelay = 250;
+    const schedule = () => {
+      pending.timer = setTimeout(() => { pending.timer = undefined; void publish(); }, retryDelay);
+      retryDelay = Math.min(2000, retryDelay * 2);
+    };
+    const publish = async () => {
+      if (!current()) {
+        if (this.deferredSaveOutputs === pending) this.cancelDeferredSaveOutputs();
+        return;
+      }
+      try {
+        // The normal project queue serializes this attempt with newer saves,
+        // ABS and library reloads. No edit fence is held while waiting on a build.
+        await this.blocklyService.runProjectOperation(async () => {
+          assertCurrent();
+          await publishGeneratorMacros(path, generated.projectMacros, assertCurrent);
+          this.syncUsedLibraryManifest(path, JSON.parse(prepared.documentText));
+          await this.publishPreparedCode(path, generated, assertCurrent, options);
+        });
+        if (current()) this.cancelDeferredSaveOutputs();
+      } catch (error) {
+        if (!current()) {
+          if (this.deferredSaveOutputs === pending) this.cancelDeferredSaveOutputs();
+          return;
+        }
+        if (isBuildWorkspaceBusyError(error) || (error as { code?: string })?.code === 'BLOCKLY_EDIT_BUSY') {
+          schedule(); return;
+        }
+        this.cancelDeferredSaveOutputs();
+        if ((error as { code?: string })?.code === 'PROJECT_CODE_PUBLICATION_STALE') return;
+        console.error('Saved project derived-code publication failed:', error);
+        this.noticeService?.update({ title: '生成代码更新失败', text: '项目文件已保存，生成代码未更新。',
+          detail: error instanceof Error ? error.message : String(error), state: 'error', sendToLog: true });
+      }
+    };
+    schedule();
   }
 
   private captureSaveContext(path: string) {

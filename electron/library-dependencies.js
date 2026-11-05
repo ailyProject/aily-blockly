@@ -9,6 +9,15 @@ const fields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peer
 const clone = value => JSON.parse(JSON.stringify(value));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const deps = manifest => Object.assign({}, ...fields.map(field => manifest[field]));
+// Build fingerprints can be refreshed independently while npm is running.
+// Keep all other project inputs guarded, and preserve the latest fingerprints.
+const sameLibraryInput = (before, after) => {
+  const input = text => {
+    const { codeHash, buildInfo, ...manifest } = JSON.parse(text);
+    return manifest;
+  };
+  try { return same(input(before), input(after)); } catch { return false; }
+};
 const conflict = () => fault('LIBRARY_DEPENDENCY_INPUT_CHANGED', 'Project dependencies changed outside this operation. Inspect dependency recovery; every version was retained.');
 const workers = new Set();
 let shuttingDown = false;
@@ -22,6 +31,7 @@ class LibraryDependencies {
     this.queues = new Map();
     this.locals = new (require('./library-local-changes').LocalLibraryChanges)({ trash: trashLocalDirectory });
     this.conflicts = new LibraryDependencyConflicts();
+    this.history = new (require('./library-history').LibraryHistory)();
   }
 
   root(project) { return fs.realpathSync(project); }
@@ -144,11 +154,11 @@ class LibraryDependencies {
       try {
         result = await this.run(root, { ...plan, options: request.options });
         assertCurrent();
-        if (fs.readFileSync(path.join(root, 'package.json'), 'utf8') !== original) throw conflict();
+        if (!sameLibraryInput(original, fs.readFileSync(path.join(root, 'package.json'), 'utf8'))) throw conflict();
       } catch (error) {
         // npm may have partially altered node_modules; restore the last accepted
         // tree. Never restore package.json bytes over an external writer.
-        if (fs.readFileSync(path.join(root, 'package.json'), 'utf8') === original) {
+        if (sameLibraryInput(original, fs.readFileSync(path.join(root, 'package.json'), 'utf8'))) {
           try { await this.run(root, { ...this.plan(disk, previous), options: request.options }); }
           catch (rollback) {
             // Keep a recoverable dirty session even when the first operation
@@ -207,10 +217,32 @@ class LibraryDependencies {
     }));
   }
 
-  save(project) {
+  async prepareSources(root, assertCurrent) {
+    const before = this.dependencyInput(root);
+    await this.run(root, { materializeSources: true, manifest: this.effective(root) });
+    assertCurrent();
+    const after = this.dependencyInput(root);
+    if (!sameLibraryInput(before.package, after.package) || after.lock !== before.lock) throw conflict();
+  }
+
+  prepare(project) {
+    // Opening/reloading can already own the renderer's project-file lease.
+    // Source expansion writes only package-local src; serialize it with npm,
+    // and verify inputs without nesting the manifest/mirror publication lock.
+    return this.queue(project, async root => {
+      const access = createProjectFileAccess(root, root);
+      await this.prepareSources(root, access.checkRoot);
+      return this.status(root);
+    });
+  }
+
+  save(project, { prepareSources = false, onPublish = () => {} } = {}) {
     return this.queue(project, root => this.locked(root, async assertCurrent => {
       const state = this.states.get(root);
-      if (!state) { this.locals.save(root); return this.status(root); }
+      if (!state) {
+        if (prepareSources) await this.prepareSources(root, assertCurrent);
+        this.locals.save(root); return this.status(root);
+      }
       const disk = this.read(root), effective = this.effective(root);
       if (state.treeNeedsReconcile) {
         state.resolution.archiveFile = archiveDependencyResolution(root, state.resolution);
@@ -226,9 +258,11 @@ class LibraryDependencies {
           throw Object.assign(error, { recoveryArchive: state.resolution.archiveFile, treeNeedsReconcile: true });
         }
       }
-      // npm owns lockfile creation and resolution. Only this explicit save is
-      // permitted to write the root manifest/lockfile; no installation is deferred.
+      // npm owns lockfile creation and resolution. Library transactions call
+      // this after source preparation, independently of saving editor content.
+      if (prepareSources) await this.prepareSources(root, assertCurrent);
       let publication;
+      onPublish();
       try { publication = await this.run(root, { ...this.plan(disk, effective), options: state.options, save: true }); }
       catch (error) {
         if (state.treeNeedsReconcile) state.reconcileFailure = { code: error.code || 'LIBRARY_DEPENDENCY_SAVE_FAILED',
@@ -254,6 +288,65 @@ class LibraryDependencies {
       this.locals.save(root);
       return this.status(root);
     }));
+  }
+
+  historyBegin(project, { packages }) {
+    return this.queue(project, root => this.locked(root, () => {
+      if (this.status(root).dirty) throw new Error('Save pending dependencies before a library checkpoint.');
+      return this.history.begin(root, packages);
+    }));
+  }
+
+  historyCommit(project, { token }) {
+    return this.queue(project, root => this.locked(root, () => this.history.commit(root, token)));
+  }
+
+  historyDiscard(project, { token }) {
+    return this.queue(project, root => this.history.discard(root, token));
+  }
+
+  historyRestore(project, { token, forward }) {
+    return this.queue(project, root => this.locked(root, async assertCurrent => {
+      if (this.status(root).dirty) throw new Error('Save pending dependencies before library undo.');
+      const { target, expected } = await this.history.prepare(root, token, forward);
+      const packageFile = path.join(root, 'package.json'), lockFile = path.join(root, 'package-lock.json');
+      const apply = async snapshot => {
+        assertCurrent();
+        const manifest = this.history.patch(this.read(root), snapshot);
+        fs.writeFileSync(packageFile, JSON.stringify(manifest, null, 2) + '\n');
+        if (snapshot.lock === null) fs.rmSync(lockFile, { force: true });
+        else fs.writeFileSync(lockFile, snapshot.lock);
+        await this.run(root, { add: [], remove: [], options: { installLinks: false },
+          // A pre-install checkpoint can have no root lockfile. In that case
+          // npm's hidden lock must not resurrect the just-undone installation.
+          reconcileOnly: snapshot.lock === null });
+        assertCurrent();
+        const current = await this.history.capture(root, []);
+        assertCurrent();
+        if (!same(current.dependencies, snapshot.dependencies) || current.lock !== snapshot.lock) throw conflict();
+        await this.history.restoreLinks(root, snapshot);
+        assertCurrent();
+        await this.prepareSources(root, assertCurrent);
+        // npm's no-save reify must leave the saved lock and dependency inputs exact.
+        const actual = await this.history.capture(root, this.history.get(root, token).names);
+        assertCurrent();
+        if (!same(this.history.identity(actual), this.history.identity(snapshot))) {
+          throw new Error('Library undo could not verify the restored dependency tree.');
+        }
+      };
+      try { await apply(target); }
+      catch (error) {
+        if (['LIBRARY_DEPENDENCY_INPUT_CHANGED', 'LIBRARY_HISTORY_CONFLICT'].includes(error.code)) throw error;
+        try { await apply(expected); }
+        catch (rollback) { throw new AggregateError([error, rollback], '库撤销与恢复均未完成，请保留项目并检查依赖。'); }
+        throw error;
+      }
+      return this.status(root);
+    }));
+  }
+
+  historyPreview(project, { token, forward }) {
+    return this.queue(project, root => this.locked(root, () => this.history.preview(root, token, forward)));
   }
 
   discard(project, { reconcile = false, historyRestored = false } = {}) {
@@ -286,10 +379,16 @@ function isCoderProject(root) {
 
 function runDependencyWorker(root, request) {
   if (shuttingDown) return Promise.reject(new Error('Application is shutting down'));
-  const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
+  const { childScriptPath } = require('./child-script-path');
+  const preprocessPath = childScriptPath('preprocess.js');
+  const childRoot = path.dirname(path.dirname(preprocessPath));
   const node = path.join(childRoot, 'node', process.platform === 'win32' ? 'node.exe' : 'bin/node');
   const npmRoot = path.join(childRoot, 'node', process.platform === 'win32' ? 'node_modules/npm' : 'lib/node_modules/npm');
   const source = fs.readFileSync(path.join(__dirname, 'library-dependency-worker.js'), 'utf8');
+  if (request.materializeSources) {
+    request = { ...request, preprocessPath, extractor: process.env.AILY_7ZA_PATH
+      || path.join(path.dirname(path.dirname(preprocessPath)), process.platform === 'win32' ? '7za.exe' : '7zz') };
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(node, ['-e', source], { cwd: root, windowsHide: true,
       env: { ...process.env, AILY_LIBRARY_WORKER: '1' }, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
