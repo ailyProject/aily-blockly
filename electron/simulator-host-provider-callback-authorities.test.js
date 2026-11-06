@@ -1047,6 +1047,9 @@ test('Simulator code-sync retains its original terminal obligation after abort, 
     await waitFor(() => fixture.sent.length === 1);
     abort.abort(new Error('original owner requested cancellation'));
     fixture.timers[0].callback();
+    assert.equal(fixture.cancelled.length, 1, 'Abort and timeout join the original cancellation, never a second run.');
+    assert.equal(fixture.cancelled[0].requestId, fixture.sent[0].requestId);
+    assert.equal(fixture.runtimeBindings, 1);
     fixture.emit(0, { type: 'event', event: { type: 'session-created', sessionId: 'late-cancelled-turn' } });
     for (const value of [{ type: 'unknown' }, { type: 'response' },
       { type: 'response', result: { accepted: true, state: 'running' } },
@@ -1059,6 +1062,7 @@ test('Simulator code-sync retains its original terminal obligation after abort, 
     fixture.emit(0, { type: 'response', result: { accepted: true, state: 'settled', sessionId: 'original' } });
     assert.match((await original).error.message, /取消|cancellation/);
     assert.equal(fixture.releases, 1); assert.equal(fixture.listeners.size, 0);
+    assert.equal(fixture.runtimeBindings, 0);
     const retry = fixture.service.requestCodeSync('explicit retry');
     await waitFor(() => fixture.sent.length === 2);
     fixture.emit(1, { type: 'response', result: { accepted: true, state: 'settled', sessionId: 'retry' } });
@@ -1101,6 +1105,45 @@ test('Simulator code-sync releases only proven pre-send failure and genuine orig
     assert.match((await operation).error.message, /normal/);
   }
   assert.equal(fixture.releases, 3); assert.equal(fixture.listeners.size, 0);
+});
+
+test('Simulator code-sync joins original physical Runtime exit after timeout and admits an explicit retry', async () => {
+  const fixture = await createCodeSyncFixture();
+  let settled = false;
+  const original = fixture.service.requestCodeSync('first').then(value => ({ value }), error => { settled = true; return { error }; });
+  await waitFor(() => fixture.sent.length === 1);
+  fixture.timers[0].callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false); assert.equal(fixture.releases, 0);
+  assert.equal(fixture.cancelled.length, 1); assert.equal(fixture.runtimeBindings, 1);
+  const oldGeneration = fixture.generation;
+  fixture.exitRuntime(oldGeneration);
+  assert.match((await original).error.message, /超时/);
+  assert.equal(fixture.releases, 1); assert.equal(fixture.runtimeBindings, 0); assert.equal(fixture.listeners.size, 0);
+  fixture.replaceRuntime();
+  const retry = fixture.service.requestCodeSync('explicit retry');
+  await waitFor(() => fixture.sent.length === 2);
+  fixture.exitRuntime(oldGeneration);
+  assert.equal(fixture.runtimeBindings, 1); assert.equal(fixture.releases, 1);
+  fixture.emit(1, { type: 'response', result: { accepted: true, state: 'settled', sessionId: 'new-generation' } });
+  assert.equal((await retry).sessionId, 'new-generation');
+  assert.equal(fixture.releases, 2); assert.equal(fixture.runtimeBindings, 0);
+});
+
+test('Simulator code-sync never redirects cancellation to a replacement Runtime generation', async () => {
+  const fixture = await createCodeSyncFixture(), abort = new AbortController();
+  const original = fixture.service.requestCodeSync('first', 'first', [], abort.signal)
+    .then(value => ({ value }), error => ({ error }));
+  await waitFor(() => fixture.sent.length === 1);
+  const originalGeneration = fixture.generation;
+  fixture.replaceRuntime();
+  abort.abort(new Error('cancel original only'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.cancelled.length, 0); assert.equal(fixture.releases, 0);
+  assert.equal(fixture.runtimeBindings, 1);
+  fixture.exitRuntime(originalGeneration);
+  assert.match((await original).error.message, /已取消/);
+  assert.equal(fixture.releases, 1); assert.equal(fixture.runtimeBindings, 0);
 });
 
 test('Build progress listener throwing at completion cannot block other listeners, cleanup or late replay', async t => {
@@ -3110,6 +3153,9 @@ async function loadHostProductService({ digest, onComposition }) {
     './simulator-entitlement-callback-authority': { SimulatorEntitlementCallbackAuthority: CallbackAuthority },
     './simulator-current-project-scope': { captureSimulatorProjectReadAuthority() { throw new Error('Not used by this workspace-source fixture'); } },
     './simulator-electron-project-artifact-file-port': { createSimulatorElectronProjectArtifactFilePort: () => ({}) },
+    './simulator-local-serial-host-provider': {
+      createSimulatorLocalSerialHostProvider() { throw new Error('Source-only fixture must not open serial hardware'); },
+    },
   };
 
   const module = { exports: {} };
@@ -3133,7 +3179,9 @@ async function createCodeSyncFixture(options = {}) {
   const transformed = await esbuild.transform(await fs.readFile(filename, 'utf8'), {
     loader: 'ts', format: 'cjs', target: 'node22', tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
   });
-  const timers = [], listeners = new Set(), sent = [], openedSessions = [];
+  const timers = [], listeners = new Set(), sent = [], cancelled = [], openedSessions = [];
+  const runtimeListeners = new Map();
+  let generation = 1;
   const counts = { acquires: 0, releases: 0 };
   const { BehaviorSubject } = require('rxjs');
   const projectPath = new BehaviorSubject('/controlled/project');
@@ -3141,8 +3189,20 @@ async function createCodeSyncFixture(options = {}) {
     async acquire() { counts.acquires++; if (options.acquireFailureOnce) { options.acquireFailureOnce = false; throw new Error('controlled acquire failure'); } },
     async release() { counts.releases++; },
     onMessage(_tool, listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    bindRuntimeGeneration(toolId, onExit) {
+      const originalGeneration = generation;
+      const current = runtimeListeners.get(originalGeneration) ?? new Set();
+      runtimeListeners.set(originalGeneration, current); current.add(onExit);
+      return {
+        dispose() { current.delete(onExit); if (!current.size) runtimeListeners.delete(originalGeneration); },
+        sendMessage(message) {
+          if (generation !== originalGeneration) throw new Error('Original Runtime generation ended');
+          return process.sendMessage(toolId, message);
+        },
+      };
+    },
     sendMessage(_tool, message) {
-      sent.push(message);
+      (message.action === 'demand-session.cancel' ? cancelled : sent).push(message);
       if (options.dispatch === 'sync-throw') throw new Error('unknown dispatch acknowledgement');
       if (options.dispatch === 'async-reject') return Promise.reject(new Error('unknown dispatch acknowledgement'));
       return Promise.resolve();
@@ -3161,7 +3221,10 @@ async function createCodeSyncFixture(options = {}) {
   }, { filename, timeout: 10_000 });
   const service = new module.exports.AilyChatDemandSessionService({ currentProjectPath: projectPath.value, currentProjectPath$: projectPath }, process,
     { async openAilyChatSession(sessionId) { openedSessions.push(sessionId); return true; } });
-  return { service, timers, listeners, sent, openedSessions, get acquires() { return counts.acquires; }, get releases() { return counts.releases; },
+  return { service, timers, listeners, sent, cancelled, openedSessions, get acquires() { return counts.acquires; }, get releases() { return counts.releases; },
+    get generation() { return generation; }, get runtimeBindings() { return [...runtimeListeners.values()].reduce((count, values) => count + values.size, 0); },
+    replaceRuntime() { generation++; },
+    exitRuntime(value = generation) { const callbacks = runtimeListeners.get(value); runtimeListeners.delete(value); for (const callback of callbacks ?? []) callback(); },
     emit(index, value) { const requestId = sent[index]?.requestId; if (requestId) for (const listener of [...listeners]) listener({ channel: 'aily-chat-demand-session-v1', requestId, ...value }); },
   };
 }

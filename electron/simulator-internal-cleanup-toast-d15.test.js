@@ -26,6 +26,9 @@ const methods = names.map(name => klass.members.find(n => n.name?.getText(render
 assert(methods.every(Boolean));
 const js = ts.transpileModule('class ActualMethods {' + methods.map(n => n.getText(renderer)).join('\n') + '}\nmodule.exports=ActualMethods;',
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const commandOutput = { exports: {} };
+new Function('exports', ts.transpileModule(fs.readFileSync(path.join(root, 'src/app/services/core/platform/cmd-output.ts'), 'utf8'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)(commandOutput.exports);
 const blockly = parse('src/app/editors/blockly-editor/components/blockly/blockly.component.ts');
 const hook = find(blockly, n => ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && n.left.getText(blockly) === 'console.error');
 assert(hook);
@@ -43,7 +46,7 @@ function chain({ id = 'simulator', stream = 'child_tool_simulator_PURE', enabled
     const hookFactory = new Function('console', 'HttpErrorResponse', 'let isHandlingError=false;return (' + hook.right.getText(blockly) + ');');
     consolePort.error = hookFactory.call({ noticeService: { update: value => notices.push(value) } }, consolePort, class HttpErrorResponse {});
     const module = { exports: {} };
-    new Function('module', 'console', js)(module, consolePort);
+    new Function('module', 'console', 'isCmdTerminalOutput', js)(module, consolePort, commandOutput.exports.isCmdTerminalOutput);
     const service = new module.exports();
     service.appendChildToolLog = (...args) => project.push(args);
     const processFailures = [];

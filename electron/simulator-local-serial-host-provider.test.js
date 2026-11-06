@@ -5,8 +5,12 @@ const path = require('node:path');
 const Module = require('node:module');
 const esbuild = require('esbuild');
 const root = path.resolve(__dirname, '..');
+const simulatorRoot = process.env.AILY_SIMULATOR_SOURCE_ROOT;
 const loaded = esbuild.build({ entryPoints: [path.join(root, 'src/app/integrations/simulator/simulator-local-serial-host-provider.ts')],
-  bundle: true, write: false, format: 'cjs', platform: 'node', logLevel: 'silent' }).then(result => {
+  bundle: true, write: false, format: 'cjs', platform: 'node', logLevel: 'silent',
+  ...(simulatorRoot ? { alias: { '@aily-project/simulator-protocol/host':
+    path.join(simulatorRoot, 'packages/simulator-protocol/src/public/host.ts') } } : {}),
+}).then(result => {
   const filename = path.join(__dirname, 'serial-provider-test.cjs');
   const compiled = new Module(filename, module); compiled.filename = filename; compiled.paths = Module._nodeModulePaths(root);
   compiled._compile(result.outputFiles[0].text, filename); return compiled.exports;
