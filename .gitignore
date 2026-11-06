@@ -94,6 +94,7 @@ child/aily-builder*
 /e2e/.results/serial-issues-build.log
 /tests/serial-issues-test.log
 /tests/.results/time-discovery/
+/tests/.results/npm-mutation-queue/
 
 **/*.spec.ts
 !/src/**/*.spec.ts
