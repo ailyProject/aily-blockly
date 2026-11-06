@@ -19,7 +19,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 import { BlocklyService } from './blockly.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { CompileValidationService, persistBuildResult, buildCancelledResult, type BuildCheckpoint } from '@domain/build/public-api';
+import { CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, type ProjectBuildLog, type BuildCheckpoint } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -58,6 +58,7 @@ const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
 @Injectable({ providedIn: 'root' })
 export class _BuilderService {
   private buildAttempt = 0;
+  private activeBuildLog?: ProjectBuildLog;
 
   constructor(
     private cmdService: CmdService,
@@ -1272,7 +1273,11 @@ export class _BuilderService {
     checkpoint.startedAt = Date.now();
 
     if (pythonRoute) {
+      const project = this.projectService.currentProjectPath;
+      const log = await createProjectBuildLog(project, requestId);
+      return log.run(async () => {
       try {
+        if (project !== this.projectService.currentProjectPath) throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed.'), { buildOutcome: 'not-started' });
         const result = await this.generateAndWritePythonEntry();
         this.workflowService.finishBuild(true);
         return result;
@@ -1281,6 +1286,7 @@ export class _BuilderService {
         this.workflowService.finishBuild(false, message);
         throw error;
       }
+      });
     }
 
     this.metrics.record('compile_attempted');
@@ -1323,6 +1329,10 @@ export class _BuilderService {
     });
     const cancellation = new AbortController();
     this.buildCancellation = cancellation;
+    const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
+    this.activeBuildLog = requestLog;
+    try {
+    return await requestLog.run(async () => {
     let capturedCode: string | undefined;
     let preparing: Promise<void>;
     const result = new Promise<ActionState>((resolve, reject) => {
@@ -1330,6 +1340,11 @@ export class _BuilderService {
       this.buildPromiseReject = reject;
       preparing = (async () => {
       try {
+        if (cancellation.signal.aborted) throw new Error(this.t('CANCELLED_TITLE'));
+        if (!projectCurrent() || requestedProjectPath !== this.projectService.currentProjectPath
+          || requestedSettingsKey !== this.compileSettingsKey()) {
+          throw Object.assign(new Error('BUILD_SOURCE_STALE: Build context changed before compilation.'), { buildOutcome: 'not-started' });
+        }
         this.currentProjectPath = requestedProjectPath;
         this.streamId = null; // 初始化为 null
         this.buildStartTime = Date.now(); // 记录编译开始时间
@@ -1709,6 +1724,8 @@ export class _BuilderService {
                 };
                 this.buildSubscription = output.subscribe({
                   next: (output: CmdOutput) => {
+                    if (output.data && (output.type === 'stdout' || output.type === 'stderr')) requestLog.append(output.data);
+                    if (output.type === 'error' && output.error) requestLog.append(String(output.error) + '\n');
                     // 第一时间检查取消状态
                     if (this.cancelled) {
                       return;
@@ -1930,7 +1947,8 @@ export class _BuilderService {
         const fullErrorMessage = (error?.fullStdErr || error?.error || error?.stack || error?.message || String(error)).toString();
         this.handleCompileError(error.message || error.text || String(error), true, fullErrorMessage, cloudBuild ? retry : undefined, cloudBuild);
         this.workflowService.finishBuild(false, error.message);
-        reject({ state: 'error', text: error.message, fullStdErr: fullErrorMessage });
+        reject({ state: 'error', text: error.message, fullStdErr: fullErrorMessage,
+          ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) });
       }
       })().catch(reject);
       });
@@ -1948,7 +1966,7 @@ export class _BuilderService {
           ((Date.now() - checkpoint.startedAt!) / 1000).toFixed(2), codeHash, true);
       }
     });
-    return completion.catch(error => {
+    return await completion.catch(error => {
       if (this.buildCancellation === cancellation && this.workflowService.currentState === ProcessState.BUILDING) {
         this.workflowService.finishBuild(false, error?.message || error?.text || 'Build preparation failed');
       }
@@ -1965,10 +1983,13 @@ export class _BuilderService {
       }
       settled();
     });
+    });
+    } finally { if (this.activeBuildLog === requestLog) this.activeBuildLog = undefined; }
     }
 
   /** 复用 Blockly 的构建生命周期；传输、签名校验和产物发布由桌面主进程负责。 */
   private async runCloudCompilation(config: any, boardName: string, assertCurrent: () => void): Promise<ActionState> {
+    const requestLog = this.activeBuildLog;
     const bridge = window['cloudBuild'];
     if (!bridge?.run || !bridge?.cancel || !bridge?.onProgress) throw new Error('Cloud compilation bridge is unavailable.');
     if (config.graphSemanticRevision || config.recordProjectDelivery) throw new Error('Cloud compilation does not support simulator or full delivery builds yet.');
@@ -2009,6 +2030,8 @@ export class _BuilderService {
           this.logService.update({ detail: text, state: stream === 'stderr' ? 'error' : 'doing' });
           this.appendCompileLog(text, stream === 'stderr' ? 'ERROR' : 'INFO');
         },
+        rawLog: text => requestLog?.append(text + '\n'),
+        logIncomplete: reason => requestLog?.markIncomplete(reason),
         progress: event => {
           const presentation = cloudBuildProgressPresentation(event, key => this.translate.instant(key));
           this.currentProgress = presentation.progress;
@@ -2293,6 +2316,9 @@ export class _BuilderService {
     }
     
     console.log('开始取消编译流程...');
+    if (hasActiveProcess || this.activeCloudRequestId) {
+      this.activeBuildLog?.markIncomplete('Build was cancelled while output was streaming; the process tail may not have been captured.');
+    }
     
     // 立即设置取消标志，防止任何后续处理
     this.cancelled = true;

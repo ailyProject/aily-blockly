@@ -113,6 +113,7 @@ describe('build failure reporting', () => {
     const content = JSON.parse(String(result.content));
     expect(content.message).toBe(`${notStarted ? '编译未开始' : '编译失败'}: actual reason`);
     if (notStarted) expect(result.metadata?.['buildOutcome']).toBe('not-started');
-    else expect(content.errors).toContain('invalid code');
+    else expect((result.metadata?.['buildResult'] as any)?.fullStdErr).toContain('invalid code');
+    expect(content.errors).toBeUndefined();
   });
 });

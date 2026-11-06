@@ -9,7 +9,8 @@ describe('live build receipt ownership', () => {
     const build = new Promise<Record<string, any>>(resolve => { finish = resolve; });
     Object.assign(service, {
       mutationSequence: 0,
-      projectService: { currentProjectPath: '/isolated', isProjectTransitionInProgress: () => false },
+      projectService: { currentProjectPath: '/isolated', isProjectTransitionInProgress: () => false,
+        isLibraryMutationInProgress: () => false },
       aiOperations: { setActive: (_id: string, active: boolean) => events.push(active) },
       executeOperation: jasmine.createSpy('build').and.returnValue(build),
     });
@@ -25,6 +26,7 @@ describe('live build receipt ownership', () => {
       ok: true, buildReceipt: jasmine.objectContaining({ state: 'running', requestId: 'isolated-build' }),
     }));
     expect(f.events).toEqual([true]);
+    expect(f.service.executeOperation.calls.mostRecent().args[0].params.buildLogRequestId).toBe('isolated-build');
     f.finish({ ok: true, operation: 'project_build', project: '/isolated' }); flushMicrotasks();
     expect(f.events).toEqual([true, false]);
   }));

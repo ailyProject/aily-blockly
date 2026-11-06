@@ -1,4 +1,5 @@
 import { isBuildCancelled } from './build-cancellation';
+import type { ProjectBuildLogReference } from './project-build-log';
 
 export interface BuildCheckpoint {
   startedAt?: number;
@@ -16,6 +17,8 @@ export interface BuildResultSnapshot {
   previousCheckpoint?: BuildCheckpoint;
   message: string;
   fullStdErr: string;
+  buildRequestId?: string;
+  buildLog?: ProjectBuildLogReference;
   code?: 'BUILD_CANCELLED';
   buildOutcome?: 'cancelled';
 }
@@ -24,8 +27,8 @@ export interface BuildResultSnapshot {
 export function persistBuildResult(
   projectPath: string,
   success: boolean,
-  result?: { state?: string; text?: string; fullStdErr?: string },
-  error?: { state?: string; text?: string; message?: string; fullStdErr?: string },
+  result?: { state?: string; text?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference },
+  error?: { state?: string; text?: string; message?: string; fullStdErr?: string; buildLog?: ProjectBuildLogReference },
   checkpoint?: BuildCheckpoint,
   source: BuildResultSnapshot['source'] = 'system',
 ): void {
@@ -39,6 +42,10 @@ export function persistBuildResult(
     ...(checkpoint?.startedAt ? { checkpoint } : {}),
     message: result?.text || error?.text || error?.message || '',
     fullStdErr: result?.fullStdErr || error?.fullStdErr || '',
+    ...(result?.buildLog || error?.buildLog ? {
+      buildLog: result?.buildLog || error?.buildLog,
+      buildRequestId: (result?.buildLog || error?.buildLog)!.requestId,
+    } : {}),
     ...(isBuildCancelled(result) || isBuildCancelled(error)
       ? { code: 'BUILD_CANCELLED' as const, buildOutcome: 'cancelled' as const } : {}),
   };

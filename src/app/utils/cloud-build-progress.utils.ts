@@ -14,6 +14,9 @@ export interface CloudBuildProgressEvent {
 interface CloudBuildProgressCallbacks {
   isCurrent: () => boolean;
   log: (text: string, stream: 'stdout' | 'stderr') => void;
+  /** Request-owned persistence must not depend on UI throttling or visibility. */
+  rawLog?: (text: string, stream: 'stdout' | 'stderr') => void;
+  logIncomplete?: (reason: string) => void;
   progress: (event: CloudBuildProgressEvent) => void;
   /** 注册本次任务的切换动作；返回 false 表示任务已结束或不再属于当前调用。 */
   localSwitch?: (requestSwitch: () => boolean) => void;
@@ -29,6 +32,7 @@ interface CloudBuildRunResult {
   text?: string;
   artifactPath?: string;
   fullStdErr?: string;
+  logComplete?: boolean;
 }
 
 interface CloudBuildProgressBridge {
@@ -164,6 +168,10 @@ export async function runCloudBuildWithProgress(
   let unsubscribe: (() => void) | void = undefined;
   try {
     unsubscribe = bridge.onProgress(event => {
+      if (event?.requestId === request.requestId && typeof event.log === 'string') {
+        logs.push(event.log);
+        callbacks.rawLog?.(event.log, event.stream === 'stderr' ? 'stderr' : 'stdout');
+      }
       if (event?.requestId === request.requestId && !switching && callbacks.isCurrent()) {
         if (event.stage === 'ci-tools-required' && event.nonce && !toolPreparation) {
           toolPreparation = (async () => {
@@ -181,7 +189,6 @@ export async function runCloudBuildWithProgress(
           toolPreparation.catch(() => {});
           return;
         }
-        if (typeof event.log === 'string' && event.log) logs.push(event.log);
         buffer.push(event);
       }
     });
@@ -208,7 +215,11 @@ export async function runCloudBuildWithProgress(
     let failure: unknown;
     try { result = await running; } catch (error) { failure = error; }
     settled = true;
+    const logEvidence = (failure || result) as { logComplete?: boolean } | undefined;
+    if (logEvidence?.logComplete !== true) callbacks.logIncomplete?.('Cloud build log completeness was not confirmed by the host.');
     if (switching) {
+      const terminalOutput = (failure as { fullStdErr?: string } | undefined)?.fullStdErr || result?.fullStdErr;
+      if (typeof terminalOutput === 'string' && terminalOutput) callbacks.rawLog?.(`[Cloud terminal output]\n${terminalOutput}`, 'stderr');
       // 等云请求释放工作区以及取消回执，两者完成前绝不能启动本地编译。
       const cancelled = await cancellation;
       if (cancelled?.error) throw cancelled.error;
@@ -220,10 +231,12 @@ export async function runCloudBuildWithProgress(
     if (result?.success === false) {
       throw Object.assign(new Error(result.text || 'Cloud compilation failed.'), result);
     }
+    if (typeof result?.fullStdErr === 'string' && result.fullStdErr) callbacks.rawLog?.(`[Cloud terminal output]\n${result.fullStdErr}`, 'stderr');
     return result;
   } catch (error) {
     if (error?.code === CLOUD_BUILD_LOCAL_REQUESTED) throw error;
     const message = error?.message || String(error);
+    if (typeof error?.fullStdErr === 'string' && error.fullStdErr) callbacks.rawLog?.(`[Cloud terminal output]\n${error.fullStdErr}`, 'stderr');
     const output = [error?.fullStdErr, ...logs].filter(text => typeof text === 'string' && text).join('\n');
     // contextBridge may reject with a plain object; retain its code and message.
     throw Object.assign(new Error(message), error, {

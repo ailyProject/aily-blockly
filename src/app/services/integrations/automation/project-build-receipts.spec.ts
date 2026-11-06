@@ -30,6 +30,20 @@ describe('project build receipt store', () => {
     expect(answer.result).toBeUndefined();
   });
 
+  it('reobserves the exact completed log without executing or recreating it', async () => {
+    const store = new ProjectBuildReceipts();
+    const buildLog = { version: 1, requestId: 'with-log', project: '/isolated', path: '/isolated/.log/compile/requests/owned.log', complete: true };
+    const run = jasmine.createSpy('run').and.resolveTo({ ok: true, buildLog });
+    const first = await store.start('/isolated', request('with-log', 10_000), 'options', run);
+    const status = await store.status('/isolated', request('with-log'));
+    const replay = await store.start('/isolated', request('with-log'), 'options', run);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(first.result?.['buildLog']).toBe(buildLog);
+    expect(status.result?.['buildLog']).toBe(buildLog);
+    expect(replay.result?.['buildLog']).toBe(buildLog);
+    expect((await new ProjectBuildReceipts().status('/isolated', request('with-log'))).result).toBeUndefined();
+  });
+
   it('retains running ownership beyond retention while only evicting completed entries', fakeAsync(() => {
     const store = new ProjectBuildReceipts(50, 1);
     let finish!: (result: Record<string, any>) => void;
