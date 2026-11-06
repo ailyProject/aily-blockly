@@ -755,7 +755,19 @@ export class AbsWorkspaceSyncService {
       if (!committed) throw new AbsSyncError('ABS_BASELINE_MISSING', 'An authoritative committed generation is required.');
       if (generation !== committed.map.generation) throw new AbsSyncError('ABS_BASELINE_STALE', 'The candidate belongs to another generation.');
       const requestPriority = binding?.concurrentEdits === 'request-priority';
-      const baseline = requestPriority ? await store.load(binding!.intentGeneration!) : committed;
+      let baseline = committed;
+
+      if (requestPriority) {
+        try { baseline = await store.load(binding!.intentGeneration!); }
+        catch (error) {
+          if (!(error instanceof AbsSyncError) || error.code !== 'ABS_BASELINE_MISSING') throw error;
+
+          throw new AbsSyncError('ABS_INTENT_GENERATION_UNKNOWN', 'The requested intent generation does not exist; the current committed baseline is readable.', undefined, [], {
+            reason: 'intent-generation-unknown', received: binding!.intentGeneration!, expected: committed.map.generation,
+            hint: 'Preserve the candidate and check its original verified generation. The current generation is context, not a replacement intent. Do not reload, fork or repair the healthy baseline to resolve this reference error.',
+          });
+        }
+      }
       this.assertMirrors(committed, expected, false);
       if (binding) {
         const evidence = await generationEvidence(committed, expected.abi);
