@@ -115,3 +115,13 @@ test('a work-area shrink repairs a covering ordinary window without changing nat
     f.win.maximized = true; const bounds = { ...f.win.bounds };
     f.screen.emit('display-metrics-changed'); assert.deepEqual(f.win.bounds, bounds);
 });
+
+
+test('maximizing on the same display never reapplies native minimum constraints', async () => {
+    const f = fixture();
+    f.controller.attach(f.win);
+    f.win.setMinimumSize = () => { throw new Error('Native constraint update would cancel maximize'); };
+    const result = await f.controller.change(f.win);
+    assert.equal(result.success, true);
+    assert.equal(result.state.maximized, true);
+});

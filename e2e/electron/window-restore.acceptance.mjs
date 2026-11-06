@@ -10,10 +10,13 @@ const require = createRequire(path.join(root, 'package.json'));
 const { _electron, expect } = require('@playwright/test');
 const output = fs.mkdtempSync(path.join(root, 'e2e/.artifacts/window-restore-'));
 const stage = path.join(output, 'app'), appdata = path.join(output, 'appdata');
-const report = { platform: process.platform, output, checks: [], pageErrors: [] };
+const scale = process.env.AILY_WINDOW_TEST_SCALE;
+if (scale && (!Number.isFinite(Number(scale)) || Number(scale) < 0.5 || Number(scale) > 4)) throw new Error('Invalid test scale');
+const report = { platform: process.platform, output, forcedScale: scale ? Number(scale) : null,
+    windowInput: 'production-ipc-with-rendered-icon-check', checks: [], pageErrors: [] };
 const write = (name, value) => { fs.mkdirSync(path.dirname(name), { recursive: true }); fs.writeFileSync(name, JSON.stringify(value, null, 2)); };
 const link = (source, destination) => { fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.symlinkSync(source, destination, process.platform === 'win32' ? 'junction' : 'dir'); };
-let application;
+let application, main;
 const submissions = [];
 const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
@@ -57,8 +60,9 @@ try {
     const { ELECTRON_RUN_AS_NODE, AILY_CHILD_PATH, NODE_PATH, ...baseEnv } = process.env;
     const launch = async () => {
         application = await _electron.launch({ executablePath: require('electron'), cwd: stage,
-            args: [stage, `--user-data-dir=${path.join(output, 'profile')}`], timeout: 60000,
-            env: { ...baseEnv, HOME: path.join(output, 'home'), AILY_E2E: '1', AILY_APPDATA_PATH: appdata,
+            args: [stage, ...(scale ? [`--force-device-scale-factor=${scale}`] : []), `--user-data-dir=${path.join(output, 'profile')}`], timeout: 60000,
+            env: { ...baseEnv, HOME: path.join(output, 'home'),
+                ...(process.platform === 'win32' ? { USERPROFILE: path.join(output, 'home') } : {}), AILY_E2E: '1', AILY_APPDATA_PATH: appdata,
                 AILY_BUILD_PRODUCT: 'blockly', AILY_SUBAPP_INSTALL_ROOT: path.join(appdata, 'npm-global/app'),
                 AILY_SUBAPP_INDEX_URL: `${origin}/subapp-index.json` } });
         const log = fs.createWriteStream(path.join(output, `electron-${report.checks.length}.log`));
@@ -80,13 +84,24 @@ try {
             write(path.join(output, 'startup.json'), pages);
             throw new Error('Main renderer not attached; see startup.json');
         }
+        await main.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         main.on('pageerror', error => report.pageErrors.push(error.message));
+        main.on('console', message => log.write(`[renderer:${message.type()}] ${message.text()}\n`));
         await main.addLocatorHandler(main.getByText('跳过', { exact: true }), locator => locator.click());
         return main;
     };
-    let main = await launch();
+    main = await launch();
     const state = () => main.evaluate(() => window.electronAPI.iWindow.getState());
-    const toggle = () => main.evaluate(() => window.electronAPI.iWindow.toggleMaximize());
+    // Native input hit testing is verified over RDP; this path checks the IPC,
+    // real native transitions and the renderer's state projection deterministically.
+    const toggle = async () => {
+        const result = await main.evaluate(() => window.electronAPI.iWindow.toggleMaximize());
+        if (process.platform === 'win32' && result.state) {
+            const icon = result.state.canRestore ? '.fa-window-restore' : '.fa-window-maximize';
+            await expect(main.locator('app-header .win-btns .maximize').locator(icon)).toBeVisible();
+        }
+        return result;
+    };
     const normal = await state();
     assert.equal(normal.canRestore, false); assert.ok(normal.bounds.width < 5000);
     report.checks.push('oversized-persisted-normal-bounds-repaired');
@@ -110,8 +125,14 @@ try {
         await main.locator('app-header .menu').click();
         await main.locator('app-menu .menu-item').filter({ hasText: /反馈|Feedback/ }).click();
         const modal = main.locator('app-feedback-dialog'); await modal.waitFor();
-        await modal.locator('input[nz-input]').first().fill(title);
+        await main.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await expect.poll(() => modal.evaluate(el => (el.closest('.ant-modal')?.getAnimations({ subtree: true }) || [])
+            .filter(animation => animation.playState === 'running').length)).toBe(0);
+        const titleInput = modal.locator('input[nz-input]').first();
+        await titleInput.click();
+        await titleInput.fill(title);
         await modal.locator('textarea').fill('Window restore regression with local-only captured feedback.');
+        await expect(titleInput).toHaveValue(title);
         const count = submissions.length;
         await modal.getByRole('button', { name: /提交|Submit/ }).click();
         await expect.poll(() => submissions.length).toBe(count + 1);
@@ -142,6 +163,28 @@ try {
     report.checks.push('restart-retains-normal-bounds-and-restores-from-maximized');
     assert.deepEqual(report.pageErrors, []);
     report.success = true;
+    if (process.env.AILY_WINDOW_HOLD_FILE) {
+        write(path.join(output, 'report.json'), report);
+        console.log(`Manual window ready: ${output}`);
+        while (!fs.existsSync(process.env.AILY_WINDOW_HOLD_FILE)) await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+} catch (error) {
+    report.error = String(error.stack || error);
+    if (main) {
+        report.failureState = await main.evaluate(() => window.electronAPI.iWindow.getState()).catch(() => null);
+        report.buttonState = await main.locator('app-header .win-btns .maximize').evaluate(el => ({
+            html: el.outerHTML, rect: el.getBoundingClientRect().toJSON(),
+            drag: getComputedStyle(el).getPropertyValue('-webkit-app-region'),
+            viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+        })).catch(() => null);
+        await main.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
+        write(path.join(output, 'report.json'), report);
+    }
+    if (process.env.AILY_WINDOW_HOLD_FILE) {
+        console.log(`Failed window held: ${output}`);
+        while (!fs.existsSync(process.env.AILY_WINDOW_HOLD_FILE)) await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    throw error;
 } finally {
     await application?.close().catch(() => {});
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

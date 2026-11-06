@@ -74,12 +74,15 @@ function createWindowStateController({ screen, platform = process.platform, tran
     function attach(win, { bounds, minimum } = {}) {
         if (records.has(win)) return records.get(win);
         const size = minimum || (() => { const [width, height] = win.getMinimumSize(); return { width, height }; })();
-        const record = { normalBounds: normalize(bounds || win.getNormalBounds(), size), minimum: size, pending: null, mode: 'normal' };
+        const record = { normalBounds: normalize(bounds || win.getNormalBounds(), size), minimum: size, pending: null, mode: 'normal', displayId: displayFor(win.getBounds()).id };
         records.set(win, record);
         const refreshMinimum = () => {
             const area = displayFor(win.getBounds()).workArea;
             const fitted = fitNormalBounds(null, area, size);
-            win.setMinimumSize(Math.min(size.width, fitted.width), Math.min(size.height, fitted.height));
+            const next = [Math.min(size.width, fitted.width), Math.min(size.height, fitted.height)];
+            const current = win.getMinimumSize();
+            // Reapplying constraints during a Windows maximize can restore the native window.
+            if (next[0] !== current[0] || next[1] !== current[1]) win.setMinimumSize(...next);
         };
         refreshMinimum();
         const changed = () => {
