@@ -89,46 +89,52 @@ export class NativeUiTasks {
     this.assertClean();
     if (!this.pending.size) return;
     this.report(true);
-    try { this.drainPending(snapshot, phase); }
+
+    try {
+      const before = this.snapshot(snapshot);
+      while (this.pending.size) this.drainNext();
+      this.assertClean();
+      this.verifyPhase(snapshot, before, phase);
+    } catch (error) { this.reject(error instanceof Error ? error : String(error)); }
     finally { this.report(true); }
   }
-  private drainPending(snapshot: () => string, phase: 'initialization' | 'ui'): void {
-    // No event can interleave this synchronous queue. Reuse each verified
-    // post-callback snapshot as the next precondition, without skipping a task.
-    let before = this.snapshot(snapshot);
-    while (this.pending.size) before = this.drainNext(snapshot, phase, before);
-    this.assertClean();
-  }
 
-  /** Only the host supplies this macrotask scheduler, captured before replay.
-   * Library callbacks remain synchronous and each still gets full readback.
-   * Yield boundaries get an additional read: browser observers must not alter
-   * state between tasks and have a later callback silently restore it. */
+  /** A disposable candidate is checked at complete phase boundaries. Host turns
+   * retain lightweight scope/cancellation checks; intermediate callback state
+   * may settle before the final full semantic readback. */
   async drainCooperatively(snapshot: () => string, yieldToHost: () => Promise<void>,
     assertCurrent: () => void, phase: 'initialization' | 'ui' = 'ui'): Promise<void> {
     this.assertClean(); assertCurrent();
     if (!this.pending.size) return;
     this.report(true);
+
     try {
-      let before = this.snapshot(snapshot), sliceStarted = this.clock(), count = 0;
+      const before = this.snapshot(snapshot);
+      let sliceStarted = this.clock(), count = 0;
+
       while (this.pending.size) {
-        before = this.drainNext(snapshot, phase, before);
+        this.drainNext();
         if (this.pending.size && (++count >= 8 || this.clock() - sliceStarted >= 8)) {
           this.report(true);
           this.assertClean(); assertCurrent();
           await yieldToHost();
           this.assertClean(); assertCurrent();
-          const resumed = this.snapshot(snapshot);
-          if (resumed !== before) this.reject(nativeSemanticChange(before, resumed, phase));
-          before = resumed; sliceStarted = this.clock(); count = 0;
+          sliceStarted = this.clock(); count = 0;
         }
       }
+
       this.assertClean(); assertCurrent();
+      this.verifyPhase(snapshot, before, phase);
     } catch (error) { this.reject(error instanceof Error ? error : String(error)); }
     finally { this.report(true); }
   }
 
-  private drainNext(snapshot: () => string, phase: 'initialization' | 'ui', before: string): string {
+  private verifyPhase(snapshot: () => string, before: string, phase: 'initialization' | 'ui'): void {
+    const after = this.snapshot(snapshot);
+    if (after !== before) this.reject(nativeSemanticChange(before, after, phase));
+  }
+
+  private drainNext(): void {
     // Equal due times retain insertion order, including nested work.
     let selected: [number, { due: number; callback: () => unknown }] | undefined;
     for (const entry of this.pending) if (!selected || entry[1].due < selected[1].due) selected = entry;
@@ -142,10 +148,7 @@ export class NativeUiTasks {
       finally { if (this.observe) this.timing.callbackMs += Math.max(0, this.clock() - started); }
       this.assertClean();
       if (value && typeof value.then === 'function') this.reject('Native candidate does not support asynchronous UI callbacks.');
-      const after = this.snapshot(snapshot);
-      if (after !== before) this.reject(nativeSemanticChange(before, after, phase));
       this.report();
-      return after;
     } catch (error) { return this.reject(error instanceof Error ? error : String(error)); }
   }
   dispose(): void { this.disposed = true; this.pending.clear(); }

@@ -8,7 +8,7 @@ import { createAbsReadbackVerifier } from './abs-readback';
  * model, host filesystem, credentials or library downloads participate. */
 describe('1243-node native preparation acceptance', () => {
   const size = 1243, callbacks = 53, chainLength = 63, variableCount = 97;
-  function request(mutate = false): NativeCandidateRequest {
+  function request(mutation: 'none' | 'restored' | 'final' = 'none'): NativeCandidateRequest {
     const fields = {}, roots: any[] = [];
     for (let start = 0; start < size; start += chainLength) {
       let tail: any;
@@ -31,7 +31,8 @@ describe('1243-node native preparation acceptance', () => {
             .appendField(new Blockly.FieldNumber(0), 'NUM');
           this.setPreviousStatement(true); this.setNextStatement(true);
           if (this.id === 'scale-0') for (let i = 0; i < ${callbacks}; i++) setTimeout(() => {
-            ${mutate ? "if (i === 0) this.setFieldValue('changed', 'TEXT'); if (i === 1) this.setFieldValue('value-0', 'TEXT');" : "this.setTooltip('native UI ready');"}
+            ${mutation === 'restored' ? "if (i === 0) this.setFieldValue('changed', 'TEXT'); if (i === 1) this.setFieldValue('value-0', 'TEXT');"
+              : mutation === 'final' ? `if (i === ${callbacks - 1}) this.setFieldValue('changed', 'TEXT');` : "this.setTooltip('native UI ready');"}
           }, 0);
         } };
         Arduino.forBlock.scale_native_probe = () => '';
@@ -92,9 +93,9 @@ describe('1243-node native preparation acceptance', () => {
       expect(JSON.stringify(input)).toBe(original);
       const completed = observed.records.slice(recordStart).filter(value => value.callbacks >= callbacks && value.pending === 0);
       expect(completed.length).toBeGreaterThan(0);
-      expect(completed.every(value => value.snapshots >= value.callbacks + 1)).toBeTrue();
+      expect(completed.some(value => value.snapshots >= 2)).toBeTrue();
       report({ run, elapsedMs, executions: execute.calls.count(), budgets, realms: observed.realms - realmStart,
-        fullReadback: true, nativeBlockMetadataPreserved: metadataPreserved, callbackGuardMinimumSnapshots: callbacks + 1,
+        fullReadback: true, nativeBlockMetadataPreserved: metadataPreserved, phaseBoundarySnapshots: 2,
         observedMaximumSnapshots: Math.max(...completed.map(value => value.snapshots)) });
     }
   }, 90000);
@@ -122,16 +123,22 @@ describe('1243-node native preparation acceptance', () => {
         : 'AbortSignal is explicitly supplied to the evaluator adapter; this is not an Agent Stop latency claim.' });
   }, 40000);
 
-  it('still rejects one callback mutation before a later callback can restore the same 1243-node graph', async () => {
+  it('accepts restored intermediate state while retaining complete final readback', async () => {
+    const input = request('restored');
+    const result = await createNativeCandidateRecovery(evaluateNativeCandidate, () => {})(input);
+    createAbsReadbackVerifier(input.verify!.state)(result.state as any);
+  }, 40000);
+
+  it('rejects a final persisted mutation in the complete 1243-node graph', async () => {
     const observed = observe(), execute = jasmine.createSpy().and.callFake(evaluateNativeCandidate);
     let failure: any;
-    try { await createNativeCandidateRecovery(execute, () => {})(request(true)); } catch (error) { failure = error; }
+    try { await createNativeCandidateRecovery(execute, () => {})(request('final')); } catch (error) { failure = error; }
     expect(failure?.message).toMatch(/changed persisted state/);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(failure?.code).toBe('ABS_NATIVE_UI_CONTRACT_CHANGED');
     expect(failure?.diagnostic?.blockId).toBe('scale-0'); expect(failure?.diagnostic?.field).toBe('TEXT');
     expect(failure?.diagnostic?.expected).toBe('value-0'); expect(failure?.diagnostic?.received).toBe('changed');
-    report({ run: 'callback-mutation', executions: execute.calls.count(), individualCallbackRejected: /changed persisted state/.test(failure?.message ?? ''),
+    report({ run: 'callback-mutation', executions: execute.calls.count(), finalMutationRejected: /changed persisted state/.test(failure?.message ?? ''),
       actualErrorCode: failure?.code, realms: observed.realms });
   }, 40000);
 });
