@@ -31,6 +31,7 @@ import { Router } from '@angular/router';
 import { ElectronService, PlatformService, CmdOutput, CmdService } from '@core/platform/public-api';
 import { ConfigService } from '@core/preferences/public-api';
 import { AuthService } from '@core/auth/public-api';
+import { HubNavigationService } from '@integration/hub/public-api';
 import { AppItem } from '../../../configs/tool.config';
 import { AppStoreService } from '../../../tools/app-store/app-store.service';
 import { RequiredSubappService } from '@integration/subapps/public-api';
@@ -105,6 +106,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private readonly coderPersistence = inject(CodeEditorProProjectService);
   private readonly requiredSubapps = inject(RequiredSubappService);
   private readonly mainUiAutomation = inject(MainUiAutomationService);
+  private readonly hubNavigation = inject(HubNavigationService);
   private readonly coderHeaderButtons = new Map<string, IMenuItem[]>();
 
   headerBtns: IMenuItem[] = HEADER_BTNS;
@@ -1542,7 +1544,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         await this.close();
         break;
       case 'example-open':
-        this.electronService.openUrl(this.configService.getHubWebUrl('/projects'));
+        void this.hubNavigation.open('/projects');
         break;
       case 'board-select':
         this.openBoardSelectorDialog();

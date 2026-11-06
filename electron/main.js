@@ -135,6 +135,118 @@ app.commandLine.appendSwitch('disk-cache-size', '104857600');
 const PROTOCOLS = getProductAuthConfig(getBuildProduct()).protocols;
 const isSupportedProtocolUrl = url => isProductProtocolUrl(getBuildProduct(), url);
 
+// Hub desktop handoffs are local, short-lived and independent of Console/OAuth.
+const hubDesktopRequests = new Map();
+
+function isHubDesktopProtocol(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === `${getProductAuthConfig(getBuildProduct()).protocol}:`
+      && url.hostname === 'auth' && url.pathname === '/hub';
+  } catch { return false; }
+}
+
+function parseHubDesktopProtocol(value) {
+  if (!isHubDesktopProtocol(value)) throw new Error('Invalid Hub handoff');
+  const url = new URL(value);
+  const keys = ['request', 'state', 'code_challenge', 'redirect_uri', 'sourceApiUrl', 'returnUrl'];
+  if (url.username || url.password || url.port || url.hash || value.length > 8192
+      || [...url.searchParams.keys()].length !== keys.length
+      || keys.some(key => url.searchParams.getAll(key).length !== 1)
+      || !/^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('request'))) throw new Error('Invalid Hub handoff');
+  return Object.fromEntries(keys.map(key => [key, url.searchParams.get(key)]));
+}
+
+function hubDesktopPipe(request) {
+  const name = `aily-hub-${getBuildProduct()}-${request}`;
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${name}`;
+  const id = require('node:crypto').createHash('sha256').update(name).digest('hex').slice(0, 32);
+  return path.join(os.tmpdir(), `ah-${id}`);
+}
+
+function forwardHubDesktopAuthorization(value) {
+  return new Promise((resolve, reject) => {
+    let request;
+    try { request = parseHubDesktopProtocol(value).request; } catch (error) { reject(error); return; }
+    const socket = require('node:net').createConnection(hubDesktopPipe(request));
+    let reply = '';
+    const fail = () => { socket.destroy(); reject(new Error('Hub handoff unavailable')); };
+    socket.on('error', fail);
+    socket.setTimeout(2000, fail);
+    socket.once('connect', () => socket.write(`${value}\n`));
+    socket.on('data', chunk => { reply += chunk.toString('utf8'); if (reply.length > 16) fail(); });
+    socket.once('end', () => {
+      socket.destroy();
+      if (reply === 'ok\n') resolve(); else fail();
+    });
+  });
+}
+
+async function beginHubDesktopRequest(event, request) {
+  const sender = event.sender, frame = event.senderFrame;
+  if (typeof request !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(request) || frame !== sender.mainFrame
+      || sender.isDestroyed() || !BrowserWindow.fromWebContents(sender)
+      || hubDesktopRequests.has(request)
+      || [...hubDesktopRequests.values()].some(entry => entry.sender === sender)) return false;
+  const pipe = hubDesktopPipe(request);
+  const entry = { sender, expiresAt: Date.now() + 120000, close: null };
+  const navigated = (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) entry.close(); };
+  const server = require('node:net').createServer(socket => {
+    let input = '', handled = false;
+    socket.on('error', () => {});
+    socket.setTimeout(2000, () => socket.destroy());
+    socket.on('data', chunk => {
+      if (handled) return;
+      input += chunk.toString('utf8');
+      if (Buffer.byteLength(input) > 8192) { socket.destroy(); return; }
+      if (!input.includes('\n')) return;
+      handled = true;
+      try {
+        const data = parseHubDesktopProtocol(input.slice(0, input.indexOf('\n')));
+        if (data.request !== request || hubDesktopRequests.get(request) !== entry
+            || Date.now() >= entry.expiresAt || sender.isDestroyed() || sender.mainFrame !== frame) throw new Error();
+        entry.close();
+        frame.send('hub-desktop-authorize', data);
+        socket.end('ok\n');
+      } catch { socket.end('stale\n'); }
+    });
+  });
+  const timer = setTimeout(() => entry.close(), 120000);
+  timer.unref();
+  entry.close = () => {
+    if (hubDesktopRequests.get(request) !== entry) return;
+    hubDesktopRequests.delete(request);
+    clearTimeout(timer);
+    sender.removeListener('destroyed', entry.close);
+    sender.removeListener('did-start-navigation', navigated);
+    if (server.listening) server.close();
+  };
+  hubDesktopRequests.set(request, entry);
+  sender.once('destroyed', entry.close);
+  sender.on('did-start-navigation', navigated);
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(pipe, () => {
+        if (hubDesktopRequests.get(request) !== entry) { server.close(); reject(new Error()); return; }
+        try {
+          if (process.platform !== 'win32') fs.chmodSync(pipe, 0o600);
+          resolve();
+        } catch { reject(new Error('Hub handoff unavailable')); }
+      });
+    });
+    server.on('error', () => entry.close());
+    return true;
+  } catch { entry.close(); return false; }
+}
+
+// A protocol-launched process only forwards to an already registered local owner.
+const hubDesktopLaunch = process.argv.find(isHubDesktopProtocol);
+if (hubDesktopLaunch) {
+  forwardHubDesktopAuthorization(hubDesktopLaunch).then(() => app.exit(0), () => app.exit(1));
+  return;
+}
+
 // 历史通知只转发给发起进程，不分配新 profile 或创建空窗口。
 const { isNotificationActivationUrl, forwardNotificationActivation } = require('./notification-activation');
 const notificationActivationUrl = isWin32 && process.argv.find(value => isNotificationActivationUrl(value, getBuildProduct()));
@@ -668,6 +780,7 @@ function handleCommandLineArgs(argv, cwd = process.cwd()) {
 handleCommandLineArgs(process.argv);
 
 function protocolLogValue(value) {
+  if (typeof value === 'string' && /^(abis|acis|ailyblockly|ailycoder):\/\/auth\/hub(?:[?#]|$)/i.test(value)) return '[Hub desktop handoff]';
   // Download URLs may contain signed query parameters; keep them out of application logs.
   return typeof value === 'string' && /^(abis|acis|ailyblockly|ailycoder):\/\/project\/import(?:[?#]|$)/i.test(value)
     ? '[project import]' : value;
@@ -705,6 +818,11 @@ function handleProtocol(url) {
       const archiveUrl = require('./project-url-import').parseProjectImportUrl(url, getBuildProduct());
       if (!pendingProjectImports.includes(archiveUrl)) pendingProjectImports.push(archiveUrl);
       void processPendingProjectImports();
+      return;
+    }
+
+    if (fullPath === '/auth/hub') {
+      void forwardHubDesktopAuthorization(url).catch(() => console.warn('Hub desktop handoff unavailable'));
       return;
     }
 
@@ -3868,6 +3986,15 @@ ipcMain.on("host-auth-state-changed", (event, data = {}) => {
 });
 
 ipcMain.handle("host-auth-state-get", () => ({ ...hostAuthState }));
+
+ipcMain.handle('hub-desktop-begin', (event, request) => beginHubDesktopRequest(event, request));
+ipcMain.handle('hub-desktop-cancel', (event, request) => {
+  const entry = hubDesktopRequests.get(request);
+  if (entry?.sender === event.sender) entry.close();
+});
+app.on('will-quit', () => {
+  for (const entry of hubDesktopRequests.values()) entry.close();
+});
 
 // OAuth状态管理的IPC处理器
 ipcMain.handle("oauth-register-state", (event, state) => {

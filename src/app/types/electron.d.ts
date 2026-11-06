@@ -98,6 +98,18 @@ declare global {
         decryptStringFromBase64: (encryptedBase64: string) => string;
       };
       ipcRenderer: any;
+      hubDesktop?: {
+        begin: (request: string) => Promise<boolean>;
+        cancel: (request: string) => Promise<void>;
+        onAuthorize: (callback: (data: {
+          request: string;
+          state: string;
+          code_challenge: string;
+          redirect_uri: string;
+          sourceApiUrl: string;
+          returnUrl: string;
+        }) => void) => () => void;
+      };
       path: any;
       platform: any;
       /** 系统文件管理器高亮（如访达、资源管理器） */

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": [
+    "../src/app/services/integrations/hub/hub-navigation.service.spec.ts",
+    "../src/app/main-window/components/header/hub-navigation-entry.spec.ts",
+    "../src/app/tools/cloud-space/cloud-space.component.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

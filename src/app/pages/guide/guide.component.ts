@@ -11,6 +11,7 @@ import { CommonModule } from '@angular/common';
 import { GUIDE_ONBOARDING_CONFIG } from '../../configs/onboarding.config';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { Subscription } from 'rxjs';
+import { HubNavigationService } from '@integration/hub/public-api';
 
 @Component({
   selector: 'app-guide',
@@ -119,6 +120,7 @@ export class GuideComponent implements OnInit, OnDestroy {
     private themeService: ThemeService,
     private sanitizer: DomSanitizer,
     private route: ActivatedRoute,
+    private hubNavigation: HubNavigationService,
   ) {
     this.guidePageDefaultUrl = this.sanitizer.bypassSecurityTrustResourceUrl('https://guide-page.aily.pro');
     this.guidePageCnUrl = this.sanitizer.bypassSecurityTrustResourceUrl('https://guide-page.yiyu.pro');
@@ -323,7 +325,7 @@ export class GuideComponent implements OnInit, OnDestroy {
         this.electronService.openUrl(item.data.url);
         break;
       case 'playground-open':
-        this.electronService.openUrl(this.configService.getHubWebUrl('/projects'));
+        void this.hubNavigation.open('/projects');
         break;
       case 'tool-open':
         this.uiService.turnTool(item.data);
@@ -338,7 +340,7 @@ export class GuideComponent implements OnInit, OnDestroy {
   }
 
   gotoPlayground() {
-    this.electronService.openUrl(this.configService.getHubWebUrl('/projects'));
+    void this.hubNavigation.open('/projects');
   }
 
   // 重新加载微信二维码图片

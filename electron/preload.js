@@ -1005,6 +1005,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
     getZoomFactor: () => webFrame.getZoomFactor()
   },
+  hubDesktop: {
+    begin: request => ipcRenderer.invoke('hub-desktop-begin', request),
+    cancel: request => ipcRenderer.invoke('hub-desktop-cancel', request),
+    onAuthorize: callback => {
+      const listener = (_event, data) => callback(data);
+      ipcRenderer.on('hub-desktop-authorize', listener);
+      return () => ipcRenderer.removeListener('hub-desktop-authorize', listener);
+    },
+  },
   // GitHub OAuth API (简化版，只处理协议回调)
   oauth: {
     onCallback: (callback) => {

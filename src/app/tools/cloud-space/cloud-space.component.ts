@@ -18,6 +18,7 @@ import {
 import { CmdService, ElectronService, PlatformService } from '@core/platform/public-api';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AuthService } from '@core/auth/public-api';
+import { HubNavigationService } from '@integration/hub/public-api';
 import { LoginDialogComponent } from '../../main-window/components/login-dialog/login-dialog.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { distinctUntilChanged } from 'rxjs/operators';
@@ -74,6 +75,7 @@ export class CloudSpaceComponent {
     private cloudProjectOpen: CloudProjectOpenService,
     private translate: TranslateService,
     private configService: ConfigService,
+    private hubNavigation: HubNavigationService,
   ) { }
 
   // 分页参数
@@ -165,8 +167,7 @@ export class CloudSpaceComponent {
 
   publishToHub(item): void {
     if (!this.canPublishToHub(item)) return;
-    this.electronService.openUrl(this.configService.getHubWebUrl(`/publish?cloudProject=${encodeURIComponent(item.uuid)}`));
-    this.message.info('已发起打开 Hub，请使用与客户端相同的 Aily 账号和区域登录，完善作品并提交审核');
+    void this.hubNavigation.open(`/publish?cloudProject=${encodeURIComponent(item.uuid)}`);
   }
 
   async requestSync(): Promise<void> {

@@ -97,6 +97,7 @@ export const API = {
   get wechatConfirmMerge() { return `${getServerUrl()}/api/v1/oauth/wechat/confirm-merge`; },
   // sso
   get ssoGenerate() { return `${getServerUrl()}/api/v1/auth/sso/generate`; },
+  get hubAuthorize() { return `${getServerUrl()}/api/v1/auth/hub/authorize`; },
   // ai
   get chatStateless() { return `${getServerUrl()}/api/v2/chat_stateless`; },
   get modelCatalog() { return `${getServerUrl()}/api/v2/model_catalog`; },

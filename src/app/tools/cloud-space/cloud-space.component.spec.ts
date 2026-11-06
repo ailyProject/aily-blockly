@@ -14,7 +14,7 @@ describe('CloudSpace opening state', () => {
       const message = { error: jasmine.createSpy('error') };
       const component = new CloudSpaceComponent({} as any, {} as any, {} as any, {} as any,
         message as any, {} as any, {} as any, {} as any, {} as any, { open } as any,
-        {} as any, {} as any);
+        {} as any, {} as any, {} as any);
       const item = { id: 'cloud-project' };
 
       const pending = component.openInNewTab(item);
@@ -40,8 +40,7 @@ describe('CloudSpace Hub publishing', () => {
     component.isStudent = false;
     component.authService = { userInfo: { id: 'author' } };
     component.electronService = { openUrl: jasmine.createSpy('openUrl') };
-    component.configService = { getHubWebUrl: jasmine.createSpy('getHubWebUrl').and.returnValue('https://hub.example/publish?cloudProject=cloud+%26+project&app=ailyblockly') };
-    component.message = { info: jasmine.createSpy('info') };
+    component.hubNavigation = { open: jasmine.createSpy('open').and.resolveTo() };
     component.cloudService = {
       publishProject: jasmine.createSpy('publish'),
       unpublishProject: jasmine.createSpy('unpublish').and.returnValue(of({ status: 200 })),
@@ -65,15 +64,14 @@ describe('CloudSpace Hub publishing', () => {
     component.isStudent = false;
     component.authService.userInfo = null;
     component.publishToHub(ownProject);
-    expect(component.electronService.openUrl).not.toHaveBeenCalled();
+    expect(component.hubNavigation.open).not.toHaveBeenCalled();
   });
 
-  it('opens the configured Hub with an encoded cloud UUID without changing publication state', () => {
+  it('hands the encoded cloud UUID to Hub account navigation without changing publication state', () => {
     const item = { ...ownProject };
     component.publishToHub(item);
-    expect(component.configService.getHubWebUrl).toHaveBeenCalledOnceWith('/publish?cloudProject=cloud%20%26%20project');
-    expect(component.electronService.openUrl).toHaveBeenCalledOnceWith('https://hub.example/publish?cloudProject=cloud+%26+project&app=ailyblockly');
-    expect(component.message.info).toHaveBeenCalledOnceWith('已发起打开 Hub，请使用与客户端相同的 Aily 账号和区域登录，完善作品并提交审核');
+    expect(component.hubNavigation.open).toHaveBeenCalledOnceWith('/publish?cloudProject=cloud%20%26%20project');
+    expect(component.electronService.openUrl).not.toHaveBeenCalled();
     expect(component.cloudService.publishProject).not.toHaveBeenCalled();
     expect(component.cloudService.unpublishProject).not.toHaveBeenCalled();
     expect(item).toEqual(ownProject);
@@ -377,7 +375,7 @@ describe('CloudSpace education access', () => {
     component = new CloudSpaceComponent({} as any, cloud, project, {} as any,
       { error: jasmine.createSpy('error'), info: jasmine.createSpy('info') } as any, { userInfo$: user } as any, modal,
       { readFile: () => JSON.stringify(project.currentPackageData) } as any,
-      {} as any, {} as any, { instant: () => '发布状态更新失败' } as any, { getDefaultProjectImageSrc: () => '/default.png' } as any);
+      {} as any, {} as any, { instant: () => '发布状态更新失败' } as any, { getDefaultProjectImageSrc: () => '/default.png' } as any, {} as any);
   });
 
   afterEach(() => component.ngOnDestroy());
