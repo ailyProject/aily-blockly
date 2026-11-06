@@ -204,6 +204,8 @@ app-act-btn.dependency-blocked {
 }
 
 .win-btns {
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   margin-left: 10px;

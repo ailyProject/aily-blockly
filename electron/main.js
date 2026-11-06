@@ -19,6 +19,8 @@ const {
 } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
+const { createWindowStateController } = require('./window-state');
+const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { startCliBridge } = require("./cli-bridge");
@@ -2607,53 +2609,6 @@ async function updateMainWindowWithPendingData() {
   }
 }
 
-function rectsOverlap(a, b) {
-  return !(
-    a.x + a.width <= b.x ||
-    a.x >= b.x + b.width ||
-    a.y + a.height <= b.y ||
-    a.y >= b.y + b.height
-  );
-}
-
-/** Windows：持久化坐标可能落在已移除的显示器上；electron-win-state 不会按当前屏幕校验。macOS 不处理。 */
-function ensureWinStateOnVisibleDisplay(winState) {
-  if (!isWin32) {
-    return;
-  }
-  const s = winState.state;
-  const w = Number(s.width);
-  const h = Number(s.height);
-  const x = Number(s.x);
-  const y = Number(s.y);
-  if (![w, h].every((n) => Number.isFinite(n) && n > 0) || ![x, y].every((n) => Number.isFinite(n))) {
-    return;
-  }
-  const winRect = { x, y, width: w, height: h };
-  const displays = screen.getAllDisplays();
-  const visible = displays.some((d) => rectsOverlap(winRect, d.workArea));
-  if (visible) {
-    return;
-  }
-  const wa = screen.getPrimaryDisplay().workArea;
-  let nw = w;
-  let nh = h;
-  if (nw > wa.width) {
-    nw = wa.width;
-  }
-  if (nh > wa.height) {
-    nh = wa.height;
-  }
-  s.width = nw;
-  s.height = nh;
-  s.x = Math.round(wa.x + Math.max(0, (wa.width - nw) / 2));
-  s.y = Math.round(wa.y + Math.max(0, (wa.height - nh) / 2));
-  try {
-    winState.saveState();
-  } catch (e) {
-    console.warn('修正窗口位置后保存状态失败:', e);
-  }
-}
 
 function createWindow() {
   // 检查是否为首次启动（没有窗口状态记录文件）
@@ -2668,13 +2623,14 @@ function createWindow() {
       cwd: process.env.AILY_APPDATA_PATH,
     },
   });
-  ensureWinStateOnVisibleDisplay(winState);
+  const normalBounds = windowStateController.normalize(winState.state);
+  Object.assign(winState.state, normalBounds);
 
   mainWindow = new BrowserWindow({
-    ...winState.winOptions,
+    ...normalBounds,
     show: false,
-    minWidth: 800,
-    minHeight: 600,
+    minWidth: Math.min(800, normalBounds.width),
+    minHeight: Math.min(600, normalBounds.height),
     frame: false,
     titleBarStyle: isDarwin ? 'hiddenInset' : 'default',
     alwaysOnTop: false,
@@ -2701,18 +2657,20 @@ function createWindow() {
     beginRendererGeneration('did-start-navigation');
   });
 
-  mainWindow.setBounds(winState.state);
+  windowStateController.attach(mainWindow, { bounds: normalBounds, minimum: { width: 800, height: 600 } });
 
   // electron-win-state 未持久化 isMaximized / isFullScreen，关闭前写入 store，供下次 ready-to-show 恢复
   mainWindow.on('close', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      winState.state.isMaximized = mainWindow.isMaximized();
-      winState.state.isFullScreen = mainWindow.isFullScreen();
+      const state = windowStateController.snapshot(mainWindow);
+      Object.assign(winState.state, state.normalBounds);
+      winState.state.isMaximized = state.mode === 'maximized';
+      winState.state.isFullScreen = state.mode === 'fullscreen';
       winState.saveState();
     }
   });
 
-  winState.manage(mainWindow);
+  // Normal bounds are tracked independently from maximized/fullscreen geometry.
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) projectOpenRendererReady = false;
   });
@@ -2721,10 +2679,10 @@ function createWindow() {
 
   // 当页面准备好显示时，再显示窗口（首次启动时最大化）
   mainWindow.once('ready-to-show', () => {
-    if (isFirstLaunch || winState.state.isMaximized) {
+    if (isFirstLaunch || winState.state.isMaximized === true) {
       mainWindow.maximize();
     }
-    if (winState.state.isFullScreen) {
+    if (winState.state.isFullScreen === true) {
       mainWindow.setFullScreen(true);
     }
     mainWindow.show();
@@ -2821,6 +2779,7 @@ function createWindow() {
   registerUpdaterHandlers(mainWindow);
   registerTerminalHandlers(mainWindow);
   windowController = registerWindowHandlers(mainWindow, {
+    windowStateController,
     resolveRendererUrl: resolveAppRendererUrl,
     getRendererGeneration: () => rendererGeneration,
     canCloseMainWindow: () => applicationQuit.canClose(),

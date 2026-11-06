@@ -18,6 +18,8 @@ export class SubWindowComponent implements OnDestroy {
   isMacFullScreen = false;
   private unsubscribeFullScreenChanged?: () => void;
   private unsubscribeMaximizeChanged?: () => void;
+  private unsubscribeWindowStateChanged?: () => void;
+  private destroyed = false;
   private unsubscribeCloseRequest?: () => void;
 
   get isMac() {
@@ -41,6 +43,11 @@ export class SubWindowComponent implements OnDestroy {
 
   ngAfterViewInit() {
     if (this.electronService.isElectron) {
+      this.isMacFullScreen = window['iWindow']?.getState?.()?.fullScreen ?? false;
+      this.unsubscribeWindowStateChanged = window['iWindow']?.onStateChanged?.((state) => {
+        this.isMacFullScreen = state.fullScreen;
+        if (!this.destroyed) this.cd.detectChanges();
+      });
       // 监听窗口全屏状态变化
       this.unsubscribeFullScreenChanged = this.electronService.onWindowFullScreenChanged((isFullScreen: boolean) => {
         this.isMacFullScreen = isFullScreen;
@@ -65,6 +72,8 @@ export class SubWindowComponent implements OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
+    this.unsubscribeWindowStateChanged?.();
     if (this.electronService.isElectron) {
       // 取消窗口全屏状态变化监听
       if (this.unsubscribeFullScreenChanged) {
@@ -92,13 +101,14 @@ export class SubWindowComponent implements OnDestroy {
     window['iWindow'].minimize();
   }
 
-  maximize() {
-    if (window['iWindow'].isMaximized()) {
-      window['iWindow'].unmaximize();
-    } else {
-      window['iWindow'].maximize();
-    }
-    // 状态会通过事件监听器自动更新
+  async maximize() {
+    try {
+      const result = await window['iWindow'].toggleMaximize();
+      if (!this.destroyed) {
+        if (!result.success) console.error('Window state change failed:', result.error);
+        this.cd.detectChanges();
+      }
+    } catch (error) { console.error('Window state change failed:', error); }
   }
 
   close() {

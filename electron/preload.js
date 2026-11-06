@@ -383,6 +383,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   iWindow: {
+    getState: () => ipcRenderer.sendSync('window-get-state'),
+    toggleMaximize: () => ipcRenderer.invoke('window-toggle-maximize'),
+    diagnostics: () => ipcRenderer.invoke('window-get-diagnostics'),
+    onStateChanged: callback => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('window-state-changed', listener);
+      return () => ipcRenderer.removeListener('window-state-changed', listener);
+    },
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
     isMaximized: () => ipcRenderer.sendSync("window-is-maximized"),
@@ -523,6 +531,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   subapps: {
+    diagnostics: () => ipcRenderer.invoke('subapp-manager-diagnostics'),
     prepareLaunch: (options) => ipcRenderer.invoke("subapp-manager-prepare-launch", options),
     finishLaunch: (token) => ipcRenderer.invoke("subapp-manager-finish-launch", token),
     list: (options = {}) => ipcRenderer.invoke("subapp-manager-list", options),

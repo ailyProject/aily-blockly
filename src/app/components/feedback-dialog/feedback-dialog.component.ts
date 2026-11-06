@@ -21,6 +21,7 @@ import { Subscription } from 'rxjs';
 import { validRange } from 'semver';
 import {
   FEEDBACK_CRASH_CONTEXT_MAX_BYTES,
+  FEEDBACK_DIAGNOSTICS_MAX_BYTES,
   enforceDiagnosticTextBudget,
   extractLatestCrashDiagnostic,
   resolveAccountStatusCode,
@@ -97,6 +98,7 @@ export class FeedbackDialogComponent implements OnDestroy {
   @ViewChild('contentTextarea') contentTextarea!: ElementRef<HTMLTextAreaElement>;
 
   private readonly STORAGE_KEY = 'feedback_dialog_draft';
+  private runtimeDiagnosticBytes = 0;
 
   // 标记是否已成功提交
   private isSubmitted: boolean = false;
@@ -333,12 +335,51 @@ export class FeedbackDialogComponent implements OnDestroy {
     ]);
   }
 
+  private async buildRuntimeDiagnostics(): Promise<string> {
+    const api = (window as any).electronAPI;
+    // Supplementary collection cannot block feedback on older hosts or failed IPC.
+    const bounded = async (read: (() => Promise<unknown>) | undefined): Promise<unknown> => {
+      if (!read) return null;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([Promise.resolve().then(read), new Promise(resolve => {
+          timer = setTimeout(() => resolve(null), 1500);
+        })]);
+      } catch { return null; }
+      finally { clearTimeout(timer); }
+    };
+    const [windowState, subapps] = await Promise.all([
+      bounded(api?.iWindow?.diagnostics ? () => api.iWindow.diagnostics() : undefined),
+      bounded(api?.subapps?.diagnostics ? () => api.subapps.diagnostics() : undefined),
+    ]);
+    const chat = (subapps as any)?.ailyChat;
+    const [runtimeBlock] = enforceDiagnosticTextBudget([{ key: 'window-displays', kind: 'result',
+      content: sanitizeDiagnosticText(JSON.stringify(windowState, null, 2)) || 'null' }], 8 * 1024);
+    const runtimeJson = runtimeBlock.content || 'null';
+    this.runtimeDiagnosticBytes = new TextEncoder().encode(runtimeJson).byteLength;
+    return [
+      '### Aily Chat',
+      this.renderTable([
+        ['Installed', chat?.installed ?? null],
+        ['Installed Version', chat?.installedVersion ?? null],
+        ['Selected Version', chat?.selectedVersion ?? null],
+        ['Selected Source', chat?.selectedSource ?? null],
+        ['Running', chat?.running ?? null],
+        ['Running Version', chat?.runningVersion ?? null],
+        ['Running Source', chat?.runningSource ?? null],
+      ]),
+      '### Window and Displays',
+      '```json\n' + runtimeJson + '\n```',
+    ].join('\n\n');
+  }
+
   private async buildIssueContent(feedbackTime: string): Promise<string> {
     const sections = [
       '## Issue Description',
       this.feedbackContent.trim() || 'null',
       '## Environment',
       this.getBasicInfo(feedbackTime),
+      await this.buildRuntimeDiagnostics(),
     ];
 
     const diagnostics = await this.buildDiagnostics(feedbackTime);
@@ -1080,7 +1121,7 @@ export class FeedbackDialogComponent implements OnDestroy {
       kind: 'result',
       content: JSON.stringify(this.readProjectDependencies(projectPackage), null, 2),
     }] : [];
-    return enforceDiagnosticTextBudget([...projectBlocks, ...blocks]);
+    return enforceDiagnosticTextBudget([...projectBlocks, ...blocks], FEEDBACK_DIAGNOSTICS_MAX_BYTES - this.runtimeDiagnosticBytes);
   }
 
   private renderProjectDependencies(blocks: readonly DiagnosticTextBlock[]): string[] {
