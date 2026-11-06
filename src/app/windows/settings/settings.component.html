@@ -119,9 +119,6 @@
           @if (!coderProduct) {
           <div id="SETTINGS.SECTIONS.BLOCKLY" class="section">
             <h2 class="section-title">{{ 'SETTINGS.SECTIONS.BLOCKLY' | translate }}</h2>
-            <p class="blockly-save-status" role="status" [class.save-error]="blocklySaveState === 'error'">
-              {{ ('SETTINGS.FIELDS.BLOCKLY_SETTINGS_' + (blocklySaveState === 'saving' ? 'SAVING' : blocklySaveState === 'saved' ? 'SAVED' : blocklySaveState === 'error' ? 'SAVE_FAILED' : 'AUTO_SAVE')) | translate }}
-            </p>
             <div class="right-inner">
               <div class="item">
                 <div><label for="blockly-autosave">{{ 'SETTINGS.FIELDS.BLOCKLY_AUTO_SAVE' | translate }}:</label></div>
@@ -375,6 +372,11 @@
       </ngx-simplebar>
     </div>
     <div class="window-footer">
+      @if (!coderProduct) {
+      <p class="blockly-save-status" role="status" aria-live="polite" aria-atomic="true" [class.save-error]="blocklySaveState === 'error'">
+        {{ ('SETTINGS.FIELDS.BLOCKLY_SETTINGS_' + (blocklySaveState === 'saving' ? 'SAVING' : blocklySaveState === 'saved' ? 'SAVED' : blocklySaveState === 'error' ? 'SAVE_FAILED' : 'AUTO_SAVE')) | translate }}
+      </p>
+      }
       <div class="btns">
         <button nz-button nzType="default" (click)="cancel()">{{ 'SETTINGS.BUTTONS.CANCEL' | translate }}</button>
         <button nz-button nzType="primary" [nzLoading]="applying" [disabled]="cloudConnectionChecking || cloudConnectionSaving" (click)="apply()">{{ 'SETTINGS.BUTTONS.APPLY' |
