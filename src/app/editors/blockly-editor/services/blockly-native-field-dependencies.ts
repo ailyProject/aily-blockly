@@ -4,6 +4,7 @@ import { NativeUiTasks, nativeUiSemanticSnapshot } from './blockly-native-ui-tas
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { collectProjectBlocks } from '@domain/project/project-data/public-api';
 import { nativeSemanticChange } from './blockly-native-semantic-diagnostic';
+import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 
 const active = new WeakMap<Blockly.Workspace, NativeFieldDependencies>();
 const initializers = new Set<{ workspace: () => Blockly.Workspace | null; initialize: (workspace: Blockly.Workspace) => void }>();
@@ -28,6 +29,7 @@ export class NativeFieldDependencies {
   private sequence = 0;
   private loadingNotified = false;
   private settling = false;
+  private preparation: 'pending' | 'preparing' | 'prepared' = 'pending';
   private readonly tasks: NativeUiTasks;
   private readonly initializationQueue: boolean;
   constructor(private readonly native: typeof Blockly, private readonly workspace: Blockly.Workspace,
@@ -103,6 +105,18 @@ export class NativeFieldDependencies {
     return absJson(value);
   }
   private beginSettlement(required: boolean): boolean {
+    // The first settlement, including model binding's early settle(false),
+    // follows restored fields rather than the still-default name checkpoint.
+    // Commit once before freezing per-callback semantics; later settlement and
+    // ordinary editor snapshots must not advance an uncommitted rename.
+    if (this.preparation === 'preparing') throw new Error('Native construction metadata preparation must not reenter initialization.');
+    if (this.preparation === 'pending') {
+      this.preparation = 'preparing';
+      try {
+        captureCustomFunctionRegistration(this.native.Blocks)?.prepareSerialization(this.workspace, true);
+        this.preparation = 'prepared';
+      } catch (error) { this.preparation = 'pending'; throw error; }
+    }
     if (!this.pending.size && (!this.initializationQueue || !required)) return false;
     if (!this.pending.size && this.loadingNotified && !this.tasks.hasPending && !this.timers.size) return false;
     this.settling = true;
@@ -140,8 +154,8 @@ export class NativeFieldDependencies {
       this.finishSettlement(required);
     } finally { this.settling = previous; }
   }
-  /** Only the outer completed-topology boundary may yield. Missing fields
-   * encountered during synchronous block construction still settle inline. */
+  /** Only the outer completed-topology boundary may yield. The completed ABS
+   * graph's synchronous model dependency worklist still settles inline. */
   async settleCooperatively(yieldToHost: () => Promise<void>, assertCurrent: () => void): Promise<void> {
     const previous = this.settling;
     try {

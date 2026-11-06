@@ -35,15 +35,15 @@ const harnessBuild = await esbuild.build({ absWorkingDir: repo, entryPoints: ['e
 const harness = harnessBuild.outputFiles[0].contents
 await fs.writeFile(path.join(values.output, 'harness.js'), harness)
 const variants = new Map()
-for (const [name, reorder] of [['observed-current', false], ['commit-names-before-settlement', true]]) {
-  const variant = await buildParamsBoundary(repo, esbuild, reorder)
+for (const [name, legacyOrder] of [['observed-fixed', false], ['legacy-order-control', true]]) {
+  const variant = await buildParamsBoundary(repo, esbuild, legacyOrder)
   variants.set(name, variant)
   await fs.mkdir(path.join(values.output, name), { recursive: true })
   await fs.writeFile(path.join(values.output, name, 'native-candidate.js'), variant.runtime)
   await fs.writeFile(path.join(values.output, name, 'harness.js'), variant.harness)
 }
-const report = { experimentCompleted: false, reproduced: false, userOriginalReproduced: false, userProjectUsed: false, loggedCommandsExecuted: false,
-  modelCalls: 0, productionSourceChanged: false, originalRuntimeSha256: manifest.sha256,
+const report = { experimentCompleted: false, regressionPassed: false, reproduced: false, userOriginalReproduced: false, userProjectUsed: false, loggedCommandsExecuted: false,
+  modelCalls: 0, productionSourcesWrittenByTest: false, runtimeSha256: manifest.sha256,
   libraries: libraries.map(({ name, version, sha256 }) => ({ name, version, sha256 })), cases: [] }
 const server = http.createServer((request, response) => {
   const route = new URL(request.url, 'http://127.0.0.1').pathname
@@ -97,7 +97,7 @@ try {
     'nested-parameterized-outer', 'nested-shared-parameter', 'nested-many-definitions']) {
     const request = { ...functionParamsCase(name), steps }
     const result = await page.evaluate(request => window.NativeParamsRepro.run(request), request)
-    report.cases.push({ name, variant: 'unchanged-production-runtime', requestSha256: sha(JSON.stringify(request)),
+    report.cases.push({ name, variant: 'production-runtime', requestSha256: sha(JSON.stringify(request)),
       expected: request.verify.state, ...result })
     assert.equal(result.ok, true, name + ' must retain its unchanged complete readback')
     if (result.failure?.code === 'ABS_NATIVE_UI_CONTRACT_CHANGED' && /extraState\/params/.test(result.failure.diagnostic?.path ?? '')) report.reproduced = true
@@ -134,9 +134,8 @@ custom_function_def("reply", void, String, "message", String, "origin")
   report.cases.push({ name: 'real-custom-serial-dependency', stage: 'actual-host-reconciliation',
     sameTopologyAsLastLoggedProbe: true, exactUserCandidate: false, source: serialSource, sourceSha256: sha(serialSource), ...serialResult })
   console.log(JSON.stringify({ name: 'real-custom-serial-dependency', ok: serialResult.ok, stages: serialResult.stages, failure: serialResult.failure }))
-  assert.equal(serialResult.failure?.code, 'ABS_NATIVE_UI_CONTRACT_CHANGED')
-  assert.ok(serialResult.failure.diagnostic.path.endsWith('/extraState/params'))
-  report.reproduced = true
+  assert.equal(serialResult.ok, true, 'The original custom serial/function graph must complete on the production runtime')
+  assert.equal(serialResult.fullReadback, true)
   for (const [variant, built] of variants) {
     await page.goto(origin + '/' + variant + '/'); await page.waitForFunction(() => window.NativeParamsRepro)
     const result = await page.evaluate(({ source, steps, variables }) => window.NativeParamsRepro.runReconciled(source, steps, variables),
@@ -144,9 +143,11 @@ custom_function_def("reply", void, String, "message", String, "origin")
     report.cases.push({ name: 'real-custom-serial-dependency', variant, privateArtifact: true, runtimeSha256: built.hash,
       privateSourceTransforms: built.edits, ...result })
     console.log(JSON.stringify({ name: 'real-custom-serial-dependency', variant, ok: result.ok, stages: result.stages, failure: result.failure }))
-    assert.equal(result.ok, variant === 'commit-names-before-settlement')
-    if (variant === 'observed-current') {
-      assert.equal(result.failure?.code, serialResult.failure.code)
+    assert.equal(result.ok, variant === 'observed-fixed')
+    if (variant === 'legacy-order-control') {
+      assert.equal(result.failure?.code, 'ABS_NATIVE_UI_CONTRACT_CHANGED')
+      assert.ok(result.failure.diagnostic.path.endsWith('/extraState/params'))
+      report.reproduced = true
       const change = result.traces.find(value => value.stage === 'existing-semantic-change')
       const read = (value, pointer) => pointer.split('/').slice(1).reduce((value, key) => value?.[key.replaceAll('~1', '/').replaceAll('~0', '~')], value)
       const pointer = result.failure.diagnostic.path
@@ -180,10 +181,11 @@ custom_function_def("reply", void, String, "message", String, "origin")
   }
   report.checksPassed = report.cases.length
   report.experimentCompleted = true
+  report.regressionPassed = true
 } catch (error) { report.error = { message: error.message, stack: error.stack }; process.exitCode = 1 }
 finally {
   await browser?.close(); await new Promise(resolve => server.close(resolve)); server.closeAllConnections()
   assert.equal(sha(await fs.readFile(path.join(repo, '.generated/blockly-runtime/native-candidate.js'))), manifest.sha256)
   await fs.writeFile(path.join(values.output, 'result.json'), JSON.stringify(report, null, 2))
-  console.log(JSON.stringify({ experimentCompleted: report.experimentCompleted, reproduced: report.reproduced, output: values.output }))
+  console.log(JSON.stringify({ regressionPassed: report.regressionPassed, legacyBoundaryReproduced: report.reproduced, output: values.output }))
 }

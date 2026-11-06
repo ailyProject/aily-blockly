@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 
 // Private experimental artifacts only. No source file or .generated asset is
 // written, no readback is suppressed, and real runtime integrity remains on.
-export async function buildParamsBoundary(repo, esbuild, reorder) {
+export async function buildParamsBoundary(repo, esbuild, legacyOrder) {
   const edits = []
   const once = (source, before, after, file) => {
     assert.equal(source.split(before).length - 1, 1, 'The experiment must match exactly one known source site: ' + file)
@@ -17,17 +17,23 @@ export async function buildParamsBoundary(repo, esbuild, reorder) {
     bundle: true, platform: 'browser', format: 'esm', target: 'es2022', write: false, minify: true,
     banner: { js: 'const Promise = globalThis.Promise;' }, tsconfig: 'tsconfig.json', logLevel: 'error',
     plugins: [{ name: 'private-params-boundary-observation', setup(build) {
-      build.onLoad({ filter: /blockly-(native-candidate-realm|native-abi-verification|native-semantic-diagnostic|custom-function-contract)\.ts$/ }, async args => {
+      build.onLoad({ filter: /blockly-(native-candidate-realm|native-abi-verification|native-field-dependencies|native-semantic-diagnostic|custom-function-contract)\.ts$/ }, async args => {
         let source = (await fs.readFile(args.path, 'utf8')).replaceAll('\r\n', '\n')
         if (args.path.endsWith('blockly-native-candidate-realm.ts')) {
           source = once(source, 'const request = decodeNativeCandidateRequest(event.data);',
             'realm.__nativeParamsReproTrace = (value: unknown) => send({ phase: "load", reproTrace: value });\n    const request = decodeNativeCandidateRequest(event.data);', args.path)
-          if (reorder) source = once(source,
-            'construction!.prepare();\n        captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);',
-            'captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);\n        construction!.prepare();', args.path)
-        } else if (args.path.endsWith('blockly-native-abi-verification.ts') && reorder) source = once(source,
-          'construction.prepare();\n    const customFunctions = captureCustomFunctionRegistration(native.Blocks);\n    customFunctions?.prepareSerialization(workspace, true);',
-          'const customFunctions = captureCustomFunctionRegistration(native.Blocks);\n    customFunctions?.prepareSerialization(workspace, true);\n    construction.prepare();', args.path)
+          if (legacyOrder) {
+            source = once(source, '{ registerCustomFunctionContract }',
+              '{ registerCustomFunctionContract, captureCustomFunctionRegistration }', args.path)
+            source = once(source, 'construction!.prepare();',
+              'construction!.prepare();\n        captureCustomFunctionRegistration(native.Blocks)?.prepareSerialization(workspace, true);', args.path)
+          }
+        } else if (args.path.endsWith('blockly-native-abi-verification.ts') && legacyOrder) source = once(source,
+          'construction.prepare();\n    const customFunctions = captureCustomFunctionRegistration(native.Blocks);',
+          'construction.prepare();\n    const customFunctions = captureCustomFunctionRegistration(native.Blocks);\n    customFunctions?.prepareSerialization(workspace, true);', args.path)
+        else if (args.path.endsWith('blockly-native-field-dependencies.ts') && legacyOrder) source = once(source,
+          'captureCustomFunctionRegistration(this.native.Blocks)?.prepareSerialization(this.workspace, true);',
+          '// Original construction boundary did not prepare loaded names.', args.path)
         else if (args.path.endsWith('blockly-native-semantic-diagnostic.ts')) source = once(source,
           'const diagnostic: AbsDiagnostic =',
           '(globalThis as any).__nativeParamsReproTrace?.({ stage: "existing-semantic-change", phase, before: JSON.parse(before), after: JSON.parse(after) });\n  const diagnostic: AbsDiagnostic =', args.path)

@@ -28,9 +28,15 @@ Object.assign(window, { NativeParamsRepro: {
       customFunctions: { get: type => kinds[type] && { kind: kinds[type], parameterTypes: ['int', 'String', 'void', 'bool', 'float'] } } };
     const custom = captureAbsCustomFunctions(snapshot), shapes = captureAbsDeclarativeContracts(snapshot);
     const workspace: any = { blocks: { blocks: [] } }, stages: any[] = [], traces: any[] = [], Channel = window.MessageChannel;
+    let generationEvidence: unknown;
     window.MessageChannel = function() {
       const channel = new Channel();
-      channel.port1.addEventListener('message', event => { if (event.data?.reproTrace) traces.push(event.data.reproTrace); });
+      channel.port1.addEventListener('message', event => {
+        if (event.data?.reproTrace) traces.push(event.data.reproTrace);
+        // Observe owned fixture generation before the host consumes its private
+        // evidence. The actual host still checks independent realm stability.
+        if (event.data?.result?.generationEvidence) generationEvidence = event.data.result.generationEvidence;
+      });
       return channel;
     } as any;
     const baseline = await createAbsProjection(workspace, { document: workspace, contracts: { fields: {} }, generation: 'repro', baselineRef: 'repro',
@@ -50,7 +56,8 @@ Object.assign(window, { NativeParamsRepro: {
           return result;
         } catch (error: any) { stages.push({ stage: input.verify ? 'verify-complete-ABI' : 'binding', ok: false, code: error.code }); throw error; }
       }, () => {});
-      return { ok: true, stages, traces, materialized: result.materialized, contracts: result.candidate.contracts, fullReadback: true };
+      return { ok: true, stages, traces, materialized: result.materialized, contracts: result.candidate.contracts,
+        generationEvidence, fullReadback: true };
     } catch (error: any) { return { ok: false, stages, traces, failure: { code: error.code, message: error.message, diagnostic: error.diagnostic } }; }
     finally { window.MessageChannel = Channel; projectDataRuntime.reset(); delete (window as any).fs; delete (window as any).path; }
   },
