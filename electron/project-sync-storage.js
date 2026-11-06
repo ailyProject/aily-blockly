@@ -8,6 +8,7 @@ const PROJECT_SYNC_STORAGE_VERSION = 2;
 const mirrors = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
 const baseline = /^baselines\/[A-Za-z0-9_-]{1,96}\.json$/;
 const recovery = /^recoveries\/[A-Za-z0-9_-]{1,96}\.json$/;
+const metadata = new Set(['operation.json', 'lineage.json']);
 
 /** A project-bound, revocable host capability, not an IPC lock token or a second transaction engine. */
 async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) {
@@ -20,7 +21,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
   const access = createProjectFileAccess(root, projectPath, files);
   const directories = [path.join(root, '.aily'), path.join(root, '.aily', 'abs-sync')];
   const locate = (key, create = false) => {
-    if (typeof key !== 'string' || !(mirrors.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
+    if (typeof key !== 'string' || !(mirrors.has(key) || metadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
     access.checkRoot();
@@ -65,7 +66,7 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
         locate(key);
         if (!(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
           || !(content === null || typeof content === 'string')
-          || (content === null && key !== 'prepared.json')
+          || (content === null && key !== 'prepared.json' && key !== 'operation.json')
           || ((baseline.test(key) || recovery.test(key)) && expectedHash !== null)) {
           throw fault('ABS_STORAGE_WRITE_INVALID', 'Invalid conditional sync write or immutable baseline mutation.');
         }

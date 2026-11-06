@@ -308,7 +308,7 @@ describe('ProjectService save as mode isolation', () => {
     expect(validate).not.toHaveBeenCalled();
     expect(configure).not.toHaveBeenCalled();
     expect(files.get('/blockly-copy/project.abi')).toBe('{"blocks":{}}');
-    expect(service.projectOpen).toHaveBeenCalledOnceWith('/blockly-copy');
+    expect(service.projectOpen).toHaveBeenCalledOnceWith('/blockly-copy', {});
     expect(service.currentProjectPath).toBe('/blockly-copy');
   });
 

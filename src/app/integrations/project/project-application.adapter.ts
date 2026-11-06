@@ -247,6 +247,24 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       && this.blocklyEditorProjectService.hasLibraryRuntimeRecovery();
   }
 
+  recoverBlocklyRuntimeInPlace(path: string, signal?: AbortSignal) {
+    if (!this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) {
+      return Promise.resolve({ ready: false, code: 'PROJECT_RECOVERY_CONTEXT_STALE', message: 'The selected project changed.' });
+    }
+    return this.blocklyEditorProjectService.recoverRuntimeInPlace(signal);
+  }
+
+  async acknowledgeBlocklyRecoveryDiscard(path: string): Promise<void> {
+    if (this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) {
+      await this.blocklyEditorProjectService.discardRetainedOperation(path);
+    }
+  }
+
+  async prepareBlocklyRecoveryDiscard(path: string) {
+    if (!this.isSameProjectPath(path, this.blocklyEditorProjectService.currentProjectPath)) throw new Error('The departing recovery view changed.');
+    return this.blocklyEditorProjectService.prepareRetainedDiscard(path);
+  }
+
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any {
     return applyCdcSerialPortOverrides(boardConfig, cdcEnabled);
   }

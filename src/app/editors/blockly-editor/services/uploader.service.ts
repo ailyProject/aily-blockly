@@ -552,7 +552,7 @@ export class _UploaderService {
           if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
 
           // 云产物尚不存在时先走正常编译流程，不能被旧产物查询提前阻断。
-          buildPath = cloud ? '' : await this.projectService.getBuildPath();
+          buildPath = cloud ? '' : await this._builderService.getCurrentBuildPath();
 
           const needsBuild = !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
 
@@ -568,7 +568,7 @@ export class _UploaderService {
 
               cloud = initialCloud && !backendOperation.local;
 
-              if (!cloud) buildPath = await this.projectService.getBuildPath();
+              if (!cloud) buildPath = await this._builderService.getCurrentBuildPath();
 
               // The editor may have changed while the compiler was running.
               // Never upload that older firmware automatically after a build.
@@ -790,17 +790,23 @@ export class _UploaderService {
         let uploadScriptPath: string;
 
         if (!cloudLocalUpload) {
+          const isolated = !this.projectService.isAilyCodeProject(currentProjectPath)
+            && window['builder']?.isolatedBuildExecutionVersion === 1;
+          const execution = isolated ? window['builder'].resolveBuildExecution(currentProjectPath) : null;
+          if (isolated && !execution) throw new Error('BUILD_ARTIFACT_STALE: No verified current build execution; build again.');
+          const uploadProjectPath = execution?.currentProjectPath ?? currentProjectPath;
           const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
             ? window['path'].join(currentProjectPath, 'sketch')
-            : window['path'].join(currentProjectPath, '.temp');
+            : window['path'].join(uploadProjectPath, '.temp');
 
           if (!window['fs'].existsSync(tempPath)) {
             window['fs'].mkdirSync(tempPath, { recursive: true });
           }
 
           const uploadConfig = {
-            currentProjectPath,
-            buildPath,
+            currentProjectPath: uploadProjectPath,
+            buildPath: execution?.buildPath ?? buildPath,
+            ...(execution ? { preprocessPath: execution.preprocessPath, buildExecution: execution } : {}),
             boardModule,
             appDataPath: window['path'].getAppDataPath(),
             serialPort: capturedSerialPort,
@@ -1947,6 +1953,12 @@ export class _UploaderService {
   private resolveOtaFirmwareFile(buildPath: string, mode: 'ble' | 'network-ota'): string {
     try {
       if (this.cloudUploadFirmwarePath) return this.cloudUploadFirmwarePath;
+
+      if (window['builder']?.isolatedBuildExecutionVersion === 1
+          && !this.projectService.isAilyCodeProject(this.projectService.currentProjectPath)) {
+        const execution = window['builder'].resolveBuildExecution(this.projectService.currentProjectPath);
+        if (!execution || execution.buildPath !== buildPath) throw new Error('BUILD_ARTIFACT_STALE: OTA output does not belong to the current completed execution.');
+      }
 
       return this.uploaderBleService.findFirmwareFile(buildPath);
     } catch (error) {

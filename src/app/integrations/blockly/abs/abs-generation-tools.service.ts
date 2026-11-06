@@ -13,6 +13,7 @@ export class AbsGenerationToolsService {
   constructor(private readonly sync: AbsWorkspaceSyncService) {}
 
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
+  observeApplication(requestId: string) { return this.sync.observeApplication(requestId); }
 
   assertNativeRecoveryCurrent(input: Record<string, any>) {
     this.sync.assertNativeRecoveryCurrent(input['token'], input['requestId']);

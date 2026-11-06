@@ -1,7 +1,7 @@
 import { localCompileDiagnostic, localCompileErrorEvents } from '../../../../../tests/fixtures/local-compile-error-events';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { CompileService } from './compile.service';
-import { NoticeService } from '@core/app-shell/public-api';
+import { recordCompileNotices } from '../../../../../tests/fixtures/compile-notice-probe';
 import { NpmService } from '../dependencies/public-api';
 import { CmdService } from '@core/platform/public-api';
 import { of, Subject } from 'rxjs';
@@ -194,8 +194,7 @@ describe('Coder build metadata', () => {
   ]) it('local Coder diagnostic appears once: ' + scenario.name, async () => {
     const compiler: any = createCompiler(() => 1), entries: any[] = [], notices: any[] = [];
     const logService = { update: (entry: any) => entries.push(entry) };
-    const noticeService = new NoticeService(logService as any);
-    noticeService.stateSubject.subscribe(notice => notices.push(notice));
+    const noticeService = recordCompileNotices(logService, notices);
     compiler.logService = logService; compiler.application.updateNotice = (notice: any) => noticeService.update(notice);
     let listener: any, rejectRun!: (reason: unknown) => void;
     window['cmd'] = { onData: (_id: string, callback: any) => { listener = callback; return () => { listener = undefined; }; },

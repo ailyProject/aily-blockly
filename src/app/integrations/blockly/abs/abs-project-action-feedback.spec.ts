@@ -15,6 +15,7 @@ describe('real unsaved-state Action feedback boundary', () => {
     // This Action boundary fixture has no editor/application injector and no
     // failed runtime snapshot; keep the new readiness query explicit.
     project.hasBlocklyRuntimeRecovery = () => false;
+    project.acknowledgeBlocklyRecoveryDiscard = jasmine.createSpy('acknowledge accepted discard').and.resolveTo();
     project.discardLibraryChangesBeforeQuit = jasmine.createSpy('discard').and.resolveTo();
     project.getProjectMode = () => 'blockly'; project.getProjectDependencySession();
     const adapter: any = Object.assign(Object.create(ProjectApplicationAdapter.prototype), { actionService: actions, projectService: project });

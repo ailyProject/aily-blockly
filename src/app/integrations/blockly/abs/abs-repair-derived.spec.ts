@@ -105,7 +105,8 @@ describe('repair source commits and derived output observations', () => {
     prepareCode.calls.reset(); publisher.calls.reset();
     const before = new Map(disk), result = await service.exportGeneration({ save: true, reuseCurrent: true });
     expect(result.reused).toBeTrue(); expect(result.derivedOutputs?.published).toBeTrue(); expect(publisher).toHaveBeenCalledTimes(1);
-    expect(disk).toEqual(before);
+    const sourceFiles = (files: Map<string, string>) => new Map([...files].filter(([key]) => key !== 'operation.json' && !key.startsWith('recoveries/operation-')));
+    expect(sourceFiles(disk)).toEqual(sourceFiles(before));
   });
   it('does not publish or certify output for projection-only baseline reuse', async () => {
     disk.set('project.abi', absJson(snapshot().document)); await service.exportGeneration({ initialize: true });

@@ -12,11 +12,13 @@ import { BlocklyWorkspaceEditGate } from '../../../editors/blockly-editor/servic
 import { BlocklyDeclarativeBlockCatalog } from '../../../editors/blockly-editor/services/blockly-declarative-block-catalog';
 import { AbsReferenceContractCache } from './abs-reference-contract-cache';
 import { sha256Hex } from '../../../utils/crypto.utils';
+import { hashAbsText } from './abs-identity-map';
 
 describe('library rebuild transfers runtime ownership without acknowledging edits', () => {
   let editor: BlocklyService, internal: any, project: _ProjectService;
   let runtime: BlocklyGeneratorRuntimeService, live: Blockly.Workspace;
   let files: Map<string, string>, oldFs: unknown, oldPath: unknown, load: jasmine.Spy;
+  let storageCapabilities: Array<{ assertCurrent(): void; read(key: string): Promise<string | null>; locks: number }>;
   const path = 'D:/runtime-test';
   const options = () => ({ projectPath: path, packageJson: {}, libraryNames: ['test-library'], projectService: {} });
   const field = () => live.getBlockById('text')!;
@@ -51,9 +53,25 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
       sharedModel: { procedureBlocks: [], extension: { keep: 'shared data' } } }));
     load = spyOn(editor, 'loadLibrary').and.resolveTo();
     oldFs = window['fs']; oldPath = window['path']; files = new Map([[`${path}/project.abi`, JSON.stringify(editor.getProjectAbiForSave())]]);
+    storageCapabilities = [];
     window['fs'] = { existsSync: file => files.has(file), readFileSync: file => files.get(file), mkdirSync() {},
       writeFileSync: (file, text) => { if (files.has(file)) throw new Error('exists'); files.set(file, text); },
-      unlinkSync: file => files.delete(file) };
+      unlinkSync: file => files.delete(file), projectSyncStorageVersion: 2,
+      openProjectSyncStorage: async (_projectPath, assertCurrent) => {
+        const read = async key => { assertCurrent(); return files.get(`${path}/.aily/abs-sync/${key}`) ?? files.get(`${path}/${key}`) ?? null; };
+        const capability = { assertCurrent, read, locks: 0 };
+        storageCapabilities.push(capability);
+        return { read, withLock: operation => new Promise((resolve, reject) => {
+          assertCurrent(); capability.locks++;
+          operation({ read, replace: async (key, hash, text) => {
+            assertCurrent();
+            const old = await read(key);
+            if ((old === null ? null : await hashAbsText(old)) !== hash) return false;
+            assertCurrent();
+            files.set(`${path}/.aily/abs-sync/${key}`, text); return true;
+          } }, result => result.ok ? resolve(result.value) : reject(new Error(result.error.message)));
+        }) };
+      } };
     spyOn(projectDataRuntime, 'flushPending').and.resolveTo();
     project = new _ProjectService(editor, { listen() {}, unlisten() {} } as any, {} as any);
     project.currentProjectPath = path; project.init();
@@ -283,6 +301,40 @@ describe('library rebuild transfers runtime ownership without acknowledging edit
     expect((await project.recoverLibraryRuntime(offer.token, crypto.randomUUID(), false)).status).toBe('unavailable');
     field().setFieldValue('saved', 'TEXT'); editor.renamePage('other', 'Other');
     expect(await project.hasUnsavedChanges()).toBeFalse();
+  });
+
+  it('reacquires host storage under the recovery lease before durably restoring a failed rebuild', async () => {
+    field().setFieldValue('unsaved view owned by the retained operation', 'TEXT');
+    files.set(`${path}/project.abs`, 'unapplied candidate');
+    const document = editor.getProjectAbiForSave(), disk = files.get(`${path}/project.abi`);
+    failOneNativeLoad();
+    await expectAsync(project.rebuildLibraryRuntime(options())).toBeRejectedWithError(/complete pre-rebuild snapshot/);
+    const ordinaryStorage = storageCapabilities[0];
+    const retained = JSON.parse(files.get(`${path}/.aily/abs-sync/operation.json`)!);
+    expect(retained.state).toBe('pending');
+    expect(storageCapabilities.length).toBe(1);
+    // A host capability retains its creating guard. Passing another guard to
+    // journal.restored cannot renew this released ordinary edit lease.
+    expect(() => ordinaryStorage.assertCurrent()).toThrow();
+    await expectAsync(ordinaryStorage.read('operation.json')).toBeRejected();
+    const originalLocks = ordinaryStorage.locks;
+    const offer = (await project.inspectLibraryRuntimeRecovery())!;
+    const recovered = await project.recoverLibraryRuntime(offer.token, offer.requestId, false);
+    expect(recovered.status).toBe('completed'); expect(recovered.value?.ready).toBeTrue();
+    expect(storageCapabilities.length).toBe(2);
+    expect(storageCapabilities[1].locks).toBeGreaterThan(0);
+    expect(ordinaryStorage.locks).toBe(originalLocks);
+    expect(JSON.parse(files.get(`${path}/.aily/abs-sync/operation.json`)!)).toEqual(jasmine.objectContaining({
+      id: retained.id, state: 'restored',
+    }));
+    expect(editor.isWorkspaceEditBlocked()).toBeFalse(); expect(project.hasLibraryRuntimeRecovery()).toBeFalse();
+    expect(runtime.isReady()).toBeTrue(); expect(editor.getProjectAbiForSave()).toEqual(document);
+    expect(await project.hasUnsavedChanges()).toBeTrue();
+    expect(files.get(`${path}/project.abi`)).toBe(disk); expect(files.get(`${path}/project.abs`)).toBe('unapplied candidate');
+    // Neither completed recovery nor read-only observation revives either lease.
+    await expectAsync(storageCapabilities[1].read('operation.json')).toBeRejected();
+    expect((await project.recoverLibraryRuntime(offer.token, offer.requestId, true)).status).toBe('completed');
+    expect(storageCapabilities.length).toBe(2);
   });
 
   it('keeps one running original restoration observable while its actual library load is pending', async () => {

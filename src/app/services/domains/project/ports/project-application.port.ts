@@ -68,6 +68,9 @@ export interface ProjectApplicationPort {
   /** File equality alone is not evidence that a failed Realm became ready. */
   isBlocklyLibraryRuntimeReady?(projectPath: string): boolean;
   hasBlocklyRuntimeRecovery?(projectPath: string): boolean;
+  recoverBlocklyRuntimeInPlace?(projectPath: string, signal?: AbortSignal): Promise<{ ready: boolean; cancelled?: boolean; code?: string; message?: string }>;
+  acknowledgeBlocklyRecoveryDiscard?(projectPath: string): Promise<void>;
+  prepareBlocklyRecoveryDiscard?(projectPath: string): Promise<{ commit(): Promise<void>; dispose(): void }>;
   applyCdcSerialPortOverrides(boardConfig: any, cdcEnabled: boolean): any;
   rebuildActiveBlocklyLibraryRuntime(input: BlocklyLibraryRuntimeRebuildInput): Promise<boolean>;
   reinstallAilyCodeDependencies(projectPath: string): Promise<boolean>;

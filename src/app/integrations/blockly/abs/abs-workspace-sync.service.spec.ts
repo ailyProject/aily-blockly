@@ -47,6 +47,11 @@ describe('v2 actual workspace generation coordinator', () => {
   let originalMathNumber: any;
   let oldBlockly: unknown, oldFs: unknown, container: HTMLDivElement | undefined;
   const registeredTypes: string[] = [];
+  const expectProgramFilesUnchanged = (before: Array<[string, string]>) => {
+    const program = (entries: Array<[string, string]>) => entries.filter(([key]) => key !== 'operation.json'
+      && !/^recoveries\/(operation-|request-|application-)/.test(key));
+    expect(program([...disk])).toEqual(program(before));
+  };
   const declare = (definition: any) => {
     Blockly.defineBlocksWithJsonArray([definition]); catalog.record(definition, Blockly.Blocks[definition.type]);
     registeredTypes.push(definition.type);
@@ -647,7 +652,7 @@ describe('v2 actual workspace generation coordinator', () => {
     const prepare = spyOn(project, 'prepareSave').and.callThrough();
     const result = await service.exportGeneration({ save: true });
     expect(result.reused).toBeTrue();
-    expect([...disk]).toEqual(before);
+    expectProgramFilesUnchanged(before);
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(editor.prepareProjectCode).toHaveBeenCalledTimes(1);
     expect(project.publishPreparedSaveOutputs).toHaveBeenCalledTimes(1);
@@ -1087,7 +1092,7 @@ describe('v2 actual workspace generation coordinator', () => {
       await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWithError('save preparation failed');
       expect(NgZone.isInAngularZone()).toBeTrue();
     });
-    expect([...disk]).toEqual(before); expect(editor.publishAbsContext).not.toHaveBeenCalled();
+    expectProgramFilesUnchanged(before); expect(editor.publishAbsContext).not.toHaveBeenCalled();
     expect(gate.blocked).toBeFalse();
   });
 
@@ -1143,7 +1148,7 @@ describe('v2 actual workspace generation coordinator', () => {
         expect(NgZone.isInAngularZone()).toBeTrue();
         throw new Error('progress consumer failed');
       } })).toBeRejectedWithError('progress consumer failed');
-      expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+      expect(absJson(nativeState())).toBe(before); expectProgramFilesUnchanged(files);
       expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1);
       expect(editor.publishAbsContext).not.toHaveBeenCalled();
       expect(editor.requestWorkspaceVisualRefresh).toHaveBeenCalledTimes(1);
@@ -1208,7 +1213,7 @@ describe('v2 actual workspace generation coordinator', () => {
     editor.prepareProjectCode.and.callFake(async () => { roots().setFieldValue('unexpected', 'TEXT'); return null; });
     await expectAsync(service.applyGeneration(base.source + '\n# no edit', base.generation))
       .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_READBACK_MISMATCH' }));
-    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect(absJson(nativeState())).toBe(before); expectProgramFilesUnchanged(files);
     expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1);
     expect(gate.blocked).toBeFalse();
   });
@@ -1217,7 +1222,7 @@ describe('v2 actual workspace generation coordinator', () => {
     const base = await baseline(), before = absJson(nativeState()), files = [...disk];
     spyOn(project, 'prepareSave').and.rejectWith(new Error('save preparation failed'));
     await expectAsync(service.applyGeneration(base.source + '\n# no edit', base.generation)).toBeRejected();
-    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect(absJson(nativeState())).toBe(before); expectProgramFilesUnchanged(files);
     expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1);
     expect(gate.blocked).toBeFalse();
   });
@@ -1587,7 +1592,7 @@ describe('v2 actual workspace generation coordinator', () => {
     enableObjectModels(); const base = await baseline(), before = absJson(nativeState()), files = [...disk];
     editor.prepareProjectCode.and.rejectWith(new Error('injected generation failure'));
     await expectAsync(service.applyGeneration(base.source + '\ntest_object_read($sensor)\ntest_object_init("sensor", Sensor)', base.generation)).toBeRejectedWithError(/injected generation failure/);
-    expect(absJson(nativeState())).toBe(before); expect([...disk]).toEqual(files);
+    expect(absJson(nativeState())).toBe(before); expectProgramFilesUnchanged(files);
     expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalled();
   });
 
@@ -2013,6 +2018,22 @@ describe('v2 actual workspace generation coordinator', () => {
     (project.publishPreparedSaveOutputs as jasmine.Spy).calls.reset();
     return { tools, exported, source, request };
   };
+
+  it('observes the original apply receipt read-only and distinguishes later unsaved native edits', async () => {
+    const { tools, request, source } = await wireBase();
+    const prepared: any = await tools.execute('abs_validate', request, source);
+    const applied: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: prepared.receipt }, source);
+    expect(applied.ok).withContext(JSON.stringify(applied)).toBeTrue();
+    const files = [...disk], count = editor.prepareProjectCode.calls.count();
+    const observed = await service.observeApplication(request.requestId);
+    expect(observed.ok).withContext(JSON.stringify(observed)).toBeTrue();
+    expect(observed.receipt).toEqual(applied.receipt); expect(observed.applicationObservation.current).toBeTrue();
+    expect([...disk]).toEqual(files); expect(editor.prepareProjectCode.calls.count()).toBe(count);
+    roots().setFieldValue('later unsaved user edit', 'TEXT');
+    const later = await service.observeApplication(request.requestId);
+    expect(later.ok).toBeTrue(); expect(later.applicationObservation.current).toBeFalse();
+    expect(roots().getFieldValue('TEXT')).toBe('later unsaved user edit'); expect([...disk]).toEqual(files);
+  });
 
   for (const failureAt of ['preparation', 'generation', 'rollback', 'commit'] as const)
     it(`reports the proven application boundary after ${failureAt} failure, without guessing from an error code`, async () => {
@@ -2485,7 +2506,7 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(validation.ok).toBeTrue(); const before = nativeState(), files = [...disk];
     editor.prepareProjectCode.and.callFake(async () => { editor.workspace.createVariable('unexpected'); return null; });
     const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validation.receipt }, candidate);
-    expect(result.ok).toBeFalse(); expect(nativeState()).toEqual(before); expect([...disk]).toEqual(files);
+    expect(result.ok).toBeFalse(); expect(nativeState()).toEqual(before); expectProgramFilesUnchanged(files);
     expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1);
   });
 
@@ -2528,7 +2549,7 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(validated.ok).toBeTrue();
     editor.prepareProjectCode.and.callFake(async () => { editor.workspace.createVariable('unprepared'); return null; });
     const applied: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validated.receipt }, source);
-    expect(applied.ok).toBeFalse(); expect(nativeState()).toEqual(original); expect([...disk]).toEqual(mirrors);
+    expect(applied.ok).toBeFalse(); expect(nativeState()).toEqual(original); expectProgramFilesUnchanged(mirrors);
     expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1);
   });
 
@@ -2791,7 +2812,7 @@ describe('v2 actual workspace generation coordinator', () => {
       return prepare(...args);
     });
     await expectAsync(apply(base)).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_REVISION_STALE' }));
-    expect(roots().getFieldValue('TEXT')).toBe('before'); expect([...disk]).toEqual(files);
+    expect(roots().getFieldValue('TEXT')).toBe('before'); expectProgramFilesUnchanged(files);
     expect(editor.restoreProjectWorkspaceSnapshot).toHaveBeenCalledTimes(1); expect(gate.blocked).toBeFalse();
     expect(Object.hasOwn(editor.workspace, 'newBlock')).toBeFalse();
     expect(Object.hasOwn(roots(), 'moveBy')).toBeFalse();
@@ -2820,7 +2841,7 @@ describe('v2 actual workspace generation coordinator', () => {
     if (failGeneration) editor.prepareProjectCode.and.rejectWith(new Error('injected generation failure'));
     const result: any = await tools.execute('abs_apply', { version: 2, requestId: request.requestId, validation: validation.receipt }, source);
     if (failGeneration) {
-      expect(result.ok).toBeFalse(); expect(absJson(nativeState())).toBe(original); expect([...disk]).toEqual(files);
+      expect(result.ok).toBeFalse(); expect(absJson(nativeState())).toBe(original); expectProgramFilesUnchanged(files);
     } else {
       expect(result.ok).withContext(JSON.stringify(result)).toBeTrue();
       expect(result.publication.status).toBe('COMMITTED');
@@ -3468,7 +3489,7 @@ describe('v2 actual workspace generation coordinator', () => {
     roots().setFieldValue('local edit', 'TEXT');
     const before = [...disk];
     await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_DUAL_EDIT_CONFLICT' }));
-    expect([...disk]).toEqual(before); expect(roots().getFieldValue('TEXT')).toBe('local edit');
+    expectProgramFilesUnchanged(before); expect(roots().getFieldValue('TEXT')).toBe('local edit');
     expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
   });
 
@@ -3503,7 +3524,7 @@ describe('v2 actual workspace generation coordinator', () => {
     disk.set('project.abi', JSON.stringify(changed)); roots().setFieldValue('local edit', 'TEXT');
     const before = [...disk];
     await expectAsync(service.exportGeneration({ save: true })).toBeRejectedWithError('missing resource');
-    expect([...disk]).toEqual(before); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
+    expectProgramFilesUnchanged(before); expect(project.publishPreparedSaveOutputs).not.toHaveBeenCalled();
   });
 
   it('retains byte CAS when disk changes after the layout-only comparison', async () => {
@@ -3818,7 +3839,7 @@ describe('v2 actual workspace generation coordinator', () => {
     const result = await service.exportGeneration({ save: true, reuseCurrent: true });
     expect(result.reused).toBeTrue(); expect(result.publication.generation).toBe(base.generation);
     expect(result.derivedOutputs).toEqual(jasmine.objectContaining({ published: false, code: 'PROJECT_CODE_GENERATION_FAILED' }));
-    expect(result.warnings.length).toBe(1); expect([...disk]).toEqual(before);
+    expect(result.warnings.length).toBe(1); expectProgramFilesUnchanged(before);
   });
 
   it('queued work is bound to its original page/project/runtime, not a later activation', async () => {

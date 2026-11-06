@@ -1,4 +1,4 @@
-import type { NoticeOptions } from '../../services/shared/models/notice';
+import type { NoticeOptions } from '@shared/public-api';
 
 export interface AiOperationNoticePort {
   updateOwned(owner: string, notice: NoticeOptions): boolean;

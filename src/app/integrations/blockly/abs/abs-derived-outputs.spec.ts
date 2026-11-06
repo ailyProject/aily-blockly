@@ -1,6 +1,13 @@
-import { describeAbsDerivedOutputs } from './abs-derived-outputs';
+import { attachAbsDerivedPublication, describeAbsDerivedOutputs } from './abs-derived-outputs';
 
 describe('ABS source and derived artifact outcome separation', () => {
+  it('identifies preview publication without claiming root generated files were written', () => {
+    const report = attachAbsDerivedPublication(describeAbsDerivedOutputs({ code: 'current preview' }), {
+      changed: false, target: 'preview', previewPublished: true, diskPublished: false,
+    });
+    expect(report.output).toEqual({ published: true, target: 'preview', previewPublished: true, diskPublished: false });
+    expect(report.warnings).toEqual([]);
+  });
   it('does not certify output when generation was not requested', () => {
     expect(describeAbsDerivedOutputs()).toEqual({ output: undefined, warnings: [] });
   });

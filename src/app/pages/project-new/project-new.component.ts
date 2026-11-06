@@ -30,7 +30,6 @@ import { NzMessageService } from 'ng-zorro-antd/message';
 import type { NewProjectData } from '../../types/project-new';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { UnsaveDialogComponent } from '../../main-window/components/unsave-dialog/unsave-dialog.component';
-import { runtimeRecoveryDialogData, saveRuntimeRecoveryCopy } from '../../main-window/components/unsave-dialog/runtime-recovery-copy';
 import {
   resolveInitialProjectCategory,
   type ProjectCreationCategory,
@@ -589,9 +588,16 @@ export class ProjectNewComponent implements OnDestroy {
       return true;
     }
     const unchanged = this.projectService.captureCurrentProjectGuard();
-    const runtimeRecovery = this.projectService.hasBlocklyRuntimeRecovery?.(path) === true;
     try {
-      if (!runtimeRecovery && !(await this.projectService.hasUnsavedChanges())) return unchanged();
+      if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
+        const restored = await this.projectService.recoverBlocklyRuntimeInPlace(path);
+        if (!unchanged()) return false;
+        if (!restored.ready) {
+          if (!restored.cancelled) this.message.error(restored.message || '工程尚未恢复，完整内容已保留。');
+          return false;
+        }
+      }
+      if (!(await this.projectService.hasUnsavedChanges())) return unchanged();
     } catch (error) {
       this.message.error(`无法确认保存状态：${error instanceof Error ? error.message : String(error)}`);
       return false;
@@ -608,7 +614,7 @@ export class ProjectNewComponent implements OnDestroy {
         nzBodyStyle: { padding: '0' },
         nzWidth: '350px',
         nzContent: UnsaveDialogComponent,
-        nzData: runtimeRecovery ? runtimeRecoveryDialogData(true) : { action: 'open' as const },
+        nzData: { action: 'open' as const },
       });
       ref.afterClose.subscribe(async (res: { result?: string } | null) => {
         this.unsaveDialogOpen = false;
@@ -617,17 +623,6 @@ export class ProjectNewComponent implements OnDestroy {
           return;
         }
         switch (res.result) {
-          case 'recovery-copy':
-            this.unsaveDialogOpen = true;
-            try {
-              const copied = await saveRuntimeRecoveryCopy(this.projectService, path,
-                () => window['ipcRenderer'].invoke('select-folder-saveAs', {
-                  path: window['path'].dirname(path), suggestedName: window['path'].basename(path) + '_recovery', returnEmptyOnCancel: true,
-                }), this.message);
-              resolve(copied && unchanged());
-            } catch (error) { this.message.error(error instanceof Error ? error.message : String(error)); resolve(false); }
-            finally { this.unsaveDialogOpen = false; }
-            break;
           case 'save':
             try {
               const saved = await this.projectService.save(path);

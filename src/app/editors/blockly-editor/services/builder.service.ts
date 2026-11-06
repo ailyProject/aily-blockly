@@ -59,6 +59,18 @@ const PREPROCESS_ERROR_OUTPUT_LIMIT = 64 * 1024;
 export class _BuilderService {
   private buildAttempt = 0;
   private activeBuildLog?: ProjectBuildLog;
+  private activeExecutionConfig?: any;
+
+  private isolatedBuilds(): boolean { return window['builder']?.isolatedBuildExecutionVersion === 1; }
+
+  private async prepareExecution(config: any, workspace?: PreparedBlocklyCode['sourceWorkspace'], operation: 'compile' | 'preprocess' = 'compile'): Promise<any> {
+    return this.isolatedBuilds() ? window['builder'].prepareBuildExecution(config, workspace, operation) : config;
+  }
+
+  getCurrentBuildPath(): Promise<string> {
+    const execution = this.isolatedBuilds() && window['builder'].resolveBuildExecution(this.projectService.currentProjectPath);
+    return this.isolatedBuilds() ? Promise.resolve(execution?.buildPath ?? '') : this.projectService.getBuildPath();
+  }
 
   constructor(
     private cmdService: CmdService,
@@ -293,9 +305,9 @@ export class _BuilderService {
       'workspace_to_code',
       () => this.runWithInteractiveProjectCode(workspace, async (prepared, assertCurrent) => {
         if (workspace !== this.blocklyService.workspace || projectPath !== this.projectService.currentProjectPath) throw new Error('Build project changed.');
-        await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+        if (!this.isolatedBuilds() || this.isCloudBuild()) await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
         assertCurrent();
-        await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, writeSketch ? prepared.code : undefined);
+        if (!this.isolatedBuilds() || this.isCloudBuild()) await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, writeSketch ? prepared.code : undefined);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
         return prepared.code;
@@ -338,9 +350,9 @@ export class _BuilderService {
         // The prepared revision is guarded for the entire publication, including
         // artifact writes; record the code/map snapshot before that async I/O.
         if (checkpoint) checkpoint.inputCapturedAt = Date.now();
-        await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
+        if (!this.isolatedBuilds() || this.isCloudBuild()) await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
         assertCurrent();
-        await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
+        if (!this.isolatedBuilds() || this.isCloudBuild()) await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts);
         assertCurrent();
         this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
         const runtimeRevision = getActiveProjectGeneratorRevision();
@@ -684,8 +696,13 @@ export class _BuilderService {
           return;
         }
         
-        const code = await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'background_preprocess', false, false,
-          () => this.shouldCancelBackgroundPreprocess(runGeneration));
+        const captured = this.isolatedBuilds()
+          ? await this.generateWorkspaceBuildSnapshotForPreprocess(this.blocklyService.workspace, 'background_preprocess', undefined,
+            () => this.shouldCancelBackgroundPreprocess(runGeneration))
+          : { code: await this.generateWorkspaceCodeForPreprocess(this.blocklyService.workspace, 'background_preprocess', false, false,
+            () => this.shouldCancelBackgroundPreprocess(runGeneration)), projectMacros: undefined, generatedArtifacts: undefined,
+            sourceWorkspace: undefined, assertFresh: () => {} };
+        const { code, projectMacros, generatedArtifacts, sourceWorkspace, assertFresh } = captured;
         if (!code) {
           return;
         }
@@ -722,21 +739,25 @@ export class _BuilderService {
         }
 
         // 构建配置对象
-        const buildConfig = {
+        const buildConfig = await this.prepareExecution({
           currentProjectPath,
           boardModule,
           code,
+          projectMacros,
+          generatedArtifacts,
           appDataPath,
           za7Path: this.platformService.za7,
           devmode: this.configService.data.devmode || false,
           partitionFilePath: this.electronService.pathJoin(currentProjectPath, 'partitions.csv')
-        };
+        }, sourceWorkspace, 'preprocess');
+        assertFresh();
 
         // 保留配置草稿，但子进程只消费该次调用的不可覆盖请求文件。
-        const savedConfigPath = this.electronService.pathJoin(tempPath, 'build-config.json');
-        if (!window['path'].isExists(tempPath)) {
+        const executionTempPath = this.electronService.pathJoin(buildConfig.currentProjectPath, '.temp');
+        const savedConfigPath = this.electronService.pathJoin(executionTempPath, 'build-config.json');
+        if (!window['path'].isExists(executionTempPath)) {
           const mkdirStartedAt = Date.now();
-          await this.crossPlatformCmdService.createDirectory(tempPath, true);
+          await this.crossPlatformCmdService.createDirectory(executionTempPath, true);
           this.recordPreprocessDuration('create_temp_dir', mkdirStartedAt);
         }
         const writeConfigStartedAt = Date.now();
@@ -775,7 +796,7 @@ export class _BuilderService {
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
-          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: currentProjectPath, backgroundPreprocess: true },
+          { streamId: preprocessStreamId, forwardStdout: true, buildWorkspace: buildConfig.currentProjectPath, backgroundPreprocess: true },
           true,
         ).subscribe({
           next: (output) => {
@@ -1081,6 +1102,11 @@ export class _BuilderService {
     const python = normalizeProjectMode(this.projectService.currentPackageData) === 'python';
     if (!workspace || !projectPath || isCancelled()) return false;
     return this.blocklyService.runWithBackgroundProjectCode(async (prepared, assertCurrent) => {
+      if (this.isolatedBuilds() && !this.isCloudBuild()) {
+        assertCurrent();
+        this.blocklyService.publishPreparedCodeView(prepared.code, prepared.blockCodeMapText ?? null);
+        return;
+      }
       await publishGeneratorMacros(projectPath, prepared.projectMacros, assertCurrent);
       assertCurrent();
       await writePreparedArduinoGeneratedArtifacts(projectPath, prepared.artifacts, python ? undefined : prepared.code);
@@ -1238,6 +1264,8 @@ export class _BuilderService {
     retryLocally = false,
   ): Promise<ActionState> {
     // 提交时固定配置与项目；任务内切换编译后端不会改变用户设置，也不能混用两类产物。
+    requestId ??= crypto.randomUUID();
+    this.activeExecutionConfig = undefined;
     let cloudBuild = this.isCloudBuild();
     if (
       graphSemanticRevision !== undefined
@@ -1386,7 +1414,7 @@ export class _BuilderService {
           console.log('检测到后台预编译正在运行，等待其完成...');
           
         }
-        if (!cloudBuild) await this.waitForPreprocessDrain(requestedProjectPath, () => cancellation.signal.aborted, 'compile');
+        if (!cloudBuild && !this.isolatedBuilds()) await this.waitForPreprocessDrain(requestedProjectPath, () => cancellation.signal.aborted, 'compile');
         if (!cloudBuild) {
           if (cancellation.signal.aborted || !projectCurrent()) throw new Error('Build configuration changed or was cancelled.');
           await this.npmService.ensureLocalCompilerDependencies(requestedProjectPath);
@@ -1478,7 +1506,7 @@ export class _BuilderService {
             partitionFilePath: this.electronService.pathJoin(projectPath, 'partitions.csv'),
             ...(savedConfig.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}) };
           if (!sourceWorkspace) throw new Error('Build source workspace capture is unavailable.');
-          buildConfig.sourceCapture = captureBuildSource(buildConfig, sourceWorkspace);
+          if (!this.isolatedBuilds() || cloudBuild) buildConfig.sourceCapture = captureBuildSource(buildConfig, sourceWorkspace);
           if (graphSemanticRevision) {
             buildConfig.graphSemanticRevision = graphSemanticRevision;
           }
@@ -1525,7 +1553,12 @@ export class _BuilderService {
                 return;
               }
             }
-            const configFilePath = await this.writeCompileRequest(buildConfig);
+            const executionConfig = await this.prepareExecution({ ...buildConfig, buildRequestId: requestId,
+              executionRetryOf: this.activeExecutionConfig?.execution?.id }, sourceWorkspace);
+            this.activeExecutionConfig = executionConfig;
+            if (cancellation.signal.aborted && executionConfig.execution) window['builder'].cancelBuildExecution(executionConfig);
+            assertCurrent();
+            const configFilePath = await this.writeCompileRequest(executionConfig);
             assertPackage(); assertBoard(); assertFresh();
 
             // 运行编译脚本
@@ -1580,9 +1613,9 @@ export class _BuilderService {
                 const streamId = `blockly_build_${crypto.randomUUID()}`;
                 this.streamId = streamId;
                 const command = this.cmdService.spawn('node', [compileScriptPath, configFilePath], {
-                  cwd: this.currentProjectPath,
+                  cwd: executionConfig.currentProjectPath,
                   shellProfile: false,
-                  buildWorkspace: this.currentProjectPath,
+                  buildWorkspace: executionConfig.currentProjectPath,
                   ...(buildConfig.recordProjectDelivery ? { buildDeliveryRequest: configFilePath } : {}),
                   streamId,
                 }, true); // This build owns its diagnostic log; suppress CmdService's close-tail replay.
@@ -1813,11 +1846,8 @@ export class _BuilderService {
                       }
                     }
 
-                    // 如果进度已达到高值且没有错误，也认为编译成功
-                    if (!this.buildCompleted && !this.isErrored && !this.cancelled && lastProgress >= 95) {
-                      console.log("进度已达到", lastProgress, "%，假定编译成功");
-                      this.buildCompleted = true;
-                    }
+                    // Process completion, rather than progress text, owns success.
+                    this.buildCompleted = !this.isErrored && !this.cancelled && processExitCode === 0 && !processSignal;
 
                     if (this.buildCompleted && !this.isErrored && !this.cancelled) {
                       this.metrics.record('build_succeeded');
@@ -1847,7 +1877,7 @@ export class _BuilderService {
 
                       // 保存编译元数据（不阻塞）
                       this.electronService.calculateHash(code).then(codeHash => {
-                        this.saveBuildInfo(buildConfig.currentProjectPath, 'success', buildDuration, codeHash);
+                        this.saveBuildInfo(buildConfig.currentProjectPath, 'success', buildDuration, codeHash, false, { config: executionConfig });
                       });
 
                       this.compileValidationService.triggerAfterSuccessfulCompile();
@@ -1866,7 +1896,7 @@ export class _BuilderService {
 
                       // 记录编译失败状态（不阻塞）
                       this.electronService.calculateHash(code).then(codeHash => {
-                        this.saveBuildInfo(buildConfig.currentProjectPath, 'failed', buildDuration, codeHash);
+                        this.saveBuildInfo(buildConfig.currentProjectPath, 'failed', buildDuration, codeHash, false, { config: executionConfig });
                       });
 
                       this.workflowService.finishBuild(false, 'Compilation failed');
@@ -1963,7 +1993,8 @@ export class _BuilderService {
         // this build still owns the workflow and before a new build can start.
         const codeHash = capturedCode === undefined ? '' : await this.electronService.calculateHash(capturedCode);
         await this.saveBuildInfo(requestedProjectPath, 'cancelled',
-          ((Date.now() - checkpoint.startedAt!) / 1000).toFixed(2), codeHash, true);
+          ((Date.now() - checkpoint.startedAt!) / 1000).toFixed(2), codeHash, true,
+          cloudBuild ? undefined : { config: this.activeExecutionConfig });
       }
     });
     return await completion.catch(error => {
@@ -2122,17 +2153,45 @@ export class _BuilderService {
     status: 'success' | 'failed' | 'cancelled',
     duration: string,
     codeHash: string,
-    requirePersistence = false
+    requirePersistence = false,
+    localExecution?: { config?: any },
   ): Promise<void> {
     try {
-      const manifest = patchBuildMetadata(projectPath, {
+      const isolatedLocal = this.isolatedBuilds() && localExecution !== undefined;
+      const execution = localExecution?.config;
+      let target = projectPath;
+      let observed: any;
+      if (isolatedLocal) {
+        // Cancellation may precede input capture. Its request log already owns
+        // the stop; there is no execution manifest to publish and no root fallback.
+        if (!execution?.execution) return;
+        observed = window['builder'].inspectBuildExecution(projectPath, execution.execution.buildRequestId);
+        if (observed?.executionId !== execution.execution.id || observed?.buildRequestId !== execution.execution.buildRequestId) {
+          throw new Error('Build metadata does not belong to the observed execution.');
+        }
+        // A Stop received after completion must not rewrite that execution as cancelled.
+        if (status === 'cancelled' && observed.status === 'completed') return;
+        if (observed.status !== (status === 'success' ? 'completed' : status)) {
+          throw new Error('Build metadata does not match the execution outcome.');
+        }
+        target = execution.currentProjectPath;
+      }
+      const patch = {
         ...(status === 'success' ? { codeHash } : {}),
         buildInfo: {
           lastBuildTime: new Date().toISOString(), lastBuildCode: codeHash,
           lastBuildStatus: status, lastBuildDuration: parseFloat(duration),
         },
-      });
-      if (this.projectService.currentProjectPath === projectPath) this.projectService.currentPackageData = manifest;
+      };
+      const manifest = patchBuildMetadata(target, patch);
+      if (this.projectService.currentProjectPath === projectPath) {
+        if (!isolatedLocal) this.projectService.currentPackageData = manifest;
+        else if (this.activeExecutionConfig === execution && observed.current && (status !== 'success' || observed.result)) {
+          // Private manifests carry captured board/library inputs. Only result
+          // fields may update the live project's display data.
+          this.projectService.currentPackageData = { ...this.projectService.currentPackageData, ...patch };
+        }
+      }
       console.log('✅ 编译元数据已保存:', manifest.buildInfo);
     } catch (error) {
       console.error('❌ 保存编译元数据失败:', error);
@@ -2322,6 +2381,10 @@ export class _BuilderService {
     
     // 立即设置取消标志，防止任何后续处理
     this.cancelled = true;
+    if (this.activeExecutionConfig?.execution) {
+      try { window['builder'].cancelBuildExecution(this.activeExecutionConfig); }
+      catch (error) { console.warn('Could not persist build cancellation; stopping the registered process tree:', error); }
+    }
     this.buildCancellation?.abort();
     // 取消远程请求后仍等待主进程完成撤销，避免下一轮编译与旧任务发布产物发生竞争。
     if (this.activeCloudRequestId && window['cloudBuild']?.cancel) {

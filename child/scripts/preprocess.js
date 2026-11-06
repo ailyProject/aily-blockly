@@ -12,6 +12,7 @@ const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDelivery } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
+const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
 const { resolvePlatformResourceRoots, prepareReadOnlyToolsView } = require('./platform-resource-roots');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
@@ -70,15 +71,20 @@ async function main() {
         process.exit(1);
     }
 
+    if (config.execution) recordFor(config);
     const workspace = acquireBuildWorkspace(config.currentProjectPath, 'preprocess', { inherited: process.env[OWNER_ENV] });
+    const standalone = config.execution?.operation === 'preprocess';
+    let completed = false;
     try {
+        if (standalone) startBuildExecution(config, workspace);
         confirmBuildSource(config);
         invalidateBuildDelivery(config.currentProjectPath);
         // Library preparation can spawn an archive extractor before the Builder.
         workspace.markDelegated();
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
-    } finally { workspace.release(); }
+        completed = true;
+    } finally { workspace.release(); if (standalone) finishBuildExecution(config, completed); }
 }
 
 async function preprocessProject(config, workspace) {

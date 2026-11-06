@@ -8,6 +8,104 @@ import {
   type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
 
+describe('BuilderService isolated derived outputs', () => {
+  let oldBuilder: any;
+  let service: any;
+  let publish: jasmine.Spy;
+  beforeEach(() => {
+    oldBuilder = window['builder'];
+    service = Object.create(_BuilderService.prototype);
+    service.configService = { getCompileBackend: () => 'local' };
+    service.projectService = { currentProjectPath: 'D:/logical', currentPackageData: {
+      dependencies: { 'current-library': '2' }, board: 'current-board', MACROS: [['CURRENT=1']],
+    }, isCloudBuild: () => false };
+    publish = jasmine.createSpy('publish').and.callFake((path, patch) => {
+      if (path === 'D:/logical') throw new Error('BUILD_WORKSPACE_RECOVERY_REQUIRED: legacy root owner exited');
+      return { dependencies: { 'captured-library': '1' }, board: 'captured-board', MACROS: [['CAPTURED=1']], ...patch };
+    });
+    window['builder'] = { isolatedBuildExecutionVersion: 1, patchBuildMetadata: publish,
+      publishArduinoGeneratedCode: jasmine.createSpy('rootArtifacts').and.throwError('legacy root output lease') };
+  });
+  afterEach(() => { window['builder'] = oldBuilder; });
+
+  const execution = () => ({ currentProjectPath: 'D:/logical/.aily/build-executions/id/project',
+    execution: { id: 'execution-id', buildRequestId: 'request-id', logicalProjectPath: 'D:/logical' } });
+  const inspect = (status: string, executionId = 'execution-id') => jasmine.createSpy('inspect').and.returnValue({
+    executionId, buildRequestId: 'request-id', status, current: true,
+    ...(status === 'completed' ? { result: { currentProjectPath: 'private' } } : {}),
+  });
+
+  for (const status of ['success', 'failed', 'cancelled'] as const) {
+    it(`writes ${status} metadata to its captured private execution and merges only live result fields`, async () => {
+      const config = execution(); service.activeExecutionConfig = config;
+      window['builder'].inspectBuildExecution = inspect(status === 'success' ? 'completed' : status);
+      await service.saveBuildInfo('D:/logical', status, '1.25', 'a'.repeat(64), true, { config });
+      expect(window['builder'].inspectBuildExecution).toHaveBeenCalledOnceWith('D:/logical', 'request-id');
+      expect(publish).toHaveBeenCalledOnceWith(config.currentProjectPath, jasmine.objectContaining({
+        buildInfo: jasmine.objectContaining({ lastBuildStatus: status, lastBuildDuration: 1.25 }),
+      }));
+      expect(service.projectService.currentPackageData).toEqual(jasmine.objectContaining({
+        dependencies: { 'current-library': '2' }, board: 'current-board', MACROS: [['CURRENT=1']],
+        buildInfo: jasmine.objectContaining({ lastBuildStatus: status }),
+      }));
+    });
+  }
+  it('never substitutes a newer execution for a delayed metadata callback', async () => {
+    const config = execution(); service.activeExecutionConfig = execution();
+    window['builder'].inspectBuildExecution = inspect('completed');
+    const current = service.projectService.currentPackageData;
+    await service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true, { config });
+    expect(publish.calls.mostRecent().args[0]).toBe(config.currentProjectPath);
+    expect(service.projectService.currentPackageData).toBe(current);
+  });
+  it('rejects another execution returned for the same request instead of publishing root metadata', async () => {
+    window['builder'].inspectBuildExecution = inspect('completed', 'newer-execution');
+    await expectAsync(service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true, { config: execution() }))
+      .toBeRejectedWithError('Build metadata does not belong to the observed execution.');
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it('keeps a completed execution unchanged after a late cancellation', async () => {
+    window['builder'].inspectBuildExecution = inspect('completed');
+    await service.saveBuildInfo('D:/logical', 'cancelled', '1', 'a'.repeat(64), true, { config: execution() });
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it('does not acquire the logical root lease when cancellation precedes execution capture', async () => {
+    await expectAsync(service.saveBuildInfo('D:/logical', 'cancelled', '0', '', true, {})).toBeResolved();
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it('keeps the protected metadata contract for cloud and legacy calls', async () => {
+    publish.and.returnValue({ buildInfo: { lastBuildStatus: 'success' }, dependencies: { legacy: '1' } });
+    await service.saveBuildInfo('D:/logical', 'success', '1', 'a'.repeat(64), true);
+    expect(publish.calls.mostRecent().args[0]).toBe('D:/logical');
+    expect(service.projectService.currentPackageData.dependencies).toEqual({ legacy: '1' });
+  });
+
+  function startup() {
+    const prepared = { code: 'exact prepared code', artifacts: [], blockCodeMapText: 'exact map', projectMacros: undefined };
+    service.blocklyService = { workspace: {}, publishPreparedCodeView: jasmine.createSpy('view'),
+      runWithBackgroundProjectCode: jasmine.createSpy('background').and.callFake(async callback => {
+        await callback(prepared, () => {}); return true;
+      }) };
+    return prepared;
+  }
+  it('finishes local startup publication with the captured preview while the legacy root is locked', async () => {
+    const prepared = startup();
+    expect(await service.generateAndWriteProjectSourceInBackground(() => false)).toBeTrue();
+    expect(service.blocklyService.publishPreparedCodeView).toHaveBeenCalledOnceWith(prepared.code, prepared.blockCodeMapText);
+    expect(window['builder'].publishArduinoGeneratedCode).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+  for (const cloud of [false, true]) it(`preserves ${cloud ? 'cloud' : 'legacy host'} startup artifact publication`, async () => {
+    const prepared = startup();
+    if (cloud) {
+      service.configService.getCompileBackend = () => 'cloud'; service.projectService.isCloudBuild = () => true;
+    } else delete window['builder'].isolatedBuildExecutionVersion;
+    window['builder'].publishArduinoGeneratedCode.and.returnValue({ changed: false });
+    expect(await service.generateAndWriteProjectSourceInBackground(() => false)).toBeTrue();
+    expect(window['builder'].publishArduinoGeneratedCode).toHaveBeenCalledOnceWith('D:/logical', { artifacts: [], sketchCode: prepared.code });
+  });
+});
+
 describe('BuilderService background preprocess ownership', () => {
   it('reports an unconfirmed stop instead of treating false as successful cleanup', async () => {
     const service = Object.create(_BuilderService.prototype) as any;
@@ -126,6 +224,23 @@ describe('BuilderService background preprocess ownership', () => {
       tick();
       expect(service.cmdService.spawn).not.toHaveBeenCalled();
       service.destroy();
+    }));
+
+    it('a private background execution uses its own captured inputs and supervisor path', fakeAsync(() => {
+      const service = backgroundBuilder(), previousBridge = window['builder'];
+      const captured = { code: 'void setup() {}', projectMacros: [], generatedArtifacts: [],
+        sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' }, assertFresh: () => {} };
+      service.generateWorkspaceBuildSnapshotForPreprocess = async () => captured;
+      service.writeCompileRequest = jasmine.createSpy('request').and.resolveTo('/private/request.json');
+      const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({ ...config, currentProjectPath: '/private/execution' }));
+      window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare };
+      try {
+        service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
+        expect(prepare).toHaveBeenCalledOnceWith(jasmine.objectContaining({ generatedArtifacts: [], projectMacros: [] }), captured.sourceWorkspace, 'preprocess');
+        expect(service.writeCompileRequest).toHaveBeenCalledOnceWith(jasmine.objectContaining({ currentProjectPath: '/private/execution' }));
+        expect(service.cmdService.spawn.calls.mostRecent().args[2].buildWorkspace).toBe('/private/execution');
+        service.backgroundOutput.complete(); tick(); service.destroy(); tick();
+      } finally { window['builder'] = previousBridge; }
     }));
 
     it('keeps a real active stream until normal completion and suppresses stale AI-era output', fakeAsync(() => {

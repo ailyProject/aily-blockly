@@ -4,13 +4,34 @@ import { absJson, createAbsProjection, hashAbsText } from './abs-identity-map';
 import { decodeAbsState, splitAbsState } from './abs-full-state';
 import { sameAbsProgram } from './abs-program-state';
 import { AbsSyncError } from './abs-state';
+import { settleAbsProjectTransaction } from './abs-project-restart';
+import { recoverAbsBaseline } from './abs-baseline-recovery';
 
 /** Opening a complete ABS regenerates caches; a draft is retained and opens its committed snapshot. */
 export async function restoreAbsProjectCaches(port: AbsSyncStoragePort, projectPath: string,
   assertCurrent: () => void): Promise<string | null> {
+  await settleAbsProjectTransaction(port, projectPath, assertCurrent);
   const lookup = new AbsBaselineStore(port, { projectKey: projectPath, pageId: '' });
-  const expected = await lookup.captureDisk();
-  const committed = await lookup.inspectCommitted();
+  let expected = await lookup.captureDisk();
+  let committed: Awaited<ReturnType<AbsBaselineStore['inspectCommitted']>>;
+  try { committed = await lookup.inspectCommitted(); }
+  catch (error) {
+    if (!['ABS_BASELINE_CORRUPT', 'ABS_BASELINE_MISSING'].includes((error as any)?.code)) throw error;
+    await recoverAbsBaseline(port, projectPath, assertCurrent);
+    expected = await lookup.captureDisk(); committed = await lookup.inspectCommitted();
+  }
+  if (!committed && expected.map !== null) {
+    await recoverAbsBaseline(port, projectPath, assertCurrent);
+    expected = await lookup.captureDisk(); committed = await lookup.inspectCommitted();
+  }
+  if (committed && expected.abi !== null) {
+    let damaged = false;
+    try { JSON.parse(expected.abi); } catch { damaged = true; }
+    if (damaged) {
+      await recoverAbsBaseline(port, projectPath, assertCurrent);
+      expected = await lookup.captureDisk(); committed = await lookup.inspectCommitted();
+    }
+  }
   const baseline = committed?.projection;
   const baselineState = baseline ? splitAbsState(baseline.abs).state : null;
   let publicState: string | null = null;

@@ -5,6 +5,14 @@ const { randomUUID } = require('node:crypto');
 const { createBuildDeliveryAuthority } = require('../../electron/build-delivery-authority');
 
 const { fixture } = require('./fixtures/build-delivery-fixture.cjs');
+test('private outputs retain the active logical editor identity and reject later document edits', async t => {
+    const f = fixture(t, false, true), handle = await f.api.begin(f.sender, f.options);
+    assert.notEqual(f.root, f.logicalRoot);
+    f.publish(handle); handle.onExit(0, null, false);
+    assert.equal((await f.query()).status, 'source-current');
+    require('node:fs').writeFileSync(require('node:path').join(f.logicalRoot, 'project.abi'), 'edited logical document');
+    await assert.rejects(f.query(), /Logical project inputs/);
+});
 for (const coder of [false, true]) test(`only an observed successful ${coder ? 'Coder' : 'Blockly'} build can report a current source boundary`, async t => {
     const f = fixture(t, coder), handle = await f.api.begin(f.sender, f.options);
     assert.equal((await f.query()).status, 'running'); f.publish(handle);

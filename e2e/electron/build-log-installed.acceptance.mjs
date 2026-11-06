@@ -124,19 +124,19 @@ async function openProject(project, scenario) {
     const result = await service.save(target)
     if (!result?.success) throw Error('Initial source save failed')
   }, project)
-  const fixture = projects.get(scenario), generatedSketch = path.join(project, '.temp/sketch/sketch.ino')
+  const fixture = projects.get(scenario)
   const sourceDeadline = Date.now() + 15000
   let generated = ''
   do {
-    try { generated = await fs.readFile(generatedSketch, 'utf8') }
-    catch (error) { if (error.code !== 'ENOENT') throw error }
+    generated = await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
+      .blocklyService.getReusableGeneratedCode() ?? '')
     if (generated.includes(fixture.marker)) break
     await wait(100)
   } while (Date.now() < sourceDeadline)
   assert.ok(generated.includes(fixture.marker), 'Validate this actual generated source fixture before any model call')
   assert.equal(generated.includes('#error'), scenario === 'failure')
   evidence.sourceFixtures ??= {}
-  evidence.sourceFixtures[scenario] = { generatedSketch, sha256: sha(generated), bytes: Buffer.byteLength(generated),
+  evidence.sourceFixtures[scenario] = { source: 'actual-current-native-generator-preview', sha256: sha(generated), bytes: Buffer.byteLength(generated),
     expectedMarkerEmitted: true, intentionalError: scenario === 'failure', library: fixture.libraryName, blockType: fixture.blockType }
   return page.evaluate(() => JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace())))
 }
@@ -235,6 +235,13 @@ async function assertLogRead(snapshot, record, fixture) {
   assert.equal(value.buildReceipt.version, 1); assert.ok(same(value.buildReceipt.project, fixture.project))
   assert.equal(value.targetPid, hostPid)
   const cancelled = value.buildOutcome === 'cancelled'
+  const execution = await page.evaluate(({ project, requestId }) => window.builder.inspectBuildExecution(project, requestId),
+    { project: fixture.project, requestId })
+  assert.ok(execution, 'The exact request must retain its private execution record')
+  assert.equal(execution.buildRequestId, requestId)
+  assert.equal(execution.status, cancelled ? 'cancelled' : value.ok ? 'completed' : 'failed')
+  assert.equal(execution.current, true)
+  record.execution = execution
   if (record.scenario === 'chat-stop') {
     assert.ok(value.ok === true || cancelled, 'Stopping observation must not fabricate a compiler failure')
     assert.equal(record.stop?.surface, 'actual-chat-stop-button')
@@ -266,7 +273,9 @@ async function assertLogRead(snapshot, record, fixture) {
     // The installed AVR recipe uses -w, so a successful #pragma message need
     // not be emitted. Attest the actual generated source and compiler command
     // instead of requiring a warning that this real toolchain suppresses.
-    const sketch = await fs.readFile(path.join(fixture.project, '.temp/sketch/sketch.ino'), 'utf8')
+    assert.equal(execution.result?.buildRequestId, requestId, 'Only the exact successful request can supply compiler input')
+    assert.ok(inside(path.join(fixture.project, '.aily/build-executions'), execution.result.currentProjectPath))
+    const sketch = await fs.readFile(path.join(execution.result.currentProjectPath, '.temp/sketch/sketch.ino'), 'utf8')
     assert.ok(sketch.includes(fixture.marker), 'The real source generator must have emitted this source fixture')
     assert.ok(source.includes('avr-g++') && source.includes('Compilation successful'), 'The request log must contain the real successful compiler invocation')
   }

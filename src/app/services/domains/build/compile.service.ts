@@ -82,6 +82,7 @@ interface DiskCompileContext {
 @Injectable({ providedIn: 'root' })
 export class CompileService {
   private activeBuildLog?: ProjectBuildLog;
+  private activeExecutionConfig?: any;
   private buildAttempt = 0;
   private cancelled = false;
   private activeSub: Subscription | null = null;
@@ -116,6 +117,10 @@ export class CompileService {
       this.activeBuildLog?.markIncomplete('Build was cancelled while output was streaming; the process tail may not have been captured.');
     }
     this.cancelled = true;
+    if (this.activeExecutionConfig?.execution) {
+      try { window['builder'].cancelBuildExecution(this.activeExecutionConfig); }
+      catch (error) { console.warn('Could not persist build cancellation; stopping the registered process tree:', error); }
+    }
     const streamId = this.activeStreamId;
     if (streamId) {
       this.stopPending = this.cmdService.kill(streamId).catch((error) => {
@@ -139,6 +144,7 @@ export class CompileService {
   }
 
   private async compileAttemptWithBackend(options: DiskCompileOptions, retryLocally = false): Promise<DiskCompileResult> {
+    options = { ...options, requestId: options.requestId ?? crypto.randomUUID() };
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
     const context: DiskCompileContext = {
       cloud: this.configService.getCompileBackend() === 'cloud' && this.projectService.isCloudBuild(root),
@@ -193,6 +199,7 @@ export class CompileService {
 
     if (!options.preprocessOnly) this.metrics.record('compile_attempted');
     this.cancelled = false;
+    this.activeExecutionConfig = undefined;
     this.stopPending = Promise.resolve();
     this.localSwitchAction = undefined;
     this.localSwitchPending = Promise.resolve();
@@ -417,7 +424,14 @@ export class CompileService {
             }
           }
 
-          const configFilePath = await writeBuildRequest(root, { ...buildConfig, sourceCapture }, {
+          const isolated = !isAilyCodeProject && window['builder']?.isolatedBuildExecutionVersion === 1;
+          const executionConfig = isolated ? await window['builder'].prepareBuildExecution({ ...buildConfig, buildRequestId: options.requestId,
+            executionRetryOf: this.activeExecutionConfig?.execution?.id },
+            undefined, options.preprocessOnly ? 'preprocess' : 'compile') : { ...buildConfig, sourceCapture };
+          this.activeExecutionConfig = executionConfig;
+          if (this.cancelled && executionConfig.execution) window['builder'].cancelBuildExecution(executionConfig);
+          const executionRoot = executionConfig.currentProjectPath;
+          const configFilePath = await writeBuildRequest(executionRoot, executionConfig, {
             join: (...parts) => this.electronService.pathJoin(...parts),
             exists: filename => window['path'].isExists(filename),
             mkdir: directory => this.crossPlatformCmdService.createDirectory(directory, true),
@@ -433,7 +447,7 @@ export class CompileService {
             const preprocessScriptPath = this.electronService.pathJoin(ailyChildPath, 'scripts', 'preprocess.js');
             const pre = await this.runOneShotCommand({ scriptPath: preprocessScriptPath, configFilePath }, (line) => {
               this.publishBuildLog(root, line.line, line.type);
-            }, root, allowCloudSwitch ? localSwitch : undefined);
+            }, executionRoot, allowCloudSwitch ? localSwitch : undefined);
             if (this.cancelled) {
               finishReason = 'Cancelled';
               const sec = ((Date.now() - started) / 1000).toFixed(2);
@@ -492,7 +506,7 @@ export class CompileService {
               return;
             }
             this.publishBuildLog(root, line.line, line.type);
-          }, root, allowCloudSwitch ? localSwitch : undefined);
+          }, executionRoot, allowCloudSwitch ? localSwitch : undefined);
           const buildDuration = ((Date.now() - started) / 1000).toFixed(2);
 
           if (this.cancelled) {

@@ -122,6 +122,7 @@ describe('complete save and background preprocess handoff', () => {
   for (const fails of [false, true]) {
     it(`keeps the pause until the actual save ${fails ? 'fails' : 'commits'}`, async () => {
       const project: any = Object.create(_ProjectService.prototype);
+      project.captureSaveContext = () => ({ assertCurrent() {} });
       const release = jasmine.createSpy('release');
       let drain!: () => void, complete!: () => void;
       const ready = new Promise<void>(resolve => { drain = resolve; });
@@ -154,6 +155,7 @@ describe('complete save and background preprocess handoff', () => {
 
   it('an older editor cannot unbind the new editor save guard', async () => {
     const project: any = Object.create(_ProjectService.prototype);
+    project.captureSaveContext = () => ({ assertCurrent() {} });
     const oldGuard = jasmine.createSpy('oldGuard').and.resolveTo(() => {});
     const nextRelease = jasmine.createSpy('nextRelease');
     const nextGuard = jasmine.createSpy('nextGuard').and.resolveTo(nextRelease);

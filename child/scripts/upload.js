@@ -376,6 +376,13 @@ async function main() {
 
     try {
         // 1. 路径准备
+        if (config.buildExecution) {
+            const selected = require('./build-execution-workspace').resolveBuildExecution(config.buildExecution.logicalProjectPath);
+            if (!selected || selected.currentProjectPath !== currentProjectPath || selected.buildPath !== buildPath
+                || selected.buildRequestId !== config.buildExecution.buildRequestId || selected.inputDigest !== config.buildExecution.inputDigest) {
+                throw new Error('BUILD_ARTIFACT_STALE: Upload does not belong to the current completed build execution.');
+            }
+        }
         const tempPath = path.join(currentProjectPath, '.temp');
         // const buildPath = path.join(tempPath, 'build');
         const resources = resolvePlatformResourceRoots(appDataPath);

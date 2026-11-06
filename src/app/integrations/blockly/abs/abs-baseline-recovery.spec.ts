@@ -40,7 +40,8 @@ describe('private baseline recovery diagnosis', () => {
         expect(result.ok).toBeFalse();
         expect(result.code).toBe(mode === 'baseline-missing' ? 'ABS_BASELINE_MISSING' : 'ABS_BASELINE_CORRUPT');
         expect(result.diagnostic.reason).toBe('baseline-unavailable');
-        expect(result.recovery).toContain('project_recover(action="fork")');
+        expect(result.recovery).toContain('same-project preserving recovery');
+        expect(result.recovery).not.toContain('action="fork"');
         expect(result.recovery).toContain('Do not delete locks/baselines');
         expect(result.receipt).toBeUndefined(); expect(result.generation).toBeUndefined();
         expect(result.publication).toBeUndefined();

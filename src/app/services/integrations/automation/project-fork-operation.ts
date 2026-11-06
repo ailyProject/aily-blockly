@@ -1,5 +1,7 @@
 import type { ProjectSaveAsOutcome, ProjectService } from '@domain/project/public-api';
 import { sameAbsProjectDirectory } from '../../../integrations/blockly/abs/abs-project-path';
+import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
+import { rememberAbsRecoveryLineage } from '../../../integrations/blockly/abs/abs-recovery-lineage';
 
 type ForkProjectService = Pick<ProjectService,
   'currentProjectPath' | 'getProjectMode' | 'isProjectOpening' | 'isProjectTransitionInProgress' | 'saveRecoveryAs'>
@@ -18,12 +20,19 @@ export interface ProjectForkNative {
   forkPolicy?: (params: { sourceProject: string; project: string }) => Promise<{
     version: 1; sourceProject: string; project: string; activation: 'same-host' | 'deferred'; reason?: 'isolated-repair-host' }>;
   windows: boolean;
+  rememberLineage?: (outcome: ProjectSaveAsOutcome) => Promise<void>;
 }
 
 function nativePort(): ProjectForkNative {
   return { path: window['path'], exists: path => window['fs'].existsSync(path),
     realpath: window['fs']?.realpathAsync, forkPolicy: window['fs']?.projectRepairEnvironment?.forkPolicy,
-    windows: window['platform']?.isWindows === true };
+    windows: window['platform']?.isWindows === true,
+    rememberLineage: async outcome => {
+      const current = () => { if (!window['fs'].existsSync(`${outcome.project}/project.abi`)) throw new Error('The saved recovery project changed.'); };
+      await rememberAbsRecoveryLineage(await openAbsHostStorage(outcome.project, current), {
+        version: 1, project: outcome.project, sourceProject: outcome.sourceProject, operationId: crypto.randomUUID(),
+      }, current);
+    } };
 }
 
 function automaticTarget(source: string, native: ProjectForkNative): string {
@@ -106,6 +115,7 @@ export async function forkProject(service: ForkProjectService, requestedProject:
       || !await sameAbsProjectDirectory(outcome.sourceProject, sourceProject, native.realpath, native.windows)) {
       return fail('PROJECT_FORK_UNCONFIRMED', '未收到完整副本保存回执；请检查目标，不要删除原工程或重复覆盖。');
     }
+    if (outcome.projectSaved) await native.rememberLineage?.(outcome);
     if (!outcome.projectSaved) {
       return { ...outcome, ok: false, operation: 'project_fork', sourceProject, project: outcome.project, activated: false,
         originalWorkspaceReleased: false,
@@ -124,7 +134,7 @@ export async function forkProject(service: ForkProjectService, requestedProject:
       projectSaved: true, activated: confirmedActivation, partial: outcome.partial || !confirmedActivation,
       message: outcome.activationDeferred ? '完整副本已保存，当前独立修复视图继续保留；由已认证的原生宿主为新目标准备独立修复环境。'
         : confirmedActivation ? '已创建并打开独立工作区副本，原工程及其构建保护保持不变。'
-        : '副本已保存，但尚未打开；原工作区保留。请等待当前宿主操作结束后打开副本，再继续校验或编译。',
+        : '恢复目标已保存，但系统激活尚未完成；原工作区和目标均已保留，校验与编译仍未完成。',
       originalWorkspaceReleased: false,
       guidance: outcome.activationDeferred ? '不要在当前修复子进程直接打开新目标，不重新复制或解除源保护；通过已认证的目标宿主交接后 inspect/resume 新目标。'
         : outcome.recoverySource?.origin === 'runtime-snapshot'

@@ -1,5 +1,7 @@
 import { restoreAbsProjectCaches } from '../../integrations/blockly/abs/abs-project-open';
 import { openAbsHostStorage } from '../../integrations/blockly/abs/abs-host-storage';
+import { recoverAbsProjectOperation } from '../../integrations/blockly/abs/abs-project-restart';
+import { AbsOperationJournal } from '../../integrations/blockly/abs/abs-operation-journal';
 import { prepareAbsLoadNormalization, bindAbsLoadNormalizationReadback,
   type AbsLoadNormalizationInput, type AbsLoadNormalizationDeferred } from '../../integrations/blockly/abs/abs-load-normalization';
 import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit } from '@angular/core';
@@ -472,7 +474,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     const {
       document: projectDocument,
       usedBoardTemplate: usedBoardTemplateAbi,
-      diskText, completeAbs, loadNormalization, deferredNormalization,
+      diskText, completeAbs, loadNormalization, deferredNormalization, recoveredOperation,
     } = await this.loadProjectAbiDocument(projectPath, assertCurrent, session.signal);
     assertCurrent();
 
@@ -508,7 +510,10 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
       await this.waitForNextFrame(session.signal);
       assertCurrent();
       loadLease.assertCurrent();
-      this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
+      if (recoveredOperation) {
+        await this._projectService.rememberRecoveredProject(projectPath, diskText, projectDocument, loadLease);
+        await recoveredOperation();
+      } else this._projectService.rememberLoadedProject(projectPath, diskText, projectDocument, loadLease);
       if (loadNormalization && !bindAbsLoadNormalizationReadback(loadNormalization,
         this.blocklyService.captureProjectSnapshot(loadLease))) {
         throw new Error('The normalized native load acknowledgement could not be bound to its original snapshot.');
@@ -530,7 +535,7 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     // Even an older plain-ABS generation, or a deferred load, can retain resource
     // roots absent from the current canvas. A successful normalization also just
     // published complete history; never GC only the active document afterwards.
-    if (!usedBoardTemplateAbi && !completeAbs && !loadNormalization && !deferredNormalization) {
+    if (!usedBoardTemplateAbi && !completeAbs && !loadNormalization && !deferredNormalization && !recoveredOperation) {
       try {
         const cleanup = projectResourceGc.cleanupUnreferencedFiles(projectPath, [projectDocument, packageJson]);
         if (cleanup.deleted.length > 0) {
@@ -622,18 +627,22 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     loadNormalization?: AbsLoadNormalizationInput;
     deferredNormalization?: AbsLoadNormalizationDeferred;
     diskText: string;
+    recoveredOperation?: () => Promise<void>;
   }> {
     const abiPath = this.electronService.pathJoin(projectPath, 'project.abi');
     assertCurrent();
     const absPort = await openAbsHostStorage(projectPath, assertCurrent);
-    const derivedAbi = await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
+    const recovery = await recoverAbsProjectOperation(absPort, projectPath, assertCurrent);
+    const derivedAbi = recovery ? null : await restoreAbsProjectCaches(absPort, projectPath, assertCurrent);
     let abiContent = derivedAbi ?? await this.electronService.readFileAsync(abiPath);
     assertCurrent();
     let projectAbi = await this.parseProjectAbiContent(abiContent, signal);
     assertCurrent();
     let diskText = abiContent;
     let normalization: DeferredProjectDataNormalization | undefined;
-    projectAbi = await this.projectService.ensureProjectDataSchemaForLoad(
+    // A recovered unsaved view must not first normalize/publish the older disk
+    // document. Its complete materialized snapshot needs no external-data migration.
+    projectAbi = recovery ? recovery.document : await this.projectService.ensureProjectDataSchemaForLoad(
       projectPath,
       projectAbi,
       abiContent,
@@ -666,11 +675,17 @@ export class BlocklyEditorComponent implements OnInit, OnDestroy {
     }
 
     return {
-      document: this.blocklyService.normalizeProjectAbiForLoad(projectAbi),
+      document: this.blocklyService.normalizeProjectAbiForLoad(recovery?.document ?? projectAbi),
       usedBoardTemplate,
       diskText, completeAbs: derivedAbi !== null,
-      ...(normalizationPreparation?.input ? { loadNormalization: normalizationPreparation.input } : {}),
-      ...(normalizationPreparation?.outcome ? { deferredNormalization: normalizationPreparation.outcome } : {}),
+      ...(recovery ? { recoveredOperation: async () => {
+        const current = await absPort.read('project.abi');
+        assertCurrent();
+        if (current !== diskText || await absPort.read('committed.json') !== recovery.committed) throw new Error('The saved document changed during recovered view loading.');
+        await new AbsOperationJournal(absPort, projectPath).restored(recovery.operationId, assertCurrent);
+      } }
+        : { ...(normalizationPreparation?.input ? { loadNormalization: normalizationPreparation.input } : {}),
+          ...(normalizationPreparation?.outcome ? { deferredNormalization: normalizationPreparation.outcome } : {}) }),
     };
   }
 

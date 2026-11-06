@@ -39,6 +39,13 @@ export class BlocklyProjectDirtyState {
     this.checkpoint = this.undoHead();
   }
 
+  /** A recovered view is compared with its real saved source, never itself. */
+  recover(saved: BlocklyProjectDocument, current: BlocklyProjectDocument): void {
+    this.remember(saved);
+    this.contentDirty = contentText(saved) !== contentText(current);
+    this.publish();
+  }
+
   /** Only admitted serializer defaults may adjust a saved baseline. Hydrating
    * an edited page or rebuilding libraries must not acknowledge local edits. */
   acceptHydration(baseline: BlocklyProjectDocument | undefined): void {

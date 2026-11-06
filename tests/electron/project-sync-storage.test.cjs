@@ -12,6 +12,27 @@ const project = () => {
 };
 const guard = () => undefined;
 const request = root => ({ projectPath: root, fileName: 'project.abi', expectedHash: null, content: 'single writer' });
+
+test('operation snapshot and discovery metadata survive reopening with exact conditional writes', async () => {
+  const root = project(); let store = await openProjectSyncStorage(root, guard);
+  const snapshot = JSON.stringify({ version: 1, document: { pages: [{ content: 'complete' }] }, candidate: 'unapplied' });
+  await store.withLock(async storage => {
+    assert.equal(await storage.replace('recoveries/operation-original.json', null, snapshot), true);
+    assert.equal(await storage.replace('operation.json', null, 'pending-operation'), true);
+    assert.equal(await storage.replace('lineage.json', null, 'relationship-only'), true);
+  });
+  store = await openProjectSyncStorage(root, guard);
+  assert.equal(await store.read('recoveries/operation-original.json'), snapshot);
+  assert.equal(await store.read('operation.json'), 'pending-operation');
+  await store.withLock(async storage => {
+    assert.equal(await storage.replace('operation.json', hash('different-operation'), null), false);
+    await assert.rejects(storage.replace('recoveries/operation-original.json', hash(snapshot), 'overwrite'), /immutable/);
+    await assert.rejects(storage.replace('lineage.json', hash('relationship-only'), null), /Invalid conditional/);
+    assert.equal(await storage.replace('operation.json', hash('pending-operation'), null), true);
+  });
+  assert.equal(await store.read('operation.json'), null);
+  assert.equal(await store.read('lineage.json'), 'relationship-only');
+});
 after(() => { for (const root of roots) {
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   assert.ok(path.basename(root).startsWith('aily-sync-storage-'));

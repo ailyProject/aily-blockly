@@ -107,22 +107,23 @@ describe('failed-load recovery source isolation', () => {
     expect(writes).toEqual([]);
   });
 
-  it('returns byte-bound saved-document facts and a specific fork offer without touching private store or native state', async () => {
+  it('returns byte-bound saved-document facts and a same-project recovery offer without touching native state', async () => {
     const disk = await inspectProjectDiskRecovery(source, () => {});
     expect(disk.abi).toBe('available'); expect(disk.hashes.abi).toMatch(/^sha256:[a-f0-9]{64}$/);
     const result: any = await inspectFailedProjectLoad(source, loadStatus, request, () => {});
     expect(result.ok).toBeTrue(); expect(result.receipt).toEqual({ version: 2, requestId: request.requestId, action: 'inspect' });
     expect(result.diagnostics.loadRecovery).toEqual(jasmine.objectContaining({ version: 1,
-      source: 'saved-document', pendingMutation: false, disk, offer: { action: 'fork' } }));
+      source: 'saved-document', pendingMutation: false, disk, offer: { action: 'recover_project', sameProject: true, candidateApplied: false } }));
     expect(result.recoverySource).toBeUndefined();
-    expect(result.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'fork' } });
+    expect(result.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'recover_project' } });
     expect(writes).toEqual([]);
   });
 
   it('does not offer a fork for an unavailable primary or claim ownership when inspection changes', async () => {
     files.delete(`${source}/project.abi`);
     const missing: any = await inspectFailedProjectLoad(source, loadStatus, request, () => {});
-    expect(missing.ok).toBeFalse(); expect(missing.diagnostics.loadRecovery.offer).toBeUndefined(); expect(missing.nextAction).toBeUndefined();
+    expect(missing.ok).toBeFalse(); expect(missing.diagnostics.loadRecovery.offer.action).toBe('recover_project');
+    expect(missing.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'recover_project' } });
     const busy: any = await inspectFailedProjectLoad(source, loadStatus, request,
       () => { throw Object.assign(new Error('busy'), { code: 'PROJECT_RECOVERY_SOURCE_BUSY' }); });
     expect(busy.ok).toBeFalse(); expect(busy.code).toBe('PROJECT_RECOVERY_SOURCE_BUSY');

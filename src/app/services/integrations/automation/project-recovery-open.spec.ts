@@ -10,7 +10,16 @@ describe('closed-source recovery opening and durable observations', () => {
     oldFs = window['fs']; oldPath = window['path']; entries = new Map();
     window['path'] = { isAbsolute: value => value.startsWith('/'), dirname: value => value.slice(0, value.lastIndexOf('/')),
       basename: value => value.slice(value.lastIndexOf('/') + 1), resolve: value => value, join: (...parts) => parts.join('/') } as any;
-    window['fs'] = { existsSync: () => false, projectRecoveryReceipts: {
+    const metadata = new Map<string, string>();
+    window['fs'] = { existsSync: file => file.endsWith('/project.abi'), projectSyncStorageVersion: 2,
+      openProjectSyncStorage: async project => {
+        const read = async key => metadata.get(`${project}/${key}`) ?? null;
+        return { read, withLock: operation => new Promise((resolve, reject) => operation({ read,
+          replace: async (key, expected, text) => {
+            const before = await read(key); if ((before === null ? null : `sha256:${await sha256Hex(before)}`) !== expected) return false;
+            metadata.set(`${project}/${key}`, text); return true;
+          } }, result => result.ok ? resolve(result.value) : reject(new Error(result.error.message)))) };
+      }, projectRecoveryReceipts: {
       abiHash: project => 'sha256:' + (project === source ? 'a' : 'b').repeat(64),
       begin: (project, id, signature, sourceAbiHash) => {
         if (entries.has(id)) {
@@ -212,8 +221,8 @@ describe('independent recovery view handoff', () => {
     expect(admission.scope).toBe('saved-recovery-project'); expect(admission.pendingMutation).toBeFalse();
     const inspection = await bridge.execute({ operation: 'abs_recovery', params: { version: 2, requestId: 'normalized-target-inspect', action: 'inspect' } });
     expect(inspection.diagnostics.loadRecovery.alreadyIndependent).toBeTrue();
-    expect(inspection.diagnostics.loadRecovery.offer).toBeUndefined();
-    expect(inspection.nextAction).toEqual({ tool: 'project_status', input: { project: target } });
+    expect(inspection.diagnostics.loadRecovery.offer).toEqual({ action: 'recover_project', sameProject: true, candidateApplied: false });
+    expect(inspection.nextAction).toEqual({ tool: 'project_recover', input: { project: target, action: 'recover_project' } });
     expect(inspection.guidance).toContain('Do not fork again');
     expect(disk.get(`${source}/project.abi`)).toBe(before); expect(disk.get(archive)).toBe('{"retained":"source proof"}');
   });

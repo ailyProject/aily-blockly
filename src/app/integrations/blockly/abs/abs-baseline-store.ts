@@ -38,11 +38,16 @@ export interface AbsGenerationInput {
   /** Explicit draft refresh: inputAbs/inputMap are the durable original draft pair. */
   draftBaseGeneration?: string;
   recoveryArchive?: { key: string; hash: string };
+  /** Only saved-source-preserving map/pointer recovery may set this marker. */
+  metadataOnly?: true;
 }
 interface GenerationRecord extends Omit<AbsGenerationInput, 'expected'> {
   schemaVersion: 1;
   expected: AbsDiskSnapshot; // Byte hashes, unlike canonical ABI hashes in the map.
   previousCommitted: string | null;
+  /** Exact predecessor pointer for checksum-verified historical observation.
+   * Missing on legacy records; it is never permission to restore old content. */
+  previousPointer?: string | null;
 }
 interface GenerationPointer { schemaVersion: 1; generation: string; hash: string }
 export interface AbsPublishResult {
@@ -88,6 +93,9 @@ export class AbsBaselineStore {
       throw new AbsSyncError('ABS_GENERATION_INVALID', 'Invalid save/export generation.');
     }
     const savedAbi = input.mode === 'import' ? input.abi : input.expected.abi;
+    if (input.metadataOnly && (input.mode !== 'import' || input.abi !== input.expected.abi || input.projection.abs !== input.expected.abs)) {
+      throw new AbsSyncError('ABS_GENERATION_INVALID', 'A metadata-only recovery must preserve exact saved ABI and ABS bytes.');
+    }
     const savedHash = savedAbi === null ? null : await hashAbsText(absJson(JSON.parse(savedAbi)));
     if (input.projection.map.savedAbiHash !== savedHash) throw new AbsSyncError('ABS_MAP_INVALID', 'Saved ABI hash does not match the prepared save shape.');
     const expected = await this.hashDisk(input.expected);
@@ -96,12 +104,13 @@ export class AbsBaselineStore {
     if (input.inputMap !== undefined && (typeof input.inputMap !== 'string' && input.inputMap !== null
       || await hashNullable(input.inputMap) !== expected.map)) throw new AbsSyncError('ABS_GENERATION_INVALID', 'Recovery map must retain the exact replaced bytes.');
     await this.port.withLock(async storage => {
-      const previousCommitted = await hashNullable(await storage.read(COMMITTED));
+      const previousPointer = await storage.read(COMMITTED);
+      const previousCommitted = await hashNullable(previousPointer);
       if (expectedCommitted !== undefined && expectedCommitted !== previousCommitted) {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed before staging.');
       }
       const record: GenerationRecord = { ...input, schemaVersion: 1, expected,
-        previousCommitted };
+        previousCommitted, previousPointer };
       const { projection, abi, ...journal } = record;
       const { generation, baselineRef, scope, savedAbiHash } = projection.map;
       const content = absJson({ ...journal, schemaVersion: 2, snapshot: projection.abs,
@@ -239,6 +248,48 @@ export class AbsBaselineStore {
     return { projection: loaded.record.projection, pointerHash: await hashAbsText(text) };
   }
 
+  /** A verified successor's CAS predecessor proves a historical commit even
+   * when its response was lost before the operation receipt was sealed. */
+  async inspectCommittedAncestor(generation: string): Promise<{ projection: AbsProjection; pointerHash: string } | null> {
+    const current = await this.port.read(COMMITTED);
+    let text = current;
+    const seen = new Set<string>();
+    for (let depth = 0; text !== null && depth < 256; depth++) {
+      const pointer = this.parsePointer(text);
+      if (seen.has(pointer.generation)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cyclic committed generation lineage.');
+      seen.add(pointer.generation);
+      const loaded = await this.readGeneration(this.port, pointer.generation, true);
+      if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical committed generation checksum mismatch.');
+      if (pointer.generation === generation) {
+        if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during historical observation.');
+        return { projection: loaded.record.projection, pointerHash: await hashAbsText(text) };
+      }
+      const previous = loaded.record.previousPointer;
+      if (previous === undefined) return null;
+      if (await hashNullable(previous) !== loaded.record.previousCommitted) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical predecessor pointer changed.');
+      text = previous;
+    }
+    return null;
+  }
+
+  /** Verify a metadata-only successor chain. This is an observation of saved
+   * source identity, never a permission to replace a native view or candidate. */
+  async isMetadataOnlyContinuation(previousPointer: string | null, abi: string): Promise<boolean> {
+    const current = await this.port.read(COMMITTED), sourceHash = await hashAbsText(abi);
+    let text = current;
+    for (let depth = 0; text !== null && text !== previousPointer && depth < 256; depth++) {
+      const pointer = this.parsePointer(text), loaded = await this.readGeneration(this.port, pointer.generation, true);
+      const record = loaded.record;
+      if (absJson(pointer) !== absJson(loaded.pointer) || record.metadataOnly !== true || record.mode !== 'import'
+        || record.abi !== abi || record.expected.abi !== sourceHash || record.expected.abs !== await hashAbsText(record.projection.abs)
+        || record.projection.map.scope.projectKey !== this.scope.projectKey || record.previousPointer === undefined
+        || await hashNullable(record.previousPointer) !== record.previousCommitted) return false;
+      text = record.previousPointer;
+    }
+    if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Metadata recovery lineage changed during observation.');
+    return current !== previousPointer && text === previousPointer;
+  }
+
   /** Read-only diagnosis. A pending journal is never interpreted as permission to replay ABI. */
   async inspectPending(): Promise<(AbsPublishResult & { mode: 'import' | 'export' }) | null> {
     const text = await this.port.read(PREPARED);
@@ -259,7 +310,7 @@ export class AbsBaselineStore {
   private async describeJournalRecovery(storage: AbsSyncStorageAccess): Promise<AbsJournalRecovery | null> {
     const prepared = await storage.read(PREPARED);
     if (prepared === null) return null;
-    const pointer = this.parsePointer(prepared), loaded = await this.readGeneration(storage, pointer.generation);
+    const pointer = this.parsePointer(prepared), loaded = await this.readGeneration(storage, pointer.generation, true);
     if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Prepared baseline checksum mismatch.');
     const { record } = loaded, disk = await this.captureDisk(storage), hashes = await this.hashDisk(disk);
     const committed = await storage.read(COMMITTED), committedHash = await hashNullable(committed);
@@ -268,10 +319,11 @@ export class AbsBaselineStore {
     if (action === 'recover' && (record.mode === 'import' ? disk.abi !== record.abi : hashes.abi !== record.expected.abi)) return null;
     if (![[disk.abs, record.projection.abs, hashes.abs, record.expected.abs],
       [disk.map, absJson(record.projection.map), hashes.map, record.expected.map]].every(([current, output, actual, expected]) => current === output || actual === expected)) return null;
-    const token = await hashAbsText(absJson({ version: 1, action, scope: this.scope,
+    const scope = record.projection.map.scope;
+    const token = await hashAbsText(absJson({ version: 1, action, scope,
       generation: pointer.generation, preparedHash: await hashAbsText(prepared), baselineHash: pointer.hash,
       committedHash, hashes }));
-    return { action, generation: pointer.generation, token, scope: { ...this.scope } };
+    return { action, generation: pointer.generation, token, scope: { ...scope } };
   }
 
   private async assertJournalRecovery(storage: AbsSyncStorageAccess, action: 'recover' | 'abandon',
@@ -443,6 +495,10 @@ export class AbsBaselineStore {
       }
       if (record.mode === 'import' && await hashAbsText(absJson(JSON.parse(record.abi!))) !== record.projection.map.savedAbiHash) {
         throw new Error('Prepared save shape changed.');
+      }
+      if (record.metadataOnly && (record.metadataOnly !== true || record.mode !== 'import'
+        || await hashNullable(record.abi) !== record.expected.abi || await hashAbsText(record.projection.abs) !== record.expected.abs)) {
+        throw new Error('Invalid metadata-only recovery source binding.');
       }
       if (record.inputMap !== undefined && (typeof record.inputMap !== 'string' && record.inputMap !== null
         || await hashNullable(record.inputMap) !== record.expected.map)) throw new Error('Recovery map bytes changed.');
