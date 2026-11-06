@@ -1,4 +1,5 @@
 import { sha256Hex } from '../../../utils/crypto.utils';
+import { projectStorageBridge } from '@shared/public-api';
 
 interface RecoveryStorage {
   read(key: string): Promise<string | null>;
@@ -17,7 +18,7 @@ export async function openProjectRecoveryBackup(project: string, assertCurrent: 
   }
   const store = await fs.openProjectSyncStorage(project, assertCurrent);
   assertCurrent();
-  return store;
+  return projectStorageBridge(store, assertCurrent);
 }
 
 export async function writeProjectRecoveryBackup(project: string, record: unknown, assertCurrent: () => void): Promise<string> {

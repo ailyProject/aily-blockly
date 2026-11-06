@@ -4053,7 +4053,11 @@ export class ProjectService {
     }
 
     // 保存当前项目
-    this.save();
+    const projectPath = this.currentProjectPath;
+    const saved = await this.save(projectPath);
+    if (saved.success !== true) throw Object.assign(
+      new Error(`修改开发板配置前保存项目失败：${saved.error || '未确认保存完成'}`), saved);
+    if (this.currentProjectPath !== projectPath) throw new Error('当前项目已切换，请重试');
     this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD_CONFIG'), { nzDuration: 5000 });
 
     const boardJson = JSON.parse(this.electronService.readFile(boardJsonPath));
@@ -4062,7 +4066,7 @@ export class ProjectService {
 
     // 重新加载项目
     console.log('重新加载项目...');
-    await this.projectOpen(this.currentProjectPath);
+    if (!await this.projectOpen(projectPath)) throw new Error('开发板配置已写入，但项目重新加载失败');
 
     // 通知开发板变更
     this.boardChangeSubject.next();

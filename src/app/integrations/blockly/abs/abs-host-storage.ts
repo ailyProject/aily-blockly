@@ -1,8 +1,9 @@
 import { AbsSyncStorageAccess, AbsSyncStoragePort } from './abs-baseline-store';
 import { AbsSyncError } from './abs-state';
+import { projectStorageBridge, type NativeProjectStorageBridge } from '@shared/public-api';
 
 export type AbsStorageSettlement<T> = { ok: true; value: T } | { ok: false; error: { code?: string; message: string } };
-export interface AbsHostStorageCapability {
+export interface AbsHostStorageCapability extends NativeProjectStorageBridge {
   read(key: string): Promise<string | null>;
   withLock<T>(operation: (storage: AbsSyncStorageAccess, settle: (result: AbsStorageSettlement<T>) => void) => void): Promise<T>;
 }
@@ -20,11 +21,12 @@ export async function openAbsHostStorage(
   if (host?.projectSyncStorageVersion !== 2 || typeof host.openProjectSyncStorage !== 'function') {
     throw new AbsSyncError('ABS_STORAGE_HOST_UNAVAILABLE', 'ABS generation storage requires the updated Electron host.');
   }
-  const storage = await host.openProjectSyncStorage(projectPath, assertCurrent);
+  const native = await host.openProjectSyncStorage(projectPath, assertCurrent);
   assertCurrent();
-  if (typeof storage?.read !== 'function' || typeof storage.withLock !== 'function') {
+  if (typeof native?.read !== 'function' || typeof native.withLock !== 'function') {
     throw new AbsSyncError('ABS_STORAGE_HOST_UNAVAILABLE', 'Invalid ABS generation storage capability.');
   }
+  const storage = projectStorageBridge(native, assertCurrent);
   return {
     read: key => storage.read(key),
     // Return void to contextBridge. Zone/native promises stay on their owning side;

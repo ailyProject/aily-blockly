@@ -26,7 +26,53 @@ export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, proj
  * the retained candidate, nor calls the view saved merely because it loaded. */
 export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
   await settleAbsProjectTransaction(port, project, assertCurrent);
-  const journal = new AbsOperationJournal(port, project), operation = await journal.inspect();
+  const journal = new AbsOperationJournal(port, project), retained = await journal.inspectLocation();
+  let operation = retained?.operation ?? null;
+  if (retained && operation!.project !== project) {
+    const store = new AbsBaselineStore(port, { projectKey: project, pageId: '' });
+    const current = await store.inspectCommitted(), disk = await store.captureDisk();
+    const committed = await port.read('committed.json'), original = operation!;
+    const scope = current?.projection.map.scope;
+    const page = (original.document as any)?.activePageId;
+    let origin: Awaited<ReturnType<AbsBaselineStore['inspectCommittedAncestor']>> = null;
+    if (original.committed) {
+      let pointer: { generation: string };
+      try { pointer = JSON.parse(original.committed); }
+      catch { throw new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN', 'The retained operation has no valid original committed pointer.'); }
+      origin = await store.inspectCommittedAncestor(pointer.generation);
+    }
+    const unchangedPointer = committed === original.committed;
+    const metadataContinuation = !unchangedPointer && original.committed !== null && original.disk.abi !== null
+      && await store.isMetadataOnlyContinuation(original.committed, original.disk.abi);
+    const savedAbi = current ? await store.readDerivedAbi(current.projection.map.generation) : null;
+    const completeMirrors = !!current && disk.abi !== null && disk.abi === savedAbi
+      && disk.abs === current.projection.abs && disk.map === absJson(current.projection.map);
+    // The same-root restart path retires an obsolete view once a later complete
+    // save won. A location change must retain that newer source too; it is never
+    // proof that the old unknown application/request succeeded.
+    const retireView = !unchangedPointer && !metadataContinuation && completeMirrors;
+    if (!current || !committed || !original.committed || original.disk.abi === null
+      || !origin || origin.pointerHash !== await hashAbsText(original.committed)
+      || origin.projection.map.scope.projectKey !== original.project || origin.projection.map.scope.pageId !== page
+      || !scope || ![project, original.project].includes(scope.projectKey) || typeof page !== 'string'
+      || !retireView && (disk.abi !== original.disk.abi || savedAbi !== original.disk.abi || page !== scope.pageId
+        || unchangedPointer && absJson(disk) !== absJson(original.disk)
+        || !unchangedPointer && (!metadataContinuation || !completeMirrors))) {
+      throw new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN', 'The old operation and current complete saved source do not prove a location-only change. All versions were retained.');
+    }
+    assertCurrent();
+    await journal.archiveLocation(retained, disk, committed, assertCurrent);
+    if (scope.projectKey !== project) await recoverAbsBaseline(port, project, assertCurrent);
+    const after = await store.inspectCommitted(), afterDisk = await store.captureDisk(), afterPointer = await port.read('committed.json');
+    if (!after || !afterPointer || after.projection.map.scope.projectKey !== project || after.projection.map.scope.pageId !== scope.pageId
+      || afterDisk.abi !== disk.abi || await store.readDerivedAbi(after.projection.map.generation) !== disk.abi
+      || afterDisk.abs !== after.projection.abs || afterDisk.map !== absJson(after.projection.map)
+      || afterPointer !== committed && !await store.isMetadataOnlyContinuation(committed, disk.abi!)) {
+      throw new AbsSyncError('ABS_OPERATION_LOCATION_UNPROVEN', 'Location recovery no longer matches its preserved complete source. No retained view was applied.');
+    }
+    if (retireView) { await journal.retireLocation(retained, afterDisk, afterPointer, assertCurrent); return null; }
+    operation = await journal.relocate(retained, afterDisk, afterPointer, assertCurrent);
+  }
   if (!operation) return null;
   if (await inspectAbsBaselineRecovery(port, project)) {
     const repaired = await recoverAbsBaseline(port, project, assertCurrent);

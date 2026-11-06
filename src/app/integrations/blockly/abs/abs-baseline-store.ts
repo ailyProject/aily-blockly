@@ -141,7 +141,7 @@ export class AbsBaselineStore {
     const current = await this.port.read(COMMITTED);
     let text = current, successor: GenerationRecord | undefined, migrated = false;
     const seen = new Set<string>();
-    for (let depth = 0; text !== null && depth < 64; depth++) {
+    while (text !== null) {
       const pointer = this.parsePointer(text), loaded = await this.readGeneration(this.port, pointer.generation, true);
       const record = loaded.record;
       if (seen.has(pointer.generation) || absJson(pointer) !== absJson(loaded.pointer)) {
@@ -169,6 +169,7 @@ export class AbsBaselineStore {
       if (record.previousPointer === undefined || await hashNullable(record.previousPointer) !== record.previousCommitted) break;
       successor = record; text = record.previousPointer;
     }
+    if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Intent ancestry changed during location recovery.');
     throw new AbsSyncError('ABS_SCOPE_INVALID', 'The original intent is not an ancestor of a verified location recovery.');
   }
 
@@ -295,7 +296,7 @@ export class AbsBaselineStore {
     const current = await this.port.read(COMMITTED);
     let text = current;
     const seen = new Set<string>();
-    for (let depth = 0; text !== null && depth < 256; depth++) {
+    while (text !== null) {
       const pointer = this.parsePointer(text);
       if (seen.has(pointer.generation)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cyclic committed generation lineage.');
       seen.add(pointer.generation);
@@ -306,10 +307,11 @@ export class AbsBaselineStore {
         return { projection: loaded.record.projection, pointerHash: await hashAbsText(text) };
       }
       const previous = loaded.record.previousPointer;
-      if (previous === undefined) return null;
+      if (previous === undefined) break;
       if (await hashNullable(previous) !== loaded.record.previousCommitted) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical predecessor pointer changed.');
       text = previous;
     }
+    if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during historical observation.');
     return null;
   }
 
@@ -317,18 +319,21 @@ export class AbsBaselineStore {
    * source identity, never a permission to replace a native view or candidate. */
   async isMetadataOnlyContinuation(previousPointer: string | null, abi: string): Promise<boolean> {
     const current = await this.port.read(COMMITTED), sourceHash = await hashAbsText(abi);
-    let text = current;
-    for (let depth = 0; text !== null && text !== previousPointer && depth < 256; depth++) {
+    let text = current, verified = true;
+    const seen = new Set<string>();
+    while (text !== null && text !== previousPointer) {
       const pointer = this.parsePointer(text), loaded = await this.readGeneration(this.port, pointer.generation, true);
       const record = loaded.record;
+      if (seen.has(pointer.generation)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Cyclic committed metadata lineage.');
+      seen.add(pointer.generation);
       if (absJson(pointer) !== absJson(loaded.pointer) || record.metadataOnly !== true || record.mode !== 'import'
         || record.abi !== abi || record.expected.abi !== sourceHash || record.expected.abs !== await hashAbsText(record.projection.abs)
         || record.projection.map.scope.projectKey !== this.scope.projectKey || record.previousPointer === undefined
-        || await hashNullable(record.previousPointer) !== record.previousCommitted) return false;
+        || await hashNullable(record.previousPointer) !== record.previousCommitted) { verified = false; break; }
       text = record.previousPointer;
     }
     if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Metadata recovery lineage changed during observation.');
-    return current !== previousPointer && text === previousPointer;
+    return verified && current !== previousPointer && text === previousPointer;
   }
 
   /** Read-only diagnosis. A pending journal is never interpreted as permission to replay ABI. */

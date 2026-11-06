@@ -1,7 +1,7 @@
 import type { IMenuItem } from '../../configs/menu.config';
 import type { ElectronService } from '@core/platform/public-api';
 import type { BuilderService } from '@domain/build/public-api';
-import type { ProjectService } from '@domain/project/public-api';
+import type { ProjectSaveReceipt, ProjectService } from '@domain/project/public-api';
 import { describeBuildEnvironment } from './build-environment';
 
 function configOptions(menu: IMenuItem[]): IMenuItem[] {
@@ -194,10 +194,21 @@ export async function setBoardConfig(
         : '配置已保存并请求预处理；这不代表编译完成，请调用 project_build 验证。',
     };
   } catch (error) {
+    const facts = error as { code?: unknown; partial?: unknown; saveReceipt?: Partial<ProjectSaveReceipt> };
+    const receipt = facts?.saveReceipt;
+    const saveReceipt: ProjectSaveReceipt | undefined = receipt?.version === 1 && receipt.project === project
+      && receipt.operation === 'project_save' && typeof receipt.requestId === 'string'
+      && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(receipt.requestId)
+      && ['queued', 'running', 'completed', 'unknown'].includes(receipt.state || '')
+      ? { version: 1, requestId: receipt.requestId, project, operation: 'project_save', state: receipt.state! }
+      : undefined;
     return {
       ...result,
       ok: false,
       persisted,
+      ...(typeof facts?.code === 'string' ? { code: facts.code } : {}),
+      ...(typeof facts?.partial === 'boolean' ? { partial: facts.partial } : {}),
+      ...(saveReceipt ? { saveReceipt } : {}),
       reason: persisted ? 'board_config_sync_failed' : 'board_config_save_failed',
       message: `${persisted ? '配置已保存，但同步或验证失败' : '配置保存失败'}：${error instanceof Error ? error.message : String(error)}`,
     };

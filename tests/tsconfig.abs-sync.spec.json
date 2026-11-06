@@ -34,6 +34,7 @@
     "../src/app/editors/blockly-editor/services/blockly-native-progress.spec.ts",
     "../src/app/services/domains/project/project-journal-reopen.spec.ts",
     "../src/app/services/domains/project/project-board-switch.spec.ts",
+    "../src/app/services/domains/project/project-board-config-save.spec.ts",
     "../src/app/services/domains/project/project-lifecycle-gate.spec.ts",
     "../src/app/services/domains/project/project-lifecycle-operation.spec.ts",
     "../src/app/services/domains/project/project-library-disposal.spec.ts",

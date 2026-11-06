@@ -113,4 +113,22 @@ describe('Header project save as', () => {
     expect(header.projectService.saveAs).not.toHaveBeenCalled();
   });
 
+  for (const [action, tool] of [['project-new', 'project_create'], ['project-open', 'app_open'],
+    ['recent-project-open', 'app_open'], ['project-close', 'app_close']]) {
+    it(`routes ${action} through candidate-preserving tools before any dialog or navigation`, async () => {
+      const itemId = `header/${action}~1`;
+      header.createHeaderMenuAutomationSnapshot = () => ({ sourceById: new Map([[itemId, { action }]]) });
+      header.showInRouter = () => true;
+      header.process = jasmine.createSpy('process').and.throwError('No direct lifecycle operation');
+      header.onHeaderMenuSubItemClick = jasmine.createSpy('recent').and.throwError('No recent-project navigation');
+      const result = await header.executeHeaderMenuAutomationItem(itemId, { confirm: true });
+      expect(result).toEqual(jasmine.objectContaining({ ok: false, commandDispatched: false,
+        requiresUserAction: false, code: 'PROJECT_LIFECYCLE_REQUIRES_TOOL' }));
+      expect(result.nextAction.tool).toBe(tool);
+      expect(header.process).not.toHaveBeenCalled();
+      expect(header.onHeaderMenuSubItemClick).not.toHaveBeenCalled();
+      expect(window['ipcRenderer'].invoke).not.toHaveBeenCalled();
+    });
+  }
+
 });

@@ -57,6 +57,80 @@ describe('same-project durable operation recovery', () => {
     await (await save('explicitly saved recovered view')).commit();
     expect(await recoverAbsProjectOperation(connect(), project, () => {})).toBeNull();
   });
+  it('recovers a complete retained operation after moving its unchanged project directory without treating its old path as corruption', async () => {
+    const saved = await save('saved'); await saved.commit(); const retained = await operation();
+    const moved = 'moved-same-project';
+    const recovered = await recoverAbsProjectOperation(connect(), moved, () => {});
+    expect(recovered!.document).toEqual(retained.complete); expect(recovered!.candidateApplied).toBeFalse();
+    expect(files.get('project.abi')).toBe(saved.abi);
+    expect((await new AbsOperationJournal(connect(), moved).inspect())!.candidate).toEqual(retained.candidate);
+  });
+  it('resumes a moved-view handoff after a crash following metadata commit without losing the old operation bytes', async () => {
+    const saved = await save('saved'); await saved.commit(); const retained = await operation();
+    const oldSnapshot = files.get(`recoveries/operation-${retained.id}.json`)!, oldPointer = files.get('operation.json');
+    const moved = 'moved-same-project'; fail = 'operation.json';
+    await expectAsync(recoverAbsProjectOperation(connect(), moved, () => {})).toBeRejected(); fail = undefined;
+    expect(files.get('operation.json')).toBe(oldPointer); expect(files.get(`recoveries/operation-${retained.id}.json`)).toBe(oldSnapshot);
+    expect((await new AbsBaselineStore(connect(), { projectKey: moved, pageId: 'main' }).loadCommitted())!.map.scope.projectKey).toBe(moved);
+    const restored = await recoverAbsProjectOperation(connect(), moved, () => {});
+    expect(restored!.document).toEqual(retained.complete); expect(restored!.candidateApplied).toBeFalse();
+    const archive = [...files].find(([key]) => key.startsWith('recoveries/location-'))!;
+    expect(JSON.parse(archive[1]).snapshot).toBe(oldSnapshot); expect(JSON.parse(archive[1]).pointer).toBe(oldPointer);
+    expect(files.get('project.abi')).toBe(saved.abi);
+  });
+  it('keeps a newer complete commit after its cleanup gap followed by a directory move instead of restoring or gating on the old view', async () => {
+    for (const value of ['latest committed program', 'previous saved']) {
+      files = new Map(); port = connect();
+      await (await save('previous saved')).commit(); const retained = await operation('abs-apply');
+      const latest = await save(value); await latest.commit(); const original = files.get(`recoveries/operation-${retained.id}.json`);
+      const moved = 'moved-same-project';
+      expect(await recoverAbsProjectOperation(connect(), moved, () => {})).toBeNull();
+      expect(files.get('project.abi')).toBe(latest.abi); expect(await new AbsOperationJournal(connect(), moved).inspect()).toBeNull();
+      expect(files.get(`recoveries/operation-${retained.id}.json`)).toBe(original);
+      expect((await new AbsBaselineStore(connect(), { projectKey: moved, pageId: 'main' }).loadCommitted())!.document).toEqual(document(value));
+      expect(JSON.parse(files.get('operation.json')!).recovery).toEqual({ version: 1, project: moved,
+        viewRetired: true, candidateApplied: false, originalApplicationResult: 'unknown' });
+    }
+  });
+  it('does not accept a fabricated foreign-project label without a matching checksum-verified original scope', async () => {
+    await (await save('saved')).commit(); const retained = await operation();
+    const key = `recoveries/operation-${retained.id}.json`, record = JSON.parse(files.get(key)!);
+    record.project = 'unrelated-source'; const text = absJson(record), pointer = JSON.parse(files.get('operation.json')!);
+    pointer.hash = await hashAbsText(text); files.set(key, text); files.set('operation.json', absJson(pointer));
+    const before = [...files];
+    await expectAsync(recoverAbsProjectOperation(connect(), 'moved-same-project', () => {}))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_OPERATION_LOCATION_UNPROVEN' }));
+    expect([...files]).toEqual(before);
+  });
+  it('does not migrate a retained view across a competing saved source or a new unapplied disk edit', async () => {
+    for (const key of ['project.abi', 'project.abs']) {
+      files = new Map(); port = connect(); await (await save('saved')).commit(); await operation();
+      files.set(key, key === 'project.abi' ? JSON.stringify(document('new external primary')) : files.get(key)! + '\n# another pending writer');
+      const before = [...files];
+      await expectAsync(recoverAbsProjectOperation(connect(), 'moved-same-project', () => {}))
+        .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_OPERATION_LOCATION_UNPROVEN' }));
+      expect([...files]).toEqual(before);
+    }
+  });
+  it('does not relocate an unknown pending transaction or clear its old scope', async () => {
+    await (await save('saved')).commit(); await operation(); files.set('prepared.json', '{unknown original transaction}');
+    const before = [...files];
+    await expectAsync(recoverAbsProjectOperation(connect(), 'moved-same-project', () => {}))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_BASELINE_CORRUPT' }));
+    expect([...files]).toEqual(before);
+  });
+  it('keeps a competing writer before the moved-view archive instead of adopting it as the migration source', async () => {
+    await (await save('saved')).commit(); await operation();
+    const external = JSON.stringify(document('concurrent complete source')), before = [...files]; let raced = false;
+    const racing: AbsSyncStoragePort = { read: key => port.read(key), withLock: operation => {
+      if (!raced) { raced = true; files.set('project.abi', external); }
+      return port.withLock(operation);
+    } };
+    await expectAsync(recoverAbsProjectOperation(racing, 'moved-same-project', () => {}))
+      .toBeRejectedWith(jasmine.objectContaining({ code: 'ABS_OPERATION_CONFLICT' }));
+    expect(files.get('project.abi')).toBe(external);
+    expect([...files].filter(([key]) => key !== 'project.abi')).toEqual(before.filter(([key]) => key !== 'project.abi'));
+  });
   for (const stage of ['project.abi', 'project.abs', 'project.abs.map.json', 'committed.json', 'prepared.json']) {
     it(`converges a save interrupted at ${stage} without replaying the candidate`, async () => {
       await (await save('old')).commit();
@@ -127,6 +201,18 @@ describe('same-project durable operation recovery', () => {
     await new AbsApplicationJournal(port, project).stage(id, validation, outcome, () => {});
     return { id, requestId, next, validation, outcome };
   }
+  it('restores a moved unsaved view while its old unknown apply request remains pending and never becomes a new-root success', async () => {
+    const original = await prepareApplication(), key = `recoveries/request-${(await hashAbsText(original.requestId)).slice(7)}.json`;
+    const oldIndex = files.get(key), saved = files.get('project.abi'), moved = 'moved-same-project';
+    const restored = await recoverAbsProjectOperation(connect(), moved, () => {});
+    expect(restored!.document).toEqual(document('unsaved before')); expect(restored!.candidateApplied).toBeFalse();
+    const current = (await new AbsOperationJournal(connect(), moved).inspect())!;
+    expect(current.candidate!.source).toBe('exact complete candidate'); expect(current.application).toBeUndefined();
+    expect(files.get(key)).toBe(oldIndex); expect(files.get('project.abi')).toBe(saved);
+    expect(files.has(`recoveries/application-commit-${original.id}.json`)).toBeFalse();
+    expect((await new AbsApplicationJournal(connect(), project).observe(original.requestId, () => {})).result.code)
+      .toBe('ABS_APPLY_OBSERVATION_PENDING');
+  });
   it('observes an exact COMMITTED application after reply loss without writing or applying again', async () => {
     const original = await prepareApplication(); await original.next.commit();
     const before = [...files], observed = await new AbsApplicationJournal(connect(), project).observe(original.requestId, () => {});
@@ -160,6 +246,14 @@ describe('same-project durable operation recovery', () => {
     expect(observed.result.ok).toBeTrue(); expect(observed.result.applicationObservation.current).toBeFalse();
     expect(observed.result.receipt.output).toEqual(original.outcome.evidence); expect([...files]).toEqual(before);
   });
+  it('observes the original unacknowledged apply after 258 later normal saves without replay or current-state claims', async () => {
+    const original = await prepareApplication(); await original.next.commit();
+    for (let index = 0; index < 258; index++) await (await save(`later user edit ${index}`)).commit();
+    const before = [...files], observed = await new AbsApplicationJournal(connect(), project).observe(original.requestId, () => {});
+    expect(observed.result.ok).toBeTrue(); expect(observed.result.applicationObservation.current).toBeFalse();
+    expect(observed.result.receipt.output).toEqual(original.outcome.evidence); expect([...files]).toEqual(before);
+    expect(files.has(`recoveries/application-commit-${original.id}.json`)).toBeFalse();
+  }, 30000);
   it('reconstructs missing private baseline metadata from matching complete public source without changing the saved ABI', async () => {
     const original = await save('complete'); await original.commit();
     files.delete(absBaselineKey(original.generation)); const abi = files.get('project.abi');

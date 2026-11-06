@@ -4,8 +4,9 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { createRecoveredAgentHarness } from '../../fixtures/abs-agent-tools.mjs'
-import { prepareCustomerLocalLibrary, installCustomerLocalLibrary } from './customer-local-library.mjs'
+import { prepareCustomerLocalLibrary, installCustomerLocalLibrary, verifyCustomerCandidateRecord } from './customer-local-library.mjs'
 import { readCustomerNativeDocument, runCustomerStateLayoutOperations } from './customer-state-layout.mjs'
+import { runCustomerApplyObservation } from './customer-apply-observation.mjs'
 
 export function indexCustomerProject(document) {
   const blocks = new Map()
@@ -148,8 +149,27 @@ const safeResult = result => ({ ok: result?.ok, code: result?.code, generation: 
     runtimeRecovery: result.diagnostics.runtimeRecovery },
   nextAction: result?.nextAction && { tool: result.nextAction.tool, action: result.nextAction.input?.action } })
 
+/** Read persisted evidence as data only. This does not bind, restore or grant
+ * edit authority, and keeps customer source text out of the compact trace. */
+async function traceCustomerProvenance(profileRoot, project) {
+  const directory = path.join(profileRoot, 'abs-edit-provenance'), records = []
+  const files = await fs.readdir(directory).catch(error => { if (error.code === 'ENOENT') return []; throw error })
+  for (const file of files.filter(name => name.endsWith('.json')).sort()) {
+    const record = JSON.parse(await fs.readFile(path.join(directory, file), 'utf8'))
+    records.push({ file, key: record.key, identity: record.identity, hash: record.hash, mapHash: record.mapHash,
+      origin: record.origin ?? null, steps: record.steps?.map(step => ({ before: step.before, after: step.after,
+        edits: step.edits?.length ?? 0 })) })
+  }
+  const map = await fs.readFile(path.join(project, 'project.abs.map.json'))
+  return { records, canonicalMapHash: createHash('sha256').update(map).digest('hex'),
+    canonicalGeneration: JSON.parse(map).generation }
+}
+
 export async function runCustomerBaselineCase({ project, suite, home, appData, agentRoot, hostPid, page, phase, evidence, originalDocument,
-  exerciseSelfOperations = false, exerciseDependencyOperations = false }) {
+  exerciseSelfOperations = false, exerciseDependencyOperations = false, exercisePostSaveEdit = false, exercisePostCommitAbort = false,
+  exerciseApplyObservationFault = false, originPreflightOnly = false }) {
+  assert.ok(!exercisePostSaveEdit || exerciseSelfOperations || exerciseDependencyOperations,
+    'A post-save edit requires the actual save/export operation chain')
   const profileRoot = path.join(suite, 'agent-profile'), absPath = path.join(project, 'project.abs')
   const localLibrary = exerciseDependencyOperations ? await prepareCustomerLocalLibrary({ suite, project }) : undefined
   const observedMenuIds = new Set()
@@ -191,6 +211,7 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
         maximumUiSnapshots: observations.length ? Math.max(...observations.map(v => v.ui.snapshots ?? 0)) : null,
         maximumUiCallbacks: observations.length ? Math.max(...observations.map(v => v.ui.callbacks ?? 0)) : null,
         observations } }
+    entry.provenance = await traceCustomerProvenance(profileRoot, project)
     calls.push(entry)
     await phase('tool-settled-' + name)
     return response
@@ -200,25 +221,39 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
     if (structured) assert.equal(response.structured?.ok, true, `${operation} did not confirm success`)
     return response.structured
   }
+  let primaryFailure
   try {
     await phase('automatically-bind-copied-scope')
     const exported = requireSuccess(await call('abs_export', { project }), 'Automatic copied-scope export')
     assert.ok(exported?.generation, 'Export must supply the actual current generation')
-    const noOp = requireSuccess(await call('abs_validate', { project, generation: exported.generation, absPath }), 'Whole exported candidate validation')
-    assert.equal((noOp.receipt?.validation ?? noOp.validation)?.ok, true)
+    if (!originPreflightOnly) {
+      const noOp = requireSuccess(await call('abs_validate', { project, generation: exported.generation, absPath }), 'Whole exported candidate validation')
+      assert.equal((noOp.receipt?.validation ?? noOp.validation)?.ok, true)
+    }
     const source = await fs.readFile(absPath, 'utf8')
     const lines = source.split(/\r?\n/)
-    const candidate = lines.map((line, index) => ({ line, index,
+    const authoringCandidates = lines.map((line, index) => ({ line, index,
       match: line.trim().startsWith('#') ? null : /\b(cpp_comment|text)\(("(?:\\.|[^"\\])*")/.exec(line) }))
-      .find(item => item.match && lines.filter(line => line === item.line).length === 1
+      .filter(item => item.match && lines.filter(line => line === item.line).length === 1
         && [...indexCustomerProject(originalDocument).values()].flatMap(block => Object.values(block.fields ?? {}))
           .filter(value => value === JSON.parse(item.match[2])).length === 1)
+    const candidate = authoringCandidates[0]
     assert.ok(candidate, 'A unique actual string field is required for a legitimate minimal derived edit')
     await call('read', { path: absPath, offset: candidate.index + 1, limit: 1 })
     const oldValue = JSON.parse(candidate.match[2]), newValue = oldValue + ' [customer-baseline-roundtrip]'
     const newLine = candidate.line.replace(candidate.match[0], candidate.match[1] + '(' + JSON.stringify(newValue))
-    const intendedCandidateHash = 'sha256:' + createHash('sha256').update(source.replace(candidate.line, newLine)).digest('hex')
+    const edits = [{ oldValue, newValue }]
+    const initialCandidateHash = 'sha256:' + createHash('sha256').update(source.replace(candidate.line, newLine)).digest('hex')
+    let intendedCandidateHash = initialCandidateHash
     requireSuccess(await call('edit', { path: absPath, edits: [{ oldText: candidate.line, newText: newLine }] }), 'Actual provenanced field edit', false)
+    if (originPreflightOnly) {
+      evidence.sdk = { actualSdkSession: true, fabricatedToolResults: false, llmInvoked: false,
+        originPreflightOnly: true, originalGeneration: exported.generation, initialCandidateHash,
+        candidateApplied: false, npmInvoked: false }
+      evidence.cases.push({ name: 'copied-scope-export-read-edit-origin-preflight', ok: true,
+        actualTools: ['abs_export', 'read', 'edit'], candidateApplied: false })
+      return { originPreflightOnly: true }
+    }
     let expectedDocument
     if (exerciseDependencyOperations) {
       evidence.dependencyOperations = { actualSdkToolChain: true, fabricatedToolResults: false,
@@ -250,10 +285,47 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
       requireSuccess(await call('abs_export', { project }), 'Projection read with retained original candidate')
       evidence.cases.push({ name: 'edit-save-export-continue-original-candidate', ok: true, automatic: true })
     }
+    if (exercisePostSaveEdit) {
+      await phase('continue-real-file-edit-after-native-save-and-readonly-export')
+      const next = authoringCandidates.find(item => item.index !== candidate.index
+        && JSON.parse(item.match[2]) !== oldValue)
+      assert.ok(next, 'A second distinct unique native string field is required for the follow-up edit')
+      const editable = await fs.readFile(harness.history.mapWorkspaceReadPath(absPath), 'utf8')
+      assert.equal('sha256:' + createHash('sha256').update(editable).digest('hex'), initialCandidateHash,
+        'The actual editable SDK view must retain all of candidate A after native save')
+      const readA = await call('read', { path: absPath, offset: candidate.index + 1, limit: 1 })
+      assert.equal(readA.isError, false)
+      assert.ok(readA.text.includes(JSON.stringify(newValue)), 'The real file read must expose candidate A to continued authoring')
+      const secondOldValue = JSON.parse(next.match[2]), secondNewValue = secondOldValue + ' [customer-baseline-followup]'
+      const secondNewLine = next.line.replace(next.match[0], next.match[1] + '(' + JSON.stringify(secondNewValue))
+      await call('read', { path: absPath, offset: next.index + 1, limit: 1 })
+      requireSuccess(await call('edit', { path: absPath, edits: [{ oldText: next.line, newText: secondNewLine }] }),
+        'Actual continued file edit B after preserving A', false)
+      intendedCandidateHash = 'sha256:' + createHash('sha256').update(source.replace(candidate.line, newLine)
+        .replace(next.line, secondNewLine)).digest('hex')
+      assert.equal('sha256:' + createHash('sha256').update(await fs.readFile(harness.history.mapWorkspaceReadPath(absPath))).digest('hex'),
+        intendedCandidateHash, 'The final editable candidate must contain exactly A+B, with every other byte retained')
+      edits.push({ oldValue: secondOldValue, newValue: secondNewValue })
+      evidence.postSaveEdit = { actualCoreReadEdit: true, initialCandidateHash, finalCandidateHash: intendedCandidateHash,
+        firstEditRetainedInEditableView: true, distinctOriginalFields: true, deliberateAdditionalEdit: true }
+      evidence.cases.push({ name: 'save-then-continue-file-edit-retaining-both-requested-changes', ok: true })
+    }
     const validated = requireSuccess(await call('abs_validate', { project, generation: exported.generation, absPath }), 'Whole derived candidate validation')
     assert.equal((validated.receipt?.validation ?? validated.validation)?.ok, true)
     assert.equal(validated.receipt?.candidate?.hash, intendedCandidateHash, 'Validation must use the retained edited candidate, not the saved canonical view')
-    const applied = requireSuccess(await call('abs_apply', { project, generation: exported.generation, absPath }), 'Whole derived candidate application')
+    if (exercisePostSaveEdit) {
+      evidence.finalCandidateBackup = await verifyCustomerCandidateRecord({ project,
+        backup: validated.retainedCandidateBackup ?? validated.candidateArchive,
+        candidateHash: intendedCandidateHash, intentGeneration: exported.generation })
+      if (exerciseDependencyOperations) {
+        evidence.dependencyOperations.finalCandidateHash = intendedCandidateHash
+        evidence.dependencyOperations.candidateBackup = evidence.finalCandidateBackup
+      }
+    }
+    const applied = exerciseApplyObservationFault
+      ? await runCustomerApplyObservation({ project, suite, home, agentRoot, hostPid, harness, call, phase,
+        generation: exported.generation, absPath, candidateHash: intendedCandidateHash, evidence })
+      : requireSuccess(await call('abs_apply', { project, generation: exported.generation, absPath }), 'Whole derived candidate application')
     assert.equal(applied.publication?.status, 'COMMITTED')
     assert.equal(applied.applyVerification?.ok, true)
     assert.equal(applied.receipt?.candidate?.hash, intendedCandidateHash,
@@ -291,11 +363,52 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
     }
     assert.deepEqual(projects, ['project'], 'Automatic tool/recovery operations must not create another user project')
     evidence.cases.push({ name: 'repeated-legacy-fork-rejected-with-no-new-projects', ok: true })
+    if (exercisePostCommitAbort) {
+      await phase('abort-real-history-turn-after-verified-native-commit')
+      const names = ['project.abi', 'project.abs', 'project.abs.map.json']
+      const before = await Promise.all(names.map(name => fs.readFile(path.join(project, name))))
+      await harness.history.abort()
+      const after = await Promise.all(names.map(name => fs.readFile(path.join(project, name))))
+      assert.deepEqual(after, before, 'Aborting the SDK turn cannot roll back the verified native ABI/ABS/map publication')
+      evidence.postCommitAbort = { actualHistoryAbort: true, beforeAndAfterBytesExactlyEqual: true,
+        nativeApplicationPreviouslyVerified: true, mirrors: names.map((name, i) => ({ name,
+          sha256: createHash('sha256').update(after[i]).digest('hex') })) }
+      evidence.cases.push({ name: 'abort-after-native-commit-preserves-three-exact-mirrors', ok: true })
+    }
     await harness.settle()
     evidence.sdk = { actualSdkSession: true, fabricatedToolResults: false, llmInvoked: false,
       originalGeneration: exported.generation, publishedGeneration: applied.publication.generation,
-      derivedEdit: { kind: 'single-string-field', blockType: candidate.match[1], originalLine: candidate.index + 1 },
+      initialCandidateHash, finalCandidateHash: intendedCandidateHash,
+      derivedEdit: { kind: 'string-field-edits', count: edits.length,
+        firstBlockType: candidate.match[1], firstOriginalLine: candidate.index + 1 },
       helperScriptsExecuted: false }
-    return { oldValue, newValue, ...(expectedDocument ? { expectedDocument } : {}) }
-  } finally { evidence.sdkProof = harness.proof(); await harness.dispose() }
+    return { oldValue, newValue, edits, ...(expectedDocument ? { expectedDocument } : {}) }
+  } catch (error) {
+    primaryFailure = error
+    evidence.sdkCaseFailure = { name: error.name, code: error.code,
+      message: String(error.message).slice(0, 1800),
+      ...(error.details ? { details: error.details } : {}),
+      ...(error.conflicts ? { conflicts: error.conflicts } : {}) }
+    throw error
+  } finally {
+    evidence.sdkProof = harness.proof()
+    try {
+      const file = path.join(suite, 'sdk-state-before-disposal.json')
+      await fs.writeFile(file, JSON.stringify({ guards: typeof harness.guard.snapshots === 'function'
+        ? harness.guard.snapshots() : [harness.guard.snapshot(project)].filter(Boolean),
+      historyEntries: harness.historyEntries(), session: harness.sessionSnapshot(),
+      executionRoot: harness.history.executionRoot, provenance: await traceCustomerProvenance(profileRoot, project) }, null, 2))
+      const view = harness.history.mapWorkspaceReadPath(absPath), source = await fs.readFile(view)
+      const viewFile = path.join(suite, 'sdk-working-view-before-disposal.abs.txt')
+      await fs.writeFile(viewFile, source)
+      evidence.sdkDiagnostics = { stateFile: file, workingViewFile: viewFile,
+        workingViewHash: 'sha256:' + createHash('sha256').update(source).digest('hex'),
+        observationOnly: true, sourceOrProofModified: false }
+    } catch (error) { evidence.sdkDiagnosticError = String(error.message).slice(0, 600) }
+    try { await harness.dispose() }
+    catch (error) {
+      evidence.sdkCleanupFailure = { name: error.name, code: error.code, message: String(error.message).slice(0, 1200) }
+      if (!primaryFailure) throw error
+    }
+  }
 }

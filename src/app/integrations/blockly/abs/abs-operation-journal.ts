@@ -15,6 +15,9 @@ export interface AbsOperationSnapshot {
   application?: { requestId: string; validation: unknown };
 }
 interface OperationPointer { version: 1; id: string; hash: string; state: 'pending' | 'restored' | 'completed'; sourceCommitted?: string; sourceAbiHash?: string }
+interface LocationOperation {
+  operation: AbsOperationSnapshot; pointer: string; snapshot: string;
+}
 const currentKey = 'operation.json';
 const snapshotKey = (id: string) => `recoveries/operation-${id}.json`;
 const conflict = () => new AbsSyncError('ABS_OPERATION_CONFLICT', 'A different document operation is retained; inspect it before replacing its recovery snapshot.');
@@ -51,6 +54,15 @@ export class AbsOperationJournal {
   }
 
   async inspect(): Promise<AbsOperationSnapshot | null> {
+    const retained = await this.inspectLocation();
+    if (retained && retained.operation.project !== this.project)
+      throw new AbsSyncError('ABS_OPERATION_CORRUPT', 'The retained operation belongs to another project location.');
+    return retained?.operation ?? null;
+  }
+
+  /** Discovery only. A different path cannot authorize restoring this view;
+   * the caller must prove its exact complete saved source before migration. */
+  async inspectLocation(): Promise<LocationOperation | null> {
     const text = await this.port.read(currentKey);
     if (text === null) return null;
     const pointer = this.pointer(text);
@@ -59,10 +71,16 @@ export class AbsOperationJournal {
     if (snapshot === null || await hashAbsText(snapshot) !== pointer.hash) {
       throw new AbsSyncError('ABS_OPERATION_CORRUPT', 'The retained complete operation snapshot is missing or changed.');
     }
-    const record = JSON.parse(snapshot) as AbsOperationSnapshot;
-    if (record.version !== 1 || record.id !== pointer.id || record.project !== this.project
+    let record: AbsOperationSnapshot;
+    try { record = JSON.parse(snapshot); }
+    catch { throw new AbsSyncError('ABS_OPERATION_CORRUPT', 'Invalid retained operation encoding.'); }
+    if (record.version !== 1 || record.id !== pointer.id || typeof record.project !== 'string' || !record.project
       || !['abs-apply', 'runtime-rebuild', 'document-save'].includes(record.kind) || !record.document || typeof record.document !== 'object'
-      || !record.disk || record.candidate && await hashAbsText(record.candidate.source) !== record.candidate.hash) {
+      || !record.disk || Object.keys(record.disk).sort().join(',') !== 'abi,abs,map'
+      || !Object.values(record.disk).every(value => value === null || typeof value === 'string')
+      || record.committed !== null && typeof record.committed !== 'string'
+      || record.candidate && (typeof record.candidate.source !== 'string' || typeof record.candidate.generation !== 'string'
+        || await hashAbsText(record.candidate.source) !== record.candidate.hash)) {
       throw new AbsSyncError('ABS_OPERATION_CORRUPT', 'Invalid complete operation snapshot.');
     }
     if (await this.port.read(currentKey) !== text) throw conflict();
@@ -70,7 +88,57 @@ export class AbsOperationJournal {
       if (record.disk.abi === null || pointer.sourceAbiHash !== await hashAbsText(record.disk.abi)) throw conflict();
       record.committed = pointer.sourceCommitted;
     }
+    return { operation: record, pointer: text, snapshot };
+  }
+
+  async archiveLocation(input: LocationOperation, disk: AbsDiskSnapshot, committed: string,
+    assertCurrent: () => void): Promise<void> {
+    const text = absJson({ version: 1, kind: 'operation-location', project: this.project,
+      sourceProject: input.operation.project, pointer: input.pointer, snapshot: input.snapshot });
+    const key = `recoveries/location-${(await hashAbsText(text)).slice(7)}.json`;
+    await this.port.withLock(async storage => {
+      assertCurrent();
+      if (await storage.read(currentKey) !== input.pointer || await storage.read(snapshotKey(input.operation.id)) !== input.snapshot
+        || absJson(await this.disk(storage)) !== absJson(disk) || await storage.read('committed.json') !== committed
+        || await storage.read('prepared.json') !== null) throw conflict();
+      const before = await storage.read(key);
+      if (before !== text && (before !== null || !await storage.replace(key, null, text))) throw conflict();
+    });
+  }
+
+  /** Atomic pointer handoff after byte-preserving location metadata recovery.
+   * The old operation/request is historical; this restores its view only. */
+  async relocate(input: LocationOperation, disk: AbsDiskSnapshot, committed: string,
+    assertCurrent: () => void): Promise<AbsOperationSnapshot> {
+    const id = crypto.randomUUID();
+    const { application, ...original } = input.operation;
+    const record: AbsOperationSnapshot = { ...original, id, project: this.project, disk, committed };
+    const text = absJson(record), hash = await hashAbsText(text), previous = this.pointer(input.pointer);
+    await this.port.withLock(async storage => {
+      assertCurrent();
+      if (await storage.read(currentKey) !== input.pointer || await storage.read(snapshotKey(input.operation.id)) !== input.snapshot
+        || absJson(await this.disk(storage)) !== absJson(disk) || await storage.read('committed.json') !== committed
+        || await storage.read('prepared.json') !== null) throw conflict();
+      if (!await storage.replace(snapshotKey(id), null, text)) throw conflict();
+      assertCurrent();
+      if (!await storage.replace(currentKey, await hashAbsText(input.pointer),
+        absJson({ version: 1, id, hash, state: previous.state }))) throw conflict();
+    });
     return record;
+  }
+
+  async retireLocation(input: LocationOperation, disk: AbsDiskSnapshot, committed: string,
+    assertCurrent: () => void): Promise<void> {
+    await this.port.withLock(async storage => {
+      assertCurrent();
+      if (await storage.read(currentKey) !== input.pointer || await storage.read(snapshotKey(input.operation.id)) !== input.snapshot
+        || absJson(await this.disk(storage)) !== absJson(disk) || await storage.read('committed.json') !== committed
+        || await storage.read('prepared.json') !== null) throw conflict();
+      const pointer = this.pointer(input.pointer);
+      if (!await storage.replace(currentKey, await hashAbsText(input.pointer), absJson({ ...pointer, state: 'completed',
+        recovery: { version: 1, project: this.project, viewRetired: true, candidateApplied: false,
+          originalApplicationResult: 'unknown' } }))) throw conflict();
+    });
   }
 
   /** A metadata-only repair may advance the saved-source pointer while leaving

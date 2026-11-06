@@ -110,6 +110,31 @@ describe('automatic location metadata recovery', () => {
     expect([...f.files]).toEqual(after);
     expect([...f.files.keys()].filter(key => key.startsWith('recoveries/baseline-')).length).toBe(1);
   });
+  it('retains migrated intent and original commit evidence after more than 256 legitimate successors', async () => {
+    const f = await fixture();
+    await recoverAbsLocationMetadata(f.port, movedScope, () => {});
+    const moved = new AbsBaselineStore(f.port, movedScope);
+    const current = (await moved.loadCommitted())!;
+    let start: string | undefined;
+    for (let index = 0; index < 323; index++) {
+      if (index === 65) start = f.files.get('committed.json')!;
+      const generation = `saved-successor-${index}`;
+      const projection = await createAbsProjection(current.workspace, { document: current.document,
+        contracts: current.contracts, generation, scope: movedScope, baselineRef: `baselines/${generation}.json`,
+        savedAbiHash: current.map.savedAbiHash });
+      await moved.stage({ projection, mode: 'import', inputAbs: projection.abs, abi: f.abi,
+        expected: await moved.captureDisk(), ...(index >= 65 ? { metadataOnly: true as const } : {}) });
+      expect((await moved.commit(generation, () => {}, async (text, hash, storage) => {
+        if (!await storage.replace('project.abi', hash, text)) throw new Error('CAS');
+      })).status).toBe('COMMITTED');
+    }
+    const before = [...f.files];
+    const intent = await moved.loadIntent(f.generation);
+    expect(intent.abs).toBe(f.projection.abs); expect(intent.map.scope).toEqual(movedScope);
+    expect((await moved.inspectCommittedAncestor(f.generation))!.projection).toEqual(f.projection);
+    expect(await moved.isMetadataOnlyContinuation(start!, f.abi)).toBeTrue();
+    expect([...f.files]).toEqual(before);
+  }, 30000);
   for (const broken of [null, '{invalid']) {
     it(`repairs an ${broken === null ? 'absent' : 'invalid'} public map from the complete verified saved source`, async () => {
       const f = await fixture();

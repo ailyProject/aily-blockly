@@ -7,12 +7,22 @@ import { parseArgs } from 'node:util'
 import { _electron } from '@playwright/test'
 import { serveRendererBuild } from '../fixtures/build-renderer-server.mjs'
 import { indexCustomerProject, customerProjectSummary, observeCustomerNativeProgress, runCustomerBaselineCase, runCustomerNativeComponentCase } from './fixtures/customer-project-baseline-case.mjs'
+import { verifyCustomerCandidateRecord } from './fixtures/customer-local-library.mjs'
 
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const { values } = parseArgs({ options: { ...Object.fromEntries(
   ['project-input', 'test-root', 'output', 'executable-path', 'host-build', 'agent-root'].map(name => [name, { type: 'string' }])),
   'component-only': { type: 'boolean' }, 'exercise-self-operations': { type: 'boolean' },
-  'exercise-dependency-operations': { type: 'boolean' } } })
+  'exercise-dependency-operations': { type: 'boolean' }, 'exercise-post-save-edit': { type: 'boolean' },
+  'exercise-post-commit-abort': { type: 'boolean' }, 'exercise-apply-observation-fault': { type: 'boolean' },
+  'origin-preflight-only': { type: 'boolean' }, 'native-dependency-only': { type: 'boolean' },
+  'native-publication-only': { type: 'boolean' } } })
+assert.ok(!values['exercise-post-save-edit'] || values['exercise-self-operations'] || values['exercise-dependency-operations'],
+  '--exercise-post-save-edit requires --exercise-self-operations or --exercise-dependency-operations')
+assert.ok(!(values['native-dependency-only'] && values['native-publication-only']))
+assert.ok(!(values['native-dependency-only'] || values['native-publication-only']) || !['component-only', 'origin-preflight-only', 'exercise-self-operations',
+  'exercise-dependency-operations', 'exercise-post-save-edit', 'exercise-post-commit-abort', 'exercise-apply-observation-fault']
+  .some(name => values[name]), 'The minimal required-dependency case is independent of customer replay modes')
 for (const name of ['project-input', 'test-root', 'output', 'agent-root']) assert.ok(values[name] && path.isAbsolute(values[name]), `--${name} must be absolute`)
 assert.ok(values['host-build'] || values['executable-path'])
 assert.ok(!(values['host-build'] && values['executable-path']),
@@ -58,7 +68,10 @@ const originalFiles = await inventory(values['project-input'])
 await fs.cp(values['project-input'], project, { recursive: true, dereference: false, force: false, errorOnExist: true })
 assert.deepEqual(await inventory(project), originalFiles)
 const inputDocument = JSON.parse(await fs.readFile(path.join(project, 'project.abi'), 'utf8'))
-const evidence = { ok: false, suite, project, cases: [], realElectron: true, realCustomerSource: true,
+const evidence = { ok: false, suite, project, cases: [], realElectron: true,
+  realCustomerSource: values['native-dependency-only'] !== true && values['native-publication-only'] !== true,
+  generatedNativeDependencyFixture: values['native-dependency-only'] === true,
+  generatedNativePublicationFixture: values['native-publication-only'] === true,
   originalInputModified: false, derivedCandidate: true, exactLateCandidateReplayed: false,
   helperScriptsExecuted: false, npmScriptsExecuted: false, compilerInvoked: false, llmInvoked: false,
   source: { summary: customerProjectSummary(inputDocument), abiSha256: digest(await fs.readFile(path.join(project, 'project.abi'))),
@@ -71,8 +84,38 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
 const hashDocument = value => digest(JSON.stringify(canonical(value)))
 // Deep real programs can exceed CDP object-by-value nesting. Transfer the
 // complete native serialization as text, then parse it on the Node side.
-const nativeDocument = async () => JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
-  .blocklyService.captureRecoverySnapshot().documentText))
+const nativeDocument = async () => {
+  const started = Date.now()
+  let snapshot
+  try {
+    snapshot = await page.waitForFunction(target => {
+      const editor = window.ng?.getComponent(document.querySelector('app-blockly-editor'))
+      if (editor?.projectService.currentProjectPath !== target
+        || editor.projectService.getBlocklyProjectLoadStatus(target)?.ready !== true) return false
+      try { return editor.blocklyService.captureRecoverySnapshot().documentText }
+      catch (error) {
+        if (error?.code === 'BLOCKLY_EDIT_BUSY' || error?.code === 'BLOCKLY_EDIT_STALE') return false
+        throw error
+      }
+    }, project, { timeout: 120000 })
+  } catch (error) {
+    evidence.nativeSnapshotFailure = { phase: evidence.phase, elapsedMs: Date.now() - started,
+      observation: await page.evaluate(target => {
+        const editor = window.ng?.getComponent(document.querySelector('app-blockly-editor'))
+        return { project: editor?.projectService.currentProjectPath,
+          load: editor?.projectService.getBlocklyProjectLoadStatus(target),
+          busy: editor?.blocklyService.workspaceEditGate?.busy,
+          blocked: editor?.blocklyService.workspaceEditGate?.blocked,
+          recoveryRequired: editor?.blocklyService.workspaceEditGate?.recoveryRequired }
+      }, project).catch(reason => ({ unavailable: String(reason.message).slice(0, 400) })) }
+    throw error
+  }
+  try {
+    const text = await snapshot.jsonValue()
+    ;(evidence.nativeSnapshotReads ??= []).push({ phase: evidence.phase, elapsedMs: Date.now() - started })
+    return JSON.parse(text)
+  } finally { await snapshot.dispose() }
+}
 async function launch() {
   const { ELECTRON_RUN_AS_NODE, AILY_CHILD_PATH, NODE_PATH, AILY_AUTH_FILE, AILY_LIBRARY_HOST_PID, PI_CODING_AGENT_DIR, ...env } = process.env
   app = await _electron.launch({ ...(values['executable-path'] ? { executablePath: values['executable-path'] } : {}), cwd: repo,
@@ -154,6 +197,10 @@ try {
   const initial = await nativeDocument()
   assert.deepEqual(customerProjectSummary(initial), evidence.source.summary)
   assert.deepEqual([...indexCustomerProject(initial).keys()].sort(), [...indexCustomerProject(inputDocument).keys()].sort())
+  if (hashDocument(initial) !== hashDocument(inputDocument)) {
+    evidence.initialNativeMismatch = path.join(values.output, 'initial-native-mismatch.json')
+    await fs.writeFile(evidence.initialNativeMismatch, JSON.stringify(initial, null, 2))
+  }
   assert.equal(hashDocument(initial), hashDocument(inputDocument),
     'Opening the actual source must preserve its entire persisted document, including function and variable identity')
   evidence.loaded = { summary: customerProjectSummary(initial), hash: hashDocument(initial) }
@@ -169,16 +216,90 @@ try {
     assert.deepEqual(await Promise.all(names.map(async name => ({ name, sha256: digest(await fs.readFile(path.join(project, name))) }))), primary)
     evidence.cases.push({ name: 'readonly-native-component-cold-warm', ok: true, sourceAndBaselineBytesUnchanged: true,
       sdkBaselineAuthorizationTested: false })
+  } else if (values['native-publication-only']) {
+    const { runCustomerNativePublicationCase } = await import('./fixtures/customer-native-publication-case.mjs')
+    const result = await runCustomerNativePublicationCase({ project, suite, home, appData,
+      agentRoot: values['agent-root'], hostPid, page, phase, evidence, originalDocument: initial,
+      readNativeDocument: nativeDocument })
+    const expectedHash = hashDocument(result.expectedDocument)
+    assert.equal(hashDocument(await nativeDocument()), expectedHash)
+    const saved = await fs.readFile(path.join(project, 'project.abi'), 'utf8')
+    assert.equal(hashDocument(JSON.parse(saved)), expectedHash)
+    const publishedMirrors = await Promise.all(['project.abi', 'project.abs', 'project.abs.map.json']
+      .map(name => fs.readFile(path.join(project, name))))
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await phase('force-kill-and-cold-reopen-native-without-applying-draft-' + attempt)
+      await forceKillOwned()
+      assert.equal(await fs.readFile(path.join(project, 'project.abi'), 'utf8'), saved)
+      await launch()
+      assert.equal(hashDocument(await nativeDocument()), expectedHash,
+        'Cold open must retain the exact native publication without applying the archived draft')
+      const coldMirrors = await Promise.all(['project.abi', 'project.abs', 'project.abs.map.json']
+        .map(name => fs.readFile(path.join(project, name))))
+      for (let index = 0; index < publishedMirrors.length; index++)
+        assert.ok(coldMirrors[index].equals(publishedMirrors[index]), 'Cold open changed a healthy native mirror without applying the draft')
+      for (const backup of result.candidateBackups) await verifyCustomerCandidateRecord({ project, backup,
+        candidateHash: backup.candidateHash, intentGeneration: backup.intentGeneration })
+      evidence.cases.push({ name: 'non-apply-native-publication-and-pending-draft-backup-survive-cold-open',
+        attempt, ok: true, candidateApplied: false })
+    }
+  } else if (values['native-dependency-only']) {
+    const { runCustomerNativeDependencyCase } = await import('./fixtures/customer-native-dependency-case.mjs')
+    const result = await runCustomerNativeDependencyCase({ project, suite, home, appData,
+      agentRoot: values['agent-root'], hostPid, page, phase, evidence, originalDocument: initial,
+      readNativeDocument: nativeDocument })
+    const expectedHash = hashDocument(result.expectedDocument)
+    const assertColdDependency = async () => {
+      assert.equal(hashDocument(await nativeDocument()), expectedHash,
+        'The entire native program must retain the new dependency block and all pre-existing content')
+      const pkg = JSON.parse(await fs.readFile(path.join(project, 'package.json'), 'utf8'))
+      assert.match(pkg.dependencies?.[result.probe.packageName] ?? '', /^file:(?:\.\/)?local-libraries\//)
+      const runtime = await page.evaluate(({ packageName, blockType }) => {
+        const editor = window.ng.getComponent(document.querySelector('app-blockly-editor'))
+        return { registered: typeof window.Blockly.Blocks[blockType]?.init === 'function',
+          used: editor.blocklyService.workspace.getAllBlocks(false).filter(block => block.type === blockType).length,
+          snapshot: editor.blocklyService.getLibraryRuntimeSnapshot() }
+      }, result.probe)
+      assert.equal(runtime.registered, true)
+      assert.equal(runtime.used, 1, 'The loaded native program must actually use this dependency')
+      assert.equal(runtime.snapshot.active, true)
+      assert.ok(runtime.snapshot.loadedLibraries.includes(result.probe.packageName))
+      assert.ok(runtime.snapshot.toolboxLibraries.includes(result.probe.packageName))
+      return runtime
+    }
+    await phase('verify-entire-program-and-required-library-after-abort')
+    await assertColdDependency()
+    const saved = await fs.readFile(path.join(project, 'project.abi'), 'utf8')
+    assert.equal(hashDocument(JSON.parse(saved)), expectedHash)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await phase('force-kill-and-cold-reopen-required-native-dependency-' + attempt)
+      await forceKillOwned()
+      assert.equal(await fs.readFile(path.join(project, 'project.abi'), 'utf8'), saved)
+      await launch()
+      const runtime = await assertColdDependency()
+      evidence.cases.push({ name: 'committed-used-library-and-entire-program-survive-abort-and-cold-open',
+        attempt, ok: true, packageName: result.probe.packageName, blockType: result.probe.blockType, runtime })
+    }
   } else {
   const edit = await runCustomerBaselineCase({ project, suite, home, appData, agentRoot: values['agent-root'], hostPid, page, phase, evidence,
     originalDocument: initial, exerciseSelfOperations: values['exercise-self-operations'] === true,
-    exerciseDependencyOperations: values['exercise-dependency-operations'] === true })
+    exerciseDependencyOperations: values['exercise-dependency-operations'] === true,
+    exercisePostSaveEdit: values['exercise-post-save-edit'] === true,
+    exercisePostCommitAbort: values['exercise-post-commit-abort'] === true,
+    exerciseApplyObservationFault: values['exercise-apply-observation-fault'] === true,
+    originPreflightOnly: values['origin-preflight-only'] === true })
+  if (edit.originPreflightOnly) {
+    assert.equal(hashDocument(await nativeDocument()), hashDocument(initial), 'An SDK file draft cannot change the native canvas')
+    evidence.cases.push({ name: 'origin-preflight-retains-native-canvas', ok: true })
+  } else {
   await phase('verify-entire-program-after-derived-apply')
   const after = await nativeDocument(), expected = structuredClone(edit.expectedDocument ?? initial)
-  const matches = [...indexCustomerProject(expected).values()].flatMap(block => Object.entries(block.fields ?? {})
-    .filter(([, value]) => value === edit.oldValue).map(([field]) => ({ block, field })))
-  assert.equal(matches.length, 1, 'The derived change must affect exactly one original string field')
-  matches[0].block.fields[matches[0].field] = edit.newValue
+  for (const change of edit.edits ?? [edit]) {
+    const matches = [...indexCustomerProject(expected).values()].flatMap(block => Object.entries(block.fields ?? {})
+      .filter(([, value]) => value === change.oldValue).map(([field]) => ({ block, field })))
+    assert.equal(matches.length, 1, 'Each derived change must affect exactly one distinct original string field')
+    matches[0].block.fields[matches[0].field] = change.newValue
+  }
   assert.equal(hashDocument(after), hashDocument(expected), 'Every unedited field, identity, page, variable and comment must be preserved')
   assert.deepEqual(customerProjectSummary(after), evidence.source.summary)
   const saved = await fs.readFile(path.join(project, 'project.abi'), 'utf8')
@@ -190,7 +311,10 @@ try {
     assert.equal(await fs.readFile(path.join(project, 'project.abi'), 'utf8'), saved)
     await launch()
     assert.equal(hashDocument(await nativeDocument()), hashDocument(after))
+    if (evidence.finalCandidateBackup) await verifyCustomerCandidateRecord({ project, backup: evidence.finalCandidateBackup,
+      candidateHash: evidence.sdk.finalCandidateHash, intentGeneration: evidence.sdk.originalGeneration })
     evidence.cases.push({ name: 'saved-complete-program-survives-force-kill-and-cold-open', attempt, ok: true })
+  }
   }
   }
   assert.deepEqual(await inventory(values['project-input']), originalFiles)

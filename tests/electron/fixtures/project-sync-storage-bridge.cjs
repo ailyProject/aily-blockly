@@ -33,6 +33,56 @@ app.whenReady().then(async () => {
       }));
     })()`);
     assert.deepEqual(zoneResult, { settled: 'native settlement' });
+    fs.mkdirSync(path.join(root, '.aily/abs-sync/recoveries'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.aily/abs-sync/recoveries/unreadable.json'), Buffer.from([0xff]));
+    const typedErrors = await window.webContents.executeJavaScript(`(async () => {
+      const failure = async operation => { try { await operation(); return { unexpected: true }; }
+        catch (error) { return { code: error.code, message: error.message }; } };
+      const direct = await failure(() => window.storage.read('recoveries/unreadable.json'));
+      const locked = await failure(() => window.storage.withLock(async access => access.read('recoveries/unreadable.json')));
+      const replace = await failure(() => window.storage.withLock(async access => access.replace('../escape', null, 'denied')));
+      const renderer = await failure(() => window.storage.withLock(async () => {
+        throw Object.assign(new Error('retained structured error'), { code: 'ABS_BASELINE_STALE' });
+      }));
+      let current = true;
+      const cancelled = await AbsKernel.openAbsHostStorage(${JSON.stringify(root)}, () => {
+        if (!current) throw Object.assign(new Error('cancelled original operation'), { code: 'USER_CANCELLED' });
+      }, window.electronAPI.fs);
+      const cancellation = await failure(() => cancelled.withLock(async access => {
+        current = false; await access.replace('project.abs', null, 'cancelled bytes');
+      }));
+      const success = await window.storage.withLock(async access => access.replace('recoveries/typed-success.json', null, 'successful after errors'));
+      return { direct, locked, replace, renderer, cancellation, success };
+    })()`);
+    assert.equal(typedErrors.direct.code, 'ABS_STORAGE_ENCODING_INVALID');
+    assert.equal(typedErrors.locked.code, 'ABS_STORAGE_ENCODING_INVALID');
+    assert.equal(typedErrors.replace.code, 'ABS_STORAGE_KEY_INVALID');
+    assert.equal(typedErrors.renderer.code, 'ABS_BASELINE_STALE');
+    assert.equal(typedErrors.cancellation.code, 'USER_CANCELLED'); assert.equal(typedErrors.success, true);
+    assert.equal(fs.existsSync(path.join(root, '.aily/project-files.write.lock')), false);
+    assert.equal(fs.existsSync(path.join(root, 'project.abs')), false);
+    const originalCandidate = await window.webContents.executeJavaScript(`(async () => {
+      window.candidateSource = 'broken(\\n完整 candidate';
+      window.candidateMetadata = { hash: await AbsKernel.hashAbsText(window.candidateSource),
+        bytes: new TextEncoder().encode(window.candidateSource).byteLength };
+      window.candidateJournal = new AbsKernel.AbsCandidateJournal(window.storage, ${JSON.stringify(root)}, () => {});
+      return window.candidateJournal.preserve(window.candidateSource, window.candidateMetadata);
+    })()`);
+    fs.writeFileSync(originalCandidate.path, Buffer.from([0xff]));
+    const encodingRecovered = await window.webContents.executeJavaScript(`window.candidateJournal.preserve(window.candidateSource, window.candidateMetadata)`);
+    assert.notEqual(encodingRecovered.recordHash, originalCandidate.recordHash);
+    assert.equal(JSON.parse(fs.readFileSync(encodingRecovered.path, 'utf8')).damagedPredecessor.readFailure, 'ABS_STORAGE_ENCODING_INVALID');
+    assert.deepEqual(fs.readFileSync(originalCandidate.path), Buffer.from([0xff]));
+    const oversized = fs.openSync(encodingRecovered.path, 'r+');
+    try { fs.ftruncateSync(oversized, 128 * 1024 * 1024 + 1); } finally { fs.closeSync(oversized); }
+    const sizeRecovered = await window.webContents.executeJavaScript(`(async () => {
+      const archive = await window.candidateJournal.preserve(window.candidateSource, window.candidateMetadata);
+      return { archive, restored: await window.candidateJournal.read(archive.recordHash) };
+    })()`);
+    assert.notEqual(sizeRecovered.archive.recordHash, encodingRecovered.recordHash);
+    assert.equal(JSON.parse(fs.readFileSync(sizeRecovered.archive.path, 'utf8')).damagedPredecessor.readFailure, 'PROJECT_FILE_TOO_LARGE');
+    assert.equal(sizeRecovered.restored.candidate.source, 'broken(\n完整 candidate');
+    assert.equal(fs.statSync(encodingRecovered.path).size, 128 * 1024 * 1024 + 1);
     const staged = await window.webContents.executeJavaScript(`(async () => {
       const { createAbsProjection, absBaselineKey, absJson, hashAbsText, reconcileAbs } = AbsKernel;
       const workspace = { blocks: { blocks: [{ type: 'any_root', id: 'root-keep', deletable: false,

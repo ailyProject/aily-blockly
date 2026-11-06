@@ -143,9 +143,16 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
  */
 async function openProjectSyncStorageBridge(projectPath, assertCurrent, options) {
   const storage = await openProjectSyncStorage(projectPath, assertCurrent, options);
-  return {
-    read: key => storage.read(key),
-    withLock: operation => storage.withLock(locked => new Promise((resolve, reject) => {
+  // Error custom properties are stripped by contextBridge. Recovery codes cross
+  // as plain data, including scoped reads/writes and failures acquiring a lock.
+  const resultOf = async operation => {
+    try { return { ok: true, value: await operation() }; }
+    catch (error) { return { ok: false, error: {
+      ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+      message: error instanceof Error ? error.message : String(error),
+    } }; }
+  };
+  const withBridgeLock = (operation, typed) => storage.withLock(locked => new Promise((resolve, reject) => {
       const settle = result => {
         if (result?.ok === true) resolve(result.value);
         else if (result?.ok === false && typeof result.error?.message === 'string') {
@@ -154,13 +161,20 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
       };
       try {
         if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a renderer callback.');
-        const returned = operation(locked, settle);
+        const scoped = typed ? { ...locked, readResult: key => resultOf(() => locked.read(key)),
+          replaceResult: (...args) => resultOf(() => locked.replace(...args)) } : locked;
+        const returned = operation(scoped, settle);
         if (returned !== undefined) {
           if (returned && typeof returned.catch === 'function') returned.catch(() => undefined);
           reject(fault('ABS_STORAGE_OPERATION_INVALID', 'Bridge callbacks must return void and settle explicitly.'));
         }
       } catch (error) { reject(error); }
-    })),
+    }));
+  return {
+    read: key => storage.read(key),
+    withLock: operation => withBridgeLock(operation, false),
+    readResult: key => resultOf(() => storage.read(key)),
+    withLockResult: operation => resultOf(() => withBridgeLock(operation, true)),
   };
 }
 

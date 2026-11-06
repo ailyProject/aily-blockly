@@ -176,6 +176,16 @@ export async function installCustomerLocalLibrary({ fixture, call, page,
 export async function verifyCustomerCandidateBackup({ project, guardSnapshot, candidateHash, intentGeneration }) {
   const backup = guardSnapshot?.retainedCandidateBackup
   assert.ok(backup, 'The dependency tool itself must publish a durable original-candidate backup reference')
+  const verified = await verifyCustomerCandidateRecord({ project, backup, candidateHash, intentGeneration })
+  assert.equal(guardSnapshot.retainedCandidate?.hash, candidateHash)
+  assert.equal(guardSnapshot.intentGeneration, intentGeneration)
+  return verified
+}
+
+/** Verify an exact host-issued reference after a later deliberate candidate
+ * edit or restart, without substituting an older guard/archive reference. */
+export async function verifyCustomerCandidateRecord({ project, backup, candidateHash, intentGeneration }) {
+  assert.ok(backup, 'The host must return the exact retained candidate record')
   assert.equal(backup.version, 1)
   assert.ok(same(backup.project, project))
   assert.match(backup.recordHash, /^sha256:[a-f0-9]{64}$/)
@@ -195,8 +205,6 @@ export async function verifyCustomerCandidateBackup({ project, guardSnapshot, ca
   assert.equal(Buffer.byteLength(record.candidate.source), backup.bytes)
   assert.equal(record.candidate.bytes, backup.bytes)
   assert.equal(record.candidate.intentGeneration, intentGeneration)
-  assert.equal(guardSnapshot.retainedCandidate?.hash, candidateHash)
-  assert.equal(guardSnapshot.intentGeneration, intentGeneration)
-  return { path: expectedPath, recordHash: backup.recordHash, candidateHash, bytes: backup.bytes,
+  return { ...structuredClone(backup), path: expectedPath, recordHash: backup.recordHash, candidateHash, bytes: backup.bytes,
     intentGeneration, physicalRecordVerified: true, originalSourceAndIntentVerified: true, candidateApplied: false }
 }
