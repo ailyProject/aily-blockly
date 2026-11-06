@@ -81,6 +81,9 @@ export class NotificationComponent {
 
   close() {
     if (this.closeTimer) return;
+    const closing = this.data;
+    closing?.onClose?.();
+    if (this.data !== closing) return; // Owner dismissal may reveal another current notice.
     if (this.timer) clearTimeout(this.timer);
     this.willClose = true;
     this.closeTimer = setTimeout(() => {

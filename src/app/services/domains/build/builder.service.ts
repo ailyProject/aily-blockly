@@ -68,13 +68,13 @@ export class BuilderService {
   /*
    * 开始编译
    */
-  async build(projectPath?: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source'] } = {}) {
+  async build(projectPath?: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string } = {}) {
     const targetPath = projectPath || this.projectService.currentProjectPath;
     if (this.coderExecution && this.projectService.isAilyCodeProject(targetPath) && !this.projectService.isCoderProjectContext) return this.coderExecution.build(targetPath, options);
     const finish = this.projectService.beginCoderOperation('build', targetPath);
     try {
       if (projectPath || this.projectService.isAilyCodeProject(targetPath)) return await this.buildFromProjectPath(targetPath, options);
-      return await this.buildCurrentBlocklyProject({ source: options.source });
+      return await this.buildCurrentBlocklyProject({ source: options.source, requestId: options.requestId });
     } finally {
       finish();
     }
@@ -136,7 +136,7 @@ export class BuilderService {
         completion = await this.blocklyBuild.build({ projectPath, ...payload });
       } else if (!this.actionService.hasListener('builder-compile-begin')) {
         // A disk/Coder route has no mounted Blockly build executor.
-        const r = await this.compileService.runCompileFromDisk({ projectPath });
+        const r = await this.compileService.runCompileFromDisk({ projectPath, requestId: payload.requestId });
         completion = { success: r.success, result: r.result, checkpoint: {} };
       } else {
         throw Object.assign(new Error('The active Blockly build executor is unavailable.'), { buildOutcome: 'not-started' });
@@ -154,6 +154,8 @@ export class BuilderService {
         error.state = buildResult?.state || 'error';
         error.text = error.message;
         error.fullStdErr = buildResult?.fullStdErr;
+        error.buildLog = buildResult?.buildLog;
+        error.buildOutcome = (buildResult as any)?.buildOutcome;
         error.buildResult = buildResult;
         if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
         throw error;
@@ -169,7 +171,7 @@ export class BuilderService {
       if (editorExecution && !checkpoint?.startedAt) error.buildOutcome = 'not-started';
       // console.error('编译失败:', error);
       this.notifyBuildCompletion(error, false);
-      if (checkpoint?.startedAt) persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
+      if (checkpoint?.startedAt && error?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, error?.buildResult, error, checkpoint, payload.source);
       this.buildFinishedSubject.next({ projectPath, success: false, result: error?.buildResult, error });
       throw error;
     }
@@ -183,7 +185,7 @@ export class BuilderService {
     return normalize(left) === normalize(right);
   }
 
-  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source'] } = {}) {
+  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source']; requestId?: string } = {}) {
     let compileResult: Awaited<ReturnType<CompileService['runCompileFromDisk']>>;
     try {
       await this.persistActiveCoderProjectBeforeBuild(projectPath);
@@ -198,9 +200,11 @@ export class BuilderService {
       error.state = buildResult?.state || 'error';
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
+      error.buildLog = buildResult?.buildLog;
+      error.buildOutcome = buildResult?.buildOutcome;
       error.buildResult = buildResult;
       if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
-      if (!options.preprocessOnly) persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
+      if (!options.preprocessOnly && buildResult?.buildOutcome !== 'not-started') persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
       this.buildFinishedSubject.next({ projectPath, success: false, result: buildResult, error });
       this.notifyBuildCompletion(error, false, options);
       throw error;

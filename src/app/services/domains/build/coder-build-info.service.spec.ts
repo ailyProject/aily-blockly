@@ -189,6 +189,7 @@ describe('Coder build metadata', () => {
     { name: 'stderr-close', stream: 'stderr', newline: true, ending: 'close' },
     { name: 'stderr-tail-close', stream: 'stderr', newline: false, ending: 'close' },
     { name: 'stdout-close-fallback', stream: 'stdout', newline: true, ending: 'close' },
+    { name: 'request-log-full-raw', stream: 'stderr', newline: false, ending: 'close', requestLog: true },
     { name: 'stderr-tail-observable-error', stream: 'stderr', newline: false, ending: 'observable-error' },
   ]) it('local Coder diagnostic appears once: ' + scenario.name, async () => {
     const compiler: any = createCompiler(() => 1), entries: any[] = [], notices: any[] = [];
@@ -204,15 +205,17 @@ describe('Coder build metadata', () => {
     compiler.cmdService = cmd;
     compiler.runOneShotCommand.and.callThrough(); compiler.publishBuildLog.and.callThrough(); compiler.handleFailNotice.and.callThrough();
     window['fs'].appendFileSync = (file: string, content: string) => files.set(file, (files.get(file) || '') + content);
+    if (scenario.requestLog) window['fs'].lstatSync = () => ({ _isSymbolicLink: false });
     const normal = scenario.native ? 'Starting compilation of' : 'LOCAL_CODER_NORMAL_' + scenario.name;
     const warning = 'warning: LOCAL_CODER_WARNING_' + scenario.name;
     const diagnostic = scenario.native ? localCompileDiagnostic : '[ERROR] source.cpp:4:3: LOCAL_CODER_DIAGNOSTIC_' + scenario.name;
     const transport = 'LOCAL_CODER_TRANSPORT_' + scenario.name;
-    const pending = compiler.runCompileFromDisk();
+    const pending = compiler.runCompileFromDisk({ requestId: 'owned-request-log' });
     for (let n = 0; n < 100 && !compiler.cmdService.spawn.calls.count(); n++) await new Promise(resolve => setTimeout(resolve, 1));
     expect(compiler.cmdService.spawn).toHaveBeenCalledTimes(1);
     if (scenario.native) localCompileErrorEvents.forEach(event => listener({ ...event }));
     else {
+    if (scenario.requestLog) listener({ type: 'stdout', data: '\n  RAW_MARGIN_PRESERVED  \r\n' });
     listener({ type: 'stdout', data: normal + '\n' });
     if (!scenario.noWarning) listener({ type: 'stderr', data: warning + '\n' });
     listener({ type: scenario.stream, data: diagnostic + (scenario.newline ? '\n' : '') });
@@ -222,6 +225,16 @@ describe('Coder build metadata', () => {
     else listener({ type: 'close', code: 1 });
     const outcome = await pending;
     expect(outcome.success).toBeFalse();
+    if (scenario.requestLog) {
+      expect(outcome.result.buildLog).toEqual(jasmine.objectContaining({
+        version: 1, requestId: 'owned-request-log', project: root, complete: true,
+      }));
+      const captured = files.get(outcome.result.buildLog.path)!;
+      expect(captured).toContain('\n  RAW_MARGIN_PRESERVED  \r\n');
+      expect(captured).toContain(normal + '\n');
+      expect(captured).toContain(warning + '\n');
+      expect(captured).toContain(diagnostic);
+    }
     const count = (marker: string) => entries.reduce((n, entry) => n + String(entry.detail || '').split(marker).length - 1, 0);
     console.log('LOCAL_LOG_REPRO ' + JSON.stringify({ editor: 'Coder', scenario: scenario.name,
       normal: count(normal), warning: count(warning), diagnostic: count(diagnostic),
@@ -341,7 +354,11 @@ describe('Coder build metadata', () => {
       return { success: true };
     });
     const save = spyOn(metadata, 'saveBuildInfo').and.callThrough();
-    const pending = compiler.runCompileFromDisk();
+    if (ending === 'cancel') {
+      window['fs'].appendFileSync = (file: string, content: string) => files.set(file, (files.get(file) || '') + content);
+      window['fs'].lstatSync = () => ({ _isSymbolicLink: false });
+    }
+    const pending = compiler.runCompileFromDisk({ requestId: 'owned-round-trip' });
     for (let n = 0; n < 100 && !launches; n++) await new Promise(resolve => setTimeout(resolve, 1));
     expect(launches).toBe(1);
     commands[0].next({ type: 'stdout', data: 'compiling locally\n' }); compiler.localSwitchAction();
@@ -357,6 +374,11 @@ describe('Coder build metadata', () => {
       commands[1].next({ type: 'close', code: 0 }); commands[1].complete();
     }
     const result = await pending;
+    if (ending === 'cancel') {
+      expect(result.result.buildLog).toEqual(jasmine.objectContaining({ requestId: 'owned-round-trip', complete: false }));
+      expect(result.result.buildLog.error).toContain('streaming');
+      expect(files.get(result.result.buildLog.path)).toContain('compiling locally');
+    }
     expect(result.result.state).toBe(ending === 'cancel' ? 'warn' : ending === 'unsupported' ? 'error' : 'done');
     expect(compiler.metrics.record.calls.allArgs()).toEqual(ending === 'cancel' || ending === 'unsupported'
       ? [['compile_attempted']] : [['compile_attempted'], ['build_succeeded']]);
@@ -395,7 +417,7 @@ describe('Coder build metadata', () => {
       const command = jasmine.createSpy('command').and.returnValue(0);
       const compiler = createCompiler(command);
       const result = await compiler.runCompileFromDisk({ projectPath: root });
-      expect(result).toEqual({ success: false, result: { state: 'warn', text: reason } });
+      expect(result).toEqual({ success: false, result: { state: 'warn', text: reason, buildOutcome: 'not-started' } });
       expect(project.getProjectDependencyBlockMessage).toHaveBeenCalledOnceWith(root);
       expect(command).not.toHaveBeenCalled();
       expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();
@@ -421,7 +443,7 @@ describe('Coder build metadata', () => {
     const compiler = createCompiler(command);
     (compiler as any).npmService.assertCoderDependenciesReady.and.rejectWith(new Error('SDK incomplete'));
     const start = spyOn((compiler as any).application, 'startBuild');
-    expect(await compiler.runCompileFromDisk()).toEqual({ success: false, result: { state: 'warn', text: 'SDK incomplete' } });
+    expect(await compiler.runCompileFromDisk()).toEqual({ success: false, result: { state: 'warn', text: 'SDK incomplete', buildOutcome: 'not-started' } });
     expect(start).not.toHaveBeenCalled();
     expect(command).not.toHaveBeenCalled();
     expect(window['builder'].captureBuildSource).not.toHaveBeenCalled();

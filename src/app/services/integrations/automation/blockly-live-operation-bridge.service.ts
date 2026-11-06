@@ -212,6 +212,7 @@ export class BlocklyLiveOperationBridgeService {
         if (payload.operation === 'project_build_status') return await receipts.status(project, request);
         const params = { ...payload.params };
         delete params['buildRequest'];
+        params['buildLogRequestId'] = request.requestId;
         const signature = JSON.stringify([params['preprocess_only'] === true, params['clear_cache'] === true]);
         return await receipts.start(project, request, signature, () =>
           this.executeAdmittedOperation({ ...payload, path: project, params }));
@@ -1168,11 +1169,13 @@ export class BlocklyLiveOperationBridgeService {
       }
       const result = operation === 'project_upload'
         ? await this.coderRuntime.upload(path, params['port'])
-        : await this.coderRuntime.build(path, { preprocessOnly: params['preprocess_only'] === true, clearCache: params['clear_cache'] === true });
-      return { ok: true, operation, project: path, message: result?.text || '', result };
+        : await this.coderRuntime.build(path, { preprocessOnly: params['preprocess_only'] === true, clearCache: params['clear_cache'] === true,
+          requestId: params['buildLogRequestId'] });
+      return { ok: true, operation, project: path, message: result?.text || '', result, ...(result?.buildLog ? { buildLog: result.buildLog } : {}) };
     } catch (error: any) {
       return { ok: false, operation, project: path, buildOutcome: error?.buildOutcome,
-        message: error?.text || error?.message || String(error), result: error?.result || error?.buildResult };
+        message: error?.text || error?.message || String(error), result: error?.result || error?.buildResult,
+        ...(error?.buildLog || error?.buildResult?.buildLog ? { buildLog: error.buildLog || error.buildResult.buildLog } : {}) };
     }
   }
 
@@ -1189,6 +1192,7 @@ export class BlocklyLiveOperationBridgeService {
       {
         preprocessOnly: params['preprocess_only'] === true,
         clearCache: params['clear_cache'] === true,
+        requestId: params['buildLogRequestId'],
       },
       this.projectService.currentProjectPath,
     );
@@ -1201,6 +1205,7 @@ export class BlocklyLiveOperationBridgeService {
       buildOutcome: toolResult.metadata?.['buildOutcome'],
       code: toolResult.metadata?.['code'],
       result: toolResult.metadata?.['buildResult'],
+      ...(toolResult.metadata?.['buildResult']?.['buildLog'] ? { buildLog: toolResult.metadata['buildResult']['buildLog'] } : {}),
       toolResult,
     };
   }

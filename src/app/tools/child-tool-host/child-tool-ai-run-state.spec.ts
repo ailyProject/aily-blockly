@@ -9,6 +9,7 @@ describe('Chat whole-run state for Save As', () => {
     host = Object.create(ChildToolHostComponent.prototype);
     host.hostContextId = 'test'; host.projectService = { currentProjectPath: '/A' };
     host.aiOperationRegistry = registry; host.isAilyChatTool = () => true;
+    host.blocklyService = { clearAiWaitWriting() {} };
     host.setAilyChatOperationActive = jasmine.createSpy('writeOverlay');
     adapter = Object.create(ProjectApplicationAdapter.prototype); adapter.aiOperationRegistry = registry;
   });

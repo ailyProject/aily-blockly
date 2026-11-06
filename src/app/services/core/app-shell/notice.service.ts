@@ -11,6 +11,8 @@ export type { NoticeOptions } from '@shared/public-api';
 export class NoticeService {
 
   data: NoticeOptions;
+  private owner: string | undefined;
+  private readonly ownedNotices = new Map<string, NoticeOptions>();
 
   stateSubject = new Subject<NoticeOptions>();
 
@@ -21,6 +23,28 @@ export class NoticeService {
   ) { }
 
   update(opts: NoticeOptions) {
+    this.owner = undefined;
+    this.publish(opts);
+  }
+
+  updateOwned(owner: string, opts: NoticeOptions): boolean {
+    if (!owner) return false;
+    this.ownedNotices.set(owner, opts);
+    if (this.data?.state === 'doing' && this.owner !== owner) return false;
+    this.owner = owner;
+    this.publish(opts);
+    return true;
+  }
+
+  clearOwned(owner: string): boolean {
+    this.ownedNotices.delete(owner);
+    if (!owner || this.owner !== owner) return false;
+    this.clear();
+    return true;
+  }
+
+  private publish(opts: NoticeOptions): void {
+    this.data = opts;
     opts['showDetail'] = false;
     this.stateSubject.next(opts);
 
@@ -35,6 +59,16 @@ export class NoticeService {
   }
 
   clear() {
+    this.owner = undefined;
+    this.data = null;
     this.stateSubject.next(null);
+    // A temporary compiler/download notice must not consume another owner's
+    // still-current presentation. Settled owners explicitly withdraw theirs.
+    const pending = [...this.ownedNotices.entries()].reverse();
+    const next = pending.find(([, notice]) => notice.state === 'doing') ?? pending[0];
+    if (next) {
+      this.owner = next[0];
+      this.publish(next[1]);
+    }
   }
 }

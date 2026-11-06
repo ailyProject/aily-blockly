@@ -58,6 +58,7 @@ export class ProjectBuildReceipts {
         result => { owned.result = result; },
         error => { owned.result = { ok: false, operation: 'project_build', project,
           code: error?.code, buildOutcome: error?.buildOutcome,
+          ...(error?.buildLog ? { buildLog: error.buildLog } : {}),
           message: error instanceof Error ? error.message : String(error) }; },
       ).then(() => {
         owned.completedAt = Date.now();

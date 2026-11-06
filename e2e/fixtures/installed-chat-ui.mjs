@@ -106,7 +106,7 @@ export async function createLocalChatApiRouter({ operationOrigin, installedRoot 
 
 /** A fresh profile references the immutable installed artifact, never the mutable
  * workspace or the user's credential/config records. */
-export async function prepareInstalledChatProfile({ appData, installedRoot, apiBase, baseConfigPath, token = createIsolatedChatToken() }) {
+export async function prepareInstalledChatProfile({ appData, installedRoot, apiBase, baseConfigPath, resourceAppData, token = createIsolatedChatToken() }) {
   appData = path.resolve(appData)
   assert.ok(path.isAbsolute(baseConfigPath) && path.isAbsolute(installedRoot))
   assert.match(appData.replaceAll('\\', '/'), /\/aily-project\/dev-tests\/.+\/appdata$/i)
@@ -138,11 +138,13 @@ export async function prepareInstalledChatProfile({ appData, installedRoot, apiB
   await fs.writeFile(path.join(installRoot, 'subapp-index.json'), JSON.stringify(catalog, null, 2), { flag: 'wx' })
   const sourceAppData = path.dirname(baseConfigPath)
   const installedAppData = path.resolve(installedRoot, '../../../../../..')
-  assert.equal(path.basename(installedAppData).toLowerCase(), 'aily-project')
+  if (resourceAppData) assert.ok(path.isAbsolute(resourceAppData))
+  const resourceRoots = [...new Set([resourceAppData, sourceAppData,
+    ...(path.basename(installedAppData).toLowerCase() === 'aily-project' ? [installedAppData] : [])].filter(Boolean))]
   const resources = []
-  for (const relative of ['sdk', 'tools', 'npm-global/node_modules']) {
+  for (const relative of ['sdk', 'tools', 'npm-global/node_modules', ...(resourceAppData ? ['compiler', 'node_modules'] : [])]) {
     let source
-    for (const base of [sourceAppData, installedAppData]) {
+    for (const base of resourceRoots) {
       const candidate = path.join(base, relative)
       try { if ((await fs.stat(candidate)).isDirectory()) { source = await fs.realpath(candidate); break } }
       catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -155,7 +157,7 @@ export async function prepareInstalledChatProfile({ appData, installedRoot, apiB
   }
   const shimNames = /^(?:aily-builder|aily-linter|aily-connector)(?:\.cmd|\.ps1)?$/
   const shims = new Set()
-  for (const base of [sourceAppData, installedAppData]) {
+  for (const base of resourceRoots) {
     const prefix = path.join(base, 'npm-global')
     let entries
     try { entries = await fs.readdir(prefix, { withFileTypes: true }) }

@@ -17,6 +17,7 @@ import { MetricsService } from '@core/metrics/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { persistBuildResult } from './build-result-snapshot';
+import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogReference } from './project-build-log';
 import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
@@ -47,6 +48,12 @@ interface DiskCompileOptions {
   code?: string;
   recordProjectDelivery?: boolean;
   graphSemanticRevision?: string;
+  requestId?: string;
+}
+
+interface DiskCompileResult {
+  success: boolean;
+  result: BuildActionState & { fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildOutcome?: string };
 }
 
 interface DiskCompileProgressState {
@@ -74,6 +81,7 @@ interface DiskCompileContext {
 
 @Injectable({ providedIn: 'root' })
 export class CompileService {
+  private activeBuildLog?: ProjectBuildLog;
   private buildAttempt = 0;
   private cancelled = false;
   private activeSub: Subscription | null = null;
@@ -104,6 +112,9 @@ export class CompileService {
   ) { }
 
   cancel(): void {
+    if (this.activeStreamId || this.activeCloudRequestId) {
+      this.activeBuildLog?.markIncomplete('Build was cancelled while output was streaming; the process tail may not have been captured.');
+    }
     this.cancelled = true;
     const streamId = this.activeStreamId;
     if (streamId) {
@@ -123,11 +134,11 @@ export class CompileService {
     }
   }
 
-  async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+  async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<DiskCompileResult> {
     return this.compileAttemptWithBackend(options);
   }
 
-  private async compileAttemptWithBackend(options: DiskCompileOptions, retryLocally = false): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+  private async compileAttemptWithBackend(options: DiskCompileOptions, retryLocally = false): Promise<DiskCompileResult> {
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
     const context: DiskCompileContext = {
       cloud: this.configService.getCompileBackend() === 'cloud' && this.projectService.isCloudBuild(root),
@@ -139,7 +150,7 @@ export class CompileService {
       this.message.warning('No project is currently open.');
       return {
         success: false,
-        result: { state: 'warn', text: 'No project is currently open; build cannot start.' },
+        result: { state: 'warn', text: 'No project is currently open; build cannot start.', buildOutcome: 'not-started' },
       };
     }
 
@@ -160,12 +171,12 @@ export class CompileService {
         msg = 'Dependency installation is already running';
       }
       this.message.warning(`${msg}; please try again later.`);
-      return { success: false, result: { state: 'warn', text: msg } };
+      return { success: false, result: { state: 'warn', text: msg, buildOutcome: 'not-started' } };
     }
 
     const attempt = this.buildAttempt = (this.buildAttempt || 0) + 1;
     const attemptStartedAt = Date.now();
-    let projectCurrent = () => false;
+    const projectCurrent = this.projectService.captureCurrentProjectGuard();
     let settled!: () => void;
     const cleanup = new Promise<void>(resolve => { settled = resolve; });
     context.retryLocally = createCloudBuildLocalRetry({
@@ -174,7 +185,7 @@ export class CompileService {
         && this.configService.getCompileSettingsKey() === context.settingsKey,
       canStart: () => ['IDLE', 'ERROR'].includes(this.application.currentProcessState),
       retry: async () => {
-        const outcome = await this.compileAttemptWithBackend({ ...options, projectPath: root }, true);
+        const outcome = await this.compileAttemptWithBackend({ ...options, projectPath: root, requestId: undefined }, true);
         if (!options.preprocessOnly) persistBuildResult(root, outcome.success, outcome.result, undefined, undefined, 'manual');
         return outcome;
       },
@@ -187,9 +198,14 @@ export class CompileService {
     this.localSwitchPending = Promise.resolve();
     this.application.updateNotice({ title: this.t('PREPARING_TITLE'), text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
       state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
+    const capture = await createProjectBuildLog(root, options.requestId);
+    this.activeBuildLog = capture;
     try {
+    const execution = await capture.run(async () => {
+    try {
+      if (this.cancelled) throw new Error(this.t('CANCELLED_TITLE'));
+      if (!projectCurrent()) throw Object.assign(new Error('BUILD_SOURCE_STALE: Build project changed.'), { buildOutcome: 'not-started' });
       context.backendOperation = this.projectService.beginBuildBackendOperation(root);
-      projectCurrent = this.projectService.captureCurrentProjectGuard();
       if (retryLocally) {
         context.backendOperation.useLocal();
         context.cloud = false;
@@ -225,19 +241,23 @@ export class CompileService {
       this.application.finishBuild(false, text);
       if (this.cancelled) this.updateCancelledNotice(text);
       else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text, context.cloud ? context.retryLocally : undefined);
-      return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text } };
+      return { success: false, result: this.cancelled ? buildCancelledResult(text) : { state: 'error', text,
+        ...(error?.buildOutcome ? { buildOutcome: error.buildOutcome } : {}) } };
     } finally {
       if (this.application.currentProcessState === 'BUILDING') this.application.finishBuild(false, 'Build preparation failed');
       context.backendOperation?.release();
       settled();
     }
+    });
+    return { ...execution, result: { ...execution.result, buildLog: execution.buildLog } };
+    } finally { if (this.activeBuildLog === capture) this.activeBuildLog = undefined; }
   }
 
   private async checkCompileDependencies(root: string, cloud = false) {
     const dependencyBlock = this.projectService.getProjectDependencyBlockMessage(root);
     if (dependencyBlock) {
       this.message.warning(dependencyBlock);
-      return { success: false, result: { state: 'warn', text: dependencyBlock } };
+      return { success: false, result: { state: 'warn', text: dependencyBlock, buildOutcome: 'not-started' } };
     }
 
     try {
@@ -248,13 +268,13 @@ export class CompileService {
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       this.message.warning(text);
-      return { success: false, result: { state: 'warn', text } };
+      return { success: false, result: { state: 'warn', text, buildOutcome: 'not-started' } };
     }
 
     return undefined;
   }
 
-  private async runCompile(root: string, options: DiskCompileOptions, context: DiskCompileContext): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+  private async runCompile(root: string, options: DiskCompileOptions, context: DiskCompileContext): Promise<DiskCompileResult> {
     const packagePath = this.electronService.pathJoin(root, 'package.json');
     const isAilyCodeProject = this.projectService.isAilyCodeProject(root);
     const source = this.readCompileSource(root, packagePath, isAilyCodeProject, options.code);
@@ -622,6 +642,7 @@ export class CompileService {
     root: string, config: unknown, settings: NonNullable<DiskCompileContext['settings']>,
     profileDigest: string, action: 'compile' | 'analysis', boardName: string, settingsKey?: string,
   ): Promise<any> {
+    const requestLog = this.activeBuildLog;
     const gateway = window['cloudBuild'];
     const requestId = `coder_${crypto.randomUUID()}`;
     this.activeCloudRequestId = requestId;
@@ -642,6 +663,8 @@ export class CompileService {
         },
         isCurrent: () => this.activeCloudRequestId === requestId && !this.cancelled
           && this.projectService.currentProjectPath === root && this.configService.getCompileSettingsKey() === settingsKey,
+        rawLog: text => requestLog?.append(text + '\n'),
+        logIncomplete: reason => requestLog?.markIncomplete(reason),
         log: (text, stream) => this.publishBuildLog(root, text, stream),
         progress: event => {
           const presentation = cloudBuildProgressPresentation(event, key => this.translate.instant(key));
@@ -866,6 +889,7 @@ export class CompileService {
     buildWorkspace?: string,
     localSwitch?: { boardName: string; isCurrent: () => boolean },
   ): Promise<OneShotCommandResult> {
+    const buildLog = this.activeBuildLog;
     return new Promise((resolve, reject) => {
       let stdout = '';
       let stderr = '';
@@ -932,6 +956,8 @@ export class CompileService {
       }) : command;
       sub = output.subscribe({
         next: (o: CmdOutput) => {
+          if (o.data && (o.type === 'stdout' || o.type === 'stderr')) buildLog?.append(o.data);
+          if (o.type === 'error' && o.error) buildLog?.append(String(o.error) + '\n');
           if (!this.activeStreamId && o.streamId) {
             this.activeStreamId = o.streamId;
           }

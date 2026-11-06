@@ -18,6 +18,7 @@
     "../src/app/services/integrations/automation/project-load-recovery.spec.ts",
     "../src/app/services/integrations/automation/project-build-receipts.spec.ts",
     "../src/app/integrations/blockly/abs/**/*.spec.ts",
+    "../src/app/editors/blockly-editor/services/blockly-project-open.spec.ts",
     "../src/app/services/shared/abs/**/*.spec.ts",
     "../src/app/services/domains/project/project-data/project-data-abs.spec.ts",
     "../src/app/services/domains/project/project-data/project-data-generic-values.spec.ts",

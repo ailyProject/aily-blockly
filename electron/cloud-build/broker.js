@@ -559,6 +559,7 @@ class CloudBuildBroker {
     if ([...this.requests.values()].some(item => item.root === root)) throw protocol.error('BUILD_BUSY', 'This project already has a cloud task.');
     const record = { requestId, root, sender, generation: owner.generation, config: input.config,
       settings: { ...(input.settings || {}) }, controller: new AbortController(), logsController: new AbortController(), onProgress, startedAt: Date.now(),
+      logComplete: false, logHistoryComplete: true,
       inputMetrics: { captureMs: 0, identityMs: 0, encodingMs: 0, encodedFiles: 0,
         manifestPrepareMs: 0, manifestResolveMs: 0, blobUploadMs: 0, commitMs: 0,
         rawBytes: 0, uniqueBytes: 0, transferredBytes: 0, uploadedBytes: 0, reusedBytes: 0, libraryHits: 0 } };
@@ -627,9 +628,10 @@ class CloudBuildBroker {
       ciAttempt: for (let ciPass = 0; ciPass < 2; ciPass++) {
       if (previous) {
         const reused = await this.reuseCompletedResult(record, previous, input.action || 'compile');
-        if (reused) return reused;
+        if (reused) return { ...reused, logComplete: record.logHistoryComplete };
         await this.assertCurrent(record);
       }
+      record.logComplete = false;
       this.progress(record, { stage: 'uploading', progress: 0 });
       const uploaded = await this.uploadSnapshot(record, caps);
       if (uploaded.inputDigest !== record.snapshot.inputDigest) throw protocol.error('INPUT_DIGEST_MISMATCH', 'Gateway sealed different build inputs.');
@@ -659,18 +661,45 @@ class CloudBuildBroker {
       this.progress(record, { stage: 'queued', progress: 0 });
       let lastSeq = 0;
       let logRequest;
+      let logDeadline = Infinity;
       const pullLogs = advertisedLastSeq => {
         if (logRequest) return logRequest;
         if (Number.isSafeInteger(advertisedLastSeq) && advertisedLastSeq >= 0 && advertisedLastSeq <= lastSeq) return;
-        // 运行期间异步读取，不阻塞状态刷新；失败返回前等待末尾诊断。
+        // Optional log I/O must not exhaust the compilation/publication budget
+        // and turn an already-known terminal result into a build timeout.
+        const timeoutMs = Math.floor(Math.min(this.requestTimeoutMs, logDeadline - Date.now(),
+          record.startedAt + this.deadlineMs - Date.now() - this.requestTimeoutMs));
+        if (timeoutMs <= 0) return Promise.resolve(false);
+        // 运行期间异步读取，不阻塞状态刷新；所有已知终态均补齐尾页。
         logRequest = this.request(record.settings, `/api/v1/build/jobs/${record.jobId}/logs?afterSeq=${lastSeq}`, undefined,
-          AbortSignal.any([record.controller.signal, record.logsController.signal])).then(logs => {
-          for (const line of logs.logs || logs.entries || []) {
-            if (line.seq > lastSeq) { lastSeq = line.seq; this.progress(record, { log: line.message || line.text || line.data?.message || '', stream: line.stream || line.data?.stream || 'stdout' }); }
+          AbortSignal.any([record.controller.signal, record.logsController.signal, AbortSignal.timeout(timeoutMs)])).then(logs => {
+          if (record.controller.signal.aborted || record.logsController.signal.aborted) return false;
+          const entries = logs.logs || logs.entries || [];
+          if (!Array.isArray(entries)) return false;
+          for (const line of [...entries].sort((a, b) => a.seq - b.seq)) {
+            if (!Number.isSafeInteger(line.seq) || line.seq < 0) return false;
+            if (line.seq > lastSeq) {
+              this.progress(record, { log: line.message || line.text || line.data?.message || '', stream: line.stream || line.data?.stream || 'stdout' });
+              lastSeq = line.seq;
+            }
           }
-        }).catch(() => { /* 日志失败不改变任务状态和签名产物的可信性。 */ })
+          return true;
+        }).catch(() => false) // 日志失败不改变编译终态或签名产物的可信性。
           .finally(() => { logRequest = undefined; });
         return logRequest;
+      };
+      const drainLogs = async terminalSeq => {
+        // A running poll may have read an older snapshot. Wait for it, then
+        // request the remaining cursor afresh; empty/error pages stop the drain.
+        logDeadline = Math.min(Date.now() + this.requestTimeoutMs,
+          record.startedAt + this.deadlineMs - this.requestTimeoutMs);
+        if (logRequest) await logRequest;
+        const known = Number.isSafeInteger(terminalSeq) && terminalSeq >= 0;
+        while (!record.controller.signal.aborted && (!known || lastSeq < terminalSeq)) {
+          const before = lastSeq;
+          if (await pullLogs(terminalSeq) === false || lastSeq <= before) return false;
+        }
+        return !record.controller.signal.aborted && known && lastSeq >= terminalSeq;
       };
       const waitBudget = caps.statusWait?.version === 1 && Number.isSafeInteger(caps.statusWait.maxWaitMs)
         ? Math.min(Math.max(0, this.statusWaitMs), caps.statusWait.maxWaitMs, this.requestTimeoutMs - 2000) : 0;
@@ -707,17 +736,11 @@ class CloudBuildBroker {
         record.attempt = status.attempt;
         this.progress(record, { stage: status.stage || status.status, progress: status.progress ?? status.stageProgress ?? 0, status: status.status, attempt: status.attempt });
         pullLogs(status.lastSeq);
+        if (['succeeded', 'failed', 'timed_out'].includes(status.status)) {
+          record.logHistoryComplete = await drainLogs(status.lastSeq) && record.logHistoryComplete;
+          record.logComplete = record.logHistoryComplete;
+        }
         if (['failed', 'cancelled', 'timed_out'].includes(status.status)) {
-          // 状态可能先于日志请求完成。按终态游标补齐分页，避免 finally
-          // 取消尚未返回的编译器错误；日志不可用/不前进时仍返回原始失败。
-          if (status.status !== 'cancelled') {
-            let previousSeq;
-            do {
-              previousSeq = lastSeq;
-              await pullLogs(status.lastSeq);
-            } while (!record.controller.signal.aborted && lastSeq > previousSeq
-              && (!Number.isSafeInteger(status.lastSeq) || lastSeq < status.lastSeq));
-          }
           if (status.status === 'failed' && status.error?.code === 'CI_RESOURCES_REQUIRED' && ciPass === 0
               && !record.ciPreparation && (input.action || 'compile') === 'compile'
               && record.profile.capabilities?.ciPreparedResourcesV1 === true) {
@@ -752,13 +775,14 @@ class CloudBuildBroker {
       await this.importResult(record, result);
       this.progress(record, { stage: 'complete', progress: 100 });
       return { success: true, state: 'done', text: 'Cloud compilation complete.', jobId: record.jobId, inputDigest: record.snapshot.inputDigest,
-        artifactPath: this.active.get(root)?.directory };
+        artifactPath: this.active.get(root)?.directory, logComplete: record.logComplete };
       }
     } catch (error) {
       if (error.cleanupConfirmed === false) record.cleanupBlocked = true;
       await this.cancelRemote(record).catch(() => {});
-      if (error.cleanupConfirmed === false) throw error;
-      throw record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
+      const failure = error.cleanupConfirmed === false ? error
+        : record.controller.signal.aborted ? record.controller.signal.reason || abortFault() : error;
+      throw Object.assign(failure, { logComplete: !record.controller.signal.aborted && record.logComplete });
     } finally {
       clearTimeout(deadline);
       try { if (typeof releasePowerSaveBlocker === 'function') releasePowerSaveBlocker(); }
