@@ -2,6 +2,7 @@
   "name": "aily-blockly-e2e",
   "private": true,
   "scripts": {
+    "test:customer-project-baseline": "cd .. && node e2e/electron/customer-project-baseline.acceptance.mjs",
     "test:issue787-save-restart": "cd .. && node e2e/electron/issue787-save-restart.acceptance.mjs",
     "test:window-restore": "cd .. && node e2e/electron/window-restore.acceptance.mjs",
     "test:build-log-installed": "cd .. && node e2e/electron/build-log-installed.acceptance.mjs",
