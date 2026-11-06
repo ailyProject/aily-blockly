@@ -135,6 +135,7 @@ class SubappNodeControlBroker {
                     && ['start', 'recover'].includes(frame.payload.action))
                     || (frame.payload?.operation === 'demonstration'
                     && ['prepare', 'command'].includes(frame.payload.request?.operation)) ? 300000
+                    : frame.payload?.operation === 'bootstrap' ? 150000
                     : localNetworkSelection(frame.payload) ? 60000 : 30000)
                 || !frame.payload || Object.getPrototypeOf(frame.payload) !== Object.prototype) throw new Error('Invalid Node control request');
             if (record.seen.has(frame.requestId) || record.controls.has(frame.requestId)) throw new Error('Repeated Node control request identity');

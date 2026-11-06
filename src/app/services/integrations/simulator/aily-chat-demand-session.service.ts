@@ -279,18 +279,48 @@ export class AilyChatDemandSessionService {
       let settled = false;
       const retainOriginalCompletion = request.kind === 'code-sync';
       let dispatched = false;
-      let unconfirmedError: Error | null = null;
-      let timeout: ReturnType<typeof setTimeout>;
+      let cancellationError: Error | null = null;
+      let announcedSession = false;
+      let originalRuntime: ReturnType<ChildToolProcessService['bindRuntimeGeneration']> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const codeSyncStage = (stage: string, status?: string) => {
+        if (retainOriginalCompletion) {
+          console.info('[AilyChatDemandSession][CodeSync]', { requestId, stage, status });
+        }
+      };
       const finish = (callback: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
         removeListener();
+        originalRuntime?.dispose();
         signal?.removeEventListener('abort', onAbort);
         callback();
       };
+      const cancelOriginal = (error: Error, trigger: 'abort' | 'timeout' | 'run-send-failed') => {
+        if (settled || cancellationError) return;
+        cancellationError = error;
+        codeSyncStage('cancel-requested', trigger);
+        // Sending or acknowledging cancellation does not prove the original
+        // Agent turn stopped. Keep its exact response listener and lease.
+        const cancellationSendFailed = () => codeSyncStage('cancel-send-failed');
+        try {
+          void originalRuntime?.sendMessage({
+            channel: AILY_CHAT_DEMAND_SESSION_CHANNEL,
+            type: 'request',
+            requestId,
+            action: 'demand-session.cancel',
+            projectPath: cwd,
+          }).catch(cancellationSendFailed);
+        } catch {
+          cancellationSendFailed();
+        }
+      };
       const onAbort = () => {
-        if (retainOriginalCompletion && dispatched) return;
+        if (retainOriginalCompletion && dispatched) {
+          cancelOriginal(abortReason(signal), 'abort');
+          return;
+        }
         finish(() => reject(abortReason(signal)));
       };
       const removeListener = this.childToolProcess.onMessage(
@@ -305,10 +335,14 @@ export class AilyChatDemandSessionService {
           }
 
           if (response.type === 'event') {
-            if (retainOriginalCompletion && (signal?.aborted || unconfirmedError)) return;
             const sessionId = response.event?.type === 'session-created'
               ? String(response.event.sessionId || '').trim()
               : '';
+            if (retainOriginalCompletion && sessionId && !announcedSession) {
+              announcedSession = true;
+              codeSyncStage('session-created');
+            }
+            if (retainOriginalCompletion && (signal?.aborted || cancellationError)) return;
             if (sessionId && diagramKind) {
               this.attachDiagramSession(diagramKind, requestId, sessionId);
             }
@@ -330,12 +364,13 @@ export class AilyChatDemandSessionService {
           if (retainOriginalCompletion && (!result || typeof result !== 'object'
             || (result.accepted !== false && !(result.accepted === true
               && ['settled', 'rejected', 'failed'].includes(result.state ?? ''))))) return;
+          codeSyncStage('terminal', result?.accepted === false ? 'refused' : result?.state);
           finish(() => {
             // The Host run response is sent after the original turn settles.
             // Aborting only this wait must not free its work slot or Runtime
             // reference while that independent turn may still be running.
-            if (retainOriginalCompletion && (signal?.aborted || unconfirmedError)) {
-              reject(signal?.aborted ? abortReason(signal) : unconfirmedError);
+            if (retainOriginalCompletion && (signal?.aborted || cancellationError)) {
+              reject(signal?.aborted ? abortReason(signal) : cancellationError);
               return;
             }
             if (response.result) resolve(response.result);
@@ -343,10 +378,22 @@ export class AilyChatDemandSessionService {
           });
         },
       );
+      if (retainOriginalCompletion) {
+        try {
+          originalRuntime = this.childToolProcess.bindRuntimeGeneration(AILY_CHAT_TOOL_ID, () => {
+            codeSyncStage('runtime-exited');
+            const error = signal?.aborted ? abortReason(signal) : cancellationError;
+            finish(() => reject(error ?? new Error('Aily Chat Runtime 已退出，请重试同步场景并编译')));
+          });
+        } catch (error) {
+          finish(() => reject(error));
+          return;
+        }
+      }
       timeout = setTimeout(() => {
         const error = new Error('Aily Chat 需求会话执行超时');
         if (retainOriginalCompletion && dispatched) {
-          unconfirmedError ??= error;
+          cancelOriginal(error, 'timeout');
           return;
         }
         finish(() => reject(error));
@@ -362,27 +409,31 @@ export class AilyChatDemandSessionService {
           // A failed transport acknowledgement is not proof the Runtime did
           // not accept the request. Keep the exact listener and reference in
           // quarantine until its original response; owner close stays joined.
-          unconfirmedError ??= error instanceof Error ? error : new Error(String(error));
+          cancelOriginal(error instanceof Error ? error : new Error(String(error)), 'run-send-failed');
           return;
         }
         finish(() => reject(error));
       };
       dispatched = true;
+      codeSyncStage('dispatch');
       try {
-        void Promise.resolve(this.childToolProcess.sendMessage(AILY_CHAT_TOOL_ID, {
-        channel: AILY_CHAT_DEMAND_SESSION_CHANNEL,
-        type: 'request',
-        requestId,
-        action: 'demand-session.run',
-        kind: request.kind,
-        cwd,
-        ...(request.preferredSessionId ? { preferredSessionId: request.preferredSessionId } : {}),
-        title: request.title.trim(),
-        prompt: request.prompt.trim(),
-        mode: request.mode,
-        revealSession,
-        resources: request.resources || [],
-        })).catch(failedDispatch);
+        const message = {
+          channel: AILY_CHAT_DEMAND_SESSION_CHANNEL,
+          type: 'request',
+          requestId,
+          action: 'demand-session.run',
+          kind: request.kind,
+          cwd,
+          ...(request.preferredSessionId ? { preferredSessionId: request.preferredSessionId } : {}),
+          title: request.title.trim(),
+          prompt: request.prompt.trim(),
+          mode: request.mode,
+          revealSession,
+          resources: request.resources || [],
+        };
+        void Promise.resolve(originalRuntime
+          ? originalRuntime.sendMessage(message)
+          : this.childToolProcess.sendMessage(AILY_CHAT_TOOL_ID, message)).catch(failedDispatch);
       } catch (error) { failedDispatch(error); }
     });
   }

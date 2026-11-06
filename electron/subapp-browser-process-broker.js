@@ -138,8 +138,11 @@ class SubappBrowserProcessBroker {
             if (!message.payload || Object.getPrototypeOf(message.payload) !== Object.prototype || Array.isArray(message.payload)) throw new Error('Browser payload must be a JSON object');
 
             const timeoutMs = message.timeoutMs === undefined ? this.timeoutMs : message.timeoutMs;
-            const maximumTimeoutMs = message.payload.method === 'session.control'
+            const preparation = message.payload.method === 'session.prepare'
+                || message.payload.method === 'replacement.access' && message.payload.operation === 'create';
+            const lifecycleMaximumTimeoutMs = message.payload.method === 'session.control'
                 && ['start', 'recover'].includes(message.payload.operation) ? 300000 : 30000;
+            const maximumTimeoutMs = preparation ? 120000 : lifecycleMaximumTimeoutMs;
 
             if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > maximumTimeoutMs) throw new Error('Browser request deadline out of range');
 

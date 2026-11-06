@@ -5,7 +5,7 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const project = require('./aily-code-project');
 const { confirmLibraryProjections } = require('./library-source-evidence');
-const { confirmBuildSource, sourceManifest } = require('./build-source-capture');
+const { confirmBuildSource, confirmPreparedBuildSource, sourceManifest } = require('./build-source-capture');
 const { readBuildInputRecordBinding } = require('./build-input-record');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(`PROJECT_INPUTS_CHANGED: ${message}`); };
@@ -159,6 +159,7 @@ function publishBuildDelivery(config, snapshot, compileSourcePath, expectedFqbn,
         if (!/^[a-f0-9-]{36}$/.test(buildId)) fail('Invalid build owner identity.');
         confirmProjectSources(snapshot, config, 'before-delivery');
         const sourceCapture = confirmBuildSource(config);
+        const preparedSnapshot = confirmPreparedBuildSource(config);
         const libraryProjections = librarySnapshot ? confirmLibraryProjections(librarySnapshot) : undefined;
         const bytes = fs.readFileSync(outputs.artifact);
         if (bytes.length > 2 * 1024 * 1024) fail('Artifact manifest exceeds budget.');
@@ -169,7 +170,7 @@ function publishBuildDelivery(config, snapshot, compileSourcePath, expectedFqbn,
             || artifact.build?.inputs?.scope !== 'build-graph-facts' || !/^[a-f0-9]{64}$/.test(artifact.build.inputs.digest)
             || artifact.build?.source?.sha256 !== snapshot.body.sourceSha256 || executionSource.sha256 !== snapshot.body.sourceSha256
             || artifact.build.source.sizeBytes !== executionSource.sizeBytes) fail('Artifact does not match this source/build-graph build.');
-        readBuildInputRecordBinding(config.currentProjectPath, artifact.build.inputs);
+        const inputRecordSha256 = readBuildInputRecordBinding(config.currentProjectPath, artifact.build.inputs, sourceCapture?.sketchInputs);
         const receipt = { schemaVersion: 1, kind: 'aily-build-delivery', buildId, completedAt: new Date().toISOString(),
             artifactId: artifact.artifactId, manifestSha256: hash(bytes), buildInputsDigest: artifact.build.inputs.digest,
             project: { scope: snapshot.body.scope, mode: snapshot.body.mode, locationSha256: snapshot.body.projectLocationSha256,
@@ -181,8 +182,12 @@ function publishBuildDelivery(config, snapshot, compileSourcePath, expectedFqbn,
         fs.writeFileSync(temporary, JSON.stringify(receipt, null, 2), { flag: 'wx' });
         confirmProjectSources(snapshot, config, 'after-delivery');
         confirmBuildSource(config);
+        confirmPreparedBuildSource(config, preparedSnapshot);
         if (librarySnapshot) confirmLibraryProjections(librarySnapshot);
         if (hash(fs.readFileSync(outputs.artifact)) !== receipt.manifestSha256) fail('Artifact changed before delivery.');
+        if (readBuildInputRecordBinding(config.currentProjectPath, artifact.build.inputs, sourceCapture?.sketchInputs) !== inputRecordSha256) {
+            fail('Build-graph record changed before delivery.');
+        }
         if (JSON.stringify(captureCompilerEntry(config.currentProjectPath, compileSourcePath)) !== JSON.stringify(executionSource)) {
             fail('Compiler entry changed before delivery.');
         }
@@ -201,7 +206,7 @@ function publishBuildDelivery(config, snapshot, compileSourcePath, expectedFqbn,
 async function reportBuildDelivery(config, receipt) {
     const artifact = JSON.parse(fs.readFileSync(buildOutputs(config.currentProjectPath).artifact));
     if (artifact.build?.inputs?.digest !== receipt.buildInputsDigest) fail('Build-graph record changed before delivery report.');
-    const inputRecordSha256 = readBuildInputRecordBinding(config.currentProjectPath, artifact.build.inputs);
+    const inputRecordSha256 = readBuildInputRecordBinding(config.currentProjectPath, artifact.build.inputs, receipt.sourceCapture?.sketchInputs);
     const receiptSha256 = hash(fs.readFileSync(buildOutputs(config.currentProjectPath).delivery));
     if (typeof process.send !== 'function') return;
     const message = { type: 'aily.build.delivery', requestDigest: hash(JSON.stringify(config)),

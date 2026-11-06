@@ -34,7 +34,7 @@ Reason：${reason}
 
 场景与执行规则已作为本轮只读资源提供。${reason === 'workspace-source-rebuild'
     ? '只读核对完成后直接结束，不修改当前代码，Host 会自动重新构建。'
-    : '完成代码核对或必要修改后直接结束，Host 会自动构建。'}`;
+    : '证据足以确认一致，或必要修改已经应用时，请立即简短结束，Host 会自动构建。仅在有明确缺失事实时读取对应文件。'}`;
 }
 
 /** Model-only resources: one revision-locked Scene projection plus bounded workflow rules. */
@@ -110,7 +110,7 @@ ${SCENE_CODE_INTERPRETATION_RULES}
 4. terminal.extensions.ailyComponentPinSemantic 是可信物理引脚语义。按上述原则使用 gpio.channel 核对物理身份，保留当前板包/库允许的 ABS/SDK 引脚参数；只有缺少权威语义或参数约束时才查询对应板卡参数。
 5. 只修改已证实与 Scene 冲突或用户明确要求变更的 ABS 块，保留其余用户逻辑；不能仅因端子未接线而删除代码或留下失去用途的配套延时。核对 GPIO、总线、上下拉、LED 源/灌电流、电阻，以及最终流入 pinMode、digitalRead、digitalWrite 和总线引脚参数的数据流。
 6. 如需修改，依次调用 abs_validate(abs=<完整 ABS>) 与 abs_apply(abs=<完整 ABS>) 原子应用。不要直接修改 project.abs、project.abi、Blockly XML 或其他项目文件。若现有代码已匹配，只完成 abs_export 核对，不调用 abs_validate/abs_apply。
-7. 完成必要的切板、配置、装库和 ABS 操作后立即用简短文本结束。不要构建、控制 Simulator/QEMU/GDB/UART、创建 Artifact、编写文档或继续浏览源码；Host 会在本轮成功结束后调用正常 Builder。`;
+7. 内联 Scene、abs_export 和定向的板卡/库事实足以确认一致时，立即用简短文本结束。确有缺失时，只查询能补齐具体事实的工具或文件，不用通用 read/ls 浏览项目、SDK 或目录。必要修改应用完成后同样立即结束。不要构建、控制 Simulator/QEMU/GDB/UART、创建 Artifact 或编写文档；Host 会在本轮成功结束后调用正常 Builder。`;
 }
 
 function requireRebuildReason(value: unknown): SimulatorMainAgentSceneChangeRequest['reason'] {

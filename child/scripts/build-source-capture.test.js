@@ -87,8 +87,11 @@ test('capture refuses linked generated files and foreign workspace claims', t =>
 
 test('delivery carries the exact captured origin, never current-project authority', async t => {
     const f = fixture(t), snapshot = captureProjectSources(f.config), entry = await prepareCompileSource(f.config);
+    const graph = `aily_sketch_inputs_digest = ${f.config.sourceCapture.sketchInputs.digest}\n`;
+    f.put('.build/build.ninja', graph);
     const body = { schemaVersion: 1, kind: 'aily-build-input-record', scope: 'build-graph-facts', configurationSha256: 'c'.repeat(64),
-        steps: ['sketch', 'libraries', 'core', 'linking'].map(name => ({ kind: 'ninja-plan', name, sha256: 'd'.repeat(64) })) };
+        steps: ['sketch', 'libraries', 'core', 'linking'].map(name => ({ kind: 'ninja-plan', name,
+            sha256: name === 'linking' ? hash(graph) : 'd'.repeat(64) })) };
     const record = { ...body, digest: hash(JSON.stringify(body)) }, bytes = JSON.stringify(record);
     f.put('.build/aily-build-inputs.json', bytes);
     f.put('.build/aily-artifact-manifest.json', JSON.stringify({ schemaVersion: 1, kind: 'aily-build-artifact', artifactId: 'a'.repeat(64),

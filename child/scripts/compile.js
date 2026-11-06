@@ -8,7 +8,7 @@ const { readLibraryProjections } = require('./library-source-evidence');
 const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, publishBuildDelivery, reportBuildDelivery } = require('./compile-delivery');
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
-const { confirmBuildSource } = require('./build-source-capture');
+const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
 const { compileWithArchiveRecovery } = require('./builder-archive-recovery');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
 
@@ -230,6 +230,7 @@ async function main() {
         await runCompilePreprocess(config, tempPath, preprocessCachePath, undefined, workspace.childEnvironment());
         workspace.assertOwned();
         confirmBuildSource(config);
+        const preparedSnapshot = confirmPreparedBuildSource(config);
 
         if (projectSnapshot) confirmProjectSources(projectSnapshot, config, 'before-target-compile');
 
@@ -388,6 +389,7 @@ async function main() {
         const attempt = await compileWithArchiveRecovery(builderCommand, args, spawnOpts, () => {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
+            confirmPreparedBuildSource(config, preparedSnapshot);
 
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
@@ -404,6 +406,7 @@ async function main() {
             if (spawnError || signal || exitCode !== 0) invalidateBuildDelivery(currentProjectPath);
             else {
                 confirmBuildSource(config);
+                confirmPreparedBuildSource(config, preparedSnapshot);
 
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);

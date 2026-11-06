@@ -77,6 +77,7 @@ function harness(t, options = {}) {
             this.webContents.emit('destroyed'); this.emit('closed'); }
     }
     const host = new SubappBrowserExecutionHost({ BrowserWindow: Window, MessageChannelMain: Channel, timeoutMs: options.timeoutMs || 100,
+        viewLoadTimeoutMs: options.viewLoadTimeoutMs,
         createServer: (entry, source) => {
             options.onCreateServer?.(entry, source);
             return { async start() { servers++; return await options.serverStart?.() ?? options.resourceLocation ?? { origin: 'http://127.0.0.1:49152' }; },
@@ -290,6 +291,54 @@ test('View cross-document navigation during held attach rejects late port handof
     assert.equal(h.host.isCurrent({ ...a, executionId: acquired.executionId }), true);
     assert.equal(h.host.isCurrent({ ...b, executionId: acquired.executionId }), true);
     assert.equal(h.windows[0].isDestroyed(), false); assert.equal(h.host.runtimes.get(a.runtimeId).connections.size, 0);
+});
+
+test('Browser View load can have a separate deadline without extending attach or hidden execution', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let finishLoad;
+    const loaded = new Promise(resolve => { finishLoad = resolve; });
+    const h = harness(t, { timeoutMs: 10, viewLoadTimeoutMs: 30, resourceLocation: hostedResources(),
+        load: win => win.webContents.url.endsWith('/view.html') ? loaded : undefined,
+        ignore: message => message.type === 'attach',
+    });
+    const a = h.owner(), acquired = await h.host.acquire(a);
+    const opening = h.host.openView({ ...a, executionId: acquired.executionId, surface: 'full' }, { show: false });
+    const rejected = assert.rejects(opening, /Browser execution attach deadline exceeded/);
+    await tick();
+    t.mock.timers.tick(11);
+    await tick();
+    assert.equal(h.windows[1].isDestroyed(), false);
+    assert.equal(h.lifecycle.some(message => message.type === 'attach'), false);
+    finishLoad();
+    await tick();
+    assert.equal(h.lifecycle.some(message => message.type === 'attach'), true);
+    t.mock.timers.tick(10);
+    await rejected;
+    assert.equal(h.windows[1].isDestroyed(), true);
+    assert.equal(h.host.isCurrent({ ...a, executionId: acquired.executionId }), true);
+});
+
+test('Browser View load expiry closes its original document before any attach', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let finishLoad;
+    const loaded = new Promise(resolve => { finishLoad = resolve; });
+    const h = harness(t, { timeoutMs: 10, viewLoadTimeoutMs: 30, resourceLocation: hostedResources(),
+        load: win => win.webContents.url.endsWith('/view.html') ? loaded : undefined });
+    const a = h.owner(), acquired = await h.host.acquire(a);
+    const opening = h.host.openView({ ...a, executionId: acquired.executionId, surface: 'full' }, { show: false });
+    const rejected = assert.rejects(opening, /Browser View load deadline exceeded/);
+    await tick();
+    t.mock.timers.tick(29);
+    await tick();
+    assert.equal(h.windows[1].isDestroyed(), false);
+    t.mock.timers.tick(1);
+    await rejected;
+    finishLoad();
+    await tick();
+    assert.equal(h.windows[1].isDestroyed(), true);
+    assert.equal(h.windows[1].webContents.received.length, 0);
+    assert.equal(h.lifecycle.some(message => message.type === 'attach'), false);
+    assert.equal(h.host.isCurrent({ ...a, executionId: acquired.executionId }), true);
 });
 
 test('View same-document/subframe navigation keeps its port; a real reload detaches only that View', async t => {

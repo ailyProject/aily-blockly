@@ -3,6 +3,7 @@ const { ipcMain, BrowserWindow, MessageChannelMain, app, screen, webContents } =
 const { createConfiguredBrowserExecutionHost } = require('./subapp-browser-resource-config');
 const browserExecutionHost = createConfiguredBrowserExecutionHost({ BrowserWindow, MessageChannelMain,
     allowLoopbackHttp: !app.isPackaged && process.argv.includes('--serve'),
+    viewLoadTimeoutMs: 30000,
 });
 const { requestWindowAttention } = require('./window-attention');
 const {

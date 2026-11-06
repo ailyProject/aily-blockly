@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const project = require('./aily-code-project');
+const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
 
 function assertPhysicalTree(root) {
     const stat = fs.lstatSync(root);
@@ -14,6 +15,7 @@ function assertPhysicalTree(root) {
 
 /** Only the derived Blockly sketch is replaceable. Coder's sketch is user-owned. */
 async function prepareCompileSource(config) {
+    confirmBuildSource(config);
     const root = fs.realpathSync(config.currentProjectPath);
     if (typeof config.code !== 'string') throw new Error('Compile code must be a string.');
     if (project.isAilyCodeProjectRoot(root)) {
@@ -54,6 +56,8 @@ async function prepareCompileSource(config) {
     const filename = path.join(destination, 'sketch.ino');
     // Generated code owns the entry, even when src contains an old sketch.ino.
     fs.writeFileSync(filename, config.code);
+    confirmBuildSource(config);
+    confirmPreparedBuildSource(config);
     return filename;
 }
 

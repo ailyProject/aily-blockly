@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const project = require('./aily-code-project');
+const { captureSketchInputs } = require('./sketch-inputs');
 const HEADER = /^(?:variables|objects)_[a-zA-Z0-9_-]+-[a-f0-9]{8}\.h$/;
 const SAVED_PROJECT_FILES = ['project.abi', 'project.abs', 'project.abs.map.json'];
 const MAX_WORKSPACE_BYTES = 128 * 1024 * 1024;
@@ -77,8 +78,8 @@ function confirmSavedWorkspace(root, workspace) {
     if (JSON.stringify(current) !== JSON.stringify(workspace.savedProjectFiles)) fail('Saved workspace files differ from the prepared boundary.');
 }
 
-/** A bounded capture of request/configuration/generated files, not a complete
- * source tree or authenticated memory revision. No writes, locks or IPC here.
+/** A bounded capture of request/configuration/Arduino sketch inputs, not a
+ * complete source tree or authenticated memory revision. No writes or IPC here.
  */
 function record(config, workspace) {
     if (typeof config.currentProjectPath !== 'string' || !path.isAbsolute(config.currentProjectPath)
@@ -117,6 +118,7 @@ function record(config, workspace) {
         boardModule: config.boardModule, boardLocationSha256: location(board),
         boardJsonSha256: hash(read(board, 'board.json')), boardPackageSha256: hash(read(board, 'package.json')),
         generatedHeadersSha256: hash(JSON.stringify(headers)), generatedHeaderCount: headers.length,
+        ...(mode === 'blockly' ? { sketchInputs: captureSketchInputs(path.join(root, 'src')).manifest } : {}),
         ...(workspace ? { workspace } : {}) };
     return { ...body, digest: hash(JSON.stringify(body)) };
 }
@@ -146,4 +148,21 @@ function confirmBuildSource(config) {
     return current;
 }
 
-module.exports = { captureBuildSource, confirmBuildSource, sourceManifest };
+/** The copied compile workspace must match the frozen project source boundary.
+ * Keep physical file state private to this compile; mtime is not portable source
+ * identity, but detects mutation-and-restore while a compiler is running.
+ */
+function confirmPreparedBuildSource(config, previous) {
+    if (config.sourceCapture === undefined || config.sourceCapture.mode !== 'blockly') return undefined;
+    const root = fs.realpathSync(config.currentProjectPath);
+    const temporary = path.join(root, '.temp');
+    if (fs.realpathSync(temporary) !== temporary) fail('Prepared sketch cannot traverse implicit links.');
+    const current = captureSketchInputs(path.join(temporary, 'sketch'));
+    if (JSON.stringify(current.manifest) !== JSON.stringify(config.sourceCapture.sketchInputs)) {
+        fail('Prepared Arduino sketch inputs differ from the captured project sources.');
+    }
+    if (previous && JSON.stringify(current) !== JSON.stringify(previous)) fail('Prepared Arduino sketch inputs changed during compilation.');
+    return current;
+}
+
+module.exports = { captureBuildSource, confirmBuildSource, confirmPreparedBuildSource, sourceManifest };

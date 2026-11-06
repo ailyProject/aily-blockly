@@ -102,6 +102,7 @@ export class ChildToolProcessService implements OnDestroy {
     string,
     Set<(message: Record<string, unknown>) => void>
   >();
+  private readonly runtimeExitListeners = new Map<string, Set<() => void>>();
   private readonly pendingProcessMessages = new Map<
     string,
     Record<string, unknown>[]
@@ -418,13 +419,36 @@ export class ChildToolProcessService implements OnDestroy {
     };
   }
 
-  async sendMessage(toolId: string, message: Record<string, unknown>): Promise<void> {
+  /** Bind sends and physical exit to the currently leased Runtime generation. */
+  bindRuntimeGeneration(toolId: string, onExit: () => void): {
+    dispose: () => void;
+    sendMessage: (message: Record<string, unknown>) => Promise<void>;
+  } {
+    const config = this.requireConfig(toolId);
+    const session = this.sessions.get(config.id);
+    if (!session?.running || !session.streamId) {
+      throw new Error(`Child tool Runtime is not running: ${toolId}`);
+    }
+    const streamId = session.streamId;
+    const listeners = this.runtimeExitListeners.get(streamId) ?? new Set<() => void>();
+    listeners.add(onExit);
+    this.runtimeExitListeners.set(streamId, listeners);
+    return {
+      dispose: () => {
+        listeners.delete(onExit);
+        if (listeners.size === 0) this.runtimeExitListeners.delete(streamId);
+      },
+      sendMessage: message => this.sendMessage(toolId, message, streamId),
+    };
+  }
+
+  async sendMessage(toolId: string, message: Record<string, unknown>, streamId?: string): Promise<void> {
     const config = this.requireConfig(toolId);
     if (!config.runtime?.processMessagePort) {
       throw new Error(`Child tool does not declare a process message port: ${toolId}`);
     }
     const session = this.sessions.get(config.id);
-    if (!session?.running || !session.streamId) {
+    if (!session?.running || !session.streamId || (streamId && session.streamId !== streamId)) {
       throw new Error(`Child tool process message port is not ready: ${toolId}`);
     }
     const result = await window['childToolSession']?.sendMessage?.({
@@ -449,6 +473,7 @@ export class ChildToolProcessService implements OnDestroy {
     this.removeHostShutdownListener = null;
     this.processMessageListeners.clear();
     this.pendingProcessMessages.clear();
+    this.runtimeExitListeners.clear();
     for (const toolId of this.prewarmReleaseTimers.keys()) {
       this.clearPrewarmRelease(toolId);
     }
@@ -1051,6 +1076,7 @@ export class ChildToolProcessService implements OnDestroy {
   ): void {
     if (!output) return;
     if (session.streamId !== streamId) {
+      if (isCmdTerminalOutput(output)) this.notifyRuntimeExit(streamId);
       this.log(config, 'ignored stale backend event', {
         streamId,
         type: output.type,
@@ -1130,6 +1156,7 @@ export class ChildToolProcessService implements OnDestroy {
         session,
         expectedStopReason ? undefined : reason,
       );
+      if (isCmdTerminalOutput(output)) this.notifyRuntimeExit(streamId);
       void window['childToolSession']?.unregister?.({
         toolId: config.id,
         streamId
@@ -1177,12 +1204,20 @@ export class ChildToolProcessService implements OnDestroy {
   private reconcileSharedRuntimeStates(payload: unknown): void {
     if (this.hostShuttingDown) return;
     const runtimes = Array.isArray(payload) ? payload as SharedChildToolRuntime[] : [];
+    for (const runtime of runtimes) {
+      if (runtime?.running === false && runtime.streamId && runtime.exit) {
+        this.notifyRuntimeExit(runtime.streamId);
+      }
+    }
     for (const [toolId, session] of this.sessions) {
       const config = getChildToolConfig(toolId);
       if (!config) continue;
       const exited = runtimes.find(runtime => runtime?.toolId === toolId
         && !!session.streamId && runtime.streamId === session.streamId && runtime.running === false);
       if (exited) {
+        // A command liveness observation can race the physical terminal event.
+        // Keep the original stream registered for callers waiting on that event.
+        if (!exited.exit && this.runtimeExitListeners.has(session.streamId)) continue;
         this.handleProcessOutput(config, session, session.streamId, { ...exited.exit, type: 'runtime-exit' });
         continue;
       }
@@ -1197,6 +1232,12 @@ export class ChildToolProcessService implements OnDestroy {
         session.reconcilePromise = null;
       });
     }
+  }
+
+  private notifyRuntimeExit(streamId: string): void {
+    const listeners = this.runtimeExitListeners.get(streamId);
+    this.runtimeExitListeners.delete(streamId);
+    for (const listener of listeners ?? []) listener();
   }
 
   private ensureSessionStateListener(): void {

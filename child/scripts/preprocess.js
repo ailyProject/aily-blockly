@@ -11,7 +11,7 @@ const { createLibrarySourceFingerprint, createLibraryProjectionRecorder, writeLi
 const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDeliveryTicket } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
-const { confirmBuildSource } = require('./build-source-capture');
+const { confirmBuildSource, confirmPreparedBuildSource } = require('./build-source-capture');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
 const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json';
@@ -75,6 +75,7 @@ async function main() {
         invalidateBuildDeliveryTicket(config.currentProjectPath);
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
+        confirmPreparedBuildSource(config);
     } finally { workspace.release(); }
 }
 

@@ -63,11 +63,13 @@ function resourceLocation(location, source) {
 /** Hosts documents/leases/ports, never domain sessions or MCU state. The package
  * execution entry owns its existing Runtime and decides its own RPC schema. */
 class SubappBrowserExecutionHost {
-    constructor({ BrowserWindow, MessageChannelMain, timeoutMs = 10000, createServer, createViewDocument } = {}) {
+    constructor({ BrowserWindow, MessageChannelMain, timeoutMs = 10000, viewLoadTimeoutMs = timeoutMs, createServer, createViewDocument } = {}) {
         this.BrowserWindow = BrowserWindow; this.MessageChannelMain = MessageChannelMain;
         this.createViewDocument = createViewDocument || (input => createEmbeddedViewDocument({ BrowserWindow, ...input }));
         if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 30000) throw fault('Invalid execution deadline');
+        if (!Number.isInteger(viewLoadTimeoutMs) || viewLoadTimeoutMs < 10 || viewLoadTimeoutMs > 30000) throw fault('Invalid Browser View load deadline');
         this.timeoutMs = timeoutMs;
+        this.viewLoadTimeoutMs = viewLoadTimeoutMs;
         this.createServer = createServer || (entry => createPackagedRendererServer({ indexFile: entry,
             crossOriginIsolated: true, strictPublicFiles: true, contentSecurityPolicy: CSP }));
         this.runtimes = new Map(); this.closed = false;
@@ -204,10 +206,10 @@ class SubappBrowserExecutionHost {
         } catch (error) { state.failed = true; throw error; }
     }
 
-    bounded(promise, label) {
+    bounded(promise, label, timeoutMs = this.timeoutMs) {
         let timer;
         return Promise.race([promise, new Promise((_, reject) => {
-            timer = setTimeout(() => reject(fault(`${label} deadline exceeded`)), this.timeoutMs);
+            timer = setTimeout(() => reject(fault(`${label} deadline exceeded`)), timeoutMs);
         })]).finally(() => clearTimeout(timer));
     }
 
@@ -369,7 +371,8 @@ class SubappBrowserExecutionHost {
         (state.views ||= new Set()).add(win);
         win.once('closed', () => state.views.delete(win));
         try {
-            await this.bounded(win.loadURL(new URL(state.source.surfaces[input.surface], state.resourceBaseUrl).href), 'Browser View load');
+            await this.bounded(win.loadURL(new URL(state.source.surfaces[input.surface], state.resourceBaseUrl).href),
+                'Browser View load', this.viewLoadTimeoutMs);
             const connected = await this.connect({ ...input, target: win.webContents, purpose: 'view' });
             const binding = state.connections.get(connected.connectionId); binding.window = win;
             win.on('close', event => {
