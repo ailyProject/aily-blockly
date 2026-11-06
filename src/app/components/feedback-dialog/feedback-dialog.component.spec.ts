@@ -46,11 +46,14 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
   let previousPlatform: unknown;
   let previousPath: unknown;
   let previousFs: unknown;
+  let previousElectronAPI: unknown;
 
   beforeEach(async () => {
     previousPlatform = (window as any).platform;
     previousPath = (window as any).path;
     previousFs = (window as any).fs;
+    previousElectronAPI = (window as any).electronAPI;
+    (window as any).electronAPI = undefined;
     (window as any).platform = { type: 'win32' };
     localStorage.removeItem('feedback_dialog_draft');
 
@@ -135,6 +138,7 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
   });
 
   afterEach(() => {
+    (window as any).electronAPI = previousElectronAPI;
     localStorage.removeItem('feedback_dialog_draft');
     if (previousPlatform === undefined) {
       delete (window as any).platform;
@@ -151,6 +155,37 @@ describe('FeedbackDialogComponent diagnostics submission', () => {
     } else {
       (window as any).fs = previousFs;
     }
+  });
+
+  it('includes current window, displays and selected/running Chat versions in every feedback type', async () => {
+    (window as any).electronAPI = {
+      iWindow: { diagnostics: async () => ({ window: { maximized: false, fullScreen: true,
+        normalBounds: { x: 100, y: 60, width: 1200, height: 780 } },
+        displays: [{ scaleFactor: 2.25, bounds: { width: 1707, height: 960 } }] }) },
+      subapps: { diagnostics: async () => ({ ailyChat: { installed: true, installedVersion: '0.1.33',
+        selectedVersion: '0.1.33', selectedSource: 'next', running: true, runningVersion: '0.1.32', runningSource: 'portable' } }) },
+    };
+    const component = createComponent();
+    for (const type of ['bug', 'feature', 'other', 'library', 'build&upload']) {
+      component.feedbackType = type;
+      const content = await (component as any).buildIssueContent('2026-11-06T03:00:00Z');
+      expect(content).toContain('| Installed | true |');
+      expect(content).toContain('| Selected Version | 0.1.33 |');
+      expect(content).toContain('| Running Version | 0.1.32 |');
+      expect(content).toContain('"scaleFactor": 2.25');
+      expect(content).toContain('"fullScreen": true');
+    }
+  });
+
+  it('preserves explicit uninstalled state and tolerates failed diagnostics IPC', async () => {
+    (window as any).electronAPI = {
+      iWindow: { diagnostics: async () => { throw new Error('host unavailable'); } },
+      subapps: { diagnostics: async () => ({ ailyChat: { installed: false, running: false } }) },
+    };
+    const content = await (createComponent() as any).buildRuntimeDiagnostics();
+    expect(content).toContain('| Installed | false |');
+    expect(content).toContain('| Selected Version | null |');
+    expect(content).toContain('```json\nnull\n```');
   });
 
   it('submits feature feedback with one environment timestamp and no private fields in content', async () => {

@@ -441,7 +441,7 @@ export class ElectronService {
 
   /**
    * 检查窗口是否最大化（同步方法，用于模板绑定）
-   * 注意：这里实际检测的是窗口最大化状态，而非全屏状态
+   * 全屏、最大化或覆盖工作区的异常普通窗口均显示还原按钮
    * @returns boolean
    */
   isWindowFullScreen(): boolean {
@@ -450,7 +450,7 @@ export class ElectronService {
     }
 
     try {
-      return window['iWindow'].isMaximized();
+      return window['iWindow'].getState?.()?.canRestore ?? window['iWindow'].isMaximized();
     } catch (error) {
       console.error('Check window maximized error:', error);
       return false;

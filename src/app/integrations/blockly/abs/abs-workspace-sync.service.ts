@@ -785,10 +785,12 @@ export class AbsWorkspaceSyncService {
       if (requestPriority) {
         try { baseline = await store.load(binding!.intentGeneration!); }
         catch (error) {
-          if ((error as any)?.code === 'ABS_BASELINE_MISSING') throw new AbsSyncError('ABS_INTENT_GENERATION_UNKNOWN',
-            'The requested intent generation does not exist. The current committed baseline is healthy; do not rebuild it or create a project copy.', undefined, [],
-            { reason: 'unknown-intent-generation', hint: 'Read the original trusted intent binding and correct the request. Never silently bind an old candidate to the current document.' });
-          throw error;
+          if (!(error instanceof AbsSyncError) || error.code !== 'ABS_BASELINE_MISSING') throw error;
+
+          throw new AbsSyncError('ABS_INTENT_GENERATION_UNKNOWN', 'The requested intent generation does not exist; the current committed baseline is readable.', undefined, [], {
+            reason: 'intent-generation-unknown', received: binding!.intentGeneration!, expected: committed.map.generation,
+            hint: 'Preserve the candidate and check its original verified generation. The current generation is context, not a replacement intent. Do not reload, fork or repair the healthy baseline to resolve this reference error.',
+          });
         }
       }
       this.assertMirrors(committed, expected, false);

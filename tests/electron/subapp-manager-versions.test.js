@@ -1338,3 +1338,28 @@ test('offline activation rejects a damaged cached archive and preserves the sele
   // Drain a catalog-triggered retry before deleting the fixture.
   await manager.downloadUpdate({ id: ID }).catch(() => {});
 });
+
+
+test('feedback diagnostics report missing Chat without network or background installation', t => {
+  const f = fixture(t);
+  assert.deepEqual(f.manager.diagnostics(), { ailyChat: {
+    installed: false, installedVersion: null, selectedVersion: null, selectedSource: null,
+    running: false, runningVersion: null, runningSource: null,
+  } });
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.downloads.length, 0);
+});
+
+test('feedback distinguishes selected installed Chat from an older running runtime', t => {
+  const f = fixture(t, { managerOptions: { getRunningSubappConfig: () => ({ version: '0.1.30',
+    env: { AILY_SUBAPP_SOURCE: 'portable' } }) } });
+  writeRunnablePackage(packagePathFor(f.rootDir, PACKAGE), '0.1.33');
+  const chat = f.manager.diagnostics().ailyChat;
+  assert.equal(chat.installed, true);
+  assert.equal(chat.installedVersion, '0.1.33');
+  assert.equal(chat.selectedVersion, '0.1.33');
+  assert.equal(chat.selectedSource, 'legacy-npm');
+  assert.equal(chat.runningVersion, '0.1.30');
+  assert.equal(chat.runningSource, 'portable');
+  assert.equal(f.calls.length, 0);
+});

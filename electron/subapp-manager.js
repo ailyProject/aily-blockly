@@ -2595,6 +2595,25 @@ function createSubappManager(options = {}) {
     return state;
   }
 
+  function diagnostics() {
+    // Read local installation selection only: feedback must never fetch, install or activate updates.
+    const entry = { id: 'aily-chat', package: '@aily-project/subapp-aily-chat', version: '0.0.0',
+      namespace: 'AILY_CHAT', titleKey: 'AILY_CHAT.NAME', app: {} };
+    const selected = readInstalledState(rootDir, entry);
+    const running = options.getRunningSubappConfig?.(entry.id);
+    return {
+      ailyChat: {
+        installed: selected.installed,
+        installedVersion: selected.installed ? selected.installedVersion : null,
+        selectedVersion: selected.config?.version || null,
+        selectedSource: selected.config?.env?.AILY_SUBAPP_SOURCE || null,
+        running: Boolean(running),
+        runningVersion: running?.version || null,
+        runningSource: running?.env?.AILY_SUBAPP_SOURCE || null,
+      },
+    };
+  }
+
   function updateKey(entry) {
     return `${entry.id}@${entry.version}`;
   }
@@ -3039,6 +3058,7 @@ function createSubappManager(options = {}) {
       return resolveIndexUrl();
     },
     list,
+    diagnostics,
     install: (payload) => mutate('install', payload),
     reinstall: (payload) => mutate('reinstall', payload),
     repair,
@@ -3158,6 +3178,7 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
     if (launch?.owner === event.sender.id) launch.release();
   });
 
+  ipcMain.handle('subapp-manager-diagnostics', () => defaultManager.diagnostics());
   ipcMain.handle('subapp-manager-list', (_event, payload = {}) => defaultManager.list(payload));
   ipcMain.handle('subapp-manager-install', handleMutation('install'));
   ipcMain.handle('subapp-manager-reinstall', handleMutation('reinstall'));
