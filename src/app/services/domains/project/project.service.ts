@@ -73,6 +73,7 @@ import { captureProjectDiskRecovery, type ProjectRecoveryFragment } from './proj
 import { ProjectRecoveryTargets, type SavedRecoveryTargetAdmission, type SavedRecoveryTargetReload } from './project-recovery-targets';
 import type { ProjectSaveDispatchResult } from './ports/project-application.port';
 import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, type ProjectSaveReceiptResponse } from './project-save-receipts';
+import { ProjectRecoveryRequests } from './project-recovery-request';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
 import { resolveVariantPaths } from '../../../utils/board-variant.utils';
@@ -1667,7 +1668,7 @@ export class ProjectService {
       // to the real loader. Requested example field edits cannot be silently lost.
       if (options.deferToLoad && (!fieldUpdates || Object.keys(fieldUpdates).length === 0)) return deferred;
       throw Object.assign(new Error('Project Data was prepared but the original ABI/ABS generation was retained. '
-        + 'Open this exact project for verified load normalization, or inspect it with project_recover and use its preserving repair or independent fork. '
+        + 'Recover this exact project through its verified same-project load normalization or preserving repair. Recovery versions remain inside this project. '
         + 'Requested field changes were not saved; do not delete maps/locks or report initialization as committed.'), deferred,
         { recovery: { tool: 'project_recover', arguments: { action: 'inspect', project: projectPath }, retryInstallation: false } });
     }
@@ -2529,11 +2530,23 @@ export class ProjectService {
     const receipts = this.failedLoadRecoveries ??= new Map();
     const original = receipts.get(requestId);
     if (original) return original.path === path ? original.task : Promise.resolve({ ok: false, operation: 'abs_recovery', code: 'PROJECT_RECOVERY_CONTEXT_STALE', project: path });
-    if (observe) return Promise.resolve({ ok: false, operation: 'abs_recovery', project: path, recoveryState: 'unknown', code: 'PROJECT_RECOVERY_REQUEST_UNKNOWN',
-      message: 'This host has no receipt for that original request. Inspect the current project; no recovery was replayed.' });
     const task = (async () => {
       const receipt = { version: 2, requestId, action: 'recover_project', candidateApplied: false };
+      const current = () => {
+        if (this.currentProjectPath !== path) throw new Error('The original recovery project is no longer current.');
+      };
+      const journal = new ProjectRecoveryRequests(path, current);
+      let owned = false;
+      const unknown = () => ({ ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'unknown',
+        code: 'PROJECT_RECOVERY_REQUEST_UNKNOWN', candidateApplied: false,
+        loadStatus: this.getBlocklyProjectLoadStatus(path),
+        message: 'The original recovery has no completed receipt. Inspect the current project; no recovery was replayed.' });
       try {
+        const previous = await journal.observe(requestId);
+        if (previous.result) return { ...previous.result, recoveryObservation: { durable: true, resultKnown: true } };
+        if (observe || previous.started || !await journal.begin(requestId)) return unknown();
+        owned = true;
+        const result = await (async () => {
         if (recoverReadyProject) {
           const result = await recoverReadyProject();
           return { ...result, operation: 'abs_recovery', project: path, receipt, recoveryState: result['ready'] ? 'completed' : 'failed', candidateApplied: false };
@@ -2557,13 +2570,21 @@ export class ProjectService {
         const result = await this.reloadSavedRecoveryTarget(path);
         return { ...result, operation: 'abs_recovery', receipt, recoveryState: result.ready ? 'completed' : 'failed', candidateApplied: false,
           ...(result.ready ? {} : { code: 'PROJECT_RECOVERY_LOAD_FAILED', message: result.loadStatus?.error ?? result.message ?? 'The same project is not ready.' }) };
+        })();
+        await journal.complete(requestId, result);
+        return result;
       } catch (error) {
-        return { ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'failed', candidateApplied: false,
+        const result = { ok: false, operation: 'abs_recovery', project: path, receipt, recoveryState: 'failed', candidateApplied: false,
           code: typeof (error as any)?.code === 'string' ? (error as any).code : 'PROJECT_RECOVERY_LOAD_FAILED',
           message: error instanceof Error ? error.message : String(error) };
+        if (owned) {
+          try { await journal.complete(requestId, result); }
+          catch { return { ...unknown(), code: 'PROJECT_RECOVERY_RECEIPT_UNCERTAIN' }; }
+        }
+        return result;
       }
     })();
-    receipts.set(requestId, { path, task });
+    if (!observe) receipts.set(requestId, { path, task });
     return task;
   }
 
@@ -2635,11 +2656,11 @@ export class ProjectService {
       unsavedLibraryChanges: state.dirty || state.busy, libraryState: { dirty: state.dirty, busy: state.busy } };
   }
 
-  /** Only a verified independently copied target can reload after managed
-   * dependency installation while its initial native load is incomplete. */
+  /** Reload the exact current saved source after fresh byte-bound admission;
+   * persistent history never replaces this per-operation verification. */
   async reloadSavedRecoveryTarget(path = this.currentProjectPath): Promise<SavedRecoveryTargetReload> {
     const before = await this.inspectSavedRecoveryTarget(path);
-    if (!before) throw Object.assign(new Error('No current saved-recovery target capability exists; inspect and fork the current source first.'),
+    if (!before) throw Object.assign(new Error('No current saved-recovery admission exists; inspect and recover this same project from verified current content.'),
       { code: 'PROJECT_RECOVERY_TARGET_UNVERIFIED' });
     if (before.unsavedLibraryChanges) throw new Error('Pending library-manager edits remain; recovery does not discard or save them implicitly.');
     const lease = this.acquireProjectLifecycle([path]);

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 import { createRecoveredAgentHarness } from '../../fixtures/abs-agent-tools.mjs'
+import { prepareCustomerLocalLibrary, installCustomerLocalLibrary } from './customer-local-library.mjs'
+import { readCustomerNativeDocument, runCustomerStateLayoutOperations } from './customer-state-layout.mjs'
 
 export function indexCustomerProject(document) {
   const blocks = new Map()
@@ -130,6 +134,10 @@ export async function runCustomerNativeComponentCase({ page, project, modules, p
 const safeResult = result => ({ ok: result?.ok, code: result?.code, generation: result?.generation,
   error: typeof result?.error === 'string' ? result.error.slice(0, 1000) : undefined,
   publication: result?.publication && { status: result.publication.status, generation: result.publication.generation },
+  candidateHash: result?.receipt?.candidate?.hash,
+  runtimeSync: result?.runtimeSync && { ok: result.runtimeSync.ok, ready: result.runtimeSync.ready,
+    requiresReload: result.runtimeSync.requiresReload },
+  stateVerification: result?.stateVerification,
   validation: result?.receipt?.validation ?? result?.validation,
   applyVerification: result?.applyVerification && { ok: result.applyVerification.ok },
   diagnostic: result?.diagnostic && { phase: result.diagnostic.phase, reason: result.diagnostic.reason,
@@ -140,16 +148,34 @@ const safeResult = result => ({ ok: result?.ok, code: result?.code, generation: 
     runtimeRecovery: result.diagnostics.runtimeRecovery },
   nextAction: result?.nextAction && { tool: result.nextAction.tool, action: result.nextAction.input?.action } })
 
-export async function runCustomerBaselineCase({ project, suite, home, appData, agentRoot, hostPid, page, phase, evidence, originalDocument }) {
+export async function runCustomerBaselineCase({ project, suite, home, appData, agentRoot, hostPid, page, phase, evidence, originalDocument,
+  exerciseSelfOperations = false, exerciseDependencyOperations = false }) {
   const profileRoot = path.join(suite, 'agent-profile'), absPath = path.join(project, 'project.abs')
+  const localLibrary = exerciseDependencyOperations ? await prepareCustomerLocalLibrary({ suite, project }) : undefined
+  const observedMenuIds = new Set()
   Object.assign(process.env, { AILY_LIBRARY_HOST_PID: String(hostPid), AILY_APPDATA_PATH: appData,
     PI_CODING_AGENT_DIR: profileRoot, HOME: home, USERPROFILE: home, PI_OFFLINE: '1' })
   const same = (a, b) => typeof a === 'string' && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
   const harness = await createRecoveredAgentHarness({ agentRoot, sourceProject: project, globalRoot: suite, profileRoot,
+    async configureRegistry(context) {
+      if (!exerciseDependencyOperations) return
+      for (const [relative, name] of [
+        ['library/lib-install-local', 'registerLibInstallLocal'], ['project/blocks-tidy', 'registerBlocksTidy'],
+        ['app-window/app-menu-list', 'registerAppMenuList'], ['app-window/app-menu-execute', 'registerAppMenuExecute']
+      ]) {
+        const module = await import(pathToFileURL(path.join(agentRoot, 'dist/blockly/tools/registrars', relative + '.js')).href)
+        module[name](context)
+      }
+    },
     permissionApproval(request) {
+      if (request.toolName === 'app_menu_list') return exerciseDependencyOperations
+      if (request.toolName === 'app_menu_execute') return observedMenuIds.has(request.input?.itemId)
       if (['read', 'edit'].includes(request.toolName)) return same(request.input?.path, absPath)
+      if (request.toolName === 'lib_install_local') return !!localLibrary
+        && same(request.input?.project, project) && same(request.input?.source, localLibrary.source)
       return same(request.input?.project, project)
-        && ['project_recover', 'project_save', 'abs_export', 'abs_validate', 'abs_apply'].includes(request.toolName)
+        && ['project_recover', 'project_save', 'abs_export', 'abs_validate', 'abs_apply',
+          ...(exerciseDependencyOperations ? ['blocks_tidy', 'blocks_set_state'] : [])].includes(request.toolName)
     } })
   const calls = evidence.tools = []
   const call = async (name, input) => {
@@ -158,6 +184,7 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
     const after = await page.evaluate(() => structuredClone(window.__customerBaselineNative))
     const observations = after.observations.slice(before.observations.length)
     const entry = { tool: name, action: input.action, elapsedMs: Date.now() - started, isError: response.isError,
+      ...(response.isError ? { failureText: response.text.slice(0, 2500) } : {}),
       result: safeResult(response.structured), native: {
         realms: after.realms - before.realms, snapshots: after.snapshotCalls - before.snapshotCalls,
         workspaceJsonCalls: after.workspaceJsonCalls - before.workspaceJsonCalls,
@@ -174,46 +201,101 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
     return response.structured
   }
   try {
-    await phase('inspect-copied-scope')
-    let inspection = (await call('project_recover', { project, action: 'inspect' })).structured
-    let exported
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const rebind = inspection?.diagnostics?.rebind?.token
-      const response = await call('abs_export', { project, ...(rebind ? { rebind } : {}) })
-      if (!response.isError && response.structured?.ok === true) { exported = response.structured; break }
-      inspection = (await call('project_recover', { project, action: 'inspect' })).structured
-      const next = inspection?.nextAction
-      assert.ok(next?.tool === 'project_recover' && same(next.input?.project, project)
-        && ['recover_project', 'recover_runtime', 'observe_project', 'observe_runtime', 'refresh', 'repair'].includes(next.input?.action),
-      'Blocked export offered no verified same-project continuation; no guard was bypassed')
-      requireSuccess(await call(next.tool, next.input), 'Offered recovery')
-    }
+    await phase('automatically-bind-copied-scope')
+    const exported = requireSuccess(await call('abs_export', { project }), 'Automatic copied-scope export')
     assert.ok(exported?.generation, 'Export must supply the actual current generation')
     const noOp = requireSuccess(await call('abs_validate', { project, generation: exported.generation, absPath }), 'Whole exported candidate validation')
     assert.equal((noOp.receipt?.validation ?? noOp.validation)?.ok, true)
     const source = await fs.readFile(absPath, 'utf8')
     const lines = source.split(/\r?\n/)
     const candidate = lines.map((line, index) => ({ line, index,
-      match: line.trim().startsWith('#') ? null : /\bcpp_comment\(("(?:\\.|[^"\\])*")/.exec(line) }))
+      match: line.trim().startsWith('#') ? null : /\b(cpp_comment|text)\(("(?:\\.|[^"\\])*")/.exec(line) }))
       .find(item => item.match && lines.filter(line => line === item.line).length === 1
         && [...indexCustomerProject(originalDocument).values()].flatMap(block => Object.values(block.fields ?? {}))
-          .filter(value => value === JSON.parse(item.match[1])).length === 1)
-    assert.ok(candidate, 'A unique actual comment is required for a legitimate minimal derived edit')
+          .filter(value => value === JSON.parse(item.match[2])).length === 1)
+    assert.ok(candidate, 'A unique actual string field is required for a legitimate minimal derived edit')
     await call('read', { path: absPath, offset: candidate.index + 1, limit: 1 })
-    const oldValue = JSON.parse(candidate.match[1]), newValue = oldValue + ' [customer787-baseline-roundtrip]'
-    const newLine = candidate.line.replace(candidate.match[0], 'cpp_comment(' + JSON.stringify(newValue))
-    requireSuccess(await call('edit', { path: absPath, edits: [{ oldText: candidate.line, newText: newLine }] }), 'Actual provenanced comment edit', false)
+    const oldValue = JSON.parse(candidate.match[2]), newValue = oldValue + ' [customer-baseline-roundtrip]'
+    const newLine = candidate.line.replace(candidate.match[0], candidate.match[1] + '(' + JSON.stringify(newValue))
+    const intendedCandidateHash = 'sha256:' + createHash('sha256').update(source.replace(candidate.line, newLine)).digest('hex')
+    requireSuccess(await call('edit', { path: absPath, edits: [{ oldText: candidate.line, newText: newLine }] }), 'Actual provenanced field edit', false)
+    let expectedDocument
+    if (exerciseDependencyOperations) {
+      evidence.dependencyOperations = { actualSdkToolChain: true, fabricatedToolResults: false,
+        originalGeneration: exported.generation, originalCandidateHash: intendedCandidateHash,
+        actualNpmExecuted: false, customerLifecycleScriptsExecuted: false }
+      const beforeInstall = await readCustomerNativeDocument(page, project)
+      await phase('install-local-library-through-real-sdk-tool')
+      evidence.dependencyOperations.library = await installCustomerLocalLibrary({ fixture: localLibrary,
+        call, page, readCandidate: () => fs.readFile(harness.history.mapWorkspaceReadPath(absPath)),
+        getGuardSnapshot: () => harness.guard.snapshot(project),
+        candidateHash: intendedCandidateHash, intentGeneration: exported.generation })
+      evidence.dependencyOperations.actualNpmExecuted = true
+      evidence.dependencyOperations.candidateBackup = evidence.dependencyOperations.library.candidateBackup
+      assert.deepEqual(await readCustomerNativeDocument(page, project), beforeInstall,
+        'Installing an unused fixture library must preserve the complete native document')
+      await phase('validate-original-candidate-after-local-library-runtime-ready')
+      const continued = requireSuccess(await call('abs_validate', { project, generation: exported.generation, absPath }),
+        'Original candidate after actual dependency/runtime synchronization')
+      assert.equal(continued.receipt?.candidate?.hash, intendedCandidateHash,
+        'Runtime synchronization must not substitute the exported saved canvas for the original candidate')
+      evidence.dependencyOperations.originalCandidateValidatedAcrossRuntimeChange = true
+      expectedDocument = await runCustomerStateLayoutOperations({ page, project, call, phase, evidence })
+    }
+    if (exerciseSelfOperations || exerciseDependencyOperations) {
+      await phase('save-current-canvas-with-unapplied-draft')
+      const saved = requireSuccess(await call('project_save', { project }), 'Canvas save while original candidate is pending')
+      assert.equal(saved.workflowVerification?.candidateApplied, false, 'Saving the current canvas cannot claim the draft applied')
+      await phase('read-current-projection-without-discarding-draft')
+      requireSuccess(await call('abs_export', { project }), 'Projection read with retained original candidate')
+      evidence.cases.push({ name: 'edit-save-export-continue-original-candidate', ok: true, automatic: true })
+    }
     const validated = requireSuccess(await call('abs_validate', { project, generation: exported.generation, absPath }), 'Whole derived candidate validation')
     assert.equal((validated.receipt?.validation ?? validated.validation)?.ok, true)
+    assert.equal(validated.receipt?.candidate?.hash, intendedCandidateHash, 'Validation must use the retained edited candidate, not the saved canonical view')
     const applied = requireSuccess(await call('abs_apply', { project, generation: exported.generation, absPath }), 'Whole derived candidate application')
     assert.equal(applied.publication?.status, 'COMMITTED')
     assert.equal(applied.applyVerification?.ok, true)
+    assert.equal(applied.receipt?.candidate?.hash, intendedCandidateHash,
+      'Application must use the same original candidate through every system-owned change')
+    if (exerciseDependencyOperations) {
+      evidence.dependencyOperations.originalCandidateApplied = true
+      evidence.cases.push({ name: 'edit-install-runtime-tidy-state-save-export-continue-original-candidate', ok: true,
+        actualNpmExecuted: true, customerLifecycleScriptsExecuted: false })
+    }
     requireSuccess(await call('project_save', { project }), 'Project save')
+    if (exerciseDependencyOperations) {
+      const menu = requireSuccess(await call('app_menu_list', {}), 'Actual host menu inspection')
+      const flatten = items => items.flatMap(item => [item, ...flatten(item.children ?? [])])
+      for (const action of ['project-save', 'project-save-as']) {
+        const item = flatten(menu.items).find(item => item.action === action)
+        assert.ok(item && item.automationBlocked, 'The actual menu must advertise its candidate-aware automation boundary')
+        observedMenuIds.add(item.id)
+        const rejected = await call('app_menu_execute', { itemId: item.id, confirm: true })
+        assert.equal(rejected.structured?.commandDispatched, false)
+        assert.equal(rejected.structured?.requiresUserAction, false)
+        assert.equal(rejected.structured?.code, action === 'project-save-as'
+          ? 'PROJECT_RECOVERY_IN_PLACE_REQUIRED' : 'PROJECT_SAVE_REQUIRES_TOOL')
+      }
+      evidence.cases.push({ name: 'menu-cannot-bypass-candidate-save-or-create-recovery-project', ok: true })
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const rejected = await call('project_recover', { project, action: 'fork', requestId: randomUUID() })
+      assert.equal(rejected.structured?.code, 'PROJECT_RECOVERY_IN_PLACE_REQUIRED')
+      assert.equal(rejected.structured?.commandDispatched, false)
+    }
+    const projects = []
+    for (const entry of await fs.readdir(suite, { withFileTypes: true })) if (entry.isDirectory()) {
+      try { if ((await fs.stat(path.join(suite, entry.name, 'project.abi'))).isFile()) projects.push(entry.name) }
+      catch (error) { if (error.code !== 'ENOENT') throw error }
+    }
+    assert.deepEqual(projects, ['project'], 'Automatic tool/recovery operations must not create another user project')
+    evidence.cases.push({ name: 'repeated-legacy-fork-rejected-with-no-new-projects', ok: true })
     await harness.settle()
     evidence.sdk = { actualSdkSession: true, fabricatedToolResults: false, llmInvoked: false,
       originalGeneration: exported.generation, publishedGeneration: applied.publication.generation,
-      derivedEdit: { kind: 'single-cpp-comment-field', originalLine: candidate.index + 1 },
+      derivedEdit: { kind: 'single-string-field', blockType: candidate.match[1], originalLine: candidate.index + 1 },
       helperScriptsExecuted: false }
-    return { oldValue, newValue }
-  } finally { await harness.dispose() }
+    return { oldValue, newValue, ...(expectedDocument ? { expectedDocument } : {}) }
+  } finally { evidence.sdkProof = harness.proof(); await harness.dispose() }
 }

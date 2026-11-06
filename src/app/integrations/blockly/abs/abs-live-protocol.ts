@@ -57,6 +57,7 @@ export function rejectAbsRuntime(operation: 'abs_validate' | 'abs_apply', curren
   const unavailable = !current;
   return {
     ok: false, operation, code: unavailable ? 'ABS_RUNTIME_NOT_READY' : 'ABS_RUNTIME_CONTRACT_STALE',
+    application: { status: 'NOT_STARTED' },
     publication: { status: 'NOT_COMMITTED' },
     diagnostic: { reason: unavailable ? 'library-runtime-unavailable' : 'library-runtime-changed' },
     message: unavailable ? 'The current library runtime is not ready; ABS was not applied.'

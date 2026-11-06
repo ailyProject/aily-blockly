@@ -103,7 +103,7 @@ export function fenceBlocklyWorkspaceInput(root: Element | undefined, options: {
     const key = event as KeyboardEvent;
     // Saving is admitted by the project coordinator, not Blockly editing.
     // Keep Ctrl/Cmd+S reachable so a quarantined canvas can offer its complete
-    // recovery copy; do not pass delete, undo, paste or other editing shortcuts.
+    // recovery of the current view; do not pass delete, undo, paste or other editing shortcuts.
     if ((key.ctrlKey || key.metaKey) && !key.altKey && !key.shiftKey && key.key?.toLowerCase() === 's') return;
     const target = event.target as Node | null;
     if (target === document || target === document.body || (target && root.contains(target))) block(event);

@@ -1,4 +1,4 @@
-import { inspectProjectDiskRecovery } from '@domain/project/public-api';
+import { inspectProjectDiskRecovery, inspectLegacyProjectRecovery } from '@domain/project/public-api';
 import { assertGenerationRequest } from '../../../integrations/blockly/abs/abs-generation-protocol';
 import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { openAbsHostStorage } from '../../../integrations/blockly/abs/abs-host-storage';
@@ -19,8 +19,8 @@ export function projectLoadFailureGuidance(project: string, status: FailedProjec
   };
 }
 
-/** A failed-load inspection does not read generation/private state or serialize
- * an incomplete canvas. It only offers a disk-primary copy of observed bytes. */
+/** A failed-load inspection never publishes a partial canvas or creates another
+ * project. History is discovery-only; recovery revalidates the current source. */
 export async function inspectFailedProjectLoad(project: string, loadStatus: FailedProjectLoadStatus,
   input: Record<string, unknown>, assertCurrent: () => void,
   inspectSavedTarget?: () => Promise<VerifiedSavedRecoveryTarget | null>) {
@@ -32,13 +32,17 @@ export async function inspectFailedProjectLoad(project: string, loadStatus: Fail
   let disk: Awaited<ReturnType<typeof inspectProjectDiskRecovery>>;
   let saved: VerifiedSavedRecoveryTarget | null = null;
   let lineage: Awaited<ReturnType<typeof readAbsRecoveryLineage>> = null;
+  let legacy: Awaited<ReturnType<typeof inspectLegacyProjectRecovery>> = null;
+  let lineageIssue: string | undefined;
   try {
     disk = await inspectProjectDiskRecovery(project, assertCurrent);
     assertCurrent(); saved = await inspectSavedTarget?.() ?? null; assertCurrent();
     if (window['fs']?.projectSyncStorageVersion === 2) {
-      lineage = await readAbsRecoveryLineage(await openAbsHostStorage(project, assertCurrent), project);
+      try { lineage = await readAbsRecoveryLineage(await openAbsHostStorage(project, assertCurrent), project); }
+      catch (error) { lineageIssue = typeof (error as any)?.code === 'string' ? (error as any).code : 'ABS_LINEAGE_INVALID'; }
       assertCurrent();
     }
+    if (!lineage) { legacy = await inspectLegacyProjectRecovery(project, assertCurrent); assertCurrent(); }
   }
   catch (error) {
     return { ok: false, operation: 'abs_recovery', project,
@@ -52,6 +56,7 @@ export async function inspectFailedProjectLoad(project: string, loadStatus: Fail
     pendingMutation: false, ...(independent ? { scope: 'saved-recovery-project', alreadyIndependent: true,
       recoveryTarget: { project, sourceProject: saved.sourceProject, abiHash: saved.abiHash, recoveryArchive: saved.recoveryArchive } }
       : {}), ...(lineage ? { lineage, alreadyIndependent: true } : {}),
+    ...(legacy ? { legacyRecovery: legacy } : {}), ...(lineageIssue ? { lineageIssue } : {}),
     offer: { action: 'recover_project', sameProject: true, candidateApplied: false } };
   const common = { operation: 'abs_recovery', project, requiresReload: false,
     receipt: { version: 2, requestId: input.requestId, action: 'inspect' }, diagnostics: { loadRecovery } };

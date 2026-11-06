@@ -43,7 +43,7 @@ export function assertAbsBaselineContext(map: AbsIdentityMap, current: AbsBaseli
       map.pageAbiHash !== current.currentPageAbiHash && 'page', map.savedAbiHash !== current.savedAbiHash && 'saved-abi'].filter(Boolean);
     throw new AbsSyncError('ABS_BASELINE_STALE', 'Project state changed since this ABS projection was prepared.', undefined, [], {
       reason: changed.join(','), hint: changed.some(part => part !== 'generation')
-        ? 'Preserve the canvas, disk ABS and AI candidate. Call project_recover(action="inspect") once and use only the offered token-bound preserving recovery (refresh/rebind/repair), or fork when the source lease cannot be owned. Then read the new baseline and reapply the intended edit. Do not overwrite files, export (including outFile) over competing edits, clear locks or force-bind a stale candidate to bypass concurrent edits.'
+        ? 'Preserve the canvas, disk ABS and original AI candidate. Known tool-driven publication changes are prepared automatically against the original intent. For an unresolved conflict, inspect once and follow only its verified same-project recovery. Recovery versions stay inside this project; do not create another project, ask the user to reopen a copy, delete locks or replace an unknown original intent with the current generation.'
         : 'Use the generation returned by the latest library/board operation. Preserve the draft and compare the current projection before preparing it again; do not reinstall libraries.' });
   }
 }

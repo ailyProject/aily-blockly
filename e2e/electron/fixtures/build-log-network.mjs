@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import https from 'node:https'
+import { isIP } from 'node:net'
 import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 
@@ -16,9 +17,16 @@ const headersFor = headers => {
  * to the real Services, drop one downstream SSE response before its first byte.
  * The upstream keeps running and is drained. No receipt/event/tool result is
  * generated, modified, cached or replayed here. Multiple user turns are allowed. */
-export async function createBuildLogNetwork({ upstreamOrigin }) {
+export async function createBuildLogNetwork({ upstreamOrigin, upstreamAddress }) {
   const base = new URL(upstreamOrigin)
   assert.ok(['http:', 'https:'].includes(base.protocol) && base.pathname === '/' && !base.username && !base.password)
+  if (upstreamAddress !== undefined) assert.ok(isIP(upstreamAddress), 'An explicitly pinned upstream must be an IP address')
+  const pinned = upstreamAddress ? { lookup(hostname, options, callback) {
+    assert.equal(hostname, base.hostname)
+    const family = isIP(upstreamAddress)
+    if (options?.all) callback(null, [{ address: upstreamAddress, family }])
+    else callback(null, upstreamAddress, family)
+  } } : {}
   const transport = base.protocol === 'https:' ? https : http
   const active = new Set(), tools = new Map(), requests = [], faults = [], failures = [], operations = new Map()
   let armed = false, capturedBuild
@@ -52,7 +60,7 @@ export async function createBuildLogNetwork({ upstreamOrigin }) {
         armed = false; drop = true
       }
       let dropped = false
-      const upstream = transport.request(new URL(url.pathname + url.search, base), { method: request.method, agent: false,
+      const upstream = transport.request(new URL(url.pathname + url.search, base), { method: request.method, agent: false, ...pinned,
         headers: { ...headersFor(request.headers), host: base.host, 'accept-encoding': 'identity' } }, reply => {
         const sse = String(reply.headers['content-type'] ?? '').includes('text/event-stream')
         const decoder = new StringDecoder('utf8')
@@ -92,6 +100,14 @@ export async function createBuildLogNetwork({ upstreamOrigin }) {
         reply.once('error', error => { failures.push({ code: 'upstream-response', networkCode: error.code }); response.destroy() })
       })
       active.add(upstream)
+      upstream.once('socket', socket => socket.once('connect', () => {
+        const peer = socket.remoteAddress?.replace(/^::ffff:/, '')
+        trace.upstreamAddress = peer
+        if (upstreamAddress && peer !== upstreamAddress) {
+          failures.push({ code: 'upstream-address-mismatch' })
+          upstream.destroy(new Error('The connection did not reach the explicitly pinned test server'))
+        }
+      }))
       upstream.once('close', () => active.delete(upstream))
       upstream.once('error', error => { failures.push({ code: 'upstream-request', networkCode: error.code }); response.destroy() })
       // A disconnected consumer never kills an accepted upstream model operation.
@@ -102,6 +118,7 @@ export async function createBuildLogNetwork({ upstreamOrigin }) {
   return { origin: `http://127.0.0.1:${server.address().port}`,
     armAfterBuildResult() { assert.equal(faults.length, 0); assert.equal(armed, false); armed = true },
     snapshot: () => ({ transparentRealUpstream: true, syntheticOutput: false, fabricatedToolResults: false,
+      ...(upstreamAddress ? { pinnedUpstreamAddress: upstreamAddress, tlsHostname: base.hostname } : {}),
       armed, capturedBuildRequestId: capturedBuild, requests: structuredClone(requests), faults: structuredClone(faults),
       failures: structuredClone(failures), operations: [...operations.values()].map(item => ({ ...item })),
       requestHashes: requests.map(item => sha(item.method + ' ' + item.path)) }),

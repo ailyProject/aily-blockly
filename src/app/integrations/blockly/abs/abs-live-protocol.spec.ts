@@ -91,6 +91,7 @@ describe('ABS live protocol admission', () => {
       const service = bridge(); service.projectService.getBlocklyLibraryRuntimeFingerprint.and.resolveTo(current);
       const result = await service.execute({ operation: 'abs_apply', params: request() });
       expect(result.code).toBe(current ? 'ABS_RUNTIME_CONTRACT_STALE' : 'ABS_RUNTIME_NOT_READY');
+      expect(result.application.status).toBe('NOT_STARTED');
       expect(result.publication.status).toBe('NOT_COMMITTED');
       expect(service.readAbsSource).not.toHaveBeenCalled();
       expect(service.absGenerationTools.execute).not.toHaveBeenCalled();

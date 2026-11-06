@@ -136,6 +136,22 @@ describe('failed-load recovery source isolation', () => {
     expect(writes).toEqual([]);
   });
 
+  it('discovers an old recovery archive after edits or relocation without making stale lineage a recovery gate', async () => {
+    const archive = `${source}/recovery-source-12345678-1234-1234-1234-123456789abc.json`;
+    files.set(archive, JSON.stringify({ version: 1, sourceProject: '/old/source', files: { 'project.abi': '{"pages":[]}' } }));
+    Object.assign(window['fs'], { projectSyncStorageVersion: 2,
+      openProjectSyncStorage: async () => ({ withLock: () => {}, read: async () => JSON.stringify({ version: 1,
+        project: '/old/recovery-location', sourceProject: '/old/source', operationId: 'old-recovery-request' }) }),
+      readDirSync: () => [{ name: archive.slice(source.length + 1), _isFile: true }],
+    });
+    const result: any = await inspectFailedProjectLoad(source, loadStatus, request, () => {});
+    expect(result.ok).toBeTrue(); expect(result.diagnostics.loadRecovery.lineageIssue).toBe('ABS_LINEAGE_INVALID');
+    expect(result.diagnostics.loadRecovery.legacyRecovery).toEqual(jasmine.objectContaining({
+      sourceProject: '/old/source', authority: 'discovery-only' }));
+    expect(result.nextAction.input).toEqual({ project: source, action: 'recover_project' });
+    expect(files.get(`${source}/project.abi`)).toBe(abi); expect(writes).toEqual([]);
+  });
+
   it('routes real failed-load inspect before readiness but keeps apply/save and active writers gated', async () => {
     const bridge: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
     const calls: string[] = [];

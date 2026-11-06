@@ -25,6 +25,7 @@ export * from './project-save-outcome';
 export * from './project-save-receipts';
 export * from './project-conflict';
 export { captureProjectDiskRecovery, inspectProjectDiskRecovery, type ProjectRecoveryFragment } from './project-disk-recovery';
+export { inspectLegacyProjectRecovery } from './project-recovery-backup';
 export * from './project-mode';
 export * from './project-document-json';
 export * from './legacy-shadow-identities';

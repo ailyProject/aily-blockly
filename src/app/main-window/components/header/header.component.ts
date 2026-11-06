@@ -41,7 +41,6 @@ import {
   type UiAutomationCommandResult,
   type UiAutomationMenuItem,
   type UiAutomationMenuListOptions,
-  HOST_EXIT_REQUIRES_USER_REASON,
   mainMenuAutomationRejection,
 } from '@integration/automation/public-api';
 import {
@@ -656,6 +655,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         const identity = this.headerMenuAutomationIdentity(item, index);
         const id = parentId ? `${parentId}/${identity}` : identity;
         const children = item.children?.length ? serialize(item.children, id) : [];
+        const rejection = mainMenuAutomationRejection(item.action, id);
         const entry: UiAutomationMenuItem = {
           id,
           label: this.translate.instant(item.name || item.action || id),
@@ -666,9 +666,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
           enabled: item.disabled !== true,
           visible,
           dangerous: item.action === 'app-exit',
-          automationBlocked: item.action === 'app-exit',
-          ...(item.action === 'app-exit'
-            ? { automationBlockedReason: HOST_EXIT_REQUIRES_USER_REASON }
+          automationBlocked: !!rejection,
+          ...(rejection
+            ? { automationBlockedReason: String(rejection['reason']) }
             : {}),
           mayPrompt: ['project-new', 'project-open', 'recent-project-open', 'project-close']
             .includes(item.action || ''),

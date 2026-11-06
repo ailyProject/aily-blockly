@@ -99,4 +99,18 @@ describe('Header project save as', () => {
     expect(header.projectService.saveAs).not.toHaveBeenCalled(); expect(header.message.warning).toHaveBeenCalledWith('AI busy');
   });
 
+  for (const action of ['project-save-as', 'project-save']) it(`routes automated ${action} before UI or document side effects`, async () => {
+    const itemId = `header/${action}~1`;
+    header.createHeaderMenuAutomationSnapshot = () => ({ sourceById: new Map([[itemId, { action }]]) });
+    header.showInRouter = () => true;
+    header.process = jasmine.createSpy('process').and.throwError('Automation must use the candidate-aware operation');
+    const result = await header.executeHeaderMenuAutomationItem(itemId, { confirm: true });
+    expect(result).toEqual(jasmine.objectContaining({ ok: false, commandDispatched: false, requiresUserAction: false,
+      code: action === 'project-save-as' ? 'PROJECT_RECOVERY_IN_PLACE_REQUIRED' : 'PROJECT_SAVE_REQUIRES_TOOL' }));
+    expect(result.nextAction.tool).toBe(action === 'project-save-as' ? 'project_recover' : 'project_save');
+    expect(header.process).not.toHaveBeenCalled();
+    expect(window['ipcRenderer'].invoke).not.toHaveBeenCalled();
+    expect(header.projectService.saveAs).not.toHaveBeenCalled();
+  });
+
 });

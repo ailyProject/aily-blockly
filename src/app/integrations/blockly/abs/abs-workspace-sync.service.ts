@@ -34,7 +34,7 @@ import { layoutAbsNewRoots } from './abs-new-root-layout';
 import { fenceBlocklyWorkspaceBumps } from '../../../editors/blockly-editor/services/blockly-workspace-layout-fence';
 import { AbsGenerationCandidateRequest, AbsGenerationEvidence, AbsGenerationValidation, generationEvidence } from './abs-generation-protocol';
 import { inspectAbsGeneration } from './abs-generation-inspection';
-import { inspectAbsGenerationForRecovery } from './abs-baseline-recovery';
+import { inspectAbsGenerationForRecovery, recoverAbsLocationMetadata } from './abs-baseline-recovery';
 import { describeAbsRepair, type AbsRecoveryArchive } from './abs-generation-repair';
 import { publishAbsSaveAs, type AbsSaveAsCapture } from './abs-save-as';
 import { planAbsVariableCreations } from './abs-variable-intents';
@@ -458,10 +458,15 @@ export class AbsWorkspaceSyncService {
       if (await store.inspectPending()) throw new AbsSyncError('ABS_TRANSACTION_PENDING', 'Recover the pending generation before exporting.');
       const savedCommit = !inspection && options.save ? await store.inspectCommitted() : null;
       const committed = inspection ? inspection.committed?.projection : options.save ? savedCommit?.projection : await store.loadCommitted();
+      // Explicit current-view saves/state operations own their canvas, not an
+      // unrelated pending ABS draft. Retain that exact draft/map in the normal
+      // immutable generation journal before publishing the current view.
+      const archiveCurrentDraft = !!committed && expected.abs !== null && expected.abs !== committed.abs
+        && (options.save === true || input?.generation !== undefined && input.generation !== null);
       if (input && (committed?.map.generation ?? null) !== input.generation) {
         throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed after state-operation preflight.');
       }
-      if (committed && !inspection) this.assertMirrors(committed, expected, true);
+      if (committed && !inspection) this.assertMirrors(committed, expected, options.publish !== false && !archiveCurrentDraft);
       else if (!committed && (expected.map !== null || expected.abs !== null && !initialize)) {
         throw new AbsSyncError('ABS_INITIALIZATION_REQUIRED', 'An existing mirror requires explicit generation initialization; orphan maps are never overwritten.', undefined, [], {
           reason: expected.map === null ? 'initial-baseline' : 'orphan-map',
@@ -534,7 +539,7 @@ export class AbsWorkspaceSyncService {
       // Still verify current disk/contracts and republish derived outputs: a
       // clean canvas does not prove generated files or dependencies are intact.
       const unchangedSave = options.save && prepared?.abiText === expected.abi;
-      if ((options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && committed
+      if ((options.reuseCurrent || unchangedSave) && options.publish !== false && !inspection && !archiveCurrentDraft && committed
         && sameAbsProgram(compact, committed.document)
         && absJson(runtime.contracts) === absJson(committed.contracts)
         && absJson(context.scope) === absJson(committed.map.scope)
@@ -562,10 +567,10 @@ export class AbsWorkspaceSyncService {
       if (options.publish === false) return { publication: { status: 'NOT_COMMITTED', generation: projection.map.generation,
         abiSaved: false, absMirrored: false, mapPublished: false }, requiresReload: false, warnings: [], evidence, abs: projection.abs };
       await store.stage({ projection, mode: prepared ? 'import' : 'export', inputAbs: expected.abs ?? projection.abs, abi: prepared?.abiText ?? null, expected,
-        ...(inspection ? { inputMap: expected.map } : {}),
-        ...(options.preserveDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
+        ...(inspection || archiveCurrentDraft ? { inputMap: expected.map } : {}),
+        ...(options.preserveDraft || archiveCurrentDraft ? { draftBaseGeneration: committed!.map.generation } : {}) },
         input?.generation === null ? null : inspection?.committed?.pointerHash ?? savedCommit?.pointerHash);
-      const archived = options.preserveDraft || input?.generation === null && expected.abs !== null
+      const archived = options.preserveDraft || archiveCurrentDraft || input?.generation === null && expected.abs !== null
         ? await store.readArchivedDraft(projection.map.generation) : undefined;
       const draftArchive = archived ? { generation: archived.generation, baseGeneration: archived.baseGeneration,
         ...(archived.origin ? { origin: archived.origin } : {}), hash: archived.hash, bytes: archived.bytes } : undefined;
@@ -748,14 +753,20 @@ export class AbsWorkspaceSyncService {
       // new candidate. Explicit variable IDs, however, are request-bound.
       const requestKey = absJson({ ...intent, ...(request.createVariables?.length ? { requestId } : {}) });
       const cached = this.preparedValidation;
-      const reuse = cached?.source === source && cached.requestKey === requestKey && cached.expires >= Date.now();
+      let reuse = cached?.source === source && cached.requestKey === requestKey && cached.expires >= Date.now();
+      if (reuse) {
+        // A library operation may replace definitions without changing this
+        // candidate or publication. An obsolete detached preparation is only
+        // a cache miss; fresh preparation still runs all contract checks.
+        try { cached!.prepared.assertRuntimeCurrent(); } catch { reuse = false; }
+      }
       if (!reuse) this.preparedValidation = undefined;
       // Reuse the same disk/program/runtime/contract checks as application. No
       // receipt-only cache and no bypass of edits made after the first dry-run.
       // Preparation owns detached candidate data, not Angular view publication.
       // Include pure analysis/storage reads, not only the native iframe phase.
       const prepared = await this.withoutViewChecks(() => reuse
-        ? this.prepareApplication(context, lease, store, source, request.base.generation, cached.validation)
+        ? this.prepareApplication(context, lease, store, source, request.base.generation, cached!.validation)
         : this.prepareGeneration(context, lease, store, source, request.base.generation, request, allowNativeRecovery));
       const result = { ...request, workspaceRevision: prepared.before.revision,
         ...(prepared.preparedModels.length ? { preparedModels: prepared.preparedModels } : {}),
@@ -763,7 +774,7 @@ export class AbsWorkspaceSyncService {
         syntaxAdvice: describePreparedAbsSyntax(prepared.candidate.workspace, prepared.candidate.contracts, prepared.candidate.identities),
         ...(request.createVariables ? { preparedVariables: planAbsVariableCreations({ requestId: request.requestId, variables: request.createVariables }) } : {}) };
       this.preparedValidation = { source, key: this.validationKey(result), requestKey, validation: result,
-        expires: reuse ? cached.expires : Date.now() + 30000, prepared };
+        expires: reuse ? cached!.expires : Date.now() + 30000, prepared };
       return result;
     });
   }
@@ -783,7 +794,7 @@ export class AbsWorkspaceSyncService {
       const requestPriority = binding?.concurrentEdits === 'request-priority';
       let baseline = committed;
       if (requestPriority) {
-        try { baseline = await store.load(binding!.intentGeneration!); }
+        try { baseline = await store.loadIntent(binding!.intentGeneration!); }
         catch (error) {
           if (!(error instanceof AbsSyncError) || error.code !== 'ABS_BASELINE_MISSING') throw error;
 
@@ -835,6 +846,7 @@ export class AbsWorkspaceSyncService {
       const reconcileOptions: AbsReconcileOptions = {
         withSynchronousRead: readDefinitions,
         sourceEdits: binding?.sourceEdits,
+        requireDeletionEvidence: !!binding,
         prepareExtraState: functionSyntax.prepareExtraState,
         declaration: captureAbsVariableDeclarations(context.definitions, shapes.get),
         argumentOrder: (type, extra, fields) => functionSyntax.argumentOrder?.(type, extra, fields) ?? shapes.get(type, extra, fields)?.argumentOrder,
@@ -946,7 +958,7 @@ export class AbsWorkspaceSyncService {
         if (expected.abs !== null && expected.abs !== committed.abs && expected.abs !== source) {
           const draftBase = splitAbsState(expected.abs).state === splitAbsState(baseline.abs).state ? baseline : committed;
           const draft = await this.reconcile(draftBase, expected.abs, absJson({ runtimeRevision: context.runtimeRevision, session: context.session }))
-            .draft({ ...reconcileOptions, sourceEdits: undefined });
+            .draft({ ...reconcileOptions, sourceEdits: undefined, requireDeletionEvidence: false });
           const user = await prepareAbsReconciledResources(expected.abs, draft, assertPreparing);
           currentWorkspace = mergeAbsRequestWorkspace(draftBase.workspace, currentWorkspace, user.workspace);
           historyContracts = { ...rollback.contracts,
@@ -1874,6 +1886,7 @@ export class AbsWorkspaceSyncService {
 
   private async store(context: ReturnType<AbsWorkspaceSyncService['context']>) {
     const port = await openAbsHostStorage(context.path, context.assertCurrent);
+    await this.withoutViewChecks(() => recoverAbsLocationMetadata(port, context.scope, context.assertCurrent));
     context.assertCurrent(); return new AbsBaselineStore(port, context.scope);
   }
 

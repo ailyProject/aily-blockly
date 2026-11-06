@@ -2,6 +2,7 @@
   "extends": "./tsconfig.spec.json",
   "include": [
     "../src/app/services/domains/project/project-document-json.spec.ts",
+    "../src/app/services/domains/project/project-recovery-backup.spec.ts",
     "../src/app/services/shared/project-recovery-files.spec.ts",
     "../src/app/services/domains/dependencies/npm.service.spec.ts",
     "../src/app/services/domains/build/builder.service.spec.ts",

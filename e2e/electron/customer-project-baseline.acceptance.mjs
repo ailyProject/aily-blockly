@@ -11,9 +11,12 @@ import { indexCustomerProject, customerProjectSummary, observeCustomerNativeProg
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const { values } = parseArgs({ options: { ...Object.fromEntries(
   ['project-input', 'test-root', 'output', 'executable-path', 'host-build', 'agent-root'].map(name => [name, { type: 'string' }])),
-  'component-only': { type: 'boolean' } } })
+  'component-only': { type: 'boolean' }, 'exercise-self-operations': { type: 'boolean' },
+  'exercise-dependency-operations': { type: 'boolean' } } })
 for (const name of ['project-input', 'test-root', 'output', 'agent-root']) assert.ok(values[name] && path.isAbsolute(values[name]), `--${name} must be absolute`)
 assert.ok(values['host-build'] || values['executable-path'])
+assert.ok(!(values['host-build'] && values['executable-path']),
+  'Use a source main with --host-build, or a complete package with --executable-path; mixed main/renderer layouts are not an installation acceptance')
 const inside = (parent, child) => { const relative = path.relative(parent, child)
   return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative) }
 assert.match(values['test-root'].replaceAll('\\', '/'), /\/aily-project\/dev-tests\//i)
@@ -79,6 +82,18 @@ async function launch() {
       npm_config_offline: 'true', npm_config_audit: 'false' } })
   hostPid = await app.evaluate(() => process.pid)
   await app.firstWindow()
+  evidence.discovery = await app.evaluate(async () => {
+    const os = process.getBuiltinModule('os'), fs = process.getBuiltinModule('fs'), path = process.getBuiltinModule('path')
+    const home = os.homedir(), file = path.join(home, '.aily-blockly', 'cli-bridge', process.pid + '.json')
+    const deadline = Date.now() + 5000
+    while (!fs.existsSync(file) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100))
+    return { hostPid: process.pid, home, expectedHome: process.env.USERPROFILE,
+      homeVariable: process.env.HOME, descriptorExists: fs.existsSync(file) }
+  })
+  await persist()
+  assert.equal(path.resolve(evidence.discovery.home).toLowerCase(), path.resolve(home).toLowerCase(), 'The host must use this isolated home')
+  assert.equal(evidence.discovery.descriptorExists, true, 'The actual owned host bridge must start before SDK business operations')
+  evidence.rendererMode = renderer ? 'source-main-with-local-build' : 'packaged-main-and-renderer'
   page = undefined
   const deadline = Date.now() + 60000
   while (!page && Date.now() < deadline) {
@@ -139,6 +154,8 @@ try {
   const initial = await nativeDocument()
   assert.deepEqual(customerProjectSummary(initial), evidence.source.summary)
   assert.deepEqual([...indexCustomerProject(initial).keys()].sort(), [...indexCustomerProject(inputDocument).keys()].sort())
+  assert.equal(hashDocument(initial), hashDocument(inputDocument),
+    'Opening the actual source must preserve its entire persisted document, including function and variable identity')
   evidence.loaded = { summary: customerProjectSummary(initial), hash: hashDocument(initial) }
   evidence.cases.push({ name: 'original-complete-native-load', ok: true })
   await observeCustomerNativeProgress(page)
@@ -153,24 +170,28 @@ try {
     evidence.cases.push({ name: 'readonly-native-component-cold-warm', ok: true, sourceAndBaselineBytesUnchanged: true,
       sdkBaselineAuthorizationTested: false })
   } else {
-  const edit = await runCustomerBaselineCase({ project, suite, home, appData, agentRoot: values['agent-root'], hostPid, page, phase, evidence, originalDocument: initial })
+  const edit = await runCustomerBaselineCase({ project, suite, home, appData, agentRoot: values['agent-root'], hostPid, page, phase, evidence,
+    originalDocument: initial, exerciseSelfOperations: values['exercise-self-operations'] === true,
+    exerciseDependencyOperations: values['exercise-dependency-operations'] === true })
   await phase('verify-entire-program-after-derived-apply')
-  const after = await nativeDocument(), expected = structuredClone(initial)
+  const after = await nativeDocument(), expected = structuredClone(edit.expectedDocument ?? initial)
   const matches = [...indexCustomerProject(expected).values()].flatMap(block => Object.entries(block.fields ?? {})
     .filter(([, value]) => value === edit.oldValue).map(([field]) => ({ block, field })))
-  assert.equal(matches.length, 1, 'The derived change must affect exactly one original comment field')
+  assert.equal(matches.length, 1, 'The derived change must affect exactly one original string field')
   matches[0].block.fields[matches[0].field] = edit.newValue
   assert.equal(hashDocument(after), hashDocument(expected), 'Every unedited field, identity, page, variable and comment must be preserved')
   assert.deepEqual(customerProjectSummary(after), evidence.source.summary)
   const saved = await fs.readFile(path.join(project, 'project.abi'), 'utf8')
   assert.equal(hashDocument(JSON.parse(saved)), hashDocument(after))
   evidence.cases.push({ name: 'complete-derived-candidate-validate-apply-save', ok: true, hash: hashDocument(after), summary: customerProjectSummary(after) })
-  await phase('force-kill-and-cold-reopen-original-project')
-  await forceKillOwned()
-  assert.equal(await fs.readFile(path.join(project, 'project.abi'), 'utf8'), saved)
-  await launch()
-  assert.equal(hashDocument(await nativeDocument()), hashDocument(after))
-  evidence.cases.push({ name: 'saved-complete-program-survives-force-kill-and-cold-open', ok: true })
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await phase('force-kill-and-cold-reopen-original-project-' + attempt)
+    await forceKillOwned()
+    assert.equal(await fs.readFile(path.join(project, 'project.abi'), 'utf8'), saved)
+    await launch()
+    assert.equal(hashDocument(await nativeDocument()), hashDocument(after))
+    evidence.cases.push({ name: 'saved-complete-program-survives-force-kill-and-cold-open', attempt, ok: true })
+  }
   }
   assert.deepEqual(await inventory(values['project-input']), originalFiles)
   evidence.originalInputUnchanged = true

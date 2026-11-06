@@ -131,6 +131,47 @@ export class AbsBaselineStore {
     return projection;
   }
 
+  /** Original edit intent may predate a verified directory migration. Follow
+   * committed predecessor checksums and permit scope edges only when the
+   * successor was a byte-preserving metadata transaction. The immutable old
+   * record remains untouched; this view never grants publication authority. */
+  async loadIntent(generation: string): Promise<AbsProjection> {
+    try { return await this.load(generation); }
+    catch (error) { if (!(error instanceof AbsSyncError) || error.code !== 'ABS_SCOPE_INVALID') throw error; }
+    const current = await this.port.read(COMMITTED);
+    let text = current, successor: GenerationRecord | undefined, migrated = false;
+    const seen = new Set<string>();
+    for (let depth = 0; text !== null && depth < 64; depth++) {
+      const pointer = this.parsePointer(text), loaded = await this.readGeneration(this.port, pointer.generation, true);
+      const record = loaded.record;
+      if (seen.has(pointer.generation) || absJson(pointer) !== absJson(loaded.pointer)) {
+        throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Intent ancestry checksum changed.');
+      }
+      seen.add(pointer.generation);
+      if (!successor) this.assertScope(record.projection);
+      else if (absJson(successor.projection.map.scope) !== absJson(record.projection.map.scope)) {
+        const retainedDraft = successor.draftBaseGeneration === pointer.generation
+          && successor.inputMap === absJson(record.projection.map) && successor.mode === 'import'
+          && typeof successor.abi === 'string' && await hashNullable(successor.abi) === successor.expected.abi;
+        if (successor.metadataOnly !== true && !retainedDraft || successor.projection.abs !== record.projection.abs
+          || successor.projection.map.scope.pageId !== record.projection.map.scope.pageId) {
+          throw new AbsSyncError('ABS_SCOPE_INVALID', 'Intent ancestry crossed an unverified scope change.');
+        }
+        migrated = true;
+      }
+      if (pointer.generation === generation) {
+        if (!migrated || record.projection.map.scope.pageId !== this.scope.pageId) break;
+        if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Intent ancestry changed during location recovery.');
+        const projection = record.projection;
+        return createAbsProjection(projection.workspace, { document: projection.document, contracts: projection.contracts,
+          generation, baselineRef: projection.map.baselineRef, savedAbiHash: projection.map.savedAbiHash, scope: this.scope });
+      }
+      if (record.previousPointer === undefined || await hashNullable(record.previousPointer) !== record.previousCommitted) break;
+      successor = record; text = record.previousPointer;
+    }
+    throw new AbsSyncError('ABS_SCOPE_INVALID', 'The original intent is not an ancestor of a verified location recovery.');
+  }
+
   async readDerivedAbi(generation: string): Promise<string | null> {
     return (await this.readGeneration(this.port, generation, true)).record.abi;
   }

@@ -39,6 +39,9 @@ describe('closed-source recovery opening and durable observations', () => {
       currentProjectPath: '', isProjectOpening: false, coderProjects: [],
       isProjectTransitionInProgress: () => false, getProjectMode: () => 'blockly',
       getBlocklyProjectLoadStatus: project => ({ project, ready: true, state: 'loaded' }),
+      projectOpen: jasmine.createSpy('sameProjectOpen').and.callFake(async project => {
+        expect(project).toBe(source); service.projectService.currentProjectPath = project; return true;
+      }),
       saveClosedRecoveryAs: jasmine.createSpy('closedCopy').and.callFake(async (from, to) => {
         expect(from).toBe(source); service.projectService.currentProjectPath = to;
         return { sourceProject: source, project: to, projectSaved: true, activated: true,
@@ -49,18 +52,23 @@ describe('closed-source recovery opening and durable observations', () => {
   });
   afterEach(() => { window['fs'] = oldFs; window['path'] = oldPath; });
 
-  it('opens only an independent copy and replays its receipt after the original response is lost', async () => {
+  it('opens the same project and observes its durable receipt after the original response is lost', async () => {
     const request = { operation: 'project_recovery_open', params: { version: 1, requestId, project: source } };
     const started = await service.execute(request);
     expect(started.ok).toBeTrue(); expect(started.sourceGuardReleased).toBeFalse();
-    expect(started.result.sourceProject).toBe(source); expect(started.result.project).not.toBe(source);
+    expect(started.result.sourceProject).toBe(source); expect(started.result.project).toBe(source);
+    expect(started.projectRecoveryVerification).toEqual({ version: 1, ok: true, requestId, project: source,
+      sameProject: true, activated: true, ready: true, candidateApplied: false,
+      currentAbiHash: 'sha256:' + 'a'.repeat(64), inputAbiHash: 'sha256:' + 'a'.repeat(64) });
     expect(started.result.forkReceipt).toEqual(jasmine.objectContaining({ requestId, state: 'completed', project: source }));
     service.absApplyInProgress = true; service.boardSwitchInProgress = true;
     const observed = await service.execute({ operation: 'project_fork_status', params: { project: source, forkRequest: { version: 1, requestId } } });
     expect(observed.operation).toBe('project_fork_status'); expect(observed.result.project).toBe(started.result.project);
     expect(observed.result.activated).toBeTrue();
-    const replay = await service.execute(request); expect(replay.result.project).toBe(started.result.project);
-    expect(service.projectService.saveClosedRecoveryAs).toHaveBeenCalledTimes(1);
+    const replay = await service.execute({ ...request, params: { ...request.params, observe: true } });
+    expect(replay.result.project).toBe(source); expect(replay.receipt.state).toBe('completed');
+    expect(service.projectService.projectOpen).toHaveBeenCalledOnceWith(source, { saveBeforeReload: false });
+    expect(service.projectService.saveClosedRecoveryAs).not.toHaveBeenCalled();
   });
 
   it('only observes an already open source without reload or creating another target', async () => {
@@ -68,6 +76,15 @@ describe('closed-source recovery opening and durable observations', () => {
     const result = await service.execute({ operation: 'project_recovery_open', params: { version: 1, requestId, project: source } });
     expect(result.observedOpen).toBeTrue(); expect(result.sourceGuardReleased).toBeFalse();
     expect(result.result).toBeUndefined(); expect(service.projectService.saveClosedRecoveryAs).not.toHaveBeenCalled();
+  });
+
+  it('returns the same-project inspect route when normal opening fails instead of selecting a copy', async () => {
+    service.projectService.getBlocklyProjectLoadStatus = () => ({ project: source, ready: false, state: 'error', error: 'Missing library' });
+    service.projectService.projectOpen.and.resolveTo(false);
+    const result = await service.execute({ operation: 'project_recovery_open', params: { version: 1, requestId, project: source } });
+    expect(result.ok).toBeFalse(); expect(result.code).toBe('PROJECT_RECOVERY_OPEN_NOT_READY');
+    expect(result.nextAction).toEqual({ tool: 'project_recover', input: { project: source, action: 'inspect' } });
+    expect(result.result.project).toBe(source); expect(service.projectService.saveClosedRecoveryAs).not.toHaveBeenCalled();
   });
 
   it('does not replace another live view, and rejects forged request outcome fields', async () => {
@@ -78,6 +95,18 @@ describe('closed-source recovery opening and durable observations', () => {
     expect(service.projectService.saveClosedRecoveryAs).not.toHaveBeenCalled();
     const invalid = await service.execute({ operation: 'project_recovery_open', params: { version: 1, requestId, project: source, force: true } });
     expect(invalid.code).toBe('PROJECT_RECOVERY_OPEN_INVALID');
+  });
+
+  it('only observes an unknown or interrupted request, including a new renderer, without opening or copying again', async () => {
+    const request = { operation: 'project_recovery_open', params: { version: 1, requestId, project: source } };
+    const unknown = await service.execute({ ...request, params: { ...request.params, observe: true } });
+    expect(unknown.receipt.state).toBe('unknown');
+    entries.set(requestId, { project: source, requestId, signature: 'same-project-recovery-open', state: 'running', sourceAbiHash: null });
+    service.forkReceipts = undefined;
+    const replay = await service.execute(request);
+    expect(replay.receipt.state).toBe('unknown');
+    expect(service.projectService.projectOpen).not.toHaveBeenCalled();
+    expect(service.projectService.saveClosedRecoveryAs).not.toHaveBeenCalled();
   });
 });
 

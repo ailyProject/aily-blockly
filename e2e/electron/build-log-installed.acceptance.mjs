@@ -19,7 +19,7 @@ assert.equal(process.env.AILY_ONLINE_ACCEPTANCE, '1', 'Explicitly enable the rea
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const required = ['connection-profile', 'installed-root', 'test-root', 'resource-root', 'lex-root', 'output']
 const optional = ['executable-path', 'host-build', 'boards-root', 'libraries-root']
-const { values } = parseArgs({ options: { ...Object.fromEntries([...required, ...optional].map(name => [name, { type: 'string' }])),
+const { values } = parseArgs({ options: { ...Object.fromEntries([...required, ...optional, 'upstream-address'].map(name => [name, { type: 'string' }])),
   cases: { type: 'string', default: 'success,failure,cancel,chat-stop,reconnect,observation' } } })
 for (const name of required) assert.ok(values[name] && path.isAbsolute(values[name]), `--${name} must be absolute`)
 for (const name of optional) if (values[name]) assert.ok(path.isAbsolute(values[name]), `--${name} must be absolute`)
@@ -118,7 +118,10 @@ async function openProject(project, scenario) {
   evidence.renderer ??= { origin: new URL(page.url()).origin,
     loadedFromAsar: !renderer && evidence.host?.packaged === true && /app\.asar$/i.test(evidence.host.appPath),
     developmentRendererOverride: Boolean(renderer) }
-  if (selectedModel) await selectOnlineModelFromUi(loaded.frame, selectedModel)
+  // A cold installed catalog loads after the visible composer. Wait for its
+  // exact selectable preset within the normal startup budget; never substitute
+  // another model or send a request while the catalog is still empty.
+  if (selectedModel) await selectOnlineModelFromUi(loaded.frame, selectedModel, { catalogTimeoutMs: 60000 })
   await page.evaluate(async target => {
     const service = window.ng.getComponent(document.querySelector('app-header')).projectService
     const result = await service.save(target)
@@ -324,15 +327,15 @@ try {
   const { captureBuildInputs } = await import(pathToFileURL(path.join(values['lex-root'], 'packages/aily-chat/scripts/portable-build-inputs.mjs')))
   assert.equal(artifact.inputHash, sha(JSON.stringify(await captureBuildInputs(values['lex-root']))))
   evidence.installed = artifact; evidence.upstream = { apiBase: api.origin, explicitConnectionProfile: true }
+  proxy = await createBuildLogNetwork({ upstreamOrigin: api.origin, upstreamAddress: values['upstream-address'] })
   await phase('129-real-auth-and-model-preflight')
   const headers = { authorization: 'Bearer ' + accessToken }
-  const me = await fetch(api.origin + '/api/v1/auth/me', { headers, signal: AbortSignal.timeout(15000) })
+  const me = await fetch(proxy.origin + '/api/v1/auth/me', { headers, signal: AbortSignal.timeout(15000) })
   evidence.authStatus = me.status; await me.body?.cancel(); assert.equal(me.status, 200)
   if (explicitOnlineModelId(connection.model)) {
-    const response = await fetch(api.origin + '/api/v2/model_catalog', { headers, signal: AbortSignal.timeout(15000) })
+    const response = await fetch(proxy.origin + '/api/v2/model_catalog', { headers, signal: AbortSignal.timeout(15000) })
     assert.equal(response.status, 200); selectedModel = resolveOnlineModelPreset(await response.json(), connection.model)
   }
-  proxy = await createBuildLogNetwork({ upstreamOrigin: api.origin })
   const profile = await prepareInstalledChatProfile({ appData, installedRoot: values['installed-root'], apiBase: proxy.origin,
     baseConfigPath: connection.configFile, resourceAppData: values['resource-root'], token: accessToken })
   profile.config.compile = { ...profile.config.compile, backend: 'local' }

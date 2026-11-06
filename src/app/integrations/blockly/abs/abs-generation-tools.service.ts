@@ -6,6 +6,8 @@ import { AbsSyncError } from './abs-state';
 import { absJson } from './abs-identity-map';
 import { serializeAbsFailure } from './abs-diagnostics';
 import { AbsApplicationFailure } from './abs-application-failure';
+import { AbsCandidateJournal, AbsCandidateRuntimePreparationFailure, assertCandidateArchiveRequest, type AbsCandidateArchive } from './abs-candidate-journal';
+import { openAbsHostStorage } from './abs-host-storage';
 
 /** Wire adaptation only. Preparation, leases, publication and recovery belong to the coordinator. */
 @Injectable({ providedIn: 'root' })
@@ -14,6 +16,18 @@ export class AbsGenerationToolsService {
 
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
   observeApplication(requestId: string) { return this.sync.observeApplication(requestId); }
+
+  async candidateBackup(project: string, input: Record<string, any>, assertCurrent: () => void, readSource: () => string) {
+    try {
+      assertGenerationRequest(input); assertCandidateArchiveRequest(input); assertCurrent();
+      const source = input['action'] === 'preserve_candidate' ? readSource() : undefined;
+      const journal = new AbsCandidateJournal(await openAbsHostStorage(project, assertCurrent), project, assertCurrent);
+      const result = input['action'] === 'preserve_candidate'
+        ? { candidateArchive: await journal.preserve(source!, input['candidate']) } : await journal.read(input['recordHash']);
+      return { ok: true, operation: 'abs_recovery', project, candidateApplied: false, ...result,
+        receipt: { version: 2, requestId: input['requestId'], action: input['action'], candidateApplied: false } };
+    } catch (error) { return { ok: false, operation: 'abs_recovery', project, candidateApplied: false, ...serializeAbsFailure(error) }; }
+  }
 
   assertNativeRecoveryCurrent(input: Record<string, any>) {
     this.sync.assertNativeRecoveryCurrent(input['token'], input['requestId']);
@@ -42,8 +56,10 @@ export class AbsGenerationToolsService {
   }
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,
-    activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string) {
+    activateRecovery?: (path: string, assertCurrent: () => void) => Promise<{ project: string; activated: boolean }>, requestedProject?: string,
+    archiveContext?: { project: string; assertCurrent: () => void; prepareRuntime?: () => Promise<void> }) {
     let applyStarted = false;
+    let candidateArchive: AbsCandidateArchive | undefined;
     try {
       const { abs, absPath, ...wire } = input;
       const params: Record<string, any> = JSON.parse(absJson(wire));
@@ -187,8 +203,22 @@ export class AbsGenerationToolsService {
       if (typeof source !== 'string' || !source.trim()) throw new AbsSyncError('ABS_REQUEST_INVALID', 'Candidate source is empty.');
       if (operation === 'abs_validate') {
         assertGenerationCandidate(params);
+        if (archiveContext) {
+          const journal = new AbsCandidateJournal(await openAbsHostStorage(archiveContext.project, archiveContext.assertCurrent),
+            archiveContext.project, archiveContext.assertCurrent);
+          candidateArchive = await journal.preserve(source, { ...params['candidate'],
+            intentGeneration: params['intentGeneration'] ?? params['base'].generation,
+            ...(params['sourceEdits'] !== undefined ? { sourceEdits: params['sourceEdits'] } : {}) });
+          try { await archiveContext.prepareRuntime?.(); }
+          catch (error) {
+            if (typeof (error as any)?.code === 'string' && /^LIBRARY_/.test((error as any).code))
+              throw new AbsCandidateRuntimePreparationFailure(error, candidateArchive);
+            throw error;
+          }
+          archiveContext.assertCurrent();
+        }
         const { syntaxAdvice, ...prepared } = await this.sync.validateGeneration(source, params);
-        return { ok: true, operation, project: prepared.base.scope.projectKey, syntaxAdvice,
+        return { ok: true, operation, project: prepared.base.scope.projectKey, syntaxAdvice, ...(candidateArchive ? { candidateArchive } : {}),
           receipt: { ...prepared, validation: { ok: true, scope: 'prepared-generation' } } };
       }
       if (operation !== 'abs_apply') throw new AbsSyncError('ABS_REQUEST_INVALID', 'Unknown ABS generation operation.');
@@ -201,10 +231,12 @@ export class AbsGenerationToolsService {
           ...(result.historyBase ? { historyBase: { hash: result.historyBase.hash, inputAbsHash: result.historyBase.inputAbsHash } } : {}),
           appliedRevision: result.appliedRevision, validation: { ok: true, scope: 'complete-generation' } } } : {}) };
     } catch (error) {
+      if (error instanceof AbsCandidateRuntimePreparationFailure) throw error;
       const failure = serializeAbsFailure(error);
       const nativeFailure = ['abs_validate', 'abs_apply'].includes(operation) && /^ABS_(NATIVE_|RUNTIME_|GENERATION_FAILED$)/.test(failure.code)
         ? await this.sync.describeNativeCandidateFailure(source) : undefined;
       return { ok: false, operation, ...failure,
+        ...(candidateArchive ? { candidateArchive } : {}),
         ...(nativeFailure ? { nativeCandidateFailure: nativeFailure } : {}),
         ...(operation === 'abs_recovery' && input['action'] === 'resolve' ? {
           ...(requestedProject ? { project: requestedProject } : {}),

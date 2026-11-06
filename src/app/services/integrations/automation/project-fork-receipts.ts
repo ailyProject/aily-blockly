@@ -47,7 +47,8 @@ export class ProjectForkReceipts {
       try { result = await run(); }
       catch (error) { result = { ok: false, operation: 'project_fork', sourceProject: project, projectSaved: false,
         code: (error as any)?.code ?? 'PROJECT_FORK_FAILED', message: error instanceof Error ? error.message : String(error) }; }
-      const targetHash = result['projectSaved'] === true && typeof result['project'] === 'string'
+      const targetHash = (result['projectSaved'] === true || result['sameProject'] === true && result['activated'] === true)
+        && typeof result['project'] === 'string'
         ? this.store.abiHash(result['project']) : null;
       const completed = this.store.complete(project, request.requestId, signature, result, targetHash);
       return this.response(project, request, completed, false);
