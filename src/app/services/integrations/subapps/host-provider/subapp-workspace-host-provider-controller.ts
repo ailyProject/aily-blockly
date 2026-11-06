@@ -1,9 +1,12 @@
+import { createWorkspaceNetworkLifecycle } from './subapp-workspace-network-lifecycle';
+import { validateHostNetworkBindingLifecycleV1 } from '@aily-project/simulator-protocol/host';
 import type {
   SubappHostProviderProductOpenContext,
   SubappHostProviderProductSession,
 } from './subapp-host-provider-product-registry.service';
 
 import type { SubappHostProviderRecord } from './subapp-host-provider-dispatcher';
+import { createWorkspaceNetworkControllerPort } from './subapp-workspace-network-controller-port';
 
 export interface WorkspaceProviderRuntime {
   toolId: string;
@@ -14,6 +17,8 @@ export interface WorkspaceProviderRuntime {
 }
 
 export interface WorkspaceProviderControllerPort {
+  localSerial?(input: { toolId: string; streamId: string; bindingId: string; command: SubappHostProviderRecord }): Promise<SubappHostProviderRecord>;
+  localNetwork?(input: SubappHostProviderRecord): Promise<SubappHostProviderRecord>;
   bindMessageController(input: { toolId: string; streamId: string; bindingId: string }): Promise<{
     success: boolean;
     negotiationRequest?: SubappHostProviderRecord | null;
@@ -39,6 +44,8 @@ interface Binding {
   initialized: Promise<void>;
   session: SubappHostProviderProductSession | null;
 
+  networkHostInstanceId: string | null;
+  networkLifecycle: ReturnType<typeof createWorkspaceNetworkLifecycle> | null;
   listener: ((message: SubappHostProviderRecord) => void) | null;
 }
 
@@ -76,11 +83,42 @@ export class SubappWorkspaceHostProviderController {
   receive(event: { toolId: string; streamId: string; message: SubappHostProviderRecord }): void {
     const binding = this.bindings.get(event.toolId);
 
-    if (!binding || binding.runtime.streamId !== event.streamId || !this.matches(binding)) return;
+    if (!binding || binding.runtime.streamId !== event.streamId) return;
+    // Original cleanup is not ordinary business and survives a fenced/ended
+    // controller. The helper independently requires its retained full identity.
+    if (binding.networkLifecycle?.handleClose(event.message)) return;
+    if (!this.matches(binding)) return;
 
     if (binding.listener) binding.listener(event.message);
     else if (binding.pending.length < 8) binding.pending.push(event.message);
     else { binding.overflowed = true; binding.pending.length = 0; }
+  }
+
+  networkBindingState(event: { toolId: string; streamId: string; bindingId: string; revision: number;
+    phase: string; selection: unknown; grant: unknown }): void {
+    const binding = this.bindings.get(event.toolId);
+    if (!binding || binding.runtime.streamId !== event.streamId || binding.bindingId !== event.bindingId
+      || !binding.networkLifecycle || !binding.networkHostInstanceId) return;
+    try {
+      const state = validateHostNetworkBindingLifecycleV1({ schemaVersion: 1, kind: 'aily-host-network-binding-lifecycle',
+        hostInstanceId: binding.networkHostInstanceId, revision: event.revision, phase: event.phase, selection: event.selection, grant: event.grant });
+      binding.networkLifecycle.observe(state);
+    } catch { /* An invalid/foreign Main observation cannot fence this binding. */ }
+  }
+
+  /** Main reports only a confirmed original network-port retirement. Rebuild
+   * this passive provider session/channel, keeping the real Runtime lease and
+   * Browser owner record untouched. Its new normal catalog identifies a fresh
+   * request producer; providerRevision changes alone do not reset producers. */
+  networkLifetimeEnded(event: { toolId: string; streamId: string; bindingId: string }): Promise<void> {
+    const binding = this.bindings.get(event.toolId);
+    if (this.closed || !binding || binding.closing || binding.runtime.streamId !== event.streamId || binding.bindingId !== event.bindingId) return this.tail;
+    binding.closing = true;
+    this.tail = this.tail.catch(() => undefined).then(async () => {
+      await this.release(binding);
+      await this.reconcile();
+    });
+    return this.tail;
   }
 
   snapshot(): readonly { toolId: string; streamId: string; scope: string | null; ready: boolean }[] {
@@ -123,7 +161,7 @@ export class SubappWorkspaceHostProviderController {
       let initialized!: () => void;
       const binding: Binding = {
         runtime, scope: this.scope, bindingId: `${this.options.instanceId}:${++this.sequence}`,
-        pending: [], overflowed: false, closing: false, sessionClosed: false, cleanup: null, session: null, listener: null,
+        pending: [], overflowed: false, closing: false, sessionClosed: false, cleanup: null, session: null, networkHostInstanceId: null, networkLifecycle: null, listener: null,
         initialized: new Promise<void>(resolve => { initialized = resolve; }),
       };
 
@@ -136,9 +174,42 @@ export class SubappWorkspaceHostProviderController {
 
         if (!result.success) throw new Error('Host Provider controller binding was rejected.');
         if (result.negotiationRequest) binding.pending.push(result.negotiationRequest);
+        const sendNetworkMessage = async (message: SubappHostProviderRecord): Promise<void> => {
+          if (this.bindings.get(runtime.toolId) !== binding) throw new Error('Original network controller is retired.');
+          const sent = await this.options.port.sendMessage({ toolId: runtime.toolId, streamId: runtime.streamId,
+            bindingId: binding.bindingId, message });
+          if (!sent.success) throw new Error('Original network sidecar delivery is unconfirmed.');
+        };
+        const networkPort = this.options.port.localNetwork ? createWorkspaceNetworkControllerPort({
+          requireCurrentBinding: cleanup => {
+            if (this.bindings.get(runtime.toolId) !== binding || (!cleanup && (!this.matches(binding) || !binding.networkHostInstanceId))) throw new Error('Network Provider controller binding is retired.');
+          },
+          invoke: input => this.options.port.localNetwork!({ ...input, toolId: runtime.toolId,
+            streamId: runtime.streamId, bindingId: binding.bindingId }),
+          observeDispatch: request => binding.networkLifecycle?.observeDispatch(request),
+          observeResult: (request, result) => binding.networkLifecycle?.observeExchange(request, result),
+          beforeResult: () => binding.networkLifecycle?.flush() ?? Promise.resolve(),
+        }) : null;
+        const bindNetworkHostInstanceId = (hostInstanceId: string): void => {
+          if (!networkPort || !this.matches(binding) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(hostInstanceId)
+            || binding.networkHostInstanceId && binding.networkHostInstanceId !== hostInstanceId)
+            throw new Error('Original product Host identity is unavailable.');
+          if (binding.networkHostInstanceId) return;
+          binding.networkHostInstanceId = hostInstanceId;
+          binding.networkLifecycle = createWorkspaceNetworkLifecycle({ hostInstanceId,
+            closeOriginal: () => networkPort.close(), send: sendNetworkMessage });
+        };
         if (this.matches(binding)) binding.session = await this.options.registry.open({
-          toolId: runtime.toolId, hostInstanceId: this.options.instanceId,
+          toolId: runtime.toolId, hostInstanceId: binding.bindingId,
           ...(runtime.hostInfo?.packagePath ? { runtimePackagePath: runtime.hostInfo.packagePath } : {}),
+          ...(this.options.port.localSerial ? { localSerial: async (command: SubappHostProviderRecord) => {
+            if (this.bindings.get(runtime.toolId) !== binding || (!this.matches(binding) && command['command'] !== 'revoke')) {
+              throw new Error('Hardware Provider binding is retired.');
+            }
+            return await this.options.port.localSerial!({ toolId: runtime.toolId, streamId: runtime.streamId,
+              bindingId: binding.bindingId, command });
+          } } : {}),
+          ...(networkPort ? { localNetwork: { ...networkPort, bindHostInstanceId: bindNetworkHostInstanceId } } : {}),
           transport: {
             onMessage: listener => {
               binding.listener = listener;
@@ -193,6 +264,7 @@ export class SubappWorkspaceHostProviderController {
         await binding.session?.close();
         binding.sessionClosed = true;
       }
+      await binding.networkLifecycle?.whenIdle();
       const result = await this.options.port.unbindMessageController({
         toolId: binding.runtime.toolId, streamId: binding.runtime.streamId,
         bindingId: binding.bindingId,

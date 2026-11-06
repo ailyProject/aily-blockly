@@ -479,6 +479,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     respond: (requestId, result) => ipcRenderer.send('child-app-host-command-response', { requestId, result }),
   },
   childToolSession: {
+    localSerial: (payload) => ipcRenderer.invoke('subapp-local-serial', payload),
+    localNetwork: (payload) => ipcRenderer.invoke('subapp-local-network', payload),
+    onNetworkBindingState: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('subapp-local-network-binding-state', listener);
+      return () => ipcRenderer.removeListener('subapp-local-network-binding-state', listener);
+    },
+    onNetworkLifetimeEnded: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('subapp-local-network-lifetime-ended', listener);
+      return () => ipcRenderer.removeListener('subapp-local-network-lifetime-ended', listener);
+    },
     browserExecution: (payload) => ipcRenderer.invoke('subapp-browser-execution', payload),
     observeNative: (payload) => ipcRenderer.invoke('subapp-native-observer', payload),
     onNativeObserverChanged: (callback) => {

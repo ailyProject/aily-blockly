@@ -3,17 +3,20 @@ import { lastValueFrom } from 'rxjs';
 import { CmdService } from '@core/platform/public-api';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
 import { SimulatorBoardDemonstrationProvider } from './simulator-board-demonstration-provider';
+import { createSimulatorLocalSerialHostProvider } from './simulator-local-serial-host-provider';
 
 import {
   SimulatorHostProviderOperationError,
   SimulatorProjectHostProviderAdapter,
   createSimulatorHostProviderDispatcherAdapterBundle,
+  createSimulatorNetworkHostProviderAdapter,
   type SimulatorProjectHostProviderAdapterOptions,
 } from '@aily-project/simulator-host-sdk';
 import type {
   SimulatorSubappHostProjectDebugConfigurationReadV1,
   SimulatorSubappHostProjectDebugConfigurationSnapshotV1,
 } from '@aily-project/simulator-protocol/host';
+import type { HostNetworkProviderRequestV1, HostNetworkProviderResultV1 } from '@aily-project/simulator-protocol/connectivity-network-provider';
 
 import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';
@@ -81,9 +84,16 @@ export class SimulatorHostProviderProductService {
     context: SubappHostProviderProductOpenContext,
   ): Promise<SubappHostProviderProductSession> {
     const scope = await this.openCurrentProjectScope(undefined, context.runtimePackagePath);
-    return scope
-      ? bindProviderSession(context, scope.adapters as readonly SubappHostProviderAdapter[], () => scope.close())
-      : bindProviderSession(context, [], () => undefined);
+    const hardware = context.localSerial ? createSimulatorLocalSerialHostProvider(context.localSerial) : null;
+    const network = context.localNetwork ? createSimulatorNetworkHostProviderAdapter({
+      request: (request: HostNetworkProviderRequestV1, signal: AbortSignal) => context.localNetwork!.request(request as unknown as Record<string, unknown>, signal) as unknown as Promise<HostNetworkProviderResultV1>,
+      close: () => context.localNetwork!.close(),
+    }) : null;
+    return bindProviderSession(context, [...(scope?.adapters ?? []), ...(hardware ? [hardware] : []), ...(network ? [network] : [])] as readonly SubappHostProviderAdapter[], async () => {
+      const results = await Promise.allSettled([scope?.close(), hardware?.close?.(), network?.close()]);
+      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, 'Simulator product resource cleanup requires retry.');
+    });
   }
 
   /** Build the active code once before opening the Simulator, through Blockly's normal Builder. */
@@ -553,8 +563,10 @@ async function bindProviderSession(
   adapters: readonly SubappHostProviderAdapter[],
   closeProduct: () => void | Promise<void>,
 ): Promise<SubappHostProviderProductSession> {
+  const hostInstanceId = `simulator-host:${context.hostInstanceId}`;
+  context.localNetwork?.bindHostInstanceId(hostInstanceId);
   const dispatcher = new SubappHostProviderDispatcher({
-    hostInstanceId: `simulator-host:${context.hostInstanceId}`,
+    hostInstanceId,
     adapters,
     maxMessageBytes: SIMULATOR_PROVIDER_MESSAGE_BUDGET,
   });

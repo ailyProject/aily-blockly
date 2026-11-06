@@ -6,6 +6,7 @@ const { acquireOwner, releaseOwner, ownerCount, hasOwner, ownerKey } = require('
 const { PROTOCOL, relativeEntry } = require('./subapp-browser-execution-source');
 const { createPackagedRendererServer } = require('./packaged-renderer-server');
 const { createEmbeddedViewDocument } = require('./subapp-browser-view-document');
+const { emitInternalCleanupDiagnostic } = require('./internal-cleanup-diagnostic');
 
 const CSP = "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' blob:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
 const fault = message => new Error(message);
@@ -184,7 +185,12 @@ class SubappBrowserExecutionHost {
                 if (data.type === 'ready' && data.protocol === PROTOCOL) state.resolveReady();
                 else if (typeof data.id === 'number') {
                     const pending = state.pending.get(data.id);
-                    if (pending) { state.pending.delete(data.id); data.ok === true ? pending.resolve(data.value) : pending.reject(fault('Execution lifecycle request failed')); }
+                    if (pending) {
+                        state.pending.delete(data.id);
+                        data.ok === true ? pending.resolve(pending.type === 'network-context'
+                            ? { diagnostics: data.value, networkContext: Object.hasOwn(data, 'networkContext') ? data.networkContext : undefined }
+                            : data.value) : pending.reject(fault('Execution lifecycle request failed'));
+                    }
                 }
             });
             port1.start();
@@ -208,7 +214,7 @@ class SubappBrowserExecutionHost {
     request(state, type, payload = {}, ports = []) {
         const id = ++state.sequence;
         const promise = new Promise((resolve, reject) => {
-            state.pending.set(id, { resolve, reject });
+            state.pending.set(id, { resolve, reject, type });
             try { state.port.postMessage({ protocol: PROTOCOL, id, type, ...payload }, ports); }
             catch (error) { state.pending.delete(id); reject(error); }
         });
@@ -216,6 +222,59 @@ class SubappBrowserExecutionHost {
     }
 
     async connect(input) { return this.connectEndpoint(input, false); }
+
+    /** Original private-ACK owner only. These methods never appear on the
+     * domain Agent/View RPC ports or accept caller-provided owner handles. */
+    createNetworkOwnerControl(original) {
+        const thisHost = this;
+        const { lease, guard, connectionId, assertCurrent } = original;
+        const { runtimeId, executionId, ownerId, leaseId } = lease;
+        const state = this.runtimes.get(runtimeId), key = ownerKey(ownerId, leaseId), binding = state?.bindings.get(key);
+        const node = binding?.node, connection = state?.connections.get(connectionId), ownerHandle = state?.ownerHandles.get(key);
+        const originalIdentity = () => {
+            if (!state || this.runtimes.get(runtimeId) !== state
+                || state.executionId !== executionId || state.bindings.get(key) !== binding || binding.node !== node
+                || !node || node.nodeBound !== true || node.bindingId !== connectionId || node.owner.sessionId !== leaseId
+                || state.connections.get(connectionId) !== connection || !connection
+                || connection.key !== key || state.ownerHandles.get(key) !== ownerHandle || !ownerHandle) throw fault('Original private Browser owner acknowledgement is unavailable');
+        };
+        const current = () => {
+            guard(); assertCurrent(); originalIdentity();
+            if (!this.isCurrent(lease) || connection.disconnecting) throw fault('Original Browser network admission has ended');
+        };
+        current();
+        return Object.freeze({
+            requireCurrent: current,
+            registerOwnerRelease(retire) {
+                current();
+                if (typeof retire !== 'function') throw fault('Actual network owner retirement callback is required');
+                (binding.networkRetireCallbacks ??= new Set()).add(retire);
+                return () => binding.networkRetireCallbacks.delete(retire);
+            },
+            async query(signal) {
+                current(); signal?.throwIfAborted();
+                const result = await thisHost.request(state, 'network-context', { connectionId, ownerHandle });
+                current(); signal?.throwIfAborted();
+                if (!result || !Object.hasOwn(result, 'networkContext') || result.networkContext === undefined) throw fault('Installed Browser network context API is unavailable');
+                return result.networkContext;
+            },
+            async attach({ sessionId, descriptor, grant, routes }, port) {
+                current();
+                if (!port) throw fault('Original network backend MessagePort is required');
+                await thisHost.request(state, 'network-host-attach', { connectionId, ownerHandle, sessionId, descriptor, grant, routes }, [port]);
+                current();
+            },
+            async detach(sessionId, grantId) {
+                // Cleanup can outlive active admission while this exact old
+                // owner is releasing. It still cannot target a replacement
+                // binding/handle; Runtime additionally asserts the original
+                // session owner before detaching its attachment.
+                originalIdentity();
+                await thisHost.request(state, 'network-host-detach', { connectionId, ownerHandle, sessionId, grantId });
+                originalIdentity();
+            },
+        });
+    }
 
     /** Main-only binding over an acknowledged process lease. The real Agent
      * connection is reserved internally before Node learns its identity. */
@@ -374,11 +433,15 @@ class SubappBrowserExecutionHost {
                 if (owner && (state.retiring.has(binding.key) || owner.confirmation)) {
                     await this.confirmOwnerRelease(state, binding.key, owner);
                 }
+                // D6 observes only already-settled original siblings, never their dispatch.
+                let executionDetachSubmitted = false;
                 const results = await Promise.allSettled([
                     ...[...(binding.cleanups || [])].map(async cleanup => { await cleanup(); binding.cleanups.delete(cleanup); }),
-                    ...(!state.closing && !state.failed ? [this.request(state, 'detach', { connectionId })] : []),
+                    ...(!state.closing && !state.failed ? [(executionDetachSubmitted = true, this.request(state, 'detach', { connectionId }))] : []),
                 ]);
                 const failures = results.filter(result => result.status === 'rejected');
+                if (failures.length) emitInternalCleanupDiagnostic('main-view-disconnect', results.flatMap((result, index) => result.status === 'rejected'
+                    ? [{ source: executionDetachSubmitted && index === results.length - 1 ? 'execution-view-detach' : 'registered-view-cleanup', error: result.reason }] : []));
                 if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'View connection cleanup was not acknowledged');
                 if (binding.window && !binding.window.isDestroyed()) await this.bounded(Promise.resolve(binding.window.destroy()), 'Browser View close');
                 binding.remove(); state.connections.delete(connectionId);
@@ -425,6 +488,13 @@ class SubappBrowserExecutionHost {
         // Publish before dispatch: a peer-close event can request disconnect
         // while Worker cleanup is still preparing its owner-release ACK.
         const confirmation = Promise.resolve().then(async () => {
+            // Main-owned network grants may have been selected before an
+            // attachment reached the Runtime. Join these exact original owners
+            // before publishing the Worker/Node owner-release acknowledgement.
+            const network = await Promise.allSettled([...(binding.networkRetireCallbacks || [])].map(async retire => {
+                await retire(); binding.networkRetireCallbacks.delete(retire);
+            }));
+            if (network.some(result => result.status === 'rejected')) throw fault('Original network owner cleanup remains unconfirmed');
             if (!binding.workerReleased) {
                 if (state.failed || !state.ready || !state.window || state.window.isDestroyed()) throw fault('Browser Worker owner release is unconfirmed');
                 await this.request(state, 'owner-release', { ownerHandle: state.ownerHandles.get(key) });

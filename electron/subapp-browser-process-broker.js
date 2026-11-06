@@ -14,6 +14,24 @@ class SubappBrowserProcessBroker {
         this.connections = new Map(); this.owners = new Map(); this.pendingCount = 0; this.pendingBytes = 0;
     }
 
+    /** Main-only lookup, never an RPC owner selector. A workspace channel does
+     * not create an execution lease. Ambiguous/pending/retiring actual owners
+     * stay unavailable; the returned closure retains the original record. */
+    resolveNetworkOwner({ runtimeId, ownerId, toolId }) {
+        const rows = [...this.owners.values()].filter(record => record.lease.runtimeId === runtimeId
+            && record.lease.ownerId === ownerId && record.toolId === toolId);
+        if (rows.length !== 1) return null;
+        const record = rows[0], lease = record.lease, connection = record.connection;
+        const assertCurrent = () => {
+            record.guard();
+            if (this.owners.get(record.key) !== record || record.lease !== lease || record.connection !== connection
+                || record.closed || record.retiring || record.admissionFailed || !connection
+                || this.connections.get(connection.connectionId) !== record || !this.host.isCurrent(lease)) throw new Error('Original registered Browser owner is unavailable');
+        };
+        try { assertCurrent(); } catch { return null; }
+        return Object.freeze({ lease, guard: record.guard, connectionId: connection.connectionId, assertCurrent });
+    }
+
     async bind({ lease, guard, toolId, maxMessageBytes, beforeAdmit, expectedConnectionId }) {
         guard();
 

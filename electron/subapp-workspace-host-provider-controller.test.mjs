@@ -58,6 +58,50 @@ test('passive workspace binding survives Agent owner removal with the same live 
   await controller.close();
 });
 
+test('confirmed network terminal renews passive channel and catalog instance while retaining original Runtime identity', async () => {
+  const { controller, calls } = fixture();
+  const original = { ...runtime(), executionLease: Object.freeze({ id: 'original-runtime-lease' }), privateOwnerRecord: Object.freeze({ id: 'original-node-ack' }) };
+  await controller.update('project-a', [original]);
+  const first = calls.find(call => call[0] === 'bind')[2];
+  assert.equal(calls.find(call => call[0] === 'open')[1], first);
+  await controller.networkLifetimeEnded({ toolId: 'simulator', streamId: original.streamId, bindingId: first });
+  const binds = calls.filter(call => call[0] === 'bind'), opens = calls.filter(call => call[0] === 'open');
+  assert.equal(binds.length, 2); assert.notEqual(binds[0][2], binds[1][2]); assert.equal(opens[1][1], binds[1][2]);
+  assert.equal(controller.snapshot()[0].ready, true); assert.equal(controller.snapshot()[0].streamId, original.streamId);
+  assert.equal(original.executionLease.id, 'original-runtime-lease'); assert.equal(original.privateOwnerRecord.id, 'original-node-ack');
+  const count = calls.length;
+  await controller.networkLifetimeEnded({ toolId: 'simulator', streamId: original.streamId, bindingId: first });
+  assert.equal(calls.length, count, 'late old lifetime cannot retire the new passive binding');
+  await controller.close();
+});
+
+test('network terminal waits confirmed ProductSession cleanup before publishing another binding identity', async () => {
+  let finish; const gate = new Promise(resolve => { finish = resolve; });
+  const { controller, calls } = fixture({ closeGates: new Map([['simulator', gate]]) });
+  await controller.update('project-a', [runtime()]); const first = calls.find(call => call[0] === 'bind')[2];
+  const ended = controller.networkLifetimeEnded({ toolId: 'simulator', streamId: 'stream-1', bindingId: first });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controller.snapshot()[0].ready, false); assert.equal(calls.filter(call => call[0] === 'bind').length, 1);
+  finish(); await ended; assert.equal(calls.filter(call => call[0] === 'bind').length, 2); await controller.close();
+});
+
+test('network terminal cleanup failure keeps old lifetime fenced and does not announce a fresh producer', async () => {
+  const options = { closeFailure: true }, { controller, calls } = fixture(options);
+  await controller.update('project-a', [runtime()]); const first = calls.find(call => call[0] === 'bind')[2];
+  await assert.rejects(controller.networkLifetimeEnded({ toolId: 'simulator', streamId: 'stream-1', bindingId: first }));
+  assert.equal(calls.filter(call => call[0] === 'bind').length, 1); assert.equal(controller.snapshot()[0].ready, false);
+  options.closeFailure = false; await controller.update('project-a', [runtime()]);
+  assert.equal(calls.filter(call => call[0] === 'bind').length, 2); await controller.close();
+});
+
+test('ordinary same-binding updates do not renew the catalog producer lifetime', async () => {
+  const { controller, calls } = fixture(); await controller.update('project-a', [runtime()]);
+  const first = calls.find(call => call[0] === 'open')[1];
+  await controller.update('project-a', [{ ...runtime(), refCount: 3, providerRevision: 99 }]);
+  assert.deepEqual(calls.filter(call => call[0] === 'open').map(call => call[1]), [first]);
+  await controller.close();
+});
+
 test('workspace callbacks use the selected Runtime package while passive consumers share the binding', async () => {
   const { controller, calls } = fixture();
   const selected = { ...runtime(), hostInfo: { packagePath: '/installed/simulator/version-a' } };

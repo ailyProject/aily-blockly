@@ -69,6 +69,8 @@ const CHILD_TOOL_PENDING_TOTAL_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { hostInfo: any, streamId: string, messagePort: any, owners: Map<string, any>, releaseTimer: NodeJS.Timeout | null }>} */
 const childToolSessions = new Map();
+let localSerialHost = null;
+let localNetworkHost = null;
 const { SubappBrowserOwnerBridge } = require('./subapp-browser-owner-bridge');
 const browserOwnerBridge = new SubappBrowserOwnerBridge({ send: sendCmdProcessMessage,
     resolveRuntime: streamId => [...childToolSessions.values()].find(session => session.streamId === streamId
@@ -173,7 +175,10 @@ function notifyWindowShutdown() {
     }
 }
 
-function shutdownSubappOwners() {
+async function shutdownSubappOwners() {
+    const results = await Promise.allSettled([localSerialHost?.dispose(), localNetworkHost?.dispose()]);
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, 'Local Host resource cleanup remains unconfirmed');
     return subappOwnerSupervisor.shutdown();
 }
 
@@ -242,6 +247,8 @@ async function stopChildToolSessionProcess(session) {
     if (session.stopPromise) return session.stopPromise;
     session.stopping = true;
     const stopPromise = Promise.resolve().then(async () => {
+        await localNetworkHost?.closeRuntime(session.streamId);
+        await localSerialHost?.revokeRuntime(session.streamId);
         await browserExecutionHost.closeRuntime(session.streamId);
         if (session.nativeStop) {
             try { await session.nativeStop(); }
@@ -429,6 +436,12 @@ onCmdProcessMessage(routeChildToolProcessMessage);
 onCmdProcessExit(handleChildToolProcessExit);
 
 function handleChildToolProcessExit(event) {
+    void localNetworkHost?.closeRuntime(event.streamId).catch(error => {
+        console.warn('[LocalNetwork] Runtime exit cleanup requires retry', error.message);
+    });
+    void localSerialHost?.revokeRuntime(event.streamId).catch(error => {
+        console.warn('[LocalSerial] Runtime exit cleanup requires retry', error.message);
+    });
     nodeControlBroker.runtimeExited(event.streamId);
     void browserExecutionHost.closeRuntime(event.streamId).catch(error => {
         console.warn('[BrowserExecution] Runtime exit teardown remains unconfirmed', error.message);
@@ -535,6 +548,12 @@ function releaseChildToolSession(toolIdOrPayload, ownerId) {
 }
 
 function releaseChildToolSessionsForOwner(ownerId, reason = 'destroyed') {
+    void localNetworkHost?.closeSender(ownerId).catch(error => {
+        console.warn('[LocalNetwork] Renderer cleanup requires retry', error.message);
+    });
+    void localSerialHost?.revokeSender(ownerId).catch(error => {
+        console.warn('[LocalSerial] Renderer cleanup requires retry', error.message);
+    });
     let controllerReleased = false;
     for (const session of childToolSessions.values()) {
         controllerReleased = clearChildToolMessageControllerBinding(session, ownerId) || controllerReleased;
@@ -2104,11 +2123,21 @@ function registerWindowHandlers(mainWindow, options = {}) {
         return await sendCmdProcessMessage(authorization.streamId, payload.message);
     });
 
-    ipcMain.handle("child-tool-session-controller-bind", (event, payload = {}) => {
+    ipcMain.handle("child-tool-session-controller-bind", async (event, payload = {}) => {
         if (event.sender !== mainWindow.webContents) {
             return { success: false, reason: 'message-controller-not-authorized' };
         }
         const session = childToolSessions.get(sanitizeChildToolId(payload.toolId));
+        const nextBinding = typeof payload.bindingId === 'string' ? payload.bindingId.trim() : '';
+        if (session?.providerMessageController && payload.streamId === session.streamId
+            && session.messagePort && !session.exit && !session.stopping && nextBinding && nextBinding.length <= 128
+            && session.providerMessageController.bindingId !== nextBinding) {
+            await localNetworkHost?.closeBinding({ senderId: session.providerMessageController.ownerId,
+                toolId: payload.toolId, streamId: session.streamId, bindingId: session.providerMessageController.bindingId });
+            await localSerialHost?.revokeBinding(session.providerMessageController.ownerId, {
+                toolId: payload.toolId, streamId: session.streamId, bindingId: session.providerMessageController.bindingId,
+            });
+        }
         const result = bindChildToolMessageController(
             session, event.sender.id, payload, mainWindow.webContents.id,
         );
@@ -2120,10 +2149,13 @@ function registerWindowHandlers(mainWindow, options = {}) {
         };
     });
 
-    ipcMain.handle("child-tool-session-controller-unbind", (event, payload = {}) => {
+    ipcMain.handle("child-tool-session-controller-unbind", async (event, payload = {}) => {
         if (event.sender !== mainWindow.webContents) {
             return { success: false, reason: 'message-controller-not-authorized' };
         }
+        await localNetworkHost?.closeBinding({ senderId: event.sender.id, toolId: payload.toolId,
+            streamId: payload.streamId, bindingId: payload.bindingId });
+        await localSerialHost?.revokeBinding(event.sender.id, payload);
         return unbindChildToolMessageController(
             childToolSessions.get(sanitizeChildToolId(payload.toolId)),
             event.sender.id, payload, mainWindow.webContents.id,
@@ -2367,6 +2399,25 @@ module.exports = {
     listChildToolHoldersForCatalogId,
     getRunningSubappConfig,
     browserExecutionRegistry: {
+        localSerialRequireController(ownerId, input) {
+            const session = childToolSessions.get(input.toolId);
+            const result = authorizeChildToolMessagePortSend(session, ownerId, input);
+            if (!session?.providerMessageController || !result.success) throw new Error('Local serial controller binding has ended');
+        },
+        installLocalSerialHost(host) { localSerialHost = host; },
+        networkRequireController(ownerId, input) {
+            return module.exports.browserExecutionRegistry.localSerialRequireController(ownerId, input);
+        },
+        installNetworkHost(host) { localNetworkHost = host; },
+        resolveOriginalOwnerNetworkControl({ authority, requireCurrentController }) {
+            requireCurrentController();
+            const original = browserProcessBroker.resolveNetworkOwner({ runtimeId: authority.streamId,
+                ownerId: authority.senderId, toolId: authority.toolId });
+            if (!original) return null;
+            const control = browserExecutionHost.createNetworkOwnerControl(original);
+            requireCurrentController(); control.requireCurrent();
+            return control;
+        },
         broker: browserProcessBroker,
         nodeControlBroker,
         ownerBridge: browserOwnerBridge,

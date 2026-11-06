@@ -10,6 +10,13 @@ const validId = value => typeof value === 'string' && /^[A-Za-z0-9:_-]{1,96}$/.t
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const identityKeys = ['type', 'version', 'runtimeId', 'connectionId', 'requestId'];
 const failure = (code, message) => Object.assign(new Error(message), { code });
+// Only the existing finite Scene selection request may wait for its native
+// chooser. This budget does not supply a Scene, owner or network permission.
+const localNetworkSelection = payload => payload && Object.getPrototypeOf(payload) === Object.prototype
+    && exact(payload, ['schemaVersion', 'kind', 'operation', 'launchId', 'action'])
+    && payload.schemaVersion === 1 && payload.kind === 'aily-project-scene-shell-request'
+    && payload.operation === 'local-network' && payload.action === 'select'
+    && typeof payload.launchId === 'string' && /^launch-v1-[a-f0-9]{64}$/.test(payload.launchId);
 
 /** A low-frequency transport for a Main-authorized installed View. It owns no
  * domain methods, Sessions, process-controller leases or execution engines. */
@@ -127,7 +134,8 @@ class SubappNodeControlBroker {
                 || !Number.isInteger(frame.timeoutMs) || frame.timeoutMs < 100 || frame.timeoutMs > ((frame.payload?.operation === 'runtime'
                     && ['start', 'recover'].includes(frame.payload.action))
                     || (frame.payload?.operation === 'demonstration'
-                    && ['prepare', 'command'].includes(frame.payload.request?.operation)) ? 300000 : 30000)
+                    && ['prepare', 'command'].includes(frame.payload.request?.operation)) ? 300000
+                    : localNetworkSelection(frame.payload) ? 60000 : 30000)
                 || !frame.payload || Object.getPrototypeOf(frame.payload) !== Object.prototype) throw new Error('Invalid Node control request');
             if (record.seen.has(frame.requestId) || record.controls.has(frame.requestId)) throw new Error('Repeated Node control request identity');
             if (record.pending.size >= 16 || this.pendingCount >= 64 || this.pendingBytes + Buffer.byteLength(JSON.stringify(frame)) > 16 * MAX_BYTES || record.seen.size >= 65536) {

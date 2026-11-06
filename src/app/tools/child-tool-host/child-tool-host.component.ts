@@ -2624,7 +2624,12 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   /** Detached compact surfaces reuse the outer Host's Main-owned projection. */
-  get browserSurfaceWorkspace(): string | null { return this.resolveHostWorkspace(); }
+  get browserSurfaceWorkspace(): string | null {
+    if (this.isStandalone && this.standaloneWorkspace !== undefined) {
+      return this.standaloneWorkspace;
+    }
+    return this.workspaceHostProviders.readBrowserSurfaceWorkspace(this.resolvedToolId || this.toolId);
+  }
 
   get surfaceHostWorkspace(): string | null | undefined {
     return this.isStandalone ? this.standaloneWorkspace ?? null : undefined;

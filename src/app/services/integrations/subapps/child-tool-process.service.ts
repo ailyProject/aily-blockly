@@ -1063,9 +1063,26 @@ export class ChildToolProcessService implements OnDestroy {
       return;
     }
 
+    // Only this Main-owned Simulator command stream may supply classified notices.
+    // Raw bytes still reach the existing buffer immediately and exactly as before.
+    const classifiedSimulatorStderr = config.id === 'simulator'
+      && /^child_tool_simulator_[A-Za-z0-9_]+$/.test(streamId)
+      && output.streamId === streamId && output.stderrPresentation === 'main-simulator-line-v1';
     if (output.type === 'stderr' && output.data) {
       session.stderrBuffer += String(output.data);
-      this.logError(config, 'stderr', this.tailText(String(output.data)));
+      if (!classifiedSimulatorStderr) this.logError(config, 'stderr', this.tailText(String(output.data)));
+      return;
+    }
+
+    if (output.type === 'stderr-notice') {
+      if (classifiedSimulatorStderr && typeof output.data === 'string' && output.data.length > 0
+        && output.data.length <= 4096 && new TextEncoder().encode(output.data).byteLength <= 4096
+        && (output.classification === 'ordinary' || output.classification === 'internal-cleanup')) {
+        if (output.classification === 'internal-cleanup') this.log(config, 'internal cleanup diagnostic', output.data);
+        else this.logError(config, 'stderr', this.tailText(output.data));
+      } else {
+        this.logError(config, 'invalid stderr notice');
+      }
       return;
     }
 

@@ -935,11 +935,16 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
       });
 
       const process = result.process;
+      const classifiedSimulatorStderr = options.env?.AILY_CHILD_TOOL_ID === 'simulator'
+        && options.messagePort?.transport === 'node-ipc-v1'
+        && /^child_tool_simulator_[A-Za-z0-9_]+$/.test(streamId);
       const ownerCleanupDiagnostics = createSimulatorOwnerCleanupDiagnostics({
-        enabled: options.env?.AILY_CHILD_TOOL_ID === 'simulator'
-          && options.messagePort?.transport === 'node-ipc-v1'
-          && /^child_tool_simulator_[A-Za-z0-9_]+$/.test(streamId),
+        enabled: classifiedSimulatorStderr,
         write: value => console.warn(JSON.stringify(value)),
+        notice: value => sendCmdData(senderWindow, `cmd-data-${streamId}`, {
+          type: 'stderr-notice', data: value.text, streamId,
+          stderrPresentation: 'main-simulator-line-v1', classification: value.classification,
+        }),
       });
       if (delivery) {
         process.on('message', message => {
@@ -971,7 +976,6 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
 
       // 监听错误输出
       process.stderr.on('data', (data) => {
-        ownerCleanupDiagnostics.push(data);
         const output = data.toString();
 
         if (result.shouldLogOutput) {
@@ -981,8 +985,10 @@ function registerCmdHandlers(mainWindow, { buildDeliveryAuthority } = {}) {
         sendCmdData(senderWindow, `cmd-data-${streamId}`, {
           type: 'stderr',
           data: output,
-          streamId
+          streamId,
+          ...(classifiedSimulatorStderr ? { stderrPresentation: 'main-simulator-line-v1' } : {}),
         });
+        ownerCleanupDiagnostics.push(data);
       });
 
       // Reuse this command's sole physical observer for delivery and Renderer.

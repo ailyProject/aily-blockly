@@ -31,6 +31,16 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
     return workspace === this.readLoadedWorkspace() ? workspace : null;
   }
 
+  /** Browser View identity follows the loaded project, independently of a
+   * passive provider channel being retired and replaced. This grants no Host
+   * callback authority; ordinary requests still require readReadyWorkspace. */
+  readBrowserSurfaceWorkspace(toolId: string): string | null {
+    if (!this.registry.hasRegistration(toolId)) return this.project.currentProjectPath || null;
+    if (this.stopping) return null;
+    const workspace = this.readLoadedWorkspace();
+    return workspace && !this.project.isAilyCodeProject(workspace) ? workspace : null;
+  }
+
   /** Registered products only receive a root after their exact stream has been bound. */
   readReadyWorkspace(toolId: string): string | null {
     if (!this.registry.hasRegistration(toolId)) return this.project.currentProjectPath || null;
@@ -54,6 +64,13 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
       onError: toolId => console.warn('[SubappHostProvider] workspace binding failed', { toolId }),
     });
     this.removeListeners.push(api.onMessage((event: Parameters<typeof controller.receive>[0]) => controller.receive(event)));
+    if (api.onNetworkBindingState) this.removeListeners.push(api.onNetworkBindingState((event: Parameters<typeof controller.networkBindingState>[0]) => {
+      if (this.controller === controller) controller.networkBindingState(event);
+    }));
+    if (api.onNetworkLifetimeEnded) this.removeListeners.push(api.onNetworkLifetimeEnded((event: Parameters<typeof controller.networkLifetimeEnded>[0]) => {
+      if (this.controller !== controller || this.stopping) return;
+      void controller.networkLifetimeEnded(event).catch(() => console.warn('[SubappHostProvider] network binding cleanup remains unconfirmed'));
+    }));
     this.removeListeners.push(api.onStateChanged((runtimes: WorkspaceProviderRuntime[]) => {
       if (this.controller !== controller || this.stopping) return;
       this.discoveryRevision++;

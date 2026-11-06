@@ -3198,6 +3198,25 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
       ipcMain, ...handlerOptions.browserExecutionRegistry,
       prepareLaunch: payload => defaultManager.prepareLaunch(payload),
     });
+    const registry = handlerOptions.browserExecutionRegistry;
+    if (registry.localSerialRequireController && registry.installLocalSerialHost) {
+      require('./subapp-local-serial-ipc').registerLocalSerialHandlers({
+        ipcMain, getMainWindow,
+        requireController: registry.localSerialRequireController,
+        installHost: registry.installLocalSerialHost,
+        prepareLaunch: payload => defaultManager.prepareLaunch(payload),
+      });
+    }
+    if (registry.networkRequireController && registry.installNetworkHost) {
+      const { app, dialog, MessageChannelMain } = require('electron');
+      require('./subapp-network-main-ipc').registerConfiguredMainNetworkHostHandlers({
+        ipcMain, app, dialog, MessageChannelMain, getMainWindow,
+        prepareLaunch: payload => defaultManager.prepareLaunch(payload),
+        requireController: registry.networkRequireController,
+        installHost: registry.installNetworkHost,
+        resolveOriginalOwnerNetworkControl: registry.resolveOriginalOwnerNetworkControl,
+      });
+    }
   }
 
   const handleMutation = (action) => async (_event, payload = {}) => {

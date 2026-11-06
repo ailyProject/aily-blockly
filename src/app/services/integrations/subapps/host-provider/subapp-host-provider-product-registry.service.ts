@@ -12,6 +12,15 @@ export interface SubappHostProviderProductOpenContext {
   readonly hostInstanceId: string;
   /** Package root of the exact Runtime stream bound by the workspace. */
   readonly runtimePackagePath?: string;
+  /** Trusted Main bridge bound to this exact Runtime/controller, independent of project context. */
+  readonly localSerial?: (command: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /** Optional original Main network binding; no caller-selected destination or Core authority. */
+  readonly localNetwork?: {
+    /** Trusted product registers its exact normal catalog identity before requests. */
+    bindHostInstanceId(hostInstanceId: string): void;
+    request(request: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>>;
+    close(): Promise<void>;
+  };
   readonly transport: SubappHostProviderTransport;
 }
 
