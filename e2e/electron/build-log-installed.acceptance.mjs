@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -11,6 +12,7 @@ import { explicitOnlineModelId, resolveOnlineModelPreset,
   selectOnlineModelFromUi, assertSelectedOnlineModel } from '../fixtures/online-model-selection.mjs'
 import { prepareBuildLogProject, buildLogSourceHashes } from './fixtures/build-log-project.mjs'
 import { createBuildLogNetwork } from './fixtures/build-log-network.mjs'
+import { verifySealedComparisonBaseline, summarizeOnlineComparison, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
 
 // Real, explicitly enabled paid acceptance. Every model call is submitted by
 // the installed iframe composer. Services is the model upstream; the local
@@ -18,14 +20,19 @@ import { createBuildLogNetwork } from './fixtures/build-log-network.mjs'
 assert.equal(process.env.AILY_ONLINE_ACCEPTANCE, '1', 'Explicitly enable the real online acceptance')
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const required = ['connection-profile', 'installed-root', 'test-root', 'resource-root', 'lex-root', 'output']
-const optional = ['executable-path', 'host-build', 'boards-root', 'libraries-root']
+const optional = ['executable-path', 'host-build', 'boards-root', 'libraries-root', 'sealed-baseline-receipt']
 const { values } = parseArgs({ options: { ...Object.fromEntries([...required, ...optional, 'upstream-address'].map(name => [name, { type: 'string' }])),
+  'minimum-free-memory-mib': { type: 'string' },
+  'fixture-preflight-only': { type: 'boolean' },
+  'comparison-tools': { type: 'boolean' },
   cases: { type: 'string', default: 'success,failure,cancel,chat-stop,reconnect,observation' } } })
 for (const name of required) assert.ok(values[name] && path.isAbsolute(values[name]), `--${name} must be absolute`)
 for (const name of optional) if (values[name]) assert.ok(path.isAbsolute(values[name]), `--${name} must be absolute`)
 assert.ok(values['executable-path'] || values['host-build'], 'Provide the actual installed executable or a renderer build')
 const cases = values.cases.split(',')
-assert.ok(cases.length && new Set(cases).size === cases.length && cases.every(name => ['success', 'failure', 'cancel', 'chat-stop', 'reconnect', 'observation'].includes(name)))
+const minimumFreeMemoryMiB = values['minimum-free-memory-mib'] === undefined ? 0 : Number(values['minimum-free-memory-mib'])
+assert.ok(Number.isSafeInteger(minimumFreeMemoryMiB) && minimumFreeMemoryMiB >= 0)
+assert.ok(cases.length && new Set(cases).size === cases.length && cases.every(name => ['success', 'failure', 'cancel', 'chat-stop', 'reconnect', 'observation', 'field-edit'].includes(name)))
 const same = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
 const inside = (parent, file) => { const relative = path.relative(parent, file)
   return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative) }
@@ -56,7 +63,7 @@ const librariesRoot = values['libraries-root'] ?? path.resolve(repo, '../aily-bl
 const evidence = { ok: false, suite, output: values.output, cases: [], actualIframeComposer: true, realInstalledUi: true,
   onlineLlm: false, syntheticOutput: false, fabricatedToolResults: false, hardwareUsed: false,
   compiler: { backend: 'local', upstreamServicesIsCompiler: false }, userProjectsModified: false, cleanupFailures: [] }
-let app, page, loaded, renderer, proxy, hostPid, artifact, verifyPortableBuild, accessToken, selectedModel
+let app, page, loaded, renderer, proxy, hostPid, artifact, verifyPortableBuild, accessToken, selectedModel, expectedEffectiveModel
 const protectedFiles = new Map(), projects = new Map()
 const safeError = error => {
   let message = String(error?.message ?? error)
@@ -144,6 +151,18 @@ async function openProject(project, scenario) {
   return page.evaluate(() => JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace())))
 }
 async function submit(prompt) {
+  const startedAt = Date.now(), minimumBytes = minimumFreeMemoryMiB * 1024 * 1024
+  let freeMemoryBytes = os.freemem(), lowestFreeMemoryBytes = freeMemoryBytes, sampleCount = 1
+  while (freeMemoryBytes < minimumBytes && Date.now() - startedAt < 60000) {
+    assert.equal(page.isClosed(), false, 'The owned app closed while waiting for resources')
+    await wait(1000); freeMemoryBytes = os.freemem(); sampleCount++
+    lowestFreeMemoryBytes = Math.min(lowestFreeMemoryBytes, freeMemoryBytes)
+  }
+  const resource = { at: Date.now(), startedAt, waitMs: Date.now() - startedAt, sampleCount, lowestFreeMemoryBytes,
+    freeMemoryBytes, totalMemoryBytes: os.totalmem(), cpus: os.cpus().length,
+    ...(process.platform === 'win32' ? { loadAverageSupported: false } : { loadAverage: os.loadavg() }), minimumFreeMemoryMiB }
+  evidence.resources ??= []; evidence.resources.push(resource)
+  assert.ok(resource.freeMemoryBytes >= minimumFreeMemoryMiB * 1024 * 1024, 'Insufficient free physical memory for the explicitly bounded paid sample')
   const input = loaded.frame.locator('.aily-chat-composer-input[role="textbox"]')
   const send = loaded.frame.locator('button.primary-action.send-action')
   const deadline = Date.now() + 30000
@@ -213,6 +232,11 @@ async function settle({ project, record, expectedUserMessages }) {
       const users = snapshot.messages.filter(message => message.role === 'user').length
       if (users === expectedUserMessages && snapshot.isIdle && !snapshot.isStreaming && ['stop', 'error', 'aborted'].includes(final?.stopReason)) {
         record.final = { stopReason: final.stopReason, assistantTextSha256: sha(textOf(final)), errorMessage: final.errorMessage }
+        record.comparison = summarizeOnlineComparison(snapshot, { startedAt: record.submittedAt,
+          expectedModel: expectedEffectiveModel, expectedPreset: selectedModel?.id,
+          userStopObserved: record.stop?.surface === 'actual-chat-stop-button',
+          businessActionNames: record.scenario === 'field-edit' ? ['edit', 'abs_apply'] : ['project_build'] })
+        record.settledAt = Date.now()
         record.finalHost = state; record.toolResultIds = [...observed]
         await checkpoint()
         return snapshot
@@ -325,7 +349,14 @@ try {
   ;({ verifyPortableBuild } = await import(pathToFileURL(path.join(values['lex-root'], 'packages/aily-chat/server/portable-integrity.ts'))))
   artifact = await verifyPortableBuild(values['installed-root'])
   const { captureBuildInputs } = await import(pathToFileURL(path.join(values['lex-root'], 'packages/aily-chat/scripts/portable-build-inputs.mjs')))
-  assert.equal(artifact.inputHash, sha(JSON.stringify(await captureBuildInputs(values['lex-root']))))
+  if (values['sealed-baseline-receipt']) {
+    assert.ok(values['executable-path'] && !values['host-build'], 'A sealed before arm must use its sealed real host')
+    evidence.inputVerification = await verifySealedComparisonBaseline({ receiptFile: values['sealed-baseline-receipt'],
+      installedRoot: values['installed-root'], executablePath: values['executable-path'], artifact })
+  } else {
+    assert.equal(artifact.inputHash, sha(JSON.stringify(await captureBuildInputs(values['lex-root']))))
+    evidence.inputVerification = { mode: 'current-source', sourceCurrent: true, inputHash: artifact.inputHash }
+  }
   evidence.installed = artifact; evidence.upstream = { apiBase: api.origin, explicitConnectionProfile: true }
   proxy = await createBuildLogNetwork({ upstreamOrigin: api.origin, upstreamAddress: values['upstream-address'] })
   await phase('129-real-auth-and-model-preflight')
@@ -334,7 +365,12 @@ try {
   evidence.authStatus = me.status; await me.body?.cancel(); assert.equal(me.status, 200)
   if (explicitOnlineModelId(connection.model)) {
     const response = await fetch(proxy.origin + '/api/v2/model_catalog', { headers, signal: AbortSignal.timeout(15000) })
-    assert.equal(response.status, 200); selectedModel = resolveOnlineModelPreset(await response.json(), connection.model)
+    assert.equal(response.status, 200)
+    const catalog = await response.json()
+    selectedModel = resolveOnlineModelPreset(catalog, connection.model)
+    const preset = { ...catalog.data?.model_presets?.[selectedModel.id], ...catalog.data?.user_visible_model_presets?.[selectedModel.id] }
+    expectedEffectiveModel = preset.auto_select === false && typeof preset.model === 'string' ? preset.model : undefined
+    evidence.selectedModel = { ...selectedModel, expectedEffectiveModel, catalogSha256: sha(JSON.stringify(catalog)) }
   }
   const profile = await prepareInstalledChatProfile({ appData, installedRoot: values['installed-root'], apiBase: proxy.origin,
     baseConfigPath: connection.configFile, resourceAppData: values['resource-root'], token: accessToken })
@@ -344,7 +380,8 @@ try {
   // platform metadata and SDK/compiler bodies. Do not seed private metadata
   // through those junctions or write anything into the daily resource trees.
   const permission = { '*': 'deny', tool_load: 'allow', tool_invoke: 'allow', skill: 'allow', read: 'allow', project_build: 'allow',
-    todo: 'allow', external_directory: { '*': 'deny', [suite + '/*']: 'allow', [values['installed-root'] + '/*']: 'allow' },
+    todo: 'allow', ...(values['comparison-tools'] || cases.includes('field-edit') ? { edit: 'allow', abs_apply: 'allow', abs_validate: 'allow' } : {}),
+    external_directory: { '*': 'deny', [suite + '/*']: 'allow', [values['installed-root'] + '/*']: 'allow' },
     path: { '*': 'allow', [path.join(appData, '.aily')]: 'deny', [connection.authFile]: 'deny', [connection.configFile]: 'deny',
       [values['connection-profile']]: 'deny', [path.join(values['resource-root'], '.aily')]: 'deny' } }
   const policy = path.join(agentProfile, 'extensions/pi-permission-system/config.json')
@@ -401,6 +438,63 @@ try {
     evidence.cases.push(record)
     const baseline = await openProject(fixture.project, scenario)
     record.sourceBefore = await buildLogSourceHashes(fixture.project, sha)
+    if (values['fixture-preflight-only']) {
+      assert.equal(scenario, 'field-edit')
+      singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, 'VALUE', 100, 101)
+      record.ok = true; record.fixturePreflightOnly = true
+      await phase('verified-unpaid-field-fixture')
+      continue
+    }
+    if (scenario === 'field-edit') {
+      const expected = singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, 'VALUE', 100, 101)
+      const nativeBefore = JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
+        .blocklyService.captureRecoverySnapshot().documentText))
+      const expectedCompleteDocument = singleFieldExpectedDocument(nativeBefore, fixture.blockId, 'VALUE', 100, 101)
+      record.expectedCompleteDocument = expectedCompleteDocument
+      await phase('129-composer-' + scenario)
+      record.submittedAt = Date.now()
+      await submit(`请直接修改当前项目 ${fixture.project}：把唯一 build log probe 积木的 VALUE 数值从100改为101，并应用到当前工作区。只改这一个字段，完整保留所有其他程序、块ID、连接、注释和坐标。读取当前ABS，使用正常edit修改后调用abs_apply即可；不编译、不整理、不新建或打开工程、不调用shell、不要求用户操作。完成后简短报告。`)
+      const snapshot = await settle({ project: fixture.project, record, expectedUserMessages: 1 })
+      assert.equal(record.final.stopReason, 'stop')
+      const calls = callsOf(snapshot)
+      assert.ok(calls.some(call => call.actualName === 'abs_apply'), 'The real model must publish its edit')
+      for (const name of ['project_build', 'project_fork', 'project_recover', 'project_recovery', 'project_open', 'app_open', 'app_reload', 'bash', 'powershell', 'code_run'])
+        assert.equal(calls.some(call => call.actualName === name), false, `No unrelated action: ${name}`)
+      const actual = await page.evaluate(() => window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))
+      assert.deepEqual(actual, expected, 'Only the requested existing field may change; the complete program must survive')
+      const nativeAfter = JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
+        .blocklyService.captureRecoverySnapshot().documentText))
+      assert.deepEqual(nativeAfter, expectedCompleteDocument, 'The entire native document must retain every unedited page and shared model')
+      const persisted = await Promise.all(['project.abi', 'project.abs', 'project.abs.map.json'].map(file => fs.readFile(path.join(fixture.project, file))))
+      assert.deepEqual(JSON.parse(persisted[0].toString()), expectedCompleteDocument, 'The full requested document must actually be saved')
+      const applyCall = calls.filter(call => call.actualName === 'abs_apply').at(-1)
+      const applyMessage = snapshot.messages.find(message => message.role === 'toolResult' && message.toolCallId === applyCall.id)
+      const applied = payloadOf(applyMessage), binding = applied?.receipt?.output?.binding
+      assert.notEqual(applyMessage?.isError, true)
+      assert.equal(applied?.publication?.status, 'COMMITTED')
+      assert.equal(applied.requiresReload, false)
+      for (const key of ['abiSaved', 'absMirrored', 'mapPublished']) assert.equal(applied.publication[key], true)
+      assert.equal(applied.receipt?.version, 2); assert.equal(applied.receipt.validation?.ok, true)
+      assert.equal(applied.receipt.validation?.scope, 'complete-generation')
+      assert.equal(applied.applyVerification?.ok, true); assert.equal(applied.absPersistence?.verified, true)
+      assert.equal(applied.publication.generation, binding?.generation)
+      assert.ok(same(binding?.scope?.projectKey ?? '', fixture.project))
+      assert.deepEqual(persisted.map(bytes => 'sha256:' + sha(bytes)), [binding.abiHash, binding.absHash, binding.mapHash])
+      assert.equal(persisted[1].length, applied.receipt.output.absBytes)
+      const publicMap = JSON.parse(persisted[2].toString())
+      assert.equal(publicMap.generation, binding.generation); assert.deepEqual(publicMap.scope, binding.scope)
+      assert.equal(publicMap.baseAbsHash, binding.absHash)
+      record.absApplication = { toolCallId: applyCall.id, result: applied,
+        persisted: { abiHash: binding.abiHash, absHash: binding.absHash, mapHash: binding.mapHash, absBytes: persisted[1].length } }
+      assert.equal(record.comparison.modelEvidenceValid, true, 'Actual routed model must match the fixed catalog preset')
+      record.programIntegrity = { completeExpectedDocument: true, beforeSha256: sha(baseline),
+        expectedSha256: sha(JSON.stringify(expected)), actualSha256: sha(JSON.stringify(actual)), changedField: 'VALUE', before: 100, after: 101 }
+      record.ok = true
+      await page.screenshot({ path: path.join(values.output, scenario + '.png'), fullPage: true })
+      await fs.writeFile(path.join(values.output, scenario + '.json'), JSON.stringify(record, null, 2))
+      await phase('verified-' + scenario)
+      continue
+    }
     if (scenario === 'observation') {
       await phase('real-host-build-observation-disconnect')
       const { runBuildLogObservation } = await import('./fixtures/build-log-observation.mjs')
@@ -418,6 +512,7 @@ try {
       ? watchUserBuildStop(fixture.project, record, scenario === 'cancel' ? 'compile-notice' : 'chat') : undefined
     let snapshot
     try {
+      record.submittedAt = Date.now()
       await submit(prompt)
       snapshot = await settle({ project: fixture.project, record, expectedUserMessages: 1 })
     } finally { await stopWatcher?.finish() }
@@ -481,6 +576,7 @@ try {
         buildStarts: 1, compilerTransportFaultInjected: false }
     }
     record.ok = true
+    if (expectedEffectiveModel) assert.equal(record.comparison.modelEvidenceValid, true, 'Actual routed model must match the fixed catalog preset')
     await page.screenshot({ path: path.join(values.output, scenario + '.png'), fullPage: true })
     await fs.writeFile(path.join(values.output, scenario + '.json'), JSON.stringify(record, null, 2))
     await phase('verified-' + scenario)
