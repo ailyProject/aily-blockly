@@ -12,7 +12,7 @@ import { explicitOnlineModelId, resolveOnlineModelPreset,
   selectOnlineModelFromUi, assertSelectedOnlineModel } from '../fixtures/online-model-selection.mjs'
 import { prepareBuildLogProject, buildLogSourceHashes } from './fixtures/build-log-project.mjs'
 import { createBuildLogNetwork } from './fixtures/build-log-network.mjs'
-import { verifySealedComparisonBaseline, summarizeOnlineComparison, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
+import { verifySealedComparisonBaseline, summarizeOnlineComparison, summarizeCaseTransport, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
 
 // Real, explicitly enabled paid acceptance. Every model call is submitted by
 // the installed iframe composer. Services is the model upstream; the local
@@ -22,6 +22,8 @@ const repo = fileURLToPath(new URL('../../', import.meta.url))
 const required = ['connection-profile', 'installed-root', 'test-root', 'resource-root', 'lex-root', 'output']
 const optional = ['executable-path', 'host-build', 'boards-root', 'libraries-root', 'sealed-baseline-receipt']
 const { values } = parseArgs({ options: { ...Object.fromEntries([...required, ...optional, 'upstream-address'].map(name => [name, { type: 'string' }])),
+  'expected-thinking-level': { type: 'string' },
+  'expected-effective-model': { type: 'string' },
   'minimum-free-memory-mib': { type: 'string' },
   'fixture-preflight-only': { type: 'boolean' },
   'comparison-tools': { type: 'boolean' },
@@ -31,6 +33,7 @@ for (const name of optional) if (values[name]) assert.ok(path.isAbsolute(values[
 assert.ok(values['executable-path'] || values['host-build'], 'Provide the actual installed executable or a renderer build')
 const cases = values.cases.split(',')
 const minimumFreeMemoryMiB = values['minimum-free-memory-mib'] === undefined ? 0 : Number(values['minimum-free-memory-mib'])
+if (values['expected-thinking-level']) assert.match(values['expected-thinking-level'], /^[a-z]{2,16}$/)
 assert.ok(Number.isSafeInteger(minimumFreeMemoryMiB) && minimumFreeMemoryMiB >= 0)
 assert.ok(cases.length && new Set(cases).size === cases.length && cases.every(name => ['success', 'failure', 'cancel', 'chat-stop', 'reconnect', 'observation', 'field-edit'].includes(name)))
 const same = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
@@ -63,7 +66,7 @@ const librariesRoot = values['libraries-root'] ?? path.resolve(repo, '../aily-bl
 const evidence = { ok: false, suite, output: values.output, cases: [], actualIframeComposer: true, realInstalledUi: true,
   onlineLlm: false, syntheticOutput: false, fabricatedToolResults: false, hardwareUsed: false,
   compiler: { backend: 'local', upstreamServicesIsCompiler: false }, userProjectsModified: false, cleanupFailures: [] }
-let app, page, loaded, renderer, proxy, hostPid, artifact, verifyPortableBuild, accessToken, selectedModel, expectedEffectiveModel
+let app, page, loaded, renderer, proxy, hostPid, artifact, verifyPortableBuild, accessToken, selectedModel, expectedEffectiveModel, activeCase
 const protectedFiles = new Map(), projects = new Map()
 const safeError = error => {
   let message = String(error?.message ?? error)
@@ -73,7 +76,21 @@ const safeError = error => {
 }
 const checkpoint = async () => {
   evidence.transport = proxy?.snapshot()
+  for (const record of evidence.cases) {
+    if (!record.transportWindow) continue
+    Object.assign(record, summarizeCaseTransport(evidence.transport, record.transportWindow, {
+      functionalPassed: record.functionalPassed === true,
+      expectedFaultKind: record.scenario === 'reconnect' ? 'accepted-build-result-sse-disconnect' : null }))
+    if (record.transportWindow.endedAt !== undefined)
+      await fs.writeFile(path.join(values.output, record.scenario + '.json'), JSON.stringify(record, null, 2))
+  }
   await fs.writeFile(path.join(values.output, 'progress.json'), JSON.stringify(evidence, null, 2))
+}
+const finishCase = async (record, functionalPassed = true) => {
+  record.functionalPassed = functionalPassed
+  record.transportWindow.endRequestIndex = proxy.snapshot().requests.length
+  record.transportWindow.endedAt = Date.now()
+  await checkpoint()
 }
 const phase = async name => { evidence.phase = name; console.log(new Date().toISOString(), 'PHASE=' + name); await checkpoint() }
 async function trustOnly(project) {
@@ -234,8 +251,19 @@ async function settle({ project, record, expectedUserMessages }) {
         record.final = { stopReason: final.stopReason, assistantTextSha256: sha(textOf(final)), errorMessage: final.errorMessage }
         record.comparison = summarizeOnlineComparison(snapshot, { startedAt: record.submittedAt,
           expectedModel: expectedEffectiveModel, expectedPreset: selectedModel?.id,
+          transport: proxy.snapshot(),
           userStopObserved: record.stop?.surface === 'actual-chat-stop-button',
           businessActionNames: record.scenario === 'field-edit' ? ['edit', 'abs_apply'] : ['project_build'] })
+        if (values['expected-thinking-level']) {
+          record.comparison.expectedThinkingLevel = values['expected-thinking-level']
+          record.comparison.thinkingEvidenceValid = record.comparison.thinkingLevels.length > 0
+            && record.comparison.thinkingLevels.every(level => level === values['expected-thinking-level'])
+          assert.equal(record.comparison.thinkingEvidenceValid, true, 'Observe the requested thinking setting; never silently lower it')
+          record.comparison.httpReasoningEvidenceValid = record.comparison.providerTimings.length > 0
+            && record.comparison.providerTimings.every(item => item.httpEvidence?.reasoningEffortComplete
+              && item.httpEvidence.reasoningEfforts.every(level => level === values['expected-thinking-level']))
+          assert.equal(record.comparison.httpReasoningEvidenceValid, true, 'Observe the actual unchanged HTTP request reasoning_effort separately from session selection')
+        }
         record.settledAt = Date.now()
         record.finalHost = state; record.toolResultIds = [...observed]
         await checkpoint()
@@ -370,8 +398,11 @@ try {
     selectedModel = resolveOnlineModelPreset(catalog, connection.model)
     const preset = { ...catalog.data?.model_presets?.[selectedModel.id], ...catalog.data?.user_visible_model_presets?.[selectedModel.id] }
     expectedEffectiveModel = preset.auto_select === false && typeof preset.model === 'string' ? preset.model : undefined
+    if (values['expected-effective-model'])
+      assert.equal(expectedEffectiveModel, values['expected-effective-model'], 'The comparison catalog must pin the explicitly expected effective model')
     evidence.selectedModel = { ...selectedModel, expectedEffectiveModel, catalogSha256: sha(JSON.stringify(catalog)) }
   }
+  if (values['expected-effective-model']) assert.equal(expectedEffectiveModel, values['expected-effective-model'])
   const profile = await prepareInstalledChatProfile({ appData, installedRoot: values['installed-root'], apiBase: proxy.origin,
     baseConfigPath: connection.configFile, resourceAppData: values['resource-root'], token: accessToken })
   profile.config.compile = { ...profile.config.compile, backend: 'local' }
@@ -384,6 +415,7 @@ try {
     external_directory: { '*': 'deny', [suite + '/*']: 'allow', [values['installed-root'] + '/*']: 'allow' },
     path: { '*': 'allow', [path.join(appData, '.aily')]: 'deny', [connection.authFile]: 'deny', [connection.configFile]: 'deny',
       [values['connection-profile']]: 'deny', [path.join(values['resource-root'], '.aily')]: 'deny' } }
+  evidence.toolPermissionPolicy = Object.fromEntries(Object.entries(permission).filter(([key]) => !['path', 'external_directory'].includes(key)))
   const policy = path.join(agentProfile, 'extensions/pi-permission-system/config.json')
   await fs.mkdir(path.dirname(policy), { recursive: true }); await fs.writeFile(policy, JSON.stringify({ permission }), { flag: 'wx' })
   if (values['host-build']) renderer = await serveRendererBuild(values['host-build'])
@@ -434,7 +466,10 @@ try {
   await page.waitForFunction(() => window.ng?.getComponent(document.querySelector('app-header'))?.projectService)
   const allRequestIds = new Set()
   for (const scenario of cases) {
-    const fixture = projects.get(scenario), record = { scenario, project: fixture.project, tools: [] }
+    const fixture = projects.get(scenario), record = { scenario, project: fixture.project, tools: [],
+      functionalPassed: false, performanceEligible: false, expectedInjectedFault: null, unexpectedTransportFailures: [],
+      transportWindow: { startRequestIndex: proxy.snapshot().requests.length, startedAt: Date.now() } }
+    activeCase = record
     evidence.cases.push(record)
     const baseline = await openProject(fixture.project, scenario)
     record.sourceBefore = await buildLogSourceHashes(fixture.project, sha)
@@ -442,6 +477,7 @@ try {
       assert.equal(scenario, 'field-edit')
       singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, 'VALUE', 100, 101)
       record.ok = true; record.fixturePreflightOnly = true
+      await finishCase(record, false)
       await phase('verified-unpaid-field-fixture')
       continue
     }
@@ -490,6 +526,7 @@ try {
       record.programIntegrity = { completeExpectedDocument: true, beforeSha256: sha(baseline),
         expectedSha256: sha(JSON.stringify(expected)), actualSha256: sha(JSON.stringify(actual)), changedField: 'VALUE', before: 100, after: 101 }
       record.ok = true
+      await finishCase(record)
       await page.screenshot({ path: path.join(values.output, scenario + '.png'), fullPage: true })
       await fs.writeFile(path.join(values.output, scenario + '.json'), JSON.stringify(record, null, 2))
       await phase('verified-' + scenario)
@@ -501,6 +538,7 @@ try {
       record.observation = await runBuildLogObservation({ app, page, loaded, project: fixture.project, suite, home, appData,
         installedRoot: values['installed-root'], output: values.output, hostPid })
       record.ok = true
+      await finishCase(record)
       await fs.writeFile(path.join(values.output, scenario + '.json'), JSON.stringify(record, null, 2))
       await phase('verified-' + scenario)
       continue
@@ -575,8 +613,9 @@ try {
       record.reconnect = { fault, sameRequestId: requestId, canonicalStateObserved: true, originalOperationEventsResumed: true,
         buildStarts: 1, compilerTransportFaultInjected: false }
     }
-    record.ok = true
     if (expectedEffectiveModel) assert.equal(record.comparison.modelEvidenceValid, true, 'Actual routed model must match the fixed catalog preset')
+    record.ok = true
+    await finishCase(record)
     await page.screenshot({ path: path.join(values.output, scenario + '.png'), fullPage: true })
     await fs.writeFile(path.join(values.output, scenario + '.json'), JSON.stringify(record, null, 2))
     await phase('verified-' + scenario)
@@ -586,6 +625,10 @@ try {
   await phase('complete')
 } catch (error) {
   evidence.error = safeError(error)
+  if (activeCase && !activeCase.functionalPassed) {
+    activeCase.error = safeError(error)
+    await finishCase(activeCase, false)
+  }
   console.error(JSON.stringify(evidence.error))
   if (page) await page.screenshot({ path: path.join(values.output, 'failure.png'), fullPage: true }).catch(() => {})
   process.exitCode = 1

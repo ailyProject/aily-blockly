@@ -12,6 +12,58 @@ async function fileHash(file) {
 }
 const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
 const textBytes = message => Buffer.byteLength((message?.content ?? []).filter(item => item.type === 'text').map(item => item.text).join('\n'))
+const elapsed = (start, end) => Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null
+const modelPost = item => item.method === 'POST' && /^\/api\/v3\/interactions(?:\/[^/]+\/steps)?$/.test(item.path)
+const sumBytes = (items, key) => items.every(item => Number.isSafeInteger(item[key]))
+  ? items.reduce((sum, item) => sum + item[key], 0) : null
+
+/** A finished case keeps its own request interval, even when a later fixture
+ * fails. Refreshing this summary also attributes late failures of an earlier
+ * in-flight request to its original case instead of the next case. */
+export function summarizeCaseTransport(network, window, { functionalPassed = false, expectedFaultKind = null } = {}) {
+  const requests = (network?.requests ?? []).slice(window.startRequestIndex, window.endRequestIndex)
+  const ids = new Set(requests.map(item => item.id).filter(Boolean))
+  const within = item => item.requestId ? ids.has(item.requestId)
+    : Number.isFinite(item.at) && item.at >= window.startedAt && (window.endedAt === undefined || item.at <= window.endedAt)
+  const faults = (network?.faults ?? []).filter(within)
+  const unexpectedTransportFailures = (network?.failures ?? []).filter(within)
+  const unattributedTransportFailures = (network?.failures ?? []).filter(item => !item.requestId && !Number.isFinite(item.at))
+  const nonApiHttpErrors = []
+  for (const item of requests.filter(item => Number.isFinite(item.status) && item.status >= 400)) {
+    const failure = { code: 'upstream-http-status', requestId: item.id, method: item.method,
+      path: item.path, status: item.status, at: item.headersReceivedAt }
+    if (item.path.startsWith('/api/')) unexpectedTransportFailures.push(failure)
+    else nonApiHttpErrors.push(failure)
+  }
+  const expected = faults.filter(item => item.kind === expectedFaultKind)
+  for (const item of faults.filter(item => item.kind !== expectedFaultKind))
+    unexpectedTransportFailures.push({ code: 'unexpected-injected-fault', requestId: item.requestId, kind: item.kind, at: item.at })
+  const incompleteRequestIds = requests.filter(item => item.upstreamRequestStartedAt && !item.requestClosedAt).map(item => item.id)
+  const expectedInjectedFault = expectedFaultKind ? { kind: expectedFaultKind, expectedCount: 1,
+    observedCount: expected.length, confirmed: expected.length === 1 } : null
+  const performanceExclusionReasons = [
+    ...(!functionalPassed ? ['functional-not-passed'] : []),
+    ...(expectedFaultKind || faults.length ? ['injected-fault-scenario'] : []),
+    ...(unexpectedTransportFailures.length ? ['unexpected-transport-failure'] : []),
+    ...(unattributedTransportFailures.length ? ['transport-failure-attribution-unavailable'] : []),
+    ...(incompleteRequestIds.length ? ['transport-still-in-flight'] : [])]
+  const posts = requests.filter(modelPost)
+  return { functionalPassed, performanceEligible: performanceExclusionReasons.length === 0,
+    expectedInjectedFault, unexpectedTransportFailures, unattributedTransportFailures, nonApiHttpErrors, performanceExclusionReasons,
+    transportMeasurement: { requestIds: requests.map(item => item.id).filter(Boolean),
+      httpSendCount: requests.every(item => Object.hasOwn(item, 'upstreamRequestStartedAt'))
+        ? requests.filter(item => item.upstreamRequestStartedAt).length : null,
+      receivedHttpResponseCount: requests.every(item => Object.hasOwn(item, 'headersReceivedAt'))
+        ? requests.filter(item => item.headersReceivedAt).length : null,
+      modelPostCount: posts.length, modelReposts: posts.filter(item => item.repostOf).map(item => ({ requestId: item.id,
+        repostOf: item.repostOf, source: item.source, attemptForOriginalStep: item.attemptForOriginalStep })),
+      bodyBytes: sumBytes(requests, 'bodyBytes'), modelBodyBytes: sumBytes(posts, 'bodyBytes'),
+      modelPayloadBytesIncludingReposts: sumBytes(posts, 'payloadBytes'),
+      responseBodyBytes: sumBytes(requests, 'responseBodyBytes'), downstreamBodyBytes: sumBytes(requests, 'downstreamBodyBytes'),
+      incompleteRequestIds, socketBytes: null, headersAndTlsBytes: null,
+      errorScope: 'all upstream/proxy I/O failures and /api/* HTTP errors affect eligibility; non-API HTTP statuses are retained separately',
+      byteAccounting: 'HTTP entity bytes only; complete request field is repeated per POST; provider cacheRead is token reuse, not network bytes' } }
+}
 
 /** Explicit old-package arm only. The ordinary acceptance still binds the
  * package to current source. This verifies the already sealed bytes instead,
@@ -62,7 +114,7 @@ export async function verifySealedComparisonBaseline({ receiptFile, installedRoo
 /** Retain provider evidence from actual UI-session messages. A preset name is
  * not proof of the routed model, and reasoning tokens are a subset of output. */
 export function summarizeOnlineComparison(snapshot, { startedAt, expectedModel, expectedPreset,
-  businessActionNames = ['project_build', 'edit', 'abs_apply', 'abs_import'], userStopObserved = false } = {}) {
+  businessActionNames = ['project_build', 'edit', 'abs_apply', 'abs_import'], userStopObserved = false, transport } = {}) {
   const messages = snapshot?.messages ?? []
   const localAborts = messages.filter(item => userStopObserved && item.role === 'assistant' && item.usage
     && !item.responseId && !item.responseModel && !item.responsePresetId && !item.responseQuotaSnapshot
@@ -85,10 +137,26 @@ export function summarizeOnlineComparison(snapshot, { startedAt, expectedModel, 
   const totals = Object.fromEntries(['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'totalTokens']
     .map(key => [key, samples.reduce((sum, item) => sum + (Number.isFinite(item.usage?.[key]) ? item.usage[key] : 0), 0)]))
   const providerTimings = (snapshot.entries ?? []).filter(entry => entry.type === 'custom' && entry.customType === 'aily.provider-timing')
-    .map(({ data }) => ({ requestId: data.requestId, selectedModel: data.selectedModel, effectiveModel: data.effectiveModel,
+    .map(({ data }) => {
+      const posts = (transport?.requests ?? []).filter(item => modelPost(item) && item.at >= data.requestStartedAt && item.at <= data.completedAt)
+      return { requestId: data.requestId, selectedModel: data.selectedModel, effectiveModel: data.effectiveModel,
       status: data.status, preparationStartedAt: data.preparationStartedAt, requestStartedAt: data.requestStartedAt,
       firstResponseAt: data.firstResponseAt, firstOutputAt: data.firstOutputAt, completedAt: data.completedAt,
-      responseAttempts: data.responseAttempts, responseResets: data.responseResets }))
+      responseAttempts: data.responseAttempts, responseResets: data.responseResets,
+      localRequestPreparationMs: elapsed(data.preparationStartedAt, data.requestStartedAt),
+      firstReceivedHeadersEnvelopeMs: elapsed(data.requestStartedAt, data.firstResponseAt),
+      firstMeaningfulStreamEventEnvelopeMs: elapsed(data.requestStartedAt, data.firstOutputAt),
+      afterFirstMeaningfulStreamEventMs: elapsed(data.firstOutputAt, data.completedAt),
+      operationObservations: (data.operationObservations ?? []).map(item => ({ phase: item.phase, kind: item.kind, status: item.status, at: item.at })),
+      httpEvidence: transport ? { modelPostCount: posts.length,
+        receivedHttpResponseCount: posts.every(item => Object.hasOwn(item, 'headersReceivedAt'))
+          ? posts.filter(item => item.headersReceivedAt).length : null,
+        requestIds: posts.map(item => item.id), bodyBytes: sumBytes(posts, 'bodyBytes'), payloadBytesIncludingReposts: sumBytes(posts, 'payloadBytes'),
+        reasoningEfforts: [...new Set(posts.map(item => item.reasoningEffort).filter(value => typeof value === 'string'))],
+        reasoningEffortComplete: posts.length > 0 && posts.every(item => typeof item.reasoningEffort === 'string'),
+        originalStepKeys: [...new Set(posts.map(item => item.source?.originalStepKey).filter(Boolean))],
+        repostRequestIds: posts.filter(item => item.repostOf).map(item => item.id) } : null }
+    })
   const toolExecutionTimings = (snapshot.entries ?? []).filter(entry => entry.type === 'custom' && entry.customType === 'aily.tool-timing')
     .map(({ data }) => ({ ...data, actualName: calls.find(call => call.id === data.toolCallId)?.name ?? data.toolName }))
   const mismatches = samples.filter(item => !item.effectiveModel || expectedModel && item.effectiveModel !== expectedModel
@@ -101,6 +169,18 @@ export function summarizeOnlineComparison(snapshot, { startedAt, expectedModel, 
       ? first.executionStartedAt - startedAt : null,
     requestPreparationProxyAfterMs: first && Number.isFinite(startedAt) ? first.requestPreparationAt - startedAt : undefined,
     providerTimings, toolExecutionTimings,
+    timingBoundaries: { responseAttempts: 'received provider HTTP responses, not HTTP sends or failed pre-response attempts',
+      firstResponseAt: 'first received response callback; includes any prior failure/recovery envelope',
+      firstOutputAt: 'first meaningful stream event, including thinking; not pure network TTFT or final answer',
+      toolExecution: 'includes argument validation, beforeToolCall gates, handler and afterToolCall; not pure compiler time',
+      beforeFirstProvider: 'unseparated UI/session/hook/history/ABS preparation envelope; no pure hostBeforeTurn clock',
+      pureReasoningMs: null },
+    logicalPayloads: (snapshot.entries ?? []).filter(entry => entry.type === 'custom' && entry.customType === 'aily.wire-context')
+      .map(({ data }) => ({ payloadBytes: data.payloadBytes, preHookPayloadBytes: data.preHookPayloadBytes,
+        payloadHash: data.payloadHash, prefixStable: data.prefixStable })),
+    thinkingLevels: [...new Set((snapshot.entries ?? []).filter(entry => entry.type === 'thinking_level_change')
+      .map(entry => entry.thinkingLevel).filter(level => typeof level === 'string'))],
+    thinkingEvidenceSource: 'session thinking_level_change; actual HTTP request reasoning_effort is recorded separately per provider',
     userTextBytes: messages.filter(item => item.role === 'user').reduce((sum, item) => sum + textBytes(item), 0),
     userTurns: messages.filter(item => item.role === 'user').length }
 }
