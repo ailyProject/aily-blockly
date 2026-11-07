@@ -985,6 +985,71 @@ test('Build owner close joins original execution that ignores abort before confi
   }
 });
 
+test('active Build cancellation uses exact original scope, retains its slot, and fences a late successful Artifact', async () => {
+  const { SimulatorBuildCallbackAuthority, SimulatorBuildHostProviderAdapter, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), request = rebuildRequest(document);
+  const gate = Promise.withResolvers(), events = []; let originalSignal;
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, observer, signal) {
+      originalSignal = signal; observer.report('compiling', 500);
+      await gate.promise;
+      return artifactDescriptorFixture(Buffer.from('late-success-must-not-import'), document.graphSemanticRevision);
+    },
+  } });
+  const adapter = new SimulatorBuildHostProviderAdapter({ ...authority.callbacks, now: () => now, publishProgressEvent: event => events.push(event) });
+  const { afterSequence: _, ...cancel } = progressSubscription(request);
+  try {
+    await adapter.handleInvocation(providerInvocation('build', 'build.artifact.request', request));
+    await adapter.handleInvocation(providerInvocation('build', 'build.progress.subscribe', progressSubscription(request)));
+    await waitFor(() => originalSignal);
+    for (const field of ['projectIdentity', 'sessionId', 'sceneId', 'sceneRevision', 'baseArtifactRevision']) {
+      const foreign = { ...cancel, [field]: field.endsWith('Revision') ? 'f'.repeat(64) : 'foreign' };
+      const rejected = await adapter.handleInvocation(providerInvocation('build', 'build.artifact.cancel', foreign, 'foreign-' + field));
+      assert.equal(rejected.status, 'failed'); assert.equal(rejected.errorCode, 'invalid-request');
+      assert.equal(originalSignal.aborted, false, 'Foreign cancellation cannot stop another owner/request scope.');
+    }
+    const ack = await adapter.handleInvocation(providerInvocation('build', 'build.artifact.cancel', cancel, 'actual-cancel'));
+    assert.equal(ack.status, 'succeeded'); assert.equal(ack.payload.status, 'cancel-requested');
+    assert.equal(ack.payload.stage, 'compiling'); assert.equal(originalSignal.aborted, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert(!events.some(event => ['completed', 'cancelled'].includes(event.payload.stage)));
+    assert.equal(authority.snapshot().activeRequestId, request.requestId);
+    const next = { ...request, requestId: `rebuild-v1-${'9'.repeat(64)}` };
+    assert.equal(authority.callbacks.requestArtifact(next, new AbortController().signal).status, 'conflict');
+    gate.resolve(); await waitFor(() => authority.snapshot().activeRequestId === null);
+    assert.equal(events.filter(event => event.payload.stage === 'cancelled').length, 1);
+    assert(!events.some(event => event.payload.stage === 'completed'), 'Late successful compile cannot become a completed import candidate.');
+    const repeated = await adapter.handleInvocation(providerInvocation('build', 'build.artifact.cancel', cancel, 'terminal-cancel'));
+    assert.equal(repeated.payload.status, 'already-terminal'); assert.equal(repeated.payload.stage, 'cancelled');
+    const absent = await adapter.handleInvocation(providerInvocation('build', 'build.artifact.cancel', { ...cancel, requestId: next.requestId }, 'absent-cancel'));
+    assert.equal(absent.payload.status, 'not-found'); assert.equal(absent.payload.stage, null);
+  } finally { gate.resolve(); await authority.close(); adapter.close(); }
+});
+
+test('same-tick active cancellation prevents dispatch and observer RPC abort never cancels original execution', async () => {
+  const { SimulatorBuildCallbackAuthority, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
+  const document = await createEmptySceneEditorDocumentV2(sceneId), request = rebuildRequest(document), signal = new AbortController().signal;
+  let calls = 0;
+  const authority = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild() { calls++; throw new Error('Actual source operation ended'); },
+  } });
+  const { afterSequence: _, ...cancel } = progressSubscription(request);
+  authority.callbacks.requestArtifact(request, signal);
+  assert.equal(authority.callbacks.cancelArtifact(cancel, signal).status, 'cancel-requested');
+  await waitFor(() => authority.snapshot().activeRequestId === null);
+  assert.equal(calls, 0); await authority.close();
+  const gate = Promise.withResolvers(); let actualSignal;
+  const running = new SimulatorBuildCallbackAuthority({ projectIdentity, sceneId, execution: {
+    async reconcileAndBuild(_request, _observer, current) { actualSignal = current; await gate.promise; throw new Error('Actual source operation ended'); },
+  } });
+  try {
+    running.callbacks.requestArtifact(request, signal); await waitFor(() => actualSignal);
+    const observer = new AbortController(); running.callbacks.subscribeProgress(progressSubscription(request), () => {}, observer.signal);
+    observer.abort(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(actualSignal.aborted, false); assert.equal(running.snapshot().activeRequestId, request.requestId);
+  } finally { gate.resolve(); await running.close(); }
+});
+
 test('Build shared Main slot protects different product compositions until original close actually settles', async () => {
   const { SimulatorBuildProductComposition, createSimulatorBuildExecutionSlot, createEmptySceneEditorDocumentV2 } = await integrationModulePromise;
   const document = await createEmptySceneEditorDocumentV2(sceneId);
@@ -1237,27 +1302,36 @@ test('Build progress listener throwing during owner cancellation cannot interrup
       executionSignal = signal; observer.report('compiling', 500); await gate; return artifact;
     },
   } });
-  t.after(() => authority.close());
+  t.after(async () => { releaseBuild(); await authority.close(); });
   const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [];
-  authority.callbacks.requestArtifact(request, signal);
-  authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
-    if (progress.stage === 'cancelled') throw new Error('cancel transport closed');
-  }, signal);
-  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
-  await waitFor(() => executionSignal !== undefined);
   let closing;
-  assert.doesNotThrow(() => { closing = authority.close(); });
-  assert.equal(executionSignal.aborted, true);
-  assert.equal(healthy.at(-1).stage, 'cancelled');
-  assert.equal(healthy.at(-1).errorCode, 'cancelled');
-  assert.equal(healthy.at(-1).artifact, null);
-  assert.equal(authority.snapshot().activeSubscriptions, 0);
-  assert.equal(authority.snapshot().activeRequestId, request.requestId);
-  releaseBuild();
-  await closing;
-  assert.equal(authority.snapshot().activeRequestId, null);
-  assert.equal(healthy.filter(progress => progress.stage === 'cancelled').length, 1);
-  assert(!healthy.some(progress => progress.stage === 'completed'));
+  try {
+    authority.callbacks.requestArtifact(request, signal);
+    authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
+      if (progress.stage === 'cancelled') throw new Error('cancel transport closed');
+    }, signal);
+    authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+    await waitFor(() => executionSignal !== undefined);
+    assert.doesNotThrow(() => { closing = authority.close(); });
+    assert.equal(executionSignal.aborted, true);
+    assert.equal(healthy.at(-1).stage, 'compiling');
+    assert(!healthy.some(progress => progress.stage === 'cancelled'), 'Close intent cannot attest original execution settlement.');
+    assert.equal(authority.snapshot().activeSubscriptions, 2);
+    assert.equal(authority.snapshot().activeRequestId, request.requestId);
+    assert.throws(() => authority.callbacks.requestArtifact(request, signal), error => error.code === 'cancelled');
+    releaseBuild();
+    await closing;
+    assert.equal(healthy.at(-1).stage, 'cancelled');
+    assert.equal(healthy.at(-1).errorCode, 'cancelled');
+    assert.equal(healthy.at(-1).artifact, null);
+    assert.equal(authority.snapshot().activeSubscriptions, 0);
+    assert.equal(authority.snapshot().activeRequestId, null);
+    assert.equal(healthy.filter(progress => progress.stage === 'cancelled').length, 1);
+    assert(!healthy.some(progress => progress.stage === 'completed'));
+  } finally {
+    releaseBuild();
+    await (closing ?? authority.close());
+  }
 });
 
 test('Build progress listener throwing before terminal does not change a successful build outcome', async t => {
@@ -1347,11 +1421,12 @@ test('execution-settled is emitted only after ignored-abort work and actual shar
   try {
     first.callbacks.requestArtifact(request, signal); await waitFor(() => started);
     const closing = first.close(); await new Promise(resolve => setImmediate(resolve));
-    assert(logs.some(entry => entry.row.stage === 'terminal-cancelled'));
+    assert(!logs.some(entry => entry.row.stage === 'terminal-cancelled'), 'Cancel intent cannot attest physical completion.');
     assert.equal(logs.filter(entry => entry.row.stage === 'execution-settled').length, 0, 'Projected cancellation/observer input cannot attest original settlement.');
     assert.equal(releases, 0);
     assert.equal((await second.callbacks.requestArtifact(next, signal)).status, 'conflict');
     gate.resolve(); await closing;
+    assert(logs.some(entry => entry.row.stage === 'terminal-cancelled'));
     const settled = logs.filter(entry => entry.row.requestId === request.requestId && entry.row.stage === 'execution-settled');
     assert.equal(settled.length, 1); assert.equal(settled[0].slotFreeAtObservation, true); assert.equal(settled[0].releasesAtObservation, 1);
     assert.equal(first.snapshot().activeRequestId, null);
@@ -2986,31 +3061,21 @@ async function loadIntegrationModule() {
     `aily-simulator-product-callbacks-${process.pid}-${Date.now()}.cjs`,
   );
 
-  const sdkEntry = path.join(
-    simulatorRoot,
-    'packages',
-    'simulator-embed-host',
-    'src',
-    'index.ts',
-  );
-
-  const protocolRoot = path.join(simulatorRoot, 'packages', 'simulator-protocol');
-  const protocolPackage = JSON.parse(await fs.readFile(path.join(protocolRoot, 'package.json'), 'utf8'));
-
-  const protocolAliases = Object.fromEntries(Object.entries(protocolPackage.exports)
-    .filter(([, target]) => typeof target?.import === 'string')
-    .map(([subpath, target]) => [
-      `${protocolPackage.name}${subpath === '.' ? '' : subpath.slice(1)}`,
-      path.join(protocolRoot, target.import.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts')),
-    ]));
-
-  const sceneModelEntry = path.join(
-    simulatorRoot,
-    'packages',
-    'scene-model',
-    'src',
-    'index.ts',
-  );
+  // Main consumes the installed, staged SDK. Keep this same SDK boundary when
+  // bundling tests, including imports from the application-only source fixtures.
+  const sdkAliases = {};
+  for (const name of ['scene-model', 'simulator-protocol', 'simulator-registry',
+    'component-catalog', 'simulator-target-model', 'simulator-board-package',
+    'simulator-catalog', 'simulator-host-sdk']) {
+    const packageRoot = path.resolve(__dirname, '../node_modules/@aily-project', name);
+    const manifest = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+    for (const [subpath, target] of Object.entries(manifest.exports)) {
+      if (typeof target?.import !== 'string') continue;
+      sdkAliases[`${manifest.name}${subpath === '.' ? '' : subpath.slice(1)}`] = path.join(packageRoot, target.import);
+    }
+  }
+  const sdkEntry = sdkAliases['@aily-project/simulator-host-sdk'];
+  const sceneModelEntry = sdkAliases['@aily-project/scene-model'];
 
   const projectAuthority = path.resolve(
     __dirname,
@@ -3090,11 +3155,7 @@ async function loadIntegrationModule() {
     platform: 'node',
     target: 'node20',
     outfile,
-    alias: {
-      '@aily-project/simulator-host-sdk': sdkEntry,
-      ...protocolAliases,
-      '@aily-project/scene-model': sceneModelEntry,
-    },
+    alias: sdkAliases,
     logLevel: 'silent',
   });
 
@@ -3144,6 +3205,14 @@ async function loadHostProductService({ digest, onComposition }) {
         constructor(options) { onComposition(options); }
         close() {}
       },
+    },
+    './simulator-coder-build-execution-port': {
+      CoderSimulatorBuildExecutionPort: class {
+        constructor() { throw new Error('Blockly source fixture must not build Coder projects'); }
+      },
+    },
+    './simulator-coder-source-reader': {
+      createSimulatorCoderSourceReader() { throw new Error('Blockly source fixture must not read Coder projects'); },
     },
     './simulator-build-callback-authority': {
       createSimulatorBuildExecutionSlot: (await integrationModulePromise).createSimulatorBuildExecutionSlot,

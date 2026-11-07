@@ -10,6 +10,8 @@ import {
   type SimulatorSubappHostBuildProgressStage,
   type SimulatorSubappHostBuildProgressSubscribeV1,
   type SimulatorSubappHostBuildProgressV1,
+  type SimulatorSubappHostBuildArtifactCancelV1,
+  type SimulatorSubappHostBuildArtifactCancelResultV1,
 } from '@aily-project/simulator-protocol/host';
 import type {
   SceneArtifactRebuildAck,
@@ -124,7 +126,7 @@ export class SimulatorBuildCallbackAuthority {
   readonly sceneId: string;
   readonly callbacks: Pick<
     SimulatorBuildHostProviderAdapterOptions,
-    'requestArtifact' | 'subscribeProgress'
+    'requestArtifact' | 'subscribeProgress' | 'cancelArtifact'
   >;
 
   private readonly execution: SimulatorBuildExecutionPort;
@@ -165,6 +167,10 @@ export class SimulatorBuildCallbackAuthority {
         publish: (progress: SimulatorSubappHostBuildProgressV1) => void,
         signal: AbortSignal,
       ) => this.subscribeProgress(request, publish, signal),
+      cancelArtifact: (
+        request: SimulatorSubappHostBuildArtifactCancelV1,
+        signal: AbortSignal,
+      ) => this.cancelArtifact(request, signal),
     });
   }
 
@@ -192,14 +198,36 @@ export class SimulatorBuildCallbackAuthority {
     for (const job of this.jobs.values()) {
       if (!job.terminal) {
         job.controller.abort();
-        this.publishTerminal(job, 'cancelled', 0, 'cancelled');
       }
-      this.releaseListeners(job);
     }
-    // Publishing cancellation fences results; it does not prove an Agent or
-    // Builder that ignored abort has actually finished its original work.
-    this.closing = Promise.all([...this.jobs.values()].map(job => job.execution)).then(() => undefined);
+    this.closing = Promise.all([...this.jobs.values()].map(job => job.execution)).then(() => {
+      for (const job of this.jobs.values()) this.releaseListeners(job);
+    });
     return this.closing;
+  }
+
+  private cancelArtifact(
+    request: SimulatorSubappHostBuildArtifactCancelV1,
+    signal: AbortSignal,
+  ): SimulatorSubappHostBuildArtifactCancelResultV1 {
+    if (signal.aborted || this.closed) throw new SimulatorHostProviderOperationError('cancelled');
+    if (!this.isExactScope(request)) throw new SimulatorHostProviderOperationError('invalid-request');
+    const job = this.jobs.get(request.requestId);
+    if (job && !sameProgressScope(job.request, request)) {
+      throw new SimulatorHostProviderOperationError('invalid-request');
+    }
+    const stage = job ? currentStage(job) : null;
+    if (job && !job.terminal && !job.controller.signal.aborted) {
+      // Intent only. The original execution retains its slot and progress
+      // listeners until Agent completion or confirmed compiler tree cleanup.
+      job.controller.abort(new Error('Simulator Build was cancelled by its original owner.'));
+    }
+    return {
+      requestId: request.requestId, projectIdentity: request.projectIdentity,
+      sessionId: request.sessionId, sceneId: request.sceneId,
+      status: !job ? 'not-found' : job.terminal ? 'already-terminal' : 'cancel-requested',
+      stage,
+    };
   }
 
   private requestArtifact(
@@ -319,7 +347,10 @@ export class SimulatorBuildCallbackAuthority {
 
   private async runJob(job: BuildJob): Promise<void> {
     try {
-      if (this.closed || job.controller.signal.aborted) return;
+      if (this.closed || job.controller.signal.aborted) {
+        this.publishTerminal(job, 'cancelled', 0, 'cancelled');
+        return;
+      }
       const artifact = await this.execution.reconcileAndBuild(
         structuredClone(job.request),
         {
@@ -472,7 +503,7 @@ export class SimulatorBuildCallbackAuthority {
     }
   }
 
-  private isExactScope(request: SceneArtifactRebuildRequest): boolean {
+  private isExactScope(request: { projectIdentity: string; sceneId: string }): boolean {
     return request.projectIdentity === this.projectIdentity
       && request.sceneId === this.sceneId;
   }
@@ -548,7 +579,7 @@ function rebuildAck(
 
 function sameProgressScope(
   request: SceneArtifactRebuildRequest,
-  subscription: SimulatorSubappHostBuildProgressSubscribeV1,
+  subscription: SimulatorSubappHostBuildProgressSubscribeV1 | SimulatorSubappHostBuildArtifactCancelV1,
 ): boolean {
   return request.requestId === subscription.requestId
     && request.projectIdentity === subscription.projectIdentity

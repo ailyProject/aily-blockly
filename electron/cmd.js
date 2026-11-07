@@ -533,6 +533,7 @@ class CommandManager {
       messagePort,
       buildWorkspace,
       buildWorkspacePath: options.buildWorkspace,
+      buildDeliveryRequested: options.buildDeliveryRequest !== undefined,
       startedAt,
       ownerWebContents: options.ownerWebContents,
       projectPath: options.projectPath,
@@ -694,6 +695,13 @@ class CommandManager {
             entry.workspaceCleanupPending = !!entry.buildWorkspace;
           }
 
+          if (entry.buildDeliveryRequested) {
+            // The original compiler tree is gone before revoking its outputs.
+            // This is the captured transaction path, never current UI selection.
+            const childRoot = process.env.AILY_CHILD_PATH || path.join(__dirname, '..', 'child');
+            require(path.join(childRoot, 'scripts/compile-delivery.js'))
+              .invalidateBuildDelivery(entry.buildWorkspacePath);
+          }
           this.releaseCommandResources(streamId, entry);
 
           return true;

@@ -87,6 +87,7 @@ export class _BuilderService {
   private buildSubscription: any = null; // 保存订阅引用
   private buildPromiseReject: any = null; // 保存 Promise 的 reject 函数
   private buildCancellation: AbortController | null = null;
+  private buildStop: Promise<void> | null = null;
   private activeBuildRequestId: string | null = null;
   private buildCompleted = false;
   private isErrored = false; // 标识是否为错误状态
@@ -1455,6 +1456,7 @@ export class _BuilderService {
     this.cancelled = false;
     this.buildSubscription = null; // 重置订阅引用
     this.buildPromiseReject = null; // 重置 reject 函数
+    this.buildStop = null;
 
     this.clearProgressTimer(); // 清理之前的定时器
 
@@ -1506,7 +1508,6 @@ export class _BuilderService {
             // 检查是否被取消
             if (cancellation.signal.aborted) {
               console.log('等待预编译时被取消');
-              this.workflowService.finishBuild(false, 'Cancelled while waiting for preprocessing');
               reject(this.buildCancelledResult(this.t('CANCELLED_TITLE')));
 
               return;
@@ -1698,6 +1699,7 @@ export class _BuilderService {
           if (cancellation.signal.aborted) throw new Error('Build cancelled before launch.');
 
           this.streamId = `blockly_build_${crypto.randomUUID()}`;
+          this.traceBuildProcess(requestId ?? null, this.streamId, 'dispatched');
 
           this.buildSubscription = this.cmdService.spawn('node', [compileScriptPath, configFilePath], {
             cwd: this.currentProjectPath,
@@ -1885,6 +1887,10 @@ export class _BuilderService {
               }
             },
             error: (error: any) => {
+              if (cancellation.signal.aborted) {
+                reject(this.buildCancelledResult(this.t('CANCELLED_TITLE')));
+                return;
+              }
               this.isErrored = true;
               this.buildSubscription = null; // 清理订阅引用
               this.buildPromiseReject = null; // 清理 reject 引用
@@ -1896,6 +1902,10 @@ export class _BuilderService {
             },
             complete: () => {
               this.clearProgressTimer(); // 清理定时器
+              if (cancellation.signal.aborted) {
+                reject(this.buildCancelledResult(this.t('CANCELLED_TITLE')));
+                return;
+              }
               console.log("编译命令完成： buildCompleted=", this.buildCompleted, "isErrored=", this.isErrored, "cancelled=", this.cancelled, "lastProgress=", lastProgress);
 
               // 计算编译耗时（统一计算，避免重复）
@@ -2031,7 +2041,6 @@ export class _BuilderService {
 
             this.cancelled = true;
 
-            this.workflowService.finishBuild(false, 'Cancelled');
             reject(this.buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
 
             return;
@@ -2045,8 +2054,13 @@ export class _BuilderService {
       }
       })().catch(reject);
       });
-    // Wait for asynchronous preparation to stop before completing cancellation.
-    const completion = result.finally(() => preparing);
+    // Observation/parent close is not compiler termination. Keep this exact
+    // request and its workflow occupied until preparation and Main's original
+    // process-tree stop have both been confirmed.
+    const completion = result.finally(async () => {
+      await preparing;
+      await this.buildStop;
+    });
 
     return completion.catch(error => {
       if (this.buildCancellation === cancellation && this.workflowService.currentState === ProcessState.BUILDING) {
@@ -2057,7 +2071,9 @@ export class _BuilderService {
     }).finally(() => {
       if (this.buildCancellation === cancellation) {
         this.buildCancellation = null;
+        this.buildStop = null;
         this.activeBuildRequestId = null;
+        this.streamId = null;
       }
     });
     }
@@ -2251,6 +2267,17 @@ export class _BuilderService {
     return { state: 'warn', text, errorCode: 'build-cancelled' };
   }
 
+  private traceBuildProcess(requestId: string | null, streamId: string | null,
+    stage: 'dispatched' | 'stop-requested' | 'stop-confirmed' | 'stop-unconfirmed'): void {
+    if (!requestId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+      || !streamId || !/^blockly_build_[a-f0-9-]{36}$/.test(streamId)) return;
+    try {
+      console.info('[SimulatorHost][BuildProcess]', JSON.stringify({
+        event: 'simulator-host-build-process', requestId, streamId, stage, atUnixMs: Date.now(),
+      }));
+    } catch { /* Fixed metadata cannot change execution or cancellation. */ }
+  }
+
   cancel(requestId?: string) {
     if (
       requestId !== undefined
@@ -2292,41 +2319,27 @@ export class _BuilderService {
     const buildEndTime = Date.now();
     const buildDuration = this.buildStartTime > 0 ? ((buildEndTime - this.buildStartTime) / 1000).toFixed(2) : '0.00';
 
-    // 1. 先 unsubscribe 订阅（立即停止接收数据）
-    if (this.buildSubscription) {
-      try {
-        this.buildSubscription.unsubscribe();
-        console.log('已取消订阅');
-      } catch (err) {
-        console.error('取消订阅失败:', err);
+    const streamId = this.streamId;
+    const subscription = this.buildSubscription;
+    const cancellingRequestId = this.activeBuildRequestId;
+    this.buildStop = (async () => {
+      if (streamId) {
+        this.traceBuildProcess(cancellingRequestId, streamId, 'stop-requested');
+        let confirmed = false;
+        try { confirmed = await this.cmdService.kill(streamId); }
+        catch { /* Keep the exact task in quarantine below. */ }
+        if (!confirmed) {
+          this.traceBuildProcess(cancellingRequestId, streamId, 'stop-unconfirmed');
+          console.error('Build cancellation remains unconfirmed; its original work slot is retained.');
+          // Never turn a rejected kill/parent close into a physical stop ACK,
+          // admit another build, or retarget a possibly recycled process PID.
+          await new Promise<void>(() => undefined);
+        }
+        this.traceBuildProcess(cancellingRequestId, streamId, 'stop-confirmed');
       }
-    }
-
-    // 2. 尝试 kill streamId（如果已经获取到）
-    const killPromises: Promise<any>[] = [];
-    
-    if (this.streamId) {
-      console.log('通过 streamId 终止进程:', this.streamId);
-
-      killPromises.push(
-        this.cmdService.kill(this.streamId)
-          .then(success => {
-            console.log('通过 streamId 终止成功:', success);
-
-            return success;
-          })
-          .catch(err => {
-            console.error('通过 streamId 终止失败:', err);
-
-            return false;
-          })
-      );
-    }
-    
-    // 等待已登记的终止操作完成
-    Promise.all(killPromises).then(() => {
-      console.log('所有终止操作已完成');
-    });
+      try { subscription?.unsubscribe(); }
+      catch { /* Physical termination is already confirmed. */ }
+    })();
 
     // 4. 立即更新 UI 状态
     this.updateCancelledNotice(buildDuration);
@@ -2342,10 +2355,9 @@ export class _BuilderService {
       this.buildPromiseReject = null; // 先清空，避免重复调用
       this.buildSubscription = null; // 同时清空订阅引用
       
-      // 使用 setTimeout 确保同步操作完成后再 reject
-      setTimeout(() => {
+      void this.buildStop.then(() => {
         rejectFunc(this.buildCancelledResult(this.t('CANCELLED_WITH_TIME', { seconds: buildDuration })));
-      }, 0);
+      });
     } else {
       console.log('Promise 已完成，仅清理资源');
 
