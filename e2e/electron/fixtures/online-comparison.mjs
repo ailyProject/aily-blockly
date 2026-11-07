@@ -17,8 +17,8 @@ const modelPost = item => item.method === 'POST' && /^\/api\/v3\/interactions(?:
 const sumBytes = (items, key) => items.every(item => Number.isSafeInteger(item[key]))
   ? items.reduce((sum, item) => sum + item[key], 0) : null
 
-/** Wire attempts are not proof of a native compilation. Keep a rejected
- * tool_invoke alias visible without describing it as a second real build. */
+/** Stored calls are after provider decoding, not HTTP wire names. Attempts
+ * are not proof of native compilation; retain rejected aliases separately. */
 export function summarizeBuildInvocationAttempts(snapshot) {
   const messages = snapshot?.messages ?? []
   const attempts = messages.filter(item => item.role === 'assistant').flatMap(item => item.content ?? [])
@@ -31,7 +31,7 @@ export function summarizeBuildInvocationAttempts(snapshot) {
       if (!value) { try { value = JSON.parse(text) } catch { /* Preserve coded text errors separately. */ } }
       const code = value?.code ?? /^\[tool_error code=([a-z_]+)\]/.exec(text)?.[1] ?? null
       const receipt = value?.buildReceipt ?? null
-      return { toolCallId: call.id, wireToolName: call.name, wireArguments: call.arguments,
+      return { toolCallId: call.id, storedToolName: call.name, storedArguments: call.arguments,
         arguments: args, kind: args?.build_request_id ? 'observation' : 'start-attempt',
         toolResultIsError: message?.isError ?? null, code, buildReceipt: receipt,
         extraRoutingAttempt: call.name === 'tool_invoke' && code === 'tool_not_exposed' && !receipt }
@@ -40,7 +40,7 @@ export function summarizeBuildInvocationAttempts(snapshot) {
     extraRoutingAttempt: attempts.some(item => item.extraRoutingAttempt),
     confirmedRequestIds: [...new Set(attempts.map(item => item.buildReceipt).filter(item => item?.version === 1
       && typeof item.requestId === 'string' && item.requestId.length > 0).map(item => item.requestId))],
-    interpretation: 'Attempts include rejected wrappers; only request-bound receipts confirm a host request. This does not relax the one-start-attempt assertion.' }
+    interpretation: 'Stored calls are after provider decoding and are not HTTP wire names. Attempts include rejected wrappers; only request-bound receipts confirm a host request. This does not relax the one-start-attempt assertion.' }
 }
 
 /** A finished case keeps its own request interval, even when a later fixture
