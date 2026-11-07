@@ -31,6 +31,10 @@ import {
   type SubappHostProviderProductSession,
 } from '@integration/subapps/public-api';
 import { SimulatorBuildProductComposition } from './simulator-build-product-composition';
+import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
+import { CoderSimulatorBuildExecutionPort } from './simulator-coder-build-execution-port';
+import { createSimulatorCoderSourceReader } from './simulator-coder-source-reader';
 import { createSimulatorBuildExecutionSlot } from './simulator-build-callback-authority';
 import {
   SimulatorBlocklyEditorCallbackAuthority,
@@ -71,6 +75,8 @@ export class SimulatorHostProviderProductService {
     private readonly ngZone: NgZone,
     private readonly demandSessions: AilyChatDemandSessionService,
     private readonly commands: CmdService,
+    private readonly coder?: CoderProjectRuntimeService,
+    private readonly coderPersistence?: CodeEditorProProjectService,
   ) {}
 
   ensureRegistered(): void {
@@ -100,11 +106,12 @@ export class SimulatorHostProviderProductService {
   async prepareCurrentProjectForSimulation(signal?: AbortSignal): Promise<void> {
     const scope = await this.openCurrentProjectScope(signal);
 
-    if (!scope) throw new Error('请先打开一个 Blockly 项目。');
+    if (!scope) throw new Error('请先打开一个 Blockly 或 Coder 项目。');
 
     const current = AbortSignal.any([scope.activation.signal, ...(signal ? [signal] : [])]);
     const requestId = `simulator-open-${crypto.randomUUID()}`;
-    const cancel = () => this.builder.cancelActiveBlocklyProjectBuild(requestId);
+    const isCoder = this.project.isAilyCodeProject(scope.activation.path);
+    const cancel = () => { if (!isCoder) this.builder.cancelActiveBlocklyProjectBuild(requestId); };
 
     current.addEventListener('abort', cancel, { once: true });
 
@@ -120,7 +127,11 @@ export class SimulatorHostProviderProductService {
         throw new Error('当前项目还没有电路场景，请先生成电路连线。');
       }
 
-      await this.builder.buildActiveBlocklyProject({
+      if (isCoder) {
+        if (!this.coder) throw new Error('Coder simulation builder is unavailable.');
+        await this.coder.buildForSimulation(scope.activation.path, { requestId,
+          graphSemanticRevision: scene.document.graphSemanticRevision, sceneDocument: scene.document, signal: current });
+      } else await this.builder.buildActiveBlocklyProject({
         projectPath: scope.activation.path,
         graphSemanticRevision: scene.document.graphSemanticRevision,
         sceneDocument: scene.document,
@@ -154,8 +165,9 @@ export class SimulatorHostProviderProductService {
   ): Promise<SimulatorCurrentProjectScope | null> {
     signal?.throwIfAborted();
     const captured = this.project.captureCurrentProjectActivation();
-    const projectRoot = this.readActiveBlocklyProjectRoot();
+    const projectRoot = this.readActiveProjectRoot();
     if (!captured || !projectRoot || !sameProjectRoot(captured.path, projectRoot)) return null;
+    const editorKind = this.project.isAilyCodeProject(projectRoot) ? 'coder' as const : 'blockly' as const;
     const lifetime = new AbortController();
     const activationSignal = AbortSignal.any([captured.signal, lifetime.signal, ...(signal ? [signal] : [])]);
     let closeRequested = false, closed = false, closing: Promise<void> | null = null;
@@ -165,7 +177,7 @@ export class SimulatorHostProviderProductService {
       activationSignal.throwIfAborted();
       if (closeRequested) throw new SimulatorHostProviderOperationError('cancelled');
       captured.requireCurrent();
-      const current = this.readActiveBlocklyProjectRoot();
+      const current = this.readActiveProjectRoot();
       if (!current || !sameProjectRoot(current, projectRoot)) throw new SimulatorHostProviderOperationError('conflict');
     };
     function trackOriginal<T>(action: () => T | Promise<T>): Promise<T> {
@@ -224,7 +236,7 @@ export class SimulatorHostProviderProductService {
           if (
             !activeRoot
             || this.project.isProjectOpening
-            || this.project.isAilyCodeProject(activeRoot)
+            || (this.project.isAilyCodeProject(activeRoot) ? 'coder' : 'blockly') !== editorKind
             || !sameProjectRoot(activeRoot, projectRoot)
           ) {
             return null;
@@ -233,7 +245,7 @@ export class SimulatorHostProviderProductService {
             projectRoot,
             projectIdentity,
             sceneId: 'main',
-            editorKind: 'blockly',
+            editorKind,
           };
         },
         isSameProjectRoot: sameProjectRoot,
@@ -256,6 +268,20 @@ export class SimulatorHostProviderProductService {
           realpathAsync: (filePath) => trackOriginal(() => window['fs'].realpathAsync(filePath)),
         },
       });
+      const coderSource = editorKind === 'coder' ? createSimulatorCoderSourceReader({
+        requireCurrent,
+        hasSavedProject: async () => this.coderPersistence?.hasSavedProject(projectRoot) ?? false,
+        readManifest: () => JSON.parse(window['fs'].readFileSync(files.join(projectRoot, 'package.json'), 'utf8')),
+        readEntry: (entry, nativeArduino) => window['fs'].readFileSync(
+          files.join(projectRoot, ...(nativeArduino ? [] : ['sketch']), entry), 'utf8'),
+        capture: (code, boardModule) => window['electronAPI'].builder.captureBuildSource({
+          currentProjectPath: projectRoot, boardModule, code,
+        }),
+        readDelivery: () => {
+          const filename = files.join(projectRoot, '.build', 'aily-build-delivery.json');
+          return window['fs'].existsSync(filename) ? JSON.parse(window['fs'].readFileSync(filename, 'utf8')) : null;
+        },
+      }) : null;
       const composition = new SimulatorBuildProductComposition({
         buildExecutionSlot: this.buildExecutionSlot,
         projectRoot,
@@ -266,7 +292,16 @@ export class SimulatorHostProviderProductService {
         activeProject,
         mainAgent: this.simulatorMainAgent,
         builderService: this.builder,
+        ...(coderSource ? {
+          isArtifactCurrent: (artifact, current) => coderSource.isArtifactCurrent(artifact, current),
+          createExecution: (readers) => {
+            if (!this.coder) throw new Error('Coder simulation builder is unavailable.');
+            return new CoderSimulatorBuildExecutionPort({ projectRoot, projectIdentity, sceneId: 'main',
+              activeProject, builder: this.coder, ...readers });
+          },
+        } : {}),
         readWorkspaceSource: async (signal) => {
+          if (coderSource) return coderSource.read(signal);
           if (signal.aborted) {
             throw new SimulatorHostProviderOperationError('cancelled');
           }
@@ -368,7 +403,7 @@ export class SimulatorHostProviderProductService {
 
       cleanup.add(() => demonstrations.close());
 
-      const editor = new SimulatorBlocklyEditorCallbackAuthority({
+      const editor = editorKind === 'blockly' ? new SimulatorBlocklyEditorCallbackAuthority({
         projectRoot,
         projectIdentity,
         sceneId: 'main',
@@ -403,8 +438,8 @@ export class SimulatorHostProviderProductService {
             });
           },
         },
-      });
-      cleanup.add(() => editor.close());
+      }) : null;
+      cleanup.add(() => editor?.close());
       const entitlement = new SimulatorEntitlementCallbackAuthority({
         account: this.entitlementAccount,
       });
@@ -415,6 +450,7 @@ export class SimulatorHostProviderProductService {
         this.project.projectActivation$.subscribe(ended);
       cleanup.add(() => projectActivationSubscription.unsubscribe());
       const callbacks = Object.freeze<SimulatorProjectHostProviderAdapterOptions>({
+        ...(editorKind === 'blockly' ? {
         requestBoardDemonstrationCode: (request, current) => run(current, async signal => {
           const source = await demonstrations.read({ projectIdentity: request.projectIdentity, lessonId: request.lessonId }, signal);
           const lesson = source.script.lessons.find(item => item.id === request.lessonId);
@@ -435,6 +471,7 @@ export class SimulatorHostProviderProductService {
         compileBoardDemonstration: (request, current) => run(current, signal => demonstrations.compile(request, signal)),
         readBoardDemonstration: (request, current) => run(current, signal => demonstrations.read(request, signal)),
         writeBoardDemonstration: (request, current) => run(current, signal => demonstrations.write(request, signal)),
+        } satisfies Partial<SimulatorProjectHostProviderAdapterOptions> : {}),
         readContext: (request, current) => run(current, bound => composition.projectCallbacks.readContext(request, bound)),
         readScene: (request, current) => run(current, bound => composition.projectCallbacks.readScene(request, bound)),
         writeScene: (request, current) => run(current, bound => composition.projectCallbacks.writeScene(request, bound)),
@@ -442,23 +479,26 @@ export class SimulatorHostProviderProductService {
         readArtifactChunk: (request, current) => run(current, bound => demonstrations.hasArtifactReference(request.artifactReference)
           ? demonstrations.readArtifactChunk(request, bound)
           : composition.projectCallbacks.readArtifactChunk(request, bound)),
+        ...(editorKind === 'blockly' ? {
         readHardwareIntent: (request, current) => run(current, bound => this.hardwareIntent.resolve(request, bound)),
         readDebugConfiguration: (request, current) => run(current, bound => this.readProjectDebugConfiguration({
           request, signal: bound, projectRoot, projectIdentity, composition, activeProject,
         })),
+        } satisfies Partial<SimulatorProjectHostProviderAdapterOptions> : {}),
       });
       const captureArtifactReadAuthority = (input: SimulatorProjectReadAuthorityCapture) => {
         return captureSimulatorProjectReadAuthority(input, {
           activation: activationSignal, projectIdentity, workspaceIdentity, requireCurrent,
           captureValidity: descriptor => composition.captureArtifactReadValidity(descriptor),
-          readWorkspaceState: () => ({ revision: this.blockly.getWorkspaceContentRevision(), code: this.blockly.getReusableGeneratedCode() }),
+          readWorkspaceState: () => coderSource ? coderSource.readState()
+            : ({ revision: this.blockly.getWorkspaceContentRevision(), code: this.blockly.getReusableGeneratedCode() }),
           readContext: async signal => callbacks.readContext({ projectIdentity }, signal),
         });
       };
       const bundle = createSimulatorHostProviderDispatcherAdapterBundle({
         project: callbacks,
         build: composition.buildCallbacks,
-        editor: editor.callbacks,
+        ...(editor ? { editor: editor.callbacks } : {}),
         entitlement: entitlement.callbacks,
       });
       cleanup.add(() => bundle.close());
@@ -472,7 +512,7 @@ export class SimulatorHostProviderProductService {
           signal: activationSignal, requireCurrent }),
         projectIdentity, workspaceIdentity, sceneId: 'main' as const,
         get project() { requireCurrent(); return projectAdapter ??= new SimulatorProjectHostProviderAdapter(callbacks); },
-        callbacks, buildCallbacks: composition.buildCallbacks, editorCallbacks: editor.callbacks,
+        callbacks, buildCallbacks: composition.buildCallbacks, ...(editor ? { editorCallbacks: editor.callbacks } : {}),
         entitlementCallbacks: entitlement.callbacks, adapters: bundle.adapters,
         requireCurrent, captureArtifactReadAuthority, close,
         snapshot: () => ({ closeRequested, closed, pendingOperations: pending.size, retainedCleanupSteps: cleanup.size,
@@ -486,12 +526,11 @@ export class SimulatorHostProviderProductService {
     }
   }
 
-  private readActiveBlocklyProjectRoot(): string | null {
+  private readActiveProjectRoot(): string | null {
     const projectRoot = this.project.currentProjectPath;
     if (
       !projectRoot
       || this.project.isProjectOpening
-      || this.project.isAilyCodeProject(projectRoot)
     ) {
       return null;
     }

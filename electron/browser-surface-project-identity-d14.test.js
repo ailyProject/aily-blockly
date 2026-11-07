@@ -21,10 +21,65 @@ async function borrowedFixture(t){const q=projection(),trace=[],gate=Promise.wit
  return{...q,trace,ui,surface,ticket,controller,runtime,bindingInputs,gate,apply,hold(){shouldHold=true;},get refs(){return refs;},get ownerAlive(){return ownerAlive;}};}
 test('D14 actual passive provider turnover preserves borrowed Surface and exact ticket while ordinary Host authority is temporarily absent',async t=>{const f=await borrowedFixture(t);assert.equal(f.s.readReadyWorkspace('simulator'),'/original-project');f.hold();const current=f.bindingInputs.at(-1),turnover=f.controller.networkLifetimeEnded({...current});assert.equal(f.s.readReadyWorkspace('simulator'),null);assert.equal(await f.apply(),'/original-project');assert.deepEqual(f.ui.openToolList,['simulator']);assert.equal(f.surface.failed.values.length,0);assert.equal(f.trace.filter(x=>x==='browser:closeView').length,0);f.gate.resolve();await turnover;assert.equal(f.bindingInputs.length,2);assert.equal(f.s.readReadyWorkspace('simulator'),'/original-project');await f.apply();assert.equal(f.surface.ready.values.length,1);assert.equal(f.trace.filter(x=>x==='process-acquire').length,1);assert.equal(f.refs,2);assert.equal(f.ownerAlive,true);assert.equal(f.ui.toolPresentationIds.simulator,f.ticket.id);facts.push({case:'passive-turnover',ordinaryAuthorityWasNull:true,ViewCloses:0,readyEvents:1,sameTicket:true,refs:2});});
 test('D14 initially loaded registered project does not need passive provider readiness and grants no ordinary Host authority',()=>{const{p,s,h}=projection();assert.equal(s.readReadyWorkspace('simulator'),null);assert.equal(h.browserSurfaceWorkspace,p.currentProjectPath);assert.equal(s.readReadyWorkspace('simulator'),null);});
-for(const[name,change]of[['close',p=>p.currentProjectPath=''],['switch',p=>p.currentProjectPath='/successor-project'],['opening',p=>p.isProjectOpening=true],['not-loaded',p=>p.loaded=false],['registered-code-project',p=>p.code=true]])test('D14 real loaded-project '+name+' still retires the original borrowed presentation',async t=>{const f=await borrowedFixture(t);change(f.p);await f.apply();assert.equal(f.trace.filter(x=>x==='browser:closeView').length,1);assert.deepEqual(f.ui.openToolList,[]);assert.equal(f.refs,1);assert.equal(f.ownerAlive,true);assert.equal(f.trace.filter(x=>x==='browser:release').length,0);facts.push({case:name,ViewClosed:true,borrowedAgentOwnerStillAlive:true});});
+for(const[name,change]of[['close',p=>p.currentProjectPath=''],['switch',p=>p.currentProjectPath='/successor-project'],['opening',p=>p.isProjectOpening=true],['not-loaded',p=>p.loaded=false]])test('D14 real loaded-project '+name+' still retires the original borrowed presentation',async t=>{const f=await borrowedFixture(t);change(f.p);await f.apply();assert.equal(f.trace.filter(x=>x==='browser:closeView').length,1);assert.deepEqual(f.ui.openToolList,[]);assert.equal(f.refs,1);assert.equal(f.ownerAlive,true);assert.equal(f.trace.filter(x=>x==='browser:release').length,0);facts.push({case:name,ViewClosed:true,borrowedAgentOwnerStillAlive:true});});
 test('D14 same-path reload opening/not-ready lifetime closes once and cannot reuse the original Agent ticket',async t=>{const f=await borrowedFixture(t);f.p.isProjectOpening=true;await f.apply();f.p.isProjectOpening=false;f.p.loaded=false;await f.apply();f.p.loaded=true;await f.apply();assert.equal(f.trace.filter(x=>x==='browser:closeView').length,1);assert.equal(f.trace.filter(x=>x==='process-acquire').length,1);assert.deepEqual(f.ui.openToolList,[]);assert.equal(f.ui.toolPresentationIds.simulator,undefined);assert(f.surface.failed.values.every(x=>/Browser presentation grant is invalid or expired/.test(x)));});
-test('D14 registered stopping/code/null/opening/not-ready and stale cached readybase use actual current loaded-project state',()=>{for(const change of[q=>q.s.stopping=true,q=>q.p.code=true,q=>q.p.currentProjectPath='',q=>q.p.isProjectOpening=true,q=>q.p.loaded=false]){const q=projection();q.s.readyBaseWorkspaceSubject.next('/old-cached-project');change(q);assert.equal(q.s.readBrowserSurfaceWorkspace('simulator'),null);}const q=projection();q.s.readyBaseWorkspaceSubject.next('/old-cached-project');assert.equal(q.s.readBrowserSurfaceWorkspace('simulator'),'/original-project');assert.equal(q.s.readReadyWorkspace('simulator'),null);});
+test('D14 registered stopping/null/opening/not-ready and stale cached readybase use actual current loaded-project state',()=>{for(const change of[q=>q.s.stopping=true,q=>q.p.currentProjectPath='',q=>q.p.isProjectOpening=true,q=>q.p.loaded=false]){const q=projection();q.s.readyBaseWorkspaceSubject.next('/old-cached-project');change(q);assert.equal(q.s.readBrowserSurfaceWorkspace('simulator'),null);}const q=projection();q.s.readyBaseWorkspaceSubject.next('/old-cached-project');assert.equal(q.s.readBrowserSurfaceWorkspace('simulator'),'/original-project');assert.equal(q.s.readReadyWorkspace('simulator'),null);});
 test('D14 unregistered legacy tool retains exact raw-path semantics including stopping/opening/code state',()=>{const q=projection(project(),false);q.p.isProjectOpening=true;q.p.loaded=false;q.p.code=true;q.s.stopping=true;assert.equal(q.s.readBrowserSurfaceWorkspace('legacy'),q.s.readReadyWorkspace('legacy'));assert.equal(q.s.readBrowserSurfaceWorkspace('legacy'),'/original-project');q.p.currentProjectPath='';assert.equal(q.s.readBrowserSurfaceWorkspace('legacy'),null);});
 test('D14 detached/standalone explicit workspace branch including null is unchanged and undefined falls back to Main stable projection',()=>{const q=projection();q.h.currentUrl='/child-tool/simulator';q.h.standaloneWorkspace='/detached';assert.equal(q.h.browserSurfaceWorkspace,'/detached');q.h.standaloneWorkspace=null;assert.equal(q.h.browserSurfaceWorkspace,null);q.h.standaloneWorkspace=undefined;assert.equal(q.h.browserSurfaceWorkspace,'/original-project');});
 test('D14 a late old completion still cannot remove a successor exact presentation',()=>{const ui=Object.create(UiService.prototype);Object.assign(ui,{openToolList:['simulator'],toolPresentationIds:{simulator:'new-ticket'},actionSubject:{next:noop}});ui.completeToolPresentationClose('simulator','old-ticket');assert.deepEqual(ui.openToolList,['simulator']);assert.equal(ui.toolPresentationIds.simulator,'new-ticket');});
+test('Coder A/B retain distinct Browser identities and ordinary UI joins old owner ACK before new View', async t => {
+  const q = projection(); q.p.code = true; q.p.currentProjectPath = '/coder-a';
+  assert.equal(q.h.browserSurfaceWorkspace, '/coder-a');
+  const originalGlobals = { window: global.window, document: global.document, setTimeout: global.setTimeout, clearTimeout: global.clearTimeout };
+  const trace = [], releaseGate = Promise.withResolvers();
+  let processRefs = 0, generation = 0;
+  const id = (prefix, value) => `${prefix}0000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+  global.window = { innerWidth: 1000, innerHeight: 800, electronAPI: { childToolSession: {
+    async superviseOwner() { return { ok: true, generation: 'ordinary-ui-generation' }; },
+    async browserExecution(input) {
+      trace.push({ action: input.action, ownerSessionId: input.ownerSessionId });
+      if (input.action === 'bindProcess') {
+        generation++;
+        return { endpoint: { kind: 'browser-message-port', runtimeId: id('1', generation) }, connectionId: id('2', generation) };
+      }
+      if (input.action === 'openView') return { executionId: id('1', generation), connectionId: id('3', generation), presentation: 'embedded' };
+      if (input.action === 'updateView') return { updated: true };
+      if (input.action === 'closeView') return { detached: true, physicalClosed: true };
+      if (input.action === 'release') { if (generation === 1) await releaseGate.promise; return { released: true, refCount: 0, acknowledged: true, physicalClosed: true }; }
+      throw Error('Unexpected ordinary UI fixture action');
+    },
+  } } };
+  global.document = { visibilityState: 'visible' }; global.setTimeout = () => 1; global.clearTimeout = noop;
+  const surfaces = new SubappBrowserSurfaceService({
+    async acquire() { processRefs++; return { pid: 1, url: 'memory-only' }; },
+    async release() { processRefs--; trace.push({ action: 'process-release' }); },
+  });
+  const surface = new ChildToolBrowserSurfaceComponent({ nativeElement: { getBoundingClientRect: () => ({ left: 0, top: 0, right: 200, bottom: 100, width: 200, height: 100 }) } }, surfaces);
+  Object.assign(surface, { toolId: 'simulator', workspace: q.h.browserSurfaceWorkspace, initialized: true });
+  t.after(async () => { releaseGate.resolve(); try { await surface.mounting; await surface.close(); } finally { Object.assign(global, originalGlobals); } });
+  await surface.mount();
+  assert.deepEqual(surface.failed.values, []);
+  assert.equal(surface.ready.values.length, 1);
+  const originalOwner = surface.ownerSessionId;
+  q.p.currentProjectPath = '/coder-b';
+  const successorWorkspace = q.h.browserSurfaceWorkspace;
+  assert.equal(successorWorkspace, '/coder-b');
+  surface.workspace = successorWorkspace;
+  surface.ngOnChanges({ workspace: { previousValue: '/coder-a', currentValue: successorWorkspace, firstChange: false } });
+  for (let turn = 0; turn < 20 && !trace.some(value => value.action === 'release'); turn++) await Promise.resolve();
+  assert.equal(trace.filter(value => value.action === 'openView').length, 1, 'B cannot mount before A owner cleanup is confirmed');
+  assert.equal(processRefs, 1);
+  assert.equal(trace.find(value => value.action === 'release').ownerSessionId, originalOwner);
+  releaseGate.resolve(); await surface.mounting;
+  assert.equal(trace.filter(value => value.action === 'openView').length, 2);
+  assert.notEqual(surface.ownerSessionId, originalOwner);
+  assert.equal(surface.runtimeId, id('1', 2));
+  assert.equal(processRefs, 1);
+  assert.equal(surface.failed.values.length, 0);
+  const releaseIndex = trace.findIndex(value => value.action === 'process-release');
+  const newBindIndex = trace.findIndex(value => value.action === 'bindProcess' && value.ownerSessionId !== originalOwner);
+  assert(releaseIndex >= 0 && releaseIndex < newBindIndex);
+  await surface.close(); assert.equal(processRefs, 0);
+  facts.push({ case: 'coder-a-to-b-normal-ui', distinctRoots: true, oldOwnerAcknowledgedBeforeNewView: true, oldFirmwareViewReused: false, finalProcessRefs: 0 });
+});
 test.after(()=>{const output=process.env.AILY_D14_EVIDENCE_DIR;if(output){assert(output.startsWith('/Volumes/data/aily-work/test-results/'));fs.writeFileSync(path.join(output,'actual-memory-facts.json'),JSON.stringify({kind:'D14-actual-Main-TS-memory-only-lifecycle-facts',facts,noMainUiApiNetworkMcuCalls:true},null,2)+'\n',{flag:'wx'});}});

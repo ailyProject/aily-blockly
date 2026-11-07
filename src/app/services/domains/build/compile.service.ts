@@ -1,3 +1,4 @@
+import type { SceneEditorDocumentV2 } from '@aily-project/scene-model';
 import { Inject, Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { NzMessageService } from 'ng-zorro-antd/message';
@@ -17,6 +18,7 @@ import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
 import { captureBuildSource } from '../../../utils/build-publication.utils';
+import { createSimulatorSceneGpioBuildMetadata } from '../../../integrations/simulator/simulator-scene-gpio-build-metadata';
 import {
   BUILD_APPLICATION_PORT,
   type BuildActionState,
@@ -35,11 +37,16 @@ import {
   ProjectLogLevel,
 } from '../../../utils/project-log.utils';
 
-interface DiskCompileOptions {
+export interface DiskCompileOptions {
   preprocessOnly?: boolean;
   projectPath?: string;
   code?: string;
   recordProjectDelivery?: boolean;
+  /** Original provider request; only its captured stream may be cancelled. */
+  requestId?: string;
+  signal?: AbortSignal;
+  graphSemanticRevision?: string;
+  sceneDocument?: SceneEditorDocumentV2;
 }
 
 interface DiskCompileProgressState {
@@ -63,6 +70,8 @@ export class CompileService {
   private activeStreamId: string | null = null;
   private activeCommandCancel: (() => void) | null = null;
   private stopPending: Promise<unknown> = Promise.resolve();
+  private activeRequestId: string | null = null;
+  private scopedStopStarted = false;
 
   constructor(
     private projectService: ProjectService,
@@ -81,9 +90,25 @@ export class CompileService {
     private npmService: NpmService,
   ) { }
 
-  cancel(): void {
+  cancel(requestId?: string): void {
+    if (requestId !== undefined && requestId !== this.activeRequestId) return;
     this.cancelled = true;
     const streamId = this.activeStreamId;
+    if (this.activeRequestId) {
+      // A provider cancellation is not a UI-only unsubscribe. Keep the original
+      // operation and build slot until Main confirms the physical process tree.
+      if (streamId && !this.scopedStopStarted) {
+        this.scopedStopStarted = true;
+        this.stopPending = this.cmdService.kill(streamId).then(stopped => {
+          if (stopped !== true) return new Promise<never>(() => {});
+          this.activeCommandCancel?.();
+        }, error => {
+          console.warn('Scoped compiler termination remains unconfirmed:', error);
+          return new Promise<never>(() => {});
+        });
+      }
+      return;
+    }
     if (streamId) {
       this.stopPending = this.cmdService.kill(streamId).catch((error) => {
         console.warn('Failed to stop the active build process:', error);
@@ -96,6 +121,10 @@ export class CompileService {
   }
 
   async runCompileFromDisk(options: DiskCompileOptions = {}): Promise<{ success: boolean; result: BuildActionState & { fullStdErr?: string } }> {
+    options.signal?.throwIfAborted();
+    if (options.requestId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(options.requestId)) {
+      throw new Error('Invalid scoped Coder build request.');
+    }
     const root = (options.projectPath || this.projectService.currentProjectPath || '').trim();
 
     if (!root) {
@@ -122,6 +151,8 @@ export class CompileService {
       }
     }
 
+    options.signal?.throwIfAborted();
+
     if (!this.application.startBuild()) {
       const state = this.application.currentProcessState;
       let msg = 'System is busy';
@@ -138,17 +169,27 @@ export class CompileService {
 
     this.cancelled = false;
     this.stopPending = Promise.resolve();
+    this.activeRequestId = options.requestId ?? null;
+    this.scopedStopStarted = false;
+    const cancelOriginal = () => this.cancel(options.requestId);
+    options.signal?.addEventListener('abort', cancelOriginal, { once: true });
     this.application.updateNotice({ title: this.t('PREPARING_TITLE'), text: this.t('DEPENDENCY_ANALYSIS_RUNNING'),
       state: 'doing', progress: 0, setTimeout: 0, stop: () => this.cancel() });
     try {
       // Keep the root captured at submission, even if the UI switches projects.
-      return await this.runCompile(root, options);
+      const outcome = await this.runCompile(root, options);
+      if (this.cancelled) return { success: false, result: { state: 'warn', text: this.t('CANCELLED_TITLE'), errorCode: 'build-cancelled' } };
+      return outcome;
     } catch (error: any) {
       const text = this.cancelled ? this.t('CANCELLED_TITLE') : error?.message || String(error);
       this.application.finishBuild(false, text);
       if (this.cancelled) this.updateCancelledNotice(text);
       else this.handleFailNotice(root, this.t('FAILED_TITLE'), text, text);
-      return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text } };
+      return { success: false, result: { state: this.cancelled ? 'warn' : 'error', text,
+        ...(this.cancelled ? { errorCode: 'build-cancelled' as const } : {}) } };
+    } finally {
+      options.signal?.removeEventListener('abort', cancelOriginal);
+      this.activeRequestId = null;
     }
   }
 
@@ -217,6 +258,11 @@ export class CompileService {
         ailyBuilderPath,
         devmode: this.configService.data.devmode || false,
         ...(options.recordProjectDelivery === true ? { recordProjectDelivery: true } : {}),
+        ...(options.graphSemanticRevision ? {
+          graphSemanticRevision: options.graphSemanticRevision,
+          sourceDocumentSchemaVersion: 2,
+          ...await this.writeSceneGpioMetadata(root, source.code, options),
+        } : {}),
         partitionFilePath: isAilyCodeProject
           ? this.electronService.pathJoin(root, 'sketch', 'src', 'partitions.csv')
           : this.electronService.pathJoin(root, 'partitions.csv'),
@@ -360,6 +406,22 @@ export class CompileService {
         return { success: false, result: { state: 'error', text: metadataError } };
       }
     }
+  }
+
+  private async writeSceneGpioMetadata(root: string, code: string, options: DiskCompileOptions) {
+    const revision = options.graphSemanticRevision!;
+    const metadata = createSimulatorSceneGpioBuildMetadata(options.sceneDocument, code, revision);
+    const directory = this.electronService.pathJoin(root, '.temp');
+    await this.crossPlatformCmdService.createDirectory(directory, true);
+    options.signal?.throwIfAborted();
+    const token = crypto.randomUUID();
+    const sceneGpioDirectionsPath = this.electronService.pathJoin(directory, `aily-coder-scene-${token}-directions.json`);
+    const sceneGpioPullsPath = this.electronService.pathJoin(directory, `aily-coder-scene-${token}-pulls.json`);
+    window['fs'].writeFileSync(sceneGpioDirectionsPath, JSON.stringify({ schemaVersion: 1,
+      kind: 'aily-scene-gpio-directions', graphSemanticRevision: revision, directions: metadata.directions }));
+    window['fs'].writeFileSync(sceneGpioPullsPath, JSON.stringify({ schemaVersion: 1,
+      kind: 'aily-scene-gpio-pulls', graphSemanticRevision: revision, pulls: metadata.pulls }));
+    return { sceneGpioDirectionsPath, sceneGpioPullsPath };
   }
 
   private readCompileSource(

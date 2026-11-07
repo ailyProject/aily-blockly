@@ -13,6 +13,7 @@ import { DependencyApplicationAdapter } from '../dependencies/dependency-applica
 import { _UploaderService } from '../../editors/blockly-editor/services/uploader.service';
 import { _BuilderService } from '../../editors/blockly-editor/services/builder.service';
 import type { NoticeOptions } from '@shared/public-api';
+import type { CoderSimulationBuildInput } from '../../services/domains/build/builder.service';
 
 export interface CoderProjectRunState {
   build: IMenuItem['state'];
@@ -172,6 +173,17 @@ export class CoderProjectRuntimeService implements CoderExecutionPort {
       const builder = session.injector.get(BuilderService);
       if (options.clearCache) await builder.clearBuildCache(path);
       return builder.build(path, options);
+    });
+  }
+
+  buildForSimulation(path: string, input: CoderSimulationBuildInput): Promise<unknown> {
+    input.signal.throwIfAborted();
+    if (this.projects.getProjectMode(path) !== 'coder') throw new Error('A Coder project is required.');
+    return this.run(path, 'build', async session => {
+      input.signal.throwIfAborted();
+      const result = await session.injector.get(BuilderService).buildCoderProjectForSimulation(path, input);
+      input.signal.throwIfAborted();
+      return result;
     });
   }
 

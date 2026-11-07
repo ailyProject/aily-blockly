@@ -34,6 +34,40 @@ function fixture(t, coder = false) {
     return { root, config, put, workspace, header };
 }
 
+for (const change of ['header', 'source', 'library-source', 'added', 'removed']) {
+    test(`Coder capture binds multi-file input ${change} without claiming Blockly workspace`, t => {
+        const f = fixture(t, true);
+        f.put('sketch/src/helper.h', '#define VALUE 1');
+        f.put('sketch/src/nested/helper.cpp', 'int value() { return 1; }');
+        f.put('sketch/libraries/Local/src/local.cpp', 'int local() { return 1; }');
+        f.config.sourceCapture = captureBuildSource(f.config);
+        const capture = f.config.sourceCapture;
+        assert.equal(capture.mode, 'coder');
+        assert.equal(capture.workspace, undefined);
+        assert.equal(capture.sketchInputs, undefined);
+        assert.deepEqual(capture.coderInputs.files.map(file => file.path), [
+            'libraries/Local/src/local.cpp', 'src/helper.h', 'src/nested/helper.cpp',
+        ]);
+        if (change === 'header') f.put('sketch/src/helper.h', '#define VALUE 2');
+        if (change === 'source') f.put('sketch/src/nested/helper.cpp', 'int value() { return 2; }');
+        if (change === 'library-source') f.put('sketch/libraries/Local/src/local.cpp', 'int local() { return 2; }');
+        if (change === 'added') f.put('sketch/src/extra.hpp', 'int extra();');
+        if (change === 'removed') fs.unlinkSync(path.join(f.root, 'sketch/src/helper.h'));
+        assert.throws(() => confirmBuildSource(f.config), /BUILD_SOURCE_STALE/);
+        assert.notEqual(captureBuildSource(f.config).digest, capture.digest);
+    });
+}
+
+test('Coder source capture excludes generated outputs but rejects a linked local source', t => {
+    const f = fixture(t, true), original = f.config.sourceCapture.digest;
+    f.put('sketch/preprocess.json', '{"generated":true}');
+    f.put('sketch/target-compile.json', '{"generated":true}');
+    assert.equal(confirmBuildSource(f.config).digest, original);
+    f.put('real-local.cpp', 'int local;');
+    fs.symlinkSync(path.join(f.root, 'real-local.cpp'), path.join(f.root, 'sketch/src/local.cpp'));
+    assert.throws(() => captureBuildSource(f.config), /implicit links/);
+});
+
 for (const coder of [false, true]) test(`capture binds ${coder ? 'Coder disk entry' : 'Blockly prepared revision'} and ignores only build result metadata`, t => {
     const f = fixture(t, coder), first = confirmBuildSource(f.config);
     assert.ok(first.digest); assert.equal(first.mode, coder ? 'coder' : 'blockly');

@@ -9,7 +9,7 @@ import {
   ElectronService,
 } from '@core/platform/public-api';
 
-import { CompileService } from './compile.service';
+import { CompileService, type DiskCompileOptions } from './compile.service';
 import { persistBuildResult, type BuildCheckpoint, type BuildResultSnapshot } from './build-result-snapshot';
 import { BUILD_ACTION_PORT, type BuildActionPort } from './ports/build-action.port';
 
@@ -25,6 +25,13 @@ export interface ActiveBlocklyProjectBuildInput {
   graphSemanticRevision: string;
   requestId: string;
   sceneDocument: SceneEditorDocumentV2;
+}
+
+export interface CoderSimulationBuildInput {
+  requestId: string;
+  graphSemanticRevision: string;
+  sceneDocument: SceneEditorDocumentV2;
+  signal: AbortSignal;
 }
 
 @Injectable({
@@ -83,6 +90,22 @@ export class BuilderService {
     } finally {
       finish();
     }
+  }
+
+  /** Called on the original Coder project's independent service instance. */
+  async buildCoderProjectForSimulation(projectPath: string, input: CoderSimulationBuildInput) {
+    input.signal.throwIfAborted();
+    if (!projectPath || !this.projectService.isCoderProjectContext
+      || !this.projectService.isAilyCodeProject(projectPath)
+      || !this.isSameProjectPath(projectPath, this.projectService.currentProjectPath)
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.requestId)
+      || !/^[a-f0-9]{64}$/.test(input.graphSemanticRevision)
+      || input.sceneDocument?.schemaVersion !== 2
+      || input.sceneDocument.kind !== 'aily-scene-editor-document'
+      || input.sceneDocument.graphSemanticRevision !== input.graphSemanticRevision) {
+      throw new Error('Coder simulation build does not match the original project and Scene.');
+    }
+    return this.buildFromProjectPath(projectPath, { ...input, recordProjectDelivery: true });
   }
 
   /**
@@ -232,8 +255,10 @@ export class BuilderService {
     return normalize(left) === normalize(right);
   }
 
-  private async buildFromProjectPath(projectPath: string, options: { preprocessOnly?: boolean; source?: BuildResultSnapshot['source'] } = {}) {
+  private async buildFromProjectPath(projectPath: string, options: DiskCompileOptions & { source?: BuildResultSnapshot['source'] } = {}) {
+    options.signal?.throwIfAborted();
     await this.persistActiveCoderProjectBeforeBuild(projectPath);
+    options.signal?.throwIfAborted();
 
     const compileResult = await this.compileService.runCompileFromDisk({ projectPath, ...options });
     const buildResult = compileResult.result;
@@ -244,6 +269,7 @@ export class BuilderService {
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
       error.buildResult = buildResult;
+      if (buildResult?.errorCode === 'build-cancelled') error.errorCode = 'build-cancelled';
 
       if (!options.preprocessOnly) persistBuildResult(projectPath, false, buildResult, error, undefined, options.source);
 

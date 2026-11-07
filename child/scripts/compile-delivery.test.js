@@ -107,6 +107,56 @@ for (const changed of ['package.json', 'src/new.h', 'components/Local/lib.h', 'p
     });
 }
 
+test('Coder source boundary ignores only the exact host-generated embed hints cache', t => {
+    const f = fixture(t, true);
+    f.put('.aily/coder-embed-hints.json', '{"v":1,"buildPath":"old-output"}');
+    const before = captureProjectSources(f.config);
+    assert.equal(before.body.files.some(file => file.path === '.aily/coder-embed-hints.json'), false);
+    // Repeated editor refreshes may rewrite identical bytes, then publish newer
+    // output paths. Neither operation changes an input to the target compiler.
+    f.put('.aily/coder-embed-hints.json', '{"v":1,"buildPath":"old-output"}');
+    fs.utimesSync(path.join(f.root, '.aily/coder-embed-hints.json'), new Date(), new Date(Date.now() + 1000));
+    assert.doesNotThrow(() => confirmProjectSources(before, f.config));
+    f.put('.aily/coder-embed-hints.json', '{"v":1,"buildPath":"new-output","buildArtifacts":[{"label":"main.elf"}]}');
+    assert.doesNotThrow(() => confirmProjectSources(before, f.config));
+    fs.unlinkSync(path.join(f.root, '.aily/coder-embed-hints.json'));
+    assert.doesNotThrow(() => confirmProjectSources(before, f.config));
+});
+
+for (const relative of ['.aily/source.h', '.aily/coder-embed-hints.json.backup', '.aily/nested/coder-embed-hints.json',
+    'sketch/src/helper.h', 'sketch/src/helper.cpp', 'sketch/libraries/Local/src/library.cpp']) {
+    test(`Coder hints exception retains content and stat guards for ${relative}`, t => {
+        const f = fixture(t, true); f.put(relative, 'int source = 1;');
+        let before = captureProjectSources(f.config);
+        assert(before.body.files.some(file => file.path === relative));
+        f.put(relative, 'int source = 2;');
+        assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+        before = captureProjectSources(f.config);
+        const file = path.join(f.root, relative), stat = fs.statSync(file);
+        fs.utimesSync(file, stat.atime, new Date(stat.mtimeMs + 1000));
+        assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+    });
+}
+
+test('Coder hints exception does not hide project/board configuration edits or a Blockly same-name input', t => {
+    for (const coder of [true, false]) {
+        const f = fixture(t, coder);
+        f.put('.aily/coder-embed-hints.json', '{"v":1}');
+        let before = captureProjectSources(f.config);
+        f.put('package.json', JSON.stringify({ type: coder ? 'coder' : 'blockly', projectConfig: { CPUFreq: '80' } }));
+        assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+        before = captureProjectSources(f.config);
+        f.put('node_modules/@aily-project/board-test/board.json', '{"changed":true}');
+        assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+        if (!coder) {
+            before = captureProjectSources(f.config);
+            assert(before.body.files.some(file => file.path === '.aily/coder-embed-hints.json'));
+            f.put('.aily/coder-embed-hints.json', '{"v":2}');
+            assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+        }
+    }
+});
+
 test('capture detects Coder local library edits, deletion, restored mtime and changed input code', t => {
     const f = fixture(t, true);
     f.put('sketch/libraries/Local/a.h', 'aaa');
