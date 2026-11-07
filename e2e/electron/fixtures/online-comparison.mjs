@@ -17,6 +17,32 @@ const modelPost = item => item.method === 'POST' && /^\/api\/v3\/interactions(?:
 const sumBytes = (items, key) => items.every(item => Number.isSafeInteger(item[key]))
   ? items.reduce((sum, item) => sum + item[key], 0) : null
 
+/** Wire attempts are not proof of a native compilation. Keep a rejected
+ * tool_invoke alias visible without describing it as a second real build. */
+export function summarizeBuildInvocationAttempts(snapshot) {
+  const messages = snapshot?.messages ?? []
+  const attempts = messages.filter(item => item.role === 'assistant').flatMap(item => item.content ?? [])
+    .filter(call => call.type === 'toolCall' && (call.name === 'project_build'
+      || call.name === 'tool_invoke' && call.arguments?.name === 'project_build')).map(call => {
+      const args = call.name === 'tool_invoke' ? call.arguments?.arguments : call.arguments
+      const message = messages.find(item => item.role === 'toolResult' && item.toolCallId === call.id)
+      const text = (message?.content ?? []).filter(item => item.type === 'text').map(item => item.text).join('\n')
+      let value = message?.details?.result
+      if (!value) { try { value = JSON.parse(text) } catch { /* Preserve coded text errors separately. */ } }
+      const code = value?.code ?? /^\[tool_error code=([a-z_]+)\]/.exec(text)?.[1] ?? null
+      const receipt = value?.buildReceipt ?? null
+      return { toolCallId: call.id, wireToolName: call.name, wireArguments: call.arguments,
+        arguments: args, kind: args?.build_request_id ? 'observation' : 'start-attempt',
+        toolResultIsError: message?.isError ?? null, code, buildReceipt: receipt,
+        extraRoutingAttempt: call.name === 'tool_invoke' && code === 'tool_not_exposed' && !receipt }
+    })
+  return { attempts, startAttemptCount: attempts.filter(item => item.kind === 'start-attempt').length,
+    extraRoutingAttempt: attempts.some(item => item.extraRoutingAttempt),
+    confirmedRequestIds: [...new Set(attempts.map(item => item.buildReceipt).filter(item => item?.version === 1
+      && typeof item.requestId === 'string' && item.requestId.length > 0).map(item => item.requestId))],
+    interpretation: 'Attempts include rejected wrappers; only request-bound receipts confirm a host request. This does not relax the one-start-attempt assertion.' }
+}
+
 /** A finished case keeps its own request interval, even when a later fixture
  * fails. Refreshing this summary also attributes late failures of an earlier
  * in-flight request to its original case instead of the next case. */

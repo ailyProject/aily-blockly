@@ -12,7 +12,7 @@ import { explicitOnlineModelId, resolveOnlineModelPreset,
   selectOnlineModelFromUi, assertSelectedOnlineModel } from '../fixtures/online-model-selection.mjs'
 import { prepareBuildLogProject, buildLogSourceHashes } from './fixtures/build-log-project.mjs'
 import { createBuildLogNetwork } from './fixtures/build-log-network.mjs'
-import { verifySealedComparisonBaseline, summarizeOnlineComparison, summarizeCaseTransport, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
+import { verifySealedComparisonBaseline, summarizeOnlineComparison, summarizeCaseTransport, summarizeBuildInvocationAttempts, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
 
 // Real, explicitly enabled paid acceptance. Every model call is submitted by
 // the installed iframe composer. Services is the model upstream; the local
@@ -278,7 +278,9 @@ async function settle({ project, record, expectedUserMessages }) {
 async function assertLogRead(snapshot, record, fixture) {
   const calls = callsOf(snapshot), builds = calls.filter(call => call.actualName === 'project_build')
   const starts = builds.filter(call => !call.actualArguments?.build_request_id)
-  assert.equal(starts.length, 1, 'One original build start; failure/recovery/cancellation cannot restart it')
+  record.buildInvocationEvidence = summarizeBuildInvocationAttempts(snapshot)
+  await checkpoint()
+  assert.equal(starts.length, 1, 'One original build invocation/start attempt; inspect buildInvocationEvidence for rejected routing attempts versus confirmed native requests')
   assert.ok(builds.every(call => same(call.actualArguments?.project ?? '', fixture.project)))
   for (const forbidden of ['write', 'edit', 'abs_apply', 'abs_validate', 'project_upload', 'blocks_tidy', 'app_reload', 'bash', 'powershell', 'code_run'])
     assert.equal(calls.some(call => call.actualName === forbidden), false, `No repair or unrelated action: ${forbidden}`)

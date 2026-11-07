@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import { createHash } from 'node:crypto'
-import { summarizeOnlineComparison, summarizeCaseTransport, singleFieldExpectedDocument, verifySealedComparisonBaseline } from './online-comparison.mjs'
+import { summarizeOnlineComparison, summarizeCaseTransport, summarizeBuildInvocationAttempts, singleFieldExpectedDocument, verifySealedComparisonBaseline } from './online-comparison.mjs'
 import { createBuildLogNetwork } from './build-log-network.mjs'
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
@@ -144,6 +144,37 @@ test('non-API resource HTTP failures remain visible but API errors and every soc
   network.failures.push({ requestId: 'resource', code: 'upstream-request', networkCode: 'ECONNRESET', at: 150 })
   result = summarizeCaseTransport(network, window, { functionalPassed: true })
   assert.equal(result.performanceEligible, false); assert.equal(result.unexpectedTransportFailures[0].networkCode, 'ECONNRESET')
+})
+
+test('build attempts distinguish rejected native wrappers from one receipt without weakening duplicate-start detection', () => {
+  const project = 'C:/owned/project'
+  const snapshot = { messages: [
+    { role: 'assistant', content: [
+      { type: 'toolCall', id: 'wrapped', name: 'tool_invoke', arguments: { name: 'project_build', arguments: { project } } },
+      { type: 'toolCall', id: 'native', name: 'project_build', arguments: { project } }
+    ] },
+    { role: 'toolResult', toolCallId: 'wrapped', isError: false, content: [{ type: 'text',
+      text: '[tool_error code=tool_not_exposed]\nrecovery=Call project_build directly as a native tool call.' }] },
+    { role: 'toolResult', toolCallId: 'native', isError: false, details: { result: { buildReceipt: {
+      version: 1, requestId: 'actual-host-request', project, state: 'completed' } } } }
+  ] }
+  const result = summarizeBuildInvocationAttempts(snapshot)
+  assert.equal(result.startAttemptCount, 2)
+  assert.equal(result.extraRoutingAttempt, true)
+  assert.deepEqual(result.confirmedRequestIds, ['actual-host-request'])
+  assert.equal(result.attempts[0].wireToolName, 'tool_invoke')
+  assert.equal(result.attempts[0].toolResultIsError, false)
+  assert.equal(result.attempts[0].code, 'tool_not_exposed')
+  assert.equal(result.attempts[0].buildReceipt, null)
+  snapshot.messages[0].content.push({ type: 'toolCall', id: 'duplicate', name: 'project_build', arguments: { project } })
+  snapshot.messages.push({ role: 'toolResult', toolCallId: 'duplicate', content: [{ type: 'text', text: JSON.stringify({
+    buildReceipt: { version: 1, requestId: 'second-host-request', project, state: 'completed' } }) }] })
+  const duplicate = summarizeBuildInvocationAttempts(snapshot)
+  assert.equal(duplicate.startAttemptCount, 3)
+  assert.deepEqual(duplicate.confirmedRequestIds, ['actual-host-request', 'second-host-request'])
+  snapshot.messages[0].content.push({ type: 'toolCall', id: 'observe', name: 'project_build',
+    arguments: { project, build_request_id: 'actual-host-request', build_target_pid: 123 } })
+  assert.equal(summarizeBuildInvocationAttempts(snapshot).startAttemptCount, 3)
 })
 
 test('real local HTTP accounting counts complete bodies, exact step reposts and bounded original-claim metadata without secrets', async () => {
