@@ -25,7 +25,7 @@ const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
 const { createProjectCrashResume } = require('./project-crash-resume');
 const { startCliBridge } = require("./cli-bridge");
-const { routeLiveOperationProject } = require('./live-operation-project-routing');
+const { routeLiveOperationProject, projectLifecycleRequestRejection } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
 const { createRepairContinuationController, checkRepairProjectOpen } = require('./project-repair-lineage');
 const { createRepairHandoffController, repairForkPolicy } = require('./project-repair-handoff');
@@ -1019,6 +1019,8 @@ function requestMainWindow(channel, responseChannel, payload, timeoutMs = 12000,
       return;
     }
 
+    const lifecycleRejection = projectLifecycleRequestRejection(payload?.lifecycle, rendererGeneration);
+    if (lifecycleRejection) { resolve(lifecycleRejection); return; }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       resolve({ ok: false, errorCode: 'RENDERER_RESPONSE_TIMEOUT', message: '等待渲染进程响应超时' });
@@ -1150,7 +1152,7 @@ async function handleCliBridgeCommand(action, payload) {
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
-        { path: dir, operation: 'project_open', params: {} },
+        { path: dir, operation: 'project_open', params: {}, ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}) },
         130000,
       );
       return result && typeof result === 'object'
@@ -1171,6 +1173,7 @@ async function handleCliBridgeCommand(action, payload) {
             path: dir,
             operation: 'project_reload',
             params: {},
+            ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
           },
           120000,
         );
@@ -1183,7 +1186,7 @@ async function handleCliBridgeCommand(action, payload) {
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
-        { path: dir, operation: 'project_open', params: {} },
+        { path: dir, operation: 'project_open', params: {}, ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}) },
         130000,
       );
       return result && typeof result === 'object'
@@ -1195,7 +1198,7 @@ async function handleCliBridgeCommand(action, payload) {
       const result = await requestMainWindow(
         'cli-bridge:blockly-live-operation',
         'cli-bridge:blockly-live-operation:response',
-        { path: dir || '', operation: 'project_close', params: {} },
+        { path: dir || '', operation: 'project_close', params: {}, ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}) },
         30000,
       );
       return result && typeof result === 'object'
@@ -1308,6 +1311,7 @@ async function handleCliBridgeCommand(action, payload) {
           path: dir || '',
           operation,
           params: payload && payload.params,
+          ...(payload.lifecycle !== undefined ? { lifecycle: payload.lifecycle } : {}),
         },
         liveOperationTimeoutMs,
       );

@@ -458,7 +458,7 @@ export class AbsWorkspaceSyncService {
           : await store.archiveRepair(generation, input.expected.disk, input.expected.pointerHash,
             absJson(snapshot.document), token, guard);
         if (input.expected.pointerHash === null) {
-          const journal = new AbsOperationJournal(await openAbsHostStorage(context.path, guard), context.path);
+          const journal = new AbsOperationJournal(await openAbsHostStorage(context.path, () => { guard(); }), context.path);
           initialJournal = { journal, id: await journal.begin({ kind: 'document-save',
             document: snapshot.document, disk: input.expected.disk }, guard) };
         }
@@ -1590,6 +1590,10 @@ export class AbsWorkspaceSyncService {
           context.definitions.customFunctions?.synchronize(context.workspace, materialized);
           layoutAbsNewRoots(materialized, candidate.added, context.workspace, context.assertCurrent);
         }
+        // New-root placement updates the trusted workspace expectation. Derive
+        // the complete document from that same plan before later callbacks run.
+        const expectedDocument = fullDocument ? replaceBlocklyPageWorkspace(fullDocument, context.scope.pageId,
+          materialized, block => candidate.contracts.procedures?.[block.id]?.role) : undefined;
         // Library model registration belongs before complete readback and the save seal.
         const generated = await this.editor.prepareProjectCode(context.assertCurrent, lease);
         context.assertCurrent();
@@ -1597,7 +1601,7 @@ export class AbsWorkspaceSyncService {
         assertAbsWorkspaceReadback(materialized, actual.state, actual, context.definitions);
         this.editor.assertWorkspaceSharedChange(before.document, actual.state, lease);
         const applied = this.editor.captureProjectSnapshot(lease);
-        if (fullDocument) assertProjectLoadPreserved(fullDocument, applied.document, state => this.editor.getWorkspaceLoadReadbackView(state));
+        if (expectedDocument) assertProjectLoadPreserved(expectedDocument, applied.document, state => this.editor.getWorkspaceLoadReadbackView(state));
         else assertAbsProjectEnvelope(before.document, applied.document, context.scope.pageId);
         if (generated && generated.revision !== applied.revision) throw new AbsSyncError('ABS_RUNTIME_CAPTURE_CHANGED', 'Prepared code no longer belongs to the applied revision.');
         const assertApplied = this.atRevision(context.assertCurrent, lease, applied);
@@ -1652,6 +1656,26 @@ export class AbsWorkspaceSyncService {
               const reason = `Rollback failed; the durable complete pre-operation view and candidate are retained for same-project recovery: ${String(rollbackError)}. Original failure: ${String(error)}`;
               lease.quarantine(reason);
               throw new AbsSyncError('ABS_ROLLBACK_FAILED', reason);
+            }
+            if (validation?.workingCandidate) {
+              const guardRollback = () => { context.assertCurrent(); lease.assertCurrent(); };
+              try {
+                await application.completeRolledBack(operationId, { code: (error as any)?.code,
+                  message: error instanceof Error ? error.message : String(error), diagnostic: (error as any)?.diagnostic },
+                guardRollback, async originalDocument => {
+                  const restored = this.editor.captureProjectSnapshot(lease);
+                  const assertRestored = this.atRevision(context.assertCurrent, lease, restored);
+                  const complete = await materializeGenericProjectDataValues(restored.document, {
+                    resolve: async <T>(ref: AilyDataRef) => { const value = await projectDataRuntime.resolve<T>(ref); assertRestored(); return value; },
+                  });
+                  assertRestored();
+                  assertProjectLoadPreserved(originalDocument as BlocklyProjectDocument, complete,
+                    state => this.editor.getWorkspaceLoadReadbackView(state));
+                });
+              } catch (terminalError) {
+                throw new AbsApplicationFailure(new AbsSyncError('ABS_APPLY_ROLLBACK_RECEIPT_UNAVAILABLE',
+                  `The native rollback completed, but its original terminal result could not be recorded: ${String(terminalError)}`), 'ROLLED_BACK');
+              }
             }
             throw new AbsApplicationFailure(error, 'ROLLED_BACK');
           }
