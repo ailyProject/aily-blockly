@@ -19,7 +19,7 @@ import {
   type CmdOutput,
   type RendererLifecycleEvent,
 } from '@core/platform/public-api';
-import { ConfigService, ThemeService } from '@core/preferences/public-api';
+import { ConfigService, ThemeService, ToolI18nService } from '@core/preferences/public-api';
 import {
   CodeEditorProProjectService,
   type CodeEditorProPersistenceBridge,
@@ -174,6 +174,7 @@ function boundedCoderNativeSearchInteger(
 })
 export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
   private readonly coderLayout = inject(CoderEditorLayoutService);
+  private readonly toolI18n = inject(ToolI18nService);
   @ViewChild('coderEmbedFrame') coderEmbedFrame?: ElementRef<HTMLIFrameElement>;
 
   @Input({ required: true }) projectPath = '';
@@ -945,6 +946,8 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
   }
 
   private async updateAndRestartCoderEditor(): Promise<void> {
+    // APP_STORE.* 文案随应用商店按需加载，未打开应用商店时需在此补载。
+    await this.toolI18n.load('app-store');
     if (this.childToolProcess.getRuntimeSnapshot(AILY_CODER_EDITOR_SUBAPP_ID).running) {
       const confirmed = await this.confirmCoderEditorUpdateRestart(
         this.coderEditorUpdateState.state === 'restart-required',
