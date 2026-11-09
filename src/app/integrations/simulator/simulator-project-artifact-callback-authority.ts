@@ -94,6 +94,8 @@ export interface SimulatorProjectArtifactCallbackAuthorityOptions {
 
     isCurrent(): boolean;
   } | null>;
+  /** Optional editor-owned freshness veto. It does not authorize an Artifact. */
+  isArtifactCurrent?: (artifact: SimulationArtifact, signal: AbortSignal) => Promise<boolean>;
 }
 
 interface ArtifactReference {
@@ -146,6 +148,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
   private readonly createArtifactReference: () => string;
   private readonly createSceneCommitId: () => string;
   private readonly readWorkspaceSource: NonNullable<SimulatorProjectArtifactCallbackAuthorityOptions['readWorkspaceSource']>;
+  private readonly isArtifactCurrent: NonNullable<SimulatorProjectArtifactCallbackAuthorityOptions['isArtifactCurrent']>;
   private readonly artifactReferences = new Map<string, ArtifactReference>();
   private operationTail: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -207,6 +210,7 @@ export class SimulatorProjectArtifactCallbackAuthority {
 
     this.readWorkspaceSource = options.readWorkspaceSource
       ?? (async () => null);
+    this.isArtifactCurrent = options.isArtifactCurrent ?? (async () => true);
 
     this.callbacks = Object.freeze({
       readContext: (
@@ -316,13 +320,14 @@ export class SimulatorProjectArtifactCallbackAuthority {
 
     const source = await this.readWorkspaceSource(signal);
     const currentArtifact = await this.readManifest(signal, true);
+    const sourceCurrent = currentArtifact ? await this.isArtifactCurrent(currentArtifact, signal) : false;
 
     this.requireActive(signal);
 
     // A build can finish while source hashing awaits. Never authorize an old
     // identity observed before that build; this is a bounded request recheck,
     // not an atomic snapshot or a new persistent authority.
-    const activeArtifactRevision = artifact?.artifactId === currentArtifact?.artifactId
+    const activeArtifactRevision = sourceCurrent && artifact?.artifactId === currentArtifact?.artifactId
       ? currentArtifact?.artifactId ?? null
       : null;
 
@@ -434,6 +439,9 @@ export class SimulatorProjectArtifactCallbackAuthority {
       );
     }
 
+    if (!await this.isArtifactCurrent(artifact, signal)) throw new SimulatorHostProviderOperationError('conflict');
+    this.requireActive(signal);
+
     const artifactRevision = artifact.artifactId;
 
     if (
@@ -461,6 +469,9 @@ export class SimulatorProjectArtifactCallbackAuthority {
     if (!reference) {
       throw new SimulatorHostArtifactChunkError('reference-not-found');
     }
+
+    if (!await this.isArtifactCurrent(reference.artifact, signal)) throw new SimulatorHostProviderOperationError('conflict');
+    this.requireActive(signal);
 
     if (reference.expiresAtUnixMs <= this.requireNow()) {
       this.artifactReferences.delete(reference.artifactReference);

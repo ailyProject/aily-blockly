@@ -48,7 +48,7 @@ function fixture(t, options = {}) {
   const activation = new Subject();
   let opening = options.opening ?? false;
   let loadedRoot = options.loadedRoot ?? paths.value;
-  let coder = false;
+  let coder = options.coder ?? false;
   const project = {
     currentProjectPath$: paths.asObservable(), stateSubject,
     projectActivation$: activation.asObservable(),
@@ -257,10 +257,35 @@ test('unrelated Runtime changes do not withdraw the same-root base projection', 
   assert.equal(f.openedRoots.filter(root => root === '/a').length, 1);
 });
 
-test('Coder base can publish while the registered simulator workspace remains null', async t => {
-  const f = fixture(t, { root: '/coder' });
-  f.makeCoder();
-  await settled(() => f.service.readyBaseWorkspace === '/coder');
+test('Coder publishes its real project root after the exact registered Provider is ready', async t => {
+  const gate = deferred();
+  const f = fixture(t, { root: '/coder', coder: true, openGates: new Map([['/coder', gate]]) });
+  await settled(() => f.openedRoots.includes('/coder'));
+  assert.equal(f.service.readBrowserSurfaceWorkspace('simulator'), '/coder');
   assert.equal(f.service.readReadyWorkspace('simulator'), null);
+  gate.resolve();
+  await settled(() => f.service.readyBaseWorkspace === '/coder');
+  assert.equal(f.service.readReadyWorkspace('simulator'), '/coder');
   assert.equal(f.service.readReadyWorkspace('plain-tool'), '/coder');
+});
+
+test('Coder A to B withdraws old admission and joins exact A cleanup before opening B', async t => {
+  const closeGate = deferred();
+  const f = fixture(t, { root: '/coder-a', coder: true, closeGate });
+  await settled(() => f.service.readReadyWorkspace('simulator') === '/coder-a');
+  const originalBinds = f.calls.filter(call => call[0] === 'bind').length;
+  f.begin('/coder-b');
+  assert.equal(f.service.readBrowserSurfaceWorkspace('simulator'), null);
+  assert.equal(f.service.readReadyWorkspace('simulator'), null);
+  f.ready('/coder-b');
+  assert.equal(f.service.readBrowserSurfaceWorkspace('simulator'), '/coder-b');
+  assert.equal(f.service.readReadyWorkspace('simulator'), null);
+  await settled(() => f.closedRoots.includes('/coder-a'));
+  assert.deepEqual(f.openedRoots, ['/coder-a']);
+  assert.equal(f.calls.filter(call => call[0] === 'bind').length, originalBinds);
+  closeGate.resolve();
+  await settled(() => f.service.readReadyWorkspace('simulator') === '/coder-b');
+  assert.deepEqual(f.openedRoots, ['/coder-a', '/coder-b']);
+  assert.equal(f.calls.filter(call => call[0] === 'unbind').length, 1);
+  assert.equal(f.calls.filter(call => call[0] === 'bind').length, originalBinds + 1);
 });

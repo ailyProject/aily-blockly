@@ -87,7 +87,7 @@ export interface SimulatorCurrentProjectScope {
   readonly project: SimulatorProjectHostProviderAdapter;
   readonly callbacks: SimulatorProjectHostProviderAdapterOptions;
   readonly buildCallbacks: Pick<SimulatorBuildHostProviderAdapterOptions, 'requestArtifact' | 'subscribeProgress'>;
-  readonly editorCallbacks: SimulatorEditorHostProviderAdapterOptions;
+  readonly editorCallbacks?: SimulatorEditorHostProviderAdapterOptions;
   readonly entitlementCallbacks: Pick<SimulatorEntitlementHostProviderAdapterOptions, 'requestLease' | 'subscribeStatus'>;
   readonly adapters: readonly SimulatorHostProviderDispatcherAdapter[];
   captureArtifactReadAuthority(input: SimulatorProjectReadAuthorityCapture): SimulatorProjectReadAuthority;

@@ -1302,27 +1302,36 @@ test('Build progress listener throwing during owner cancellation cannot interrup
       executionSignal = signal; observer.report('compiling', 500); await gate; return artifact;
     },
   } });
-  t.after(() => authority.close());
+  t.after(async () => { releaseBuild(); await authority.close(); });
   const request = rebuildRequest(document), signal = new AbortController().signal, healthy = [];
-  authority.callbacks.requestArtifact(request, signal);
-  authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
-    if (progress.stage === 'cancelled') throw new Error('cancel transport closed');
-  }, signal);
-  authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
-  await waitFor(() => executionSignal !== undefined);
   let closing;
-  assert.doesNotThrow(() => { closing = authority.close(); });
-  assert.equal(executionSignal.aborted, true);
-  assert.equal(healthy.at(-1).stage, 'cancelled');
-  assert.equal(healthy.at(-1).errorCode, 'cancelled');
-  assert.equal(healthy.at(-1).artifact, null);
-  assert.equal(authority.snapshot().activeSubscriptions, 0);
-  assert.equal(authority.snapshot().activeRequestId, request.requestId);
-  releaseBuild();
-  await closing;
-  assert.equal(authority.snapshot().activeRequestId, null);
-  assert.equal(healthy.filter(progress => progress.stage === 'cancelled').length, 1);
-  assert(!healthy.some(progress => progress.stage === 'completed'));
+  try {
+    authority.callbacks.requestArtifact(request, signal);
+    authority.callbacks.subscribeProgress(progressSubscription(request), progress => {
+      if (progress.stage === 'cancelled') throw new Error('cancel transport closed');
+    }, signal);
+    authority.callbacks.subscribeProgress(progressSubscription(request), progress => healthy.push(progress), signal);
+    await waitFor(() => executionSignal !== undefined);
+    assert.doesNotThrow(() => { closing = authority.close(); });
+    assert.equal(executionSignal.aborted, true);
+    assert.equal(healthy.at(-1).stage, 'compiling');
+    assert(!healthy.some(progress => progress.stage === 'cancelled'), 'Close intent cannot attest original execution settlement.');
+    assert.equal(authority.snapshot().activeSubscriptions, 2);
+    assert.equal(authority.snapshot().activeRequestId, request.requestId);
+    assert.throws(() => authority.callbacks.requestArtifact(request, signal), error => error.code === 'cancelled');
+    releaseBuild();
+    await closing;
+    assert.equal(healthy.at(-1).stage, 'cancelled');
+    assert.equal(healthy.at(-1).errorCode, 'cancelled');
+    assert.equal(healthy.at(-1).artifact, null);
+    assert.equal(authority.snapshot().activeSubscriptions, 0);
+    assert.equal(authority.snapshot().activeRequestId, null);
+    assert.equal(healthy.filter(progress => progress.stage === 'cancelled').length, 1);
+    assert(!healthy.some(progress => progress.stage === 'completed'));
+  } finally {
+    releaseBuild();
+    await (closing ?? authority.close());
+  }
 });
 
 test('Build progress listener throwing before terminal does not change a successful build outcome', async t => {
@@ -3052,38 +3061,21 @@ async function loadIntegrationModule() {
     `aily-simulator-product-callbacks-${process.pid}-${Date.now()}.cjs`,
   );
 
-  const sdkEntry = path.join(
-    simulatorRoot,
-    'packages',
-    'simulator-embed-host',
-    'src',
-    'index.ts',
-  );
-
-  const protocolRoot = path.join(simulatorRoot, 'packages', 'simulator-protocol');
-  const protocolPackage = JSON.parse(await fs.readFile(path.join(protocolRoot, 'package.json'), 'utf8'));
-  // Use source workspace dependencies so this focused test never reads a
-  // partly built/stale SDK dependency dist while another package is prepared.
-  const sourceConfig = require('typescript').parseConfigFileTextToJson('tsconfig.json',
-    await fs.readFile(path.join(simulatorRoot, 'tsconfig.json'), 'utf8')).config;
-  const workspaceAliases = Object.fromEntries(Object.entries(sourceConfig.compilerOptions.paths)
-    .filter(([name]) => !name.includes('*'))
-    .map(([name, targets]) => [name, path.join(simulatorRoot, targets[0])]));
-
-  const protocolAliases = Object.fromEntries(Object.entries(protocolPackage.exports)
-    .filter(([, target]) => typeof target?.import === 'string')
-    .map(([subpath, target]) => [
-      `${protocolPackage.name}${subpath === '.' ? '' : subpath.slice(1)}`,
-      path.join(protocolRoot, target.import.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts')),
-    ]));
-
-  const sceneModelEntry = path.join(
-    simulatorRoot,
-    'packages',
-    'scene-model',
-    'src',
-    'index.ts',
-  );
+  // Main consumes the installed, staged SDK. Keep this same SDK boundary when
+  // bundling tests, including imports from the application-only source fixtures.
+  const sdkAliases = {};
+  for (const name of ['scene-model', 'simulator-protocol', 'simulator-registry',
+    'component-catalog', 'simulator-target-model', 'simulator-board-package',
+    'simulator-catalog', 'simulator-host-sdk']) {
+    const packageRoot = path.resolve(__dirname, '../node_modules/@aily-project', name);
+    const manifest = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+    for (const [subpath, target] of Object.entries(manifest.exports)) {
+      if (typeof target?.import !== 'string') continue;
+      sdkAliases[`${manifest.name}${subpath === '.' ? '' : subpath.slice(1)}`] = path.join(packageRoot, target.import);
+    }
+  }
+  const sdkEntry = sdkAliases['@aily-project/simulator-host-sdk'];
+  const sceneModelEntry = sdkAliases['@aily-project/scene-model'];
 
   const projectAuthority = path.resolve(
     __dirname,
@@ -3163,14 +3155,7 @@ async function loadIntegrationModule() {
     platform: 'node',
     target: 'node20',
     outfile,
-    alias: {
-      ...workspaceAliases,
-      '@aily-project/simulator-host-sdk': sdkEntry,
-      ...protocolAliases,
-      '@aily-project/scene-model': sceneModelEntry,
-      '@aily-project/simulator-catalog': path.join(simulatorRoot, 'packages/simulator-catalog/src/index.ts'),
-      '@aily-project/simulator-target-model/definition': path.join(simulatorRoot, 'packages/simulator-target-model/src/definition.ts'),
-    },
+    alias: sdkAliases,
     logLevel: 'silent',
   });
 
@@ -3220,6 +3205,14 @@ async function loadHostProductService({ digest, onComposition }) {
         constructor(options) { onComposition(options); }
         close() {}
       },
+    },
+    './simulator-coder-build-execution-port': {
+      CoderSimulatorBuildExecutionPort: class {
+        constructor() { throw new Error('Blockly source fixture must not build Coder projects'); }
+      },
+    },
+    './simulator-coder-source-reader': {
+      createSimulatorCoderSourceReader() { throw new Error('Blockly source fixture must not read Coder projects'); },
     },
     './simulator-build-callback-authority': {
       createSimulatorBuildExecutionSlot: (await integrationModulePromise).createSimulatorBuildExecutionSlot,

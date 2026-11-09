@@ -7,6 +7,7 @@ import type { SimulatorSubappHostArtifactDescriptorV1 } from '@aily-project/simu
 import {
   SimulatorBuildCallbackAuthority,
   type SimulatorBuildCallbackAuthorityOptions,
+  type SimulatorBuildExecutionPort,
 } from './simulator-build-callback-authority';
 import {
   BlocklySimulatorBuildExecutionPort,
@@ -41,6 +42,10 @@ export interface SimulatorBuildProductCompositionOptions {
   createArtifactReference?: () => string;
   createSceneCommitId?: () => string;
   readWorkspaceSource?: SimulatorProjectArtifactCallbackAuthorityOptions['readWorkspaceSource'];
+  isArtifactCurrent?: SimulatorProjectArtifactCallbackAuthorityOptions['isArtifactCurrent'];
+  /** Editor-specific compilation, behind the same job/Artifact authorities. */
+  createExecution?: (ports: Pick<import('./simulator-build-execution-port').BlocklySimulatorBuildExecutionPortOptions,
+    'readCompileScene' | 'artifacts'>) => SimulatorBuildExecutionPort;
 }
 
 export interface SimulatorBuildProductCompositionSnapshot {
@@ -105,15 +110,10 @@ export class SimulatorBuildProductComposition {
       ...(options.readWorkspaceSource
         ? { readWorkspaceSource: options.readWorkspaceSource }
         : {}),
+      ...(options.isArtifactCurrent ? { isArtifactCurrent: options.isArtifactCurrent } : {}),
     });
-    const builder = createSimulatorBlocklyBuilderPort(options.builderService);
-    const execution = new BlocklySimulatorBuildExecutionPort({
-      projectRoot: options.projectRoot,
-      projectIdentity: options.projectIdentity,
-      sceneId: options.sceneId,
-      activeProject: options.activeProject,
-      mainAgent: options.mainAgent,
-      builder,
+    const readers: Pick<import('./simulator-build-execution-port').BlocklySimulatorBuildExecutionPortOptions,
+      'readCompileScene' | 'artifacts'> = {
       readCompileScene: async (revision, signal) => {
         const scene = await this.projectAuthority.callbacks.readScene({
           projectIdentity: options.projectIdentity, sceneId: options.sceneId ?? 'main',
@@ -134,6 +134,15 @@ export class SimulatorBuildProductComposition {
           )
         ),
       },
+    };
+    const execution = options.createExecution?.(readers) ?? new BlocklySimulatorBuildExecutionPort({
+      projectRoot: options.projectRoot,
+      projectIdentity: options.projectIdentity,
+      sceneId: options.sceneId,
+      activeProject: options.activeProject,
+      mainAgent: options.mainAgent,
+      builder: createSimulatorBlocklyBuilderPort(options.builderService),
+      ...readers,
     });
     this.buildAuthority = new SimulatorBuildCallbackAuthority({
       projectIdentity: options.projectIdentity,

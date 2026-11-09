@@ -37,15 +37,14 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
   readBrowserSurfaceWorkspace(toolId: string): string | null {
     if (!this.registry.hasRegistration(toolId)) return this.project.currentProjectPath || null;
     if (this.stopping) return null;
-    const workspace = this.readLoadedWorkspace();
-    return workspace && !this.project.isAilyCodeProject(workspace) ? workspace : null;
+    return this.readLoadedWorkspace();
   }
 
   /** Registered products only receive a root after their exact stream has been bound. */
   readReadyWorkspace(toolId: string): string | null {
     if (!this.registry.hasRegistration(toolId)) return this.project.currentProjectPath || null;
     const workspace = this.readyBaseWorkspace;
-    if (!workspace || !this.controller || this.project.isAilyCodeProject(workspace)) return null;
+    if (!workspace || !this.controller) return null;
     return this.isProviderReady(toolId, workspace) ? workspace : null;
   }
 
@@ -125,7 +124,10 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
     if (!controller || this.stopping) return;
     const root = this.project.currentProjectPath;
     const workspace = this.readLoadedWorkspace();
-    const scope = workspace && !this.project.isAilyCodeProject(workspace) ? workspace : null;
+    // Coder is a first-class Simulator product scope. Returning null for every
+    // Coder root would retain the old provider binding and Browser View when
+    // switching projects, including a previously loaded firmware's Start UI.
+    const scope = workspace;
     const key = JSON.stringify([root, workspace, scope]);
     if (key !== this.readinessKey) {
       this.readinessKey = key;

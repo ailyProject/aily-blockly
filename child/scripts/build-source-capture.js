@@ -118,7 +118,17 @@ function record(config, workspace) {
         boardModule: config.boardModule, boardLocationSha256: location(board),
         boardJsonSha256: hash(read(board, 'board.json')), boardPackageSha256: hash(read(board, 'package.json')),
         generatedHeadersSha256: hash(JSON.stringify(headers)), generatedHeaderCount: headers.length,
-        ...(mode === 'blockly' ? { sketchInputs: captureSketchInputs(path.join(root, 'src')).manifest } : {}),
+        ...(mode === 'blockly' ? { sketchInputs: captureSketchInputs(path.join(root, 'src')).manifest } : {
+            // Coder owns persistent multi-file sources, including localized
+            // libraries. Keep this separate from Blockly's copied Ninja graph
+            // binding; full delivery still verifies its complete ProjectSources.
+            coderInputs: captureSketchInputs(
+                JSON.parse(manifest).arduinoSketch === true ? root : project.resolveCompileWorkspacePath(root),
+                path.relative(JSON.parse(manifest).arduinoSketch === true ? root : project.resolveCompileWorkspacePath(root),
+                    project.resolveCompileSourcePath(root)).split(path.sep).join('/'),
+                { recursiveSources: true },
+            ).manifest,
+        }),
         ...(workspace ? { workspace } : {}) };
     return { ...body, digest: hash(JSON.stringify(body)) };
 }

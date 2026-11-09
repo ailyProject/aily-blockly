@@ -54,6 +54,10 @@ function captureProjectSources(config) {
     // through a second Windows handle conflicts with our own held byte lock.
     const excluded = relative => relative === '.aily/build-workspace.guard'
         || ['.git', '.temp', '.build', '.log', '.workspace-history', 'node_modules', '.aily/build'].some(name => relative === name || relative.startsWith(name + '/'))
+        // The Coder host rewrites this exact derived output/SDK-view hint when
+        // the editor refreshes. Firmware compilation reads package/board/source
+        // inputs directly, never this resource-tree and LSP presentation cache.
+        || (coder && relative === '.aily/coder-embed-hints.json')
         || (coder && /^sketch\/(?:preprocess\.json|target-compile\.json|library-cache\.json|compile-preprocess-[^/]+\.json)$/.test(relative));
     const visit = (filename, relative, depth = 0, exclusions = true) => {
         if (exclusions && excluded(relative)) return;

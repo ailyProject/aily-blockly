@@ -16,7 +16,7 @@ const fail = message => { throw Object.assign(new Error(`BUILD_SOURCE_STALE: ${m
  * The generated main entry has its own identity. Never read unrelated project
  * directories, non-source attachments or the contents of links.
  */
-function captureSketchInputs(root, entry = 'sketch.ino') {
+function captureSketchInputs(root, entry = 'sketch.ino', options = {}) {
     const files = [], states = [];
     let sizeBytes = 0, entryCount = 0, directoryCount = 0;
     const present = filename => {
@@ -38,13 +38,15 @@ function captureSketchInputs(root, entry = 'sketch.ino') {
         const names = fs.readdirSync(directory);
         if ((entryCount += names.length) > 16384) fail('Sketch source traversal exceeds its boundary.');
         for (const name of names.sort(compare)) {
+            if (options.recursiveSources === true && ['node_modules', '.git', '.temp', '.build', '.log', '.workspace-history', '.aily'].includes(name)) continue;
             const filename = path.join(directory, name), child = relative ? `${relative}/${name}` : name;
             if (child.length > 512 || child.split('/').length > 64 || /[\\\u0000-\u001f\u007f:]/.test(child)) {
                 fail('Sketch source path exceeds its boundary.');
             }
             const extension = path.extname(name);
             const selected = child !== entry && (HEADERS.has(extension)
-                || ((!relative || relative === 'src' || relative.startsWith('src/')) && SOURCES.has(extension)));
+                || ((options.recursiveSources === true || !relative || relative === 'src' || relative.startsWith('src/')) && SOURCES.has(extension))
+                || (options.recursiveSources === true && extension === '.ino'));
             const stat = fs.lstatSync(filename);
             if (stat.isSymbolicLink()) fail('Sketch inputs cannot traverse implicit links.');
             if (stat.isDirectory()) {
