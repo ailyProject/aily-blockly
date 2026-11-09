@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.abs-sync.spec.json",
+  "include": [
+    "../src/app/integrations/blockly/abs/abs-live-protocol.spec.ts",
+    "../src/app/integrations/blockly/abs/abs-candidate-journal.spec.ts",
+    "../src/app/services/domains/build/build-input.spec.ts",
+    "../src/app/editors/blockly-editor/services/r4-builder-owner.spec.ts",
+    "../src/**/*.d.ts"
+  ]
+}

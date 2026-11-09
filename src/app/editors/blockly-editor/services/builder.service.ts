@@ -19,7 +19,7 @@ import { type BlockCodeMapping } from '../components/blockly/generators/arduino/
 import { BlocklyService } from './blockly.service';
 
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from './generated-code-artifacts';
-import { CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, type ProjectBuildLog, type BuildCheckpoint } from '@domain/build/public-api';
+import { CompileValidationService, persistBuildResult, buildCancelledResult, createProjectBuildLog, capturedBuildInput, type ProjectBuildLog, type BuildCheckpoint } from '@domain/build/public-api';
 import { NpmService } from '@domain/dependencies/public-api';
 import { debounceTime } from 'rxjs/operators';
 import {
@@ -1265,7 +1265,6 @@ export class _BuilderService {
   ): Promise<ActionState> {
     // 提交时固定配置与项目；任务内切换编译后端不会改变用户设置，也不能混用两类产物。
     requestId ??= crypto.randomUUID();
-    this.activeExecutionConfig = undefined;
     let cloudBuild = this.isCloudBuild();
     if (
       graphSemanticRevision !== undefined
@@ -1298,6 +1297,7 @@ export class _BuilderService {
       return Promise.reject({ state: 'warn', text: this.t('BUSY_WAIT', { message: msg }) });
     }
 
+    this.activeExecutionConfig = undefined;
     checkpoint.startedAt = Date.now();
 
     if (pythonRoute) {
@@ -1360,7 +1360,7 @@ export class _BuilderService {
     const requestLog = await createProjectBuildLog(requestedProjectPath, requestId);
     this.activeBuildLog = requestLog;
     try {
-    return await requestLog.run(async () => {
+    const outcome = await requestLog.run(async () => {
     let capturedCode: string | undefined;
     let preparing: Promise<void>;
     const result = new Promise<ActionState>((resolve, reject) => {
@@ -2015,6 +2015,12 @@ export class _BuilderService {
       settled();
     });
     });
+    const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, requestId);
+    return { ...outcome, ...(buildInput ? { buildInput } : {}) };
+    } catch (error) {
+      const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, requestId);
+      if (buildInput && error && typeof error === 'object') Object.assign(error, { buildInput });
+      throw error;
     } finally { if (this.activeBuildLog === requestLog) this.activeBuildLog = undefined; }
     }
 

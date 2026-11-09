@@ -26,6 +26,7 @@ const { createWindowStateController } = require('./window-state');
 const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
 const projectLock = require("./project-lock");
+const { createProjectCrashResume } = require('./project-crash-resume');
 const { startCliBridge } = require("./cli-bridge");
 const { routeLiveOperationProject } = require('./live-operation-project-routing');
 const { createRepairEnvironmentController, readRepairBootstrap, rendererOverride, shutdownRepairEnvironment } = require('./project-repair-environment');
@@ -841,7 +842,7 @@ async function runProjectLibraryOperation(operation, projectPath, request, trans
   try {
     return await librarySessions.run(operation, projectPath, request, transaction);
   } finally {
-    if (operation !== 'status' && !librarySessions.sessions.has(projectLibraries.root(projectPath)) && mainWindow && !mainWindow.isDestroyed()) {
+    if (!['status', 'capabilities', 'observeEnvironment'].includes(operation) && !librarySessions.sessions.has(projectLibraries.root(projectPath)) && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('library-dependencies:changed', { projectPath, ...projectLibraries.status(projectPath) });
     }
   }
@@ -954,6 +955,16 @@ function summarizeAppProcessMetrics() {
 
 // === CLI Bridge：供外部 CLI 通过本地回环接口驱动主程序（附加能力） ===
 let cliBridge = null;
+let projectCrashResume = null;
+function projectCrashResumeController() {
+  if (!projectCrashResume && process.env.AILY_APPDATA_PATH) {
+    projectCrashResume = createProjectCrashResume({ stateDirectory: process.env.AILY_APPDATA_PATH,
+      profileKey: path.resolve(app.commandLine.getSwitchValue('user-data-dir') || app.getPath('userData')),
+      onWarning: warning => console.warn('Project crash navigation:', warning) });
+  }
+  return projectCrashResume;
+}
+app.on('quit', () => { projectCrashResume?.clear(); });
 
 /** 导航主窗口到指定 hash（复用 dev/prod 既有加载方式） */
 function navigateMainWindowHash(targetHash) {
@@ -1281,7 +1292,7 @@ async function handleCliBridgeCommand(action, payload) {
             ? 600000
           : operation === 'project_save' && payload?.params?.chunk === true
             ? 140000
-          : operation === 'abs_recovery' && payload?.params?.action === 'repair'
+          : operation === 'abs_recovery' && ['repair', 'history_publish'].includes(payload?.params?.action)
             ? 120000
           : operation === 'abs_apply' || operation === 'abs_validate' || operation === 'abs_projection' || operation === 'library_runtime_sync' || operation === 'set_board_config' || operation === 'blocks_set_state'
             ? 120000
@@ -2791,6 +2802,12 @@ function createWindow() {
   if (!libraryDependenciesRegistered) {
     // Register once; the memory belongs to the process, not a renderer generation.
     libraryDependenciesRegistered = true;
+    ipcMain.handle('library-dependencies:capabilities', event => {
+      if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('Library capabilities require the current main frame.');
+      }
+      return librarySessions.capabilities();
+    });
     ipcMain.handle('library-dependencies', async (event, { operation, projectPath, request }) => {
       if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) {
         throw new Error('Library operations require the current main frame.');
@@ -3210,6 +3227,13 @@ app.on("ready", async () => {
     return;
   }
 
+  // Preloads inherit this immutable execution address when the renderer is
+  // created. Setting it only after createWindow loses the original main PID.
+  process.env.AILY_LIBRARY_HOST_PID = String(process.pid);
+  if (!repairBootstrap && !pendingFileToOpen && !pendingRoute) {
+    const interrupted = projectCrashResumeController()?.interruptedProject();
+    if (interrupted?.ok && interrupted.project) pendingFileToOpen = interrupted.project;
+  }
   createWindow();
   registerPowerMonitorLifecycle();
 
@@ -3507,6 +3531,21 @@ ipcMain.handle("project-lock-release", (event, data) => {
     }
   }
   return r;
+});
+
+// Navigation records identify the accepted project only. They never select a
+// program version, recover a transaction or open a copy. Reloads retain them.
+ipcMain.handle('project-navigation-active', (event, projectPath) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string'
+    || !path.isAbsolute(projectPath) || !heldProjectLockNormalized
+    || projectLock.normalizeProjectPathLoose(projectPath) !== projectLock.normalizeProjectPathLoose(heldProjectLockNormalized))
+    return { ok: false, reason: 'project-not-owned' };
+  return projectCrashResumeController()?.record(projectPath) ?? { ok: false, reason: 'navigation-storage-unavailable' };
+});
+ipcMain.handle('project-navigation-clear', (event, projectPath) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || typeof projectPath !== 'string' || !path.isAbsolute(projectPath))
+    return { ok: false, reason: 'project-not-owned' };
+  return projectCrashResume?.clear(projectPath) ?? { ok: true, cleared: false };
 });
 
 ipcMain.handle("project-lock-focus", (event, data) => {

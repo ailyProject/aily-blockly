@@ -112,13 +112,17 @@ test('automatic source preparation expands root/nested archives and transitives,
   const source = name => path.join(f.root, 'node_modules', `@aily-project/lib-${name}`, 'src/Fixture.h');
   assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// archive\n');
   assert.equal(fs.readFileSync(source('nested'), 'utf8'), '// nested\n');
-  // Reload may hold the renderer's mirror-publication lock while preparing
-  // package sources. Expansion must not try to acquire that same lock again.
+  // R2 source expansion owns the same physical lock. Production startup does
+  // not nest that lock; a competing writer must finish before any extraction.
   fs.rmSync(path.dirname(source('archive')), { recursive: true });
   const { createProjectFileAccess, acquireProjectFileLock } = require('../../electron/project-file-access');
   const lock = await acquireProjectFileLock(createProjectFileAccess(f.root, f.root), () => {});
-  try { await sessions.run('prepare', f.root); }
-  finally { lock.release(); }
+  const preparing = sessions.run('prepare', f.root);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(fs.existsSync(source('archive')), false, 'No source write may bypass a live native writer');
+  } finally { lock.release(); }
+  await preparing;
   assert.equal(fs.readFileSync(source('archive'), 'utf8'), '// archive\n');
   fs.writeFileSync(source('archive'), '// user edit\n');
   const baseline = ['package.json', 'package-lock.json'].map(f.read);
@@ -255,7 +259,9 @@ test('real npm: cumulative installs/removals, save, discard and no draft files',
   assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), snapshot);
   assert.equal(api.status(root).dirty, false);
   assert.deepEqual(fs.readdirSync(root).sort(), ['.aily', 'local-libraries', 'node_modules', 'package-lock.json', 'package.json']);
-  assert.deepEqual(fs.readdirSync(path.join(root, '.aily')), []);
+  assert.deepEqual(fs.readdirSync(path.join(root, '.aily')).sort(), ['dependency-recovery', 'project-files.guard']);
+  assert.ok(fs.readdirSync(path.join(root, '.aily/dependency-recovery')).every(name => /^environment-[0-9a-f]{64}$/.test(name)),
+    'Only checksummed original environment checkpoints are retained; no loose manifest drafts');
 });
 
 test('discard follows current disk after Chat restore; save preserves unrelated external metadata', async t => {

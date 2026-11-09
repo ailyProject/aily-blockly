@@ -9,6 +9,12 @@ import { AbsSyncError } from './abs-state';
  * unstarted transaction is abandoned; candidate input is never replayed. */
 export async function settleAbsProjectTransaction(port: AbsSyncStoragePort, project: string, assertCurrent: () => void) {
   if (await port.read('prepared.json') === null) return;
+  const retained = await new AbsOperationJournal(port, project).inspectLocation();
+  if (retained?.operation.nativeSave) {
+    const original = retained.operation;
+    const ref = await new AbsOperationJournal(port, original.project).findDocumentSave(original.nativeSave!, assertCurrent);
+    if (!ref) throw new AbsSyncError('ABS_NATIVE_SAVE_OBSERVATION_INVALID', 'The interrupted native publication has no original admission.');
+  }
   const recovery = await new AbsBaselineStore(port, { projectKey: project, pageId: '' }).inspectJournalRecovery();
   assertCurrent();
   if (!recovery) throw new AbsSyncError('ABS_TRANSACTION_CONFLICT', 'The interrupted save conflicts with current files. All versions were retained.');
@@ -28,6 +34,10 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
   await settleAbsProjectTransaction(port, project, assertCurrent);
   const journal = new AbsOperationJournal(port, project), retained = await journal.inspectLocation();
   let operation = retained?.operation ?? null;
+  if (operation?.nativeSave) {
+    const original = await new AbsOperationJournal(port, operation.project).findDocumentSave(operation.nativeSave, assertCurrent);
+    if (!original) throw new AbsSyncError('ABS_NATIVE_SAVE_OBSERVATION_INVALID', 'The retained native operation has no original admission.');
+  }
   if (retained && operation!.project !== project) {
     const store = new AbsBaselineStore(port, { projectKey: project, pageId: '' });
     const current = await store.inspectCommitted(), disk = await store.captureDisk();
@@ -74,6 +84,12 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
     operation = await journal.relocate(retained, afterDisk, afterPointer, assertCurrent);
   }
   if (!operation) return null;
+  // A damaged derived sidecar must not manufacture a metadata successor and
+  // stale the original pending request. Preserve the same immutable source.
+  if (operation.project === project) {
+    try { await new AbsBaselineStore(port, { projectKey: project, pageId: '' }).restoreCommittedMap(assertCurrent); }
+    catch (error) { if ((error as { code?: string })?.code !== 'ABS_MAP_REPAIR_UNPROVEN') throw error; }
+  }
   if (await inspectAbsBaselineRecovery(port, project)) {
     const repaired = await recoverAbsBaseline(port, project, assertCurrent);
     if (repaired.changed) {
@@ -81,6 +97,10 @@ export async function recoverAbsProjectOperation(port: AbsSyncStoragePort, proje
     }
   }
   if (operation.application) await new AbsApplicationJournal(port, project).seal(operation.id, assertCurrent);
+  if (operation.nativeSave) {
+    const ref = await journal.findDocumentSave(operation.nativeSave, assertCurrent);
+    if (ref) await new AbsApplicationJournal(port, project).sealNativeSave(ref, assertCurrent);
+  }
   const store = new AbsBaselineStore(port, { projectKey: project, pageId: '' });
   let disk = await store.captureDisk();
   let committed = await port.read('committed.json');

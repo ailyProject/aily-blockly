@@ -1,4 +1,5 @@
 import { recordLibraryMutation } from '../../editors/blockly-editor/services/blockly-library-history';
+import type { ProjectSaveRequest } from '@domain/project/public-api';
 import type { BlocklyProjectDocument } from '../../editors/blockly-editor/services/blockly.service';
 import { Injectable, Injector } from '@angular/core';
 import { ActionService, UiService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
@@ -30,6 +31,7 @@ import { firstValueFrom } from 'rxjs';
 import { PasteInstallDialogComponent } from '../../editors/blockly-editor/components/paste-install-dialog/paste-install-dialog.component';
 import { AbsWorkspaceSyncService } from '../blockly/abs/abs-workspace-sync.service';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
+import { settleLinkedProjectEnvironment } from '../blockly/environment-settlement';
 
 @Injectable({ providedIn: 'root' })
 export class ProjectApplicationAdapter implements ProjectApplicationPort {
@@ -43,7 +45,22 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
     private readonly blocklyService: BlocklyService,
     private readonly blocklyEditorProjectService: BlocklyEditorProjectService,
     private readonly injector: Injector,
-  ) {}
+  ) {
+    this.blocklyEditorProjectService.setEnvironmentRuntimeReader?.(async project => {
+      const runtime = await this.projectService.readBlocklyEnvironmentRuntime(project);
+      const libraryNames = (await this.npmService.getAllInstalledLibraries(project)).map(item => item.name);
+      runtime.assertCurrent();
+      return { ...runtime, libraryNames };
+    });
+  }
+
+  publishBlocklyEnvironmentMutation(project: string, mutate: (publication: unknown) => Promise<any>, request?: ProjectSaveRequest) {
+    return this.blocklyEditorProjectService.publishEnvironmentMutation(project, mutate, request);
+  }
+
+  async settleEnvironmentBeforeOpen(project: string, assertCurrent: () => void): Promise<void> {
+    await settleLinkedProjectEnvironment(project, assertCurrent);
+  }
 
   updateFooterState(state: { state: string; text: string; timeout?: number }): void {
     this.uiService.updateFooterState(state);
@@ -126,9 +143,9 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
       : this.injector.get(AbsWorkspaceSyncService).prepareCopy();
   }
 
-  dispatchProjectSave(path: string, timeoutMs: number): Promise<ProjectSaveDispatchResult> {
+  dispatchProjectSave(path: string, timeoutMs: number, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult> {
     return new Promise((resolve) => {
-      this.actionService.dispatch('project-save', { path }, (result) => {
+      this.actionService.dispatch('project-save', { path, ...(request ? { saveRequest: request } : {}) }, (result) => {
         const outcome = result.data;
         if (outcome?.code === 'ACTION_HANDLER_UNAVAILABLE') {
           resolve({ success: false, code: 'PROJECT_SAVE_HANDLER_UNAVAILABLE', projectSaved: false,
@@ -142,6 +159,10 @@ export class ProjectApplicationAdapter implements ProjectApplicationPort {
           error: structured?.error || (structured?.partial ? '项目文件已保存，但生成代码未完整发布。' : result.error) });
       }, timeoutMs, { requireHandler: true });
     });
+  }
+
+  observeProjectPublication(path: string, request: ProjectSaveRequest, originalTargetPid?: number) {
+    return this.injector.get(AbsWorkspaceSyncService).observeNativeSave(path, request, originalTargetPid);
   }
 
   async inspectBlocklyConflict(path: string) {

@@ -2283,21 +2283,13 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
         const configChanged = coder
           ? await this.coderBoardConfig.select(projectPath, subItem)
-          : await persistBoardConfigSelection(this.projectService, subItem);
+          : (await this.projectService.applyBoardConfiguration(subItem)).changed;
         const shouldRunEffects = shouldRunBoardConfigSelectionEffects(
           configChanged,
           subItem,
         );
         if (!shouldRunEffects) {
           return;
-        }
-
-        if (!coder && subItem.extra?.refreshRuntimeBoardConfig) {
-          await this.projectService.refreshRuntimeBoardConfig();
-        }
-
-        if (!coder && configChanged && subItem.extra?.syncPinConfig) {
-          await this.projectService.syncBoardPinConfig(subItem);
         }
 
         if (subItem.extra?.selectAction === 'flash-softdevice') {

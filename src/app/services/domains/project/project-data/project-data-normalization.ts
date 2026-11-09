@@ -106,7 +106,10 @@ export async function normalizeProjectDataDocument(
       // The native loader acknowledges the actual old bytes, not an unpublished candidate.
       persistedText = originalContent;
     };
-    if (changed && hasAbsIdentityContext(projectPath, files) !== false) defer();
+    // The native loader validates changed data in memory first, including a
+    // legacy project before its first generation. Fresh template initialization
+    // retains its existing empty-identity precondition under the host lock.
+    if (changed && (loadOnly || hasAbsIdentityContext(projectPath, files) !== false)) defer();
     else {
       const publicationGuard = () => {
         check();

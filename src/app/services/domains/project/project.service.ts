@@ -42,6 +42,7 @@ import {
   isAilyCoreLibraryPackageName,
   isAilyLibraryPackageName,
   isAilyScopedPackageName,
+  requireProjectProgramPublication,
 } from '@shared/public-api';
 import {
   CODER_TEMPLATE_DIRECTORY,
@@ -76,6 +77,8 @@ import { ProjectSaveReceipts, type ProjectSaveRequest, type ProjectSaveReceipt, 
 import { ProjectRecoveryRequests } from './project-recovery-request';
 import { normalizeBoardMcuDeclaration } from './board-mcu';
 import { ProjectBlockFieldUpdates } from './project-block-field-updates';
+import { readManagedLibraryEnvironment, type ManagedLibraryEnvironmentReference } from './project-managed-library-environment';
+import { boardPublicationRequest } from './project-board-publication-request';
 import { resolveVariantPaths } from '../../../utils/board-variant.utils';
 import {
   canonicalCloudJson, cloudBoardProperties, getCloudBoardOptions,
@@ -261,6 +264,7 @@ export class ProjectService {
 
   private libraryMutation?: {
     projectPath: string; token: string; before: unknown;
+    packages: string[]; removedPackages: string[];
     edit: Awaited<ReturnType<NonNullable<ProjectApplicationPort['prepareBlocklyLibraryEdit']>>>;
     lease: ProjectLifecycleLease;
     timer?: ReturnType<typeof setTimeout>;
@@ -292,7 +296,7 @@ export class ProjectService {
       edit = await this.application.prepareBlocklyLibraryEdit!(projectPath, removedNames);
       await this.saveLibraryChanges(projectPath);
       const { token } = await window['libraryDependencies'].historyBegin(projectPath, { packages });
-      this.libraryMutation = { projectPath, token, before: edit.document, edit, lease };
+      this.libraryMutation = { projectPath, token, before: edit.document, packages: packages.map(packageName), removedPackages: removedNames, edit, lease };
       // A disconnected AI transport must never leave input blocked forever.
       this.libraryMutation.timer = setTimeout(() => { void this.abortLibraryMutation(token).catch(error => console.warn('Library transaction expiry:', error)); }, 300_000);
       return { token };
@@ -308,25 +312,40 @@ export class ProjectService {
     finally { mutation.edit.release(); mutation.lease.release(); this.libraryChangesChanged?.next(); }
   }
 
-  async finishLibraryMutation(token: string, reconcile = false): Promise<void> {
+  async finishLibraryMutation(token: string, reconcile = false, managedEnvironment?: ManagedLibraryEnvironmentReference,
+    assertOwner?: () => void): Promise<void> {
     const mutation = this.libraryMutation;
     if (!mutation || mutation.token !== token || mutation.projectPath !== this.currentProjectPath) {
       throw new Error('Library mutation expired or belongs to another project.');
     }
     clearTimeout(mutation.timer);
     try {
-      // AI's npm runs against its candidate tree. History publishes manifests,
-      // while the host must reify its own node_modules before scanning libraries.
-      if (reconcile) {
+      const current = this.captureCurrentProjectGuard();
+      const assertCurrent = () => {
+        assertOwner?.();
+        if (!current() || this.libraryMutation !== mutation || this.currentProjectPath !== mutation.projectPath) {
+          throw new Error('Library runtime refresh no longer owns the original project mutation.');
+        }
+      };
+      assertCurrent();
+      if (managedEnvironment) {
+        await readManagedLibraryEnvironment(mutation.projectPath, managedEnvironment, mutation, assertCurrent);
+        // The original Main already reified and saved this exact dependency
+        // environment. Refresh only the live runtime, never reify it again.
+        this.acceptLibraryStatus(mutation.projectPath, await window['libraryDependencies'].status(mutation.projectPath));
+        assertCurrent();
+      } else if (reconcile) {
         this.acceptLibraryStatus(mutation.projectPath,
           await window['libraryDependencies'].discard(mutation.projectPath, {reconcile:true,historyRestored:true}));
         await window['libraryDependencies'].prepare(mutation.projectPath);
       }
-      // Native library sessions already await source expansion before publishing
-      // their manifest. Only AI's separately reconciled host tree needs this pass.
       await this.ensureBlocklyLibraryRuntimeReady(mutation.projectPath);
+      assertCurrent();
+      if (managedEnvironment) await readManagedLibraryEnvironment(mutation.projectPath, managedEnvironment, mutation, assertCurrent);
       const after = await this.application.captureBlocklyLibraryDocument!();
+      assertCurrent();
       const committed = await window['libraryDependencies'].historyCommit(mutation.projectPath, { token });
+      assertCurrent();
       if (committed.changed) {
         const documents = { before: mutation.before, after };
         mutation.edit.record(forward => this.restoreLibraryMutation(mutation, forward, documents));
@@ -337,7 +356,7 @@ export class ProjectService {
       try { await window['libraryDependencies'].historyDiscard(mutation.projectPath, { token }); } catch {}
       throw error;
     } finally {
-      this.libraryMutation = undefined;
+      if (this.libraryMutation === mutation) this.libraryMutation = undefined;
       mutation.edit.release(); mutation.lease.release(); this.libraryChangesChanged?.next();
     }
   }
@@ -401,7 +420,7 @@ export class ProjectService {
    * mounted. Ordinary code/history restoration still uses its ABS conflict gate. */
   async beginLibraryHistoryNavigation(changedPaths: string[]): Promise<{ token: string }> {
     if (!Array.isArray(changedPaths) || !changedPaths.includes('package.json')
-      || changedPaths.some(file => !['package.json', 'package-lock.json', '.npmrc'].includes(file))) {
+      || changedPaths.some(file => !['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock'].includes(file))) {
       throw new Error('库历史仅允许恢复依赖文件。');
     }
     const projectPath = this.currentProjectPath;
@@ -431,7 +450,7 @@ export class ProjectService {
   async synchronizeLibraryHistoryNavigation(token: string, changedPaths: string[]): Promise<void> {
     const operation = this.libraryHistoryNavigation;
     if (!operation || operation.token !== token || operation.projectPath !== this.currentProjectPath) throw new Error('库历史恢复已过期。');
-    if (!Array.isArray(changedPaths) || changedPaths.some(file => !['package.json', 'package-lock.json', '.npmrc'].includes(file))) throw new Error('库历史包含其他项目文件，恢复未继续。');
+    if (!Array.isArray(changedPaths) || changedPaths.some(file => !['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock'].includes(file))) throw new Error('库历史包含其他项目文件，恢复未继续。');
     const path = operation.projectPath, fs = window['fs'];
     for (const [file, before] of Object.entries(operation.files)) {
       const current = fs.existsSync(`${path}/${file}`) ? fs.readFileSync(`${path}/${file}`, 'utf8') : null;
@@ -1986,6 +2005,39 @@ export class ProjectService {
     };
   }
 
+  /** Read installed inputs without preparing code, saving defaults or touching
+   * the canvas. The existing acknowledgement is consumed only after a real
+   * reconstruction under the publisher's original edit lease. */
+  async readBlocklyEnvironmentRuntime(projectPath: string) {
+    const current = this.captureCurrentProjectGuard();
+    if (!current() || !this.isSameProjectPath(projectPath, this.currentProjectPath)) throw new Error('Runtime environment belongs to another project.');
+    const packageJson = await this.getPackageJson(projectPath);
+    await this.loadBoardMenuConfig();
+    if (!current()) throw new Error('Project changed while reading its new board menu.');
+    const boardConfig = await this.resolveBoardConfigForRuntime(await this.getBoardJson());
+    const signature = this.getBlocklyLibraryRuntimeSignature(projectPath, this.getEffectivePackageText(projectPath));
+    const fingerprint = `sha256:${await sha256Hex(signature)}`;
+    const assertCurrent = () => {
+      if (!current() || !this.isSameProjectPath(projectPath, this.currentProjectPath)
+        || this.getBlocklyLibraryRuntimeSignature(projectPath, this.getEffectivePackageText(projectPath)) !== signature) {
+        throw new Error('Installed environment changed while reconstructing the target program.');
+      }
+    };
+    assertCurrent();
+    // The editor verifies the rebuilt generator under its exact publication
+    // lease. Public readiness deliberately stays false while that lease is held.
+    let consumed = false;
+    return { packageJson, boardConfig, fingerprint, assertCurrent, acknowledge: () => {
+      assertCurrent();
+      if (consumed) return false;
+      consumed = true;
+      this.blocklyLibraryRuntimeSignatures.set(projectPath, signature);
+      this.currentPackageData = packageJson;
+      this.currentBoardConfig = boardConfig;
+      return true;
+    } };
+  }
+
   private async rebuildActiveBlocklyLibraryRuntime(
     projectPath: string,
     packageContent: string,
@@ -2022,6 +2074,12 @@ export class ProjectService {
       window['path'].join('i18n', `${language}.json`),
     ];
     const libraryFileSignatures: Array<[string, string, string]> = [];
+    const boardEntries = Object.entries({ ...(packageJson?.dependencies || {}), ...(packageJson?.devDependencies || {}) })
+      .filter(([name]) => isAilyBoardPackageName(name)).sort(([a], [b]) => a.localeCompare(b));
+    const boardFiles = boardEntries.flatMap(([name]) => ['package.json', 'board.json', 'menu.json'].map(file => {
+      const filename = window['path'].join(projectPath, 'node_modules', name, file);
+      return [name, file, window['fs'].existsSync(filename) ? window['fs'].md5Buffer(window['fs'].readFileSync(filename)) : 'missing'];
+    }));
 
     for (const scope of AILY_PACKAGE_SCOPES) {
       const scopePath = window['path'].join(projectPath, 'node_modules', scope);
@@ -2047,6 +2105,7 @@ export class ProjectService {
       toolboxOrder: packageJson?.blocklyToolboxOrder || [],
       language,
       libraryFileSignatures,
+      boardEntries, boardFiles, projectConfig: packageJson?.projectConfig || {}, compileBackend: this.getCompileBackendKey(),
     });
   }
 
@@ -2221,9 +2280,20 @@ export class ProjectService {
 
     const session = this.rememberDependencyBackend(this.dependencyLifecycle.beginPreparation(projectPath));
     onPreparation?.(session);
+    if (this.getProjectMode(projectPath) === 'blockly') {
+      await this.application.settleEnvironmentBeforeOpen?.(projectPath, () => this.assertProjectDependencySession(session));
+      this.assertProjectDependencySession(session);
+    }
     this.beginBlocklyProjectLoad(projectPath);
 
     const abiIsExist = this.getProjectMode(projectPath) === 'blockly';
+    if (abiIsExist && window['projectLock']?.recordActive) {
+      try {
+        const navigation = await window['projectLock'].recordActive(projectPath);
+        if (navigation?.ok !== true) console.warn('Project crash navigation could not be recorded:', navigation);
+      } catch (error) { console.warn('Project crash navigation could not be recorded:', error); }
+      this.assertProjectDependencySession(session);
+    }
     const blocklyRouteIsBeingReused = abiIsExist && this.router.url.startsWith('/main/blockly-editor');
     if (blocklyRouteIsBeingReused) {
       // Angular reuses the component when only query params change. Take an
@@ -2336,7 +2406,15 @@ export class ProjectService {
   private saveRequestSequence = 0;
 
   private get projectSaveReceipts(): ProjectSaveReceipts {
-    return this.saveReceipts ??= new ProjectSaveReceipts();
+    return this.saveReceipts ??= new ProjectSaveReceipts({
+      durableOnly: project => window['fs']?.nativeSaveReceiptVersion === 2 && this.getProjectMode(project) !== 'coder',
+      durableLookup: (path, request) => {
+        const observe = this.application.observeProjectPublication;
+        if (!observe) return Promise.reject(Object.assign(new Error('The document publication observer is unavailable.'),
+          { code: 'PROJECT_SAVE_DURABILITY_UNAVAILABLE' }));
+        return observe.call(this.application, path, request);
+      },
+    });
   }
 
   private saveContext(path: string): readonly unknown[] {
@@ -2355,6 +2433,15 @@ export class ProjectService {
     return this.projectSaveReceipts.status(path, request);
   }
 
+  /** A new host is only a reader of the original durable publication. */
+  async observeProjectPublication(path: string, request: ProjectSaveRequest, originalTargetPid: number): Promise<ProjectSaveReceiptResponse> {
+    if (request.version !== 2 || !Number.isSafeInteger(originalTargetPid) || originalTargetPid <= 0)
+      throw Object.assign(new Error('A durable observation requires the original v2 request and executor.'),
+        { code: 'PROJECT_SAVE_RECEIPT_INVALID' });
+    return this.projectSaveReceipts.status(path, request, async (project, original) =>
+      await this.application.observeProjectPublication?.(project, original, originalTargetPid) ?? null);
+  }
+
   private guardSaveContext(path: string, context: readonly unknown[], run: () => Promise<Record<string, any>>) {
     return async () => {
       const current = this.saveContext(path);
@@ -2366,19 +2453,30 @@ export class ProjectService {
   }
 
   // Manual save and exit retain their original completion, not an Action timer.
-  async save(path = this.currentProjectPath, _feedbackTimeoutMs?: number): Promise<ProjectSaveDispatchResult & { path?: string; saveReceipt?: ProjectSaveReceipt }> {
+  async save(path = this.currentProjectPath, _feedbackTimeoutMs?: number, publicationRequest?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult & { path?: string; saveReceipt?: ProjectSaveReceipt }> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
+    if (this.getProjectMode(path) !== 'coder') {
+      try { requireProjectProgramPublication(); }
+      catch (error) { return { success: false, path, code: (error as any)?.code,
+        error: error instanceof Error ? error.message : String(error) }; }
+    }
     const context = this.saveContext(path);
     this.saveRequestSequence = (this.saveRequestSequence ?? 0) + 1;
-    const request: ProjectSaveRequest = { version: 1, operation: 'project_save',
-      requestId: `ui-save-${Date.now().toString(36)}-${this.saveRequestSequence}` };
+    const durable = window['fs']?.nativeSaveReceiptVersion === 2 && this.getProjectMode(path) !== 'coder';
+    const request: ProjectSaveRequest = publicationRequest ?? { version: durable ? 2 : 1, operation: 'project_save',
+      requestId: durable ? `pub2-${crypto.randomUUID()}` : `ui-save-${Date.now().toString(36)}-${this.saveRequestSequence}` };
     const response = await this.projectSaveReceipts.execute(path, request, context,
-      this.guardSaveContext(path, context, () => this.saveProjectActual(path)));
-    const result = response.result!;
-    return { ...result, success: result['success'] === true, path, saveReceipt: response.saveReceipt };
+      this.guardSaveContext(path, context, () => this.saveProjectActual(path, durable ? request : undefined)));
+    const result = response.result;
+    if (!result) return { success: false, path, saveReceipt: response.saveReceipt,
+      code: response.code ?? 'PROJECT_SAVE_PUBLICATION_PENDING',
+      error: 'The original save has not produced a durable terminal result. It was not started again.' };
+    const success = result['success'] === true || request.version === 2 && result['ok'] === true
+      && result['projectSaved'] === true && result['partial'] !== true;
+    return { ...result, success, path, saveReceipt: response.saveReceipt };
   }
 
-  private async saveProjectActual(path: string): Promise<ProjectSaveDispatchResult & { path?: string }> {
+  private async saveProjectActual(path: string, request?: ProjectSaveRequest): Promise<ProjectSaveDispatchResult & { path?: string }> {
     if (!path) return { success: false, error: '没有可保存的项目', path };
     if (this.isProjectOpening && this.getProjectMode(path) !== 'coder') {
       return Promise.resolve({
@@ -2408,7 +2506,8 @@ export class ProjectService {
     let outcome: Partial<ProjectSaveOutcome> = {};
     try {
       if (await this.prepareResolvedLibraryChangesForSave(path) && this.getProjectMode(path) !== 'coder') await this.ensureBlocklyLibraryRuntimeReady(path);
-      const result = await this.application.dispatchProjectSave(path, 0);
+      const result = request ? await this.application.dispatchProjectSave(path, 0, request)
+        : await this.application.dispatchProjectSave(path, 0);
       if (result?.projectSaved !== undefined) outcome = { ...result };
       if (result?.success !== true) throw Object.assign(new Error(result?.error || '编辑器未确认保存成功'),
         typeof result?.code === 'string' ? { code: result.code } : {});
@@ -3066,6 +3165,10 @@ export class ProjectService {
   }
 
   private async closeInternal(paths: string[]) {
+    if (this.currentProjectPath && window['projectLock']?.clearActive) {
+      try { await window['projectLock'].clearActive(this.currentProjectPath); }
+      catch (error) { console.warn('Project crash navigation could not be cleared:', error); }
+    }
     if (this.electronService.isElectron && this.currentProjectPath && window['projectLock']) {
       try {
         for (const path of paths) {
@@ -3442,36 +3545,90 @@ export class ProjectService {
     }
 
     if (this.libraryChanges.has(this.normalizeProjectPath(this.currentProjectPath))) {
-      this.acceptLibraryStatus(this.currentProjectPath, await window['libraryDependencies'].patch(this.currentProjectPath, data));
+      const staged = await window['libraryDependencies'].patch(this.currentProjectPath, data);
+      this.acceptLibraryStatus(this.currentProjectPath, staged);
       this.libraryChangesChanged?.next();
-      return;
+      return staged;
     }
-    const packageJsonPath = `${this.currentProjectPath}/package.json`;
-
-    try {
-      this.writePackageJsonFile(packageJsonPath, data);
-    } catch (error) {
-      console.error('写入package.json失败:', error);
-      throw error;
+    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
+    const host = window['libraryDependencies'];
+    if (host?.environmentVersion !== 2 || typeof host.configure !== 'function') {
+      throw Object.assign(new Error('Project configuration requires the matching dependency publisher; no unchecked write was attempted.'),
+        { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
     }
-
-    // 更新当前packageData
+    const packageJsonPath = `${project}/package.json`, before = window['fs'].readFileSync(packageJsonPath, 'utf8');
+    const expectedHash = `sha256:${await sha256Hex(before)}`;
+    if (!current()) throw new Error('Project changed before publishing its configuration.');
+    const result = await host.configure(project, { operation: 'project-config',
+      files: { 'package.json': { expectedHash, content: JSON.stringify(data, null, 2) } } });
+    if (result.environment?.status !== 'completed' || result.environment.current !== true || result.candidateApplied !== false) {
+      throw Object.assign(new Error('The original project environment is not verified complete; observe that request instead of publishing another change.'),
+        { code: 'LIBRARY_ENVIRONMENT_UNCERTAIN', environment: result.environment, candidateApplied: false });
+    }
+    if (!current()) throw Object.assign(new Error('The original project configuration completed after navigation.'),
+      { environment: result.environment, candidateApplied: false });
+    this.acceptLibraryStatus(project, result);
     this.currentPackageData = data;
+    return result;
   }
 
-  private writePackageJsonFile(packageJsonPath: string, data: any) {
-    try {
-      window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
-    } catch (error) {
-      console.warn('写入package.json失败，尝试修改权限后重试:', error);
-      if (window['fs'].existsSync(packageJsonPath)) {
-        window['fs'].chmodSync(packageJsonPath, 0o666);
-        window['fs'].writeFileSync(packageJsonPath, JSON.stringify(data, null, 2));
-        return;
-      }
-
-      throw error;
+  /** Board menu and automation share the same native document owner. The
+   * environment callback starts only after its complete Working S1 is durable. */
+  async applyBoardConfiguration(selection: { key?: string; data?: unknown }, saveRequest?: ProjectSaveRequest): Promise<any> {
+    if (!selection.key) return { changed: false };
+    if (this.isCoderProjectContext) throw new Error('Coder board selections use their source transaction.');
+    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
+    const packageJson = await this.getPackageJson();
+    const changed = packageJson?.projectConfig?.[selection.key] !== selection.data;
+    if (!changed && !saveRequest) return { changed: false };
+    const request = boardPublicationRequest({ kind: 'board-config', configKey: selection.key, configValue: String(selection.data) }, saveRequest);
+    if (!changed) {
+      const saved = await this.save(project, undefined, request);
+      if (!saved.success) throw Object.assign(new Error(saved.error || 'The original unchanged board publication is not complete.'), saved);
+      return { ...saved, changed: false, candidateApplied: false };
     }
+    const target = { ...packageJson, projectConfig: { ...packageJson?.projectConfig, [selection.key]: selection.data } };
+    const outcome = await this.publishManifestEnvironment(target, 'board-config', request);
+    if (!current()) throw new Error('Project changed after board source publication.');
+    this.boardChangeSubject.next();
+    return { ...outcome, changed: true };
+  }
+
+  private async publishManifestEnvironment(target: any | (() => Promise<any>), operation: string, request?: ProjectSaveRequest): Promise<any> {
+    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard(), host = window['libraryDependencies'];
+    let environment: any;
+    if (!this.application.publishBlocklyEnvironmentMutation || host?.environmentVersion !== 2) {
+      throw Object.assign(new Error('Board configuration requires the native environment/document publisher.'), { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
+    }
+    const outcome = await this.application.publishBlocklyEnvironmentMutation(project, async programRef => {
+      if (!current()) throw new Error('Project changed before the board environment operation.');
+      const planned = typeof target === 'function' ? await target() : target;
+      if (!current()) throw new Error('Project changed while preparing the original board environment.');
+      const raw = window['fs'].readFileSync(`${project}/package.json`, 'utf8');
+      const result = await host.configure(project, { operation, programRef,
+        files: { 'package.json': { expectedHash: `sha256:${await sha256Hex(raw)}`, content: JSON.stringify(planned, null, 2) } } });
+      if (!current()) throw new Error('Project changed during the board environment operation.');
+      this.acceptLibraryStatus(project, result);
+      environment = result.environment;
+      return result;
+    }, request);
+    if (!outcome.projectSaved || outcome.partial) throw Object.assign(new Error(outcome.error || 'Board environment/source publication is incomplete.'), outcome,
+      { environment, candidateApplied: false });
+    if (!current()) throw new Error('Project changed after board source publication.');
+    return { ...outcome, environment, candidateApplied: false };
+  }
+
+  /** An external manifest edit is reconciled against its current bytes. The
+   * watcher never uninstalls packages or reloads/saves the canvas on its own. */
+  async reconcileBlocklyEnvironment(removedBoards: string[] = []): Promise<void> {
+    const project = this.currentProjectPath, current = this.captureCurrentProjectGuard();
+    const target = await this.getPackageJson(project);
+    for (const name of removedBoards) for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+      if (target[field]) { target[field] = { ...target[field] }; delete target[field][name]; }
+    }
+    if (!current()) throw new Error('Project changed before its external board configuration could reconcile.');
+    await this.publishManifestEnvironment(target, 'board-reconcile');
+    this.boardChangeSubject.next();
   }
 
   /**
@@ -3909,6 +4066,21 @@ export class ProjectService {
     normalizeBoardMcuDeclaration(resolvedBoardJson);
     const boardModule = this.runtimeBoardModules.get(boardJson);
     if (boardModule) this.runtimeBoardModules.set(resolvedBoardJson, boardModule);
+    if (!this.isCoderProjectContext) {
+      // The installed board remains immutable. Variant pins are a projection
+      // of the selected project environment, just like CDC runtime ports.
+      const menu = await this.getBoardConfigMenu({ persistDefaults: false }, resolvedBoardJson);
+      const selected = menu.flatMap(item => item.children || []).find(item => item.check && item.extra?.syncPinConfig);
+      if (selected) {
+        const pins = await this.getVariantConfig(selected.extra?.build?.variant || null,
+          selected.extra?.build?.variant_h || 'variant_generic.h');
+        for (const [key, value] of Object.entries(pins || {})) if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
+      }
+      const packageJson = await this.getPackageJson();
+      for (const [key, value] of Object.entries(packageJson?.ailyBoardOverrides || {})) {
+        if (Array.isArray(value)) resolvedBoardJson[key] = JSON.parse(JSON.stringify(value));
+      }
+    }
     const cdcEnabled = await this.isCdcOnBootEnabledForProject(resolvedBoardJson);
     // 云目标暂不可用时仍允许打开和编辑工程；CDC 状态未知时保留开发板原始运行端口。
     if (cdcEnabled !== undefined) this.application.applyCdcSerialPortOverrides(resolvedBoardJson, cdcEnabled);
@@ -4052,26 +4224,10 @@ export class ProjectService {
       return;
     }
 
-    // 保存当前项目
-    const projectPath = this.currentProjectPath;
-    const saved = await this.save(projectPath);
-    if (saved.success !== true) throw Object.assign(
-      new Error(`修改开发板配置前保存项目失败：${saved.error || '未确认保存完成'}`), saved);
-    if (this.currentProjectPath !== projectPath) throw new Error('当前项目已切换，请重试');
-    this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD_CONFIG'), { nzDuration: 5000 });
-
-    const boardJson = JSON.parse(this.electronService.readFile(boardJsonPath));
-    Object.assign(boardJson, data);
-    window['fs'].writeFileSync(boardJsonPath, JSON.stringify(boardJson, null, 2));
-
-    // 重新加载项目
-    console.log('重新加载项目...');
-    if (!await this.projectOpen(projectPath)) throw new Error('开发板配置已写入，但项目重新加载失败');
-
-    // 通知开发板变更
+    const packageJson = await this.getPackageJson();
+    const pins = Object.fromEntries(Object.entries(data || {}).filter(([, value]) => Array.isArray(value)));
+    await this.publishManifestEnvironment({ ...packageJson, ailyBoardOverrides: { ...packageJson.ailyBoardOverrides, ...pins } }, 'board-pins');
     this.boardChangeSubject.next();
-    this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.BOARD_SWITCH_COMPLETE') });
-    this.message.success(this.translate.instant('PROJECT.BOARD_SWITCH_SUCCESS'), { nzDuration: 3000 });
   }
 
   // 获取开发板package路径
@@ -4300,7 +4456,7 @@ export class ProjectService {
   }
 
   /** Build the current board's configuration menu from its root menu.json. */
-  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}): Promise<IMenuItem[]> {
+  async getBoardConfigMenu(options: { persistDefaults?: boolean; requireCloudTarget?: boolean } = {}, runtimeBoard?: any): Promise<IMenuItem[]> {
     if (!this.isCoderProjectContext && this.isAilyCodeProject()) {
       const path = this.currentProjectPath;
       const context = this.getCoderProjectContext(path);
@@ -4310,7 +4466,9 @@ export class ProjectService {
     }
     // Merely opening Coder's menu must not change its board/source outside the
     // saved-editor transaction. boards.txt's first option remains checked below.
-    let persistDefaults = options.persistDefaults !== false && !this.isCoderProjectContext;
+    // Reading the menu may display boards.txt defaults, but it must not save a
+    // configuration or start a pin-change save/reload transaction implicitly.
+    let persistDefaults = options.persistDefaults === true && !this.isCoderProjectContext;
     // 菜单可能异步写入默认值和引脚，期间切换工程或后端时必须停止，避免污染新上下文。
     const projectCurrent = this.captureCurrentProjectGuard();
     const settingsKey = this.getCompileBackendKey();
@@ -4354,7 +4512,7 @@ export class ProjectService {
       console.warn('[ProjectService] failed to read current project config:', error);
     }
 
-    const boardName = this.getBoardNameFromBoardJson(this.currentBoardConfig) || cloudProfile?.fqbn.split(':')[2] || null;
+    const boardName = this.getBoardNameFromBoardJson(runtimeBoard ?? this.currentBoardConfig) || cloudProfile?.fqbn.split(':')[2] || null;
     const boardDependencies = await this.getBoardDependencies();
     assertCurrent();
     const hasSdk = Object.keys(boardDependencies).some(name => name.startsWith('@aily-project/sdk-'));
@@ -4537,6 +4695,15 @@ export class ProjectService {
 
   // 同步 menu.json 选项声明的开发板引脚配置。
   async syncBoardPinConfig(pinConfig: any, options: { notifyChange?: boolean } = {}): Promise<boolean> {
+    if (!this.isCoderProjectContext) {
+      // Selection is persisted by applyBoardConfiguration. A read/hydration
+      // never rewrites installed libraries or triggers an independent reload.
+      await this.refreshRuntimeBoardConfig();
+      this.currentBoardPinConfig = { board: pinConfig.data, variant: pinConfig.extra?.build?.variant || null,
+        variant_h: pinConfig.extra?.build?.variant_h || 'variant_generic.h' };
+      if (options.notifyChange !== false) this.boardChangeSubject.next();
+      return true;
+    }
     const cloud = this.isCloudBuild();
     // 本地模式已将变体写入板包，可沿用原有快捷路径；云模式必须核对当前运行态引脚。
     if (!cloud && pinConfig.data == this.currentBoardPinConfig.board) return true;
@@ -4772,7 +4939,7 @@ export class ProjectService {
     version: string;
     mode?: string[];
     selectedFramework?: string;
-  }) {
+  }, saveRequest?: ProjectSaveRequest) {
     const projectPath = this.currentProjectPath;
     const assertCurrentProject = () => {
       if (!projectPath || this.currentProjectPath !== projectPath) throw new Error('切换开发板期间项目已改变，已停止后续写入');
@@ -4782,6 +4949,7 @@ export class ProjectService {
     this.boardSwitchLifecycle = { projectPath, token: lifecycle.token };
     this.isBoardSwitchInProgress = true;
     let reloadPromise: Promise<void> | null = null;
+    let nativePublication: Record<string, unknown> | undefined;
     try {
       const separator = this.platformService.getPlatformSeparator();
       if (!this.currentProjectPath) {
@@ -4809,8 +4977,10 @@ export class ProjectService {
         }
       }
       // 0. 保存当前项目
-      const saved = await this.save();
-      if (!saved.success) throw new Error(`切换开发板前保存项目失败：${saved.error || '未确认保存完成'}`);
+      if (isAilyCode) {
+        const saved = await this.save();
+        if (!saved.success) throw new Error(`切换开发板前保存项目失败：${saved.error || '未确认保存完成'}`);
+      }
       assertCurrentProject();
       this.message.loading(this.translate.instant('PROJECT.SWITCHING_BOARD'), { nzDuration: 5000 });
 
@@ -4818,6 +4988,9 @@ export class ProjectService {
       this.configService.recordBoardUsage(normalizedBoardInfo.name);
       const currentBoardModule = await this.getBoardModule();
       assertCurrentProject();
+      // The native publisher admits full Working S1 and the original request
+      // before any target preparation. Re-observing an ID never reruns this factory.
+      const prepareTarget = async (): Promise<Record<string, unknown>> => {
       // 1. npm install 安装boardInfo.name@boardInfo.version 到 appDataPath（与 projectNew 一致）
       const appDataPath = window['path'].getAppDataPath();
       const newBoardPackage = this.buildNpmPackageSpec(normalizedBoardInfo.name, normalizedBoardInfo.version);
@@ -4833,10 +5006,8 @@ export class ProjectService {
       assertCurrentProject();
 
       // 2. 预安装到当前项目的 node_modules，但不写 package.json；最终 package.json 变更交给 watcher 处理。
-      await this.cmdService.runAsyncChecked(
-        await this.buildNpmInstallCommand(newBoardPackage, { noSave: true, registry: boardRegistry }),
-        projectPath,
-      );
+      if (isAilyCode) await this.cmdService.runAsyncChecked(
+          await this.buildNpmInstallCommand(newBoardPackage, { noSave: true, registry: boardRegistry }), projectPath);
       assertCurrentProject();
 
       // 3. 获取新开发板的模板并更新package.json
@@ -4898,8 +5069,21 @@ export class ProjectService {
           };
         }
 
-        // 写入新的package.json
-        // The watcher reacts to added board names, not same-board repair/version updates.
+        return newPackageJson;
+      } else {
+        throw new Error(isAilyCode
+          ? '未找到新开发板可用的 template_arduino/package.json 或 template/package.json，无法更新 Coder 项目配置'
+          : '未找到新开发板的 template/package.json，无法更新项目配置');
+      }
+      };
+
+      if (!isAilyCode) {
+        const request = boardPublicationRequest({ kind: 'board-switch', boardName: normalizedBoardInfo.name }, saveRequest);
+        nativePublication = await this.publishManifestEnvironment(prepareTarget, 'board-switch', request);
+        assertCurrentProject();
+        this.boardChangeSubject.next();
+      } else {
+        const newPackageJson = await prepareTarget();
         const shouldUsePackageJsonWatcher = this.isPackageJsonBoardWatcherActive && currentBoardModule !== normalizedBoardInfo.name;
         reloadPromise = shouldUsePackageJsonWatcher ? this.waitForBoardSwitchReload() : null;
         this.isBoardSwitchInProgress = !shouldUsePackageJsonWatcher;
@@ -4910,10 +5094,6 @@ export class ProjectService {
         if (!shouldUsePackageJsonWatcher) {
           await this.finishBoardSwitchWithoutPackageWatcher(currentBoardModule, normalizedBoardInfo.name, projectPath);
         }
-      } else {
-        throw new Error(isAilyCode
-          ? '未找到新开发板可用的 template_arduino/package.json 或 template/package.json，无法更新 Coder 项目配置'
-          : '未找到新开发板的 template/package.json，无法更新项目配置');
       }
 
       if (reloadPromise) {
@@ -4923,6 +5103,7 @@ export class ProjectService {
 
       this.application.updateFooterState({ state: 'done', text: this.translate.instant('PROJECT.BOARD_SWITCH_COMPLETE') });
       this.message.success(this.translate.instant('PROJECT.BOARD_SWITCH_SUCCESS'), { nzDuration: 3000 });
+      return nativePublication;
     } catch (error) {
       this.rejectBoardSwitchReload(error);
       console.error('切换开发板失败:', error);

@@ -19,6 +19,22 @@ const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, can
     prepareBuildExecution, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 
+async function readDependencyEnvironmentCapability() {
+  let capability;
+  try { capability = await ipcRenderer.invoke('library-dependencies:capabilities'); }
+  catch { /* A static preload property cannot prove the running Main was updated. */ }
+  if (capability?.dependencyEnvironmentVersion !== 2) {
+    throw Object.assign(new Error('The running application does not support durable dependency changes.'),
+      { code: 'LIBRARY_ENVIRONMENT_UNAVAILABLE' });
+  }
+  return capability;
+}
+
+async function invokeDependencyEnvironmentMutation(operation, projectPath, request) {
+  await readDependencyEnvironmentCapability();
+  return ipcRenderer.invoke('library-dependencies', { operation, projectPath, request });
+}
+
 // 单双杠虽不影响实用性，为了路径规范好看，还是单独使用
 const pt = process.platform === "win32" ? "\\" : "/"
 const ailyBuilderEnv = {
@@ -455,6 +471,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
         force: options && options.force,
       }),
     release: (projectPath) => ipcRenderer.invoke("project-lock-release", { projectPath }),
+    recordActive: (projectPath) => ipcRenderer.invoke('project-navigation-active', projectPath),
+    clearActive: (projectPath) => ipcRenderer.invoke('project-navigation-clear', projectPath),
     focusProcess: (pid) => ipcRenderer.invoke("project-lock-focus", { pid }),
   },
   subWindow: (() => {
@@ -707,6 +725,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     projectShadowIdentityMigrationVersion: PROJECT_SHADOW_IDENTITY_MIGRATION_VERSION,
     replaceProjectText: (request, assertCurrent) => replaceProjectText(request, assertCurrent),
     projectSyncStorageVersion: PROJECT_SYNC_STORAGE_VERSION,
+    nativeSaveReceiptVersion: 2,
+    projectProgramPublicationVersion: 1,
     openProjectSyncStorage: (projectPath, assertCurrent) => openProjectSyncStorageBridge(projectPath, assertCurrent),
     projectCopySourceVersion: 1,
     withProjectCopySource: (projectPath, assertCurrent, action) => require('./project-copy-source').withProjectCopySource(projectPath, assertCurrent, action),
@@ -870,23 +890,31 @@ contextBridge.exposeInMainWorld("electronAPI", {
     run: (data) => ipcRenderer.invoke("npm-run", data),
   },
   libraryDependencies: {
+    environmentVersion: 2,
+    capabilities: () => readDependencyEnvironmentCapability(),
     onChanged: callback => {
       const listener = (_event, status) => callback(status);
       ipcRenderer.on('library-dependencies:changed', listener);
       return () => ipcRenderer.removeListener('library-dependencies:changed', listener);
     },
-    historyBegin: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyBegin', projectPath, request }),
+    historyBegin: (projectPath, request) => invokeDependencyEnvironmentMutation('historyBegin', projectPath, request),
     historyCommit: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyCommit', projectPath, request }),
-    historyRestore: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyRestore', projectPath, request }),
+    historyRestore: (projectPath, request) => invokeDependencyEnvironmentMutation('historyRestore', projectPath, request),
     historyPreview: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyPreview', projectPath, request }),
     historyDiscard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'historyDiscard', projectPath, request }),
     status: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'status', projectPath }),
-    recover: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'recover', projectPath, request }),
-    mutate: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'mutate', projectPath, request }),
-    prepare: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'prepare', projectPath }),
-    patch: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'patch', projectPath, request }),
-    save: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'save', projectPath }),
-    discard: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'discard', projectPath, request }),
+    recover: (projectPath, request) => request?.action === 'resolve' ? invokeDependencyEnvironmentMutation('recover', projectPath, request)
+      : ipcRenderer.invoke('library-dependencies', { operation: 'recover', projectPath, request }),
+    mutate: (projectPath, request) => invokeDependencyEnvironmentMutation('mutate', projectPath, request),
+    prepare: projectPath => invokeDependencyEnvironmentMutation('prepare', projectPath),
+    patch: (projectPath, request) => invokeDependencyEnvironmentMutation('patch', projectPath, request),
+    configure: (projectPath, request) => invokeDependencyEnvironmentMutation('configure', projectPath, request),
+    reconcile: (projectPath, request) => invokeDependencyEnvironmentMutation('reconcile', projectPath, request),
+    observeEnvironment: (projectPath, request) => ipcRenderer.invoke('library-dependencies', { operation: 'observeEnvironment', projectPath, request }),
+    pendingEnvironment: projectPath => ipcRenderer.invoke('library-dependencies', { operation: 'pendingEnvironment', projectPath }),
+    settleLinkedEnvironment: (projectPath, request) => invokeDependencyEnvironmentMutation('settleLinkedEnvironment', projectPath, request),
+    save: projectPath => invokeDependencyEnvironmentMutation('save', projectPath),
+    discard: (projectPath, request) => invokeDependencyEnvironmentMutation('discard', projectPath, request),
   },
   // 执行命令行命令
   cmd: {

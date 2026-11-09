@@ -24,6 +24,7 @@ import { resolveTranslatedApiErrorMessage } from '../../utils/api-error.utils';
 import { AILY_LOCAL_LIBRARY_SOURCES_KEY } from '@domain/dependencies/public-api';
 import { TranslateService } from '@ngx-translate/core';
 import { ConfigService } from '@core/preferences/public-api';
+import { readSavedProjectProgram, type SavedProjectProgram } from '../../integrations/blockly/abs/abs-program-reader';
 
 @Component({
   selector: 'app-cloud-space',
@@ -367,6 +368,7 @@ export class CloudSpaceComponent {
       hasAbi: window['fs'].existsSync(abiPath),
       hasAci: window['fs'].existsSync(aciPath),
     }) === 'coder';
+    let savedProgram: SavedProjectProgram | undefined;
     if (isCoder) {
       // Coder 保存的是源码工作区，不依赖 Blockly ABI/ABS 或外置数据运行时。
       if (!window['fs'].existsSync(window['path'].join(prjPath, 'sketch'))
@@ -376,13 +378,17 @@ export class CloudSpaceComponent {
       }
     } else {
       try {
-        const abi = JSON.parse(window['fs'].readFileSync(abiPath, 'utf8'));
-        assertNoOversizedInlineValues(abi);
         await projectDataRuntime.flushPending();
+        savedProgram = await readSavedProjectProgram(prjPath, () => undefined);
+        cloudPackageJson = JSON.parse(savedProgram.packageText);
+        const abiText = savedProgram.files['project.abi'];
+        if (abiText === null) throw new Error('A complete saved project document is unavailable.');
+        const abi = JSON.parse(abiText);
+        assertNoOversizedInlineValues(abi);
         const roots: unknown[] = [abi];
-        const absPath = window['path'].join(prjPath, 'project.abs');
-        if (window['fs'].existsSync(absPath)) {
-          roots.push(...extractStructuredAbsValues(window['fs'].readFileSync(absPath, 'utf8'), { strict: true }));
+        const abs = savedProgram.files['project.abs'];
+        if (abs !== null) {
+          roots.push(...extractStructuredAbsValues(abs, { strict: true }));
         }
         const validation = await projectDataRuntime.getStore().validateReferences(
           roots.flatMap((root) => projectDataRuntime.getStore().collectReferences(root)),
@@ -412,7 +418,7 @@ export class CloudSpaceComponent {
     // -x!project.7z: 排除自身
     // 注意：在某些shell环境下，!可能需要转义或引用，这里使用引号包裹排除项
     // Cloud projects reopen from ABI; ABS identity maps belong to the source's local baseline.
-    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`;
+    let packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * "-x!node_modules" "-xr!.*" "-x!package-lock.json" "-x!project.7z" "-x!project.abi" "-x!package.json" "-x!project.abi.backup" "-x!project.abs" "-x!project.abs.map.json"`;
     if (isCoder) {
       // 保留 sketch 源码、本地库和 .aily-component-library.json 来源记录。
       // 只排除本机状态和可重建缓存，Blockly 仍使用上面的原始打包规则。
@@ -428,7 +434,7 @@ export class CloudSpaceComponent {
       ];
       packCommand = `${this.platformService.za7} a -t7z -mx=9 "${archivePath}" * ${exclusions.map(value => `"${value}"`).join(' ')}`;
     }
-    if (hasLocalLibrarySources) {
+    if (hasLocalLibrarySources && isCoder) {
       packCommand += ` "-x!package.json"`;
     }
     
@@ -444,29 +450,32 @@ export class CloudSpaceComponent {
       return;
     }
 
-    if (hasLocalLibrarySources) {
+    if (savedProgram || hasLocalLibrarySources) {
       const stagingDir = window['path'].join(
         window['os'].tmpdir(),
         `aily-cloud-package-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       );
+      let stagingOwned = false;
       try {
         window['fs'].mkdirSync(stagingDir);
+        stagingOwned = true;
         window['fs'].writeFileSync(
           window['path'].join(stagingDir, 'package.json'),
           JSON.stringify(cloudPackageJson, null, 2),
         );
+        if (savedProgram) window['fs'].writeFileSync(window['path'].join(stagingDir, 'project.abi'), savedProgram.files['project.abi']);
         const addPackageResult = await this.cmdService.runAsync(
-          `${this.platformService.za7} a -t7z "${archivePath}" "package.json"`,
+          `${this.platformService.za7} a -t7z "${archivePath}" "package.json"${savedProgram ? ' "project.abi"' : ''}`,
           stagingDir,
           false,
         );
         if (addPackageResult.type === 'error' || (addPackageResult.code && addPackageResult.code !== 0)) {
-          this.message.error('项目打包失败: 无法移除本机库路径');
+          this.message.error('项目打包失败: 无法写入已保存的项目快照');
           console.error('写入云端 package.json 失败:', addPackageResult);
           return;
         }
       } finally {
-        window['fs'].rmSync(stagingDir, { recursive: true, force: true });
+        if (stagingOwned) window['fs'].rmSync(stagingDir, { recursive: true, force: true });
       }
     }
 

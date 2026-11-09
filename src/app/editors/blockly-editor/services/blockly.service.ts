@@ -1409,7 +1409,13 @@ export class BlocklyService {
   isWorkspaceEditBlocked(): boolean { return this.workspaceEditGate.blocked; }
   isWorkspaceEditInProgress(): boolean { return this.workspaceEditGate.busy; }
   isWorkspaceRecoveryRequired(): boolean { return this.workspaceEditGate.recoveryRequired; }
-  isLibraryRuntimeReady(): boolean { return this.generatorRuntime.isReady() && !this.workspaceEditGate.blocked; }
+  isLibraryRuntimeReady(owner?: BlocklyWorkspaceEditLease): boolean {
+    if (!owner) return this.generatorRuntime.isReady() && !this.workspaceEditGate.blocked;
+    try {
+      owner.assertCurrent(); this.workspaceEditGate.assertAvailable(owner);
+      return this.generatorRuntime.isReady() && !this.workspaceEditGate.recoveryRequired;
+    } catch { return false; }
+  }
 
   acquireWorkspaceEditLease(): BlocklyWorkspaceEditLease {
     return this.fenceEditLease(this.workspaceEditGate.acquire());

@@ -2227,13 +2227,17 @@ export class NpmService {
 
     // 修复项目依赖时仍按当前项目 devmode 选择仓库，避免混装两类板包。
     this.invalidateCloudDependencyInventory(session);
-    const npmResult = await this.cmdService.runAsync(
-      this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
-      projectPath,
-      true,
-      false,
-      session,
-    );
+    let npmResult: { stderr?: string };
+    if (!this.isAilyCodeProjectRoot(projectPath)) {
+      const host = window['libraryDependencies'];
+      if (host?.environmentVersion !== 2 || typeof host.reconcile !== 'function') throw new Error('The matching dependency environment publisher is unavailable.');
+      const registry = this.configService.getNpmRegistryForProject(projectPackageJson);
+      try { await host.reconcile(projectPath, { options: registry ? { '@aily-project:registry': registry } : {} }); npmResult = {}; }
+      catch (error) { npmResult = { stderr: error instanceof Error ? error.message : String(error) }; }
+    } else {
+      npmResult = await this.cmdService.runAsync(this.configService.withProjectNpmRegistry('npm install', projectPackageJson),
+        projectPath, true, false, session);
+    }
     this.assertDependencySession(session);
 
     const installedAfterAttempt = await this.installedOk(projectPath, session, inventory);

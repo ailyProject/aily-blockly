@@ -1,6 +1,21 @@
 export type ProjectStorageSettlement<T> = { ok: true; value: T }
   | { ok: false; error: { code?: string; message: string } };
+export interface ProjectStorageAttachment {
+  readonly version: 1; readonly root: string;
+  readonly identity: { readonly dev: string; readonly ino: string; readonly birthtimeNs: string };
+}
+export interface ProjectStorageExecutor {
+  readonly version: 1; readonly hostPid: number | null; readonly storagePid: number;
+  readonly instanceId: string; readonly processIdentity: string | null; readonly bootId: string | null;
+}
+export interface ProjectStorageExecutorObservation {
+  readonly version: 1; readonly state: 'active' | 'exited' | 'unknown';
+  readonly reason: 'invalid-executor' | 'same-instance' | 'system-restarted' | 'process-exited'
+    | 'process-unavailable' | 'identity-unavailable' | 'process-matched' | 'process-reused';
+}
 export interface ProjectStorageAccess {
+  readonly attachment?: ProjectStorageAttachment;
+  readonly executor?: ProjectStorageExecutor;
   read(key: string): Promise<string | null>;
   replace(key: string, expected: string | null, content: string | null): Promise<boolean>;
 }
@@ -9,10 +24,14 @@ interface NativeProjectStorageAccess extends ProjectStorageAccess {
   replaceResult?(key: string, expected: string | null, content: string | null): Promise<ProjectStorageSettlement<boolean>>;
 }
 export interface ProjectStorageBridge {
+  readonly attachment?: ProjectStorageAttachment;
+  readonly executor?: ProjectStorageExecutor;
+  observeExecutor?(original: ProjectStorageExecutor): Promise<ProjectStorageExecutorObservation>;
   read(key: string): Promise<string | null>;
   withLock<T>(run: (storage: ProjectStorageAccess, settle: (result: ProjectStorageSettlement<T>) => void) => void): Promise<T>;
 }
 export interface NativeProjectStorageBridge extends ProjectStorageBridge {
+  observeExecutorResult?(original: ProjectStorageExecutor): Promise<ProjectStorageSettlement<ProjectStorageExecutorObservation>>;
   readResult?(key: string): Promise<ProjectStorageSettlement<string | null>>;
   withLockResult?<T>(run: (storage: NativeProjectStorageAccess,
     settle: (result: ProjectStorageSettlement<T>) => void) => void): Promise<ProjectStorageSettlement<T>>;
@@ -34,10 +53,19 @@ export function projectStorageBridge(storage: NativeProjectStorageBridge, assert
     assertCurrent(); return value(result);
   };
   return {
+    attachment: storage.attachment,
+    executor: storage.executor,
+    ...(storage.observeExecutor ? { observeExecutor: async (original: ProjectStorageExecutor) => {
+      assertCurrent();
+      const observed = storage.observeExecutorResult ? value(await storage.observeExecutorResult(original)) : await storage.observeExecutor!(original);
+      assertCurrent(); return observed;
+    } } : {}),
     read: key => read(storage, key),
     withLock<T>(run: (storage: ProjectStorageAccess, settle: (result: ProjectStorageSettlement<T>) => void) => void) {
       if (!storage.withLockResult) return storage.withLock(run);
       return storage.withLockResult<T>((locked, settle) => run({
+        attachment: locked.attachment,
+        executor: locked.executor,
         read: key => read(locked, key),
         replace: async (key, expected, content) => {
           assertCurrent();

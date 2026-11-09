@@ -3,6 +3,7 @@ import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsPreparedVariable, AbsVariableCreation, assertAbsVariableCreations, planAbsVariableCreations } from './abs-variable-intents';
 import { assertAbsSourceEdits, type AbsSourceEdits } from './abs-edit-provenance';
 import { assertAbsNativeModelDeclarations, type AbsNativeModelDeclaration } from './abs-native-model-declarations';
+import { assertWorkingCandidateRef, type WorkingCandidateRef } from './abs-working-candidate';
 
 /** A byte-bound wire view, not an authority to modify the immutable baseline. */
 export interface AbsGenerationBinding {
@@ -15,11 +16,12 @@ export interface AbsGenerationBinding {
 export interface AbsGenerationEvidence { binding: AbsGenerationBinding; absBytes: number }
 export interface AbsGenerationRequest { version: 2; requestId: string }
 export interface AbsGenerationCandidateRequest extends AbsGenerationRequest {
+  workingCandidate?: WorkingCandidateRef;
   base: AbsGenerationBinding;
   candidate: { hash: string; bytes: number };
   createVariables?: AbsVariableCreation[];
   sourceEdits?: AbsSourceEdits;
-  /** AI request delta wins overlapping edits; unrelated current state is retained. */
+  /** Legacy intent selector. All paths now use strict overlapping-edit checks. */
   concurrentEdits?: 'request-priority';
   intentGeneration?: string;
 }
@@ -66,6 +68,16 @@ export function assertGenerationCandidate(value: any): asserts value is AbsGener
     throw new AbsSyncError('ABS_REQUEST_INVALID', 'Invalid concurrent request policy or intent generation.');
   }
   const { base, candidate } = value as any;
+  if (value['workingCandidate'] !== undefined) {
+    assertWorkingCandidateRef(value['workingCandidate']);
+    if (value['sourceEdits'] !== undefined || value['concurrentEdits'] !== undefined || value['intentGeneration'] !== undefined
+      || !hash(candidate?.hash) || !Number.isSafeInteger(candidate?.bytes) || candidate.bytes < 1) {
+      throw new AbsSyncError('ABS_REQUEST_INVALID', 'Working candidates use their immutable record, not legacy intent or edit proofs.');
+    }
+    // The Host hydrates base from the record. A preparation receipt still carries
+    // this projection binding, but the current Published head is independent.
+    if (base === undefined) return;
+  }
   if (!base || typeof base.generation !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(base.generation)
     || typeof base.scope?.projectKey !== 'string' || !base.scope.projectKey || typeof base.scope?.pageId !== 'string' || !base.scope.pageId
     || !hash(base.abiHash) || !hash(base.absHash) || !hash(base.mapHash)
@@ -75,6 +87,7 @@ export function assertGenerationCandidate(value: any): asserts value is AbsGener
 }
 export function assertGenerationValidation(value: any): asserts value is AbsGenerationValidation & Record<string, any> {
   assertGenerationCandidate(value);
+  if (!value.base) throw new AbsSyncError('ABS_REQUEST_INVALID', 'The host preparation projection is missing.');
   assertAbsNativeModelDeclarations(value['preparedModels']);
   const retired = value['retiredModels'];
   if (retired !== undefined && (!Array.isArray(retired) || !retired.length
@@ -94,7 +107,8 @@ export function readGenerationApplyValidation(input: any): AbsGenerationValidati
   try {
     assertGenerationValidation(validation);
     if (validation.requestId !== input.requestId || validation['validation']?.scope !== 'prepared-generation'
-      || validation['validation']?.ok !== true || input['chunk'] !== undefined && typeof input['chunk'] !== 'boolean') {
+      || validation['validation']?.ok !== true || input['chunk'] !== undefined && typeof input['chunk'] !== 'boolean'
+      || input['workingCandidate'] !== undefined && absJson(input['workingCandidate']) !== absJson(validation.workingCandidate)) {
       throw new Error('The preparation receipt must match this request and scope.');
     }
   } catch (error) {

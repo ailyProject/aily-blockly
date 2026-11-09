@@ -351,10 +351,29 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
       }
       evidence.cases.push({ name: 'menu-cannot-bypass-candidate-save-or-create-recovery-project', ok: true })
     }
+    const forkMirrorNames = ['project.abi', 'project.abs', 'project.abs.map.json']
+    const beforeForkMirrors = await Promise.all(forkMirrorNames.map(name => fs.readFile(path.join(project, name))))
+    const beforeForkGuard = structuredClone(harness.guard.snapshot(project))
+    const beforeForkAssociation = structuredClone(harness.binding.associatedProjectRoots)
+    const beforeForkProof = harness.proof()
+    evidence.forkRejections = []
     for (let attempt = 0; attempt < 2; attempt++) {
       const rejected = await call('project_recover', { project, action: 'fork', requestId: randomUUID() })
-      assert.equal(rejected.structured?.code, 'PROJECT_RECOVERY_IN_PLACE_REQUIRED')
-      assert.equal(rejected.structured?.commandDispatched, false)
+      assert.equal(rejected.isError, true)
+      assert.equal(rejected.structured, undefined, 'Public fork must fail schema validation before reaching the legacy handler')
+      assert.match(rejected.text, /^Validation failed for tool "project_recover":\n/)
+      assert.match(rejected.text, /\n  - action: must be equal to constant/)
+      assert.equal(harness.proof().toolEvents, beforeForkProof.toolEvents, 'Schema rejection must precede actual PI tool dispatch')
+      assert.equal(harness.proof().permissionPrompts, beforeForkProof.permissionPrompts)
+      assert.deepEqual(await Promise.all(forkMirrorNames.map(name => fs.readFile(path.join(project, name)))), beforeForkMirrors)
+      assert.deepEqual(harness.guard.snapshot(project), beforeForkGuard)
+      assert.deepEqual(harness.binding.associatedProjectRoots, beforeForkAssociation)
+      assert.equal(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-header'))
+        .projectService.currentProjectPath), project)
+      const native = calls.at(-1).native
+      assert.equal(native.realms, 0); assert.equal(native.snapshots, 0); assert.equal(native.workspaceJsonCalls, 0)
+      evidence.forkRejections.push({ stage: 'public-tool-schema', isError: true, toolDispatched: false,
+        mirrorBytesUnchanged: true, sameProject: true, guardUnchanged: true })
     }
     const projects = []
     for (const entry of await fs.readdir(suite, { withFileTypes: true })) if (entry.isDirectory()) {
@@ -362,7 +381,7 @@ export async function runCustomerBaselineCase({ project, suite, home, appData, a
       catch (error) { if (error.code !== 'ENOENT') throw error }
     }
     assert.deepEqual(projects, ['project'], 'Automatic tool/recovery operations must not create another user project')
-    evidence.cases.push({ name: 'repeated-legacy-fork-rejected-with-no-new-projects', ok: true })
+    evidence.cases.push({ name: 'repeated-public-fork-schema-rejected-with-no-side-effects-or-new-projects', ok: true })
     if (exercisePostCommitAbort) {
       await phase('abort-real-history-turn-after-verified-native-commit')
       const names = ['project.abi', 'project.abs', 'project.abs.map.json']

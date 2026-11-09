@@ -3,6 +3,10 @@ import { decodeAbsState } from './abs-full-state';
 import { absJson, assertCurrentAbsProjection, createAbsProjection, hashAbsText, validateAbsProjection } from './abs-identity-map';
 import { AbsIdentityMap, AbsProjection, AbsSyncError } from './abs-state';
 import type { AbsRecoveryArchive } from './abs-generation-repair';
+import type { ProjectStorageAttachment, ProjectStorageExecutor, ProjectStorageExecutorObservation } from '@shared/project-sync-storage-bridge';
+export type AbsProjectAttachment = ProjectStorageAttachment;
+export type AbsStorageExecutor = ProjectStorageExecutor;
+export type AbsStorageExecutorObservation = ProjectStorageExecutorObservation;
 
 /**
  * Project-scoped host capability. Keys are relative to its private sync directory,
@@ -11,16 +15,24 @@ import type { AbsRecoveryArchive } from './abs-generation-repair';
  * CAS does not claim to lock arbitrary external processes: retain recovery copies.
  */
 export interface AbsSyncStorageAccess {
+  readonly attachment?: AbsProjectAttachment;
+  readonly executor?: AbsStorageExecutor;
   read(key: string): Promise<string | null>;
   replace(key: string, expectedByteHash: string | null, content: string | null): Promise<boolean>;
 }
 export interface AbsSyncStoragePort {
+  readonly attachment?: AbsProjectAttachment;
+  readonly executor?: AbsStorageExecutor;
+  observeExecutor?(original: AbsStorageExecutor): Promise<AbsStorageExecutorObservation>;
   read(key: string): Promise<string | null>;
   /** Write capability exists only inside this callback; never store a global active lock. */
   withLock<T>(operation: (storage: AbsSyncStorageAccess) => Promise<T>): Promise<T>;
 }
 
 export interface AbsDiskSnapshot { abi: string | null; abs: string | null; map: string | null }
+export interface AbsCommittedProgramSnapshot {
+  projection: AbsProjection; abi: string | null; pointerHash: string;
+}
 export interface AbsViewResolutionRecord { token: string; choice: 'keep_view' | 'replace_view'; inputAbiHash: string }
 export interface AbsJournalRecovery {
   action: 'recover' | 'abandon'; generation: string; token: string; scope: AbsIdentityMap['scope'];
@@ -281,18 +293,76 @@ export class AbsBaselineStore {
 
   /** Cross-scope, checksum-verified diagnosis only. Does not authorize load/apply/recovery. */
   async inspectCommitted(): Promise<{ projection: AbsProjection; pointerHash: string } | null> {
+    const snapshot = await this.readCommittedSnapshot();
+    return snapshot ? { projection: snapshot.projection, pointerHash: snapshot.pointerHash } : null;
+  }
+
+  /** Background consumers pin one immutable committed record. In-progress
+   * mirror replacement cannot splice a new ABI into an older ABS/map pair. */
+  async readCommittedSnapshot(): Promise<AbsCommittedProgramSnapshot | null> {
     const text = await this.port.read(COMMITTED);
     if (text === null) return null;
     const pointer = this.parsePointer(text);
     const loaded = await this.readGeneration(this.port, pointer.generation, true);
     if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Committed baseline checksum mismatch.');
     if (await this.port.read(COMMITTED) !== text) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during capture.');
-    return { projection: loaded.record.projection, pointerHash: await hashAbsText(text) };
+    return { projection: loaded.record.projection, abi: loaded.record.abi, pointerHash: await hashAbsText(text) };
+  }
+
+  /** Repair only a derived map of the same verified saved source. This does
+   * not create a generation, acknowledge an edit or replace a retained request.
+   * The damaged bytes remain in the existing recovery archive before CAS. */
+  async restoreCommittedMap(assertCurrent: () => void,
+    observed?: { disk: AbsDiskSnapshot; pointerHash: string }): Promise<{ changed: boolean; generation: string }> {
+    let selected: AbsCommittedProgramSnapshot | null;
+    try { selected = await this.readCommittedSnapshot(); }
+    catch (error) {
+      if (!(error instanceof AbsSyncError) || !['ABS_BASELINE_CORRUPT', 'ABS_BASELINE_MISSING'].includes(error.code)) throw error;
+      throw new AbsSyncError('ABS_MAP_REPAIR_UNPROVEN', 'The saved source requires its existing complete recovery path.');
+    }
+    assertCurrent();
+    if (!selected || selected.abi === null || selected.projection.map.scope.projectKey !== this.scope.projectKey
+      || this.scope.pageId && selected.projection.map.scope.pageId !== this.scope.pageId) {
+      throw new AbsSyncError('ABS_MAP_REPAIR_UNPROVEN', 'No complete saved source proves this map cache.');
+    }
+    const map = absJson(selected.projection.map), generation = selected.projection.map.generation;
+    return this.port.withLock(async storage => {
+      assertCurrent();
+      const pointer = await storage.read(COMMITTED), disk = await this.captureDisk(storage);
+      if (pointer === null || await hashAbsText(pointer) !== selected.pointerHash
+        || disk.abi !== selected.abi || disk.abs !== selected.projection.abs
+        || await storage.read(PREPARED) !== null
+        || observed && (observed.pointerHash !== selected.pointerHash || absJson(observed.disk) !== absJson(disk))) {
+        throw new AbsSyncError('ABS_MAP_REPAIR_UNPROVEN', 'Source or original observation changed; no map was replaced.');
+      }
+      if (disk.map === map) return { changed: false, generation };
+      const archive = absJson({ version: 1, kind: 'derived-map', generation,
+        pointerHash: selected.pointerHash, map: disk.map });
+      const key = `recoveries/map-${(await hashAbsText(archive)).slice(7)}.json`;
+      const previous = await storage.read(key);
+      if (previous !== null && previous !== archive || previous === null && !await storage.replace(key, null, archive)) {
+        throw new AbsSyncError('ABS_DISK_CONFLICT', 'Could not preserve the original derived map.');
+      }
+      assertCurrent();
+      if (await storage.read(COMMITTED) !== pointer || await storage.read(PREPARED) !== null
+        || absJson(await this.captureDisk(storage)) !== absJson(disk)) {
+        throw new AbsSyncError('ABS_DISK_CONFLICT', 'Source changed before derived map restoration.');
+      }
+      if (!await storage.replace(MAP, await hashNullable(disk.map), map)) {
+        throw new AbsSyncError('ABS_DISK_CONFLICT', 'Map changed during derived cache restoration.');
+      }
+      assertCurrent();
+      if (await storage.read(COMMITTED) !== pointer || await storage.read(PREPARED) !== null
+        || absJson(await this.captureDisk(storage)) !== absJson({ ...disk, map })) {
+        throw new AbsSyncError('ABS_COMMIT_UNCERTAIN', 'Derived map restoration requires a fresh source observation.');
+      }
+      return { changed: true, generation };
+    });
   }
 
   /** A verified successor's CAS predecessor proves a historical commit even
    * when its response was lost before the operation receipt was sealed. */
-  async inspectCommittedAncestor(generation: string): Promise<{ projection: AbsProjection; pointerHash: string } | null> {
+  async inspectCommittedAncestor(generation: string): Promise<{ projection: AbsProjection; pointerHash: string; abi: string | null } | null> {
     const current = await this.port.read(COMMITTED);
     let text = current;
     const seen = new Set<string>();
@@ -304,7 +374,7 @@ export class AbsBaselineStore {
       if (absJson(pointer) !== absJson(loaded.pointer)) throw new AbsSyncError('ABS_BASELINE_CORRUPT', 'Historical committed generation checksum mismatch.');
       if (pointer.generation === generation) {
         if (await this.port.read(COMMITTED) !== current) throw new AbsSyncError('ABS_BASELINE_STALE', 'Committed generation changed during historical observation.');
-        return { projection: loaded.record.projection, pointerHash: await hashAbsText(text) };
+        return { projection: loaded.record.projection, pointerHash: await hashAbsText(text), abi: loaded.record.abi };
       }
       const previous = loaded.record.previousPointer;
       if (previous === undefined) break;

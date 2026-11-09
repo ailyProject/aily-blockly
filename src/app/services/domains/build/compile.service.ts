@@ -17,6 +17,7 @@ import { MetricsService } from '@core/metrics/public-api';
 import { CompileValidationService } from './compile-validation.service';
 import { CoderBuildInfoService } from './coder-build-info.service';
 import { persistBuildResult } from './build-result-snapshot';
+import { capturedBuildInput, type BuildInput } from './build-input';
 import { createProjectBuildLog, type ProjectBuildLog, type ProjectBuildLogReference } from './project-build-log';
 import { buildCancelledResult } from './build-cancellation';
 import { writeBuildRequest, captureBuildRequestGuard } from '../../../utils/build-request.utils';
@@ -53,7 +54,7 @@ interface DiskCompileOptions {
 
 interface DiskCompileResult {
   success: boolean;
-  result: BuildActionState & { fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildOutcome?: string };
+  result: BuildActionState & { fullStdErr?: string; buildLog?: ProjectBuildLogReference; buildOutcome?: string; buildInput?: BuildInput };
 }
 
 interface DiskCompileProgressState {
@@ -256,7 +257,9 @@ export class CompileService {
       settled();
     }
     });
-    return { ...execution, result: { ...execution.result, buildLog: execution.buildLog } };
+    const buildInput = capturedBuildInput(this.activeExecutionConfig?.execution, execution.buildLog.requestId);
+    return { ...execution, ...(buildInput ? { buildInput } : {}),
+      result: { ...execution.result, buildLog: execution.buildLog, ...(buildInput ? { buildInput } : {}) } };
     } finally { if (this.activeBuildLog === capture) this.activeBuildLog = undefined; }
   }
 

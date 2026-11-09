@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const api = require('../child/scripts/build-execution-workspace');
 const upload = require('../child/scripts/blockly-upload-state');
+const { createHash } = require('node:crypto');
 
 function fixture(t) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aily-execution-')));
@@ -166,4 +167,23 @@ test('an interrupted current-pointer publication does not hide the original admi
     const original = api.inspectBuildExecution(f.root, 'original-request');
     assert.equal(original.buildRequestId, 'original-request'); assert.equal(original.status, 'prepared');
     assert.equal(original.current, false); assert.equal(original.result, undefined);
+});
+
+test('R4 build input identifies detached original ABI across live edits, cancel, failure and reconnect', t => {
+    const f = fixture(t), first = api.prepareBuildExecution(f.config);
+    const expected = 'sha256:' + createHash('sha256').update('original user program').digest('hex');
+    assert.equal(first.execution.abiHash, expected);
+    f.put('project.abi', 'new live GUI document');
+    api.cancelBuildExecution(first);
+    const cancelled = api.inspectBuildExecution(f.root, 'original-request');
+    assert.equal(cancelled.status, 'cancelled');
+    assert.deepEqual(cancelled.buildInput, { version: 1, executionId: first.execution.id,
+        buildRequestId: 'original-request', inputDigest: first.execution.inputDigest, abiHash: expected });
+    const second = api.prepareBuildExecution({ ...f.config, buildRequestId: 'failed-request' });
+    api.finishBuildExecution(second, false);
+    const failed = api.inspectBuildExecution(f.root, 'failed-request');
+    assert.equal(failed.status, 'failed');
+    assert.notEqual(failed.buildInput.abiHash, expected);
+    assert.deepEqual(api.inspectBuildExecution(f.root, 'original-request').buildInput, cancelled.buildInput);
+    assert.throws(() => api.recordFor({ ...first, execution: { ...first.execution, abiHash: second.execution.abiHash } }), /binding changed/);
 });

@@ -158,20 +158,32 @@ export async function recoverAbsBaseline(port: AbsSyncStoragePort, project: stri
  * source and the exact committed chain before replacing only metadata. */
 export async function recoverAbsLocationMetadata(port: AbsSyncStoragePort, scope: AbsIdentityMap['scope'], assertCurrent: () => void) {
   const map = await port.read('project.abs.map.json');
-  let foreign = false, invalid = map === null;
+  let foreign = false, invalid = map === null, changed = false;
   if (map !== null) {
     try {
       const value = JSON.parse(map);
       invalid = typeof value?.scope?.projectKey !== 'string' || typeof value?.scope?.pageId !== 'string';
       foreign = !invalid && value.scope.projectKey !== scope.projectKey && value.scope.pageId === scope.pageId;
+      changed = !foreign && (map !== absJson(value)
+        || JSON.parse((await port.read('committed.json')) ?? 'null')?.generation !== value.generation);
     } catch { invalid = true; }
   }
-  if (!foreign && (!invalid || await port.read('committed.json') === null)) return;
+  if (!foreign && !invalid && !changed || await port.read('committed.json') === null) return;
   if (await port.read('prepared.json') !== null) return;
+  if (!foreign) {
+    try { await new AbsBaselineStore(port, scope).restoreCommittedMap(assertCurrent); return; }
+    catch (error) { if ((error as { code?: string })?.code !== 'ABS_MAP_REPAIR_UNPROVEN') throw error; }
+    if (!invalid) return;
+  }
   if (invalid) {
     try {
       const committed = await new AbsBaselineStore(port, scope).inspectCommitted();
       if (committed?.projection.map.scope.pageId !== scope.pageId) return;
+      // An untrusted draft is not input to automatic source decoding/rebind.
+      // Leave its exact bytes and bad sidecar to the existing preserving
+      // diagnostic path rather than introducing a new read/edit gate.
+      if (committed.projection.map.scope.projectKey === scope.projectKey
+        && await port.read('project.abs') !== committed.projection.abs) return;
     } catch (error) {
       if (error instanceof AbsSyncError && recoverable.has(error.code)) return;
       throw error;

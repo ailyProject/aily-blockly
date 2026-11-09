@@ -73,10 +73,12 @@ test('write access is callback-scoped, not shared with concurrent callers or usa
 
 test('all keys are confined and immutable baselines/public mirrors cannot be deleted or overwritten', async () => {
   const root = project(); const store = await openProjectSyncStorage(root, guard);
-  for (const key of ['../outside', 'baselines/../outside', 'baselines\\x.json', 'project.abi:stream', 'C:/x', 'package.json', 'baselines/', 'baselines/..json']) {
+  for (const key of ['../outside', 'baselines/../outside', 'baselines\\x.json', 'project.abi:stream', 'C:/x', 'baselines/', 'baselines/..json']) {
     await assert.rejects(store.read(key), { code: 'ABS_STORAGE_KEY_INVALID' });
   }
   await store.withLock(async locked => {
+    assert.equal(await locked.read('package.json'), null, 'The project manifest is an existing readonly input');
+    await assert.rejects(locked.replace('package.json', null, '{}'), { code: 'ABS_STORAGE_WRITE_INVALID' });
     await locked.replace('baselines/g.json', null, 'one');
     assert.equal(await locked.replace('baselines/g.json', null, 'two'), false);
     await assert.rejects(locked.replace('baselines/g.json', hash('one'), 'two'), { code: 'ABS_STORAGE_WRITE_INVALID' });
