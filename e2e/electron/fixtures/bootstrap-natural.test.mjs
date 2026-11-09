@@ -3,9 +3,30 @@ import test from 'node:test'
 import { bootstrapPrompt, bootstrapPromptSha256, selectBootstrapAnswer, inspectBootstrapSession,
   inspectWeatherGeneratedSource, bootstrapSessionProjectBinding, bootstrapUserStopOutcome,
   bootstrapDeferredCall, bootstrapCalls, bootstrapOriginalAutoSelection, bootstrapResourceAssessment,
-  readBootstrapTerminalUi } from './bootstrap-natural.mjs'
+  readBootstrapTerminalUi, readBootstrapTerminalGeneratedSource } from './bootstrap-natural.mjs'
 import { explicitOnlineModelId } from '../../fixtures/online-model-selection.mjs'
 import { summarizeOnlineComparison } from './online-comparison.mjs'
+
+test('terminal generated-source capture reads once and leaves unavailable or throwing generators unknown', () => {
+  const previous = { document: globalThis.document, window: globalThis.window }
+  let reads = 0, editor = { blocklyService: { getReusableGeneratedCode: () => { reads++; return 'actual-source' } } }
+  try {
+    globalThis.document = { querySelector: () => 'app-blockly-editor' }
+    globalThis.window = { ng: { getComponent: () => editor } }
+    assert.equal(readBootstrapTerminalGeneratedSource(), 'actual-source')
+    assert.equal(reads, 1)
+    const error = new Error('genuine generator failure')
+    editor = { blocklyService: { getReusableGeneratedCode: () => { throw error } } }
+    assert.throws(readBootstrapTerminalGeneratedSource, value => value === error)
+    editor = null
+    assert.throws(readBootstrapTerminalGeneratedSource, /unavailable/)
+    editor = { blocklyService: { getReusableGeneratedCode: () => null } }
+    assert.throws(readBootstrapTerminalGeneratedSource, /not text/)
+  } finally {
+    if (previous.document === undefined) delete globalThis.document; else globalThis.document = previous.document
+    if (previous.window === undefined) delete globalThis.window; else globalThis.window = previous.window
+  }
+})
 
 test('terminal UI observation captures actual Native and notices without applying an acceptance gate', () => {
   const previous = { document: globalThis.document, window: globalThis.window }

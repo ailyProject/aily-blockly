@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 
+/** One terminal source read, shared by early evidence and later assertions. */
+export function readBootstrapTerminalGeneratedSource() {
+  const editor = window.ng.getComponent(document.querySelector('app-blockly-editor'))
+  if (typeof editor?.blocklyService?.getReusableGeneratedCode !== 'function') throw new Error('Terminal generated source is unavailable')
+  const source = editor.blocklyService.getReusableGeneratedCode()
+  if (typeof source !== 'string') throw new Error('Terminal generated source is not text')
+  return source
+}
+
 /** Browser-side read-only terminal observation. Keep it before acceptance
  * assertions so a strict later failure does not discard actual UI evidence. */
 export function readBootstrapTerminalUi() {

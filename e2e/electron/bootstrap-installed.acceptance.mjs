@@ -16,9 +16,11 @@ import { assertCapturedEnvironmentProcess, selectEnvironmentProcessTree,
   remainingEnvironmentProcesses, environmentProcessStopScript } from './fixtures/r2-environment-cleanup.mjs'
 import { bootstrapPrompt, bootstrapPromptSha256, answerBootstrapQuestionnaire, bootstrapText,
   inspectBootstrapSession, inspectWeatherGeneratedSource, qualifyBootstrapWeatherGoal,
-  bootstrapOriginalAutoSelection, bootstrapResourceAssessment, readBootstrapTerminalUi } from './fixtures/bootstrap-natural.mjs'
+  bootstrapOriginalAutoSelection, bootstrapResourceAssessment, readBootstrapTerminalUi,
+  readBootstrapTerminalGeneratedSource } from './fixtures/bootstrap-natural.mjs'
 import { bootstrapCleanupDecision } from './fixtures/bootstrap-cleanup.mjs'
 import { readBootstrapObservation, createBootstrapReadOnlyObserver } from './fixtures/bootstrap-observation.mjs'
+import { resolveBootstrapResources, sharedBootstrapProtectedFiles } from './fixtures/bootstrap-resources.mjs'
 
 // Explicit Root-owned real paid acceptance. No project is prepared or opened
 // before the original user prompt. Importing the pure fixture launches nothing.
@@ -26,8 +28,9 @@ assert.equal(process.env.AILY_BOOTSTRAP_ROOT_HOST_WINDOW, '1')
 assert.equal(process.env.AILY_ONLINE_ACCEPTANCE, '1')
 const required = ['pair-file', 'connection-profile', 'answers-file', 'output', 'test-root', 'resource-root',
   'platform-resource-root', 'registry-origin', 'resource-origin', 'permission-mode']
-const { values } = parseArgs({ options: { ...Object.fromEntries([...required, 'agent-root', 'original-session']
+const { values } = parseArgs({ options: { ...Object.fromEntries([...required, 'agent-root', 'original-session', 'npm-cache-root']
   .map(name => [name, { type: 'string' }])), 'task-timeout-ms': { type: 'string', default: '1800000' },
+  'shared-platform-resources': { type: 'boolean', default: false },
   'resource-profile': { type: 'string', default: 'physical-1gib' } } })
 for (const name of required.filter(name => !['registry-origin', 'resource-origin', 'permission-mode'].includes(name)))
   assert.ok(path.isAbsolute(values[name] ?? ''), '--' + name + ' must be absolute')
@@ -77,9 +80,9 @@ assert.equal(registryOrigin, 'https://registry.yiyu.pro', 'Use the explicitly ap
 assert.equal(resourceOrigin, 'https://blockly.yiyu.pro', 'Use the explicitly approved genuine resource service')
 assert.ok(inside(path.join(repo, 'e2e/test-results'), values.output))
 assert.ok(inside(path.join(values['resource-root'], 'dev-tests'), values['test-root']))
-assert.equal(inside(values['resource-root'], values['platform-resource-root']), false)
-for (const relative of ['sdk', 'tools', 'compiler', 'node_modules', 'npm-global/node_modules'])
-  assert.ok(inside(values['platform-resource-root'], await fs.realpath(path.join(values['platform-resource-root'], relative))))
+const resourceTopology = await resolveBootstrapResources({ resourceRoot: values['resource-root'],
+  platformRoot: values['platform-resource-root'], sharedPlatformResources: values['shared-platform-resources'],
+  npmCacheRoot: values['npm-cache-root'] })
 const pair = JSON.parse(await fs.readFile(values['pair-file']))
 const host = JSON.parse(await fs.readFile(pair.hostReceipt)), chat = JSON.parse(await fs.readFile(pair.chatReceipt))
 assert.equal(chat.ok, true)
@@ -112,14 +115,14 @@ await fs.mkdir(path.dirname(values.output), { recursive: true }); await fs.mkdir
 await fs.mkdir(values['test-root'], { recursive: true })
 const suite = await fs.mkdtemp(path.join(values['test-root'], 'bootstrap-installed-'))
 const appData = path.join(suite, 'appdata'), home = path.join(suite, 'home'), temp = path.join(suite, 'temp')
-const agentProfile = path.join(suite, 'agent-profile'), npmCache = path.join(suite, 'npm-cache')
+const agentProfile = path.join(suite, 'agent-profile'), npmCache = resourceTopology.npmCache?.realPath ?? path.join(suite, 'npm-cache')
 const projectFolder = path.join(suite, 'projects'), userconfig = path.join(suite, 'bootstrap.npmrc')
-for (const directory of [home, temp, agentProfile, npmCache, projectFolder]) await fs.mkdir(directory)
+for (const directory of [home, temp, agentProfile, ...(!resourceTopology.npmCache ? [npmCache] : []), projectFolder]) await fs.mkdir(directory)
 let app, page, loaded, proxy, accessToken, artifact, verifyPortableBuild, mainIdentity, actorIdentity, selectedModel, snapshot, sessionId
-let preserveActive = false
+let preserveActive = false, terminalGeneratedSource
 let observationDeadline
 const evidence = { ok: false, suite, host: { executable: host.executable, hash: host.asarHash }, chat: chat.artifact,
-  resourcePreflight,
+  resourcePreflight, resourceTopology,
   ...(resourceProfile === 'windows-functional' ? { performanceComparisonEligible: false,
     performanceExclusionReason: 'Explicit Windows functional capacity profile; no performance comparison is claimed' } : {}),
   originalPrompt: bootstrapPrompt, originalPromptSha256: bootstrapPromptSha256, originalAnswersSha256: sha(JSON.stringify(originalAnswers)),
@@ -213,10 +216,11 @@ async function selectOriginalSettings() {
 
 try {
   await stage('read-only-129-preflight-and-private-profile')
+  const sharedFiles = resourceTopology.mode === 'shared-daily' ? await sharedBootstrapProtectedFiles(values['resource-root']) : []
   for (const file of new Set([values['connection-profile'], connection.configFile, connection.authFile,
     path.join(values['resource-root'], 'config.json'), path.join(values['resource-root'], '.aily'),
     path.join(values['resource-root'], 'npm-global/app/store/subapp-aily-chat/active.json'),
-    path.join(values['resource-root'], 'npm-global/app/subapp-index.json'), values['answers-file'], values['original-session']].filter(Boolean)))
+    path.join(values['resource-root'], 'npm-global/app/subapp-index.json'), values['answers-file'], values['original-session'], ...sharedFiles].filter(Boolean)))
     protectedFiles.set(file, await fs.readFile(file).then(sha).catch(error => { if (error.code === 'ENOENT') return null; throw error }))
   if (values['original-session']) evidence.originalFailurePreserved = { sha256: protectedFiles.get(values['original-session']), readonlyInput: true }
   const config = JSON.parse(await fs.readFile(connection.configFile)), auth = JSON.parse(await fs.readFile(connection.authFile))
@@ -368,6 +372,11 @@ try {
         const diskFile = path.join(observed.finalHost.project, 'project.abi'), disk = await fs.readFile(diskFile)
         Object.assign(evidence.preAssertionNative, { diskFile, diskSha256: sha(disk),
           completeDocumentMatchesDisk: isDeepStrictEqual(native, JSON.parse(disk)) })
+        terminalGeneratedSource = await page.evaluate(readBootstrapTerminalGeneratedSource)
+        evidence.generatedSourceFile = path.join(values.output, 'final-generated-source.cpp')
+        await fs.writeFile(evidence.generatedSourceFile, terminalGeneratedSource)
+        evidence.generatedSourceSha256 = sha(terminalGeneratedSource)
+        evidence.generatedGoal = inspectWeatherGeneratedSource(terminalGeneratedSource)
       }
     } catch (error) { evidence.preAssertionObservationError = safeError(error) }
     await persist()
@@ -405,7 +414,8 @@ try {
   const abi = await fs.readFile(path.join(project, 'project.abi'))
   assert.deepEqual(JSON.parse(abi), native); evidence.nativeDocumentSha256 = sha(JSON.stringify(native)); evidence.abiSha256 = sha(abi)
   await fs.writeFile(path.join(values.output, 'final-native-document.json'), JSON.stringify(native, null, 2))
-  const generated = await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor')).blocklyService.getReusableGeneratedCode())
+  const generated = terminalGeneratedSource
+  assert.equal(typeof generated, 'string', 'The actual terminal source must be captured before acceptance assertions')
   evidence.generatedSourceSha256 = sha(generated); evidence.generatedGoal = inspectWeatherGeneratedSource(generated)
   assert.ok(facts.completedBuilds.length > 0, 'No successful compiler work can be inferred from a loaded tool or prose')
   const completed = facts.completedBuilds.at(-1).result; evidence.build = completed
