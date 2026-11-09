@@ -16,9 +16,12 @@ const {
   powerMonitor,
   powerSaveBlocker,
   safeStorage,
+  nativeImage,
+  nativeTheme,
 } = require("electron");
 
 const { isWin32, isDarwin, isLinux } = require("./platform");
+const { inspectMacosLaunchLocation, showMacosInstallGuide } = require("./macos-launch-location");
 const { createWindowStateController } = require('./window-state');
 const windowStateController = createWindowStateController({ screen });
 const { getPlatformResources } = require("./child-resources");
@@ -3121,7 +3124,26 @@ function ensureRosettaIfNeededOnDarwin() {
   }
 }
 
+// 未安装到「应用程序」时只显示安装引导，不初始化内置工具、主窗口或项目。
+let macosInstallGuideWindow = null;
+
+function openMacosInstallGuideIfNeeded() {
+  if (!isDarwin || !app.isPackaged || repairBootstrap) return false;
+  const report = inspectMacosLaunchLocation({
+    platform: process.platform,
+    paths: [process.execPath, app.getAppPath(), process.resourcesPath],
+    appName: app.getName(),
+    product: getBuildProduct(),
+    locale: app.getLocale(),
+  });
+  if (!report.unsafe) return false;
+  macosInstallGuideWindow = showMacosInstallGuide({ BrowserWindow, ipcMain, shell, app, nativeImage, nativeTheme, report });
+  return true;
+}
+
 app.on("ready", async () => {
+  if (openMacosInstallGuideIfNeeded()) return;
+
   // 检查是否是协议启动
   const protocolUrl = process.argv.find(isSupportedProtocolUrl);
 
@@ -3356,6 +3378,10 @@ app.on("will-quit", () => {
 
 // 在 macOS 上，当应用被激活时（如点击 Dock 图标），重新创建窗口
 app.on("activate", async () => {
+  if (macosInstallGuideWindow) {
+    if (!macosInstallGuideWindow.isDestroyed()) macosInstallGuideWindow.focus();
+    return;
+  }
   if (mainWindow === null) {
     // 先加载环境变量
     try {
