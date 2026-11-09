@@ -16,7 +16,9 @@ export interface CodeEditorProPersistenceBridge {
 })
 export class CodeEditorProProjectService {
   private initialized = false;
-  private readonly persistenceBridges = new Map<string, CodeEditorProPersistenceBridge>();
+  // Keys only match paths; host calls need the registered spelling because the
+  // native project-root check compares it with the on-disk case.
+  private readonly persistenceBridges = new Map<string, { path: string; bridge: CodeEditorProPersistenceBridge }>();
   private key(path: string): string {
     return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   }
@@ -55,16 +57,17 @@ export class CodeEditorProProjectService {
   }
 
   registerPersistenceBridge(path: string, bridge: CodeEditorProPersistenceBridge): void {
-    this.persistenceBridges.set(this.key(path), bridge);
+    this.persistenceBridges.set(this.key(path), { path, bridge });
   }
 
   unregisterPersistenceBridge(path: string, bridge: CodeEditorProPersistenceBridge): void {
-    if (this.persistenceBridges.get(this.key(path)) === bridge) this.persistenceBridges.delete(this.key(path));
+    if (this.persistenceBridges.get(this.key(path))?.bridge === bridge) this.persistenceBridges.delete(this.key(path));
   }
 
-  async saveAll(path = this.projectService.currentProjectPath): Promise<{ ok: true }> {
-    const bridge = this.persistenceBridges.get(this.key(path));
-    if (!bridge) throw new Error(`Aily Coder 保存通道尚未就绪: ${path}`);
+  async saveAll(requestedPath = this.projectService.currentProjectPath): Promise<{ ok: true }> {
+    const entry = this.persistenceBridges.get(this.key(requestedPath));
+    if (!entry) throw new Error(`Aily Coder 保存通道尚未就绪: ${requestedPath}`);
+    const { path, bridge } = entry;
     const result = await bridge.saveAll();
     if (!result.ok) throw new Error(result.message || 'Aily Coder 未能保存全部代码文件');
     await this.projectService.saveLibraryChanges(path);
@@ -75,16 +78,16 @@ export class CodeEditorProProjectService {
   }
 
   async saveAllOpenProjects(): Promise<{ ok: true }> {
-    await Promise.all([...this.persistenceBridges.keys()].map(path => this.saveAll(path)));
+    await Promise.all([...this.persistenceBridges.values()].map(({ path }) => this.saveAll(path)));
     return { ok: true };
   }
 
   async prepareCopy(path: string): Promise<ProjectCopySnapshot> {
-    const bridge = this.persistenceBridges.get(this.key(path));
+    const bridge = this.persistenceBridges.get(this.key(path))?.bridge;
     if (!bridge?.captureCopy || !bridge.checkCopy) throw new Error('另存为需要更新后的 Coder 编辑器，请更新编辑器后重试。');
     const captured = await bridge.captureCopy();
     const assertCurrent = async () => {
-      if (this.persistenceBridges.get(this.key(path)) !== bridge) throw new Error('Coder 编辑器已切换，请重新执行另存为。');
+      if (this.persistenceBridges.get(this.key(path))?.bridge !== bridge) throw new Error('Coder 编辑器已切换，请重新执行另存为。');
       await bridge.checkCopy!(captured.token);
     };
     await assertCurrent();
@@ -113,15 +116,15 @@ export class CodeEditorProProjectService {
 
   /** Missing/unmounted editors are unknown, never implicitly clean. No save. */
   async hasSavedProject(path: string, cachedLibraries = false): Promise<boolean> {
-    const key = this.key(path), bridge = this.persistenceBridges.get(key);
+    const key = this.key(path), bridge = this.persistenceBridges.get(key)?.bridge;
     if (!bridge) return false;
     const dirty = (cachedLibraries ? this.projectService.hasCachedLibraryChanges(path)
       : await this.projectService.hasUnsavedLibraryChanges(path)) || await bridge.hasUnsavedChanges();
-    return this.persistenceBridges.get(key) === bridge && dirty === false;
+    return this.persistenceBridges.get(key)?.bridge === bridge && dirty === false;
   }
 
   private async hasUnsavedChanges(): Promise<boolean> {
-    const states = await Promise.all([...this.persistenceBridges.entries()].map(async ([path, bridge]) =>
+    const states = await Promise.all([...this.persistenceBridges.values()].map(async ({ path, bridge }) =>
       await this.projectService.hasUnsavedLibraryChanges(path) || await bridge.hasUnsavedChanges()));
     return states.some(Boolean);
   }
