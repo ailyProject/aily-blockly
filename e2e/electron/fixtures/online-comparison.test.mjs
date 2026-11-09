@@ -5,10 +5,43 @@ import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import { createHash } from 'node:crypto'
-import { summarizeOnlineComparison, summarizeCaseTransport, summarizeBuildInvocationAttempts, singleFieldExpectedDocument, verifySealedComparisonBaseline } from './online-comparison.mjs'
+import { summarizeOnlineComparison, summarizeCaseTransport, summarizeBuildInvocationAttempts, summarizeTodoProgress, summarizeCompilerReportedTimes, singleFieldExpectedDocument, verifySealedComparisonBaseline } from './online-comparison.mjs'
 import { createBuildLogNetwork } from './build-log-network.mjs'
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+
+test('Todo observation preserves the real 3/4 leak independently of successful business work', () => {
+  const tasks = [1, 2, 3, 4].map(id => ({ id, status: id === 1 ? 'pending' : 'completed' }))
+  const snapshot = { todos: tasks, messages: [
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'todo-update', name: 'todo', arguments: { updates: [{ id: 4, status: 'completed' }] } }] },
+    { role: 'toolResult', toolCallId: 'todo-update', isError: false, details: { action: 'batch_update', tasks }, content: [{ type: 'text', text: 'Updated' }] }] }
+  const before = structuredClone(snapshot), result = summarizeTodoProgress(snapshot)
+  assert.equal(result.createdTaskCount, 4); assert.equal(result.completedCount, 3); assert.deepEqual(result.pendingIds, [1])
+  assert.equal(result.finalStatusConsistent, false); assert.equal(result.toolProjectionConsistent, true)
+  assert.deepEqual(snapshot, before, 'Measurement must not complete or rewrite tasks')
+  tasks[0].status = 'completed'; assert.equal(summarizeTodoProgress(snapshot).finalStatusConsistent, true)
+})
+
+test('Todo is optional, but missing state, stale projection, deletion or clearing cannot disguise created tasks', () => {
+  assert.equal(summarizeTodoProgress({ todos: [], messages: [] }).finalStatusConsistent, true)
+  assert.equal(summarizeTodoProgress({ messages: [] }).finalStatusConsistent, null)
+  const snapshot = { todos: [{ id: 1, status: 'pending' }], messages: [
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'init', name: 'tool_invoke', arguments: { name: 'todo', arguments: { tasks: [{}] } } }] },
+    { role: 'toolResult', toolCallId: 'init', details: { action: 'initialize', tasks: [{ id: 1, status: 'completed' }] } }] }
+  assert.equal(summarizeTodoProgress(snapshot).toolProjectionConsistent, false)
+  snapshot.todos = []; assert.deepEqual(summarizeTodoProgress(snapshot).missingTaskIds, [1])
+  assert.equal(summarizeTodoProgress(snapshot).finalStatusConsistent, false)
+  snapshot.todos = [{ id: 1, status: 'deleted' }]; assert.equal(summarizeTodoProgress(snapshot).finalStatusConsistent, false)
+})
+
+test('compiler timing reports only real log stages and keeps unavailable process clocks unknown', () => {
+  const result = summarizeCompilerReportedTimes('[INFO] Preprocess time: 0.37s\n[INFO] Build time: 10.29s\n[INFO] Total time: 10.291s\nBuild finished: done 编译完成 (耗时: 17.61s)\n')
+  assert.deepEqual(result.reports.map(item => item.milliseconds), [370, 10290, 10291, 17610])
+  assert.equal(result.pureCompilerWallClockMs, null)
+  assert.equal(summarizeCompilerReportedTimes('no timestamps here').available, false)
+  const colored = summarizeCompilerReportedTimes('\u001b[34m[INFO]\u001b[0m Preprocess time: 0.327s\n\u001b[34m[INFO]\u001b[0m Build time: 9.296s')
+  assert.deepEqual(colored.reports.map(item => item.milliseconds), [327, 9296])
+})
 async function withLocalNetwork(handler, run) {
   const server = http.createServer(handler)
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))

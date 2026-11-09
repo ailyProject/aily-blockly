@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.spec.json",
+  "include": ["./r1-restored-view-observation.spec.ts", "../src/**/*.d.ts"]
+}

@@ -46,6 +46,12 @@ function locked(store, action) {
     if (!guard) throw Object.assign(new Error('BUILD_WORKSPACE_BUSY: Another execution transition is running.'), { code: 'BUILD_WORKSPACE_BUSY' });
     try { return action(); } finally { guard.close(); }
 }
+function executionTransition(value, action) {
+    // Only requests/current publication shares the project admission guard.
+    // Background preprocessing owns a different execution.json and must not
+    // reject an unrelated foreground request while updating its own status.
+    return locked({ anchor: path.join(value.folder, 'transition.guard') }, action);
+}
 
 /** These are detached byte copies, including npm junctions. No hardlinks or live
  * library links may give an old compiler a path into the new execution. */
@@ -127,6 +133,8 @@ function prepareBuildExecution(config, workspace, operation = 'compile') {
     applyGeneratorInputs(root, config);
     const execution = { version: 1, id, logicalProjectPath: store.root, inputDigest,
         buildRequestId: config.buildRequestId || id, operation,
+        ...(fs.existsSync(path.join(root, 'project.abi'))
+            ? { abiHash: `sha256:${hash(fs.readFileSync(path.join(root, 'project.abi')))}` } : {}),
         ...(config.executionRetryOf ? { retryOf: config.executionRetryOf } : {}) };
     if (typeof execution.buildRequestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(execution.buildRequestId)) fail('Invalid build request identity.');
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
@@ -153,6 +161,7 @@ function recordFor(config) {
     if (!samePath(fs.realpathSync(config.currentProjectPath), root)) fail('Execution path does not belong to its request.');
     const record = json(path.join(folder, 'execution.json'));
     if (record.id !== execution.id || record.inputDigest !== execution.inputDigest || record.buildRequestId !== execution.buildRequestId
+        || record.abiHash !== execution.abiHash
         || !samePath(record.logicalProjectPath, store.root) || JSON.stringify(record.sourceCapture) !== JSON.stringify(config.sourceCapture)) fail('Execution binding changed.');
     return { store, folder, root, record };
 }
@@ -181,7 +190,7 @@ function startBuildExecution(config, lease) {
     if (!samePath(lease.projectRoot, value.root) || !UUID.test(lease.buildId)) fail('Execution lease belongs to another workspace.');
     lease.assertOwned();
     const owner = { pid: process.pid, creation: processIdentity(process.pid), bootId: getSystemBootId(), token: lease.buildId };
-    locked(value.store, () => {
+    executionTransition(value, () => {
         lease.assertOwned();
         const current = json(path.join(value.folder, 'execution.json'));
         if (current.status !== 'prepared' || fs.existsSync(path.join(value.folder, 'outcome.json'))) fail('Execution was already started or cancelled. Inspect its original request.');
@@ -192,7 +201,7 @@ function startBuildExecution(config, lease) {
 function finishBuildExecution(config, success) {
     if (!config.execution) return;
     const value = recordFor(config);
-    locked(value.store, () => {
+    executionTransition(value, () => {
         const current = json(path.join(value.folder, 'execution.json'));
         if (!['prepared', 'running'].includes(current.status)) return;
         if (success && !fs.existsSync(path.join(value.folder, 'outcome.json'))
@@ -271,6 +280,8 @@ function inspectBuildExecution(projectPath, buildRequestId) {
             }
         }
         return { version: 1, executionId: record.id, buildRequestId, status, inputDigest: record.inputDigest,
+            ...(record.abiHash ? { buildInput: { version: 1, executionId: record.id, buildRequestId,
+                inputDigest: record.inputDigest, abiHash: record.abiHash } } : {}),
             ...(ownerState ? { ownerState } : {}),
             nextAction: status === 'running' && ownerState === 'live' ? 'observe-original'
                 : ['prepared', 'interrupted', 'unconfirmed'].includes(status) ? 'new-execution-required'

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
+import { taskThinking } from './task-thinking.mjs'
 
 const sha = value => createHash('sha256').update(value).digest('hex')
 async function fileHash(file) {
@@ -16,6 +17,63 @@ const elapsed = (start, end) => Number.isFinite(start) && Number.isFinite(end) &
 const modelPost = item => item.method === 'POST' && /^\/api\/v3\/interactions(?:\/[^/]+\/steps)?$/.test(item.path)
 const sumBytes = (items, key) => items.every(item => Number.isSafeInteger(item[key]))
   ? items.reduce((sum, item) => sum + item[key], 0) : null
+
+/** Observe Todo facts from the real session and actual tool results. Neither
+ * business success nor a fluent final answer can complete a task here. */
+export function summarizeTodoProgress(snapshot) {
+  const messages = snapshot?.messages ?? [], seenIds = new Set(), calls = []
+  let latestToolTasks
+  const taskState = tasks => tasks.map(task => ({ id: task.id, status: task.status })).sort((a, b) => a.id - b.id)
+  for (const message of messages.filter(item => item.role === 'assistant')) {
+    for (const call of (message.content ?? []).filter(item => item.type === 'toolCall')) {
+      const name = call.name === 'tool_invoke' ? call.arguments?.name : call.name
+      if (name !== 'todo') continue
+      const input = call.name === 'tool_invoke' ? call.arguments?.arguments : call.arguments
+      const result = messages.find(item => item.role === 'toolResult' && item.toolCallId === call.id)
+      const details = result?.details
+      if (result && result.isError !== true && !details?.error && Array.isArray(details?.tasks)) {
+        latestToolTasks = taskState(details.tasks)
+        for (const task of details.tasks) seenIds.add(task.id)
+      }
+      calls.push({ toolCallId: call.id, action: details?.action ?? input?.action ?? null,
+        argumentBytes: Buffer.byteLength(JSON.stringify(input ?? {})), resultTextBytes: result ? textBytes(result) : null,
+        resultIsError: result?.isError === true || !!details?.error, taskArgumentCount: input?.tasks?.length ?? 0,
+        updates: Array.isArray(input?.updates) ? input.updates.map(item => ({ id: item.id, status: item.status }))
+          : input?.id !== undefined ? [{ id: input.id, status: input.status ?? null }] : [],
+        resultingTasks: Array.isArray(details?.tasks) ? taskState(details.tasks) : null })
+    }
+  }
+  const available = Array.isArray(snapshot?.todos), finalTasks = available ? taskState(snapshot.todos) : null
+  for (const task of finalTasks ?? []) seenIds.add(task.id)
+  const valid = available && finalTasks.every(task => Number.isSafeInteger(task.id)
+    && ['pending', 'in_progress', 'completed', 'deleted'].includes(task.status))
+    && new Set(finalTasks.map(task => task.id)).size === finalTasks.length
+  const missingTaskIds = available ? [...seenIds].filter(id => !finalTasks.some(task => task.id === id)) : null
+  const pendingIds = finalTasks?.filter(task => task.status === 'pending').map(task => task.id) ?? null
+  const inProgressIds = finalTasks?.filter(task => task.status === 'in_progress').map(task => task.id) ?? null
+  const deletedIds = finalTasks?.filter(task => task.status === 'deleted').map(task => task.id) ?? null
+  const completedCount = finalTasks?.filter(task => task.status === 'completed').length ?? null
+  return { available, callCount: calls.length, calls, createdTaskCount: seenIds.size, finalTasks,
+    pendingIds, inProgressIds, deletedIds, missingTaskIds, completedCount,
+    finalStatusConsistent: valid ? missingTaskIds.length === 0 && finalTasks.every(task => task.status === 'completed') : null,
+    toolProjectionConsistent: available ? latestToolTasks ? JSON.stringify(latestToolTasks) === JSON.stringify(finalTasks)
+      : calls.length === 0 && finalTasks.length === 0 : null,
+    interpretation: 'No Todo is required. If tasks were created, this successful isolated task must leave all observed tasks completed; deleted/cleared tasks are reported, never silently treated as completion.' }
+}
+
+/** Actual compiler/host-reported log durations, not inferred process clocks. */
+export function summarizeCompilerReportedTimes(source) {
+  const reports = []
+  for (const [index, raw] of source.split(/\r?\n/).entries()) {
+    const line = raw.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    const compiler = /^\[INFO\] (Preprocess|Build|Total) time: ([0-9]+(?:\.[0-9]+)?)s\s*$/.exec(line)
+    const host = /^Build finished:.*\(耗时: ([0-9]+(?:\.[0-9]+)?)s\)\s*$/.exec(line)
+    if (compiler) reports.push({ source: 'actual-compiler-log', phase: compiler[1].toLowerCase(), milliseconds: Number(compiler[2]) * 1000, line: index + 1 })
+    else if (host) reports.push({ source: 'actual-host-build-log', phase: 'host-build-envelope', milliseconds: Number(host[1]) * 1000, line: index + 1 })
+  }
+  return { available: reports.length > 0, reports, pureCompilerWallClockMs: null,
+    interpretation: 'Reported durations retain their original stage boundaries. Provider/tool clocks and the host build envelope are separate; missing native process clocks stay unknown.' }
+}
 
 /** Stored calls are after provider decoding, not HTTP wire names. Attempts
  * are not proof of native compilation; retain rejected aliases separately. */
@@ -34,13 +92,17 @@ export function summarizeBuildInvocationAttempts(snapshot) {
       return { toolCallId: call.id, storedToolName: call.name, storedArguments: call.arguments,
         arguments: args, kind: args?.build_request_id ? 'observation' : 'start-attempt',
         toolResultIsError: message?.isError ?? null, code, buildReceipt: receipt,
+        preDispatchInputValidation: message?.isError === true && !receipt
+          && text.startsWith('Validation failed for tool "project_build":\n'),
         extraRoutingAttempt: call.name === 'tool_invoke' && code === 'tool_not_exposed' && !receipt }
     })
   return { attempts, startAttemptCount: attempts.filter(item => item.kind === 'start-attempt').length,
+    admittedStartAttemptCount: attempts.filter(item => item.kind === 'start-attempt' && !item.preDispatchInputValidation).length,
+    preDispatchInputValidationCount: attempts.filter(item => item.preDispatchInputValidation).length,
     extraRoutingAttempt: attempts.some(item => item.extraRoutingAttempt),
     confirmedRequestIds: [...new Set(attempts.map(item => item.buildReceipt).filter(item => item?.version === 1
       && typeof item.requestId === 'string' && item.requestId.length > 0).map(item => item.requestId))],
-    interpretation: 'Stored calls are after provider decoding and are not HTTP wire names. Attempts include rejected wrappers; only request-bound receipts confirm a host request. This does not relax the one-start-attempt assertion.' }
+    interpretation: 'All stored call attempts and their costs remain counted. An exact registry input-validation rejection occurs before the handler; admitted starts exclude only that rejection. Request-bound receipts and private execution/log checks separately identify the actual Host request.' }
 }
 
 /** A finished case keeps its own request interval, even when a later fixture
@@ -187,14 +249,18 @@ export function summarizeOnlineComparison(snapshot, { startedAt, expectedModel, 
     .map(({ data }) => ({ ...data, actualName: calls.find(call => call.id === data.toolCallId)?.name ?? data.toolName }))
   const mismatches = samples.filter(item => !item.effectiveModel || expectedModel && item.effectiveModel !== expectedModel
     || expectedPreset && item.preset !== expectedPreset)
-  return { sampleCount: samples.length, excludedProvenLocalAbortCount: localAborts.length, samples, usage: totals,
+  // A fresh session can persist its initial selection after the UI submit
+  // invocation. Bind configuration to actual provider preparation; the UI
+  // start remains unchanged for all latency measurements.
+  const thinking = taskThinking(snapshot.entries, providerTimings[0]?.preparationStartedAt)
+  return { sampleCount: samples.length, logicalResponseCount: samples.length, excludedProvenLocalAbortCount: localAborts.length, samples, usage: totals,
     expectedModel, expectedPreset, effectiveModels: [...new Set(samples.map(item => item.effectiveModel).filter(Boolean))],
     modelEvidenceValid: samples.length > 0 && mismatches.length === 0,
     tools: calls.map(item => item.name), businessActionNames, firstBusinessAction: first,
     firstBusinessActionAfterMs: first?.executionStartedAt !== null && first && Number.isFinite(startedAt)
       ? first.executionStartedAt - startedAt : null,
     requestPreparationProxyAfterMs: first && Number.isFinite(startedAt) ? first.requestPreparationAt - startedAt : undefined,
-    providerTimings, toolExecutionTimings,
+    providerTimings, toolExecutionTimings, todo: summarizeTodoProgress(snapshot),
     timingBoundaries: { responseAttempts: 'received provider HTTP responses, not HTTP sends or failed pre-response attempts',
       firstResponseAt: 'first received response callback; includes any prior failure/recovery envelope',
       firstOutputAt: 'first meaningful stream event, including thinking; not pure network TTFT or final answer',
@@ -204,9 +270,9 @@ export function summarizeOnlineComparison(snapshot, { startedAt, expectedModel, 
     logicalPayloads: (snapshot.entries ?? []).filter(entry => entry.type === 'custom' && entry.customType === 'aily.wire-context')
       .map(({ data }) => ({ payloadBytes: data.payloadBytes, preHookPayloadBytes: data.preHookPayloadBytes,
         payloadHash: data.payloadHash, prefixStable: data.prefixStable })),
-    thinkingLevels: [...new Set((snapshot.entries ?? []).filter(entry => entry.type === 'thinking_level_change')
-      .map(entry => entry.thinkingLevel).filter(level => typeof level === 'string'))],
-    thinkingEvidenceSource: 'session thinking_level_change; actual HTTP request reasoning_effort is recorded separately per provider',
+    taskThinking: thinking,
+    thinkingLevels: thinking.levels,
+    thinkingEvidenceSource: 'session selection at first provider preparation and subsequent changes; UI submit latency is unchanged; setup transitions retained in taskThinking.sessionLevels; actual HTTP reasoning_effort is separately verified for every provider request',
     userTextBytes: messages.filter(item => item.role === 'user').reduce((sum, item) => sum + textBytes(item), 0),
     userTurns: messages.filter(item => item.role === 'user').length }
 }

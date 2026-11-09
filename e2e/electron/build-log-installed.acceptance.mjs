@@ -11,8 +11,12 @@ import { prepareInstalledChatProfile, assertInstalledChatLoaded } from '../fixtu
 import { explicitOnlineModelId, resolveOnlineModelPreset,
   selectOnlineModelFromUi, assertSelectedOnlineModel } from '../fixtures/online-model-selection.mjs'
 import { prepareBuildLogProject, buildLogSourceHashes } from './fixtures/build-log-project.mjs'
+import { loadNaturalRequests, naturalRequest } from '../fixtures/r4-natural-request.mjs'
+import { customerNaturalCases, prepareCustomerNaturalProject, expectedCustomerNaturalDocument,
+  verifyCustomerGeneratedSource, verifyCustomerCompilerInput, verifyCustomerOriginalUnchanged,
+  verifyCustomerKnownCompileFailure } from './fixtures/r4-customer-natural.mjs'
 import { createBuildLogNetwork } from './fixtures/build-log-network.mjs'
-import { verifySealedComparisonBaseline, summarizeOnlineComparison, summarizeCaseTransport, summarizeBuildInvocationAttempts, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
+import { verifySealedComparisonBaseline, summarizeOnlineComparison, summarizeCaseTransport, summarizeBuildInvocationAttempts, summarizeCompilerReportedTimes, singleFieldExpectedDocument } from './fixtures/online-comparison.mjs'
 
 // Real, explicitly enabled paid acceptance. Every model call is submitted by
 // the installed iframe composer. Services is the model upstream; the local
@@ -20,26 +24,47 @@ import { verifySealedComparisonBaseline, summarizeOnlineComparison, summarizeCas
 assert.equal(process.env.AILY_ONLINE_ACCEPTANCE, '1', 'Explicitly enable the real online acceptance')
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 const required = ['connection-profile', 'installed-root', 'test-root', 'resource-root', 'lex-root', 'output']
-const optional = ['executable-path', 'host-build', 'boards-root', 'libraries-root', 'sealed-baseline-receipt']
+const optional = ['executable-path', 'host-build', 'boards-root', 'libraries-root', 'sealed-baseline-receipt', 'natural-requests-file', 'customer-input', 'platform-resource-root']
 const { values } = parseArgs({ options: { ...Object.fromEntries([...required, ...optional, 'upstream-address'].map(name => [name, { type: 'string' }])),
   'expected-thinking-level': { type: 'string' },
   'expected-effective-model': { type: 'string' },
+  'customer-case': { type: 'string' },
   'minimum-free-memory-mib': { type: 'string' },
   'fixture-preflight-only': { type: 'boolean' },
+  'fixture-preflight-build': { type: 'boolean' },
   'comparison-tools': { type: 'boolean' },
+  'expect-settled-todos': { type: 'boolean' },
   cases: { type: 'string', default: 'success,failure,cancel,chat-stop,reconnect,observation' } } })
 for (const name of required) assert.ok(values[name] && path.isAbsolute(values[name]), `--${name} must be absolute`)
 for (const name of optional) if (values[name]) assert.ok(path.isAbsolute(values[name]), `--${name} must be absolute`)
 assert.ok(values['executable-path'] || values['host-build'], 'Provide the actual installed executable or a renderer build')
 const cases = values.cases.split(',')
+if (values['fixture-preflight-build']) assert.ok(values['fixture-preflight-only'] && values['customer-case'], 'A baseline compile is an unpaid customer fixture check, never a hidden warmup for a paid turn')
+const customerGoal = customerNaturalCases[values['customer-case']]
+assert.equal(Boolean(values['customer-case']), Boolean(values['customer-input']))
+if (values['customer-case']) {
+  assert.ok(customerGoal); assert.deepEqual(cases, ['edit-build'])
+  assert.equal(values['natural-requests-file'], undefined, 'Original customer goals use their fixed literal user request')
+}
+const naturalRequests = customerGoal
+  ? { hash: createHash('sha256').update(customerGoal.prompt).digest('hex'), cases: { 'edit-build': {
+    prompt: customerGoal.prompt, marker: 'R4_CUSTOMER_' + values['customer-case'].toUpperCase() } } }
+  : await loadNaturalRequests(values['natural-requests-file'], cases)
 const minimumFreeMemoryMiB = values['minimum-free-memory-mib'] === undefined ? 0 : Number(values['minimum-free-memory-mib'])
 if (values['expected-thinking-level']) assert.match(values['expected-thinking-level'], /^[a-z]{2,16}$/)
 assert.ok(Number.isSafeInteger(minimumFreeMemoryMiB) && minimumFreeMemoryMiB >= 0)
-assert.ok(cases.length && new Set(cases).size === cases.length && cases.every(name => ['success', 'failure', 'cancel', 'chat-stop', 'reconnect', 'observation', 'field-edit'].includes(name)))
+assert.ok(cases.length && new Set(cases).size === cases.length && cases.every(name => ['success', 'failure', 'cancel', 'chat-stop', 'reconnect', 'observation', 'field-edit', 'edit-build'].includes(name)))
 const same = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
 const inside = (parent, file) => { const relative = path.relative(parent, file)
   return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative) }
 assert.ok(inside(path.join(values['resource-root'], 'dev-tests'), values['test-root']))
+if (values['platform-resource-root']) {
+  assert.ok(customerGoal, 'A private platform supplement is limited to original customer compiler qualification')
+  const physicalRoot = await fs.realpath(values['platform-resource-root'])
+  for (const relative of ['sdk', 'tools', 'npm-global/node_modules', 'compiler', 'node_modules'])
+    assert.ok(inside(physicalRoot, await fs.realpath(path.join(physicalRoot, relative))),
+      'Every potentially writable platform resource must physically remain inside the private supplement')
+}
 assert.ok(inside(path.join(repo, 'e2e/test-results'), values.output))
 const sha = value => createHash('sha256').update(value).digest('hex')
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
@@ -66,6 +91,8 @@ const librariesRoot = values['libraries-root'] ?? path.resolve(repo, '../aily-bl
 const evidence = { ok: false, suite, output: values.output, cases: [], actualIframeComposer: true, realInstalledUi: true,
   onlineLlm: false, syntheticOutput: false, fabricatedToolResults: false, hardwareUsed: false,
   compiler: { backend: 'local', upstreamServicesIsCompiler: false }, userProjectsModified: false, cleanupFailures: [] }
+if (naturalRequests) evidence.naturalRequests = { sourceFileSha256: naturalRequests.hash, toolSequenceInjected: false,
+  modelLogReadRequired: false, fixedFixtureMarkers: true }
 let app, page, loaded, renderer, proxy, hostPid, artifact, verifyPortableBuild, accessToken, selectedModel, expectedEffectiveModel, activeCase
 const protectedFiles = new Map(), projects = new Map()
 const safeError = error => {
@@ -161,11 +188,57 @@ async function openProject(project, scenario) {
     await wait(100)
   } while (Date.now() < sourceDeadline)
   assert.ok(generated.includes(fixture.marker), 'Validate this actual generated source fixture before any model call')
+  if (fixture.customer) {
+    evidence.sourceFixtures ??= {}
+    evidence.sourceFixtures[scenario] = { source: 'actual-original-project-native-generator-preview',
+      ...verifyCustomerGeneratedSource(fixture, generated), customerCase: fixture.customer.kind,
+      inputAbiSha256: fixture.customer.inputAbiSha256, originalConversationReplayed: false,
+      dependencyMaterialization: fixture.customer.dependencies }
+    return page.evaluate(() => JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace())))
+  }
   assert.equal(generated.includes('#error'), scenario === 'failure')
+  if (scenario === 'edit-build') assert.ok(generated.includes('int buildLogEditedValue = 100;'), 'Confirm the new compound fixture through the actual generator before submitting its paid turn')
   evidence.sourceFixtures ??= {}
   evidence.sourceFixtures[scenario] = { source: 'actual-current-native-generator-preview', sha256: sha(generated), bytes: Buffer.byteLength(generated),
     expectedMarkerEmitted: true, intentionalError: scenario === 'failure', library: fixture.libraryName, blockType: fixture.blockType }
   return page.evaluate(() => JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace())))
+}
+async function compileOriginalCustomerFixture(fixture, originalDocument) {
+  const requestId = 'R4_BASELINE_' + randomUUID()
+  const outcome = await page.evaluate(async requestId => {
+    const builder = window.ng.getComponent(document.querySelector('app-blockly-editor'))._builderService
+    try {
+      const value = await builder.build(undefined, requestId)
+      return { success: value.state === 'done', result: { state: value.state, text: value.text,
+        buildLog: value.buildLog, buildInput: value.buildInput } }
+    } catch (error) {
+      return { success: false, result: { state: error?.state, code: error?.code,
+        message: error?.message || error?.text || String(error), buildOutcome: error?.buildOutcome,
+        buildLog: error?.buildLog, buildInput: error?.buildInput } }
+    }
+  }, requestId)
+  const execution = await page.evaluate(({ project, requestId }) => window.builder.inspectBuildExecution(project, requestId),
+    { project: fixture.project, requestId })
+  const reference = outcome.result.buildLog
+  let log, input
+  if (reference) {
+    assert.equal(reference.requestId, requestId); assert.ok(same(reference.project, fixture.project))
+    assert.ok(same(reference.path, path.join(fixture.project, '.log/compile/requests', sha(requestId) + '.log')))
+    const text = await fs.readFile(reference.path, 'utf8'), lines = text.split('\n')
+    assert.ok(text.startsWith(`Build request: ${requestId}\nProject: ${fixture.project}\n`))
+    log = { path: reference.path, sha256: sha(text), bytes: Buffer.byteLength(text), complete: reference.complete,
+      lineCount: lines.length, readRange: { offset: Math.max(1, lines.length - 79), limit: Math.min(80, lines.length) } }
+  }
+  if (execution) {
+    assert.equal(execution.buildRequestId, requestId); assert.match(execution.executionId, /^[a-f0-9-]{36}$/)
+    const bytes = await fs.readFile(path.join(fixture.project, '.aily/build-executions', execution.executionId, 'project/project.abi'))
+    assert.deepEqual(JSON.parse(bytes), originalDocument, 'A baseline build must use the complete original document')
+    input = { abiSha256: sha(bytes), completeOriginalDocumentMatched: true }
+  }
+  const modelPosts = proxy.snapshot().requests.filter(item => item.method === 'POST' && /^\/api\/v3\/interactions(?:\/|$)/.test(item.path))
+  assert.equal(modelPosts.length, 0, 'A fixture baseline compile must never submit a paid provider turn')
+  return { requestId, originalProjectCompile: true, userTurnCount: 0, modelPosts: 0,
+    ...outcome, execution, log, input, qualifiedForNaturalCompile: outcome.success && !!log && !!input }
 }
 async function submit(prompt) {
   const startedAt = Date.now(), minimumBytes = minimumFreeMemoryMiB * 1024 * 1024
@@ -253,10 +326,12 @@ async function settle({ project, record, expectedUserMessages }) {
           expectedModel: expectedEffectiveModel, expectedPreset: selectedModel?.id,
           transport: proxy.snapshot(),
           userStopObserved: record.stop?.surface === 'actual-chat-stop-button',
-          businessActionNames: record.scenario === 'field-edit' ? ['edit', 'abs_apply'] : ['project_build'] })
+          businessActionNames: record.scenario === 'edit-build' ? ['edit', 'abs_apply', 'project_build']
+            : record.scenario === 'field-edit' ? ['edit', 'abs_apply'] : ['project_build'] })
         if (values['expected-thinking-level']) {
           record.comparison.expectedThinkingLevel = values['expected-thinking-level']
-          record.comparison.thinkingEvidenceValid = record.comparison.thinkingLevels.length > 0
+          record.comparison.thinkingEvidenceValid = record.comparison.taskThinking.complete
+            && record.comparison.thinkingLevels.length > 0
             && record.comparison.thinkingLevels.every(level => level === values['expected-thinking-level'])
           assert.equal(record.comparison.thinkingEvidenceValid, true, 'Observe the requested thinking setting; never silently lower it')
           record.comparison.httpReasoningEvidenceValid = record.comparison.providerTimings.length > 0
@@ -266,6 +341,10 @@ async function settle({ project, record, expectedUserMessages }) {
         }
         record.settledAt = Date.now()
         record.finalHost = state; record.toolResultIds = [...observed]
+        if (record.scenario === 'edit-build' || naturalRequests) {
+          record.final.assistantText = textOf(final)
+          await fs.writeFile(path.join(values.output, record.scenario + '-session.json'), JSON.stringify(snapshot, null, 2))
+        }
         await checkpoint()
         return snapshot
       }
@@ -280,9 +359,16 @@ async function assertLogRead(snapshot, record, fixture) {
   const starts = builds.filter(call => !call.actualArguments?.build_request_id)
   record.buildInvocationEvidence = summarizeBuildInvocationAttempts(snapshot)
   await checkpoint()
-  assert.equal(starts.length, 1, 'One original build invocation/start attempt; inspect buildInvocationEvidence for rejected routing attempts versus confirmed native requests')
-  assert.ok(builds.every(call => same(call.actualArguments?.project ?? '', fixture.project)))
-  for (const forbidden of ['write', 'edit', 'abs_apply', 'abs_validate', 'project_upload', 'blocks_tidy', 'app_reload', 'bash', 'powershell', 'code_run'])
+  if (naturalRequests) assert.ok(starts.length >= 1, 'A natural compile task needs a real build; preserve extra attempts as measured model behavior')
+  else {
+    assert.equal(record.buildInvocationEvidence.admittedStartAttemptCount, 1,
+      'Exactly one admitted start; registry schema rejections dispatch no Host request and remain counted as raw model attempts')
+    assert.equal(record.buildInvocationEvidence.confirmedRequestIds.length, 1,
+      'Exactly one confirmed original Host request; no replacement build after cancellation or disconnect')
+  }
+  assert.ok(builds.every(call => naturalRequests && call.actualArguments?.project === undefined
+    || same(call.actualArguments?.project ?? '', fixture.project)))
+  for (const forbidden of naturalRequests ? ['project_upload', 'project_fork'] : ['write', ...(record.scenario === 'edit-build' ? [] : ['edit', 'abs_apply', 'abs_validate']), 'project_upload', 'blocks_tidy', 'app_reload', 'bash', 'powershell', 'code_run'])
     assert.equal(calls.some(call => call.actualName === forbidden), false, `No repair or unrelated action: ${forbidden}`)
   const resultMessages = snapshot.messages.filter(message => message.role === 'toolResult' && builds.some(call => call.id === message.toolCallId))
   const completed = resultMessages.map(message => ({ message, value: payloadOf(message) })).filter(item => item.value?.buildReceipt?.state === 'completed')
@@ -292,6 +378,7 @@ async function assertLogRead(snapshot, record, fixture) {
   assert.equal(value.buildReceipt.version, 1); assert.ok(same(value.buildReceipt.project, fixture.project))
   assert.equal(value.targetPid, hostPid)
   const cancelled = value.buildOutcome === 'cancelled'
+  const knownOriginalFailure = fixture.customer?.expectedCompileFailure
   const execution = await page.evaluate(({ project, requestId }) => window.builder.inspectBuildExecution(project, requestId),
     { project: fixture.project, requestId })
   assert.ok(execution, 'The exact request must retain its private execution record')
@@ -299,14 +386,33 @@ async function assertLogRead(snapshot, record, fixture) {
   assert.equal(execution.status, cancelled ? 'cancelled' : value.ok ? 'completed' : 'failed')
   assert.equal(execution.current, true)
   record.execution = execution
+  // New hosts expose an immutable compiler-input receipt for every terminal
+  // outcome. Keep sealed R3 comparison behavior when that field is absent.
+  if (execution.buildInput !== undefined) {
+    const fixed = execution.buildInput
+    assert.equal(fixed.version, 1)
+    assert.match(execution.executionId, /^[a-f0-9-]{36}$/)
+    assert.equal(fixed.executionId, execution.executionId)
+    assert.equal(fixed.buildRequestId, requestId)
+    assert.equal(fixed.inputDigest, execution.inputDigest)
+    assert.match(fixed.inputDigest, /^[a-f0-9]{64}$/)
+    assert.match(fixed.abiHash, /^sha256:[a-f0-9]{64}$/)
+    assert.deepEqual(value.buildInput, fixed, 'SDK output must retain the exact request-bound Host input receipt')
+    const snapshotAbi = path.join(fixture.project, '.aily/build-executions', execution.executionId, 'project/project.abi')
+    const bytes = await fs.readFile(snapshotAbi)
+    assert.equal('sha256:' + sha(bytes), fixed.abiHash, 'Receipt ABI hash must identify the actual private compiler snapshot, including failure and cancellation')
+    record.buildInputProof = { ...fixed, privateSnapshotAbi: snapshotAbi, actualAbiBytes: bytes.length,
+      verifiedAgainstPrivateSnapshot: true, terminalStatus: execution.status }
+  }
   if (record.scenario === 'chat-stop') {
     assert.ok(value.ok === true || cancelled, 'Stopping observation must not fabricate a compiler failure')
     assert.equal(record.stop?.surface, 'actual-chat-stop-button')
     assert.equal(value.verification?.status, cancelled ? 'cancelled' : 'passed')
     record.chatStopCompilationOutcome = cancelled ? 'host-confirmed-cancelled' : 'host-confirmed-success'
   } else {
-    assert.equal(value.ok, record.scenario !== 'failure' && record.scenario !== 'cancel')
-    assert.equal(value.verification?.status, record.scenario === 'cancel' ? 'cancelled' : record.scenario === 'failure' ? 'failed' : 'passed')
+    const expectedFailure = record.scenario === 'failure' || !!knownOriginalFailure
+    assert.equal(value.ok, !expectedFailure && record.scenario !== 'cancel')
+    assert.equal(value.verification?.status, record.scenario === 'cancel' ? 'cancelled' : expectedFailure ? 'failed' : 'passed')
   }
   assert.equal(value.logStatus, cancelled ? 'partial' : 'complete')
   if (record.scenario === 'cancel' || record.scenario === 'chat-stop') {
@@ -318,13 +424,20 @@ async function assertLogRead(snapshot, record, fixture) {
     assert.equal(requestId, record.runningBuild.requestId)
     assert.ok(builds.slice(1).every(call => call.actualArguments.build_request_id === requestId && call.actualArguments.build_target_pid === hostPid))
   }
-  assert.ok(same(value.sourceLogFile, path.join(fixture.project, '.log/compile/requests', sha(requestId) + '.log')))
+  const sourceLogFile = path.join(fixture.project, '.log/compile/requests', sha(requestId) + '.log')
+  // The model only needs its readable copy; independently bind the source by
+  // the actual Host request rather than requiring a retired output field.
+  if (value.sourceLogFile !== undefined) assert.ok(same(value.sourceLogFile, sourceLogFile))
   assert.ok(path.isAbsolute(value.resultFile))
-  const [source, copy] = await Promise.all([fs.readFile(value.sourceLogFile, 'utf8'), fs.readFile(value.resultFile, 'utf8')])
+  const [source, copy] = await Promise.all([fs.readFile(sourceLogFile, 'utf8'), fs.readFile(value.resultFile, 'utf8')])
   assert.equal(copy, source); assert.ok(source.startsWith(`Build request: ${requestId}\n`))
   const loggedProject = /^Project: (.+)$/m.exec(source)?.[1]
   assert.ok(loggedProject && same(loggedProject, fixture.project), 'The actual log header must name its bound project')
-  if (record.scenario === 'failure') {
+  if (fixture.customer && !cancelled) record.customerCompilerInput = await verifyCustomerCompilerInput(fixture,
+    path.join(fixture.project, '.aily/build-executions', execution.executionId, 'project'), record.expectedCompleteDocument)
+  if (knownOriginalFailure) {
+    record.customerCompileOutcome = verifyCustomerKnownCompileFailure(fixture, value, source, record.final.assistantText)
+  } else if (record.scenario === 'failure') {
     assert.ok(source.includes(fixture.marker), 'The actual failed C++ diagnostic must identify this intentional source error')
   } else if (!cancelled) {
     // The installed AVR recipe uses -w, so a successful #pragma message need
@@ -333,28 +446,51 @@ async function assertLogRead(snapshot, record, fixture) {
     assert.equal(execution.result?.buildRequestId, requestId, 'Only the exact successful request can supply compiler input')
     assert.ok(inside(path.join(fixture.project, '.aily/build-executions'), execution.result.currentProjectPath))
     const sketch = await fs.readFile(path.join(execution.result.currentProjectPath, '.temp/sketch/sketch.ino'), 'utf8')
-    assert.ok(sketch.includes(fixture.marker), 'The real source generator must have emitted this source fixture')
-    assert.ok(source.includes('avr-g++') && source.includes('Compilation successful'), 'The request log must contain the real successful compiler invocation')
+    if (!fixture.customer) {
+      assert.ok(sketch.includes(fixture.marker), 'The real source generator must have emitted this source fixture')
+      if (record.scenario === 'edit-build') assert.ok(sketch.includes('int buildLogEditedValue = 101;'), 'The actual compiler must receive the newly applied field, not the original program')
+      assert.ok(source.includes('avr-g++'), 'The request log must contain the real successful compiler invocation')
+    }
+    assert.ok(source.includes('Compilation successful'), 'The current request log must report the real successful compiler outcome')
   }
   const lines = source.split('\n'), range = { offset: Math.max(1, lines.length - 79), limit: Math.min(80, lines.length) }
   assert.equal(value.logLineCount, lines.length); assert.deepEqual(value.readRange, range)
   assert.equal(value.stderr, undefined); assert.equal(value.compileDiagnostics, undefined)
   const reads = calls.filter(call => call.actualName === 'read' && same(call.actualArguments?.path ?? '', value.resultFile))
-  assert.ok(reads.some(call => call.actualArguments.offset === range.offset && call.actualArguments.limit === range.limit),
-    'The real model must use the returned path and exact suggested read range')
   const read = reads.find(call => call.actualArguments.offset === range.offset && call.actualArguments.limit === range.limit)
-  const readMessages = snapshot.messages.filter(message => message.role === 'toolResult' && message.toolCallId === read.id)
-  assert.equal(readMessages.length, 1); assert.notEqual(readMessages[0].isError, true)
+  if (!naturalRequests) assert.ok(read, 'The real model must use the returned path and exact suggested read range')
+  const readMessages = snapshot.messages.filter(message => read && message.role === 'toolResult' && message.toolCallId === read.id)
+  const nativeRead = readMessages.length === 1 && readMessages[0].isError !== true
+  if (!naturalRequests) { assert.equal(readMessages.length, 1); assert.equal(nativeRead, true) }
   const expectedTail = lines.slice(range.offset - 1, range.offset - 1 + range.limit).filter(line => line.trim())
-  const readText = textOf(readMessages[0])
-  for (const line of expectedTail.slice(-3)) assert.ok(readText.includes(line), 'Actual native read must contain the requested compiler log tail')
-  const requestFiles = await fs.readdir(path.dirname(value.sourceLogFile))
-  assert.deepEqual(requestFiles, [sha(requestId) + '.log'], 'A failure/reconnect/cancel must not silently compile a second request')
+  const readText = nativeRead ? textOf(readMessages[0]) : ''
+  if (nativeRead) for (const line of expectedTail.slice(-3)) assert.ok(readText.includes(line), 'Actual native read must contain the requested compiler log tail')
+  const requestFiles = await fs.readdir(path.dirname(sourceLogFile))
+  if (naturalRequests) {
+    const known = record.buildInvocationEvidence.confirmedRequestIds.map(id => sha(id) + '.log').sort()
+    assert.deepEqual(requestFiles.filter(file => !fixture.customer?.initialRequestLogFiles.includes(file)).sort(), known,
+      'Every new natural-task compiler log must have an actual request-bound receipt; historical input logs are separate')
+  } else assert.deepEqual(requestFiles, [sha(requestId) + '.log'], 'A failure/reconnect/cancel must not silently compile a second request')
   const before = await fs.stat(value.resultFile), originalHash = sha(copy)
   await wait(100)
   assert.equal(sha(await fs.readFile(value.resultFile)), originalHash); assert.equal((await fs.stat(value.resultFile)).mtimeMs, before.mtimeMs)
   record.build = value; record.logProof = { requestId, logSha256: originalHash, bytes: Buffer.byteLength(source), lineCount: lines.length,
-    readRange: range, actualNativeRead: true, readToolCallIdSha256: sha(read.id), requestFiles: requestFiles.length, immutableCopy: true }
+    readRange: range, actualNativeRead: nativeRead, readToolCallIdSha256: nativeRead ? sha(read.id) : null,
+    independentObserverRead: naturalRequests ? true : undefined, modelLogReadRequired: !naturalRequests,
+    modelLogReadAttempts: reads.map(item => ({ offset: item.actualArguments.offset, limit: item.actualArguments.limit })),
+    requestFiles: requestFiles.length, immutableCopy: true }
+  const window = id => {
+    const timing = record.comparison?.toolExecutionTimings.find(item => item.toolCallId === id)
+    return timing ? { startedAt: timing.startedAt, completedAt: timing.completedAt, durationMs: timing.durationMs,
+      boundary: 'includes tool validation, permission/before/after gates and handler; not pure compiler time' } : null
+  }
+  record.compilerTiming = { requestId, reported: summarizeCompilerReportedTimes(source),
+    buildToolWindow: window(starts[0].id), exactLogReadToolWindow: nativeRead ? window(read.id) : null }
+  record.taskTiming = { submittedAt: record.submittedAt, settledAt: record.settledAt,
+    taskEnvelopeMs: record.settledAt - record.submittedAt,
+    firstBusinessActionAfterMs: record.comparison?.firstBusinessActionAfterMs ?? null,
+    afterExactLogReadToSettledMs: Number.isFinite(record.compilerTiming.exactLogReadToolWindow?.completedAt)
+      ? record.settledAt - record.compilerTiming.exactLogReadToolWindow.completedAt : null }
   return requestId
 }
 
@@ -362,8 +498,12 @@ try {
   await phase('prepare-isolated-board-template-projects')
   for (const directory of [appData, home, agentProfile, agentTemp]) await fs.mkdir(directory)
   for (const scenario of cases) {
-    const marker = 'BUILD_LOG_' + scenario.toUpperCase() + '_' + randomUUID().replaceAll('-', '')
-    const fixture = await prepareBuildLogProject({ directory: path.join(suite, scenario), boardsRoot, librariesRoot, scenario, marker })
+    const marker = naturalRequests?.cases[scenario]?.marker ?? 'BUILD_LOG_' + scenario.toUpperCase() + '_' + randomUUID().replaceAll('-', '')
+    const fixture = customerGoal
+      ? await prepareCustomerNaturalProject({ input: values['customer-input'], directory: path.join(suite, scenario),
+        kind: values['customer-case'], resourceRoot: values['resource-root'], boardsRoot, librariesRoot })
+      : await prepareBuildLogProject({ directory: path.join(suite, scenario), boardsRoot, librariesRoot,
+        scenario: scenario === 'edit-build' ? 'field-edit' : scenario, marker, compileFieldValue: scenario === 'edit-build' })
     projects.set(scenario, fixture)
   }
   for (const file of new Set([values['connection-profile'], connection.configFile, connection.authFile,
@@ -406,18 +546,26 @@ try {
   }
   if (values['expected-effective-model']) assert.equal(expectedEffectiveModel, values['expected-effective-model'])
   const profile = await prepareInstalledChatProfile({ appData, installedRoot: values['installed-root'], apiBase: proxy.origin,
-    baseConfigPath: connection.configFile, resourceAppData: values['resource-root'], token: accessToken })
+    baseConfigPath: connection.configFile, resourceAppData: values['platform-resource-root'] ?? values['resource-root'], token: accessToken })
   profile.config.compile = { ...profile.config.compile, backend: 'local' }
   await fs.writeFile(path.join(appData, 'config.json'), JSON.stringify(profile.config, null, 2))
   // resourceAppData gives this profile read-through access to the installed
   // platform metadata and SDK/compiler bodies. Do not seed private metadata
   // through those junctions or write anything into the daily resource trees.
   const permission = { '*': 'deny', tool_load: 'allow', tool_invoke: 'allow', skill: 'allow', read: 'allow', project_build: 'allow',
-    todo: 'allow', ...(values['comparison-tools'] || cases.includes('field-edit') ? { edit: 'allow', abs_apply: 'allow', abs_validate: 'allow' } : {}),
+    todo: 'allow', ...(values['comparison-tools'] || cases.some(name => name === 'field-edit' || name === 'edit-build') ? { edit: 'allow', abs_apply: 'allow', abs_validate: 'allow' } : {}),
+    ...(cases.includes('edit-build') ? { project_save: 'allow', abs_export: 'allow' } : {}),
+    ...(naturalRequests ? { write: 'allow', project_recover: 'allow', app_reload: 'allow', project_save: 'allow', abs_export: 'allow' } : {}),
+    ...(customerGoal ? { grep: 'allow', find: 'allow', ls: 'allow', code_run: 'allow' } : {}),
     external_directory: { '*': 'deny', [suite + '/*']: 'allow', [values['installed-root'] + '/*']: 'allow' },
     path: { '*': 'allow', [path.join(appData, '.aily')]: 'deny', [connection.authFile]: 'deny', [connection.configFile]: 'deny',
       [values['connection-profile']]: 'deny', [path.join(values['resource-root'], '.aily')]: 'deny' } }
   evidence.toolPermissionPolicy = Object.fromEntries(Object.entries(permission).filter(([key]) => !['path', 'external_directory'].includes(key)))
+  if (customerGoal) evidence.customerNaturalScope = { originalConversationReplayed: false,
+    standardReadonlySearch: ['grep', 'find', 'ls'], codeModeAllowed: true,
+    codeModeNestedFileOperationsCountedSeparately: false, codeModeWrapperIsObserved: true,
+    fullDocumentAndCompilerOraclesIndependentOfEditTool: true,
+    protectedCredentialPathsAndExternalDirectoryScopeUnchanged: true }
   const policy = path.join(agentProfile, 'extensions/pi-permission-system/config.json')
   await fs.mkdir(path.dirname(policy), { recursive: true }); await fs.writeFile(policy, JSON.stringify({ permission }), { flag: 'wx' })
   if (values['host-build']) renderer = await serveRendererBuild(values['host-build'])
@@ -475,34 +623,55 @@ try {
     evidence.cases.push(record)
     const baseline = await openProject(fixture.project, scenario)
     record.sourceBefore = await buildLogSourceHashes(fixture.project, sha)
+    if (naturalRequests) {
+      record.naturalRequest = naturalRequest(naturalRequests, scenario, fixture.project)
+      record.naturalCompleteDocumentBefore = JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
+        .blocklyService.captureRecoverySnapshot().documentText))
+    }
     if (values['fixture-preflight-only']) {
-      assert.equal(scenario, 'field-edit')
-      singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, 'VALUE', 100, 101)
+      assert.ok(scenario === 'field-edit' || scenario === 'edit-build')
+      if (fixture.customer) expectedCustomerNaturalDocument(record.naturalCompleteDocumentBefore, fixture)
+      else singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, 'VALUE', 100, 101)
       record.ok = true; record.fixturePreflightOnly = true
+      if (values['fixture-preflight-build']) {
+        record.fixtureBaselineBuild = await compileOriginalCustomerFixture(fixture, record.naturalCompleteDocumentBefore)
+        await checkpoint()
+        assert.equal(record.fixtureBaselineBuild.qualifiedForNaturalCompile, true,
+          'The unchanged original project did not compile; retain its real request/log and classify the failure before any paid customer turn')
+      }
       await finishCase(record, false)
       await phase('verified-unpaid-field-fixture')
       continue
     }
-    if (scenario === 'field-edit') {
-      const expected = singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, 'VALUE', 100, 101)
+    if (scenario === 'field-edit' || scenario === 'edit-build') {
+      const goal = fixture.customer ?? { field: 'VALUE', before: 100, after: 101 }
+      const expected = fixture.customer ? undefined : singleFieldExpectedDocument(JSON.parse(baseline), fixture.blockId, goal.field, goal.before, goal.after)
       const nativeBefore = JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
         .blocklyService.captureRecoverySnapshot().documentText))
-      const expectedCompleteDocument = singleFieldExpectedDocument(nativeBefore, fixture.blockId, 'VALUE', 100, 101)
+      const expectedCompleteDocument = fixture.customer ? expectedCustomerNaturalDocument(nativeBefore, fixture)
+        : singleFieldExpectedDocument(nativeBefore, fixture.blockId, goal.field, goal.before, goal.after)
       record.expectedCompleteDocument = expectedCompleteDocument
       await phase('129-composer-' + scenario)
       record.submittedAt = Date.now()
-      await submit(`请直接修改当前项目 ${fixture.project}：把唯一 build log probe 积木的 VALUE 数值从100改为101，并应用到当前工作区。只改这一个字段，完整保留所有其他程序、块ID、连接、注释和坐标。读取当前ABS，使用正常edit修改后调用abs_apply即可；不编译、不整理、不新建或打开工程、不调用shell、不要求用户操作。完成后简短报告。`)
+      await submit(record.naturalRequest?.prompt ?? (scenario === 'edit-build'
+        ? `请修改当前项目 ${fixture.project}，把唯一 build log probe 积木的 VALUE 从100改为101，保留其他内容。应用到工作区后进行编译验证，检查编译日志，简短告诉我最终结果和日志路径。遇到工程状态问题请自动在当前项目内处理，不要要求我切换或重开副本。`
+        : `请直接修改当前项目 ${fixture.project}：把唯一 build log probe 积木的 VALUE 数值从100改为101，并应用到当前工作区。只改这一个字段，完整保留所有其他程序、块ID、连接、注释和坐标。读取当前ABS，使用正常edit修改后调用abs_apply即可；不编译、不整理、不新建或打开工程、不调用shell、不要求用户操作。完成后简短报告。`))
       const snapshot = await settle({ project: fixture.project, record, expectedUserMessages: 1 })
       assert.equal(record.final.stopReason, 'stop')
       const calls = callsOf(snapshot)
       assert.ok(calls.some(call => call.actualName === 'abs_apply'), 'The real model must publish its edit')
-      for (const name of ['project_build', 'project_fork', 'project_recover', 'project_recovery', 'project_open', 'app_open', 'app_reload', 'bash', 'powershell', 'code_run'])
+      for (const name of naturalRequests ? ['project_fork', 'project_upload', 'project_open', 'app_open'] : [...(scenario === 'edit-build' ? [] : ['project_build']), 'project_fork', 'project_recover', 'project_recovery', 'project_open', 'app_open', 'app_reload', 'bash', 'powershell', 'code_run'])
         assert.equal(calls.some(call => call.actualName === name), false, `No unrelated action: ${name}`)
-      const actual = await page.evaluate(() => window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))
-      assert.deepEqual(actual, expected, 'Only the requested existing field may change; the complete program must survive')
+      const actual = fixture.customer ? undefined
+        : await page.evaluate(() => window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))
+      if (!fixture.customer) assert.deepEqual(actual, expected, 'Only the requested existing field may change; the complete program must survive')
       const nativeAfter = JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
         .blocklyService.captureRecoverySnapshot().documentText))
       assert.deepEqual(nativeAfter, expectedCompleteDocument, 'The entire native document must retain every unedited page and shared model')
+      if (naturalRequests) {
+        record.sourceAfter = await buildLogSourceHashes(fixture.project, sha)
+        assert.equal(record.sourceAfter['package.json'], record.sourceBefore['package.json'], 'The requested field edit does not change project dependencies')
+      }
       const persisted = await Promise.all(['project.abi', 'project.abs', 'project.abs.map.json'].map(file => fs.readFile(path.join(fixture.project, file))))
       assert.deepEqual(JSON.parse(persisted[0].toString()), expectedCompleteDocument, 'The full requested document must actually be saved')
       const applyCall = calls.filter(call => call.actualName === 'abs_apply').at(-1)
@@ -524,9 +693,26 @@ try {
       assert.equal(publicMap.baseAbsHash, binding.absHash)
       record.absApplication = { toolCallId: applyCall.id, result: applied,
         persisted: { abiHash: binding.abiHash, absHash: binding.absHash, mapHash: binding.mapHash, absBytes: persisted[1].length } }
+      if (scenario === 'edit-build') {
+        record.buildRequestId = await assertLogRead(snapshot, record, fixture)
+        const settledHost = await hostState()
+        assert.equal(settledHost.hasRunning, false); assert.equal(settledHost.aiNoticeCount, 0)
+        record.settledHost = settledHost
+      }
       assert.equal(record.comparison.modelEvidenceValid, true, 'Actual routed model must match the fixed catalog preset')
       record.programIntegrity = { completeExpectedDocument: true, beforeSha256: sha(baseline),
-        expectedSha256: sha(JSON.stringify(expected)), actualSha256: sha(JSON.stringify(actual)), changedField: 'VALUE', before: 100, after: 101 }
+        expectedSha256: sha(JSON.stringify(expected ?? expectedCompleteDocument)), actualSha256: sha(JSON.stringify(fixture.customer ? nativeAfter : actual)),
+        changedField: goal.field, before: goal.before, after: goal.after, customerCase: fixture.customer?.kind,
+        originalConversationReplayed: false }
+      record.businessVerificationPassed = true
+      record.todoConsistency = { required: values['expect-settled-todos'] === true,
+        finalStatusConsistent: record.comparison.todo.finalStatusConsistent,
+        toolProjectionConsistent: record.comparison.todo.toolProjectionConsistent }
+      await checkpoint()
+      if (values['expect-settled-todos']) {
+        assert.equal(record.todoConsistency.finalStatusConsistent, true, 'If the model creates a Todo list, its completed task cannot leave pending, missing or deleted tasks')
+        assert.equal(record.todoConsistency.toolProjectionConsistent, true, 'The final Todo snapshot must match the actual successful tool state')
+      }
       record.ok = true
       await finishCase(record)
       await page.screenshot({ path: path.join(values.output, scenario + '.png'), fullPage: true })
@@ -547,7 +733,7 @@ try {
     }
     if (scenario === 'reconnect') proxy.armAfterBuildResult()
     await phase('129-composer-' + scenario)
-    const prompt = `这是隔离工程的编译日志验收，源码和依赖已准备并保存，路径 ${fixture.project}。只执行以下动作：必要时tool_load加载project_build，然后实际调用一次project_build(project="${fixture.project}")。编译后必须使用普通read，path严格取该返回的resultFile，offset和limit严格取其readRange。读取完成简短报告buildReceipt.requestId、编译状态、logStatus及读取到的日志尾部。${scenario === 'failure' ? '工程故意含#error，编译失败正是预期，读取其失败日志即可。' : ''}${scenario === 'cancel' ? '我将在编译通知里点击停止来取消真实编译。收到取消回执后仍实际read其日志；绝不重新编译。' : ''}${scenario === 'chat-stop' ? '我会在编译过程中点击Chat停止，停止的是AI观察，不要擅自恢复观察或重启编译。' : ''}绝对不要修改任何文件/积木、修复故意错误、扫描项目、重复新建编译、清缓存、烧录或调用shell。遇到断线继续同一原操作；若返回pendingBuild，仅按其精确arguments观察原请求，不要新开编译。请直接执行，不询问。`
+    const prompt = record.naturalRequest?.prompt ?? `这是隔离工程的编译日志验收，源码和依赖已准备并保存，路径 ${fixture.project}。只执行以下动作：必要时tool_load加载project_build，然后实际调用一次project_build(project="${fixture.project}")。编译后必须使用普通read，path严格取该返回的resultFile，offset和limit严格取其readRange。读取完成简短报告buildReceipt.requestId、编译状态、logStatus及读取到的日志尾部。${scenario === 'failure' ? '工程故意含#error，编译失败正是预期，读取其失败日志即可。' : ''}${scenario === 'cancel' ? '我将在编译通知里点击停止来取消真实编译。收到取消回执后仍实际read其日志；绝不重新编译。' : ''}${scenario === 'chat-stop' ? '我会在编译过程中点击Chat停止，停止的是AI观察，不要擅自恢复观察或重启编译。' : ''}绝对不要修改任何文件/积木、修复故意错误、扫描项目、重复新建编译、清缓存、烧录或调用shell。遇到断线继续同一原操作；若返回pendingBuild，仅按其精确arguments观察原请求，不要新开编译。请直接执行，不询问。`
     const stopWatcher = ['cancel', 'chat-stop'].includes(scenario)
       ? watchUserBuildStop(fixture.project, record, scenario === 'cancel' ? 'compile-notice' : 'chat') : undefined
     let snapshot
@@ -604,6 +790,13 @@ try {
     assert.equal(allRequestIds.has(requestId), false, 'Independent compilations cannot share a request ID'); allRequestIds.add(requestId)
     assert.equal(await page.evaluate(() => JSON.stringify(window.Blockly.serialization.workspaces.save(window.Blockly.getMainWorkspace()))), baseline,
       'The model must leave the source canvas unchanged')
+    if (naturalRequests) {
+      record.sourceAfter = await buildLogSourceHashes(fixture.project, sha)
+      assert.deepEqual(record.sourceAfter, record.sourceBefore, 'A natural compile request must preserve its saved source and dependencies')
+      const complete = JSON.parse(await page.evaluate(() => window.ng.getComponent(document.querySelector('app-blockly-editor'))
+        .blocklyService.captureRecoverySnapshot().documentText))
+      assert.deepEqual(complete, record.naturalCompleteDocumentBefore, 'A compile request must preserve every page and shared model')
+    }
     if (scenario === 'reconnect') {
       const network = proxy.snapshot()
       assert.equal(network.faults.length, 1); assert.equal(network.capturedBuildRequestId, requestId)
@@ -648,6 +841,8 @@ try {
     assert.equal(after, before, 'The explicit and daily profiles/catalogs must remain unchanged')
   })
   if (artifact) await finish('immutable-installed-chat', async () => assert.deepEqual(await verifyPortableBuild(values['installed-root']), artifact))
+  for (const fixture of projects.values()) if (fixture.customer)
+    await finish('original-customer-input-unchanged', () => verifyCustomerOriginalUnchanged(fixture))
   if (evidence.cleanupFailures.length) evidence.ok = false
   await checkpoint()
   await fs.writeFile(path.join(values.output, 'result.json'), JSON.stringify(evidence, null, 2))

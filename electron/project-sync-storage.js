@@ -1,14 +1,22 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { storageExecutor, observeStorageExecutor } = require('./project-file-lock-owner');
 const { MAX_PROJECT_FILE_BYTES, projectFileHash: hash, projectFileFault: fault, projectFileGuard,
   createProjectFileAccess, acquireProjectFileLock } = require('./project-file-access');
 
 const PROJECT_SYNC_STORAGE_VERSION = 2;
 const mirrors = new Set(['project.abi', 'project.abs', 'project.abs.map.json']);
+const readOnlyInputs = new Set(['package.json', 'package-lock.json', '.npmrc', 'npm-shrinkwrap.json', 'yarn.lock']);
+const readableFiles = new Set([...mirrors, ...readOnlyInputs]);
 const baseline = /^baselines\/[A-Za-z0-9_-]{1,96}\.json$/;
 const recovery = /^recoveries\/[A-Za-z0-9_-]{1,96}\.json$/;
 const metadata = new Set(['operation.json', 'lineage.json']);
+const historyObject = /^history-objects\/([a-f0-9]{64})$/;
+const historyHash = key => {
+  const match = typeof key === 'string' ? historyObject.exec(key) : null;
+  return match && match[0] === key ? match[1] : null;
+};
 
 /** A project-bound, revocable host capability, not an IPC lock token or a second transaction engine. */
 async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) {
@@ -19,14 +27,18 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
   const root = await files.promises.realpath(projectPath);
   guard();
   const access = createProjectFileAccess(root, projectPath, files);
+  const executor = storageExecutor();
   const directories = [path.join(root, '.aily'), path.join(root, '.aily', 'abs-sync')];
   const locate = (key, create = false) => {
-    if (typeof key !== 'string' || !(mirrors.has(key) || metadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
+    const objectHash = historyHash(key);
+    if (typeof key !== 'string' || !(objectHash || readableFiles.has(key) || metadata.has(key) || key === 'prepared.json' || key === 'committed.json' || baseline.test(key) || recovery.test(key))) {
       throw fault('ABS_STORAGE_KEY_INVALID', 'Unsupported ABS sync storage key.');
     }
+    if (objectHash && create) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
     access.checkRoot();
-    if (mirrors.has(key)) return path.join(root, key);
-    const parents = baseline.test(key) || recovery.test(key)
+    if (readableFiles.has(key)) return path.join(root, key);
+    const parents = objectHash ? [path.join(root, '.workspace-history'), path.join(root, '.workspace-history', 'objects'),
+      path.join(root, '.workspace-history', 'objects', objectHash.slice(0, 2))] : baseline.test(key) || recovery.test(key)
       ? [...directories, path.join(directories[1], key.split('/')[0])] : directories;
     for (const directory of parents) {
       if (create) {
@@ -35,11 +47,17 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       try { access.checkDirectory(directory); }
       catch (error) { if (!create && error.code === 'ENOENT') return null; throw error; }
     }
-    return path.join(directories[1], ...key.split('/'));
+    return objectHash ? path.join(parents[2], objectHash + '.blob') : path.join(directories[1], ...key.split('/'));
   };
   const readBytes = key => {
     const file = locate(key);
-    return file === null ? null : access.readRegular(file);
+    if (file === null) return null;
+    const bytes = access.readRegular(file);
+    if (historyHash(key)) {
+      guard();
+      if (locate(key) !== file) throw fault('PROJECT_FILE_UNSAFE_PATH', 'History object ancestry changed during its read.');
+    }
+    return bytes;
   };
   const readText = key => {
     const bytes = readBytes(key);
@@ -49,6 +67,13 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
     return text;
   };
   return {
+    attachment: access.attachment,
+    executor,
+    observeExecutor: async original => {
+      guard(); access.checkRoot();
+      const result = observeStorageExecutor(original, executor);
+      guard(); return result;
+    },
     read: async key => { guard(); return readText(key); },
     withLock: async operation => {
       if (typeof operation !== 'function') throw fault('ABS_STORAGE_OPERATION_INVALID', 'Expected a scoped storage operation.');
@@ -61,10 +86,11 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
       };
       const replace = async (key, expectedHash, content) => {
         check();
+        if (historyHash(key)) throw fault('ABS_STORAGE_WRITE_INVALID', 'History objects are read-only through sync storage.');
         // Validate keys even for no-op/delete requests. Baselines are append-only;
         // only the prepared journal may be deleted by the sync protocol.
         locate(key);
-        if (!(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
+        if (readOnlyInputs.has(key) || !(expectedHash === null || /^sha256:[a-f0-9]{64}$/.test(expectedHash))
           || !(content === null || typeof content === 'string')
           || (content === null && key !== 'prepared.json' && key !== 'operation.json')
           || ((baseline.test(key) || recovery.test(key)) && expectedHash !== null)) {
@@ -113,6 +139,8 @@ async function openProjectSyncStorage(projectPath, assertCurrent, options = {}) 
         }
       };
       const scoped = {
+        attachment: access.attachment,
+        executor,
         read: async key => { check(); return readText(key); },
         replace: (...args) => {
           const result = replace(...args);
@@ -171,6 +199,10 @@ async function openProjectSyncStorageBridge(projectPath, assertCurrent, options)
       } catch (error) { reject(error); }
     }));
   return {
+    attachment: storage.attachment,
+    executor: storage.executor,
+    observeExecutor: original => storage.observeExecutor(original),
+    observeExecutorResult: original => resultOf(() => storage.observeExecutor(original)),
     read: key => storage.read(key),
     withLock: operation => withBridgeLock(operation, false),
     readResult: key => resultOf(() => storage.read(key)),

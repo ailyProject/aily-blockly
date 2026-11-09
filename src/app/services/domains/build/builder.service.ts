@@ -155,6 +155,7 @@ export class BuilderService {
         error.text = error.message;
         error.fullStdErr = buildResult?.fullStdErr;
         error.buildLog = buildResult?.buildLog;
+        error.buildInput = (buildResult as any)?.buildInput;
         error.buildOutcome = (buildResult as any)?.buildOutcome;
         error.buildResult = buildResult;
         if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);
@@ -201,6 +202,7 @@ export class BuilderService {
       error.text = buildResult?.text || 'Build failed';
       error.fullStdErr = buildResult?.fullStdErr;
       error.buildLog = buildResult?.buildLog;
+      error.buildInput = buildResult?.buildInput;
       error.buildOutcome = buildResult?.buildOutcome;
       error.buildResult = buildResult;
       if (isBuildCancelled(buildResult)) Object.assign(error, buildResult);

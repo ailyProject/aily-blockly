@@ -7,6 +7,13 @@ import { BlocklyComponent } from '../components/blockly/blockly.component';
 import { ProjectApplicationAdapter } from '../../../integrations/project/project-application.adapter';
 
 describe('complete save and background preprocess handoff', () => {
+  let previousFs: any;
+  beforeEach(() => {
+    previousFs = window['fs'];
+    window['fs'] = { ...previousFs, projectProgramPublicationVersion: 1, nativeSaveReceiptVersion: 2,
+      projectSyncStorageVersion: 2, openProjectSyncStorage: () => { throw new Error('Not used by preprocess handoff'); } } as any;
+  });
+  afterEach(() => { window['fs'] = previousFs; });
   function builder() {
     const service: any = Object.create(_BuilderService.prototype);
     Object.assign(service, {

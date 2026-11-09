@@ -6,11 +6,12 @@ import { readAbsSyntax } from './abs-syntax';
 describe('ABS live protocol admission', () => {
   const fingerprint = 'a'.repeat(64), hash = `sha256:${fingerprint}`;
   function request() {
+    const workingCandidate = { version: 1 as const, id: '11111111-1111-1111-1111-111111111111', revisionHash: fingerprint };
     const validation = { version: 2, requestId: '01234567-89ab-cdef',
       base: { generation: 'base', scope: { projectKey: '/a', pageId: 'main' }, abiHash: hash, absHash: hash, mapHash: hash },
-      candidate: { hash, bytes: 20 }, workspaceRevision: 1, libraryRuntimeFingerprint: fingerprint,
+      candidate: { hash, bytes: 20 }, workingCandidate, workspaceRevision: 1, libraryRuntimeFingerprint: fingerprint,
       validation: { ok: true, scope: 'prepared-generation' } };
-    return { version: 2, requestId: validation.requestId, validation, abs: '# ABS Schema: 2\ntext("test")' };
+    return { version: 2, requestId: validation.requestId, workingCandidate, validation, abs: '# ABS Schema: 2\ntext("test")' };
   }
   function bridge() {
     const service: any = Object.create(BlocklyLiveOperationBridgeService.prototype);
@@ -25,6 +26,9 @@ describe('ABS live protocol admission', () => {
     service.emitLiveOperationProgress = jasmine.createSpy('progress');
     service.readAbsSource = jasmine.createSpy('source').and.returnValue(request().abs);
     service.executeOperation = (payload: any) => service.executeAbsApply(payload.params);
+    // Exercise native wire admission after the transport's publication owner
+    // has been admitted, without mocking the unrelated outer UI owner scope.
+    service.execute = (payload: any) => service.executeAdmittedOperation(payload);
     return service;
   }
 
@@ -69,6 +73,22 @@ describe('ABS live protocol admission', () => {
   it('does not mistake block capability query version 1 for an obsolete generation request', () => {
     expect(rejectAbsLiveRequest('abs_capabilities', { version: 1, type: 'text' })).toBeNull();
     expect(rejectAbsLiveRequest('project_save', {})).toBeNull();
+  });
+
+  it('retires base-only apply and old baseline mutations before touching the coordinator', async () => {
+    const service = bridge(), old: any = request();
+    delete old.workingCandidate; delete old.validation.workingCandidate;
+    const result = await service.execute({ operation: 'abs_apply', params: old });
+    expect(result.code).toBe('ABS_PROTOCOL_REQUIRED');
+    expect(service.aiOperations.setActive).not.toHaveBeenCalled();
+    expect(service.readAbsSource).not.toHaveBeenCalled();
+    expect(service.absGenerationTools.execute).not.toHaveBeenCalled();
+    for (const action of ['preserve_candidate', 'repair', 'refresh', 'resolve', 'reopen', 'prepare_native', 'abandon']) {
+      const rejected = rejectAbsLiveRequest('abs_recovery', { version: 2, requestId: old.requestId, action });
+      expect(rejected!.code).toBe('ABS_PROTOCOL_REQUIRED');
+    }
+    for (const action of ['inspect', 'read_candidate', 'read_repair', 'read_draft', 'recover_runtime', 'recover'])
+      expect(rejectAbsLiveRequest('abs_recovery', { version: 2, requestId: old.requestId, action })).toBeNull();
   });
 
   it('identifies an obsolete MCP caller separately from the ABS source schema', () => {

@@ -112,6 +112,12 @@ export class BlocklyProjectCleanState {
     this.failure = undefined;
   }
 
+  /** Original acknowledged load/save bytes; current disk or canvas never grants this record. */
+  readSavedAbiRecipe(scope: readonly unknown[]): string | undefined {
+    if (this.failure || !this.accepted || !this.matches(scope)) return undefined;
+    return this.accepted.disk;
+  }
+
   reject(error: unknown): void {
     this.clear();
     this.failure = error instanceof Error ? error : new Error(String(error));

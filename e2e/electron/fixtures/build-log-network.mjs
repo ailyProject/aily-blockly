@@ -56,7 +56,8 @@ const headersFor = headers => {
  * to the real Services, drop one downstream SSE response before its first byte.
  * The upstream keeps running and is drained. No receipt/event/tool result is
  * generated, modified, cached or replayed here. Multiple user turns are allowed. */
-export async function createBuildLogNetwork({ upstreamOrigin, upstreamAddress }) {
+export async function createBuildLogNetwork({ upstreamOrigin, upstreamAddress, listenPort = 0 }) {
+  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) throw new Error('Invalid owned test proxy port')
   const base = new URL(upstreamOrigin)
   assert.ok(['http:', 'https:'].includes(base.protocol) && base.pathname === '/' && !base.username && !base.password)
   if (upstreamAddress !== undefined) assert.ok(isIP(upstreamAddress), 'An explicitly pinned upstream must be an IP address')
@@ -185,7 +186,7 @@ export async function createBuildLogNetwork({ upstreamOrigin, upstreamAddress })
       upstream.end(raw)
     })().catch(error => { fail('proxy-request', { name: error.name }); response.destroy() })
   })
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(listenPort, '127.0.0.1', resolve) })
   return { origin: `http://127.0.0.1:${server.address().port}`,
     armAfterBuildResult() { assert.equal(faults.length, 0); assert.equal(armed, false); armed = true },
     snapshot: () => {

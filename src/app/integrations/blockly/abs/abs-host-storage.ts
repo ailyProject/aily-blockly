@@ -1,6 +1,7 @@
 import { AbsSyncStorageAccess, AbsSyncStoragePort } from './abs-baseline-store';
 import { AbsSyncError } from './abs-state';
-import { projectStorageBridge, type NativeProjectStorageBridge } from '@shared/public-api';
+import { projectStorageBridge, requireProjectProgramPublication,
+  type NativeProjectStorageBridge, type ProjectProgramPublicationHost } from '@shared/public-api';
 
 export type AbsStorageSettlement<T> = { ok: true; value: T } | { ok: false; error: { code?: string; message: string } };
 export interface AbsHostStorageCapability extends NativeProjectStorageBridge {
@@ -8,7 +9,7 @@ export interface AbsHostStorageCapability extends NativeProjectStorageBridge {
   withLock<T>(operation: (storage: AbsSyncStorageAccess, settle: (result: AbsStorageSettlement<T>) => void) => void): Promise<T>;
 }
 
-export interface AbsHostStoragePort {
+export interface AbsHostStoragePort extends ProjectProgramPublicationHost {
   readonly projectSyncStorageVersion?: number;
   openProjectSyncStorage(projectPath: string, assertCurrent: () => void): Promise<AbsHostStorageCapability>;
 }
@@ -28,11 +29,19 @@ export async function openAbsHostStorage(
   }
   const storage = projectStorageBridge(native, assertCurrent);
   return {
+    attachment: storage.attachment,
+    executor: storage.executor,
+    ...(storage.observeExecutor ? { observeExecutor: (original: NonNullable<AbsSyncStoragePort['executor']>) => storage.observeExecutor!(original) } : {}),
     read: key => storage.read(key),
     // Return void to contextBridge. Zone/native promises stay on their owning side;
     // only plain results/errors pass through the explicit native settlement callback.
     withLock: operation => storage.withLock((locked, settle) => {
-      Promise.resolve().then(() => operation(locked)).then(
+      const access: AbsSyncStorageAccess = { ...locked, replace: (key, expected, content) => {
+        if (['project.abi', 'project.abs', 'project.abs.map.json', 'prepared.json', 'committed.json'].includes(key)
+          || key.startsWith('baselines/')) requireProjectProgramPublication(host);
+        return locked.replace(key, expected, content);
+      } };
+      Promise.resolve().then(() => operation(access)).then(
         value => settle({ ok: true, value }),
         error => settle({ ok: false, error: { ...(typeof error?.code === 'string' ? { code: error.code } : {}),
           message: error instanceof Error ? error.message : String(error) } }),

@@ -3,6 +3,7 @@ export * from './development-resource-routing';
 export * from './linux-board-project-route';
 export * from './project-recovery-files';
 export * from './project-sync-storage-bridge';
+export * from './project-program-publication';
 export * from './abs/abs-json-tokens';
 export * from './concurrency/serial-operation-queue';
 export { createBrowserFrameBudget } from './concurrency/browser-frame-budget';

@@ -2,6 +2,11 @@ import { AbsBaselineStore, type AbsSyncStoragePort } from './abs-baseline-store'
 import { generationEvidence } from './abs-generation-protocol';
 import { absJson, hashAbsText } from './abs-identity-map';
 import { AbsSyncError, type AbsProjection } from './abs-state';
+export type { NativeSaveResultFacts } from './abs-native-save-protocol';
+import { NativeSavePublications } from './abs-native-save-publication';
+import type { NativeSaveIdentity, NativeSaveOperationRef, NativeSaveStageInput, NativeSaveResultFacts } from './abs-native-save-protocol';
+import type { AbsSyncStorageAccess } from './abs-baseline-store';
+import type { AbsOperationSnapshot } from './abs-operation-journal';
 
 const stageKey = (id: string) => `recoveries/application-${id}.json`;
 const proofKey = (id: string) => `recoveries/application-commit-${id}.json`;
@@ -12,6 +17,15 @@ const fail = (message: string) => new AbsSyncError('ABS_APPLY_OBSERVATION_INVALI
  * success: only an exact committed-pointer + complete-file readback seals it. */
 export class AbsApplicationJournal {
   constructor(private readonly port: AbsSyncStoragePort, private readonly project: string) {}
+  private native() { return new NativeSavePublications(this.port, this.project); }
+  stageNativeSave(input: NativeSaveStageInput, guard: () => void) { return this.native().stageNativeSave(input, guard); }
+  sealNativeSave(ref: NativeSaveOperationRef, guard: () => void) { return this.native().sealNativeSave(ref, guard); }
+  sealNativeUnchangedLocked(ref: NativeSaveOperationRef, access: AbsSyncStorageAccess, original: AbsOperationSnapshot,
+    committedPointer: string | null, guard: () => void) {
+    return this.native().sealNativeUnchangedLocked(ref, access, original, committedPointer, guard);
+  }
+  completeNativeSave(ref: NativeSaveOperationRef, facts: NativeSaveResultFacts, guard: () => void) { return this.native().completeNativeSave(ref, facts, guard); }
+  observeNativeSave(request: NativeSaveIdentity, guard: () => void) { return this.native().observeNativeSave(request, guard); }
 
   async stage(operationId: string, validation: any, outcome: any, assertCurrent: () => void) {
     const record = absJson({ version: 1, project: this.project, operationId, validation, outcome });

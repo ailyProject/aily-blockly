@@ -5,7 +5,8 @@ import path from 'node:path'
 /** A new board-template project and a tiny source fixture. No user project or
  * generated compiler output is copied, and the real generator/compiler owns
  * every diagnostic, build result and request log. */
-export async function prepareBuildLogProject({ directory, boardsRoot, librariesRoot, scenario, marker }) {
+export async function prepareBuildLogProject({ directory, boardsRoot, librariesRoot, scenario, marker, compileFieldValue = false }) {
+  if (compileFieldValue) assert.equal(scenario, 'field-edit')
   const libraryName = '@aily-project/lib-e2e-build-log-' + scenario
   const blockType = 'e2e_build_log_probe_' + scenario.replaceAll('-', '_')
   const blockId = 'build_log_probe_' + (scenario === 'field-edit' ? 'value-edit' : scenario)
@@ -37,7 +38,7 @@ export async function prepareBuildLogProject({ directory, boardsRoot, librariesR
       message0: scenario === 'field-edit' ? 'build log probe value %1' : 'build log probe',
       ...(scenario === 'field-edit' ? { args0: [{ type: 'field_number', name: 'VALUE', value: 100 }] } : {}), previousStatement: null,
       nextStatement: null, colour: 210 }]),
-    'generator.js': `Arduino.forBlock[${JSON.stringify(blockType)}] = function (block, generator) { generator.addVariable(${JSON.stringify(blockType)}, ${JSON.stringify(source)}); return ""; };\n`,
+    'generator.js': `Arduino.forBlock[${JSON.stringify(blockType)}] = function (block, generator) { generator.addVariable(${JSON.stringify(blockType)}, ${JSON.stringify(source)}); ${compileFieldValue ? 'generator.addVariable("buildLogEditedValue", "int buildLogEditedValue = " + block.getFieldValue("VALUE") + ";\\n"); ' : ''}return ""; };\n`,
     'toolbox.json': JSON.stringify({ kind: 'category', name: 'Build log acceptance', contents: [{ kind: 'block', type: blockType }] }),
     'info.json': JSON.stringify({ name: libraryName.replace('@aily-project/', ''), displayName: 'Build log acceptance', category: 'utility' }),
     'readme_ai.md': 'A test-owned source probe. It intentionally emits a compiler pragma, and one case emits #error. Do not repair it.\n'

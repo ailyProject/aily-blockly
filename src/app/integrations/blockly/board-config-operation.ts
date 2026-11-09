@@ -2,6 +2,7 @@ import type { IMenuItem } from '../../configs/menu.config';
 import type { ElectronService } from '@core/platform/public-api';
 import type { BuilderService } from '@domain/build/public-api';
 import type { ProjectSaveReceipt, ProjectService } from '@domain/project/public-api';
+import type { ProjectSaveRequest } from '../../services/domains/project/project-save-receipts';
 import { describeBuildEnvironment } from './build-environment';
 
 function configOptions(menu: IMenuItem[]): IMenuItem[] {
@@ -102,6 +103,7 @@ export async function setBoardConfig(
   electronService: ElectronService,
   input: Record<string, unknown>,
   preprocess?: (project: string) => Promise<unknown>,
+  saveRequest?: ProjectSaveRequest,
 ): Promise<Record<string, unknown>> {
   const project = projectService.currentProjectPath;
   const board = projectService.currentBoardConfig;
@@ -146,17 +148,22 @@ export async function setBoardConfig(
   const changed = oldValue !== selection.data;
   const result = { ...base, old_value: oldValue ?? null, new_value: selection.data, changed };
   let persisted = false;
+  let publication: Record<string, unknown> | undefined;
 
   try {
-    packageJson.projectConfig = { ...packageJson.projectConfig, [configKey]: selection.data };
-    await projectService.setPackageJson(packageJson);
+    const nativeSelection = !projectService.isAilyCodeProject(project) && typeof projectService.applyBoardConfiguration === 'function';
+    if (nativeSelection) publication = await projectService.applyBoardConfiguration(selection, saveRequest);
+    else {
+      packageJson.projectConfig = { ...packageJson.projectConfig, [configKey]: selection.data };
+      await projectService.setPackageJson(packageJson);
+    }
     persisted = true;
 
     // A retry must also finish synchronization after a previous partial failure.
-    if (selection.extra?.refreshRuntimeBoardConfig) {
+    if (!nativeSelection && selection.extra?.refreshRuntimeBoardConfig) {
       await projectService.refreshRuntimeBoardConfig();
     }
-    if (selection.extra?.syncPinConfig) {
+    if (!nativeSelection && selection.extra?.syncPinConfig) {
       await projectService.syncBoardPinConfig(selection);
     }
 
@@ -184,6 +191,7 @@ export async function setBoardConfig(
     }
 
     return {
+      ...publication,
       ...result,
       ...customPartition,
       ok: true,

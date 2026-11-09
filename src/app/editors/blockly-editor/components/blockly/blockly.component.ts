@@ -103,6 +103,7 @@ import { CodeViewerIpcService } from '../../services/code-viewer-ipc.service';
 import { isBuildWorkspaceBusyError, writePreparedArduinoGeneratedArtifacts } from '../../services/generated-code-artifacts';
 import { _BuilderService } from '../../services/builder.service';
 import { AilyChatDemandSessionService } from '@integration/simulator/public-api';
+import { installPasteLibrariesManaged } from '../../services/paste-project-libraries';
 
 type BlocklyWorkspaceEvent = WorkspaceCodeEvent | null | undefined;
 
@@ -388,6 +389,56 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
 
   get pages() {
     return this.blocklyService.getPages();
+  }
+
+  private restorePasteLibraries(missingLibraries: MissingLibInfo[]): Promise<void> {
+    const libraries = missingLibraries.filter(library => library.name);
+    if (!libraries.length) return Promise.resolve();
+    const project = this.projectService.currentProjectPath, workspace = this.workspace;
+    if (!project || !workspace) return Promise.reject(new Error('No original paste workspace is available.'));
+    const session = this.projectService.getProjectDependencySession(project);
+    const current = this.projectService.captureCurrentProjectGuard();
+    const assertCurrent = () => {
+      session.signal.throwIfAborted();
+      this.projectService.assertProjectDependencySession(session);
+      if (!current() || this.destroy$.isStopped || this.workspace !== workspace || this.projectService.currentProjectPath !== project) {
+        throw new Error('The original paste project or workspace changed.');
+      }
+    };
+    assertCurrent();
+    return new Promise<void>((resolve, reject) => {
+      const modalRef = this.modal.create({ nzTitle: null, nzFooter: null, nzClosable: false,
+        nzBodyStyle: { padding: '0' }, nzContent: PasteInstallDialogComponent,
+        nzData: { missingLibs: libraries,
+          installFn: async (selected: MissingLibInfo[]) => {
+            assertCurrent();
+            const registry = this.configService.getNpmRegistryForProject(this.projectService.currentPackageData);
+            await installPasteLibrariesManaged({ project, libraries: selected, signal: session.signal, assertCurrent,
+              domain: this.projectService, host: window['libraryDependencies'],
+              storage: () => window['fs'].openProjectSyncStorage(project, assertCurrent),
+              options: { installLinks: false, ...(registry ? { '@aily-project:registry': registry } : {}) },
+              readLocalPackage: source => {
+                const file = this.electronService.pathJoin(source, 'package.json');
+                if (!this.electronService.exists(file)) throw new Error('The original clipboard library source is missing.');
+                return JSON.parse(this.electronService.readFile(file));
+              },
+              cancel: requestId => window['ipcRenderer'].invoke('library-dependencies', {
+                operation: 'cancelEnvironment', projectPath: project, request: { requestId } }),
+            });
+            assertCurrent();
+          } }, nzWidth: '450px' });
+      const stop = () => {
+        reject(session.signal.reason ?? new Error('The original paste was cancelled.'));
+        modalRef.destroy();
+      };
+      session.signal.addEventListener('abort', stop, { once: true });
+      modalRef.afterClose.subscribe((result: any) => {
+        session.signal.removeEventListener('abort', stop);
+        if (result?.result !== 'installed') { reject(new Error('cancelled')); return; }
+        try { assertCurrent(); resolve(); } catch (error) { reject(error); }
+      });
+      if (session.signal.aborted) stop();
+    });
   }
 
   get functionViewState() { return this.blocklyService.functionViewSubject.value; }
@@ -877,74 +928,7 @@ export class BlocklyComponent implements OnInit, AfterViewInit, OnDestroy {
         ),
       };
       // 注册跨实例粘贴时缺失库的安装回调
-      (window as any).__ailyBlockPasteNeedsInstall = (missingLibs: MissingLibInfo[]) => {
-        // Filter to only installable libs (those with a name)
-        const installableLibs = missingLibs.filter(l => l.name);
-        if (installableLibs.length === 0) {
-          // No installable libs info available, still resolve to attempt paste
-          return Promise.resolve();
-        }
-        return new Promise<void>((resolve, reject) => {
-          const modalRef = this.modal.create({
-            nzTitle: null,
-            nzFooter: null,
-            nzClosable: false,
-            nzBodyStyle: { padding: '0' },
-            nzContent: PasteInstallDialogComponent,
-            nzData: {
-              missingLibs: installableLibs,
-              installFn: async (libs: MissingLibInfo[]) => {
-                const projectPath = this.projectService.currentProjectPath;
-                if (!projectPath) throw new Error('No project path');
-                // Separate local libs from npm libs
-                const localLibs = libs.filter(l => l.localPath);
-                const npmLibs = libs.filter(l => !l.localPath);
-                // Handle local libs: copy source folder to current project then npm install from local path
-                for (const lib of localLibs) {
-                  // Extract the folder name from localPath (e.g. "lib-l298n" from "C:\...\lib-l298n")
-                  const folderName = lib.localPath!.split(/[/\\]/).pop()!;
-                  const destPath = this.electronService.pathJoin(projectPath, folderName);
-                  if (lib.localPath !== destPath) {
-                    if (this.electronService.exists(destPath)) {
-                      await this.crossPlatformCmdService.removeItem(destPath, true, true);
-                    }
-                    await this.crossPlatformCmdService.copyItem(lib.localPath!, destPath, true, true);
-                  }
-                  const { code, stderr } = await this.cmdService.runAsync(
-                    `npm install "${destPath}"`, projectPath
-                  );
-                  if (code !== 0) throw new Error(stderr || `Exit code: ${code}`);
-                }
-                // Handle npm libs: batch npm install
-                if (npmLibs.length > 0) {
-                  const pkgs = npmLibs.map(l => l.version ? `${l.name}@${l.version}` : l.name).join(' ');
-                  // 动态补装库时由项目 devmode 选择 Linux 或默认 Arduino npm 来源。
-                  const { code, stderr } = await this.cmdService.runAsync(
-                    this.configService.withProjectNpmRegistry(
-                      `npm install ${pkgs}`,
-                      this.projectService.currentPackageData,
-                    ),
-                    projectPath,
-                  );
-                  if (code !== 0) throw new Error(stderr || `Exit code: ${code}`);
-                }
-                // Load each newly installed library
-                for (const lib of libs) {
-                  await this.blocklyService.loadLibrary(lib.name, projectPath);
-                }
-              },
-            },
-            nzWidth: '450px',
-          });
-          modalRef.afterClose.subscribe((result: any) => {
-            if (result?.result === 'installed') {
-              resolve();
-            } else {
-              reject(new Error('cancelled'));
-            }
-          });
-        });
-      };
+      (window as any).__ailyBlockPasteNeedsInstall = (missingLibs: MissingLibInfo[]) => this.restorePasteLibraries(missingLibs);
 
       if (this.configData.blockly.minimap) {
         this.ngZone.runOutsideAngular(() => {

@@ -22,6 +22,22 @@ export class NoticeService {
     private logService: LogService
   ) { }
 
+  /** Restore live ownership after editor recreation or a temporary error.
+   * Completed/legacy notices are not replayed and active tasks keep priority. */
+  restoreOwnedPresentation(): boolean {
+    let next: [string, NoticeOptions] | undefined;
+    if (this.data?.state === 'doing') {
+      if (!this.owner || this.ownedNotices.get(this.owner) !== this.data) return false;
+      next = [this.owner, this.data];
+    } else {
+      next = [...this.ownedNotices.entries()].reverse().find(([, notice]) => notice.state === 'doing');
+    }
+    if (!next) return false;
+    this.owner = next[0];
+    this.publish(next[1], false);
+    return true;
+  }
+
   update(opts: NoticeOptions) {
     this.owner = undefined;
     this.publish(opts);
@@ -43,13 +59,13 @@ export class NoticeService {
     return true;
   }
 
-  private publish(opts: NoticeOptions): void {
+  private publish(opts: NoticeOptions, writeLog = true): void {
     this.data = opts;
     opts['showDetail'] = false;
     this.stateSubject.next(opts);
 
     const sendToLog = opts.sendToLog ?? true;
-    if (sendToLog && opts.detail) {
+    if (writeLog && sendToLog && opts.detail) {
       this.logService.update({
         title: opts.title,
         detail: opts.detail,
