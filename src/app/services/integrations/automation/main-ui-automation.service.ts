@@ -155,6 +155,28 @@ export class MainUiAutomationService {
     return (await this.readWindowState(this.routePath(config))).open === true;
   }
 
+  /** Called only through the internal Subapp port with a registry-owned grant.
+   * Reuse never enters the ordinary open/window or mount-registration paths. */
+  async focusChildAppPresentation(toolId: string, presentationId: string): Promise<Record<string, unknown>> {
+    try {
+      const config = getChildToolConfig(toolId);
+      if (!config?.runtime?.browserExecution || !this.browserPresentations) {
+        throw new Error('Agent Browser presentation focus is unavailable');
+      }
+      this.browserPresentations.requireReusableMount(toolId, presentationId);
+      const windowState = await this.readWindowState(this.routePath(config));
+      this.browserPresentations.requireReusableMount(toolId, presentationId);
+      if (windowState.open || this.ui.focusToolPresentation?.(toolId, presentationId) !== true) {
+        throw new Error('The original Agent Browser View is no longer mounted');
+      }
+      this.browserPresentations.requireReusableMount(toolId, presentationId);
+      return { ok: true, toolId, action: 'focus', mode: 'embedded' };
+    } catch (error) {
+      return { ok: false, toolId, errorCode: 'SUBAPP_OWNER_PRESENTATION_UNAVAILABLE',
+        error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async waitForChildAppHostReady(
     toolIdValue: string,
     timeoutMs?: number,

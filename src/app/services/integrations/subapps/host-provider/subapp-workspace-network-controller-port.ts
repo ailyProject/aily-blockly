@@ -3,12 +3,13 @@ type RecordValue = Record<string, unknown>;
 /** Thin cancellation/lifetime adapter for one original workspace IPC binding.
  * Actual simulation-owner authority, endpoint policy, grants and network work
  * remain in Main and the shared backend. No Scope or URL is manufactured here. */
-export function createWorkspaceNetworkControllerPort(options: {
+export function createWorkspaceConnectivityControllerPort(options: {
   invoke(input: RecordValue): Promise<RecordValue>;
   requireCurrentBinding(cleanup: boolean): void;
   observeDispatch?(request: RecordValue): void;
   observeResult?(request: RecordValue, result: RecordValue): void;
   beforeResult?(): Promise<void>;
+  isCleanupRequest?(request: RecordValue): boolean;
 }): { request(request: RecordValue, signal: AbortSignal): Promise<RecordValue>; close(): Promise<void> } {
   let closed = false, closing: Promise<void> | null = null;
   // A request is the only operation that can acquire an original Main
@@ -23,13 +24,15 @@ export function createWorkspaceNetworkControllerPort(options: {
   };
   return {
     async request(request, signal) {
-      options.requireCurrentBinding(false);
-      if (closed || signal.aborted) throw new Error('Network Provider binding is retired or cancelled.');
+      const cleanup = options.isCleanupRequest?.(request) === true;
+      options.requireCurrentBinding(cleanup);
+      if ((!cleanup && closed) || signal.aborted) throw new Error('Network Provider binding is retired or cancelled.');
       const id = request['requestId'];
       if (typeof id !== 'string' || id.length < 1 || id.length > 128 || pending.has(id) || pending.size >= 16) throw new Error('Network Provider request identity/capacity is unavailable.');
       let complete!: () => void, cancellation: Promise<void> | null = null, dispatched = false;
       const done = new Promise<void>(resolve => { complete = resolve; });
       const cancel = () => {
+        if (cleanup) return Promise.resolve();
         if (!dispatched) return Promise.resolve();
         return cancellation ??= invoke({ action: 'cancel', requestId: id }, true).then(result => {
           if (result['ok'] !== true || result['completionConfirmed'] !== false) throw new Error('Network cancellation delivery is unconfirmed.');
@@ -46,7 +49,7 @@ export function createWorkspaceNetworkControllerPort(options: {
         requestDispatched = true;
         // Reserve destructive-cleanup ordering before actual Main dispatch.
         // A stale selected identity cannot cancel a later pending chooser.
-        const work = invoke({ action: 'request', request }, false, () => options.observeDispatch?.(request));
+        const work = invoke({ action: 'request', request }, cleanup, () => options.observeDispatch?.(request));
         if (signal.aborted) aborted();
         const result = await work;
         // Retain a genuine successful selection before cancellation can refuse
@@ -55,8 +58,8 @@ export function createWorkspaceNetworkControllerPort(options: {
         if (signal.aborted) await cancel();
         if (cancellation) await cancellation;
         await options.beforeResult?.();
-        options.requireCurrentBinding(false);
-        if (closed || signal.aborted) throw new Error('Network Provider result arrived after cancellation.');
+        options.requireCurrentBinding(cleanup);
+        if (!cleanup && (closed || signal.aborted)) throw new Error('Network Provider result arrived after cancellation.');
         return result;
       } finally { signal.removeEventListener('abort', aborted); pending.delete(id); complete(); }
     },
@@ -80,3 +83,6 @@ export function createWorkspaceNetworkControllerPort(options: {
     },
   };
 }
+
+/** Existing Network callers retain their source API over the shared adapter. */
+export const createWorkspaceNetworkControllerPort = createWorkspaceConnectivityControllerPort;

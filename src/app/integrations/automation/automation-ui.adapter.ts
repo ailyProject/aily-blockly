@@ -21,6 +21,10 @@ export class AutomationUiAdapter implements AutomationUiPort {
     return presentationId ? this.uiService.openToolEmbedded(toolId, presentationId) : this.uiService.openToolEmbedded(toolId);
   }
 
+  focusToolPresentation(toolId: string, presentationId: string): boolean {
+    return this.uiService.focusToolPresentation(toolId, presentationId);
+  }
+
   openToolWindow(toolId: string, options?: Omit<AutomationWindowOptions, 'path'>): boolean {
     return this.uiService.openToolWindow(toolId, options);
   }

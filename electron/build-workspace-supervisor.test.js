@@ -269,15 +269,21 @@ test('registered cancellation stops the owner and descendant before releasing it
     console.log(JSON.stringify({owner:process.pid,descendant:child.pid}));setInterval(()=>{},1000);`;
   const started = manager.executeCommand({ command: process.execPath,
     args: ['-e', script, path.resolve(__dirname, '../child/scripts/build-workspace-lease.js'), root],
-    streamId, shellProfile: false, buildWorkspace: root });
+    streamId, shellProfile: false, buildWorkspace: root, buildDeliveryRequest: 'original-transaction' });
   const closed = once(started.process, 'close');
   const [line] = await once(started.process.stdout, 'data');
   const pids = JSON.parse(String(line));
+  for (const name of ['aily-artifact-manifest.json', 'aily-build-delivery.json', 'aily-library-projections.json']) {
+    fs.writeFileSync(path.join(root, '.build', name), JSON.stringify({ partialFromOriginalCompiler: true }));
+  }
   assert.ok(fs.existsSync(path.join(root, '.build/aily-workspace.lock')));
   assert.equal(await manager.killProcess(streamId), true);
   await closed;
   for (const pid of Object.values(pids)) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   assert.equal(fs.existsSync(path.join(root, '.build/aily-workspace.lock')), false);
+  for (const name of ['aily-artifact-manifest.json', 'aily-build-delivery.json', 'aily-library-projections.json']) {
+    assert.equal(fs.existsSync(path.join(root, '.build', name)), false, 'Only confirmed original compiler cancellation revokes its delivery outputs.');
+  }
   acquireBuildWorkspace(root, 'compile').release();
 });
 

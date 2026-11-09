@@ -14,6 +14,10 @@ export class SubappAutomationAdapter implements SubappAutomationPort {
     return this.mainUiAutomation.openChildApp(params);
   }
 
+  focusChildAppPresentation(toolId: string, presentationId: string): Promise<Record<string, unknown>> {
+    return this.mainUiAutomation.focusChildAppPresentation(toolId, presentationId);
+  }
+
   waitForChildAppHostReady(toolId: string): Promise<Record<string, unknown>> {
     return this.mainUiAutomation.waitForChildAppHostReady(toolId);
   }

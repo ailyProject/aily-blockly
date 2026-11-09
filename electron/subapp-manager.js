@@ -865,6 +865,10 @@ function readInstalledState(rootDir, entry) {
           AILY_SUBAPP_PACKAGE_PATH: runnablePackagePath,
           AILY_SUBAPP_VERSION: installedVersion || '',
           AILY_SUBAPP_SOURCE: selected.source || (development ? 'development' : 'legacy-npm'),
+          ...(entry.id === 'aily-simulator' && entry.package === '@aily-project/aily-simulator'
+              && process.env.AILY_PRIVATE_NODE_LOCAL_GATT_DIAGNOSTIC_V1 === '1'
+            ? { AILY_PRIVATE_NODE_LOCAL_GATT_DIAGNOSTIC_V1: '1' }
+            : {}),
           ...(subappBinRouter.isStableRouterReady(rootDir)
             ? { AILY_SUBAPP_BIN_ROUTER: subappBinRouter.stableRouterPath(rootDir) }
             : {}),
@@ -2951,6 +2955,41 @@ function createSubappManager(options = {}) {
     }
   }
 
+  /** Trusted Main compositions only. One selection owns the original global
+   * install lock for the whole set, rather than recursively taking that lock.
+   * This read-only admission keeps the same currently installed versions;
+   * prepared updates remain deferred until all composed resources retire. */
+  async function prepareLaunchSet(payload = {}) {
+    if (!isObject(payload) || Object.keys(payload).sort().join(',') !== 'deferPreparedUpdate,ids'
+      || payload.deferPreparedUpdate !== true || !Array.isArray(payload.ids)
+      || payload.ids.length < 1 || payload.ids.length > 8) throw new Error('Invalid Main package selection set');
+    const ids = payload.ids.map(id => validateId(id));
+    if (new Set(ids).size !== ids.length) throw new Error('Duplicate Main package selection');
+    const { index } = await loadIndex('cache-first');
+    const entries = ids.map(id => {
+      const entry = index[id];
+      if (!entry) throw new Error('Subapp is not present in the catalog');
+      return entry;
+    });
+    const release = await waitForUpdateLock(path.join(rootDir, 'store', '.locks'));
+    try {
+      const launches = entries.map(entry => {
+        const installed = readInstalledState(rootDir, entry);
+        if (!installed.installed) throw new Error(`Subapp is not installed: ${entry.id}`);
+        assertPackagePlatform(readJson(path.join(installed.packagePath, 'package.json')), options);
+        return Object.freeze({ id: entry.id, config: installed.config });
+      });
+      return Object.freeze({ launches: Object.freeze(launches), release });
+    } catch (error) {
+      try { release(); }
+      catch (cleanupError) {
+        throw Object.assign(new AggregateError([error, cleanupError], 'Main package selection cleanup remains owned'),
+          { retainedPreparedLaunchSet: Object.freeze({ release }) });
+      }
+      throw error;
+    }
+  }
+
   async function mutate(action, payload = {}) {
     const requestedId = validateId(payload.id);
     if (action !== 'uninstall') assertNotUninstalling(requestedId);
@@ -3118,6 +3157,7 @@ function createSubappManager(options = {}) {
     update: (payload) => mutate('update', payload),
     downloadUpdate,
     prepareLaunch,
+    prepareLaunchSet,
     installUpdate: (payload) => mutate('install-update', payload),
     uninstall: (payload) => mutate('uninstall', payload),
   };
@@ -3215,6 +3255,20 @@ function registerSubappManagerHandlers(getMainWindow = () => null, handlerOption
         requireController: registry.networkRequireController,
         installHost: registry.installNetworkHost,
         resolveOriginalOwnerNetworkControl: registry.resolveOriginalOwnerNetworkControl,
+      });
+    }
+    if (registry.networkRequireController && registry.installGattHost) {
+      const { dialog, MessageChannelMain } = require('electron');
+      require('./subapp-gatt-main-ipc').registerMainGattHostHandlers({
+        ipcMain, dialog, MessageChannelMain, getMainWindow,
+        // No renderer-selected package list: this private GATT composition
+        // always owns the same two normal installed selections under one lock.
+        prepareLaunch: () => defaultManager.prepareLaunchSet({
+          ids: ['aily-simulator', 'ble-debugger'], deferPreparedUpdate: true,
+        }),
+        requireController: registry.networkRequireController,
+        installHost: registry.installGattHost,
+        resolveOriginalOwnerBluetoothControl: registry.resolveOriginalOwnerBluetoothControl,
       });
     }
   }

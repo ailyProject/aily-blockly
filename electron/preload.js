@@ -481,6 +481,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   childToolSession: {
     localSerial: (payload) => ipcRenderer.invoke('subapp-local-serial', payload),
     localNetwork: (payload) => ipcRenderer.invoke('subapp-local-network', payload),
+    localGatt: (payload) => ipcRenderer.invoke('subapp-local-gatt', payload),
+    onGattLifetimeEnded: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('subapp-local-gatt-lifetime-ended', listener);
+      return () => ipcRenderer.removeListener('subapp-local-gatt-lifetime-ended', listener);
+    },
     onNetworkBindingState: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on('subapp-local-network-binding-state', listener);

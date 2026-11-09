@@ -93,6 +93,9 @@
     },
     "mac": {
       "icon": "public/icon-512.ico",
+      "extendInfo": {
+        "NSBluetoothAlwaysUsageDescription": "连接您为当前仿真会话选择的蓝牙设备，用于读取、写入及接收通知；仅在您请求扫描或连接时使用蓝牙。"
+      },
       "artifactName": "aily-blockly-macos-${version}-${arch}.${ext}",
       "fileAssociations": [
         {

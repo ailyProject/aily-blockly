@@ -71,6 +71,10 @@ export class SubappWorkspaceHostProviderService implements OnDestroy {
       if (this.controller !== controller || this.stopping) return;
       void controller.networkLifetimeEnded(event).catch(() => console.warn('[SubappHostProvider] network binding cleanup remains unconfirmed'));
     }));
+    if (api.onGattLifetimeEnded) this.removeListeners.push(api.onGattLifetimeEnded((event: Parameters<typeof controller.gattLifetimeEnded>[0]) => {
+      if (this.controller !== controller || this.stopping) return;
+      controller.gattLifetimeEnded(event);
+    }));
     this.removeListeners.push(api.onStateChanged((runtimes: WorkspaceProviderRuntime[]) => {
       if (this.controller !== controller || this.stopping) return;
       this.discoveryRevision++;

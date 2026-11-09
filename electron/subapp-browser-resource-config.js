@@ -75,8 +75,11 @@ function createConfiguredBrowserExecutionHost({ configurationFilePath, allowLoop
         return [identityKey(name, version), release];
     }));
     const host = new SubappBrowserExecutionHost(hostOptions), createLocalServer = host.createServer;
+    // Main-only lookup of the already selected frozen configuration, never IPC.
+    Object.defineProperty(host, 'configuredReleaseForSource', { value: source =>
+        releases.get(identityKey(source?.packageName, source?.version)) || null });
     host.createServer = (entry, source) => {
-        const release = releases.get(identityKey(source?.packageName, source?.version));
+        const release = host.configuredReleaseForSource(source);
         return release ? createTrustedBrowserResourceServer({ ...release, source, allowLoopbackHttp,
             timeoutMs: host.timeoutMs }) : createLocalServer(entry, source);
     };

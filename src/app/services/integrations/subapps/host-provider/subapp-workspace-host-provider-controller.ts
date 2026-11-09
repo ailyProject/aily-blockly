@@ -7,6 +7,7 @@ import type {
 
 import type { SubappHostProviderRecord } from './subapp-host-provider-dispatcher';
 import { createWorkspaceNetworkControllerPort } from './subapp-workspace-network-controller-port';
+import { createWorkspaceGattControllerPort } from './subapp-workspace-gatt-controller-port';
 
 export interface WorkspaceProviderRuntime {
   toolId: string;
@@ -19,6 +20,7 @@ export interface WorkspaceProviderRuntime {
 export interface WorkspaceProviderControllerPort {
   localSerial?(input: { toolId: string; streamId: string; bindingId: string; command: SubappHostProviderRecord }): Promise<SubappHostProviderRecord>;
   localNetwork?(input: SubappHostProviderRecord): Promise<SubappHostProviderRecord>;
+  localGatt?(input: SubappHostProviderRecord): Promise<SubappHostProviderRecord>;
   bindMessageController(input: { toolId: string; streamId: string; bindingId: string }): Promise<{
     success: boolean;
     negotiationRequest?: SubappHostProviderRecord | null;
@@ -46,6 +48,7 @@ interface Binding {
 
   networkHostInstanceId: string | null;
   networkLifecycle: ReturnType<typeof createWorkspaceNetworkLifecycle> | null;
+  gattPort: ReturnType<typeof createWorkspaceGattControllerPort> | null;
   listener: ((message: SubappHostProviderRecord) => void) | null;
 }
 
@@ -121,6 +124,12 @@ export class SubappWorkspaceHostProviderController {
     return this.tail;
   }
 
+  gattLifetimeEnded(event: { toolId: string; streamId: string; bindingId: string; producerId: string }): void {
+    const binding = this.bindings.get(event.toolId);
+    if (!binding || binding.runtime.streamId !== event.streamId || binding.bindingId !== event.bindingId) return;
+    binding.gattPort?.observeRetired(event.producerId);
+  }
+
   snapshot(): readonly { toolId: string; streamId: string; scope: string | null; ready: boolean }[] {
     return [...this.bindings.values()].map(binding => ({
       toolId: binding.runtime.toolId, streamId: binding.runtime.streamId,
@@ -161,7 +170,7 @@ export class SubappWorkspaceHostProviderController {
       let initialized!: () => void;
       const binding: Binding = {
         runtime, scope: this.scope, bindingId: `${this.options.instanceId}:${++this.sequence}`,
-        pending: [], overflowed: false, closing: false, sessionClosed: false, cleanup: null, session: null, networkHostInstanceId: null, networkLifecycle: null, listener: null,
+        pending: [], overflowed: false, closing: false, sessionClosed: false, cleanup: null, session: null, networkHostInstanceId: null, networkLifecycle: null, gattPort: null, listener: null,
         initialized: new Promise<void>(resolve => { initialized = resolve; }),
       };
 
@@ -190,6 +199,15 @@ export class SubappWorkspaceHostProviderController {
           observeResult: (request, result) => binding.networkLifecycle?.observeExchange(request, result),
           beforeResult: () => binding.networkLifecycle?.flush() ?? Promise.resolve(),
         }) : null;
+        const gattPort = this.options.port.localGatt ? createWorkspaceGattControllerPort({
+          requireCurrentBinding: cleanup => {
+            if (this.bindings.get(runtime.toolId) !== binding || (!cleanup && !this.matches(binding)))
+              throw new Error('GATT Provider controller binding is retired.');
+          },
+          invoke: input => this.options.port.localGatt!({ ...input, toolId: runtime.toolId,
+            streamId: runtime.streamId, bindingId: binding.bindingId }),
+        }) : null;
+        binding.gattPort = gattPort;
         const bindNetworkHostInstanceId = (hostInstanceId: string): void => {
           if (!networkPort || !this.matches(binding) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(hostInstanceId)
             || binding.networkHostInstanceId && binding.networkHostInstanceId !== hostInstanceId)
@@ -210,6 +228,7 @@ export class SubappWorkspaceHostProviderController {
               bindingId: binding.bindingId, command });
           } } : {}),
           ...(networkPort ? { localNetwork: { ...networkPort, bindHostInstanceId: bindNetworkHostInstanceId } } : {}),
+          ...(gattPort ? { localGatt: gattPort } : {}),
           transport: {
             onMessage: listener => {
               binding.listener = listener;

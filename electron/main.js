@@ -791,6 +791,7 @@ const { registerMCPHandlers } = require("./mcp");
 const { withAuthCredentialsLock, beginAuthCredentialsShutdown, releaseAllAuthCredentialsLocks } = require('./auth-credentials-lock');
 const { registerAppDataResourceCleanupHandlers } = require('./appdata-resource-cleanup');
 const { createBuildDeliveryAuthority } = require('./build-delivery-authority');
+const { captureSimulatorCompilationBinding } = require('./simulator-compilation-profile');
 let buildDeliveryAuthority;
 let simulatorDebugPreviewRegistered = false;
 // debug模块
@@ -2676,6 +2677,7 @@ function createWindow() {
       childRoot: deliveryChildRoot,
       getOwner: () => isCurrentRendererGenerationReady() ? { sender: mainWindow.webContents, generation: rendererGeneration } : null,
       querySource: projectPath => requestMainWindow('build-source-query', 'build-source-query:response', { projectPath }, 5000),
+      captureCompilationBinding: sender => captureSimulatorCompilationBinding(browserExecutionRegistry, sender),
     });
     ipcMain.handle('build-delivery-query', (event, request) => {
       if (!isCurrentMainRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Build delivery query requires the current main frame.');

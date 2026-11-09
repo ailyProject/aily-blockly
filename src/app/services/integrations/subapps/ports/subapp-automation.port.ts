@@ -4,6 +4,8 @@ import { InjectionToken } from '@angular/core';
 export interface SubappAutomationPort {
   isChildAppWindowOpen(toolId: string): Promise<boolean>;
   openChildApp(params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** In-process only: focus an existing View with its original trusted grant. */
+  focusChildAppPresentation(toolId: string, presentationId: string): Promise<Record<string, unknown>>;
   waitForChildAppHostReady(toolId: string): Promise<Record<string, unknown>>;
 }
 

@@ -19,6 +19,7 @@ export interface AutomationUiPort {
   readonly openToolList: string[];
   readonly topTool: string | null;
   openToolEmbedded(toolId: string, presentationId?: string): boolean;
+  focusToolPresentation?(toolId: string, presentationId: string): boolean;
   completeToolPresentationClose?(toolId: string, presentationId: string): void;
   openToolWindow(toolId: string, options?: Omit<AutomationWindowOptions, 'path'>): boolean;
   openWindow(options: AutomationWindowOptions): void;

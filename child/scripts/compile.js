@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const ailyCodeProject = require('./aily-code-project');
 const { runCompilePreprocess } = require('./compile-preprocess');
 const { readBuilderCapabilities } = require('./builder-capabilities');
+const { authorizeSimulationTransportProfile } = require('./simulation-transport-profile');
 const { readLibraryProjections } = require('./library-source-evidence');
 const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, publishBuildDelivery, reportBuildDelivery } = require('./compile-delivery');
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
@@ -283,6 +284,12 @@ async function main() {
         const simulatorDebugRequested = simulatorArtifactRequested || config.simulationDebug === true;
         const capabilities = readBuilderCapabilities(builderCommand);
         const recordBuildInputs = projectSnapshot !== null || config.recordBuildInputs === true;
+        const simulationTransport = await authorizeSimulationTransportProfile(config, preprocessCachePath, boardType);
+
+        if (simulationTransport && (!recordBuildInputs || !capabilities.artifact || !capabilities.debug
+            || capabilities.simulationTransportProfile !== simulationTransport.profile)) {
+            throw new Error('Current Builder does not support the host-authorized simulation compilation profile; upgrade it before simulating.');
+        }
 
         if (recordBuildInputs && (!capabilities.artifact || !capabilities.inputs || !capabilities.workspace)) {
             throw new Error('Current Builder cannot record build-graph facts with workspace ownership; upgrade it before requesting project delivery.');
@@ -361,6 +368,7 @@ async function main() {
         }
 
         if (recordBuildInputs) args.push('--record-build-inputs');
+        if (simulationTransport) args.push('--simulation-transport-profile', simulationTransport.profile);
         if (projectSnapshot) args.push('--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
 
         if (!projectSnapshot && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
@@ -390,6 +398,7 @@ async function main() {
             workspace.assertOwned(); workspace.assertBuilderIdle();
             confirmBuildSource(config);
             confirmPreparedBuildSource(config, preparedSnapshot);
+            simulationTransport?.assertCurrent();
 
             if (projectSnapshot) confirmProjectSources(projectSnapshot, config);
         });
@@ -407,6 +416,7 @@ async function main() {
             else {
                 confirmBuildSource(config);
                 confirmPreparedBuildSource(config, preparedSnapshot);
+                if (simulationTransport) await simulationTransport.confirm();
 
                 if (projectSnapshot) {
                     const receipt = publishBuildDelivery(config, projectSnapshot, compileSourcePath, boardType, librarySnapshot, workspace.buildId);

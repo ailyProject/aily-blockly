@@ -21,6 +21,13 @@ export interface SubappHostProviderProductOpenContext {
     request(request: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>>;
     close(): Promise<void>;
   };
+  /** Original Main GATT binding; peers and Core scope are selected by Main. */
+  readonly localGatt?: {
+    bindingState(signal: AbortSignal): Promise<Record<string, unknown>>;
+    request(producerId: string, request: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>>;
+    closeProducer(producerId: string): Promise<void>;
+    close(): Promise<void>;
+  };
   readonly transport: SubappHostProviderTransport;
 }
 

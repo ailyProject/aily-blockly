@@ -15,6 +15,7 @@ const loaded = esbuild.build({
     "export { SubappBrowserPresentationService, SUBAPP_BROWSER_PRESENTATION } from './src/app/services/integrations/subapps/subapp-browser-presentation.service.ts';",
     "export { MainUiAutomationService } from './src/app/services/integrations/automation/main-ui-automation.service.ts';",
     "export { AutomationUiAdapter } from './src/app/integrations/automation/automation-ui.adapter.ts';",
+    "export { SubappAutomationAdapter } from './src/app/integrations/subapps/subapp-automation.adapter.ts';",
     "export { replaceChildToolConfigs, getChildToolConfig } from './src/app/configs/tool.config.ts';",
   ].join('\n'), resolveDir: path.resolve(__dirname, '..'), loader: 'ts' },
   bundle: true, platform: 'node', format: 'cjs', write: false,
@@ -30,7 +31,7 @@ const loaded = esbuild.build({
       angular: 'export const Injectable = () => target => target; export const Inject = () => () => {}; export const Optional = () => () => {}; export class InjectionToken {}',
       translate: 'export class TranslateService {}', registry: 'export class ChildAppHostRegistryService {}',
       automation: 'export class UiAutomationRegistryService {}', process: 'export class ChildToolProcessService {}',
-      ui: 'export class UiService {}', 'automation-types': '',
+      ui: 'export class UiService {}', 'automation-types': `export { MainUiAutomationService } from ${JSON.stringify(path.resolve(__dirname, '../src/app/services/integrations/automation/main-ui-automation.service.ts'))};`,
     }[args.path], loader: 'js' }));
   } }],
 }).then(result => { const module = { exports: {} };
@@ -65,12 +66,13 @@ function actualUiService(getChildToolConfig, childHosts) {
 
 async function fixture(t, options = {}) {
   const { SubappAgentBridgeService, SubappBrowserSurfaceService, SubappBrowserPresentationService,
-    SUBAPP_BROWSER_PRESENTATION, replaceChildToolConfigs, getChildToolConfig, MainUiAutomationService, AutomationUiAdapter } = await loaded;
-  replaceChildToolConfigs([{ id: 'fixture', titleKey: 'Fixture', runtime: { browserExecution: { protocol: 'aily-browser-execution-v1' } },
+    SUBAPP_BROWSER_PRESENTATION, replaceChildToolConfigs, getChildToolConfig, MainUiAutomationService, AutomationUiAdapter, SubappAutomationAdapter } = await loaded;
+  replaceChildToolConfigs([{ id: 'fixture', titleKey: 'Fixture', runtime: options.native ? {} : { browserExecution: { protocol: 'aily-browser-execution-v1' } },
     ui: { surfaces: { full: { entry: 'ui/full.html' } } },
     agent: { protocolVersion: 1, transport: 'aily-child-rpc', lifecycle: {
       ownerRelease: { method: 'fixture.owner.release' }, sessionRelease: { method: 'fixture.session.release' },
-    }, tools: [{ name: 'fixture_tool', rpc: { method: 'fixture.work' } }] } }]);
+    }, tools: [{ name: 'fixture_tool', rpc: { method: 'fixture.work' },
+      ...(options.presentation ? { presentation: options.presentation } : {}) }] } }]);
   const calls = [], handles = [], registry = new SubappBrowserPresentationService();
   const previousWindow = global.window, previousWebSocket = global.WebSocket;
   class Socket extends EventTarget {
@@ -115,17 +117,28 @@ async function fixture(t, options = {}) {
       })().catch(error => mountErrors.push(error));
     });
     mainAutomation = new MainUiAutomationService({}, hosts, new AutomationUiAdapter(ui), { instant: value => value }, registry);
-    mainAutomation.readWindowState = async () => ({ open: false });
+    mainAutomation.readWindowState = async () => { await options.readWindowState?.(); return { open: false }; };
   }
-  const automation = { async openChildApp(input) {
+  const automation = {
+    async isChildAppWindowOpen() { calls.push({ kind: 'automation', action: 'window-state' }); return false; },
+    async waitForChildAppHostReady() { calls.push({ kind: 'automation', action: 'legacy-host-ready' }); return { ok: true }; },
+    async openChildApp(input) {
     calls.push({ kind: 'automation', action: 'open', input });
     await options.beforeOpen?.();
+    if (options.native) return { ok: true };
     if (mainAutomation) return mainAutomation.openChildApp(input);
+    if (input[SUBAPP_BROWSER_PRESENTATION]) registry.registerMount('fixture', input[SUBAPP_BROWSER_PRESENTATION], () => undefined);
     const handle = surfaces.open('fixture', geometry, input[SUBAPP_BROWSER_PRESENTATION]); handles.push(handle);
     await handle.ready; return { ok: true };
+  }, async focusChildAppPresentation(toolId, presentationId) {
+    calls.push({ kind: 'automation', action: 'focus-owned', toolId, presentationId });
+    if (mainAutomation) return mainAutomation.focusChildAppPresentation(toolId, presentationId);
+    registry.requireReusableMount(toolId, presentationId); return { ok: true };
   } };
   const activity = { releaseSession() {}, recordRuntimeState() {}, recordInvocationStarted() {}, recordInvocationCompleted() {} };
-  const bridge = new SubappAgentBridgeService(processes, automation, activity, null, 'native', {}, {}, registry);
+  // Match app.config's production SUBAPP_AUTOMATION_PORT provider. Every
+  // presentation test crosses this adapter, including the actual Main UI path.
+  const bridge = new SubappAgentBridgeService(processes, new SubappAutomationAdapter(automation), activity, null, 'native', {}, {}, registry);
   t.after(async () => {
     for (const handle of handles) await handle.close().catch(() => undefined);
     for (const owner of [...bridge.ownerLeases.leases.values()]) await bridge.ownerLeases.release(owner.ownerLeaseId).catch(() => undefined);
@@ -134,7 +147,7 @@ async function fixture(t, options = {}) {
   });
   return { bridge, surfaces, registry, handles, calls, ui, mountErrors,
     acquire: sessionId => bridge.manageOwnerLease({ action: 'acquire', sessionId }),
-    execute: lease => bridge.execute({ toolId: 'fixture', tool: 'fixture_tool' }, undefined,
+    execute: (lease, params = {}) => bridge.execute({ toolId: 'fixture', tool: 'fixture_tool', params }, undefined,
       { sessionId: lease.sessionId, ownerLeaseId: lease.ownerLeaseId, toolCallId: crypto.randomUUID() }),
     present: lease => bridge.manageOwnerLease({ action: 'present', toolId: 'fixture', ...lease }),
     release: lease => bridge.manageOwnerLease({ action: 'release', ...lease }),
@@ -156,6 +169,199 @@ test('same-owner Agent presentation borrows the original binding; closing the Vi
   assert.equal(h.bridge.channels.get('fixture').sessionIds.has(lease.ownerLeaseId), true);
   assert.equal((await h.execute(lease)).ok, true);
   assert.equal((await h.release(lease)).ok, true);
+});
+
+const automaticFullPresentation = { mode: 'window', surface: 'full', autoOpen: 'always' };
+
+test('a Browser execution auto-open uses the trusted same-owner full View before its domain RPC', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation }), lease = await h.acquire('chat-auto');
+  const result = await h.execute(lease);
+  assert.equal(result.ok, true); assert.equal(result.presentation.mode, 'embedded');
+  assert.equal(result.presentation.ownerSessionId, lease.ownerLeaseId);
+  const opened = h.calls.find(value => value.kind === 'automation' && value.action === 'open');
+  assert.equal(opened.input.mode, 'embedded'); assert.equal(Object.getOwnPropertySymbols(opened.input).length, 1);
+  assert.equal(h.calls.some(value => value.action === 'window-state' || value.action === 'legacy-host-ready'), false);
+  const viewIndex = h.calls.findIndex(value => value.action === 'openView');
+  const rpcIndex = h.calls.findIndex(value => value.kind === 'rpc' && value.method === 'fixture.work');
+  assert.ok(viewIndex >= 0 && rpcIndex > viewIndex);
+  assert.equal(h.handles[0].ownerSessionId, lease.ownerLeaseId);
+  assert.ok(h.calls.filter(value => value.kind === 'browser').every(value => value.ownerSessionId === lease.ownerLeaseId));
+  const rpc = h.calls[rpcIndex]; assert.equal(rpc.context.sessionId, lease.ownerLeaseId);
+  assert.deepEqual(rpc.context.browserExecution, { endpoint: { kind: 'browser-message-port', runtimeId }, connectionId });
+});
+
+test('a Browser declaration requires the verified Agent lease before any runtime or UI acquisition', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation });
+  const result = await h.bridge.execute({ toolId: 'fixture', tool: 'fixture_tool' }, undefined, { sessionId: 'chat-without-lease' });
+  assert.equal(result.errorCode, 'SUBAPP_SESSION_REQUIRED'); assert.equal(h.calls.length, 0);
+});
+
+test('foreign and expired Agent leases cannot auto-open a Browser execution View', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation }), lease = await h.acquire('chat-auto');
+  assert.equal((await h.execute({ ...lease, sessionId: 'foreign-chat' })).errorCode, 'SUBAPP_OWNER_MISMATCH');
+  h.bridge.ownerLeases.leases.get(lease.ownerLeaseId).expiresAt = 0;
+  assert.equal((await h.execute(lease)).errorCode, 'SUBAPP_OWNER_EXPIRED'); assert.equal(h.calls.length, 0);
+});
+
+test('explicit presentation suppression still runs the original Browser execution RPC without opening a View', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation }), lease = await h.acquire('chat-auto');
+  const result = await h.execute(lease, { presentUi: 'none' }); assert.equal(result.ok, true);
+  assert.equal(h.handles.length, 0); assert.equal(h.calls.some(value => value.kind === 'automation'), false);
+  const rpc = h.calls.find(value => value.kind === 'rpc' && value.method === 'fixture.work');
+  assert.equal(rpc.params.presentUi, undefined); assert.equal(rpc.context.sessionId, lease.ownerLeaseId);
+});
+
+test('a failed full View acknowledgement prevents the Browser domain RPC and retains its original owner', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation,
+    browser: input => { if (input.action === 'openView') throw Error('full View allocation refused'); } });
+  const lease = await h.acquire('chat-auto'), result = await h.execute(lease);
+  assert.equal(result.ok, false); assert.match(result.error, /full View allocation refused/);
+  assert.equal(h.calls.some(value => value.kind === 'rpc' && value.method === 'fixture.work'), false);
+  assert.equal(h.registry.active.size, 0); assert.equal(h.surfaces.surfaces.size, 0);
+  assert.equal(h.bridge.channels.get('fixture').sessionIds.has(lease.ownerLeaseId), true);
+  assert.equal((await h.release(lease)).ok, true);
+});
+
+test('revocation during auto-open joins the actual late View allocation and never starts the domain RPC', async t => {
+  const entered = deferred(), resume = deferred();
+  const h = await fixture(t, { presentation: automaticFullPresentation,
+    browser: async input => { if (input.action === 'openView') { entered.resolve(); await resume.promise; } } });
+  const lease = await h.acquire('chat-auto'), opening = h.execute(lease); await entered.promise;
+  const releasing = h.release(lease); resume.resolve();
+  assert.equal((await opening).ok, false); assert.equal((await releasing).ok, true);
+  assert.equal(h.calls.some(value => value.kind === 'rpc' && value.method === 'fixture.work'), false);
+  assert.equal(h.calls.filter(value => value.action === 'closeView').length, 1);
+  assert.equal(h.registry.active.size, 0); assert.equal(h.surfaces.surfaces.size, 0);
+});
+
+test('ordinary native tools keep their existing automatic window and host readiness route', async t => {
+  const h = await fixture(t, { native: true, presentation: automaticFullPresentation }), lease = await h.acquire('chat-native');
+  const result = await h.execute(lease); assert.equal(result.ok, true);
+  const opened = h.calls.find(value => value.kind === 'automation' && value.action === 'open');
+  assert.deepEqual(opened.input, { toolId: 'fixture', mode: 'window' });
+  assert.equal(h.calls.some(value => value.action === 'legacy-host-ready'), true);
+  assert.equal(h.calls.some(value => value.kind === 'browser'), false);
+});
+
+test('repeated automatic open focuses the same acknowledged Owner View without opening or mounting again', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true }), lease = await h.acquire('chat-repeat');
+  const first = await h.execute(lease), grant = h.ui.toolPresentationIds.fixture, handle = h.handles[0];
+  h.ui.openToolList.unshift('other'); h.ui.openToolList.push('other-top');
+  const second = await h.execute(lease), third = await h.execute(lease);
+  assert.equal(second.ok, true, JSON.stringify(second)); assert.equal(third.ok, true, JSON.stringify(third));
+  assert.deepEqual(second.presentation, first.presentation); assert.deepEqual(third.presentation, first.presentation);
+  assert.equal(h.ui.topTool, 'fixture'); assert.equal(h.ui.toolPresentationIds.fixture, grant);
+  assert.equal(h.handles.length, 1); assert.equal(h.handles[0], handle);
+  assert.equal(h.calls.filter(x => x.kind === 'automation' && x.action === 'open').length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'automation' && x.action === 'focus-owned').length, 2);
+  assert.equal(h.calls.filter(x => x.kind === 'ui-shell' && x.action === 'open').length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'browser' && x.action === 'openView').length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'rpc' && x.method === 'fixture.work').length, 3);
+});
+
+test('production adapter chain follows the actual app provider and forwards same-owner focus to Main UI', async t => {
+  const { SubappAutomationAdapter } = await loaded;
+  const filename = path.resolve(__dirname, '../src/app/app.config.ts');
+  const source = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest);
+  let provider;
+  const visit = node => {
+    if (ts.isObjectLiteralExpression(node)) {
+      const properties = new Map(node.properties.filter(ts.isPropertyAssignment).map(p => [p.name.getText(source), p.initializer.getText(source)]));
+      if (properties.get('provide') === 'SUBAPP_AUTOMATION_PORT') provider = properties;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source); assert.equal(provider?.get('useExisting'), 'SubappAutomationAdapter');
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true });
+  assert.ok(h.bridge.automation instanceof SubappAutomationAdapter);
+  assert.equal(typeof h.bridge.automation.focusChildAppPresentation, 'function');
+  const lease = await h.acquire('chat-production-adapter'), first = await h.execute(lease), second = await h.execute(lease);
+  assert.equal(first.ok, true); assert.equal(second.ok, true, JSON.stringify(second));
+  assert.deepEqual(second.presentation, first.presentation); assert.equal(h.handles.length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'automation' && x.action === 'focus-owned').length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'ui-shell' && x.action === 'open').length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'rpc' && x.method === 'fixture.work').length, 2);
+});
+
+test('ordinary explicit presentation still rejects an existing View even for its same Owner', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true }), lease = await h.acquire('chat-repeat');
+  await h.execute(lease); const result = await h.present(lease);
+  assert.equal(result.ok, false); assert.match(result.error, /presentation already exists/);
+  assert.equal(h.handles.length, 1); assert.equal(h.calls.some(x => x.action === 'focus-owned'), false);
+});
+
+test('automatic reuse cannot focus or acquire another Owner or an unowned View', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true });
+  const a = await h.acquire('chat-a'), b = await h.acquire('chat-b'); await h.execute(a);
+  assert.equal((await h.execute(b)).ok, false); assert.equal(h.handles.length, 1);
+  assert.equal(h.handles[0].ownerSessionId, a.ownerLeaseId); assert.equal(h.calls.some(x => x.action === 'focus-owned'), false);
+  assert.equal((await h.release(b)).ok, true); assert.equal(h.handles.length, 1);
+  h.bridge.ownerLeases.leases.get(a.ownerLeaseId).expiresAt = 0;
+  assert.equal((await h.execute(a)).errorCode, 'SUBAPP_OWNER_EXPIRED');
+});
+
+test('an unowned ordinary View is never adopted by automatic same-tool presentation', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation });
+  const ordinary = h.surfaces.open('fixture', geometry); await ordinary.ready;
+  const lease = await h.acquire('chat-agent'), result = await h.execute(lease);
+  assert.equal(result.ok, false); assert.match(result.error, /another or unowned View/);
+  assert.equal(h.calls.some(x => x.action === 'focus-owned'), false); assert.ok(ordinary.ownerSessionId.startsWith('ui-'));
+  await ordinary.close();
+});
+
+test('a pending View cannot be reused before its actual readiness acknowledgement', async t => {
+  const entered = deferred(), resume = deferred();
+  const h = await fixture(t, { presentation: automaticFullPresentation,
+    browser: async input => { if (input.action === 'openView') { entered.resolve(); await resume.promise; } } });
+  const lease = await h.acquire('chat-pending'), first = h.execute(lease); await entered.promise;
+  assert.equal((await h.execute(lease)).ok, false); assert.equal(h.calls.some(x => x.action === 'focus-owned'), false);
+  resume.resolve(); assert.equal((await first).ok, true); assert.equal(h.handles.length, 1);
+});
+
+test('a closing View cannot be reused; after actual detach the same Owner may open a fresh View', async t => {
+  const entered = deferred(), resume = deferred(); let held = false;
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true,
+    browser: async input => { if (input.action === 'closeView' && !held) { held = true; entered.resolve(); await resume.promise; } } });
+  const lease = await h.acquire('chat-closing'); await h.execute(lease); const oldGrant = h.ui.toolPresentationIds.fixture;
+  const closing = h.handles[0].close(); await entered.promise;
+  assert.equal((await h.execute(lease)).ok, false); assert.equal(h.calls.some(x => x.action === 'focus-owned'), false);
+  resume.resolve(); await closing; assert.equal((await h.execute(lease)).ok, true);
+  assert.notEqual(h.ui.toolPresentationIds.fixture, oldGrant); assert.equal(h.handles.length, 2);
+});
+
+test('failed focus of a stale pane grant never cancels or remounts the original active View', async t => {
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true }), lease = await h.acquire('chat-focus');
+  await h.execute(lease); const original = h.registry.active.get('fixture'), grant = h.ui.toolPresentationIds.fixture;
+  h.ui.toolPresentationIds.fixture = 'foreign-grant'; assert.equal((await h.execute(lease)).ok, false);
+  assert.equal(h.registry.active.get('fixture'), original); assert.equal(original.revoked, false); assert.equal(h.handles.length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'rpc' && x.method === 'fixture.work').length, 1);
+  h.ui.toolPresentationIds.fixture = grant; assert.equal((await h.execute(lease)).ok, true); assert.equal(h.handles.length, 1);
+});
+
+test('an unconfirmed detach keeps its claim unavailable until the original View cleanup succeeds', async t => {
+  let attempts = 0;
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true,
+    browser: input => { if (input.action === 'closeView' && ++attempts === 1) throw Error('detach ACK missing'); } });
+  const lease = await h.acquire('chat-unconfirmed'); await h.execute(lease);
+  const original = h.registry.active.get('fixture'), oldGrant = h.ui.toolPresentationIds.fixture;
+  await assert.rejects(h.handles[0].close(), /detach ACK missing/);
+  assert.equal((await h.execute(lease)).ok, false); assert.equal(h.registry.active.get('fixture'), original);
+  assert.equal(h.handles.length, 1); assert.equal(h.calls.some(x => x.action === 'focus-owned'), false);
+  await h.handles[0].close(); assert.equal(h.registry.active.size, 0);
+  assert.equal((await h.execute(lease)).ok, true); assert.equal(h.handles.length, 2);
+  assert.notEqual(h.ui.toolPresentationIds.fixture, oldGrant);
+});
+
+test('Owner revocation during the focus window lookup cannot focus, remount or send another domain RPC', async t => {
+  const entered = deferred(), resume = deferred(); let lookups = 0;
+  const h = await fixture(t, { presentation: automaticFullPresentation, mountLifecycle: true,
+    readWindowState: async () => { if (++lookups === 2) { entered.resolve(); await resume.promise; } } });
+  const lease = await h.acquire('chat-revoked-focus'); await h.execute(lease);
+  const second = h.execute(lease); await entered.promise; const releasing = h.release(lease); resume.resolve();
+  assert.equal((await second).ok, false); assert.equal((await releasing).ok, true);
+  assert.equal(h.calls.filter(x => x.kind === 'rpc' && x.method === 'fixture.work').length, 1);
+  assert.equal(h.calls.filter(x => x.kind === 'browser' && x.action === 'openView').length, 1);
+  assert.equal(h.registry.active.size, 0); assert.deepEqual(h.ui.openToolList, []);
 });
 
 test('missing, foreign and expired leases cannot present; an acquired lease must first own this tool', async t => {

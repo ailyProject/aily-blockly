@@ -395,6 +395,15 @@ export class UiService {
     return this.topTool === name;
   }
 
+  /** Focus only the currently mounted grant; never open or remount a tool. */
+  focusToolPresentation(name: string, presentationId: string): boolean {
+    if (!presentationId || !this.openToolList.includes(name)
+      || this.toolPresentationIds[name] !== presentationId) return false;
+    if (getChildToolConfig(name)?.app?.extension === true || this.requestLoginForProtectedTool(name)) return false;
+    this.openToolList = [...this.openToolList.filter(value => value !== name), name];
+    return this.topTool === name;
+  }
+
   private openToolInMainWindow(name: string, presentationId?: string) {
     if (getChildToolConfig(name)?.app?.extension === true) return;
     if (!name || this.requestLoginForProtectedTool(name)) {

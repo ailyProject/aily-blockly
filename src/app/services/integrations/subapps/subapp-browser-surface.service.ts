@@ -42,7 +42,7 @@ export class SubappBrowserSurfaceService {
     if (presentationId && !this.presentations) throw new Error('Browser presentation authority is unavailable');
     const record: SurfaceRecord = { id: crypto.randomUUID(), toolId, ownerSessionId: '', processAcquired: false, ownerTracked: false,
       closing: false, viewClosed: false, ownerReleased: false, starting: undefined!, updating: Promise.resolve() };
-    record.presentation = this.presentations?.claim(toolId, presentationId, () => this.close(record));
+    record.presentation = this.presentations?.claim(toolId, presentationId, () => this.close(record), () => !record.closing);
     const ownerSessionId = record.ownerSessionId = record.presentation?.ownerSessionId || `ui-${crypto.randomUUID()}`;
     this.surfaces.set(record.id, record);
     const current = () => { if (record.closing) throw new Error('Browser surface closed during startup'); record.presentation?.validate(); };

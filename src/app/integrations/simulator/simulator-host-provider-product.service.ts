@@ -10,13 +10,16 @@ import {
   SimulatorProjectHostProviderAdapter,
   createSimulatorHostProviderDispatcherAdapterBundle,
   createSimulatorNetworkHostProviderAdapter,
+  createSimulatorGattHostProviderAdapter,
   type SimulatorProjectHostProviderAdapterOptions,
 } from '@aily-project/simulator-host-sdk';
 import type {
   SimulatorSubappHostProjectDebugConfigurationReadV1,
   SimulatorSubappHostProjectDebugConfigurationSnapshotV1,
+  HostGattProducerStateV1, HostGattBoundProviderResultV1,
 } from '@aily-project/simulator-protocol/host';
 import type { HostNetworkProviderRequestV1, HostNetworkProviderResultV1 } from '@aily-project/simulator-protocol/connectivity-network-provider';
+import type { HostGattProviderRequestV1 } from '@aily-project/simulator-protocol/connectivity-gatt-provider';
 
 import { BuilderService } from '@domain/build/public-api';
 import { ProjectDebugConfigurationService, ProjectService } from '@domain/project/public-api';
@@ -89,11 +92,18 @@ export class SimulatorHostProviderProductService {
       request: (request: HostNetworkProviderRequestV1, signal: AbortSignal) => context.localNetwork!.request(request as unknown as Record<string, unknown>, signal) as unknown as Promise<HostNetworkProviderResultV1>,
       close: () => context.localNetwork!.close(),
     }) : null;
-    return bindProviderSession(context, [...(scope?.adapters ?? []), ...(hardware ? [hardware] : []), ...(network ? [network] : [])] as readonly SubappHostProviderAdapter[], async () => {
-      const results = await Promise.allSettled([scope?.close(), hardware?.close?.(), network?.close()]);
+    const gatt = context.localGatt ? createSimulatorGattHostProviderAdapter({
+      bound: true,
+      bindingState: (signal: AbortSignal) => context.localGatt!.bindingState(signal) as unknown as Promise<HostGattProducerStateV1>,
+      request: (producerId: string, request: HostGattProviderRequestV1, signal: AbortSignal) => context.localGatt!.request(producerId, request as unknown as Record<string, unknown>, signal) as unknown as Promise<HostGattBoundProviderResultV1>,
+      closeProducer: (producerId: string) => context.localGatt!.closeProducer(producerId),
+      close: () => context.localGatt!.close(),
+    }) : null;
+    return bindProviderSession(context, [...(scope?.adapters ?? []), ...(hardware ? [hardware] : []), ...(network ? [network] : []), ...(gatt ? [gatt] : [])] as readonly SubappHostProviderAdapter[], async () => {
+      const results = await Promise.allSettled([scope?.close(), hardware?.close?.(), network?.close(), gatt?.close()]);
       const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
       if (errors.length) throw new AggregateError(errors, 'Simulator product resource cleanup requires retry.');
-    });
+    }, gatt ? { [gatt.provider]: gatt.capabilities } : undefined);
   }
 
   /** Build the active code once before opening the Simulator, through Blockly's normal Builder. */
@@ -562,12 +572,14 @@ async function bindProviderSession(
   context: SubappHostProviderProductOpenContext,
   adapters: readonly SubappHostProviderAdapter[],
   closeProduct: () => void | Promise<void>,
+  capabilityAliases?: ConstructorParameters<typeof SubappHostProviderDispatcher>[0]['capabilityAliases'],
 ): Promise<SubappHostProviderProductSession> {
   const hostInstanceId = `simulator-host:${context.hostInstanceId}`;
   context.localNetwork?.bindHostInstanceId(hostInstanceId);
   const dispatcher = new SubappHostProviderDispatcher({
     hostInstanceId,
     adapters,
+    ...(capabilityAliases ? { capabilityAliases } : {}),
     maxMessageBytes: SIMULATOR_PROVIDER_MESSAGE_BUDGET,
   });
   let unbind: (() => void) | null = null;

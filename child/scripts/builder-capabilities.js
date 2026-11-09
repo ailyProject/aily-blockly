@@ -1,6 +1,15 @@
 'use strict';
 
 const { spawnSync } = require('node:child_process');
+const { PROFILE, PROVIDER } = require('./simulation-transport-profile');
+
+function supportsSimulationTransportProfile(value) {
+    return value?.schemaVersion === 1 && value.cliOption === '--simulation-transport-profile'
+        && Array.isArray(value.allowedValues) && value.allowedValues.length === 1 && value.allowedValues[0] === PROFILE
+        && value.providerByProfile && Object.keys(value.providerByProfile).length === 1
+        && value.providerByProfile[PROFILE] === PROVIDER && value.requiresSimulationDebug === true
+        && value.requiresBuildInputRecord === true && value.requiresArtifactManifest === true;
+}
 
 /** Probe once per compile. Only legacy ordinary Artifact output may use help fallback. */
 function readBuilderCapabilities(command, launch = spawnSync) {
@@ -19,6 +28,7 @@ function readBuilderCapabilities(command, launch = spawnSync) {
                         && c.buildInputRecord.scope === 'build-graph-facts' && c.buildInputRecord.currentProjectFreshness === false
                         && c.buildInputRecord.defaultFileName === 'aily-build-inputs.json',
                     workspace: c.buildWorkspaceLease?.schemaVersion === 1 && c.buildWorkspaceLease.delegationEnvironment === 'AILY_BUILDER_WORKSPACE',
+                    ...(supportsSimulationTransportProfile(c.simulationTransportProfile) ? { simulationTransportProfile: PROFILE } : {}),
                 };
             }
         }
@@ -29,4 +39,4 @@ function readBuilderCapabilities(command, launch = spawnSync) {
     } catch { return { artifact: false, debug: false, graph: false, inputs: false, workspace: false }; }
 }
 
-module.exports = { readBuilderCapabilities };
+module.exports = { readBuilderCapabilities, supportsSimulationTransportProfile };

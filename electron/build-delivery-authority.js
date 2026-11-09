@@ -21,12 +21,31 @@ function readJson(filename, limit) {
  * registry. This proves an observed build/source boundary, not all SDK inputs,
  * Agent authorization, a sandbox against local code, or physical correctness.
  */
-function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
+function createBuildDeliveryAuthority({ getOwner, querySource, childRoot, captureCompilationBinding }) {
     const { readBuildInputRecordBinding } = require(path.join(childRoot, 'scripts/build-input-record.js'));
     const captures = require(path.join(childRoot, 'scripts/build-source-capture.js'));
     const sources = require(path.join(childRoot, 'scripts/compile-delivery.js'));
     const records = new Map();
     const epoch = randomUUID();
+    const { PROFILE, PROVIDER } = require('./simulator-compilation-profile');
+    const profileQuery = 'aily.build.compilation-profile.query', profileResult = 'aily.build.compilation-profile.result';
+
+    function compilationReply(entry, message) {
+        assertOwner(entry);
+        if (entry.state !== 'running' || entry.receipt
+            || Object.keys(message).sort().join(',') !== 'phase,requestDigest,type'
+            || message.requestDigest !== entry.requestDigest
+            || !['before-compile', 'before-delivery'].includes(message.phase)
+            || entry.profilePhases.has(message.phase)
+            || message.phase === 'before-delivery' && !entry.profilePhases.has('before-compile')
+            || entry.config.simulationDebug !== true && entry.config.graphSemanticRevision === undefined) {
+            throw fault('Unexpected compilation profile query.');
+        }
+        entry.compilationBinding?.assertCurrent();
+        entry.profilePhases.add(message.phase);
+        return { type: profileResult, requestDigest: entry.requestDigest, phase: message.phase, ok: true,
+            profile: entry.compilationBinding?.profile || null };
+    }
 
     function ownerFor(sender) {
         const owner = getOwner();
@@ -84,6 +103,12 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             || !/^[a-f0-9-]{36}$/.test(message.buildId)) throw fault('Unexpected build receipt message.');
 
         const { receipt, artifact } = files(entry), value = receipt.value;
+        const providers = artifact.value.build?.simulationProviders || [];
+        if (providers.includes(PROVIDER) || entry.compilationBinding && entry.profilePhases.has('before-compile')) {
+            entry.compilationBinding?.assertCurrent();
+            if (!entry.compilationBinding || !entry.profilePhases.has('before-delivery')
+                || providers.length !== 1 || providers[0] !== PROVIDER) throw fault('Artifact compilation profile was not authorized by its original execution.');
+        }
 
         if (receipt.digest !== message.receiptSha256 || value?.kind !== 'aily-build-delivery' || value.schemaVersion !== 1
             || value.buildId !== message.buildId || value.currentProjectAcceptance !== false
@@ -123,6 +148,7 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
                 || key(fs.realpathSync(path.dirname(requestPath))) !== key(path.join(root, '.temp'))) throw fault('Not a supervised host compile request.');
 
             const config = readJson(requestPath, 160 * 1024 * 1024).value;
+            if (config.simulationTransportProfile !== undefined && config.simulationTransportProfile !== PROFILE) throw fault('Unsupported compilation profile request.');
 
             if (key(fs.realpathSync(config.currentProjectPath)) !== key(root) || config.recordProjectDelivery !== true
                 || !config.sourceCapture) throw fault('Full delivery recording/source capture is required.');
@@ -142,6 +168,11 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             const entry = { key: key(root), root, sender, generation: owner.generation, config,
                 requestDigest: hash(JSON.stringify(config)), requestPath, requestFileDigest: readJson(requestPath, 160 * 1024 * 1024).digest,
                 handle: `${epoch}:${randomUUID()}`, state: 'running' };
+            entry.profilePhases = new Set();
+            if (config.simulationDebug === true || config.graphSemanticRevision !== undefined) {
+                entry.compilationBinding = captureCompilationBinding?.(sender) || null;
+            }
+            if (config.simulationTransportProfile !== undefined && !entry.compilationBinding) throw fault('Requested compilation profile has no current execution binding.');
 
             records.set(entry.key, entry);
 
@@ -151,8 +182,14 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             return {
                 handle: entry.handle,
                 onMessage(message) {
-                    try { bindReceipt(entry, message); }
-                    catch (error) { entry.state = 'failed'; entry.error = error.message; }
+                    try {
+                        if (message?.type === profileQuery) return compilationReply(entry, message);
+                        bindReceipt(entry, message);
+                    } catch (error) {
+                        entry.state = 'failed'; entry.error = error.message;
+                        if (message?.type === profileQuery) return { type: profileResult, requestDigest: entry.requestDigest,
+                            phase: message.phase, ok: false, profile: null };
+                    }
                 },
                 onExit(code, signal, cancelled) {
                     entry.state = code === 0 && !signal && !cancelled && entry.receipt && entry.state === 'running' ? 'completed' : 'failed';
@@ -177,11 +214,13 @@ function createBuildDeliveryAuthority({ getOwner, querySource, childRoot }) {
             if (entry.state !== 'completed') return { status: entry.state, currentProjectAcceptance: false, message: entry.error };
 
             try {
+                if (entry.profilePhases.has('before-compile')) entry.compilationBinding?.assertCurrent();
                 const before = sources.captureProjectSources(entry.config);
 
                 if (before.digest !== entry.receipt.value.project.digest) throw fault('Project source/configuration changed.');
 
                 await live(entry);
+                if (entry.profilePhases.has('before-compile')) entry.compilationBinding?.assertCurrent();
                 captures.confirmBuildSource(entry.config);
                 sources.confirmProjectSources(before, entry.config);
 

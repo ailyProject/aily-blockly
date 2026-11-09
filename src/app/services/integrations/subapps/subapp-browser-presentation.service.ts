@@ -8,6 +8,9 @@ interface Presentation {
   resolve(value: Record<string, unknown>): void; reject(error: unknown): void;
   close?: () => Promise<Record<string, unknown>>; revoked: boolean;
   completeMount?: () => void; mountCompleted?: boolean;
+  ready?: Promise<Record<string, unknown>>;
+  receipt?: Readonly<Record<string, unknown>>;
+  canReuse?: () => boolean;
 }
 export interface SubappBrowserPresentationClaim {
   readonly ownerSessionId?: string;
@@ -32,9 +35,34 @@ export class SubappBrowserPresentationService {
     // Startup can fail before the caller has awaited automation.openChildApp.
     void ready.catch(() => undefined);
     const presentation: Presentation = { id: crypto.randomUUID(), toolId, ownerSessionId,
-      validate, resolve, reject, revoked: false };
+      validate, resolve, reject, ready, revoked: false };
     this.pending.set(presentation.id, presentation);
     return { id: presentation.id, ready };
+  }
+
+  /** Automatic open/focus may borrow only the same live, acknowledged View.
+   * Explicit presentation still uses prepare() and its original exclusion. */
+  reuseOwned(toolId: string, ownerSessionId: string, validate: () => void) {
+    validate();
+    const presentation = this.active.get(toolId);
+    if (!presentation) return null;
+    if (!ownerSessionId || presentation.ownerSessionId !== ownerSessionId) {
+      throw new Error('Browser presentation belongs to another or unowned View');
+    }
+    this.requireReusableMount(toolId, presentation.id);
+    validate();
+    return { id: presentation.id, ready: presentation.ready! };
+  }
+
+  /** The in-process focus port cannot mount, retarget or revive a View. */
+  requireReusableMount(toolId: string, presentationId: string): void {
+    const presentation = this.active.get(toolId);
+    if (!presentation || presentation.id !== presentationId || !presentation.ownerSessionId
+      || presentation.revoked || !presentation.ready || !presentation.receipt
+      || !presentation.completeMount || presentation.mountCompleted || !presentation.canReuse?.()) {
+      throw new Error('Browser presentation is not an active reusable owned View');
+    }
+    presentation.validate();
   }
 
   /** Main registers only the exact UI mount opened with its in-process grant.
@@ -48,7 +76,8 @@ export class SubappBrowserPresentationService {
     presentation.validate(); presentation.completeMount = complete;
   }
 
-  claim(toolId: string, presentationId: string, close: () => Promise<Record<string, unknown>>): SubappBrowserPresentationClaim {
+  claim(toolId: string, presentationId: string, close: () => Promise<Record<string, unknown>>,
+    canReuse?: () => boolean): SubappBrowserPresentationClaim {
     let presentation: Presentation;
     if (presentationId) {
       const pending = this.pending.get(presentationId);
@@ -62,13 +91,17 @@ export class SubappBrowserPresentationService {
         resolve: () => undefined, reject: () => undefined, revoked: false };
     }
     presentation.close = close;
+    presentation.canReuse = canReuse;
     this.active.set(toolId, presentation);
     const validate = () => {
       if (presentation.revoked) throw new Error('Browser presentation grant has been revoked');
       presentation.validate();
     };
     return { ownerSessionId: presentation.ownerSessionId || undefined, validate,
-      ready: value => presentation.resolve(value), failed: error => presentation.reject(error),
+      ready: value => {
+        presentation.receipt = Object.freeze({ ...value });
+        presentation.resolve(presentation.receipt);
+      }, failed: error => presentation.reject(error),
       released: async () => {
         this.completeMount(presentation);
         if (this.active.get(toolId) === presentation) this.active.delete(toolId);

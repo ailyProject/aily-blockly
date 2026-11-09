@@ -191,6 +191,8 @@ class SubappBrowserExecutionHost {
                         state.pending.delete(data.id);
                         data.ok === true ? pending.resolve(pending.type === 'network-context'
                             ? { diagnostics: data.value, networkContext: Object.hasOwn(data, 'networkContext') ? data.networkContext : undefined }
+                            : pending.type === 'bluetooth-context'
+                                ? { diagnostics: data.value, bluetoothContext: Object.hasOwn(data, 'bluetoothContext') ? data.bluetoothContext : undefined }
                             : data.value) : pending.reject(fault('Execution lifecycle request failed'));
                     }
                 }
@@ -227,7 +229,7 @@ class SubappBrowserExecutionHost {
 
     /** Original private-ACK owner only. These methods never appear on the
      * domain Agent/View RPC ports or accept caller-provided owner handles. */
-    createNetworkOwnerControl(original) {
+    createConnectivityOwnerControl(original, protocol) {
         const thisHost = this;
         const { lease, guard, connectionId, assertCurrent } = original;
         const { runtimeId, executionId, ownerId, leaseId } = lease;
@@ -255,15 +257,16 @@ class SubappBrowserExecutionHost {
             },
             async query(signal) {
                 current(); signal?.throwIfAborted();
-                const result = await thisHost.request(state, 'network-context', { connectionId, ownerHandle });
+                const result = await thisHost.request(state, protocol.query, { connectionId, ownerHandle });
                 current(); signal?.throwIfAborted();
-                if (!result || !Object.hasOwn(result, 'networkContext') || result.networkContext === undefined) throw fault('Installed Browser network context API is unavailable');
-                return result.networkContext;
+                if (!result || !Object.hasOwn(result, protocol.contextKey) || result[protocol.contextKey] === undefined) throw fault(`Installed Browser ${protocol.label} context API is unavailable`);
+                return result[protocol.contextKey];
             },
             async attach({ sessionId, descriptor, grant, routes }, port) {
                 current();
                 if (!port) throw fault('Original network backend MessagePort is required');
-                await thisHost.request(state, 'network-host-attach', { connectionId, ownerHandle, sessionId, descriptor, grant, routes }, [port]);
+                await thisHost.request(state, protocol.attach, { connectionId, ownerHandle, sessionId, descriptor, grant,
+                    ...(protocol.routes ? { routes } : {}) }, [port]);
                 current();
             },
             async detach(sessionId, grantId) {
@@ -272,10 +275,20 @@ class SubappBrowserExecutionHost {
                 // binding/handle; Runtime additionally asserts the original
                 // session owner before detaching its attachment.
                 originalIdentity();
-                await thisHost.request(state, 'network-host-detach', { connectionId, ownerHandle, sessionId, grantId });
+                await thisHost.request(state, protocol.detach, { connectionId, ownerHandle, sessionId, grantId });
                 originalIdentity();
             },
         });
+    }
+
+    createNetworkOwnerControl(original) {
+        return this.createConnectivityOwnerControl(original, { label: 'network', query: 'network-context', contextKey: 'networkContext',
+            attach: 'network-host-attach', detach: 'network-host-detach', routes: true });
+    }
+
+    createBluetoothOwnerControl(original) {
+        return this.createConnectivityOwnerControl(original, { label: 'Bluetooth', query: 'bluetooth-context', contextKey: 'bluetoothContext',
+            attach: 'gatt-host-attach', detach: 'gatt-host-detach', routes: false });
     }
 
     /** Main-only binding over an acknowledged process lease. The real Agent

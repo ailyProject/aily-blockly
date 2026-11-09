@@ -192,15 +192,17 @@ export class SubappAgentBridgeService implements OnDestroy {
       webSelected = this.resolveAgentPlatform(resolved.config.id) === 'web';
 
       const nativeBatch = !webSelected && resolved.config.runtime?.headless === true;
+      const browserPresentation = !webSelected && !nativeBatch && !!resolved.config.runtime?.browserExecution;
 
       if (webSelected && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for Web tools.', 'SUBAPP_SESSION_REQUIRED');
       if (nativeBatch && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for native batch tools.', 'SUBAPP_SESSION_REQUIRED');
+      if (browserPresentation && !context.ownerLeaseId) throw new SubappRpcError('A live Agent owner lease is required for Browser execution tools.', 'SUBAPP_SESSION_REQUIRED');
       if (nativeBatch || webSelected) invocation.waitForCleanup(webSelected ? 'web-semantic' : 'native-batch');
 
       const params = this.record(input['params']);
       const hasExplicitPresentation = Object.prototype.hasOwnProperty.call(params, 'presentUi');
 
-      const activeMode = !webSelected && (!nativeBatch || resolved.config.runtime?.observer) && !hasExplicitPresentation
+      const activeMode = !webSelected && !browserPresentation && (!nativeBatch || resolved.config.runtime?.observer) && !hasExplicitPresentation
         && resolved.config.app?.extension !== true
         && resolved.definition.presentation
         && await this.automation.isChildAppWindowOpen(resolved.config.id)
@@ -220,7 +222,7 @@ export class SubappAgentBridgeService implements OnDestroy {
         title: String(resolved.config.app?.name || resolved.config.titleKey || resolved.config.id),
         icon: String(resolved.config.app?.icon || 'fa-light fa-puzzle-piece'),
         toolCallId: String(context.toolCallId || '').trim(),
-        presentation: webSelected ? undefined : presentationPolicy.activityPresentation,
+        presentation: webSelected || browserPresentation ? undefined : presentationPolicy.activityPresentation,
       });
 
       this.enforceInputBudget(params, resolved.definition);
@@ -232,7 +234,14 @@ export class SubappAgentBridgeService implements OnDestroy {
       const mapped = this.mapRpc(resolved.definition, rpcParams);
       let presentation: Record<string, unknown> | undefined;
 
-      if (presentationPolicy.uiMode === 'window') {
+      if (presentationPolicy.uiMode === 'window' && browserPresentation) {
+        // Browser execution stays on its original Agent owner. Ordinary
+        // window opening has no trusted View grant and selects a default UI.
+        await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
+        await this.ownerGuard.track(resolved.config.id, ownerSessionId);
+        this.throwIfCancelled(signal);
+        presentation = await this.presentOwner({ toolId: resolved.config.id, mode: 'embedded' }, ownerSessionId, activitySessionId, true);
+      } else if (presentationPolicy.uiMode === 'window') {
         if (!webSelected && !nativeBatch) await this.prepareRuntime(resolved.config.id, ownerSessionId, signal);
 
         this.throwIfCancelled(signal);
@@ -451,7 +460,8 @@ export class SubappAgentBridgeService implements OnDestroy {
     }
   }
 
-  private async presentOwner(input: Record<string, unknown>, ownerLeaseId: string, sessionId: string): Promise<Record<string, unknown>> {
+  private async presentOwner(input: Record<string, unknown>, ownerLeaseId: string, sessionId: string,
+    reuseOwnedView = false): Promise<Record<string, unknown>> {
     const toolId = String(input['toolId'] || '').trim();
     const validate = () => {
       this.ownerLeases.require(ownerLeaseId, sessionId);
@@ -466,6 +476,18 @@ export class SubappAgentBridgeService implements OnDestroy {
     }
     if (input['mode'] !== undefined && input['mode'] !== 'embedded') {
       throw new SubappRpcError('Agent Browser presentation requires embedded mode', 'SUBAPP_OWNER_PRESENTATION_MODE');
+    }
+    const existing = reuseOwnedView ? this.browserPresentations.reuseOwned(toolId, ownerLeaseId, validate) : null;
+    if (existing) {
+      const ready = await existing.ready;
+      validate();
+      this.browserPresentations.requireReusableMount(toolId, existing.id);
+      const focused = await this.automation.focusChildAppPresentation(toolId, existing.id);
+      if (focused?.['ok'] !== true) throw new SubappRpcError(
+        String(focused?.['message'] || focused?.['error'] || 'The original Agent Browser View could not be focused'), 'SUBAPP_PRESENTATION_NOT_READY');
+      validate();
+      this.browserPresentations.requireReusableMount(toolId, existing.id);
+      return { ok: true, toolId, mode: 'embedded', ...ready };
     }
     const ticket = this.browserPresentations.prepare(toolId, ownerLeaseId, validate);
     let timer: ReturnType<typeof setTimeout> | undefined;

@@ -69,6 +69,9 @@ export interface SubappHostProviderAdapter {
 export interface SubappHostProviderDispatcherOptions {
   hostInstanceId: string;
   adapters: readonly SubappHostProviderAdapter[];
+  /** Trusted construction only. Exact alternative namespaces must be declared
+   * by that registered adapter itself; transport messages cannot add aliases. */
+  capabilityAliases?: Readonly<Record<string, readonly string[]>>;
   now?: () => number;
   maxMessageBytes?: number;
   maxActiveInvocations?: number;
@@ -120,6 +123,7 @@ export class SubappHostProviderDispatcher {
   private readonly hostInstanceId: string;
   private readonly adapters: readonly SubappHostProviderAdapter[];
   private readonly adaptersByProvider: ReadonlyMap<string, SubappHostProviderAdapter>;
+  private readonly capabilityAliases: CapabilityAliases;
   private readonly artifactAdapter: SubappHostProviderAdapter | null;
   private readonly now: () => number;
   private readonly maxMessageBytes: number;
@@ -140,8 +144,9 @@ export class SubappHostProviderDispatcher {
       options.hostInstanceId,
       'hostInstanceId',
     );
+    this.capabilityAliases = snapshotCapabilityAliases(options.capabilityAliases, options.adapters);
     this.adapters = Object.freeze(
-      options.adapters.map((adapter) => validateAdapter(adapter)),
+      options.adapters.map((adapter) => validateAdapter(adapter, this.capabilityAliases)),
     );
     if (this.adapters.length > MAX_PROVIDERS) {
       throw new RangeError(`Host provider adapter limit is ${MAX_PROVIDERS}.`);
@@ -316,7 +321,7 @@ export class SubappHostProviderDispatcher {
     let requestId: string;
     try {
       requestId = requirePortableIdentifier(request['requestId'], 'requestId');
-      validateNegotiationRequirements(request['providers']);
+      validateNegotiationRequirements(request['providers'], this.capabilityAliases);
     } catch {
       return;
     }
@@ -362,6 +367,7 @@ export class SubappHostProviderDispatcher {
         invocation['capability'],
         provider,
         'capability',
+        this.capabilityAliases,
       );
       requirePositiveInteger(invocation['protocolVersion'], 'protocolVersion');
       requirePositiveInteger(invocation['providerRevision'], 'providerRevision');
@@ -887,8 +893,50 @@ function terminalBuildTrace(event: SubappHostProviderRecord): ((stage: string) =
   };
 }
 
+type CapabilityAliases = ReadonlyMap<string, ReadonlySet<string>>;
+
+/** Copy only bounded plain data. Neither a later caller mutation nor a
+ * transport negotiation can extend this exact per-adapter constructor policy. */
+function snapshotCapabilityAliases(value: unknown, adapters: readonly SubappHostProviderAdapter[]): CapabilityAliases {
+  if (!Array.isArray(adapters) || adapters.length > MAX_PROVIDERS) throw new TypeError('Host provider adapters must be bounded.');
+  const result = new Map<string, ReadonlySet<string>>();
+  if (value === undefined) return result;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError('Capability aliases require plain data.');
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(value);
+  if (keys.length > MAX_PROVIDERS || keys.some(key => typeof key !== 'string')
+    || Object.values(descriptors).some(d => !('value' in d))) throw new TypeError('Capability aliases must be bounded plain data.');
+  for (const key of keys as string[]) {
+    const provider = requireProviderIdentifier(key, 'alias.provider');
+    if (provider !== key || ['constructor', 'prototype', '__proto__'].includes(key)) throw new TypeError('Capability alias provider is invalid.');
+    const registered = adapters.filter(adapter => requireProviderIdentifier(adapter.provider, 'adapter.provider') === provider);
+    if (registered.length !== 1) throw new TypeError('Capability aliases require one registered adapter.');
+    const declared = snapshotAliasArray(registered[0]!.capabilities), aliases = snapshotAliasArray(descriptors[key]!.value);
+    for (const capability of aliases) if (!declared.includes(capability)) throw new TypeError('Capability alias is not declared by its adapter.');
+    result.set(provider, new Set(aliases));
+  }
+  return result;
+}
+
+function snapshotAliasArray(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new TypeError('Capability aliases require a bounded array.');
+  const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(value), length = descriptors['length']?.value;
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_CAPABILITIES || keys.length !== length + 1
+    || keys.some(k => typeof k !== 'string') || Object.values(descriptors).some(d => !('value' in d))) throw new TypeError('Capability alias array is invalid.');
+  const copied: string[] = [];
+  for (let i = 0; i < length; i++) {
+    const entry = descriptors[String(i)]?.value;
+    if (typeof entry !== 'string' || entry.length < 1 || entry.length > MAX_IDENTIFIER_LENGTH || !CAPABILITY_PATTERN.test(entry)) throw new TypeError('Capability alias name is invalid.');
+    copied.push(entry);
+  }
+  if (new Set(copied).size !== copied.length) throw new TypeError('Capability aliases must be unique.');
+  return copied;
+}
+
 function validateAdapter(
   adapter: SubappHostProviderAdapter,
+  aliases: CapabilityAliases,
 ): SubappHostProviderAdapter {
   if (
     !adapter
@@ -899,7 +947,7 @@ function validateAdapter(
   }
   const provider = requireProviderIdentifier(adapter.provider, 'adapter.provider');
   const protocolVersions = validateProtocolVersions(adapter.protocolVersions);
-  const capabilities = validateCapabilities(adapter.capabilities, provider);
+  const capabilities = validateCapabilities(adapter.capabilities, provider, aliases);
   if (
     (typeof adapter.readArtifactChunk === 'function')
     !== (typeof adapter.createArtifactChunkFailureResult === 'function')
@@ -936,7 +984,7 @@ function validateAdapter(
   return Object.freeze(normalized);
 }
 
-function validateNegotiationRequirements(value: unknown): void {
+function validateNegotiationRequirements(value: unknown, aliases: CapabilityAliases): void {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_PROVIDERS) {
     throw new TypeError('Provider requirements must be a bounded non-empty array.');
   }
@@ -956,10 +1004,12 @@ function validateNegotiationRequirements(value: unknown): void {
     validateCapabilities(
       requirement['requiredCapabilities'],
       provider,
+      aliases,
     );
     validateCapabilities(
       requirement['optionalCapabilities'],
       provider,
+      aliases,
     );
   }
 }
@@ -982,12 +1032,12 @@ function validateProtocolVersions(value: unknown): number[] {
   return versions.sort((left, right) => left - right);
 }
 
-function validateCapabilities(value: unknown, provider: string): string[] {
+function validateCapabilities(value: unknown, provider: string, aliases: CapabilityAliases): string[] {
   if (!Array.isArray(value) || value.length > MAX_CAPABILITIES) {
     throw new TypeError('Capabilities must be a bounded array.');
   }
   const capabilities = value.map((entry) => (
-    requireCapability(entry, provider, 'capability')
+    requireCapability(entry, provider, 'capability', aliases)
   ));
   if (new Set(capabilities).size !== capabilities.length) {
     throw new TypeError('Capabilities must be unique.');
@@ -1063,13 +1113,14 @@ function requireCapability(
   value: unknown,
   provider: string,
   label: string,
+  aliases: CapabilityAliases,
 ): string {
   if (
     typeof value !== 'string'
     || value.length < 1
     || value.length > MAX_IDENTIFIER_LENGTH
     || !CAPABILITY_PATTERN.test(value)
-    || !value.startsWith(`${provider}.`)
+    || (!value.startsWith(`${provider}.`) && !aliases.get(provider)?.has(value))
   ) {
     throw new TypeError(`${label} is invalid.`);
   }

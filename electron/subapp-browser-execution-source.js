@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const { readCompilationProfiles } = require('./simulator-compilation-profile');
 const PROTOCOL = 'aily-browser-execution-v1';
 
 function relativeEntry(value) {
@@ -61,9 +62,12 @@ function readBrowserExecutionSource(config) {
         }
         surfaces[name] = path.relative(rootDirectory, surfacePath).split(path.sep).join('/');
     }
-    const identity = JSON.stringify([manifest.name, manifest.version, packageRoot, rootEntry, entry, sha256, surfaces]);
+    const compilationProfiles = readCompilationProfiles(declaration.compilationProfiles);
+    const identity = JSON.stringify([manifest.name, manifest.version, packageRoot, rootEntry, entry, sha256, surfaces,
+        ...(compilationProfiles ? [compilationProfiles] : [])]);
     return Object.freeze({ protocol: PROTOCOL, packageName: manifest.name, version: manifest.version,
-        packageRoot, rootDirectory, entry, sha256, identity, surfaces: Object.freeze(surfaces) });
+        packageRoot, rootDirectory, entry, sha256, identity, surfaces: Object.freeze(surfaces),
+        ...(compilationProfiles ? { compilationProfiles } : {}) });
 }
 
 module.exports = { PROTOCOL, relativeEntry, readBrowserExecutionSource };
