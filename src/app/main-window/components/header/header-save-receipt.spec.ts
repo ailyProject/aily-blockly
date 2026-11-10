@@ -96,11 +96,17 @@ describe('Header original save completion', () => {
   });
 
   it('accepts a committed document while its generated code waits for the active build', async () => {
+    header.autoSaveState = 'error';
+    header.autoSaveError = 'previous failure';
+    header.cd = { markForCheck: jasmine.createSpy('markForCheck') };
     header.projectService.save.and.resolveTo({ success: false, projectSaved: true,
       generatedCodePublished: false, partial: true, code: 'BUILD_WORKSPACE_BUSY', error: 'BUILD_WORKSPACE_BUSY: busy' });
     expect(await header.saveProjectFromUi()).toBeTrue();
     expect(header.message.error).not.toHaveBeenCalled();
     expect(header.projectService.save).toHaveBeenCalledTimes(1);
+    expect(header.autoSaveState).toBe('saved');
+    expect(header.autoSaveError).toBe('');
+    expect(header.cd.markForCheck).toHaveBeenCalledTimes(1);
   });
 
   it('still reports contention before any confirmed document commit', async () => {

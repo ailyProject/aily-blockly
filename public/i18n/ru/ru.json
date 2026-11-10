@@ -385,6 +385,8 @@
             "BLOCKLY_THEME": "Тема Blockly",
             "BLOCKLY_MINIMAP": "Миникарта Blockly",
             "BLOCKLY_SOUNDS": "Звуки действий",
+      "BLOCKLY_AUTO_SAVE": "Auto save",
+      "BLOCKLY_AUTO_SAVE_HINT": "Save the project 2 seconds after the last edit. Saved appears only after a successful write.",
             "FLYOUT_AUTO_CLOSE": "Автоматически закрывать панель инструментов",
             "COMPILATION_OPTIONS": "Параметры компиляции",
             "REGION": "Регион обслуживания",
@@ -573,6 +575,9 @@
         "SAVE_AND_CONTINUE": "Сохранить и продолжить"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "Could not read the main window project information. Please retry.",
+    "CONTEXT_RETRY": "Retry",
+    "MINIMIZE": "Minimize",
         "TITLE": "Обратная связь",
         "FEEDBACK_TYPE": "Тип обратной связи",
         "TYPE_BUG": "Отчет об ошибке",
@@ -1079,6 +1084,10 @@
         "NO_TUTORIAL_PROVIDED": "Автор библиотеки не предоставил руководство"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "Unsaved",
+    "AUTO_SAVE_SAVING": "Saving…",
+    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "Выполняется задача ИИ. Дождитесь её завершения, прежде чем сохранять проект под другим именем.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",

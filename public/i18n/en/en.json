@@ -450,6 +450,12 @@
             "BLOCKLY_THEME": "Blockly Theme",
             "BLOCKLY_MINIMAP": "Blockly Minimap",
             "BLOCKLY_SOUNDS": "Interaction sounds",
+      "BLOCKLY_AUTO_SAVE": "Auto save",
+      "BLOCKLY_AUTO_SAVE_HINT": "Save the project 2 seconds after the last edit. Saved appears only after a successful write.",
+      "BLOCKLY_SETTINGS_AUTO_SAVE": "Blockly settings save automatically",
+      "BLOCKLY_SETTINGS_SAVING": "Saving Blockly settings…",
+      "BLOCKLY_SETTINGS_SAVED": "Blockly settings saved automatically",
+      "BLOCKLY_SETTINGS_SAVE_FAILED": "Could not save Blockly settings. Select again or click Apply to retry.",
             "FLYOUT_AUTO_CLOSE": "Auto Close Toolbox",
             "COMPILATION_OPTIONS": "Compilation Options",
             "REGION": "Service Region",
@@ -671,6 +677,9 @@
         "CONFIRM": "Yes"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "Could not read the main window project information. Please retry.",
+    "CONTEXT_RETRY": "Retry",
+    "MINIMIZE": "Minimize",
         "TITLE": "User Feedback",
         "FEEDBACK_TYPE": "Feedback Type",
         "TYPE_BUG": "Bug Report",
@@ -1227,6 +1236,10 @@
         "NO_TUTORIAL_PROVIDED": "No tutorial provided by the library author"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "Unsaved",
+    "AUTO_SAVE_SAVING": "Saving…",
+    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "An AI task is running. Please wait for it to finish before saving as a new project.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",

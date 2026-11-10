@@ -13,6 +13,7 @@ const modules = {
   'project-repair-lineage.js': 'createRepairContinuationController',
   'project-copy-admission.js': 'inspectProjectCopyBuild',
   'project-copy-source.js': 'withProjectCopySource',
+  'npm-mutation-queue.js': 'acquireNpmMutation',
 };
 
 for (const packaged of [false, true]) {
@@ -25,7 +26,7 @@ for (const packaged of [false, true]) {
     const source = path.join(root, 'source');
     const resources = path.join(root, 'resources');
     await fs.mkdir(path.join(source, 'electron'), { recursive: true });
-    for (const name of [...Object.keys(modules), 'child-script-path.js', 'project-file-access.js',
+    for (const name of [...Object.keys(modules), 'child-script-path.js', 'project-file-access.js', 'project-file-lock-owner.js',
       'project-recovery-receipts.js', 'project-repair-environment.js', 'project-repair-commit.js']) {
       await fs.copyFile(path.join(__dirname, '../../electron', name), path.join(source, 'electron', name));
     }
@@ -66,6 +67,11 @@ for (const packaged of [false, true]) {
         assert.ok(require.cache[require.resolve(path.join(childRoot, 'scripts', name))], name);
       }
       const { codeIdentity } = require(path.join(appRoot, 'electron/project-repair-environment.js'));
+      // Acquire a real native handle through the production path resolver, not a
+      // mocked helper. The writable prefix remains outside the ASAR and user data.
+      require(path.join(appRoot, 'electron/npm-mutation-queue.js')).acquireNpmMutation({
+        command: 'npm', args: ['install', '--prefix', path.join(resources, 'isolated-npm-prefix')],
+      }).then(release => release());
       console.log(codeIdentity(process.execPath, appRoot));
     `;
     const environment = { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: '' };

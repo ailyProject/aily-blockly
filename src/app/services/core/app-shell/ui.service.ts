@@ -6,6 +6,7 @@ import { ElectronService, LogService } from '@core/platform/public-api';
 import { TerminalService } from '../../../tools/terminal/terminal.service';
 import { Router } from '@angular/router';
 import { FeedbackDialogComponent } from '../../../components/feedback-dialog/feedback-dialog.component';
+import { resolveAccountStatusCode } from '../../../components/feedback-dialog/feedback-diagnostics.utils';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { ProjectSettingDialogComponent } from '../../../components/project-setting-dialog/project-setting-dialog.component';
@@ -159,6 +160,8 @@ export class UiService {
         let data;
         if (String(message.data?.action || '').startsWith('partition-manager-')) {
           data = await this.partitionManagerRequest(message.data);
+        } else if (message.data?.action === 'get-feedback-context') {
+          data = await this.getFeedbackContext();
         } else if (message.data?.action === 'get-auth-state') {
           const initializationState = this.authService.getAuthInitializationState();
           if (initializationState === 'idle' || initializationState === 'checking') {
@@ -831,6 +834,14 @@ export class UiService {
 
 
   openFeedback(data?: any) {
+    // The existing independent-window host focuses/reuses the same route.
+    // Opening the form never submits feedback or uploads an attachment.
+    if (typeof window['subWindow']?.open === 'function') {
+      this.openWindow({ path: 'feedback', type: 'feedback-open', title: 'Aily Feedback',
+        data, width: 620, height: 740, minWidth: 520, minHeight: 520, alwaysOnTop: false, windowClass: 'builtin' });
+      void this.reportOpenChatIssue().catch(() => undefined);
+      return;
+    }
     const modalRef = this.modal.create({
       nzTitle: null,
       nzFooter: null,
@@ -865,6 +876,34 @@ export class UiService {
     // The existing window command only reaches an already-open detached host.
     const path = this.getToolWindowPath(toolId) || `/child-tool/${toolId}`;
     await window['subWindow']?.command?.(path, { toolId, action: 'reportIssue' });
+  }
+
+  private async getFeedbackContext(): Promise<Record<string, unknown>> {
+    try {
+      const { ProjectService } = await import('@domain/project/public-api');
+      const { SerialService } = await import('@domain/device/public-api');
+      const project = this.injector.get(ProjectService);
+      const unchanged = project.captureCurrentProjectGuard();
+      const path = project.currentProjectPath || null;
+      const [projectPackage, boardPackageName, boardPackage, logPage] = await Promise.all([
+        path ? project.getPackageJson().catch(() => null) : null,
+        path ? project.getBoardModule().catch(() => null) : null,
+        path ? project.getBoardPackageJson().catch(() => null) : null,
+        this.logService.readPage({ mode: 'tail', limit: 500, maxBytes: 128 * 1024 }).catch(() => ({ entries: this.logService.list })),
+      ]);
+      if (!unchanged()) return { success: false, error: 'Project changed while collecting feedback context' };
+      const authState = this.authService.getAuthInitializationState();
+      return { success: true, context: {
+        projectPath: path, projectPackage, boardPackageName, boardPackage,
+        boardName: project.currentBoardConfig?.name || null,
+        serialPort: this.injector.get(SerialService).currentPort || null,
+        logs: logPage.entries.slice(-500), email: this.authService.currentUser?.email || '',
+        accountStatusCode: resolveAccountStatusCode(authState, this.authService.isAuthenticated,
+          authState === 'authenticated' ? this.authService.getAuthSnapshot()?.plan : null),
+      } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   openProjectSettings() {

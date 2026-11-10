@@ -385,6 +385,8 @@
             "BLOCKLY_THEME": "Blocklyテーマ",
             "BLOCKLY_MINIMAP": "Blocklyミニマップ",
             "BLOCKLY_SOUNDS": "操作音",
+      "BLOCKLY_AUTO_SAVE": "Auto save",
+      "BLOCKLY_AUTO_SAVE_HINT": "Save the project 2 seconds after the last edit. Saved appears only after a successful write.",
             "FLYOUT_AUTO_CLOSE": "ツールボックスを自動的に閉じる",
             "COMPILATION_OPTIONS": "コンパイルオプション",
             "REGION": "サービスリージョン",
@@ -573,6 +575,9 @@
         "SAVE_AND_CONTINUE": "保存して続行"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "Could not read the main window project information. Please retry.",
+    "CONTEXT_RETRY": "Retry",
+    "MINIMIZE": "Minimize",
         "TITLE": "ユーザーフィードバック",
         "FEEDBACK_TYPE": "フィードバックタイプ",
         "TYPE_BUG": "バグ報告",
@@ -1079,6 +1084,10 @@
         "NO_TUTORIAL_PROVIDED": "ライブラリ作者がチュートリアルを提供していません"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "Unsaved",
+    "AUTO_SAVE_SAVING": "Saving…",
+    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "AI タスクを実行中です。完了してから名前を付けて保存してください。",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",

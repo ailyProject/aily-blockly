@@ -1,4 +1,4 @@
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { canonicalProjectJsonStringify } from '@domain/project/project-document/public-api';
 import { BlocklyProjectDocument, BlocklyWorkspaceViewState, normalizeBlocklyViewState } from './blockly-project-model';
 
@@ -11,6 +11,7 @@ const viewText = (view: BlocklyWorkspaceViewState | undefined): string =>
  * persistence checks. Ordinary edits and viewport events never capture a project. */
 export class BlocklyProjectDirtyState {
   readonly changed = new BehaviorSubject(false);
+  readonly activity = new Subject<void>();
   private baseline?: string;
   private baselineDocumentText?: string;
   private views = new Map<string, string>();
@@ -69,6 +70,7 @@ export class BlocklyProjectDirtyState {
 
   edited(recordUndo: boolean): void {
     if (this.baseline === undefined) return;
+    this.activity.next();
     this.contentDirty = true;
     this.publish();
     // Native undo/redo emits non-recording events. Verify only when returning
@@ -80,6 +82,7 @@ export class BlocklyProjectDirtyState {
    * frequent boundaries; coalesce them and compare memory, without disk/IPC. */
   invalidate(): void {
     if (this.baseline === undefined) return;
+    if (!this.pending) this.activity.next();
     this.pending = true;
     clearTimeout(this.timer);
     this.outsideAngular(() => { this.timer = setTimeout(() => this.reconcile(), 200); });

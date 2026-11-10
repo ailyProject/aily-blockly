@@ -385,6 +385,8 @@
             "BLOCKLY_THEME": "Blockly-Theme",
             "BLOCKLY_MINIMAP": "Blockly-Miniaturansicht",
             "BLOCKLY_SOUNDS": "Interaktionsklänge",
+      "BLOCKLY_AUTO_SAVE": "Auto save",
+      "BLOCKLY_AUTO_SAVE_HINT": "Save the project 2 seconds after the last edit. Saved appears only after a successful write.",
             "FLYOUT_AUTO_CLOSE": "Werkzeugkasten automatisch schließen",
             "COMPILATION_OPTIONS": "Kompilierungsoptionen",
             "REGION": "Service-Region",
@@ -573,6 +575,9 @@
         "SAVE_AND_CONTINUE": "Speichern und fortfahren"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "Could not read the main window project information. Please retry.",
+    "CONTEXT_RETRY": "Retry",
+    "MINIMIZE": "Minimize",
         "TITLE": "Benutzerfeedback",
         "FEEDBACK_TYPE": "Feedback-Typ",
         "TYPE_BUG": "Fehlermeldung",
@@ -1079,6 +1084,10 @@
         "NO_TUTORIAL_PROVIDED": "Der Bibliotheksautor hat kein Tutorial bereitgestellt"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "Unsaved",
+    "AUTO_SAVE_SAVING": "Saving…",
+    "AUTO_SAVE_SAVED": "Saved",
+    "AUTO_SAVE_ERROR": "Auto save failed",
         "SAVE_AS_AI_BUSY": "Eine KI-Aufgabe läuft. Warten Sie, bis sie abgeschlossen ist, bevor Sie das Projekt unter einem neuen Namen speichern.",
       "OPEN_IN_CODER": "Open in Aily Coder",
       "CONVERT_CODER_TITLE": "Convert to a Coder project",

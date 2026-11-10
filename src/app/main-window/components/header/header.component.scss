@@ -234,3 +234,5 @@ app-act-btn.dependency-blocked {
     }
   }
 }
+:host .project-save-status { font-size: 11px; color: var(--aily-text-secondary, #aaa); margin-left: 8px; white-space: nowrap; }
+:host .project-save-status.failed { color: #e89570; }

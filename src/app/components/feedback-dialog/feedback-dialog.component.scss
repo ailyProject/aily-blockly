@@ -218,3 +218,8 @@
         }
     }
 }
+:host.standalone { height: 100vh; max-height: 100vh; }
+:host.standalone ::ng-deep .prompt-box.dialog-scrollable { height: 100vh; max-height: 100vh; border-radius: 0; }
+:host.standalone ::ng-deep .header { -webkit-app-region: drag; }
+:host.standalone ::ng-deep .header button, :host.standalone ::ng-deep .win-btns { -webkit-app-region: no-drag; }
+.context-error { color: #e89570; padding-bottom: 12px; }

@@ -11,6 +11,7 @@ import { UiService, UpdateService, OnboardingService } from '@core/app-shell/pub
 import { ChildToolHostComponent } from '../tools/child-tool-host/child-tool-host.component';
 import { CodeViewerComponent } from '../editors/blockly-editor/tools/code-viewer/code-viewer.component';
 import { ProjectService } from '@domain/project/public-api';
+import { SerialService } from '@domain/device/public-api';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import { NzMessageService } from 'ng-zorro-antd/message';
 import { AppStoreComponent } from '../tools/app-store/app-store.component';
@@ -134,6 +135,8 @@ export class MainWindowComponent implements OnDestroy {
   private loginModalRef: NzModalRef<LoginComponent> | null = null;
   private authSessionInvalidationSubscription: Subscription | null = null;
   private authStateBroadcastSubscription: Subscription | null = null;
+  private ailyChatAutoOpenSubscription: Subscription | null = null;
+  private destroyed = false;
   private authSessionInvalidationPromise: Promise<void> | null = null;
   private cancelAilyChatPrewarm: (() => void) | null = null;
   private ailyChatPrewarmAuthSubscription: Subscription | null = null;
@@ -162,6 +165,7 @@ export class MainWindowComponent implements OnDestroy {
     private childToolProcessService: ChildToolProcessService,
     private toolI18n: ToolI18nService,
     private metrics: MetricsService,
+    private serialService: SerialService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -186,15 +190,18 @@ export class MainWindowComponent implements OnDestroy {
       this.toolI18n.loadChildTools(),
       this.toolI18n.load('aily-chat'),
     ]);
+    if (this.destroyed) return;
     this.uiService.init();
     this.projectService.init();
     this.projectContextSubscription = combineLatest([
       this.projectService.currentProjectPath$,
       this.projectService.coderWorkspace$,
-    ]).subscribe(([workspace, coderWorkspace]) => {
+      this.serialService.selectedPort$,
+    ]).subscribe(([workspace, coderWorkspace, serialPort]) => {
       window['ipcRenderer']?.send?.('host-project-context-changed', {
         workspace: workspace || null,
         coderWorkspace,
+        serialPort,
       });
     });
     this.updateService.init();
@@ -203,6 +210,12 @@ export class MainWindowComponent implements OnDestroy {
     this.setupExampleListListener();
     void this.electronService.sendRendererReady();
     this.metrics.record('app_opened');
+    this.ailyChatAutoOpenSubscription = this.authService.isLoggedIn$.pipe(
+      // Observe sign-out too, so a later login can open Chat again. Repeated
+      // authenticated snapshots must respect a panel the user has closed.
+      distinctUntilChanged(),
+      filter(Boolean),
+    ).subscribe(() => this.uiService.openPreferredAilyChat());
     void this.initializeAuthAndPromptIfNeeded();
     void this.ensureDefaultSubapps();
     // 重置 footer 状态
@@ -444,6 +457,9 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
+    this.ailyChatAutoOpenSubscription?.unsubscribe();
+    this.ailyChatAutoOpenSubscription = null;
     this.unregisterAilyChatHostAuthRuntimeBridge?.();
     this.unregisterAilyChatHostAuthRuntimeBridge = null;
     this.cancelAilyChatPrewarm?.();

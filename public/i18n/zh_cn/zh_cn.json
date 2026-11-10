@@ -446,6 +446,12 @@
             "BLOCKLY_THEME": "Blockly主题",
             "BLOCKLY_MINIMAP": "Blockly缩略图",
             "BLOCKLY_SOUNDS": "操作音效",
+      "BLOCKLY_AUTO_SAVE": "自动保存",
+      "BLOCKLY_AUTO_SAVE_HINT": "停止编辑 2 秒后保存工程；仅在实际保存成功后显示已保存。",
+      "BLOCKLY_SETTINGS_AUTO_SAVE": "Blockly 设置自动保存",
+      "BLOCKLY_SETTINGS_SAVING": "正在保存 Blockly 设置…",
+      "BLOCKLY_SETTINGS_SAVED": "Blockly 设置已自动保存",
+      "BLOCKLY_SETTINGS_SAVE_FAILED": "Blockly 设置保存失败，请重新选择或点击应用重试",
             "FLYOUT_AUTO_CLOSE": "自动关闭工具箱",
             "COMPILATION_OPTIONS": "编译选项",
             "REGION": "服务区域",
@@ -667,6 +673,9 @@
         "CONFIRM": "是"
     },
     "FEEDBACK_DIALOG": {
+    "CONTEXT_FAILED": "无法获取主窗口的工程信息，请重试。",
+    "CONTEXT_RETRY": "重新获取",
+    "MINIMIZE": "最小化",
         "TITLE": "用户反馈",
         "FEEDBACK_TYPE": "反馈类型",
         "TYPE_BUG": "Bug反馈",
@@ -1223,6 +1232,10 @@
         "NO_TUTORIAL_PROVIDED": "库作者未提供教程"
     },
     "PROJECT": {
+    "AUTO_SAVE_PENDING": "待保存",
+    "AUTO_SAVE_SAVING": "保存中…",
+    "AUTO_SAVE_SAVED": "已保存",
+    "AUTO_SAVE_ERROR": "自动保存失败",
         "SAVE_AS_AI_BUSY": "AI 任务正在运行，请等待完成后再另存为。",
       "OPEN_IN_CODER": "使用 Aily Coder 打开",
       "CONVERT_CODER_TITLE": "转换为 Coder 项目",

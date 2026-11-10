@@ -58,6 +58,7 @@ import {
   type LinuxBoardSshSettings,
 } from '@integration/device/public-api';
 import { ConnectorSettingDialogComponent } from '../connector-setting-dialog/connector-setting-dialog.component';
+import { ProjectAutoSave, type AutoSaveState } from './project-auto-save';
 
 interface NetworkOtaTarget {
   id: string;
@@ -164,6 +165,9 @@ export class HeaderComponent implements OnInit, OnDestroy {
   }
 
   hasUnsavedProjectChanges = false;
+  autoSaveState: AutoSaveState = '';
+  autoSaveError = '';
+  private autoSave?: ProjectAutoSave;
   private unsavedSubscriptions = new Subscription();
   private unsavedCheckTimer?: ReturnType<typeof setTimeout>;
   private coderUnsavedPoll?: ReturnType<typeof setInterval>;
@@ -171,7 +175,28 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private unsavedCheckRunning = false;
 
   private watchProjectUnsavedState(): void {
+    this.autoSave = new ProjectAutoSave({
+      project: () => this.projectService.currentProjectPath,
+      enabled: () => this.configService.data?.blockly?.autoSave !== false
+        && this.router.url.includes('/main/blockly-editor'),
+      ready: () => !this.destroyed && !this.projectSavingFromUi && !this.projectSavingAs
+        && !this.projectConflictResolving && !this.unsaveDialogOpen
+        && !this.blocklyService.aiWriting && !this.blocklyService.aiWaitWriting
+        && !this.blocklyService.isWorkspaceEditBlocked()
+        && !this.blocklyService.workspace?.isDragging()
+        && !this.projectService.isProjectTransitionInProgress(this.projectService.currentProjectPath)
+        && ['loaded', 'saved'].includes(this.projectService.stateSubject.value),
+      dirty: () => this.projectService.hasUnsavedChanges(),
+      save: path => this.projectService.save(path),
+      state: (state, error) => this.ngZone.run(() => {
+        this.autoSaveState = state; this.autoSaveError = error || ''; this.cd.markForCheck();
+      }),
+    });
+    this.unsavedSubscriptions.add(merge(this.blocklyService.projectDirtyState.activity,
+      this.projectService.libraryChangesChanged, this.configService.configReloaded$)
+      .subscribe(() => this.autoSave?.edited()));
     this.unsavedSubscriptions.add(this.projectService.currentProjectPath$.subscribe(() => {
+      this.autoSave?.cancel();
       this.setProjectUnsaved(false);
       this.scheduleUnsavedCheck();
     }));
@@ -1289,10 +1314,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
       // cannot prove that persistence failed or release this UI submission.
       const saved = await this.projectService.save(path);
       if (!unchanged()) return false;
-      if (saved?.success === true) return true;
       // The editable document is committed. Its derived outputs are queued
       // until the active build releases ownership; this is not a failed save.
-      if (saved?.projectSaved === true && saved?.code === 'BUILD_WORKSPACE_BUSY') return true;
+      if (saved?.success === true || (saved?.projectSaved === true && saved?.code === 'BUILD_WORKSPACE_BUSY')) {
+        if (this.autoSaveState === 'error') {
+          this.autoSaveState = 'saved'; this.autoSaveError = ''; this.cd.markForCheck();
+        }
+        return true;
+      }
       const resolved = await this.resolveSaveConflictFromUi(path, saved);
       if (resolved !== undefined) return resolved && unchanged();
       if (this.projectService.hasBlocklyRuntimeRecovery?.(path)) {
@@ -1677,6 +1706,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.destroyed = true;
     this.unsubscribeWindowStateChanged?.();
     this.unsavedSubscriptions?.unsubscribe();
+    this.autoSave?.dispose();
     clearTimeout(this.unsavedCheckTimer);
     clearInterval(this.coderUnsavedPoll);
     this.clearPartitionInstallNotice();

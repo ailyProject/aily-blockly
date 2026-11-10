@@ -21,7 +21,7 @@ function cancellationFixture({ terminate, workspace, viaIpc = false, backgroundP
   let killCalls = 0, spawnCalls = 0;
   const killOptions = [];
   const timers = [], handlers = new Map();
-  const context = { module: { exports: {} }, process, console: { info() {}, log() {}, warn() {}, error() {} },
+  const context = { module: { exports: {} }, process, AbortController, console: { info() {}, log() {}, warn() {}, error() {} },
     setTimeout: callback => { const timer = { callback, unref() {} }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.cancelled = true; },
     require: name => {

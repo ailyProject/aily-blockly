@@ -3,6 +3,7 @@ const { ipcMain } = require("electron");
 const { spawn } = require('child_process');
 const { killRegisteredProcessTree } = require('./process-tree');
 const { assertProjectTaskActive, matchesProjectTask } = require('./project-task-scope');
+const { acquireNpmMutation } = require('./npm-mutation-queue');
 
 const activeNpmProcesses = new Map();
 let npmShutdown = false;
@@ -198,7 +199,7 @@ function runNpmCommand(entry, option, mainWindow) {
         child.once('close', (code, signal) => {
             entry.closed = true;
             entry.completedNormally = Number.isInteger(code) && !signal;
-            if (!entry.completedNormally && child.pid && !processError) entry.terminationUnconfirmed = true;
+            if (!entry.completedNormally && child.pid) entry.terminationUnconfirmed = true;
             if (entry.cancelled) return reject(new Error('NPM_COMMAND_CANCELLED'));
             if (processError) return option?.ignoreErr ? resolve(false) : reject(processError);
             if (code !== 0) {
@@ -262,6 +263,11 @@ function registerNpmHandlers(mainWindow) {
         owner.on('render-process-gone', onDestroyed);
         owner.on('destroyed', onDestroyed);
         try {
+            const permit = acquireNpmMutation({ commandText: cmd }, {
+                signal: entry.retryAbort.signal,
+                onWait: () => sendRendererLog(mainWindow, '依赖正在安装，已排队等待完成…', 'doing', `${sourceId}:install-wait`),
+            });
+            if (permit) entry.releaseNpmMutation = await permit;
             return await runNpmWithRetries(entry, option, mainWindow);
         } finally {
             owner.removeListener('did-start-navigation', onNavigation);
@@ -274,6 +280,8 @@ function registerNpmHandlers(mainWindow) {
 }
 
 function releaseNpmEntry(entry) {
+    entry.releaseNpmMutation?.();
+    entry.releaseNpmMutation = undefined;
     if (activeNpmProcesses.get(entry.sourceId) === entry) activeNpmProcesses.delete(entry.sourceId);
 }
 

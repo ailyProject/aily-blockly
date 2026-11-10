@@ -40,6 +40,7 @@ import { ElectronService, LogService, PlatformService } from '@core/platform/pub
 import { MainUiAutomationService, AiOperationRegistryService } from '@integration/automation/public-api';
 import { NoticeService, UiService } from '@core/app-shell/public-api';
 import { ProjectService, type CoderWorkspaceContext } from '@domain/project/public-api';
+import { SerialService, type HostSerialPort } from '@domain/device/public-api';
 import { SubappActivityDockComponent } from '../../components/subapp-activity-dock/subapp-activity-dock.component';
 import { ChildToolNativeObserverComponent } from '../child-tool-native-observer/child-tool-native-observer.component';
 import {
@@ -56,6 +57,7 @@ type HostMessageState = 'success' | 'info' | 'warning' | 'error' | 'loading';
 type ChildLifecycleReason = 'close' | 'restart' | 'update';
 
 interface HostProjectContext {
+  serialPort?: HostSerialPort | null;
   workspace?: string | null;
   coderWorkspace?: CoderWorkspaceContext | null;
   version?: number;
@@ -152,6 +154,8 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   private langSubscription: Subscription | null = null;
   private themeSubscription: Subscription | null = null;
   private projectPathSubscription: Subscription | null = null;
+  private serialPortSubscription: Subscription | null = null;
+  private standaloneSerialPort: HostSerialPort | null = null;
   private blockSelectionSubscription: Subscription | null = null;
   private toolSignalSubscription: Subscription | null = null;
   private subappActivitySubscription: Subscription | null = null;
@@ -214,6 +218,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     private requiredSubapps: RequiredSubappService,
     private aiOperationRegistry: AiOperationRegistryService,
     platformService: PlatformService,
+    private serialService: SerialService,
   ) {
     this.standaloneWinBtns = platformService.isWindows()
       ? ['go-main', 'minimize', 'maximize', 'close']
@@ -223,6 +228,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       this.pushChatSubappActivities();
     });
     this.themeSubscription = this.themeService.themeChanged$.subscribe(() => this.syncHostContext());
+    this.serialPortSubscription = this.serialService.selectedPort$.subscribe(() => {
+      if (this.initialized && !this.isStandalone && this.resolvedToolId === 'serial-debugger') this.syncHostContext();
+    });
     this.projectPathSubscription = combineLatest([
       this.projectService.currentProjectPath$,
       this.projectService.coderWorkspace$,
@@ -424,6 +432,7 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.serialPortSubscription?.unsubscribe();
     this.langSubscription?.unsubscribe();
     this.langSubscription = null;
     this.themeSubscription?.unsubscribe();
@@ -1868,6 +1877,9 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
       platform: (window as any).electronAPI?.platform?.type || 'browser',
       embedded: !this.isStandalone,
       active: this.isStandalone || this.active,
+      ...(this.resolvedToolId === 'serial-debugger' ? {
+        serialPort: this.isStandalone ? this.standaloneSerialPort : this.serialService.selectedPort$.value,
+      } : {}),
       ...developmentModeContext,
       surface: launch.surface,
       surfaceParams: launch.params,
@@ -2665,10 +2677,11 @@ export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
     const coderWorkspace = context?.coderWorkspace && typeof context.coderWorkspace === 'object'
       ? context.coderWorkspace
       : null;
-    const changed = this.standaloneWorkspace !== workspace ||
+    const changed = JSON.stringify(this.standaloneSerialPort) !== JSON.stringify(context?.serialPort || null) || this.standaloneWorkspace !== workspace ||
       JSON.stringify(this.standaloneCoderWorkspace) !== JSON.stringify(coderWorkspace);
 
     this.standaloneWorkspace = workspace;
+    this.standaloneSerialPort = context?.serialPort || null;
     this.standaloneCoderWorkspace = coderWorkspace;
     if (Number.isFinite(version)) {
       this.standaloneWorkspaceVersion = version;

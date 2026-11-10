@@ -447,3 +447,25 @@ ngx-simplebar {
 .cloud-build-status:not(:empty) {
   margin-top: 6px;
 }
+
+.window-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  height: auto;
+  padding: 12px 15px;
+
+  .btns {
+    position: static;
+    flex-shrink: 0;
+    gap: 12px;
+    height: auto;
+    margin-left: auto;
+
+    button { margin-right: 0; }
+  }
+}
+
+.blockly-save-status { min-width: 0; margin: 0; font-size: 12px; line-height: 18px; color: var(--aily-text-secondary); }
+.blockly-save-status.save-error { color: var(--aily-color-error, #e36a6a); }
