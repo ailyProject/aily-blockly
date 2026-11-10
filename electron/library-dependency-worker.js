@@ -101,7 +101,8 @@ async function run(request) {
           || additions.has(node.name)) { locations.add(location); retainBins(node); retainBins(target); }
       }
       for (const [location, node] of ideal.inventory) {
-        if (location?.startsWith('node_modules/') && !actual.inventory.has(location)) { locations.add(location); retainBins(node); }
+        // Inventory.has() takes a Node; a location string always misses.
+        if (location?.startsWith('node_modules/') && !actual.inventory.get(location)) { locations.add(location); retainBins(node); }
       }
       await checkpoint([...locations].sort());
     }

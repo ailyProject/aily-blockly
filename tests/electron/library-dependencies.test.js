@@ -71,6 +71,52 @@ test('public library operations persist manifest and lockfile before returning a
   assert.deepEqual(['package.json', 'package-lock.json'].map(f.read), baseline);
 });
 
+test('a library operation archives only changed packages and its attempts share one recovery copy', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  const recovery = path.join(f.root, '.aily/dependency-recovery');
+  const trees = [];
+  const visit = folder => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const child = path.join(folder, entry.name);
+      if (entry.name === 'trees') trees.push(child); else visit(child);
+    }
+  };
+  visit(recovery);
+  assert.ok(trees.length > 1, 'The session operation retains original and attempt checkpoints');
+  const archived = trees.map(folder => fs.readdirSync(folder, { withFileTypes: true }).filter(entry => entry.isDirectory()));
+  for (const entries of archived) assert.equal(entries.length, 1, 'Unchanged installed packages are not copied into recovery');
+  const inodes = new Set(trees.map((folder, index) => fs.statSync(path.join(folder, archived[index][0].name, 'package.json')).ino));
+  assert.equal(inodes.size, 1, 'Attempts checkpointed together link the original archive instead of copying it again');
+});
+
+test('settled operations beyond the latest five drop archived bytes but keep their observation records', async t => {
+  const f = await fixture(t), sessions = new LibraryDependencySessions(f.api);
+  for (let index = 0; index < 4; index++) {
+    await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+    await sessions.run('mutate', f.root, { action: 'install', packages: ['test-b@file:local-libraries/b'] });
+  }
+  const recovery = path.join(f.root, '.aily/dependency-recovery');
+  const operations = fs.readdirSync(recovery).filter(name => name.startsWith('environment-')).map(name => path.join(recovery, name));
+  assert.equal(operations.length, 8);
+  for (const folder of operations) {
+    assert.ok(fs.existsSync(path.join(folder, 'checkpoint.json')) && fs.existsSync(path.join(folder, 'result.json')));
+  }
+  const retained = operations.filter(folder => fs.existsSync(path.join(folder, 'trees')));
+  assert.equal(retained.length, 5);
+  const newest = operations.map(folder => JSON.parse(fs.readFileSync(path.join(folder, 'checkpoint.json'), 'utf8')))
+    .map((record, index) => ({ folder: operations[index], createdAt: record.payload.createdAt }))
+    .sort((left, right) => right.createdAt - left.createdAt).slice(0, 5).map(value => value.folder);
+  assert.deepEqual(retained.sort(), newest.sort());
+  for (let wait = 0; operations.some(folder => fs.readdirSync(folder).some(name => name.startsWith('pruned-'))); wait++) {
+    assert.ok(wait < 100, 'Discarded archives are removed in the background');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  await sessions.run('mutate', f.root, { action: 'remove', packages: ['test-b'] });
+  assert.deepEqual(f.installed(), ['test-a']);
+});
+
 test('automatic library save preserves build fingerprints refreshed during npm and source preparation', async t => {
   const f = await fixture(t), sessions = new LibraryDependencySessions(f.api), run = f.api.run;
   let revision = 0;

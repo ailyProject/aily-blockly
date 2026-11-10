@@ -20,6 +20,7 @@ const inputs = root => Object.fromEntries(inputNames.map(name => {
   return [name, stat ? raw(file) : null];
 }));
 const relevantPackage = environmentManifest;
+const RETAINED_SETTLED_ARCHIVES = 5;
 function programSource(root) {
   const access = createProjectFileAccess(root, root);
   for (const directory of ['.aily', '.aily/abs-sync']) access.checkDirectory(path.join(root, directory));
@@ -125,6 +126,20 @@ function tree(source, target, ancestors = new Set(), allowLinks = true) {
   return { hash: digest(JSON.stringify(entries)), entries };
 }
 
+/** Recorded archives are never written again, so attempts checkpointed in the
+ * same call share their original's fsynced bytes instead of copying them. */
+function linkArchive(from, to) {
+  const link = (source, target) => {
+    const stat = fs.lstatSync(source);
+    if (!stat.isDirectory()) return fs.linkSync(source, target);
+    fs.mkdirSync(target);
+    for (const name of fs.readdirSync(source)) link(path.join(source, name), path.join(target, name));
+    fs.chmodSync(target, stat.mode & 0o777);
+  };
+  try { link(from, to); return true; }
+  catch { fs.rmSync(to, { recursive: true, force: true }); return false; }
+}
+
 /** The existing dependency manager owns this journal and its one npm executor.
  * It stores no Blockly state and grants no ABS apply/publication authority. */
 class LibraryEnvironmentJournal {
@@ -193,7 +208,7 @@ class LibraryEnvironmentJournal {
   }
   endAttempt(root, id) { this.attempts.set(root, (this.attempts.get(root) || []).filter(value => value.record.requestId !== id)); }
   attempt(root, id) { return this.attempts.get(root)?.find(value => value.record.requestId === id); }
-  preserve(root, locations, assertCurrent, worker, retained) {
+  preserve(root, locations, assertCurrent, worker, retained, fresh = new Map()) {
     const operation = retained ?? this.owned.get(root);
     if (!operation) throw fail('Npm cannot mutate an environment without its original checkpoint.');
     this.assertAttachment(root, operation.record); this.assertOriginal(operation); assertCurrent();
@@ -204,6 +219,10 @@ class LibraryEnvironmentJournal {
       assertCurrent(); parentIsPhysical(root, relative, false);
       const key = digest(relative).slice(7), metadata = path.join(base, `${key}.json`);
       if (fs.existsSync(metadata)) { readRecord(metadata); continue; }
+      const shared = retained && fresh.get(relative);
+      if (shared && (!shared.record.exists || linkArchive(shared.destination, path.join(base, key)))) {
+        immutable(metadata, shared.record); assertCurrent(); continue;
+      }
       const logical = path.join(root, relative), stat = fs.lstatSync(logical, { throwIfNoEntry: false });
       const record = { version: 1, relative, exists: !!stat };
       if (stat) {
@@ -227,8 +246,9 @@ class LibraryEnvironmentJournal {
         if (!same(tree(logical), { hash: record.hash, entries: record.entries })) throw fail('Library source changed while it was being preserved.');
       }
       immutable(metadata, record); assertCurrent();
+      if (!retained) fresh.set(relative, { destination: path.join(base, key), record });
     }
-    if (!retained) for (const attempt of this.attempts.get(root) || []) this.preserve(root, locations, assertCurrent, worker, attempt);
+    if (!retained) for (const attempt of this.attempts.get(root) || []) this.preserve(root, locations, assertCurrent, worker, attempt, fresh);
   }
   complete(root, assertCurrent, status = 'completed') {
     const operation = this.owned.get(root); if (!operation) return undefined;
@@ -244,7 +264,39 @@ class LibraryEnvironmentJournal {
     }
     const result = { version: 1, requestId: operation.record.requestId, status, after: inputs(root), trees, candidateApplied: false };
     immutable(path.join(operation.folder, 'result.json'), result); this.owned.delete(root); this.latest.set(root, result);
+    this.prune(root);
     return result;
+  }
+  /** Settled operations are only observed through their checkpoint/result
+   * records, so older archived bytes can go while those records stay. */
+  prune(root, keep = RETAINED_SETTLED_ARCHIVES) {
+    const base = path.join(root, '.aily/dependency-recovery');
+    const active = new Set([this.owned.get(root), ...(this.attempts.get(root) || [])].filter(Boolean)
+      .map(operation => path.relative(base, operation.folder).split(path.sep)[0]));
+    const settled = [];
+    for (const name of fs.existsSync(base) ? fs.readdirSync(base) : []) {
+      if (!/^environment-[0-9a-f]{64}$/.test(name)) continue;
+      const folder = path.join(base, name);
+      try {
+        if (!fs.lstatSync(folder).isDirectory() || !fs.existsSync(path.join(folder, 'result.json'))) continue;
+        const record = readRecord(path.join(folder, 'checkpoint.json'));
+        if (record.request?.programRef && !fs.existsSync(path.join(folder, 'program-resolution.json'))) continue;
+        settled.push({ folder, createdAt: record.createdAt || 0 });
+      } catch { /* An unreadable operation stays for recovery to report. */ }
+    }
+    settled.sort((left, right) => right.createdAt - left.createdAt);
+    for (const { folder } of settled.slice(keep)) {
+      if (active.has(path.basename(folder))) continue;
+      for (const name of ['trees', 'attempts']) {
+        const data = path.join(folder, name);
+        if (fs.lstatSync(data, { throwIfNoEntry: false })?.isDirectory()) {
+          try { fs.renameSync(data, path.join(folder, `pruned-${randomUUID()}`)); } catch { /* Retried on the next completion. */ }
+        }
+      }
+      for (const name of fs.readdirSync(folder).filter(name => name.startsWith('pruned-'))) {
+        fs.promises.rm(path.join(folder, name), { recursive: true, force: true }).catch(() => { /* Retried on the next completion. */ });
+      }
+    }
   }
   preserveInputWrites(root, writes, assertCurrent, retained) {
     const operation = retained ?? this.owned.get(root); if (!operation) throw fail('Dependency input write has no original owner.');
