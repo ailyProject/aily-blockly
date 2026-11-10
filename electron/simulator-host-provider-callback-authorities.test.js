@@ -3214,6 +3214,11 @@ async function loadHostProductService({ digest, onComposition }) {
     './simulator-coder-source-reader': {
       createSimulatorCoderSourceReader() { throw new Error('Blockly source fixture must not read Coder projects'); },
     },
+    './simulator-coder-editor-callback-authority': {
+      SimulatorCoderEditorCallbackAuthority: class {
+        constructor() { throw new Error('Blockly source fixture must not create Coder editor callbacks'); }
+      },
+    },
     './simulator-build-callback-authority': {
       createSimulatorBuildExecutionSlot: (await integrationModulePromise).createSimulatorBuildExecutionSlot,
     },
