@@ -4,6 +4,7 @@ import { observeRuntimePublication } from './abs/abs-runtime-publication-observa
 import { AbsBaselineStore, type AbsSyncStoragePort } from './abs/abs-baseline-store';
 import { AbsOperationJournal } from './abs/abs-operation-journal';
 import { absJson, hashAbsText } from './abs/abs-identity-map';
+import type { NativeSaveOperationRef } from './abs/abs-native-save-protocol';
 
 /** Only retires an older environment observation. It grants no completion or
  * candidate authority to that older native request. */
@@ -41,16 +42,26 @@ export async function inspectEnvironmentSuccessor(io: AbsSyncStoragePort, projec
 
 /** Source observation and dependency restoration share a physical lock, so
  * these two existing owners are called sequentially, never inside each other. */
-export async function settleLinkedProjectEnvironment(project: string, assertCurrent: () => void): Promise<void> {
+export async function settleLinkedProjectEnvironment(project: string, assertCurrent: () => void,
+  completed?: NativeSaveOperationRef): Promise<void> {
   const host = window['libraryDependencies'];
   if (host?.environmentVersion !== 2 || typeof host.pendingEnvironment !== 'function') return;
-  const pending = await host.pendingEnvironment(project); assertCurrent();
+  const originals: Array<{ requestId: string; programRef: NativeSaveOperationRef }> = await host.pendingEnvironment(project);
+  assertCurrent();
+  const pending = completed ? originals.filter(value => value.programRef.request.requestId === completed.request.requestId) : originals;
   if (!pending.length) return;
-  const io = await openAbsHostStorage(project, assertCurrent);
-  await settleAbsProjectTransaction(io, project, assertCurrent); assertCurrent();
+  if (completed && (pending.length !== 1 || absJson(pending[0].programRef) !== absJson(completed))) {
+    throw new Error('The linked environment no longer identifies the completed source publication.');
+  }
+  const io = completed ? undefined : await openAbsHostStorage(project, assertCurrent);
+  if (io) await settleAbsProjectTransaction(io, project, assertCurrent);
+  assertCurrent();
   for (const original of pending) {
     const facts = await observeRuntimePublication(project, original.programRef, assertCurrent); assertCurrent();
-    const successor = facts.observation.state === 'completed' && facts.observation.result.publication.status === 'NOT_COMMITTED'
+    if (completed && (facts.observation.state !== 'completed' || facts.observation.result.publication.status !== 'COMMITTED')) {
+      throw new Error('The original source commit is not verified for its linked environment.');
+    }
+    const successor = io && facts.observation.state === 'completed' && facts.observation.result.publication.status === 'NOT_COMMITTED'
       ? await inspectEnvironmentSuccessor(io, project, assertCurrent) : undefined;
     await host.settleLinkedEnvironment(project, { ...original, ...facts, ...(successor ? { successor } : {}) }); assertCurrent();
   }

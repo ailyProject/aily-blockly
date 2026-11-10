@@ -4,6 +4,7 @@ import { readAbsHistoryPublication, historyPublicationIdentity, historyPublicati
 import { mergeAbsHistoryDocument } from './abs-history-document';
 import { restoreObservedProgramMap } from './abs-derived-map-recovery';
 import type { HistoryEnvironmentPlan } from '../history-environment';
+import { settleLinkedProjectEnvironment } from '../environment-settlement';
 import { observeRuntimePublication } from './abs-runtime-publication-observation';
 import { AbsOperationJournal, type NativeSaveOperationRef } from './abs-operation-journal';
 import { AbsApplicationJournal } from './abs-application-journal';
@@ -248,7 +249,17 @@ export class AbsWorkspaceSyncService {
             { publication: outcome.publication, projectSaved: outcome.publication.abiSaved === true,
               generatedCodePublished: false, partial: outcome.publication.abiSaved === true });
         }
-        return { outcome, ref: admitted.ref, project, identity, port };
+        let linkedEnvironmentError: string | undefined;
+        if (change && ('runtime' in change || history?.history.environment)) {
+          try {
+            // The source seal already proves this request. Resolve its exact
+            // Main-owned environment before the generic dependency post-effect.
+            await settleLinkedProjectEnvironment(project, () => { context.assertCurrent(); lease.assertCurrent(); }, admitted.ref);
+          } catch (error) {
+            linkedEnvironmentError = error instanceof Error ? error.message : String(error);
+          }
+        }
+        return { outcome, ref: admitted.ref, project, identity, port, linkedEnvironmentError };
       } catch (error) {
         // Only a fully unchanged source and a restored latest Working view can
         // obtain a durable NOT_COMMITTED terminal. The journal checks source
@@ -282,8 +293,8 @@ export class AbsWorkspaceSyncService {
     }
     if ('facts' in prepared && prepared.facts) return nativeSaveResult(prepared.project, prepared.identity, prepared.facts);
     const result = prepared.outcome!;
-    let dependencyError: string | undefined;
-    try { await window['libraryDependencies']?.save(path); }
+    let dependencyError = prepared.linkedEnvironmentError;
+    try { if (!dependencyError) await window['libraryDependencies']?.save(path); }
     catch (error) { dependencyError = error instanceof Error ? error.message : String(error); }
     const generatedCodePublished = result.derivedOutputs?.published ?? result.warnings.length === 0;
     const partial = !generatedCodePublished || !!dependencyError;

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -17,8 +18,8 @@ const structuredOf = result => {
  * No direct project-file IO is available here. Default permissions come from
  * the real permission-system extension; roots come only from WorkspaceBinding.
  * Create this before recovery and call project_recover through this harness.
- * guardProjects must include every already-protected fixture project so normal
- * session_start restoration cannot accidentally discard a prior protection.
+ * Legacy workflow snapshots remain read-only recovery observations. Current
+ * candidate ownership and private-file protection come from real History hooks.
  */
 export async function createRecoveredAgentHarness(options) {
   const stage = name => options.onStage?.(name)
@@ -43,6 +44,7 @@ export async function createRecoveredAgentHarness(options) {
   const { createBlocklyToolRegistry } = await mod('blockly/tools/registry')
   const { createBlocklyTools } = await mod('blockly/tools/definitions')
   const { createTools } = await mod('tools/create-tools')
+  const { createWorkingCandidateFileCapability } = await mod('blockly/services/abs/working-candidate-capability')
   const { createAilyBlocklyExtension, ABS_WORKFLOW_ENTRY_TYPE } = await mod('extensions/pi-aily-blockly/extension')
   const { createPermissionModeExtension } = await mod('extensions/pi-permission-mode/extension')
   const { createWorkspaceHistoryExtension } = await mod('extensions/pi-workspace-history/extension')
@@ -57,6 +59,7 @@ export async function createRecoveredAgentHarness(options) {
   if (!history.hasActiveTurn && !options.restoreHistory) await history.begin(undefined)
   const binding = options.binding ?? new WorkspaceBinding(sourceProject, globalRoot, history, permissionMode)
   const guard = options.guard ?? new AbsWorkflowGuard()
+  assert.equal(typeof guard.recordConflict, 'undefined', 'Do not inject a retired workflow writer')
   assert.equal(binding.root, sourceProject, 'The original session remains bound to its source')
   const registry = options.registry ?? createBlocklyToolRegistry(binding, history, 'blockly')
   const registrarContext = { registry, workspace: binding, workspaceHistory: history, absWorkflow: guard, developmentMode: 'blockly' }
@@ -77,7 +80,15 @@ export async function createRecoveredAgentHarness(options) {
   }
   await options.configureRegistry?.(registrarContext)
   const blocklyTools = createBlocklyTools(binding, history, registry.definitions())
-  const coreTools = createTools(binding, history, permissionMode, blocklyTools)
+  // Match the production composition root: reading ABS must use the actual
+  // branch-owned WorkingCandidate capability, not plain versioned disk IO.
+  const candidateFiles = createWorkingCandidateFileCapability(binding, history, {
+    hasLegacyCandidate: () => Boolean(guard.snapshot(binding.root)?.retainedCandidate),
+    legacyCandidateReference: () => guard.snapshot(binding.root)?.retainedCandidateHandoff,
+    hasCompletedLegacyApplication: () => guard.snapshot(binding.root)?.status === 'verified'
+  })
+  const coreTools = createTools(binding, history, permissionMode, blocklyTools,
+    [], [], () => [], undefined, undefined, undefined, [], candidateFiles)
   stage('tools-created')
   const services = { cwd: sourceProject, agentDir: profileRoot, workspaceBinding: binding, absWorkflow: guard, workspaceHistory: history,
     permissionMode, blocklyTools, contextCache: new ContextCacheRuntime(), assets: {
@@ -86,13 +97,23 @@ export async function createRecoveredAgentHarness(options) {
     } }
   assert.ok(!options.sessionSnapshot || !options.initialEntries?.length,
     'Resume the actual session snapshot or seed entries, never merge unrelated sessions')
-  assert.ok(!options.createStreaming || !options.sessionSnapshot,
+  assert.ok(!options.sessionFile || !options.sessionSnapshot && !options.initialEntries?.length,
+    'Resume an actual session file or seed one snapshot, never combine session trees')
+  assert.ok(!options.createStreaming || !options.sessionSnapshot && !options.sessionFile,
     'A streaming acceptance starts its own native persistent session, never a patched in-memory session')
-  const persistentManager = options.createStreaming
-    ? (await mod('session-manager/windowed-session-manager')).WindowedSessionManager : undefined
-  const sessionManager = persistentManager
-    ? persistentManager.create(sourceProject, path.join(profileRoot, 'sessions'))
-    : sdk.SessionManager.inMemory(sourceProject, undefined, options.sessionSnapshot)
+  const { WindowedSessionManager } = await mod('session-manager/windowed-session-manager')
+  const sessionDirectory = path.join(profileRoot, 'sessions')
+  let sessionFile = options.sessionFile && absolute(options.sessionFile, 'sessionFile')
+  if (options.sessionSnapshot) {
+    assert.ok(Array.isArray(options.sessionSnapshot) && options.sessionSnapshot[0]?.type === 'session',
+      'A resumed snapshot must retain its actual session header and entry identities')
+    await fs.mkdir(sessionDirectory, { recursive: true })
+    sessionFile = path.join(sessionDirectory, `restored-${randomUUID()}.jsonl`)
+    await fs.writeFile(sessionFile, options.sessionSnapshot.map(entry => JSON.stringify(entry)).join('\n') + '\n', { flag: 'wx' })
+  }
+  const sessionManager = sessionFile
+    ? WindowedSessionManager.open(sessionFile, sessionDirectory, sourceProject)
+    : WindowedSessionManager.create(sourceProject, sessionDirectory)
   // Optional product-provider session for transport/Agent-loop acceptance. The
   // normal direct-tool harness still has no provider and never starts a turn.
   const streaming = await options.createStreaming?.({ sdk, load, mod, services, sessionManager })
@@ -100,11 +121,12 @@ export async function createRecoveredAgentHarness(options) {
     assert.equal(entry.type, 'custom', 'Only existing extension state is seeded; never inject a user message')
     sessionManager.appendCustomEntry(entry.customType, entry.data)
   }
-  const projects = new Set([sourceProject, ...binding.associatedProjectRoots, ...(options.guardProjects ?? [])])
-  const concurrent = guard.concurrentEdit()
-  if (concurrent) projects.add(concurrent.project)
-  const existingGuards = [...projects].map(project => guard.snapshot(project)).filter(Boolean)
-  for (const snapshot of existingGuards) sessionManager.appendCustomEntry(ABS_WORKFLOW_ENTRY_TYPE, snapshot)
+  const existingGuards = guard.snapshots()
+  // Preserve historical DTOs across session_start without granting them a file
+  // writer, candidate owner or permission override. A resumed tree already owns
+  // its observations and must not get a newer duplicate checkpoint.
+  if (!sessionFile) for (const snapshot of existingGuards)
+    sessionManager.appendCustomEntry(ABS_WORKFLOW_ENTRY_TYPE, snapshot)
   const existingAssociation = [...binding.associatedProjectRoots]
   if (existingAssociation.length > 1) sessionManager.appendCustomEntry(SESSION_PROJECT_ASSOCIATION_ENTRY_TYPE, {
     version: 1, workspaceId: `session:${binding.sessionRoot}`, root: binding.sessionRoot,
@@ -261,12 +283,16 @@ export async function createRecoveredAgentHarness(options) {
       messages: () => structuredClone(session.agent.state.messages),
       historyEntries: () => structuredClone(sessionManager.getEntries().filter(entry => entry.type === 'custom')),
       sessionSnapshot: () => structuredClone([sessionManager.getHeader(), ...sessionManager.getEntries()]),
+      sessionFile: () => sessionManager.getSessionFile(),
       async beginTurn(prompt) {
         assert.equal(disposed, false)
         assert.equal(streamingActive, false, 'Direct-tool lifecycle must not overlap a provider prompt')
         assert.equal(activeCall, undefined)
         assert.equal(history.hasActiveTurn, false, 'Settle the preceding real turn first')
         assert.equal(typeof prompt, 'string')
+        // Candidate checkpoints require the real persistent SDK user branch;
+        // lifecycle events alone leave its owner branchId null.
+        sessionManager.appendMessage({ role: 'user', content: [{ type: 'text', text: prompt }], timestamp: Date.now() })
         // Use the SDK's actual dedicated turn-start dispatcher. A direct
         // history.begin() would bypass per-turn extension state (including the
         // cached settlement promise and the normal host ABS preflight).

@@ -10,6 +10,8 @@ import { _electron } from '@playwright/test';
 import { createAbsStopModel } from '../fixtures/abs-stop-model.mjs';
 import { createLocalChatApiRouter, prepareInstalledChatProfile, assertInstalledChatLoaded } from '../fixtures/installed-chat-ui.mjs';
 import { prepareBuildLogProject } from './fixtures/build-log-project.mjs';
+import { extractNativeCustomerZip } from './fixtures/customer-native-zip.mjs';
+import { hantaiColdFieldPlans } from './fixtures/hantai-control-source.mjs';
 import { singleFieldExpectedDocument } from './fixtures/online-comparison.mjs';
 import { readWorkingCandidateEvidence, selectedWorkingCandidateRef } from './fixtures/r3-candidate-evidence.mjs';
 import { installR3CandidatePublicationFault } from './fixtures/r3-candidate-publication-fault.mjs';
@@ -24,7 +26,8 @@ import { assertCapturedEnvironmentProcess, selectEnvironmentProcessTree, remaini
 // is deterministic; every Candidate, native publication and Stop is production.
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const names = ['executable-path', 'installed-root', 'lex-root', 'resource-root', 'test-root', 'output', 'expected-input-hash', 'expected-host-hash'];
-const { values } = parseArgs({ options: Object.fromEntries(names.map(name => [name, { type: 'string' }])) });
+const { values } = parseArgs({ options: Object.fromEntries([...names,
+  'customer-archive', 'customer-prefix', 'expected-customer-hash'].map(name => [name, { type: 'string' }])) });
 assert.equal(process.env.AILY_R3_CANDIDATE_COLD_HOST_WINDOW, '1', 'Root owns the single actual Host window');
 for (const name of names.filter(name => !name.startsWith('expected-'))) assert.ok(path.isAbsolute(values[name] ?? ''), name);
 for (const name of names.filter(name => name.startsWith('expected-'))) assert.match(values[name] ?? '', /^[a-f0-9]{64}$/);
@@ -44,17 +47,31 @@ await fs.mkdir(values.output, { recursive: false }); await fs.mkdir(values['test
 const suite = await fs.mkdtemp(path.join(values['test-root'], 'r3-candidate-cold-')),
   project = path.join(suite, 'project'), appData = path.join(suite, 'appdata'), home = path.join(suite, 'home'), temp = path.join(suite, 'temp'), absPath = path.join(project, 'project.abs');
 await fs.mkdir(home); await fs.mkdir(temp);
-const fixture = await prepareBuildLogProject({ directory: project, boardsRoot: path.resolve(repo, '../aily-blockly-boards'),
-  librariesRoot: path.resolve(repo, '../aily-blockly-libraries'), scenario: 'field-edit', marker: 'R3_CANDIDATE_COLD_NO_BUILD' });
-const seed = JSON.parse(await fs.readFile(path.join(project, 'project.abi'), 'utf8'));
-seed.blocks.blocks.find(block => block.type === 'arduino_global').inputs.ARDUINO_GLOBAL.block.next = {
-  block: { type: fixture.blockType, id: 'r3_cold_B', fields: { VALUE: 200 },
-    next: { block: { type: fixture.blockType, id: 'r3_cold_C', fields: { VALUE: 300 } } } } };
-await fs.writeFile(path.join(project, 'project.abi'), JSON.stringify(seed, null, 2));
+const customer = !!values['customer-archive'];
+let fixture, fieldPlans;
+if (customer) {
+  assert.ok(path.isAbsolute(values['customer-archive']));
+  assert.match(values['expected-customer-hash'] ?? '', /^[a-f0-9]{64}$/);
+  fixture = await extractNativeCustomerZip({ archive: values['customer-archive'],
+    prefix: values['customer-prefix'] ?? 'esp32-c3-HANTAI-OK/', expectedArchiveSha256: values['expected-customer-hash'], project, output: values.output });
+} else {
+  fixture = await prepareBuildLogProject({ directory: project, boardsRoot: path.resolve(repo, '../aily-blockly-boards'),
+    librariesRoot: path.resolve(repo, '../aily-blockly-libraries'), scenario: 'field-edit', marker: 'R3_CANDIDATE_COLD_NO_BUILD' });
+  const seed = JSON.parse(await fs.readFile(path.join(project, 'project.abi'), 'utf8'));
+  seed.blocks.blocks.find(block => block.type === 'arduino_global').inputs.ARDUINO_GLOBAL.block.next = {
+    block: { type: fixture.blockType, id: 'r3_cold_B', fields: { VALUE: 200 },
+      next: { block: { type: fixture.blockType, id: 'r3_cold_C', fields: { VALUE: 300 } } } } };
+  await fs.writeFile(path.join(project, 'project.abi'), JSON.stringify(seed, null, 2));
+  fieldPlans = Object.fromEntries([['A', fixture.blockId, 100], ['B', 'r3_cold_B', 200], ['C', 'r3_cold_C', 300]]
+    .map(([name, blockId, oldValue]) => [name, { blockId, field: 'VALUE', oldValue, value: oldValue + 1,
+      oldText: `${fixture.blockType}(${oldValue})`, newText: `${fixture.blockType}(${oldValue + 1})` }]));
+}
 const evidence = { ok: false, suite, project, artifact, hostHash: values['expected-host-hash'], startedAt: new Date().toISOString(),
   realInstalledChat: true, realAsarHost: true, deterministicLocalModel: true, paidModelRequests: 0,
   fabricatedCandidateAuthority: false, fabricatedHostReceipts: false, manualColdProjectOpen: false, manualColdSessionOpen: false,
   stages: [], launchAttempts: [], launches: [], tools: [], sessionCommands: [], sessionResponses: [], abortCommands: [], abortResponses: [], eventCounts: {}, resources: [] };
+evidence.customerArchive = customer ? { originalReadOnly: true, hash: fixture.archiveSha256,
+  originalMetadataAndLibrariesRetained: true, exclusionRule: fixture.exclusionRule } : null;
 const persist = () => fs.writeFile(path.join(values.output, 'result.json'), JSON.stringify(evidence, null, 2));
 const phase = async name => { evidence.stages.push({ name, at: Date.now() }); console.log('R3_CANDIDATE_COLD_PHASE=' + name); await persist(); };
 const textOf = message => (message?.content ?? []).filter(value => value.type === 'text').map(value => value.text).join('\n');
@@ -138,7 +155,7 @@ async function observe() {
       assert.deepEqual(await document(), expectedC); assert.deepEqual(await mirrors(), evidence.dirtyWorking.savedMirrors);
     }
     if (tool.id === 'edit-private-A') {
-      const source = evidence.capture.source.replace(`${fixture.blockType}(100)`, `${fixture.blockType}(101)`); assert.notEqual(source, evidence.capture.source);
+      const source = evidence.capture.source.replace(fieldPlans.A.oldText, fieldPlans.A.newText); assert.notEqual(source, evidence.capture.source);
       candidateA = await readWorkingCandidateEvidence({ project, snapshot, candidateHash: hash(source), expectedBase: evidence.capture.record.base });
       assert.equal(candidateA.ref.id, evidence.capture.ref.id); assert.equal(candidateA.record.derivation.kind, 'splices');
       evidence.candidateA = candidateA; assert.deepEqual(await document(), expectedC); assert.deepEqual(await mirrors(), evidence.dirtyWorking.savedMirrors);
@@ -156,7 +173,7 @@ async function observe() {
       assert.deepEqual(await document(), expectedAC);
     }
     if (tool.id === 'edit-B-after-cold') {
-      const current = evidence.workingAfterAcceptedA, source = current.source.replace(`${fixture.blockType}(200)`, `${fixture.blockType}(201)`); assert.notEqual(source, current.source);
+      const current = evidence.workingAfterAcceptedA, source = current.source.replace(fieldPlans.B.oldText, fieldPlans.B.newText); assert.notEqual(source, current.source);
       evidence.candidateAB = await readWorkingCandidateEvidence({ project, snapshot, candidateHash: hash(source), expectedBase: current.record.base });
       assert.equal(evidence.candidateAB.ref.id, current.ref.id); assert.notEqual(evidence.candidateAB.ref.revisionHash, current.ref.revisionHash);
       assert.deepEqual(await document(), expectedAC); assert.deepEqual(await mirrors(), evidence.afterStop.mirrors);
@@ -200,7 +217,8 @@ function wireSocket(socket) {
 async function launch(nextAttempt) {
   attempt = nextAttempt; startupReady = false; page = undefined;
   assert.ok(os.freemem() >= 1024 ** 3, 'Tiny functional host cold reserve is 1024 MiB'); evidence.resources.push({ attempt, freeMemory: os.freemem(), at: Date.now() });
-  const { ELECTRON_RUN_AS_NODE, AILY_CHILD_PATH, NODE_PATH, AILY_PORTABLE_ROOT, AILY_AUTH_FILE, ...env } = process.env;
+  const { ELECTRON_RUN_AS_NODE, AILY_CHILD_PATH, NODE_PATH, AILY_PORTABLE_ROOT, AILY_AUTH_FILE,
+    CPLUS_INCLUDE_PATH, C_INCLUDE_PATH, CPATH, ...env } = process.env;
   evidence.launchAttempts.push({ attempt, at: Date.now() });
   app = await _electron.launch({ executablePath: values['executable-path'], cwd: repo, args: [`--user-data-dir=${path.join(suite, 'electron-profile')}`], timeout: 60000,
     env: { ...env, ...profile.env, AILY_E2E: '1', HOME: home, USERPROFILE: home, TEMP: temp, TMP: temp, npm_config_offline: 'true', npm_config_audit: 'false' } });
@@ -219,8 +237,10 @@ async function launch(nextAttempt) {
     new MutationObserver(dismiss).observe(document.documentElement, { childList: true, subtree: true }); dismiss(); });
   await page.waitForFunction(() => { const element = document.querySelector('app-header'); return element && window.ng?.getComponent(element)?.projectService; });
   if (!attempt) { evidence.launches.at(-1).initialFixtureOpenIssued = true;
-    await page.evaluate(async target => { const domain = window.ng.getComponent(document.querySelector('app-header')).projectService;
-      await domain.initializeProjectDataSchema(target); if (!await domain.projectOpen(target)) throw Error('Owned tiny project failed to open'); }, project); }
+    await page.evaluate(async configuration => { const { target } = configuration;
+      const domain = window.ng.getComponent(document.querySelector('app-header')).projectService;
+      if (!configuration.customer) await domain.initializeProjectDataSchema(target);
+      if (!await domain.projectOpen(target)) throw Error('Owned project failed to open'); }, { target: project, customer }); }
   await page.waitForFunction(target => { const element = document.querySelector('app-header'), domain = element && window.ng?.getComponent(element)?.projectService;
     return domain?.currentProjectPath === target && domain?.getBlocklyProjectLoadStatus(target)?.ready === true; }, project, { timeout: 120000 });
   const output = path.join(values.output, 'launch-' + attempt); await fs.mkdir(output);
@@ -262,13 +282,13 @@ try {
     if (!turn) {
       if (step === 0) return native('load-candidate-tools', 'tool_load', { names: ['abs_apply', 'project_recover'] });
       if (step === 1) return native('read-Working-before-A', 'read', { path: absPath });
-      if (step === 2) return native('edit-private-A', 'edit', { path: absPath, edits: [{ oldText: `${fixture.blockType}(100)`, newText: `${fixture.blockType}(101)` }] });
+      if (step === 2) return native('edit-private-A', 'edit', { path: absPath, edits: [{ oldText: fieldPlans.A.oldText, newText: fieldPlans.A.newText }] });
       if (step === 3) return deferred('apply-A-lost-ACK', 'abs_apply', { project, absPath });
       throw Error('The real first turn must Stop during original-ID observation before another provider step');
     }
     assert.equal(turn, 1, 'Only two actual user/provider turns are allowed');
     if (step === 0) return native('read-A-after-cold', 'read', { path: absPath });
-    if (step === 1) return native('edit-B-after-cold', 'edit', { path: absPath, edits: [{ oldText: `${fixture.blockType}(200)`, newText: `${fixture.blockType}(201)` }] });
+    if (step === 1) return native('edit-B-after-cold', 'edit', { path: absPath, edits: [{ oldText: fieldPlans.B.oldText, newText: fieldPlans.B.newText }] });
     if (step === 2) return deferred('apply-ABC-after-cold', 'abs_apply', { project, absPath });
     assert.equal(step, 3); return undefined;
   } });
@@ -277,13 +297,17 @@ try {
     baseConfigPath: path.join(repo, 'electron/config/config.json'), resourceAppData: values['resource-root'], token: router.token });
   await phase('fresh-real-installed-Chat-and-dirty-Working-C'); await launch(0);
   baseDocument = await document(); const savedMirrors = await mirrors();
-  await page.evaluate(() => { const block = window.Blockly.getMainWorkspace().getBlockById('r3_cold_C'); if (!block) throw Error('Actual C block missing'); block.setFieldValue(301, 'VALUE'); });
-  expectedC = singleFieldExpectedDocument(baseDocument, 'r3_cold_C', 'VALUE', 300, 301);
-  expectedAC = singleFieldExpectedDocument(expectedC, fixture.blockId, 'VALUE', 100, 101);
-  expectedABC = singleFieldExpectedDocument(expectedAC, 'r3_cold_B', 'VALUE', 200, 201);
+  if (customer) fieldPlans = hantaiColdFieldPlans(baseDocument);
+  evidence.fieldPlans = fieldPlans;
+  await page.evaluate(plan => { const block = window.Blockly.getMainWorkspace().getBlockById(plan.blockId);
+    if (!block) throw Error('Actual C block missing'); block.setFieldValue(plan.value, plan.field); }, fieldPlans.C);
+  const expectedField = (document, plan) => singleFieldExpectedDocument(document, plan.blockId, plan.field, plan.oldValue, plan.value);
+  expectedC = expectedField(baseDocument, fieldPlans.C);
+  expectedAC = expectedField(expectedC, fieldPlans.A);
+  expectedABC = expectedField(expectedAC, fieldPlans.B);
   assert.deepEqual(await document(), expectedC); assert.deepEqual(await mirrors(), savedMirrors);
   evidence.dirtyWorking = { savedMirrors, fullDocument: expectedC, implicitlySaved: false };
-  await submit('Change field A from 100 to 101 and apply it, preserving the existing program and my field C change.');
+  await submit(`Change the existing field A from ${fieldPlans.A.oldValue} to ${fieldPlans.A.value} and apply it, preserving the existing program and my field C change.`);
   await phase('real-commit-A-then-drop-ACK-and-hold-original-readonly-observation');
   await until(async () => {
     if (!faultInstalled) return false;

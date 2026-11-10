@@ -121,7 +121,8 @@ describe('native deferred UI effect boundary', () => {
     for (let i = 0; i < 512; i++) bounded.set(() => { callbacks++; });
     await bounded.drainCooperatively(() => { snapshots++; return 'same'; }, async () => { yields++; }, () => {});
     expect(callbacks).toBe(512); expect(yields).toBe(63); expect(snapshots).toBe(2);
-    expect(() => bounded.set(() => {})).toThrowError(/finite callback/);
+    bounded.set(() => {});
+    expect(() => bounded.drain(() => 'same')).toThrowError(/finite callback/);
   });
   it('settles the outer construction queue cooperatively while retaining synchronous preparation', async () => {
     const workspace = new Blockly.Workspace(), tasks = new NativeUiTasks(undefined, () => 0);
@@ -185,8 +186,8 @@ describe('native deferred UI effect boundary', () => {
     for (let i = 0; i < 512; i++) tasks.set(() => { now += 2; });
     tasks.drain(() => { now += 3; return 'same'; });
     expect(observations.length).toBeLessThanOrEqual(54);
-    expect(observations[0]).toEqual({ callbacks: 0, pending: 512, snapshots: 0, callbackMs: 0, snapshotMs: 0 });
-    expect(observations[observations.length - 1]).toEqual({ callbacks: 512, pending: 0, snapshots: 2, callbackMs: 1024, snapshotMs: 6 });
+    expect(observations[0]).toEqual(jasmine.objectContaining({ callbacks: 0, pending: 512, snapshots: 0, callbackMs: 0, snapshotMs: 0 }));
+    expect(observations[observations.length - 1]).toEqual(jasmine.objectContaining({ callbacks: 512, pending: 0, snapshots: 2, callbackMs: 1024, snapshotMs: 6 }));
     const count = observations.length;
     tasks.drain(() => { throw Error('must not snapshot an empty queue'); });
     expect(observations.length).toBe(count);
@@ -199,7 +200,7 @@ describe('native deferred UI effect boundary', () => {
     tasks.drain(() => { now += 7; return 'same'; });
     expect(observations.some(value => value.callbacks > 0 && value.callbacks < 53)).toBeTrue();
     expect(observations.length).toBeLessThanOrEqual(12);
-    expect(observations[observations.length - 1]).toEqual({ callbacks: 53, pending: 0, snapshots: 2, callbackMs: 106, snapshotMs: 14 });
+    expect(observations[observations.length - 1]).toEqual(jasmine.objectContaining({ callbacks: 53, pending: 0, snapshots: 2, callbackMs: 106, snapshotMs: 14 }));
   });
   it('reports the callback threshold even when elapsed time has not advanced', () => {
     const observations: AbsNativeUiTiming[] = [];
@@ -215,7 +216,7 @@ describe('native deferred UI effect boundary', () => {
     const tasks = new NativeUiTasks(value => observations.push(value), () => now);
     tasks.set(() => { now += 7; state = 'changed'; });
     expect(() => tasks.drain(() => { now += 3; return state; })).toThrowError(/changed persisted state/);
-    expect(observations[observations.length - 1]).toEqual({ callbacks: 1, pending: 0, snapshots: 2, callbackMs: 7, snapshotMs: 6 });
+    expect(observations[observations.length - 1]).toEqual(jasmine.objectContaining({ callbacks: 1, pending: 0, snapshots: 2, callbackMs: 7, snapshotMs: 6 }));
   });
   it('still bounds serial virtual time and individual timers with capacity diagnostics', () => {
     const tasks = new NativeUiTasks(); let calls = 0;
@@ -248,15 +249,67 @@ describe('native deferred UI effect boundary', () => {
       else expect((await evaluateNativeCandidate(input, { assertCurrent() {} })).state['blocks'].blocks[0].fields!['NUM']).toBe(1);
     }
   });
-  it('bounds callback work after cancellations and checks complete phase snapshots', () => {
+  it('bounds actual callback work independently of cancelled registrations', () => {
     const tasks = new NativeUiTasks(); let snapshots = 0;
     for (let i = 0; i < 512; i++) tasks.set(() => {});
     tasks.drain(() => { snapshots++; return 'same'; });
     expect(snapshots).toBe(2);
-    expect(() => tasks.set(() => {})).toThrowError(/finite callback/);
+    tasks.set(() => {});
+    expect(() => tasks.drain(() => 'same')).toThrowError(/finite callback/);
     const cancelled = new NativeUiTasks();
-    for (let i = 0; i < 512; i++) cancelled.clear(cancelled.set(() => {}));
-    expect(() => cancelled.set(() => {})).toThrowError(/finite callback/);
+    for (let i = 0; i < 2048; i++) cancelled.clear(cancelled.set(() => { fail('cancelled callback executed'); }));
+    let calls = 0;
+    cancelled.set(() => { calls++; });
+    cancelled.drain(() => 'same');
+    expect(calls).toBe(1);
+  });
+
+  it('keeps finite pending capacity without charging cancelled work as pending', () => {
+    const tasks = new NativeUiTasks();
+    for (let i = 0; i < 512; i++) tasks.set(() => {});
+    expect(() => tasks.set(() => {})).toThrowError(/pendingCallbacks: 513/);
+    expect(tasks.hasPending).toBeFalse();
+    expect(() => tasks.drain(() => 'same')).toThrowError(/pendingCallbacks/);
+  });
+
+  it('bounds register/cancel churn and attempts to cancel unknown addresses', () => {
+    const churn = new NativeUiTasks();
+    for (let i = 0; i < 32768; i++) churn.clear(churn.set(() => {}));
+    expect(() => churn.set(() => {})).toThrowError(/schedulingOperations/);
+    const unknown = new NativeUiTasks();
+    for (let i = 0; i < 65536; i++) unknown.clear(-1);
+    expect(() => unknown.clear(-1)).toThrowError(/schedulingOperations/);
+    expect(() => unknown.set(() => {})).toThrowError(/schedulingOperations/);
+  });
+
+  it('retains the complete semantic check after native frame cancellation and synchronous flush', () => {
+    const observations: AbsNativeUiTiming[] = [];
+    const tasks = new NativeUiTasks(value => observations.push(value));
+    let state = 'before', calls = 0;
+    for (let i = 0; i < 1000; i++) tasks.clear(tasks.frame(() => { fail('cancelled native frame executed'); }));
+    tasks.frame(() => { calls++; });
+    tasks.set(() => { state = 'changed'; });
+    expect(() => tasks.drain(() => state)).toThrowError(/changed persisted state/);
+    expect(calls).toBe(1);
+    expect(observations.at(-1)).toEqual(jasmine.objectContaining({ registered: 1002, cancelled: 1000,
+      peakPending: 2, callbacks: 2, frameRegistrations: 1001, frameCancellations: 1000, frameCallbacks: 1 }));
+  });
+
+  it('settles a real realm with many cancelled frame addresses and preserves actual fields', async () => {
+    const input: NativeCandidateRequest = { blocks: [{ id: 'owner', type: 'cancelled_frame_probe', fields: [{ name: 'NUM', value: 1 }] }],
+      steps: [{ kind: 'context', mode: 'arduino' }, { kind: 'script', label: 'cancelled-native-frames', source: `
+        Blockly.Blocks.cancelled_frame_probe = { init() {
+          this.appendDummyInput().appendField(new Blockly.FieldNumber(1), 'NUM');
+          for (let i = 0; i < 1000; i++) {
+            const id = requestAnimationFrame(() => this.setFieldValue(99, 'NUM'));
+            cancelAnimationFrame(id);
+          }
+          setTimeout(() => this.setTooltip('ready'), 0);
+        } };
+        Arduino.forBlock.cancelled_frame_probe = () => '';
+      ` }] };
+    const result = await evaluateNativeCandidate(input, { assertCurrent() {} });
+    expect(result.state['blocks'].blocks[0].fields!['NUM']).toBe(1);
   });
   for (const storage of ['generator', 'closure', 'global'])
   it('isolates first-generation state across UI verification passes: ' + storage, async () => {

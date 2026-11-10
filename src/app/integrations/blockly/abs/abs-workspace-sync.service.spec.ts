@@ -469,6 +469,47 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(setter).toHaveBeenCalledTimes(1); expect([...disk]).toEqual(saved);
   });
 
+  it('settles the original linked board environment before ordinary dependency save', async () => {
+    await service.exportGeneration({ save: true });
+    const previous = window['libraryDependencies'];
+    const request = { version: 2 as const, requestId: `pub2-${crypto.randomUUID()}`, operation: 'project_save' as const,
+      input: { kind: 'board-config' as const, configKey: 'PartitionScheme', configValue: 'no_ota' } };
+    let original: any;
+    const events: string[] = [];
+    const environment = {
+      environmentVersion: 2,
+      pendingEnvironment: async () => [
+        { requestId: 'unrelated-environment', programRef: { request: { requestId: 'pub2-unrelated' } } }, original,
+      ],
+      settleLinkedEnvironment: jasmine.createSpy('settle').and.callFake(async (path, value) => {
+        expect(path).toBe(scope.projectKey);
+        expect(value.requestId).toBe(original.requestId);
+        expect(value.programRef).toEqual(original.programRef);
+        expect(value.observation).toEqual(jasmine.objectContaining({ state: 'completed', ref: original.programRef, current: true }));
+        expect(value.observation.result.publication.status).toBe('COMMITTED');
+        events.push('settled');
+      }),
+      save: jasmine.createSpy('save').and.callFake(async () => {
+        if (events.at(-1) !== 'settled') throw new Error('The original program publication must be observed before choosing its environment.');
+        events.push('dependencies');
+      }),
+    };
+    const mutate = jasmine.createSpy('configure').and.callFake(async (_lease, _guard, programRef) => {
+      events.push('configured'); original = { requestId: 'original-environment', programRef };
+    });
+    window['libraryDependencies'] = environment;
+    try {
+      const result: any = await project.publishRuntimeMutation(scope.projectKey, mutate, request);
+      expect(result.ok).toBeTrue(); expect(result.publication.status).toBe('COMMITTED');
+      expect(events).toEqual(['configured', 'settled', 'dependencies']);
+      const observed = await service.observeNativeSave(scope.projectKey, request, port.executor!.hostPid!);
+      expect(observed?.saveReceipt.state).toBe('completed'); expect(observed?.result?.['ok']).toBeTrue();
+      await project.publishRuntimeMutation(scope.projectKey, mutate, request);
+      expect(mutate).toHaveBeenCalledTimes(1); expect(environment.settleLinkedEnvironment).toHaveBeenCalledTimes(1);
+      expect(environment.save).toHaveBeenCalledTimes(1); expect(gate.blocked).toBeFalse();
+    } finally { window['libraryDependencies'] = previous; }
+  });
+
   it('R2 History object transport preserves GUI edits through undo redo and observes completed IDs without reading objects', async () => {
     const savedA = await service.exportGeneration({ save: true }), sourceA = disk.get('project.abs')!;
     roots().setFieldValue('after', 'TEXT');

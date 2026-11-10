@@ -1,18 +1,19 @@
 import type * as Blockly from 'blockly';
 import { absJson } from '../../../integrations/blockly/abs/abs-json';
 import { absProgramWorkspace } from '../../../integrations/blockly/abs/abs-program-state';
-import { AbsSyncError } from '../../../integrations/blockly/abs/abs-state';
 import { serializeRuntimeFieldContract } from './blockly-runtime-block-metadata';
 import { createBlocklyBlockActivity } from './blockly-block-activity';
 import { captureCustomFunctionRegistration } from './blockly-custom-function-contract';
 import type { AbsNativeUiTiming } from '../../../integrations/blockly/abs/abs-diagnostics';
 import { nativeSemanticChange } from './blockly-native-semantic-diagnostic';
+import { NativeUiTaskBudget, type NativeUiTaskKind } from './blockly-native-ui-budget';
 
 /** Candidate-local, virtual one-shot tasks. No event loop, waiting or arbitrary
  * async completion. Tasks are admitted by their observed semantic effects,
  * never by a library name or by guessing that setTimeout means UI work. */
 export class NativeUiTasks {
-  private readonly pending = new Map<number, { due: number; callback: () => unknown }>();
+  private readonly pending = new Map<number, { due: number; callback: () => unknown; kind: NativeUiTaskKind }>();
+  private readonly budget = new NativeUiTaskBudget();
   private sequence = 0;
   private now = 0;
   private forbidden = false;
@@ -31,7 +32,7 @@ export class NativeUiTasks {
     // must not stay silent until its final callback finishes.
     if (!force && this.timing.callbacks - this.reportedCallbacks < 64 && now - this.reportedAt < 50) return;
     this.reportedAt = now; this.reportedCallbacks = this.timing.callbacks;
-    this.observe({ ...this.timing, pending: this.pending.size });
+    this.observe({ ...this.timing, ...this.budget.counts(), pending: this.pending.size });
   }
   private snapshot(read: () => string): string {
     const started = this.observe ? this.clock() : 0;
@@ -47,33 +48,40 @@ export class NativeUiTasks {
   }
   private reject(error: string | Error): never {
     this.failure ??= typeof error === 'string' ? new Error(error) : error;
-    this.pending.clear(); throw this.failure;
-  }
-  private limit(resource: string, actual: number, limit: number): never {
-    return this.reject(new AbsSyncError('ABS_LIMIT',
-      `Native UI tasks exceed the finite callback/delay budget (${resource}: ${actual}, limit: ${limit}).`, undefined, [], {
-        reason: 'native-ui-capacity', capacity: { phase: 'ui', resource, actual: Math.ceil(actual), limit },
-        hint: 'Deterministic virtual UI capacity failure. Retain ABS and repair the host; waiting or retrying unchanged ABS cannot help.',
-      }));
+    this.pending.clear();
+    try { this.report(true); } catch { /* Diagnostics never replace the original rejection. */ }
+    throw this.failure;
   }
   set(callback: () => unknown, delay = 0): number {
+    return this.add(callback, delay, 'timer');
+  }
+  frame(callback: () => unknown): number {
+    return this.add(callback, 0, 'frame');
+  }
+  private add(callback: () => unknown, delay: number, kind: NativeUiTaskKind): number {
     this.assertClean();
     if (this.forbidden) return this.reject('Native candidate does not support timers during generation.');
     if (typeof callback !== 'function' || typeof delay !== 'number' || !Number.isFinite(delay)
       || delay < 0) {
       return this.reject('Native UI tasks require a function and finite non-negative delay.');
     }
-    if (delay > 2000) return this.limit('singleDelay', delay, 2000);
-    if (++this.sequence > 512) return this.limit('callbacks', this.sequence, 512);
     // Parallel initialization timers share a due time. Only nested/serial work
     // advances virtual elapsed time; a large workspace is not a long timer chain.
     const due = this.now + delay;
-    if (due > 5000) return this.limit('virtualDelay', due, 5000);
-    const id = -this.sequence;
-    this.pending.set(id, { due, callback });
+    try { this.budget.delay(delay, due); this.budget.register(this.pending.size + 1, kind); }
+    catch (error) { return this.reject(error instanceof Error ? error : String(error)); }
+    const id = -++this.sequence;
+    this.pending.set(id, { due, callback, kind });
     return id;
   }
-  clear(id: number): void { this.pending.delete(id); }
+  clear(id: number): void {
+    // Disposal may invoke native cancellation while unwinding an earlier failure.
+    if (!this.failure && !this.disposed) {
+      try { this.budget.cancel(this.pending.get(id)?.kind); }
+      catch (error) { return this.reject(error instanceof Error ? error : String(error)); }
+    }
+    this.pending.delete(id);
+  }
   /** Only the captured Blockly core queueRender implementation uses this scope.
    * Scheduled work still passes the finite queue and semantic readback checks. */
   coreRender<T>(action: () => T): T {
@@ -136,11 +144,12 @@ export class NativeUiTasks {
 
   private drainNext(): void {
     // Equal due times retain insertion order, including nested work.
-    let selected: [number, { due: number; callback: () => unknown }] | undefined;
+    let selected: [number, { due: number; callback: () => unknown; kind: NativeUiTaskKind }] | undefined;
     for (const entry of this.pending) if (!selected || entry[1].due < selected[1].due) selected = entry;
     const [id, task] = selected!;
     this.pending.delete(id); this.now = task.due;
     try {
+      this.budget.execute(task.kind);
       const started = this.observe ? this.clock() : 0;
       this.timing.callbacks++;
       let value: any;
