@@ -2,6 +2,8 @@
 export { projectDataRuntime } from './project-data-runtime';
 export { isAilyDataRef } from './project-data.types';
 export type { AilyDataRef } from './project-data.types';
+export { MAX_U8G2_BITMAP_DIMENSION, packXbmBitmap } from './project-data-xbm';
+export type { U8g2BitmapValue } from './project-data-xbm';
 export { canonicalJsonStringify, createDefaultProjectDataCodecRegistry } from './project-data-codec.registry';
 export { canonicalProjectJsonStringify } from '../project-document-json';
 export { materializeProjectDataPayload, materializePreparedProjectDataPayload } from './project-data-generic-values';

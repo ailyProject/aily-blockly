@@ -28,7 +28,7 @@ describe('project media import asset boundary', () => {
     const f = fixture();
     const result = await importProjectMedia('/project', request, f.deps);
     expect(result.ok).toBeTrue();
-    if (!result.ok) return;
+    if (!result.ok || result.kind === 'u8g2_bitmap') return;
     expect(result.value.frameCount).toBe(1); expect(result.value.maxFrames).toBe(1);
     expect(result.value.encoding).toBe('rgb565-be'); expect(result.decodedBytes).toBe(4);
     expect(f.packed[0]).toEqual(new Uint8Array([0xf8, 0, 0x07, 0xe0]));
@@ -36,6 +36,53 @@ describe('project media import asset boundary', () => {
     expect(f.files.get(f.written[0])).toEqual(new Uint8Array([1, 2, 3]));
     expect((await importProjectMedia('/project', request, f.deps)).ok).toBeTrue();
     expect(f.written.length).toBe(1);
+  });
+  async function png(width: number, height: number, draw: (context: CanvasRenderingContext2D) => void) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    draw(canvas.getContext('2d')!);
+    const blob = await new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  const bitmapRequest: MediaImportRequest = { kind: 'u8g2_bitmap', source: '/input.png', width: 104, height: 212 };
+  it('decodes a real Linkbit portrait image into its native resource without dropping the last row', async () => {
+    const f = fixture();
+    const original = await png(104, 212, context => {
+      context.fillRect(0, 0, 1, 1);
+      context.fillRect(103, 211, 1, 1);
+      context.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      context.fillRect(102, 211, 1, 1);
+    });
+    f.files.set('/input.png', original);
+    const result = await importProjectMedia('/project', bitmapRequest, f.deps);
+    expect(result.ok).toBeTrue();
+    if (!result.ok || result.kind !== 'u8g2_bitmap') return;
+    expect(result.fieldType).toBe('field_bitmap_u8g2');
+    expect(result.value).toEqual({ schemaVersion: 1, encoding: 'xbm-lsb-row-v1', width: 104, height: 212,
+      bitmap: jasmine.objectContaining({ $ailyData: jasmine.objectContaining({ codec: 'u8g2-xbm-v1', rawLength: 2756 }) }) });
+    const expected = new Uint8Array(2756);
+    expected[0] = 1;
+    expected[2755] = 128;
+    expect(result.decodedBytes).toBe(expected.length);
+    expect(f.packed[0]).toEqual(expected);
+    expect(f.written).toEqual([`/project/${result.sourcePath}`]);
+    expect(f.files.get(f.written[0])).toEqual(original);
+  });
+  it('centers an image with white padding and packs each row independently', async () => {
+    const f = fixture();
+    f.files.set('/input.png', await png(9, 1, context => context.fillRect(0, 0, 9, 1)));
+    const result = await importProjectMedia('/project', { ...bitmapRequest, width: 9, height: 3 }, f.deps);
+    expect(result.ok).toBeTrue();
+    expect(f.packed[0]).toEqual(new Uint8Array([0, 0, 255, 1, 0, 0]));
+  });
+  it('rejects oversized bitmap dimensions, video, or undecodable bytes before asset writes', async () => {
+    const f = fixture();
+    for (const invalid of [{ width: 257 }, { source: '/input.mp4' }, {}]) {
+      expect((await importProjectMedia('/project', { ...bitmapRequest, ...invalid }, f.deps)).ok).toBeFalse();
+    }
+    expect(f.written.length).toBe(0);
+    expect(f.packed.length).toBe(0);
   });
   it('rejects bad dimensions and unsupported input before decoding or writing', async () => {
     const f = fixture(); spyOn(f.deps, 'decode').and.callThrough();
