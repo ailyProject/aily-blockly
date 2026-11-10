@@ -863,6 +863,7 @@
         "LOGIN_PROCESSING_FAILED": "Не удалось обработать вход. Повторите попытку"
     },
     "COMMON": {
+        "CLOSE": "Закрыть",
     "RESTART": "Перезапустить",
     "LOADING_WITH_NAME": "Загрузка {{name}}…",
         "FEATURE_COMING_SOON": "Функция скоро появится",

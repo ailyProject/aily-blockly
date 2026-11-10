@@ -18,16 +18,8 @@
     }
 
     .win-btns {
-      > div {
+      > .btn:not(.go-main) {
         display: none;
-      }
-
-      .header-btns {
-        display: flex;
-      }
-
-      .go-main {
-        display: flex;
       }
     }
   }
@@ -87,7 +79,12 @@
   }
 
   .close {
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
     font-size: 19px;
+    -webkit-app-region: no-drag;
 
     &:hover {
       color: var(--aily-color-error);

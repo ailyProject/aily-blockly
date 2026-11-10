@@ -1,10 +1,11 @@
 import { Component, Input, Output, EventEmitter, ChangeDetectorRef, OnDestroy } from '@angular/core';
+import { TranslateModule } from '@ngx-translate/core';
 import { Router } from '@angular/router';
 import { PlatformService, ElectronService } from '@core/platform/public-api';
 
 @Component({
   selector: 'app-sub-window',
-  imports: [],
+  imports: [TranslateModule],
   templateUrl: './sub-window.component.html',
   styleUrl: './sub-window.component.scss',
 })

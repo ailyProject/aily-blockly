@@ -863,6 +863,7 @@
         "LOGIN_PROCESSING_FAILED": "No se pudo procesar el inicio de sesión. Inténtelo de nuevo"
     },
     "COMMON": {
+        "CLOSE": "Cerrar",
     "RESTART": "Reiniciar",
     "LOADING_WITH_NAME": "Cargando {{name}}…",
         "FEATURE_COMING_SOON": "Función próximamente",

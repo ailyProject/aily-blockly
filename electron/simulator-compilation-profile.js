@@ -4,6 +4,7 @@
 const PROFILE = 'esp32-classic-spp-ahc2-v2';
 const PROVIDER = 'aily.esp32-spp-vhci-v2';
 const NATIVE_PROFILE = 'esp32-classic-p15-aio-ble-v1';
+const NATIVE_PROFILES = [NATIVE_PROFILE, 'esp32-classic-p15-aio-ble-learned-mmio-v1'];
 const exact = (value, fields) => value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).sort().join(',') === [...fields].sort().join(',');
 
@@ -13,11 +14,11 @@ function readCompilationProfiles(value) {
     const item = value[0];
     if (!exact(item, ['schemaVersion', 'profile', 'provider', 'nativeProfile', 'runtimeAcceptance'])
         || item.schemaVersion !== 1 || item.profile !== PROFILE || item.provider !== PROVIDER
-        || item.nativeProfile !== NATIVE_PROFILE || item.runtimeAcceptance !== false) {
+        || !NATIVE_PROFILES.includes(item.nativeProfile) || item.runtimeAcceptance !== false) {
         throw new Error('Unsupported Browser compilation profile');
     }
     return Object.freeze([Object.freeze({ schemaVersion: 1, profile: PROFILE, provider: PROVIDER,
-        nativeProfile: NATIVE_PROFILE, runtimeAcceptance: false })]);
+        nativeProfile: item.nativeProfile, runtimeAcceptance: false })]);
 }
 
 /** Never accepts a renderer-supplied package, owner, execution or release selector.

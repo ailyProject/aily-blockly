@@ -997,6 +997,7 @@
         "AUTH_SELF_INVITATION_NOT_ALLOWED": "不能填写自己的邀请码"
     },
     "COMMON": {
+        "CLOSE": "关闭",
     "RESTART": "重启",
     "LOADING_WITH_NAME": "正在加载 {{name}}…",
         "FEATURE_COMING_SOON": "功能即将上线",

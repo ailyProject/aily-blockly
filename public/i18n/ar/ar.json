@@ -863,6 +863,7 @@
         "LOGIN_PROCESSING_FAILED": "فشلت معالجة تسجيل الدخول. يرجى المحاولة مرة أخرى"
     },
     "COMMON": {
+        "CLOSE": "إغلاق",
     "RESTART": "إعادة التشغيل",
     "LOADING_WITH_NAME": "جارٍ تحميل {{name}}…",
         "FEATURE_COMING_SOON": "الميزة قادمة قريباً",

@@ -37,6 +37,14 @@
       }
     }
 
+    .tool-close {
+      z-index: 12;
+      padding: 0;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      -webkit-app-region: no-drag;
+    }
 
     .fa-arrow-up-right-from-square {
       font-size: 12px;

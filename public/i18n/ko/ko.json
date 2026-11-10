@@ -863,6 +863,7 @@
         "LOGIN_PROCESSING_FAILED": "로그인 처리에 실패했습니다. 다시 시도하세요"
     },
     "COMMON": {
+        "CLOSE": "닫기",
     "RESTART": "다시 시작",
     "LOADING_WITH_NAME": "{{name}} 로드 중…",
         "FEATURE_COMING_SOON": "기능 출시 예정",

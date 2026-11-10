@@ -66,7 +66,8 @@
         </nz-resize-handle>
         <div class="right-box">
           @for (tool of openToolList; track tool + ':' + toolPresentationId(tool)) {
-          <div class="tool-panel" [class.active]="tool === topTool" [style.z-index]="tool === topTool ? 100 : 1">
+          <div class="tool-panel" [class.active]="tool === topTool" [inert]="tool !== topTool"
+            [style.z-index]="tool === topTool ? 100 : 1">
             @if (isChildTool(tool)) {
             <app-child-tool-presentation [toolId]="tool" [active]="tool === topTool" [presentationId]="toolPresentationId(tool)"></app-child-tool-presentation>
             } @else {

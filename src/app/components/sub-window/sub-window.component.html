@@ -30,9 +30,9 @@
           </div>
         }
         @if (btn === "close") {
-          <div class="btn ccenter close" (click)="close()">
-            <i class="fa-light fa-xmark"></i>
-          </div>
+          <button class="btn ccenter close" type="button" [attr.aria-label]="'COMMON.CLOSE' | translate" (click)="close()">
+            <i class="fa-light fa-xmark" aria-hidden="true"></i>
+          </button>
         }
       }
     </div>

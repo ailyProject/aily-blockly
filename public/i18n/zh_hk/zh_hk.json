@@ -950,6 +950,7 @@
         "AUTH_SELF_INVITATION_NOT_ALLOWED": "不能填寫自己的邀請碼"
     },
     "COMMON": {
+        "CLOSE": "關閉",
     "RESTART": "重新啟動",
     "LOADING_WITH_NAME": "正在載入 {{name}}…",
         "FEATURE_COMING_SOON": "功能即將上線",

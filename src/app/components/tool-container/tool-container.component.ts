@@ -1,10 +1,11 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { TranslateModule } from '@ngx-translate/core';
 import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { UiService, WindowOpts } from '@core/app-shell/public-api';
 
 @Component({
   selector: 'app-tool-container',
-  imports: [NzTabsModule],
+  imports: [NzTabsModule, TranslateModule],
   templateUrl: './tool-container.component.html',
   styleUrl: './tool-container.component.scss',
 })

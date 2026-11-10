@@ -863,6 +863,7 @@
         "LOGIN_PROCESSING_FAILED": "Échec du traitement de la connexion. Veuillez réessayer"
     },
     "COMMON": {
+        "CLOSE": "Fermer",
     "RESTART": "Redémarrer",
     "LOADING_WITH_NAME": "Chargement de {{name}}…",
         "FEATURE_COMING_SOON": "Fonctionnalité bientôt disponible",

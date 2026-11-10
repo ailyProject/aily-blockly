@@ -863,6 +863,7 @@
         "LOGIN_PROCESSING_FAILED": "Não foi possível processar o login. Tente novamente"
     },
     "COMMON": {
+        "CLOSE": "Fechar",
     "RESTART": "Reiniciar",
     "LOADING_WITH_NAME": "Carregando {{name}}…",
         "FEATURE_COMING_SOON": "Recurso em breve",
