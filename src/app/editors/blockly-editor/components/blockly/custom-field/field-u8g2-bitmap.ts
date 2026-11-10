@@ -16,6 +16,7 @@ Blockly.Msg['BITMAP_U8G2_HINT_MOUSE'] = '鼠标左键绘制，右键擦除';
 
 export const DEFAULT_HEIGHT = 128;
 export const DEFAULT_WIDTH = 64;
+const MAX_BITMAP_DIMENSION = 256;
 const DEFAULT_PIXEL_SIZE = 2;
 const BLOCK_FIELD_HEIGHT = 50;
 const DEFAULT_PIXEL_COLOURS: PixelColours = {
@@ -461,8 +462,8 @@ export class FieldBitmapU8g2 extends Blockly.Field<U8g2BitmapValue> {
         const toolbar = this.createElementWithClassname('div', 'toolbar-u8g2 ailyMediaFieldToolbar');
 
         const dimensionGroup = this.createElementWithClassname('div', 'dimensionGroup-u8g2 ailyMediaFieldSettings');
-        this.widthInput = this.createDimensionInput('W', this.imgWidth, 1, 256);
-        this.heightInput = this.createDimensionInput('H', this.imgHeight, 1, 128);
+        this.widthInput = this.createDimensionInput('W', this.imgWidth, 1, MAX_BITMAP_DIMENSION);
+        this.heightInput = this.createDimensionInput('H', this.imgHeight, 1, MAX_BITMAP_DIMENSION);
         this.bindDimensionInputEvents(this.widthInput);
         this.bindDimensionInputEvents(this.heightInput);
         dimensionGroup.appendChild(this.createDimensionControl('W', this.widthInput));
@@ -1355,8 +1356,8 @@ function normalizeU8g2BitmapValue(
     value: U8g2BitmapValue | undefined,
     config?: FieldBitmapFromJsonConfig,
 ): U8g2BitmapValue {
-    const width = clampBitmapDimension(value?.width ?? config?.width ?? DEFAULT_WIDTH, 1, 256);
-    const height = clampBitmapDimension(value?.height ?? config?.height ?? DEFAULT_HEIGHT, 1, 128);
+    const width = clampBitmapDimension(value?.width ?? config?.width ?? DEFAULT_WIDTH, 1, MAX_BITMAP_DIMENSION);
+    const height = clampBitmapDimension(value?.height ?? config?.height ?? DEFAULT_HEIGHT, 1, MAX_BITMAP_DIMENSION);
     return {
         schemaVersion: 1,
         encoding: 'xbm-lsb-row-v1',

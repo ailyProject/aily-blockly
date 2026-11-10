@@ -28,7 +28,7 @@ import { AbsBlockContextIndex } from './abs-block-context';
 import { nativeDefaultSource } from './abs-native-defaults.fixture';
 import { nativeDormantSource } from './abs-native-shadows.fixture';
 import { modelDefinitions, modelSource } from './abs-native-models.fixture';
-import '../../../editors/blockly-editor/components/blockly/custom-field/field-u8g2-bitmap';
+import { FieldBitmapU8g2 } from '../../../editors/blockly-editor/components/blockly/custom-field/field-u8g2-bitmap';
 
 describe('v2 actual workspace generation coordinator', () => {
   let originalTimeout: number;
@@ -2309,23 +2309,31 @@ describe('v2 actual workspace generation coordinator', () => {
     expect(editor.prepareProjectCode).not.toHaveBeenCalled();
   });
 
-  for (const chunk of [false, true]) it(`preserves binary media through native create/edit/save/reopen (chunk=${chunk})`, async () => {
+  for (const chunk of [false, true]) it(`preserves a portrait bitmap through native create/edit/save/reopen (chunk=${chunk})`, async () => {
     const replay = enableNative();
     if (chunk) renderWorkspace();
+    const width = 104, height = 212;
+    const blank = FieldBitmapU8g2.fromJson({ width, height });
+    expect(blank.getValue()).toEqual(jasmine.objectContaining({ width, height, bitmap: null }));
+    const bytes = new Uint8Array(Math.ceil(width / 8) * height);
+    bytes[0] = 1;
+    bytes[bytes.length - 1] = 128;
+    expect(bytes.length).toBe(2756);
     const definition = { type: 'native_commit_media', message0: '%1', args0: [
-      { type: 'field_bitmap_u8g2', name: 'DATA', width: 8, height: 1 },
+      { type: 'field_bitmap_u8g2', name: 'DATA', width, height },
     ], output: 'Bitmap' };
     declare(definition);
     replay.steps.push({ kind: 'definitions', definitions: [definition] }, { kind: 'script', label: 'media-codegen', source: `
       Arduino.forBlock.native_commit_media = block => {
         const pixels = block.getFieldValue('DATA');
-        if (pixels[0][0] !== 1 || pixels[0][7] !== 1) throw Error('Binary bytes lost');
+        if (pixels.length !== ${height} || pixels[0].length !== ${width}
+            || pixels[0][0] !== 1 || pixels[${height - 1}][${width - 1}] !== 1) throw Error('Portrait bitmap pixels lost');
         return ['0', 0];
       };` });
     const ref: any = { $ailyData: { schemaVersion: 1, id: 'sha256:' + 'c'.repeat(64), codec: 'u8g2-xbm-v1',
-      logicalType: 'binary', storage: 'raw-v1', rawLength: 1, storedLength: 1 } };
-    values.set(ref.$ailyData.id, new Uint8Array([129]));
-    const field = { schemaVersion: 1, encoding: 'xbm-lsb-row-v1', width: 8, height: 1, bitmap: ref };
+      logicalType: 'binary', storage: 'raw-v1', rawLength: bytes.length, storedLength: bytes.length } };
+    values.set(ref.$ailyData.id, bytes);
+    const field = { schemaVersion: 1, encoding: 'xbm-lsb-row-v1', width, height, bitmap: ref };
     const base = await baseline(), source = base.source + `\nnative_commit_shape(B, math_number(7), "detail")\nnative_commit_media(${JSON.stringify(field)})\n`;
     expect((await service.applyGeneration(source, base.generation, { chunk })).publication.status).toBe('COMMITTED');
     const id = editor.workspace.getBlocksByType('native_commit_media', false)[0].id;
@@ -2336,7 +2344,10 @@ describe('v2 actual workspace generation coordinator', () => {
     editor.restoreProjectWorkspaceSnapshot(persisted);
     expect(nativeState()).toEqual(state); expect(roots().isDeletable()).toBeFalse();
     expect(editor.workspace.getBlockById(id).getFieldValue('DATA')).toEqual(field);
-    expect(values.get(ref.$ailyData.id)).toEqual(new Uint8Array([129]));
+    const bitmap = await (editor.workspace.getBlockById(id).getField('DATA') as FieldBitmapU8g2).ensureBitmapLoaded();
+    expect(bitmap.length).toBe(height);
+    expect(bitmap[height - 1][width - 1]).toBe(1);
+    expect(values.get(ref.$ailyData.id)).toEqual(bytes);
     const again = await baseline(), files = [...disk], before = absJson(nativeState());
     values.delete(ref.$ailyData.id);
     // Force native shape discovery; the fixture's fast-path resource port is a stub.
