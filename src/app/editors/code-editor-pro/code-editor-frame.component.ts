@@ -1561,6 +1561,17 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     }
   }
 
+  /** 依赖恢复归档归主进程私有，一次库操作可写入数千文件，不转发给 Coder。 */
+  private isCoderDependencyRecoveryPath(watchRoot: string, filename?: string): boolean {
+    if (!filename) return false;
+    const pathApi = window['path'];
+    const relative = pathApi.relative(
+      pathApi.join(this.projectPath, '.aily', 'dependency-recovery'),
+      pathApi.resolve(watchRoot, filename),
+    );
+    return relative === '' || (!relative.startsWith('..') && !pathApi.isAbsolute(relative));
+  }
+
   /** 将宿主 fs.watch 事件推送给内嵌 Coder iframe */
   private pushCoderNativeFsWatchEvent(
     watchId: number,
@@ -2466,6 +2477,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
                       eventType: String(eventTypeOrEvent ?? ''),
                       filename: filenameArg ?? undefined,
                     };
+                if (this.isCoderDependencyRecoveryPath(abs, event.filename)) return;
                 this.pushCoderNativeFsWatchEvent(watchId, event);
                 this.scheduleSettledCoderNativeFsWatchEvent(watchId, event);
                 if (event.eventType === 'error') {
