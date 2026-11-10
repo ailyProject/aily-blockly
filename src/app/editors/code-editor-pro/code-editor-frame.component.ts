@@ -6,6 +6,7 @@ import { openCoderBrowserDocument } from '../../integrations/coder/coder-browser
 import { BrowserProjectDocumentService } from '../../integrations/project/browser-project-document.service';
 import { Component, ElementRef, OnInit, OnDestroy, AfterViewInit, ViewChild, Input, OnChanges, SimpleChanges, inject, isDevMode } from '@angular/core';
 import { CoderEditorLayoutService, CODER_SIDEBAR_STATE_CHANNEL } from '../../integrations/coder/coder-editor-layout.service';
+import { CoderSimulatorSourceBridgeService } from '../../integrations/coder/coder-simulator-source-bridge.service';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { CommonModule } from '@angular/common';
@@ -179,6 +180,7 @@ function boundedCoderNativeSearchInteger(
 })
 export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
   private readonly coderLayout = inject(CoderEditorLayoutService);
+  private readonly simulatorSourceBridge = inject(CoderSimulatorSourceBridgeService);
   private readonly browserConfiguration = inject(CODER_BROWSER_EMBED_CONFIGURATION);
   private readonly browserProjectDocument = inject(BrowserProjectDocumentService);
   private browserDeployment: Readonly<CoderBrowserEmbedConfiguration> | null = null;
@@ -770,6 +772,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       }
       if (this.electronService.isElectron) {
         u.searchParams.set('nativeFsBridge', 'true');
+        u.searchParams.set('simulatorSourceHostOrigin', window.location.origin);
       }
       this.coderLoadingStage = 'workbench';
       this.coderFrameProjectPath = projectPath;
@@ -868,6 +871,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
     this.coderInitialContextRoot = '';
     const frame = this.coderEmbedFrame?.nativeElement;
     const root = this.coderEmbedWorkspaceRoot;
+    const origin = this.coderRuntimeHostInfo && new URL(this.coderRuntimeHostInfo.url).origin;
+    if (root && frame?.contentWindow && origin && this.isCurrentCoderWorkspace(root)) {
+      this.simulatorSourceBridge.attach(root, frame.contentWindow, origin, true);
+    }
     this.coderWorkbenchReady = false;
     if (this.coderEmbedLoading) {
       this.coderLoadingStage = 'workbench';
@@ -1464,6 +1471,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       return;
     }
     this.coderLayout.reset(this.projectPath);
+    this.simulatorSourceBridge.detach(this.projectPath, this.coderEmbedFrame?.nativeElement?.contentWindow);
     this.stopAllCoderEmbedFsWatchers();
     this.stopAllCoderNativeSearches();
     this.codeSuggestionHostBridge.registerFrame(null);
@@ -2152,6 +2160,7 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
       }
       return;
     }
+    if (this.simulatorSourceBridge.receive(this.projectPath, ev)) return;
     if (ev.data?.channel === CODER_SIDEBAR_STATE_CHANNEL) {
       const frame = this.coderEmbedFrame?.nativeElement?.contentWindow;
       if (frame && ev.source === frame && typeof ev.data.visible === 'boolean') {
@@ -2225,6 +2234,10 @@ export class CodeEditorFrameComponent implements OnInit, OnDestroy, AfterViewIni
         // Replay the latest snapshot only after the new Workbench has installed its
         // host-context listener so a simultaneous theme change cannot be lost.
         const root = this.coderEmbedWorkspaceRoot;
+        const origin = this.coderRuntimeHostInfo && new URL(this.coderRuntimeHostInfo.url).origin;
+        if (origin && ev.origin === origin && root && this.isCurrentCoderWorkspace(root)) {
+          this.simulatorSourceBridge.attach(root, frameWindow, origin);
+        }
         if (root) void this.pushAilyCoderHostContext(root);
       }
       return;

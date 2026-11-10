@@ -428,6 +428,15 @@ export class SimulatorProjectArtifactCallbackAuthority {
     signal: AbortSignal,
   ): Promise<SimulatorSubappHostArtifactDescriptorV1> {
     this.requireProject(request.projectIdentity);
+    const artifact = await this.readCurrentArtifact(request.artifactRevision, signal);
+    const reference = await this.createReference(artifact, signal);
+    return descriptorFromReference(reference);
+  }
+
+  async readCurrentArtifact(
+    artifactRevision: string | null,
+    signal: AbortSignal,
+  ): Promise<SimulationArtifact> {
     this.requireActive(signal);
 
     const artifact = await this.readManifest(signal, false);
@@ -442,18 +451,10 @@ export class SimulatorProjectArtifactCallbackAuthority {
     if (!await this.isArtifactCurrent(artifact, signal)) throw new SimulatorHostProviderOperationError('conflict');
     this.requireActive(signal);
 
-    const artifactRevision = artifact.artifactId;
-
-    if (
-      request.artifactRevision !== null
-      && request.artifactRevision !== artifactRevision
-    ) {
+    if (artifactRevision !== null && artifactRevision !== artifact.artifactId) {
       throw new SimulatorHostProviderOperationError('conflict');
     }
-
-    const reference = await this.createReference(artifact, signal);
-
-    return descriptorFromReference(reference);
+    return artifact;
   }
 
   private async readArtifactChunk(

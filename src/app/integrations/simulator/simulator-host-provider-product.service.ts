@@ -35,9 +35,11 @@ import {
 } from '@integration/subapps/public-api';
 import { SimulatorBuildProductComposition } from './simulator-build-product-composition';
 import { CoderProjectRuntimeService } from '../coder/coder-project-runtime.service';
+import { CoderSimulatorSourceBridgeService } from '../coder/coder-simulator-source-bridge.service';
 import { CodeEditorProProjectService } from '../../editors/code-editor-pro/services/code-editor-pro-project.service';
 import { CoderSimulatorBuildExecutionPort } from './simulator-coder-build-execution-port';
 import { createSimulatorCoderSourceReader } from './simulator-coder-source-reader';
+import { SimulatorCoderEditorCallbackAuthority } from './simulator-coder-editor-callback-authority';
 import { createSimulatorBuildExecutionSlot } from './simulator-build-callback-authority';
 import {
   SimulatorBlocklyEditorCallbackAuthority,
@@ -80,6 +82,7 @@ export class SimulatorHostProviderProductService {
     private readonly commands: CmdService,
     private readonly coder?: CoderProjectRuntimeService,
     private readonly coderPersistence?: CodeEditorProProjectService,
+    private readonly coderSimulatorSources?: CoderSimulatorSourceBridgeService,
   ) {}
 
   ensureRegistered(): void {
@@ -448,6 +451,12 @@ export class SimulatorHostProviderProductService {
             });
           },
         },
+      }) : coderSource && this.coderSimulatorSources ? new SimulatorCoderEditorCallbackAuthority({
+        readArtifact: artifactRevision => run(activationSignal,
+          signal => composition.readCurrentDebugArtifact(artifactRevision, signal)),
+        editorPath: artifactPath => coderSource.editorPath(artifactPath),
+        show: (path, line, sha256, focus) => this.coderSimulatorSources!.show(projectRoot, { path, line, sha256, focus }),
+        clear: () => this.coderSimulatorSources!.clear(projectRoot),
       }) : null;
       cleanup.add(() => editor?.close());
       const entitlement = new SimulatorEntitlementCallbackAuthority({

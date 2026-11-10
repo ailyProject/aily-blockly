@@ -83,7 +83,9 @@ function sourceFixture(create) {
     capture(code) { return { mode: 'coder', sourceSha256: hash(code), digest: hash(code + header) }; },
     readDelivery: () => delivery,
   };
-  const artifact = { artifactId: 'c'.repeat(64), build: { source: { sha256: hash(options.readEntry()) } } };
+  const artifact = { artifactId: 'c'.repeat(64), build: { source: {
+    path: 'main.cpp', sizeBytes: Buffer.byteLength(options.readEntry()), sha256: hash(options.readEntry()),
+  } } };
   delivery = { kind: 'aily-build-delivery', artifactId: artifact.artifactId, sourceCapture: options.capture(options.readEntry()) };
   return { reader: create(options), options, artifact, setSaved: value => { saved = value; },
     changeHeader() { header = '#define VALUE 2'; }, setDelivery: value => { delivery = value; } };
@@ -109,6 +111,35 @@ test('missing or foreign delivery cannot make a Coder Artifact current', async (
   f.setDelivery(null); assert.equal(await f.reader.isArtifactCurrent(f.artifact, signal), false);
   f.setDelivery({ kind: 'aily-build-delivery', artifactId: 'foreign' });
   assert.equal(await f.reader.isArtifactCurrent(f.artifact, signal), false);
+});
+test('Coder debug source identity must match the saved entry path, byte length and hash', async () => {
+  const { createSimulatorCoderSourceReader: create } = await sources;
+  const signal = new AbortController().signal;
+  for (const override of [
+    { path: 'another.cpp' }, { path: 'src/main.cpp' }, { path: 'Main.cpp' },
+    { sizeBytes: 1 }, { sha256: 'f'.repeat(64) },
+  ]) {
+    const f = sourceFixture(create), source = { ...f.artifact.build.source, ...override };
+    // A delivery receipt cannot bind the compiled source to a different entry.
+    f.setDelivery({ kind: 'aily-build-delivery', artifactId: f.artifact.artifactId,
+      sourceCapture: { ...f.options.capture(f.options.readEntry()), sourceSha256: source.sha256 } });
+    assert.equal(await f.reader.isArtifactCurrent({ ...f.artifact, build: { source } }, signal), false);
+  }
+});
+test('native Arduino Coder uses the exact Builder basename and counts UTF-8 bytes', async () => {
+  const { createSimulatorCoderSourceReader: create } = await sources, f = sourceFixture(create);
+  const signal = new AbortController().signal;
+  Object.assign(f.options.readManifest(), { entry: 'demo/demo.ino', arduinoSketch: true });
+  f.options.readEntry = (entry, nativeArduino) => {
+    assert.equal(entry, 'demo/demo.ino');
+    assert.equal(nativeArduino, true);
+    return '// 中文\nvoid setup(){}\nvoid loop(){}';
+  };
+  const code = f.options.readEntry('demo/demo.ino', true), sourceCapture = f.options.capture(code);
+  const source = { path: 'demo.ino', sizeBytes: Buffer.byteLength(code), sha256: sourceCapture.sourceSha256 };
+  f.setDelivery({ kind: 'aily-build-delivery', artifactId: f.artifact.artifactId, sourceCapture });
+  assert.equal(await f.reader.isArtifactCurrent({ ...f.artifact, build: { source } }, signal), true);
+  assert.equal(await f.reader.isArtifactCurrent({ ...f.artifact, build: { source: { ...source, sizeBytes: code.length } } }, signal), false);
 });
 test('unsafe source paths and spoofed Blockly capture are refused', async () => {
   const { createSimulatorCoderSourceReader: create } = await sources;

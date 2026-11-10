@@ -87,6 +87,10 @@ export class SimulatorBuildProductComposition {
     return this.projectAuthority.captureArtifactReadValidity(descriptor);
   }
 
+  readCurrentDebugArtifact(artifactRevision: string, signal: AbortSignal) {
+    return this.projectAuthority.readCurrentArtifact(artifactRevision, signal);
+  }
+
   constructor(options: SimulatorBuildProductCompositionOptions) {
     this.projectAuthority = new SimulatorProjectArtifactCallbackAuthority({
       projectRoot: options.projectRoot,
