@@ -128,11 +128,22 @@ function windowsTaskkill(pid) {
     (error, _stdout, stderr) => resolve({ success: !error, error: error?.message || '', stderr: stderr?.trim?.() || '' })));
 }
 
-async function terminateWindowsProcessTree(pid, label, startedAt) {
+async function terminateWindowsProcessTree(pid, label, startedAt, options = {}) {
   // Capture descendants before taskkill can orphan them. Creation identity
   // prevents a recycled PID from becoming evidence or a later kill target.
   let before;
   try { before = await windowsProcessSnapshot(); } catch { /* A failed snapshot cannot attest a failed kill. */ }
+  const originalCompletedNormally = options.originalProcessCompletedNormally?.() === true;
+  if (originalCompletedNormally) {
+    // The registered ChildProcess can finish while CIM is enumerating it. Do
+    // not kill its old PID: it may already belong to another process. A failed
+    // enumeration or any possible remaining tree still leaves stop unresolved.
+    const success = !!before && !before.some(row => row.pid === pid || row.parent === pid);
+    console.info('[PROC_TRACE][PROCESS_TREE_KILL]', { label, pid, method: 'taskkill', success,
+      durationMs: Date.now() - startedAt, snapshotAvailable: !!before, originalCompletedNormally,
+      alreadyExited: success, verifiedAfterFailure: false, targetPids: [], aliveAfterKill: [] });
+    return success;
+  }
   const known = new Map();
   const root = before?.find(row => row.pid === pid);
   if (root) known.set(pid, root.created);
@@ -169,7 +180,8 @@ async function terminateWindowsProcessTree(pid, label, startedAt) {
     }
   }
   console.info('[PROC_TRACE][PROCESS_TREE_KILL]', { label, pid, method: 'taskkill', success,
-    durationMs: Date.now() - startedAt, verifiedAfterFailure,
+    durationMs: Date.now() - startedAt, snapshotAvailable: !!before, originalCompletedNormally,
+    verifiedAfterFailure,
     targetPids: [...known.keys()], aliveAfterKill, error: first.error, stderr: first.stderr });
   return success;
 }
@@ -192,7 +204,7 @@ function killRegisteredProcessTree(pid, label, options = {}) {
           resolve(result.success);
         }, () => resolve(false));
       } else {
-        void terminateWindowsProcessTree(pid, label, startedAt).then(resolve, () => resolve(false));
+        void terminateWindowsProcessTree(pid, label, startedAt, options).then(resolve, () => resolve(false));
       }
       return;
     }

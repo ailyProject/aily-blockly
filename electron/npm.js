@@ -289,7 +289,12 @@ async function stopNpmEntry(entry) {
     }
     entry.stopRequested = true;
     entry.stopPromise = (async () => {
-        const stopped = await killRegisteredProcessTree(entry.process?.pid, `npm:${entry.sourceId}`).catch(() => false);
+        const originalProcess = entry.process;
+        const stopped = await killRegisteredProcessTree(originalProcess?.pid, `npm:${entry.sourceId}`, {
+            originalProcessCompletedNormally: () => activeNpmProcesses.get(entry.sourceId) === entry
+                && entry.process === originalProcess && entry.closed === true
+                && entry.completedNormally === true && !entry.terminationUnconfirmed,
+        }).catch(() => false);
         entry.terminationUnconfirmed = !stopped;
         if (stopped) releaseNpmEntry(entry);
         entry.stopRequested = false;
