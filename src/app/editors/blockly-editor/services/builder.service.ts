@@ -67,6 +67,11 @@ export class _BuilderService {
     return this.isolatedBuilds() ? window['builder'].prepareBuildExecution(config, workspace, operation) : config;
   }
 
+  private async abandonPreparedPreprocess({ currentProjectPath, execution, sourceCapture }: any): Promise<void> {
+    try { await window['builder']?.abandonPreparedPreprocess?.({ currentProjectPath, execution, sourceCapture }); }
+    catch (error) { console.warn('Could not retire unstarted background preprocess inputs:', error); }
+  }
+
   getCurrentBuildPath(): Promise<string> {
     const execution = this.isolatedBuilds() && window['builder'].resolveBuildExecution(this.projectService.currentProjectPath);
     return this.isolatedBuilds() ? Promise.resolve(execution?.buildPath ?? '') : this.projectService.getBuildPath();
@@ -685,6 +690,7 @@ export class _BuilderService {
       }
 
       // 2. 在后台运行预处理脚本
+      let unstartedExecution: any;
       try {
         await this.waitForOneIdleBoundary();
         if (this.shouldCancelBackgroundPreprocess(runGeneration)) {
@@ -750,6 +756,7 @@ export class _BuilderService {
           devmode: this.configService.data.devmode || false,
           partitionFilePath: this.electronService.pathJoin(currentProjectPath, 'partitions.csv')
         }, sourceWorkspace, 'preprocess');
+        if (buildConfig.execution?.operation === 'preprocess') unstartedExecution = buildConfig;
         assertFresh();
 
         // 保留配置草稿，但子进程只消费该次调用的不可覆盖请求文件。
@@ -793,6 +800,8 @@ export class _BuilderService {
             this.preprocessStreamId = null;
           }
         };
+        // CmdService dispatches on call. From here, the child owns settlement.
+        unstartedExecution = undefined;
         const subscription = this.cmdService.spawn(
           'node',
           [preprocessScriptPath, configFilePath],
@@ -879,6 +888,8 @@ export class _BuilderService {
       } catch (error) {
         if (error instanceof BlocklyCodePreparationInvalidatedError) return;
         console.warn('启动后台预处理失败:', error);
+      } finally {
+        if (unstartedExecution) void this.abandonPreparedPreprocess(unstartedExecution);
       }
       } finally { this.preprocessPreparations.delete(runGeneration); }
       })

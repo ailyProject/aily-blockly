@@ -204,6 +204,38 @@ test('the asynchronous preload adapter captures inputs off the renderer thread a
     assert.equal(bridge.resolveBuildExecution(f.root), null);
 });
 
+test('the worker retires only the exact unstarted preprocess relinquished by its caller', async t => {
+    const f = fixture(t), bridge = require('../electron/build-workspace-publication');
+    const compiled = api.prepareBuildExecution(f.config); complete(compiled);
+    const prepare = buildRequestId => api.prepareBuildExecution({ ...f.config, buildRequestId }, undefined, 'preprocess');
+    const unstarted = prepare('unstarted'), unrelated = prepare('unrelated'), running = prepare('running');
+    const { folder, root } = api.recordFor(unstarted);
+    const lease = acquireBuildWorkspace(root, 'preprocess');
+    const runningLease = acquireBuildWorkspace(running.currentProjectPath, 'preprocess');
+    try {
+        api.startBuildExecution(running, runningLease);
+        await assert.rejects(bridge.abandonPreparedPreprocess(unstarted), { code: 'BUILD_WORKSPACE_BUSY' });
+        assert.equal(await bridge.abandonPreparedPreprocess(running), false);
+        assert.equal(fs.existsSync(path.join(folder, 'outcome.json')), false);
+        assert.equal(fs.existsSync(path.join(root, 'node_modules')), true);
+    } finally { lease.release(); runningLease.release(); }
+
+    assert.equal(await bridge.abandonPreparedPreprocess(unstarted), true);
+    assert.equal(await bridge.abandonPreparedPreprocess(unstarted), false);
+    assert.equal(api.recordFor(unstarted).record.status, 'cancelled');
+    assert.equal(api.recordFor(unstarted).record.preprocessInputsRetired, true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(folder, 'outcome.json'))).status, 'cancelled');
+    assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+    assert.equal(fs.readFileSync(path.join(root, 'src/user.h'), 'utf8'), 'user');
+    assert.equal(api.recordFor(unrelated).record.status, 'prepared');
+    assert.equal(fs.existsSync(path.join(unrelated.currentProjectPath, 'node_modules')), true);
+    assert.equal(fs.existsSync(path.join(running.currentProjectPath, 'node_modules')), true);
+    assert.equal(api.resolveBuildExecution(f.root).currentProjectPath, compiled.currentProjectPath);
+    const delayed = acquireBuildWorkspace(root, 'preprocess');
+    try { assert.throws(() => api.startBuildExecution(unstarted, delayed), /already started or cancelled/); }
+    finally { delayed.release(); }
+});
+
 test('cancellation wins even while another execution finalizer holds the transition guard', t => {
     const f = fixture(t), config = api.prepareBuildExecution(f.config);
     const guard = require('../child/scripts/native-file-lock').tryAcquireFileLock(path.join(f.root, '.aily/build-executions/execution.guard'));

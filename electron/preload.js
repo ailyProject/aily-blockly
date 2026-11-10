@@ -16,7 +16,7 @@ const { replaceProjectText, PROJECT_FILE_PUBLICATION_VERSION, PROJECT_SHADOW_IDE
 const { openProjectSyncStorageBridge, PROJECT_SYNC_STORAGE_VERSION } = require("./project-sync-storage");
 const { copyProjectDirectory, copyRecoveryProjectDirectory, importProjectDirectory } = require("./project-file-copy");
 const { publishArduinoGeneratedCode, patchBuildMetadata, captureBuildSource, canReuseBlocklyUpload, GENERATED_SOURCE_ARCHIVE_VERSION,
-    prepareBuildExecution, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
+    prepareBuildExecution, abandonPreparedPreprocess, resolveBuildExecution, resolveBuildProjectPath, inspectBuildExecution, cancelBuildExecution, ISOLATED_BUILD_EXECUTION_VERSION } = require('./build-workspace-publication');
 const recoveryReceipts = require('./project-recovery-receipts').createProjectRecoveryReceipts(process.env.AILY_APPDATA_PATH);
 
 async function readDependencyEnvironmentCapability() {
@@ -590,6 +590,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     canReuseBlocklyUpload,
     isolatedBuildExecutionVersion: ISOLATED_BUILD_EXECUTION_VERSION,
     prepareBuildExecution,
+    abandonPreparedPreprocess,
     resolveBuildExecution,
     resolveBuildProjectPath,
     inspectBuildExecution,

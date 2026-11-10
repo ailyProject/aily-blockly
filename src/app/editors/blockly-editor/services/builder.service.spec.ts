@@ -4,6 +4,7 @@ import * as Blockly from 'blockly';
 import { BlocklyService } from './blockly.service';
 import { ProcessState } from '@core/app-shell/public-api';
 import { Subject } from 'rxjs';
+import { BlocklyCodePreparationInvalidatedError } from './prepared-project-code';
 import {
   type BlockCodeMapping,
 } from '../components/blockly/generators/arduino/arduino';
@@ -232,16 +233,44 @@ describe('BuilderService background preprocess ownership', () => {
         sourceWorkspace: { documentText: '{}', revision: 1, runtimeRevision: 1, pageId: 'main' }, assertFresh: () => {} };
       service.generateWorkspaceBuildSnapshotForPreprocess = async () => captured;
       service.writeCompileRequest = jasmine.createSpy('request').and.resolveTo('/private/request.json');
-      const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({ ...config, currentProjectPath: '/private/execution' }));
-      window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare };
+      const prepare = jasmine.createSpy('prepare').and.callFake(async config => ({ ...config, currentProjectPath: '/private/execution', execution: { operation: 'preprocess' } }));
+      const abandon = jasmine.createSpy('abandon').and.resolveTo(true);
+      window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: prepare, abandonPreparedPreprocess: abandon };
       try {
         service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
         expect(prepare).toHaveBeenCalledOnceWith(jasmine.objectContaining({ generatedArtifacts: [], projectMacros: [] }), captured.sourceWorkspace, 'preprocess');
         expect(service.writeCompileRequest).toHaveBeenCalledOnceWith(jasmine.objectContaining({ currentProjectPath: '/private/execution' }));
         expect(service.cmdService.spawn.calls.mostRecent().args[2].buildWorkspace).toBe('/private/execution');
         service.backgroundOutput.complete(); tick(); service.destroy(); tick();
+        expect(abandon).not.toHaveBeenCalled();
       } finally { window['builder'] = previousBridge; }
     }));
+
+    for (const phase of ['stale capture', 'configuration write failure', 'closing before spawn']) {
+      it(`relinquishes its exact private preparation on ${phase}`, fakeAsync(() => {
+        const service = backgroundBuilder(), previousBridge = window['builder'];
+        const execution = { currentProjectPath: '/private/execution', execution: { operation: 'preprocess', id: 'captured' }, sourceCapture: { digest: 'capture' } };
+        const abandon = jasmine.createSpy('abandon').and.resolveTo(true);
+        window['builder'] = { isolatedBuildExecutionVersion: 1, prepareBuildExecution: async () => ({ ...execution, code: 'generated code' }), abandonPreparedPreprocess: abandon };
+        service.generateWorkspaceBuildSnapshotForPreprocess = async () => ({ code: 'void setup() {}', assertFresh: () => {
+          if (phase === 'stale capture') throw new BlocklyCodePreparationInvalidatedError('invalidated by newer work');
+        } });
+        let finishWrite!: (request: string) => void;
+        if (phase === 'configuration write failure') service.writeCompileRequest = async () => { throw new Error('configuration could not be written'); };
+        if (phase === 'closing before spawn') service.writeCompileRequest = () => new Promise(resolve => { finishWrite = resolve; });
+        try {
+          service.init(); service.blocklyService.dependencySubject.next('changed'); tick(500);
+          if (phase === 'closing before spawn') {
+            expect(abandon).not.toHaveBeenCalled();
+            service.projectService.isProjectTransitionInProgress = () => true;
+            finishWrite('/private/request.json'); tick();
+          }
+          expect(abandon).toHaveBeenCalledOnceWith(execution);
+          expect(service.cmdService.spawn).not.toHaveBeenCalled();
+          expect(service.preprocessPreparations.size).toBe(0);
+        } finally { service.destroy(); window['builder'] = previousBridge; }
+      }));
+    }
 
     it('keeps a real active stream until normal completion and suppresses stale AI-era output', fakeAsync(() => {
       const service = backgroundBuilder(); service.init();

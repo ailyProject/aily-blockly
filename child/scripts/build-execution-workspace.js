@@ -60,6 +60,15 @@ function readOptional(read, ...args) {
     try { return read(...args); } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
 }
 
+function isUnindexedPreprocess(store, record) {
+    if (readOptional(fs.lstatSync, store.pointer)) {
+        const current = json(store.pointer);
+        if (current?.version !== 1 || !UUID.test(current.id) || current.id === record.id) return false;
+    }
+    const requests = readOptional(directory, store.parent, 'requests', false);
+    return !(requests && readOptional(fs.lstatSync, path.join(requests, `${hash(record.buildRequestId)}.json`)));
+}
+
 function retirePreprocessInputs(store, id) {
     try {
         if (!UUID.test(id)) return;
@@ -75,12 +84,7 @@ function retirePreprocessInputs(store, id) {
             if (outcome?.version !== 1 || outcome.id !== id || outcome.status !== record.status
                 || outcome.inputDigest !== record.inputDigest || outcome.buildRequestId !== record.buildRequestId) return;
 
-            if (readOptional(fs.lstatSync, store.pointer)) {
-                const current = json(store.pointer);
-                if (current?.version !== 1 || !UUID.test(current.id) || current.id === id) return;
-            }
-            const requests = readOptional(directory, store.parent, 'requests', false);
-            if (requests && readOptional(fs.lstatSync, path.join(requests, `${hash(record.buildRequestId)}.json`))) return;
+            if (!isUnindexedPreprocess(store, record)) return;
 
             // A copied archive may describe a different absolute project location.
             // Use the local physical directory and its actual leases, never that old path.
@@ -280,6 +284,28 @@ function cancelBuildExecution(config) {
     if (!['prepared', 'running'].includes(value.record.status)) return { status: value.record.status };
     return claimOutcome(value, 'cancelled');
 }
+
+/** The caller has relinquished the exact preparation without dispatching it. */
+function abandonPreparedPreprocess(config) {
+    if (config?.execution?.operation !== 'preprocess') return false;
+    const value = recordFor(config);
+    const abandoned = executionTransition(value, () => {
+        const { record: current } = recordFor(config);
+        if (current.version !== 1 || current.operation !== 'preprocess' || current.status !== 'prepared' || current.owner
+            || typeof current.buildRequestId !== 'string' || !REQUEST_ID.test(current.buildRequestId)
+            || !isUnindexedPreprocess(value.store, current)) return false;
+        const idle = inspectBuildWorkspaceIdle(value.root);
+        try {
+            idle.assertIdle();
+            const outcome = claimOutcome(value, 'cancelled');
+            if (outcome.status !== 'cancelled') return false;
+            write(path.join(value.folder, 'execution.json'), { ...current, status: outcome.status });
+            return true;
+        } finally { idle.release(); }
+    });
+    if (abandoned) retireStandalonePreprocessInputs(config);
+    return abandoned;
+}
 function resolveBuildExecution(projectPath) {
     try {
         const store = storage(projectPath), pointer = json(store.pointer);
@@ -354,4 +380,4 @@ function inspectBuildExecution(projectPath, buildRequestId) {
 
 module.exports = { prepareBuildExecution, startBuildExecution, finishBuildExecution, cancelBuildExecution, resolveBuildExecution,
     resolveBuildProjectPath, canReuseBuildExecution, inspectBuildExecution, recordFor, retireStandalonePreprocessInputs,
-    pruneTerminalPreprocessInputs };
+    pruneTerminalPreprocessInputs, abandonPreparedPreprocess };
