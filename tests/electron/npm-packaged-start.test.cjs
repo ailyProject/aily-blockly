@@ -52,6 +52,10 @@ test('packaged Electron cold-start acquires the npm lock with external native re
   fs.copyFileSync(path.join(__dirname, '../../child/scripts/native-file-lock.js'), path.join(child, 'scripts/native-file-lock.js'));
   fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({ name: 'aily-npm-cold-fixture', version: '1.0.0', main: 'main.cjs' }));
   const result = path.join(root, 'result.json');
+  const prefix = path.join(root, 'prefix');
+  const auth = '{"access_token":"isolated-test-token"}\n';
+  fs.mkdirSync(prefix);
+  fs.writeFileSync(path.join(prefix, '.aily'), auth, { mode: 0o600 });
   fs.writeFileSync(path.join(source, 'main.cjs'), `
     const { app } = require('electron');
     const fs = require('node:fs'), assert = require('node:assert/strict');
@@ -63,7 +67,7 @@ test('packaged Electron cold-start acquires the npm lock with external native re
       assert.equal(app.isPackaged, true);
       for (const key of ['AILY_CHILD_PATH', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) assert.equal(process.env[key], undefined);
       const { acquireNpmMutation } = require('./electron/npm-mutation-queue');
-      const options = { command: 'npm', args: ['install', '--prefix', ${JSON.stringify(path.join(root, 'prefix'))}] };
+      const options = { command: 'npm', args: ['install', '--prefix', ${JSON.stringify(prefix)}] };
       const release = await acquireNpmMutation(options);
       let waited = false;
       const next = acquireNpmMutation(options, { onWait: () => { waited = true; } });
@@ -79,4 +83,5 @@ test('packaged Electron cold-start acquires the npm lock with external native re
     windowsHide: true, encoding: 'utf8', timeout: 25000 });
   assert.equal(launched.status, 0, (fs.existsSync(result) ? fs.readFileSync(result, 'utf8') : '') + launched.stderr + launched.error);
   assert.deepEqual(JSON.parse(fs.readFileSync(result, 'utf8')), { packaged: true, nativeLock: true, queued: true });
+  assert.equal(fs.readFileSync(path.join(prefix, '.aily'), 'utf8'), auth);
 });

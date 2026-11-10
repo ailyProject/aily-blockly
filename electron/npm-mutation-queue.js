@@ -6,8 +6,10 @@ const { childScriptPath } = require('./child-script-path');
 
 // Both npm IPC channels modify the same package tree. Keep the anchor outside
 // node_modules: npm reify may rename/remove any package while installing another.
+// AppData's .aily is the shared login file; project prefixes use it as a directory.
+// Use a separate namespace so both kinds of prefix retain their existing .aily.
 function tryAcquirePrefix(prefix) {
-  const directory = path.join(prefix, '.aily');
+  const directory = path.join(prefix, '.aily-npm');
   fs.mkdirSync(directory, { recursive: true });
   const { tryAcquireFileLock } = require(childScriptPath('native-file-lock.js'));
   const lock = tryAcquireFileLock(path.join(directory, 'npm-mutation.lock'));

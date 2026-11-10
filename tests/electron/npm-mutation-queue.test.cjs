@@ -144,8 +144,12 @@ test('failed termination retains the prefix and does not retarget a closed PID',
   await f.npm.killAllNpmProcesses(); await rejected;
 });
 
-test('independent host processes share the native prefix lock', async t => {
+for (const entryType of ['file', 'directory']) test(`independent hosts share the native prefix lock with .aily as a ${entryType}`, async t => {
   const root = temporary(t), acquire = createNpmMutationQueue({ pollMs: 10 });
+  const existing = path.join(root, '.aily');
+  const auth = '{"access_token":"isolated-test-token"}\n';
+  if (entryType === 'file') fs.writeFileSync(existing, auth, { mode: 0o600 });
+  else fs.mkdirSync(existing);
   const release = await acquire(install(root));
   const worker = fork(path.join(__dirname, 'fixtures/npm-prefix-lock-worker.cjs'), [root], {
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true,
@@ -157,4 +161,7 @@ test('independent host processes share the native prefix lock', async t => {
   assert.deepEqual(messages, ['waiting']);
   const acquired = once(worker, 'message'); release(); assert.equal((await acquired)[0], 'acquired');
   assert.equal((await exited)[0], 0);
+  assert.ok(fs.statSync(path.join(root, '.aily-npm', 'npm-mutation.lock')).isFile());
+  if (entryType === 'file') assert.equal(fs.readFileSync(existing, 'utf8'), auth);
+  else assert.deepEqual(fs.readdirSync(existing), []);
 });

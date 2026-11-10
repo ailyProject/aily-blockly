@@ -16,6 +16,8 @@ test('real npm compiler postinstall and board install coexist at one prefix thro
     fs.rmSync(root, { recursive: true, force: true });
   });
   const prefix = path.join(root, 'app data'); fs.mkdirSync(prefix);
+  const auth = '{"access_token":"isolated-test-token","custom":"preserve"}\n';
+  fs.writeFileSync(path.join(prefix, '.aily'), auth, { mode: 0o600 });
   fs.writeFileSync(path.join(prefix, 'package.json'), '{"name":"isolated-npm-race","version":"1.0.0","private":true}');
   const ready = path.join(root, 'compiler-started'), gate = path.join(root, 'allow-compiler-finish');
   const compilerTarball = path.join(root, 'compiler.tgz'), boardTarball = path.join(root, 'board.tgz');
@@ -63,6 +65,7 @@ test('real npm compiler postinstall and board install coexist at one prefix thro
     const lock = JSON.parse(fs.readFileSync(path.join(prefix, 'package-lock.json'), 'utf8'));
     assert.ok(lock.packages['node_modules/aily-fixture-board']);
     assert.ok(lock.packages['node_modules/aily-fixture-compiler']);
+    assert.equal(fs.readFileSync(path.join(prefix, '.aily'), 'utf8'), auth);
   } finally {
     fs.writeFileSync(gate, 'finish');
     await compilerResult;

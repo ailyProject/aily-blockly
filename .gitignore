@@ -34,6 +34,7 @@ yarn.lock
 
 # Project-local IDE lock (cross-instance)
 .aily/
+.aily-npm/
 
 # Miscellaneous
 /.angular/cache
