@@ -138,6 +138,24 @@ for (const relative of ['.aily/source.h', '.aily/coder-embed-hints.json.backup',
     });
 }
 
+test('only Coder clangd index changes leave the project source capture valid', t => {
+    const index = '.aily/lsp/.cache/clangd/index';
+    for (const coder of [true, false]) {
+        const f = fixture(t, coder);
+        f.put(`${index}/Arduino.h.idx`, 'old');
+        const before = captureProjectSources(f.config);
+        f.put(`${index}/Arduino.h.idx`, 'rewritten');
+        f.put(`${index}/probe.cpp.idx`, 'new');
+        if (!coder) {
+            assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+            continue;
+        }
+        assert.doesNotThrow(() => confirmProjectSources(before, f.config));
+        f.put('.aily/lsp/.cache/clangd/index-backup/probe.h', 'still guarded');
+        assert.throws(() => confirmProjectSources(before, f.config), /PROJECT_INPUTS_CHANGED/);
+    }
+});
+
 test('Coder hints exception does not hide project/board configuration edits or a Blockly same-name input', t => {
     for (const coder of [true, false]) {
         const f = fixture(t, coder);

@@ -58,6 +58,10 @@ function captureProjectSources(config) {
         // the editor refreshes. Firmware compilation reads package/board/source
         // inputs directly, never this resource-tree and LSP presentation cache.
         || (coder && relative === '.aily/coder-embed-hints.json')
+        // clangd populates this generated index while a newly opened Coder
+        // project is already compiling. Its shards are not compiler inputs.
+        || (coder && (relative === '.aily/lsp/.cache/clangd/index'
+            || relative.startsWith('.aily/lsp/.cache/clangd/index/')))
         || (coder && /^sketch\/(?:preprocess\.json|target-compile\.json|library-cache\.json|compile-preprocess-[^/]+\.json)$/.test(relative));
     const visit = (filename, relative, depth = 0, exclusions = true) => {
         if (exclusions && excluded(relative)) return;
