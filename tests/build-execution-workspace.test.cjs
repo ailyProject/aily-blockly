@@ -4,10 +4,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { fork, spawn } = require('node:child_process');
 const { once } = require('node:events');
 const api = require('../child/scripts/build-execution-workspace');
 const upload = require('../child/scripts/blockly-upload-state');
+const { acquireBuildWorkspace } = require('../child/scripts/build-workspace-lease');
 const { createHash } = require('node:crypto');
 
 function fixture(t) {
@@ -35,7 +36,7 @@ function complete(config) {
     const root = config.currentProjectPath, build = path.join(root, '.build'), temp = path.join(root, '.temp');
     let lease;
     if (!fs.existsSync(path.join(path.dirname(root), 'outcome.json'))) {
-        lease = require('../child/scripts/build-workspace-lease').acquireBuildWorkspace(root, 'compile');
+        lease = acquireBuildWorkspace(root, 'compile');
         api.startBuildExecution(config, lease);
     }
     fs.mkdirSync(build, { recursive: true }); fs.mkdirSync(temp, { recursive: true });
@@ -108,6 +109,88 @@ test('background executions do not supersede a completed foreground build', t =>
     const f = fixture(t), compiled = api.prepareBuildExecution(f.config); complete(compiled);
     api.prepareBuildExecution({ ...f.config, code: 'background newer code' }, undefined, 'preprocess');
     assert.equal(api.resolveBuildExecution(f.root).buildRequestId, 'original-request');
+});
+
+function completePreprocess(config) {
+    const root = config.currentProjectPath, lease = acquireBuildWorkspace(root, 'preprocess');
+    try {
+        api.startBuildExecution(config, lease);
+        for (const relative of ['.temp/libraries/lib/header.h', '.temp/sketch/sketch.ino', '.temp/preprocess.json', '.temp/target-compile.json']) {
+            const filename = path.join(root, relative);
+            fs.mkdirSync(path.dirname(filename), { recursive: true });
+            fs.writeFileSync(filename, relative);
+        }
+    } finally { lease.release(); }
+    api.finishBuildExecution(config, true);
+}
+
+test('standalone preprocess retirement keeps receipts, generated files and the exact foreground build', t => {
+    const f = fixture(t), compiled = api.prepareBuildExecution(f.config); complete(compiled);
+    const requestLog = `.log/compile/requests/${createHash('sha256').update(f.config.buildRequestId).digest('hex')}.log`;
+    f.put(requestLog, 'full compile output');
+    const config = api.prepareBuildExecution({ ...f.config, buildRequestId: 'background' }, undefined, 'preprocess');
+    completePreprocess(config);
+    const { folder, root } = api.recordFor(config), outcome = fs.readFileSync(path.join(folder, 'outcome.json'));
+    api.retireStandalonePreprocessInputs(config);
+    api.retireStandalonePreprocessInputs(config);
+    for (const relative of ['node_modules', '.temp/libraries']) assert.equal(fs.existsSync(path.join(root, relative)), false, relative);
+    for (const relative of ['.temp/sketch/sketch.ino', '.temp/preprocess.json', '.temp/target-compile.json']) {
+        assert.equal(fs.readFileSync(path.join(root, relative), 'utf8'), relative);
+    }
+    assert.deepEqual(fs.readFileSync(path.join(folder, 'outcome.json')), outcome);
+    assert.equal(api.recordFor(config).record.preprocessInputsRetired, true);
+    assert.equal(api.inspectBuildExecution(f.root, f.config.buildRequestId).status, 'completed');
+    assert.equal(api.resolveBuildExecution(f.root).currentProjectPath, compiled.currentProjectPath);
+    assert.equal(fs.readFileSync(path.join(f.root, requestLog), 'utf8'), 'full compile output');
+    assert.equal(fs.readFileSync(path.join(f.root, 'node_modules/@aily-project/lib-test/src/library.h'), 'utf8'), 'library');
+});
+
+test('the actual preprocess command retires failed standalone inputs without hiding its diagnostic', async t => {
+    const f = fixture(t), config = api.prepareBuildExecution(f.config, undefined, 'preprocess');
+    const { folder, root } = api.recordFor(config);
+    const child = spawn(process.execPath, [require.resolve('../child/scripts/preprocess'), path.join(folder, 'config.json')], {
+        env: { ...process.env, AILY_COMPILERS_PATH: 'relative-test-resource-root' }, windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    assert.deepEqual(await once(child, 'close'), [1, null], stderr);
+    assert.match(stderr, /AILY_COMPILERS_PATH must be an absolute platform resource root/);
+    assert.equal(api.recordFor(config).record.status, 'failed');
+    assert.equal(api.recordFor(config).record.preprocessInputsRetired, true);
+    assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+});
+
+test('a new build worker prunes verifiable terminal preprocess inputs from a moved archive', async t => {
+    const source = fixture(t), target = fixture(t);
+    const prepare = buildRequestId => api.prepareBuildExecution({ ...source.config, buildRequestId }, undefined, 'preprocess');
+    const completed = prepare('old-completed'), pending = prepare('old-pending');
+    const mismatch = prepare('old-mismatch'), indexed = prepare('old-indexed'), busy = prepare('old-busy');
+    for (const config of [completed, mismatch, indexed, busy]) completePreprocess(config);
+    api.cancelBuildExecution(pending); // A stop receipt without terminal ownership is insufficient.
+    const invalidOutcome = path.join(path.dirname(mismatch.currentProjectPath), 'outcome.json');
+    fs.writeFileSync(invalidOutcome, JSON.stringify({ ...JSON.parse(fs.readFileSync(invalidOutcome)), status: 'failed' }));
+    const index = createHash('sha256').update(indexed.execution.buildRequestId).digest('hex') + '.json';
+    source.put(`.aily/build-executions/requests/${index}`, JSON.stringify({ version: 1, id: indexed.execution.id,
+        buildRequestId: indexed.execution.buildRequestId }));
+    fs.renameSync(path.join(source.root, '.aily'), path.join(target.root, '.aily'));
+    const moved = config => path.join(target.root, '.aily', 'build-executions', config.execution.id, 'project');
+    const busyLease = acquireBuildWorkspace(moved(busy), 'preprocess');
+    try {
+        const worker = fork(require.resolve('../child/scripts/build-execution-worker'), [], {
+            windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], serialization: 'advanced',
+        });
+        const result = once(worker, 'message'), exited = once(worker, 'exit');
+        worker.send({ config: target.config, operation: 'compile' });
+        assert.equal((await result)[0].ok, true);
+        assert.equal((await exited)[0], 0);
+        assert.equal(fs.existsSync(path.join(moved(completed), 'node_modules')), false);
+        assert.equal(fs.existsSync(path.join(moved(completed), '.temp/libraries')), false);
+        for (const config of [pending, mismatch, indexed, busy]) {
+            assert.equal(fs.existsSync(path.join(moved(config), 'node_modules')), true, config.execution.buildRequestId);
+        }
+        assert.equal(api.inspectBuildExecution(target.root, target.config.buildRequestId).status, 'prepared');
+    } finally { busyLease.release(); }
 });
 
 test('the asynchronous preload adapter captures inputs off the renderer thread and rejects stale source selection', async t => {

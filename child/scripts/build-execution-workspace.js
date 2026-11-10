@@ -8,9 +8,12 @@ const { collectLibraryPackages } = require('./library-packages');
 const { captureBuildSource } = require('./build-source-capture');
 const { getSystemBootId } = require('./system-boot-id');
 const { processIdentity } = require('./build-process-identity');
+const { inspectBuildWorkspaceIdle } = require('./build-workspace-lease');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const UUID = /^[a-f0-9-]{36}$/;
 const HEADER = /^(?:variables|objects)_[a-zA-Z0-9_-]+-[a-f0-9]{8}\.h$/;
+const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled'];
 const fail = message => { throw Object.assign(new Error(`BUILD_EXECUTION_INVALID: ${message}`), { code: 'BUILD_EXECUTION_INVALID' }); };
 const state = stat => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
@@ -51,6 +54,65 @@ function executionTransition(value, action) {
     // Background preprocessing owns a different execution.json and must not
     // reject an unrelated foreground request while updating its own status.
     return locked({ anchor: path.join(value.folder, 'transition.guard') }, action);
+}
+
+function readOptional(read, ...args) {
+    try { return read(...args); } catch (error) { if (error.code !== 'ENOENT') throw error; return null; }
+}
+
+function retirePreprocessInputs(store, id) {
+    try {
+        if (!UUID.test(id)) return;
+        const folder = directory(store.parent, id, false), filename = path.join(folder, 'execution.json');
+        const isTerminal = record => record?.version === 1 && record.id === id && record.operation === 'preprocess'
+            && TERMINAL_STATUSES.includes(record.status) && !record.preprocessInputsRetired;
+        if (!isTerminal(json(filename))) return;
+        executionTransition({ folder }, () => {
+            const record = json(filename);
+            if (!isTerminal(record) || !/^[a-f0-9]{64}$/.test(record.inputDigest)
+                || typeof record.buildRequestId !== 'string' || !REQUEST_ID.test(record.buildRequestId)) return;
+            const outcome = json(path.join(folder, 'outcome.json'));
+            if (outcome?.version !== 1 || outcome.id !== id || outcome.status !== record.status
+                || outcome.inputDigest !== record.inputDigest || outcome.buildRequestId !== record.buildRequestId) return;
+
+            if (readOptional(fs.lstatSync, store.pointer)) {
+                const current = json(store.pointer);
+                if (current?.version !== 1 || !UUID.test(current.id) || current.id === id) return;
+            }
+            const requests = readOptional(directory, store.parent, 'requests', false);
+            if (requests && readOptional(fs.lstatSync, path.join(requests, `${hash(record.buildRequestId)}.json`))) return;
+
+            // A copied archive may describe a different absolute project location.
+            // Use the local physical directory and its actual leases, never that old path.
+            const root = directory(folder, 'project', false);
+            const idle = inspectBuildWorkspaceIdle(root);
+            try {
+                const temp = readOptional(directory, root, '.temp', false);
+                const inputs = [
+                    readOptional(directory, root, 'node_modules', false),
+                    temp && readOptional(directory, temp, 'libraries', false),
+                ];
+                for (const input of inputs) {
+                    if (!input) continue;
+                    idle.assertIdle();
+                    fs.rmSync(input, { recursive: true });
+                }
+                write(filename, { ...record, preprocessInputsRetired: true });
+            } finally { idle.release(); }
+        });
+    } catch { /* Retain ambiguous or busy executions and retry on a future build. */ }
+}
+
+function retireStandalonePreprocessInputs(config) {
+    try { retirePreprocessInputs(storage(config.execution.logicalProjectPath), config.execution.id); }
+    catch { /* Cleanup cannot change the observed preprocess result. */ }
+}
+
+function pruneTerminalPreprocessInputs(projectPath) {
+    try {
+        const store = storage(projectPath);
+        for (const id of fs.readdirSync(store.parent)) retirePreprocessInputs(store, id);
+    } catch { /* Projects with no readable execution store have no safe cleanup target. */ }
 }
 
 /** These are detached byte copies, including npm junctions. No hardlinks or live
@@ -136,7 +198,7 @@ function prepareBuildExecution(config, workspace, operation = 'compile') {
         ...(fs.existsSync(path.join(root, 'project.abi'))
             ? { abiHash: `sha256:${hash(fs.readFileSync(path.join(root, 'project.abi')))}` } : {}),
         ...(config.executionRetryOf ? { retryOf: config.executionRetryOf } : {}) };
-    if (typeof execution.buildRequestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(execution.buildRequestId)) fail('Invalid build request identity.');
+    if (typeof execution.buildRequestId !== 'string' || !REQUEST_ID.test(execution.buildRequestId)) fail('Invalid build request identity.');
     const prepared = { ...config, currentProjectPath: root, partitionFilePath: path.join(root, 'partitions.csv'), execution };
     delete prepared.sourceCapture;
     prepared.sourceCapture = captureBuildSource(prepared, workspace);
@@ -180,7 +242,7 @@ function claimOutcome(value, status) {
         if (error.code !== 'EEXIST') throw error;
         const existing = json(filename);
         if (existing.version !== 1 || existing.id !== receipt.id || existing.buildRequestId !== receipt.buildRequestId
-            || existing.inputDigest !== receipt.inputDigest || !['completed', 'failed', 'cancelled'].includes(existing.status)) fail('Terminal execution receipt changed.');
+            || existing.inputDigest !== receipt.inputDigest || !TERMINAL_STATUSES.includes(existing.status)) fail('Terminal execution receipt changed.');
         return existing;
     }
 }
@@ -291,4 +353,5 @@ function inspectBuildExecution(projectPath, buildRequestId) {
 }
 
 module.exports = { prepareBuildExecution, startBuildExecution, finishBuildExecution, cancelBuildExecution, resolveBuildExecution,
-    resolveBuildProjectPath, canReuseBuildExecution, inspectBuildExecution, recordFor };
+    resolveBuildProjectPath, canReuseBuildExecution, inspectBuildExecution, recordFor, retireStandalonePreprocessInputs,
+    pruneTerminalPreprocessInputs };

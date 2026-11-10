@@ -12,7 +12,7 @@ const { acquireBuildWorkspace, OWNER_ENV } = require('./build-workspace-lease');
 const { invalidateBuildDelivery } = require('./compile-delivery');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
-const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
+const { recordFor, startBuildExecution, finishBuildExecution, retireStandalonePreprocessInputs } = require('./build-execution-workspace');
 const { resolvePlatformResourceRoots, prepareReadOnlyToolsView } = require('./platform-resource-roots');
 
 const LIBRARY_CACHE_SCHEMA_VERSION = 2;
@@ -84,7 +84,13 @@ async function main() {
         await preprocessProject(config, workspace);
         confirmBuildSource(config);
         completed = true;
-    } finally { workspace.release(); if (standalone) finishBuildExecution(config, completed); }
+    } finally {
+        workspace.release();
+        if (standalone) {
+            finishBuildExecution(config, completed);
+            retireStandalonePreprocessInputs(config);
+        }
+    }
 }
 
 async function preprocessProject(config, workspace) {
