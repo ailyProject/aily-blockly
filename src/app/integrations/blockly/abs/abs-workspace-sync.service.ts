@@ -49,7 +49,7 @@ import { describeAbsRepair, type AbsRecoveryArchive } from './abs-generation-rep
 import { publishAbsSaveAs, type AbsSaveAsCapture } from './abs-save-as';
 import { planAbsVariableCreations } from './abs-variable-intents';
 import { captureAbsBundledProcedures } from './abs-bundled-procedures';
-import { describeAbsBlockCapability } from './abs-block-capabilities';
+import { captureAbsBlockCapabilities } from './abs-block-capabilities';
 import { captureAbsCustomFunctions } from './abs-custom-functions';
 import { captureAbsVariableDeclarations } from './abs-declaration-intents';
 import { prepareAbsNativeReconciliation } from './abs-native-reconciliation';
@@ -677,9 +677,10 @@ export class AbsWorkspaceSyncService {
     const filter = (input['filter'] ?? '').toLowerCase();
     const selected: string[] | undefined = input['type'] !== undefined ? [input['type']] : input['types'];
     const types = selected ?? context.definitions.types;
+    const describe = captureAbsBlockCapabilities(context.definitions, nativeValidation);
     const blocks = types.map(type => ({ type, library: this.editor.blockTypeToLibMap.get(type)?.name ?? 'host' }))
       .filter(item => !filter || item.type.toLowerCase().includes(filter) || item.library.toLowerCase().includes(filter))
-      .map(item => ({ ...item, ...describeAbsBlockCapability(context.definitions, item.type, nativeValidation) }));
+      .map(item => ({ ...item, ...describe(item.type) }));
     const instanceSyntax = selected ? this.editor.describeCommittedAbsSyntax(selected) : undefined;
     context.assertCurrent();
     return { version: 1, scope: context.scope, runtimeRevision, blocks, workingCandidateVersion: 1,

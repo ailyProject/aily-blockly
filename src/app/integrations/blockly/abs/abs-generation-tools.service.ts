@@ -1,4 +1,5 @@
 import { AbsPrecheckFailure } from './abs-precheck';
+import { AbsComposeFailure } from './abs-compose';
 import { Injectable } from '@angular/core';
 import { AbsWorkspaceSyncService } from './abs-workspace-sync.service';
 import { assertGenerationCandidate, assertGenerationRequest, readGenerationApplyValidation } from './abs-generation-protocol';
@@ -51,7 +52,10 @@ export class AbsGenerationToolsService {
 
   authoring(operation: 'abs_compose' | 'abs_precheck', input: Record<string, any>) {
     try { return this.sync.authoring(operation, input); }
-    catch (error) { return { ok: false, operation, ...serializeAbsFailure(error) }; }
+    catch (error) {
+      return { ok: false, operation, ...serializeAbsFailure(error),
+        ...(error instanceof AbsComposeFailure ? { composeDiagnostics: error.composeDiagnostics } : {}) };
+    }
   }
 
   async execute(operation: string, input: Record<string, any>, source?: string, onProgress?: (blocks: number, batches: number) => void,

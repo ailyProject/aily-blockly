@@ -30,7 +30,7 @@ const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4' };
 const U8G2_THRESHOLD = 127;
-const GUIDANCE = 'Use value unchanged as the media field argument in the complete ABS candidate, then apply it normally.';
+const GUIDANCE = 'Edit the current text ABS with value unchanged as one JSON media field argument. Preserve the surrounding project source and apply the edited file normally.';
 
 /** Prepares resources for native media fields without changing blocks or the ABS generation. */
 export async function importProjectMedia(project: string, params: MediaImportRequest, dependencies?: Dependencies) {
