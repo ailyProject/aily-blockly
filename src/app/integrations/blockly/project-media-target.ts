@@ -26,6 +26,20 @@ function mediaKind(field: Record<string, any>): MediaKind | undefined {
   if (field['type'] === 'field_tftespi_animation') return field['imageMode'] === true ? 'tft_image' : 'tft_animation';
 }
 
+function mediaBlockArguments(definition: Record<string, any>) {
+  const argumentLists = Object.keys(definition).filter(key => /^args\d+$/.test(key)).map(key => definition[key]);
+  const args: Array<Record<string, any>> = argumentLists.filter(Array.isArray).flat();
+  const fields = args.filter(field => field && typeof field['name'] === 'string' && mediaKind(field));
+  return { argumentLists, args, fields };
+}
+
+/** A recovery can target only a unique field supported by the media importer. */
+export function declaredMediaImportFieldType(definition: Record<string, any> | undefined, fieldName: string): string | undefined {
+  if (!definition) return;
+  const matches = mediaBlockArguments(definition).fields.filter(field => field['name'] === fieldName);
+  return matches.length === 1 ? matches[0]['type'] : undefined;
+}
+
 /** Bind to registered field declarations without creating a probe block. */
 export function bindMediaImportTarget(target: MediaImportTarget, definitions: DeclarativeBlockSnapshot,
   assertCurrent: () => void): BoundMediaImportTarget {
@@ -35,10 +49,7 @@ export function bindMediaImportTarget(target: MediaImportTarget, definitions: De
   }
   const definition = definitions.get(target.blockType);
   if (!definition) throw new Error(`No registered field declaration is available for ${target.blockType}.`);
-  const argumentLists = Object.keys(definition).filter(key => /^args\d+$/.test(key)).map(key => definition[key]);
-  const args: Array<Record<string, any>> = argumentLists.filter(Array.isArray).flat();
-  const fields = args
-    .filter(field => field && typeof field['name'] === 'string' && mediaKind(field));
+  const { argumentLists, args, fields } = mediaBlockArguments(definition);
   const matches = target.fieldName === undefined ? fields : fields.filter(field => field['name'] === target.fieldName);
   if (matches.length !== 1) {
     const names = fields.map(field => field['name']).join(', ');
