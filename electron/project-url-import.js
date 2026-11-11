@@ -71,7 +71,7 @@ async function importProjectUrl({ url, product, projectRoot, sevenZipPath, tempR
       callback(bytes > MAX_ARCHIVE_SIZE ? new Error('下载工程大小超过限制。') : null, chunk);
     } }), fs.createWriteStream(archivePath, { flags: 'wx' }));
     let destination;
-    do { destination = path.join(projectRoot, `Import_${randomUUID().slice(0, 8)}`); }
+    do { destination = path.join(projectRoot, `hub_${randomUUID().slice(0, 8)}`); }
     while (fs.existsSync(destination));
     return await importProjectPackage({ archivePath, destination,
       product, sevenZipPath, tempRoot });

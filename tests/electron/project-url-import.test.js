@@ -85,7 +85,7 @@ test('HTTPS packages including Hub-shaped URLs import anonymously in either edit
     if (product === 'coder') current.options.url = hubShapedUrl;
     const result = await importProjectUrl(current.options);
     assert.equal(path.dirname(result), current.options.projectRoot);
-    assert.match(path.basename(result), /^Import_[a-f0-9]{8}$/);
+    assert.match(path.basename(result), /^hub_[a-f0-9]{8}$/);
     const manifest = JSON.parse(fs.readFileSync(path.join(result, 'package.json'), 'utf8'));
     assert.equal(manifest.type, product);
     assert.equal(manifest.cloudId, undefined);
@@ -101,7 +101,7 @@ test('short import names skip existing targets and repeated imports preserve loc
   const existsSync = fs.existsSync;
   let collision;
   t.mock.method(fs, 'existsSync', target => {
-    if (!collision && path.dirname(target) === f.options.projectRoot && /^Import_[a-f0-9]{8}$/.test(path.basename(target))) {
+    if (!collision && path.dirname(target) === f.options.projectRoot && /^hub_[a-f0-9]{8}$/.test(path.basename(target))) {
       collision = target;
       fs.mkdirSync(collision);
       fs.writeFileSync(path.join(collision, 'keep'), 'existing short-name project');
@@ -112,7 +112,7 @@ test('short import names skip existing targets and repeated imports preserve loc
   assert.ok(collision);
   fs.writeFileSync(path.join(first, 'project.abi'), '{"localChanges":true}');
   const second = await importProjectUrl(f.options);
-  for (const result of [first, second]) assert.match(path.basename(result), /^Import_[a-f0-9]{8}$/);
+  for (const result of [first, second]) assert.match(path.basename(result), /^hub_[a-f0-9]{8}$/);
   assert.notEqual(first, second);
   assert.notEqual(first, collision);
   assert.notEqual(second, collision);
