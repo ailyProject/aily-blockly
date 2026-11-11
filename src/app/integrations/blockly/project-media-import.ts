@@ -38,6 +38,12 @@ const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4' };
 const U8G2_THRESHOLD = 127;
 const GUIDANCE = 'Insert absArgument unchanged as one field argument in the current text ABS.';
+
+function mediaAbs(value: object, target?: BoundMediaImportTarget) {
+  const absArgument = JSON.stringify(value);
+  return { absArgument, ...(target?.singleFieldOutput ? { absExpression: `${target.blockType}(${absArgument})` } : {}) };
+}
+
 /** Prepares resources for native media fields without changing blocks or the ABS generation. */
 export async function importProjectMedia(project: string, params: MediaImportRequest, dependencies?: Dependencies,
   resolveTarget?: (target: MediaImportTarget) => BoundMediaImportTarget) {
@@ -106,7 +112,7 @@ export async function importProjectMedia(project: string, params: MediaImportReq
       const bitmap = await deps.put({ codec: 'u8g2-xbm-v1', storage: 'raw-v1', value: packed });
       deps.assertCurrent();
       const value: U8g2BitmapValue = { schemaVersion: 1, encoding: 'xbm-lsb-row-v1', width, height, bitmap };
-      return { ...receipt, kind, fieldType: 'field_bitmap_u8g2', ...field, value, absArgument: JSON.stringify(value),
+      return { ...receipt, kind, fieldType: 'field_bitmap_u8g2', ...field, value, ...mediaAbs(value, target),
         geometry: { source, target: targetSize, content, fit }, decodedBytes: packed.length };
     }
     const result = await deps.decode({ type: 'decode', requestId: 1, fileName, mimeType: MIME[ext],
@@ -128,7 +134,7 @@ export async function importProjectMedia(project: string, params: MediaImportReq
       width, height, fps, maxFrames: Math.min(maxFrames, Math.floor(MAX_OUTPUT_BYTES / frameSize)), frameCount: result.frames.length,
       frames, sourceName: fileName, sourceType: MIME[ext], sourcePath };
     return { ...receipt, kind, blockType: kind === 'tft_image' ? 'tftespi_image' : 'tftespi_animation',
-      fieldName: kind === 'tft_image' ? 'CUSTOM_IMAGE' : 'CUSTOM_ANIMATION', ...field, value, absArgument: JSON.stringify(value),
+      fieldName: kind === 'tft_image' ? 'CUSTOM_IMAGE' : 'CUSTOM_ANIMATION', ...field, value, ...mediaAbs(value, target),
       geometry: { target: targetSize, fit, ...result.firstFrame }, decodedBytes: packed.length };
   } catch (error) {
     return { ok: false as const, operation: 'project_media_import', project, code: 'MEDIA_IMPORT_FAILED',

@@ -1,5 +1,6 @@
 import { tftMediaSize, u8g2BitmapSize } from '@domain/project/project-data/public-api';
 import type { DeclarativeBlockSnapshot } from '../../editors/blockly-editor/services/blockly-declarative-block-catalog';
+import { parseBlockDefinition } from './abs/block-definition.model';
 
 export type MediaKind = 'tft_image' | 'tft_animation' | 'u8g2_bitmap';
 
@@ -15,6 +16,7 @@ export interface BoundMediaImportTarget {
   fieldType: string;
   width: number;
   height: number;
+  singleFieldOutput?: true;
   assertCurrent(): void;
 }
 
@@ -33,8 +35,9 @@ export function bindMediaImportTarget(target: MediaImportTarget, definitions: De
   }
   const definition = definitions.get(target.blockType);
   if (!definition) throw new Error(`No registered field declaration is available for ${target.blockType}.`);
-  const fields = Object.keys(definition).filter(key => /^args\d+$/.test(key) && Array.isArray(definition[key]))
-    .flatMap(key => definition[key] as Array<Record<string, any>>)
+  const argumentLists = Object.keys(definition).filter(key => /^args\d+$/.test(key)).map(key => definition[key]);
+  const args: Array<Record<string, any>> = argumentLists.filter(Array.isArray).flat();
+  const fields = args
     .filter(field => field && typeof field['name'] === 'string' && mediaKind(field));
   const matches = target.fieldName === undefined ? fields : fields.filter(field => field['name'] === target.fieldName);
   if (matches.length !== 1) {
@@ -46,6 +49,15 @@ export function bindMediaImportTarget(target: MediaImportTarget, definitions: De
   const tftValue = value?.schemaVersion === 1 && (value.format === 'rgb565' && value.encoding === 'rgb565-be'
     || value.format === 'rgb332' && value.encoding === 'rgb332') ? value : undefined;
   const size = kind === 'u8g2_bitmap' ? u8g2BitmapSize(value, field) : tftMediaSize(tftValue, tftMediaSize(field));
+  // This proves the call syntax. Media fields still require native validation when applied.
+  const meta = args.length === 1 && argumentLists.every(Array.isArray) &&
+    !Object.hasOwn(definition, 'mutator') && !Object.hasOwn(definition, 'extraState') &&
+    !Object.hasOwn(definition, 'extensions') && !/[^A-Za-z0-9_]/.test(target.blockType) &&
+    definitions.registered(target.blockType) ? parseBlockDefinition(definition, '') : undefined;
+  const argument = meta?.argsOrder[0];
+  const singleFieldOutput = meta?.type === target.blockType && meta.hasOutput && !meta.hasPrevious && !meta.hasNext &&
+    meta.argsOrder.length === 1 && argument?.kind === 'field' && argument.name === field['name'];
   assertCurrent();
-  return { kind, blockType: target.blockType, fieldName: field['name'], fieldType: field['type'], ...size, assertCurrent };
+  return { kind, blockType: target.blockType, fieldName: field['name'], fieldType: field['type'], ...size,
+    ...(singleFieldOutput ? { singleFieldOutput: true } : {}), assertCurrent };
 }
