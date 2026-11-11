@@ -768,7 +768,8 @@ export class BlocklyLiveOperationBridgeService {
           ? this.absGenerationTools.blockState(payload.params)
           : this.runAbsOperation(() => this.absGenerationTools.blockState(payload.params || {}));
       case 'project_media_import':
-        return importProjectMedia(currentProject, payload.params as any);
+        return importProjectMedia(currentProject, payload.params as any, undefined,
+          target => this.absGenerationTools.captureMediaImportTarget(target));
       case 'abs_apply':
         return this.runAbsOperation(() => this.executeAbsApply(payload.params || {}));
       case 'abs_projection':
