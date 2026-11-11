@@ -9,7 +9,7 @@ const { captureProjectSources, confirmProjectSources, invalidateBuildDelivery, p
 const { acquireBuildWorkspace } = require('./build-workspace-lease');
 const { readBuildRequest } = require('./build-request');
 const { confirmBuildSource } = require('./build-source-capture');
-const { compileWithArchiveRecovery } = require('./builder-archive-recovery');
+const { builderArchiveOptions, compileWithArchiveRecovery } = require('./builder-archive-recovery');
 const { captureBlocklyUploadInputs, publishBlocklyUploadState, invalidateBlocklyUploadState } = require('./blockly-upload-state');
 const { recordFor, startBuildExecution, finishBuildExecution } = require('./build-execution-workspace');
 const { captureBlocklyCompileSource } = require('./compile-source');
@@ -224,18 +224,22 @@ async function main() {
             }
         }
         if (projectSnapshot) args.push('--record-build-inputs');
-        if (projectSnapshot || config.execution) args.push('--no-archive-cloud-cache', '--no-fetch-archive-cloud-cache');
-
-        if (!projectSnapshot && !config.execution && (isDevelopmentEnvironment() || process.env.AILY_E2E === '1')) {
-            args.push('--generate-archive-cloud-cache');
-        }
+        const archive = builderArchiveOptions({
+            execution: config.execution,
+            projectPath: currentProjectPath,
+            recordsProjectDelivery: !!projectSnapshot,
+            isAilyCode,
+            verifiedLocalArchiveCache: capabilities.verifiedLocalArchiveCache,
+            generateLegacy: isDevelopmentEnvironment() || process.env.AILY_E2E === '1'
+        });
+        args.push(...archive.args);
 
         /** @type {{ cwd: string, shell: boolean, stdio: string[], env?: NodeJS.ProcessEnv }} */
         const spawnOpts = {
             cwd: currentProjectPath,
             shell: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: workspace.builderEnvironment('compile')
+            env: { ...workspace.builderEnvironment('compile'), ...archive.env }
         };
 
         if (frameworkOutputDir) {

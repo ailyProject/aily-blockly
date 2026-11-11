@@ -42,7 +42,7 @@ for (const timing of ['none', 'before', 'after']) for (const captured of [false,
           Module._load=function(name,parent,...args){
             if(parent?.filename===process.argv[1] && name==='./compile-preprocess')return{runCompilePreprocess:async()=>{put(entry,c.code);put(p.join(root,'.temp/preprocess.json'),JSON.stringify({success:true,envVars:{BUILD_PATH:p.join(root,'.build')},upload:{command:'flash "'+p.join(root,'.build/firmware.bin')+'"'}}))}};
             if(parent?.filename===process.argv[1] && name==='./builder-capabilities')return{readBuilderCapabilities:()=>{if(timing==='before')put(entry,'changed before Builder spawn');return{}}};
-            if(parent?.filename===process.argv[1] && name==='./builder-archive-recovery')return{compileWithArchiveRecovery:async(_command,args)=>{put(p.join(root,'builder-started'),'yes');put(p.join(root,'.build/firmware.bin'),'firmware');if(timing==='after')put(entry,'changed after Builder close');return{exitCode:0,signal:null,spawnError:null,args,output:[]}}};
+            if(parent?.filename===process.argv[1] && name==='./builder-archive-recovery')return{...original.call(this,name,parent,...args),compileWithArchiveRecovery:async(_command,args)=>{put(p.join(root,'builder-started'),'yes');put(p.join(root,'.build/firmware.bin'),'firmware');if(timing==='after')put(entry,'changed after Builder close');return{exitCode:0,signal:null,spawnError:null,args,output:[]}}};
             return original.call(this,name,parent,...args)
           };require(process.argv[1]);`;
         const result = spawnSync(process.execPath, ['-e', boot, compiler, request, timing], { encoding: 'utf8', windowsHide: true, timeout: 15000 });

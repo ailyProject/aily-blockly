@@ -21,14 +21,16 @@ function readBuilderCapabilities(command, launch = spawnSync) {
                     verification: c.buildInputVerification?.schemaVersion === 1 && c.buildInputVerification.command === 'verify-build-inputs'
                         && c.buildInputVerification.contextFileName === 'aily-build-input-context.json'
                         && c.buildInputVerification.scope === 'prepared-dependency-trees-and-sdk-tools',
+                    verifiedLocalArchiveCache: c.verifiedLocalArchiveCache?.schemaVersion === 1
+                        && c.verifiedLocalArchiveCache.cliOption === '--verified-local-archive-cache',
                 };
             }
         }
     } catch { /* Older Builder can still perform ordinary compilation. */ }
     try {
         const result = launch(command, ['compile', '--help'], options);
-        return { artifact: result.status === 0 && `${result.stdout || ''}\n${result.stderr || ''}`.includes('--emit-artifact-manifest'), graph: false, inputs: false, workspace: false, packages: false, verification: false };
-    } catch { return { artifact: false, graph: false, inputs: false, workspace: false, packages: false, verification: false }; }
+        return { artifact: result.status === 0 && `${result.stdout || ''}\n${result.stderr || ''}`.includes('--emit-artifact-manifest'), graph: false, inputs: false, workspace: false, packages: false, verification: false, verifiedLocalArchiveCache: false };
+    } catch { return { artifact: false, graph: false, inputs: false, workspace: false, packages: false, verification: false, verifiedLocalArchiveCache: false }; }
 }
 
 module.exports = { readBuilderCapabilities };
