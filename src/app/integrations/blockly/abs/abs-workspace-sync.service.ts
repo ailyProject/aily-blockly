@@ -40,6 +40,8 @@ import { prepareAbsReconciledResources } from './abs-prepared-reconciliation';
 import { assertAbsResourceContracts } from './abs-resource-contracts';
 import { AbsWorkspaceLoadOptions, assertAbsProjectEnvelope, assertAbsRuntimeShapeSupported, assertAbsWorkspaceReadback, captureAbsWorkspaceState, loadAbsWorkspaceState } from './abs-workspace-state';
 import { captureAbsDeclarativeContracts } from './abs-declarative-contracts';
+import { bindMediaImportTarget } from '../project-media-target';
+import type { MediaImportTarget } from '../project-media-target';
 import { layoutAbsNewRoots } from './abs-new-root-layout';
 import { fenceBlocklyWorkspaceBumps } from '../../../editors/blockly-editor/services/blockly-workspace-layout-fence';
 import { AbsGenerationCandidateRequest, AbsGenerationEvidence, AbsGenerationValidation, generationEvidence } from './abs-generation-protocol';
@@ -685,6 +687,11 @@ export class AbsWorkspaceSyncService {
     context.assertCurrent();
     return { version: 1, scope: context.scope, runtimeRevision, blocks, workingCandidateVersion: 1,
       ...(selected ? { instanceSyntax: instanceSyntax ?? { scope: 'unavailable', reason: 'no-current-committed-snapshot' } } : {}) };
+  }
+
+  captureMediaImportTarget(target: MediaImportTarget) {
+    const context = this.context();
+    return bindMediaImportTarget(target, context.definitions, context.assertCurrent);
   }
 
   /** Read-only authoring advice; never acquires a write lease or publishes a generation. */

@@ -7,15 +7,16 @@
 import * as Blockly from 'blockly/core';
 import type { BitmapUploadRequest } from '../../../services/bitmap-upload.service';
 import { GlobalServiceManager } from '../../../services/bitmap-upload-bridge';
-import { projectDataRuntime, isAilyDataRef, MAX_U8G2_BITMAP_DIMENSION, packXbmBitmap, U8g2BitmapValue } from '@domain/project/project-data/public-api';
+import { projectDataRuntime, isAilyDataRef, MAX_U8G2_BITMAP_DIMENSION, packXbmBitmap, U8g2BitmapValue,
+    DEFAULT_U8G2_BITMAP_SIZE, u8g2BitmapSize } from '@domain/project/project-data/public-api';
 import { MEDIA_FIELD_PARAMETER_DEBOUNCE_MS } from './field-media-editor-style';
 
 Blockly.Msg['BUTTON_LABEL_CLEAR'] = 'Clear';
 Blockly.Msg['BUTTON_LABEL_UPLOAD'] = 'Upload';
 Blockly.Msg['BITMAP_U8G2_HINT_MOUSE'] = '鼠标左键绘制，右键擦除';
 
-export const DEFAULT_HEIGHT = 128;
-export const DEFAULT_WIDTH = 64;
+export const DEFAULT_HEIGHT = DEFAULT_U8G2_BITMAP_SIZE.height;
+export const DEFAULT_WIDTH = DEFAULT_U8G2_BITMAP_SIZE.width;
 const DEFAULT_PIXEL_SIZE = 2;
 const BLOCK_FIELD_HEIGHT = 50;
 const DEFAULT_PIXEL_COLOURS: PixelColours = {
@@ -1349,20 +1350,13 @@ function normalizeU8g2BitmapValue(
     value: U8g2BitmapValue | undefined,
     config?: FieldBitmapFromJsonConfig,
 ): U8g2BitmapValue {
-    const width = clampBitmapDimension(value?.width ?? config?.width ?? DEFAULT_WIDTH, 1, MAX_U8G2_BITMAP_DIMENSION);
-    const height = clampBitmapDimension(value?.height ?? config?.height ?? DEFAULT_HEIGHT, 1, MAX_U8G2_BITMAP_DIMENSION);
+    const size = u8g2BitmapSize(value, config);
     return {
         schemaVersion: 1,
         encoding: 'xbm-lsb-row-v1',
-        width,
-        height,
+        ...size,
         bitmap: isAilyDataRef(value?.bitmap) ? value!.bitmap : null,
     };
-}
-
-function clampBitmapDimension(value: unknown, min: number, max: number): number {
-    const numeric = Number(value);
-    return Math.min(max, Math.max(min, Number.isFinite(numeric) ? Math.floor(numeric) : min));
 }
 
 function createEmptyBitmap(width: number, height: number): number[][] {

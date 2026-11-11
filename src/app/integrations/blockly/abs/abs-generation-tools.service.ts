@@ -10,6 +10,7 @@ import { AbsApplicationFailure } from './abs-application-failure';
 import { AbsCandidateJournal, assertCandidateArchiveRequest } from './abs-candidate-journal';
 import { openAbsHostStorage } from './abs-host-storage';
 import { rejectAbsLiveRequest } from './abs-live-protocol';
+import type { MediaImportTarget } from '../project-media-target';
 
 /** Wire adaptation only. Preparation, leases, publication and recovery belong to the coordinator. */
 @Injectable({ providedIn: 'root' })
@@ -17,6 +18,7 @@ export class AbsGenerationToolsService {
   constructor(private readonly sync: AbsWorkspaceSyncService) {}
 
   capabilities(input: Record<string, any>) { return this.sync.describeCapabilities(input); }
+  captureMediaImportTarget(target: MediaImportTarget) { return this.sync.captureMediaImportTarget(target); }
   observeApplication(requestId: string) { return this.sync.observeApplication(requestId); }
 
   async candidateBackup(project: string, input: Record<string, any>, assertCurrent: () => void) {

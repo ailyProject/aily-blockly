@@ -8,13 +8,14 @@ import {
   BleOtaProgress,
   UploaderBleService,
   resolveUploadRecoveryPolicy,
+  type FirmwareUploadOptions,
   type UploadRecoveryPolicy,
   getLinkUploadParam,
 } from '@domain/device/public-api';
 
 import { NzMessageService } from "ng-zorro-antd/message";
 import { _BuilderService } from "./builder.service";
-import { BuilderService as HostBuilderService } from "@domain/build/public-api";
+import { BuilderService as HostBuilderService, requirePreparedBuildExecution } from "@domain/build/public-api";
 import { NoticeService, ActionState, ActionService, WorkflowService, ProcessState } from '@core/app-shell/public-api';
 import { NzModalService } from "ng-zorro-antd/modal";
 import { CmdOutput, CmdService, LogService } from '@core/platform/public-api';
@@ -49,6 +50,11 @@ interface Esp32UploadProgressState {
 interface UploadActionState extends ActionState {
   resourceRecovery?: UploadRecoveryPolicy;
 }
+
+type FirmwareUploadRequest = FirmwareUploadOptions & {
+  projectPath: string;
+  port: string;
+};
 
 function mapLogStateToLevel(state?: string): ProjectLogLevel {
   switch ((state || '').toLowerCase()) {
@@ -139,7 +145,8 @@ export class _UploaderService {
 
     this.actionService.listen('upload-begin', async (action) => {
       try {
-        const result = await this.upload();
+        const result = action.payload?.preparedFirmware || action.payload?.reuseCloudFirmware
+          ? await this.upload(action.payload) : await this.upload();
 
         return { success: true, result };
       } catch (msg) {
@@ -336,7 +343,7 @@ export class _UploaderService {
     this._builderService.isUploading = false;
   }
 
-  async upload(): Promise<UploadActionState> {
+  async upload(prepared?: FirmwareUploadRequest): Promise<UploadActionState> {
     if (this.uploadInProgress || this.cloudUploadInProgress) {
       throw { state: 'warn', text: this.uploadT('BUSY_UPLOADING') };
     }
@@ -368,12 +375,19 @@ export class _UploaderService {
 
         const dependencySession = cloud ? this.projectService.getProjectDependencySession(projectPath) : undefined;
         const activationCurrent = this.projectService.captureCurrentProjectGuard();
+        const firmware = prepared?.preparedFirmware;
+        const reuseCloud = prepared?.reuseCloudFirmware === true;
 
         const assertContext = () => {
           if (this.cancelled || !activationCurrent() || this.projectService.currentProjectPath !== projectPath
               || (initialCloud && !backendOperation.local) !== this.projectService.isCloudBuild()) throw new Error('Upload project, settings or activation changed or was cancelled.');
 
           if (dependencySession) this.projectService.assertProjectDependencySession(dependencySession);
+          if (prepared && (prepared.projectPath !== projectPath || prepared.port !== this.serialService.currentPort
+            || this.projectService.isAilyCodeProject(projectPath) || this.projectService.isCloudBuild() !== reuseCloud)) {
+            throw Object.assign(new Error('Prepared firmware upload no longer owns the requested project and port.'),
+              { code: 'PREPARED_FIRMWARE_UNAVAILABLE' });
+          }
         };
 
         // 重置ESP32上传状态，防止进度累加
@@ -419,6 +433,15 @@ export class _UploaderService {
         const boardJson = await this.projectService.getBoardJson();
 
         assertContext();
+        if (firmware || reuseCloud) {
+          this._builderService.isUploading = true;
+          if (!await this._builderService.canReuseBuildForUpload(() => this.cancelled)) {
+            const message = reuseCloud ? 'No reusable cloud firmware is available for the current Blockly project.'
+              : 'The active Blockly project changed after compilation.';
+            throw Object.assign(new Error(message), { code: 'BUILD_ARTIFACT_STALE' });
+          }
+          assertContext();
+        }
 
         const isDebuggerUpload = capturedPortInfo?.type === 'debugger';
         const debuggerUploadParam = getLinkUploadParam(boardJson);
@@ -483,7 +506,9 @@ export class _UploaderService {
         const isAilyCodeProject = this.projectService.isAilyCodeProject(projectPath);
         let buildPath: string;
 
-        if (isAilyCodeProject) {
+        if (firmware) {
+          buildPath = requirePreparedBuildExecution(projectPath, firmware).buildPath;
+        } else if (isAilyCodeProject) {
           try {
             this.coderBuildActive = true;
 
@@ -554,7 +579,7 @@ export class _UploaderService {
           // 云产物尚不存在时先走正常编译流程，不能被旧产物查询提前阻断。
           buildPath = cloud ? '' : await this._builderService.getCurrentBuildPath();
 
-          const needsBuild = !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
+          const needsBuild = !reuseCloud && !await this._builderService.canReuseBuildForUpload(() => this.cancelled);
 
           if (this.cancelled || projectPath !== this.projectService.currentProjectPath) throw new Error('Upload project changed or cancelled.');
 
@@ -792,7 +817,8 @@ export class _UploaderService {
         if (!cloudLocalUpload) {
           const isolated = !this.projectService.isAilyCodeProject(currentProjectPath)
             && window['builder']?.isolatedBuildExecutionVersion === 1;
-          const execution = isolated ? window['builder'].resolveBuildExecution(currentProjectPath) : null;
+          const execution = firmware ? requirePreparedBuildExecution(currentProjectPath, firmware)
+            : isolated ? window['builder'].resolveBuildExecution(currentProjectPath) : null;
           if (isolated && !execution) throw new Error('BUILD_ARTIFACT_STALE: No verified current build execution; build again.');
           const uploadProjectPath = execution?.currentProjectPath ?? currentProjectPath;
           const tempPath = this.projectService.isAilyCodeProject(currentProjectPath)
@@ -917,6 +943,7 @@ export class _UploaderService {
         let bufferData = '';
 
         await new Promise<void>((completeCommand) => {
+        if (prepared) assertContext();
         if (currentProjectPath !== this.projectService.currentProjectPath
           || this.projectService.isProjectTransitionInProgress(currentProjectPath)) {
           throw new Error('Upload cancelled: project is closing or has changed.');
@@ -1415,6 +1442,7 @@ export class _UploaderService {
         reject({
           state: 'error',
           text: error.message || this.uploadT('FAILED_TITLE'),
+          ...(prepared && typeof error?.code === 'string' ? { code: error.code } : {}),
           ...(resourceRecovery ? { resourceRecovery } : {}),
         });
       }
