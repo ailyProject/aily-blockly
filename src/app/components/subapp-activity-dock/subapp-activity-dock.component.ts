@@ -41,6 +41,8 @@ export class SubappActivityDockComponent {
   dockWidth = 320;
 
   @Output() readonly expandedChange = new EventEmitter<boolean>();
+  // Expansion is reported from an effect after the parent view was checked.
+  @Output() readonly widthChange = new EventEmitter<number>(true);
 
   private readonly activityService = inject(SubappActivityService);
   private readonly mainUiAutomation = inject(MainUiAutomationService);
@@ -69,6 +71,7 @@ export class SubappActivityDockComponent {
       }
       this.lastReportedExpanded = expanded;
       this.expandedChange.emit(expanded);
+      this.widthChange.emit(expanded ? this.dockWidth : 0);
     });
   }
 
@@ -101,8 +104,11 @@ export class SubappActivityDockComponent {
   }
 
   onResize(event: NzResizeEvent): void {
-    if (typeof event.width !== 'number') return;
-    this.dockWidth = Math.max(this.minWidth, Math.min(this.maxWidth, Math.round(event.width)));
+    if (!Number.isFinite(event.width)) return;
+    const width = Math.max(this.minWidth, Math.min(this.maxWidth, Math.round(event.width!)));
+    if (width === this.dockWidth) return;
+    this.dockWidth = width;
+    this.widthChange.emit(this.isOpen ? width : 0);
   }
 
   async openFull(activity: SubappActivity, mode: 'embedded' | 'window' = 'embedded'): Promise<void> {

@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectorRef, Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges } from '@angular/core';
+import { ChangeDetectorRef, Component, EventEmitter, Input, NgZone, OnChanges, OnDestroy, OnInit, Output, SimpleChanges } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -111,6 +111,7 @@ interface ChatResourcePickerRequest {
 export class ChildToolHostComponent implements OnInit, OnChanges, OnDestroy {
   @Input() toolId = '';
   @Input() active = true;
+  @Output() readonly dockWidthChange = new EventEmitter<number>();
 
   currentUrl = '';
   resolvedToolId = '';

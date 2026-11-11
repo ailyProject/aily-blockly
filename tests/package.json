@@ -17,6 +17,7 @@
     "test:subapp-owner-quit": "cd .. && node --test --test-concurrency=1 tests/electron/subapp-owner-supervisor.test.js tests/electron/subapp-lifecycle-rpc.test.js tests/electron/subapp-agent-owner-lifecycle.test.js tests/electron/subapp-owner-recovery.test.cjs tests/electron/application-quit.test.js tests/electron/child-tool-session-shutdown.test.js tests/electron/app-shutdown.test.js",
     "test:subapp-owner-ble": "cd .. && node tests/electron/subapp-owner-supervisor.ble.electron.cjs",
     "test:subapp-dock-i18n": "cd .. && node --test tests/subapp-dock-i18n.test.cjs tests/subapp-activity-titles.test.cjs tests/tool-i18n-generations.test.cjs",
+    "test:subapp-dock-layout": "cd .. && node tests/subapp-dock-layout.browser.mjs",
     "test:tool-i18n": "cd .. && node --test tests/tool-i18n-generations.test.cjs",
     "test:subapp-recovery": "cd .. && node --test tests/electron/subapp-install-lock.test.js tests/electron/subapp-network.test.js tests/electron/subapp-package-extractor.test.js tests/electron/subapp-version-store.test.js tests/electron/subapp-manager-versions.test.js tests/electron/subapp-version-runtime.test.js tests/package-build-lock-runtime.test.cjs",
     "test:metrics": "cd .. && node --test tests/metrics.test.cjs",

@@ -666,13 +666,36 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   bottomHeight = 210;
+  // Persist the content width; the active Chat Dock adds temporary space on its left.
   siderWidth = this.readPersistedSiderWidth();
+  private ailyChatDockWidth = 0;
+
+  private get activeDockWidth(): number {
+    return this.topTool === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID ? this.ailyChatDockWidth : 0;
+  }
+
+  get rightSiderWidth(): number {
+    return this.siderWidth + this.activeDockWidth;
+  }
+
+  get rightSiderMinWidth(): number {
+    return RIGHT_SIDER_MIN_WIDTH + this.activeDockWidth;
+  }
+
+  get rightSiderMaxWidth(): number {
+    return RIGHT_SIDER_MAX_WIDTH + this.activeDockWidth;
+  }
+
+  onToolDockWidthChange(toolId: string, width: number): void {
+    if (toolId !== DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID || !Number.isFinite(width)) return;
+    this.ailyChatDockWidth = Math.max(0, Math.round(width));
+  }
 
   onSideResize({ width }: NzResizeEvent): void {
     if (!Number.isFinite(width)) {
       return;
     }
-    this.siderWidth = this.normalizeSiderWidth(width!);
+    this.siderWidth = this.normalizeSiderWidth(width! - this.activeDockWidth);
     try {
       localStorage.setItem(RIGHT_SIDER_WIDTH_STORAGE_KEY, String(this.siderWidth));
     } catch (error) {
