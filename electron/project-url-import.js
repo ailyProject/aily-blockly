@@ -70,7 +70,10 @@ async function importProjectUrl({ url, product, projectRoot, sevenZipPath, tempR
       bytes += chunk.length;
       callback(bytes > MAX_ARCHIVE_SIZE ? new Error('下载工程大小超过限制。') : null, chunk);
     } }), fs.createWriteStream(archivePath, { flags: 'wx' }));
-    return await importProjectPackage({ archivePath, destination: path.join(projectRoot, `Import_${randomUUID()}`),
+    let destination;
+    do { destination = path.join(projectRoot, `Import_${randomUUID().slice(0, 8)}`); }
+    while (fs.existsSync(destination));
+    return await importProjectPackage({ archivePath, destination,
       product, sevenZipPath, tempRoot });
   } finally {
     // This directory belongs to this download, never to URL/archive input.

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseProjectImportUrl, importProjectUrl } = require('./project-url-import');
+const { parseProjectImportUrl, importProjectUrl } = require('../../electron/project-url-import');
 
 const sevenZipPath = process.env.AILY_7ZA_PATH;
 const needs7z = { skip: !sevenZipPath };
@@ -85,7 +85,7 @@ test('HTTPS packages including Hub-shaped URLs import anonymously in either edit
     if (product === 'coder') current.options.url = hubShapedUrl;
     const result = await importProjectUrl(current.options);
     assert.equal(path.dirname(result), current.options.projectRoot);
-    assert.match(path.basename(result), /^Import_/);
+    assert.match(path.basename(result), /^Import_[a-f0-9]{8}$/);
     const manifest = JSON.parse(fs.readFileSync(path.join(result, 'package.json'), 'utf8'));
     assert.equal(manifest.type, product);
     assert.equal(manifest.cloudId, undefined);
@@ -93,6 +93,34 @@ test('HTTPS packages including Hub-shaped URLs import anonymously in either edit
     assert.equal(fs.existsSync(path.join(result, product === 'coder' ? 'sketch/main.cpp' : 'project.abi')), true);
     assertPreserved(current, true);
   }
+});
+
+test('short import names skip existing targets and repeated imports preserve local changes', needs7z, async t => {
+  const f = fixture(t);
+  t.mock.method(globalThis, 'fetch', async () => new Response(f.bytes));
+  const existsSync = fs.existsSync;
+  let collision;
+  t.mock.method(fs, 'existsSync', target => {
+    if (!collision && path.dirname(target) === f.options.projectRoot && /^Import_[a-f0-9]{8}$/.test(path.basename(target))) {
+      collision = target;
+      fs.mkdirSync(collision);
+      fs.writeFileSync(path.join(collision, 'keep'), 'existing short-name project');
+    }
+    return existsSync(target);
+  });
+  const first = await importProjectUrl(f.options);
+  assert.ok(collision);
+  fs.writeFileSync(path.join(first, 'project.abi'), '{"localChanges":true}');
+  const second = await importProjectUrl(f.options);
+  for (const result of [first, second]) assert.match(path.basename(result), /^Import_[a-f0-9]{8}$/);
+  assert.notEqual(first, second);
+  assert.notEqual(first, collision);
+  assert.notEqual(second, collision);
+  assert.equal(fs.readFileSync(path.join(first, 'project.abi'), 'utf8'), '{"localChanges":true}');
+  assert.equal(fs.readFileSync(path.join(second, 'project.abi'), 'utf8'), '{"blocks":{"blocks":[]}}');
+  assert.deepEqual(fs.readdirSync(collision), ['keep']);
+  assert.equal(fs.readFileSync(path.join(collision, 'keep'), 'utf8'), 'existing short-name project');
+  assertPreserved(f, true);
 });
 
 test('cross-origin redirects stay anonymous without metadata requests', needs7z, async t => {
