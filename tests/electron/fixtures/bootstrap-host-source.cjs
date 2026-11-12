@@ -106,6 +106,7 @@ function bridgeFixture(sourceProject = '', generation = 7) {
   domain.dependencyLifecycle = { isStopping: () => false };
   domain.application = { hasActiveProjectMutation: () => false };
   domain.getProjectMode = () => 'blockly';
+  domain.isCloudBuild = () => false;
   domain.coderProjects = [];
   domain.isSameProjectPath = (left, right) => left === right;
   const Bridge = sourceClass(
@@ -203,4 +204,4 @@ function mainRequestFixture(generation = 7) {
     sent,
   };
 }
-module.exports = { bridgeFixture, mainRouteFixture, mainRequestFixture, readPureModule };
+module.exports = { bridgeFixture, mainRouteFixture, mainRequestFixture, readPureModule, sourceClass };
