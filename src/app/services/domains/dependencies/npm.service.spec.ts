@@ -23,7 +23,7 @@ describe('NpmService shared dependency operations', () => {
     oldFsp = window['fsp']; oldIpc = window['ipcRenderer'];
     oldEnv = window['env'];
     window['env'] = { get: jasmine.createSpy('envGet').and.resolveTo(undefined) } as any;
-    window['path'] = { getAppDataPath: () => '/app', isExists: () => true,
+    window['path'] = { getAppDataPath: () => '/app', getAilyChildPath: () => '/child', isExists: () => true,
       join: (...parts: string[]) => parts.join('/'), basename: (s: string) => s.split('/').pop(),
       resolve: (s: string) => s, relative: (root: string, target: string) => target.slice(root.length + 1),
       isAbsolute: (s: string) => s.startsWith('/') };
@@ -62,7 +62,7 @@ describe('NpmService shared dependency operations', () => {
   it('repairs a missing extracted SDK without reinstalling its package', async () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     service.isPlatformPackageOnDisk = jasmine.createSpy('ready').and.returnValues(false, true);
-    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false, true);
+    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '~1.0.0' } }, false, true);
     expect(service.cmdService.runAsyncChecked.calls.first().args[0]).toBe('npm run postinstall');
     expect(window['npm'].run).not.toHaveBeenCalled();
   });
@@ -82,8 +82,8 @@ describe('NpmService shared dependency operations', () => {
       AILY_TOOLS_PATH: '/parent/tools', AILY_REPAIR_READONLY_NPM_PREFIX: '/parent/managed-tools' };
     window['env'].get.and.callFake(async key => roots[key]);
     service.isPlatformPackageOnDisk = jasmine.createSpy('existingResource').and.returnValue(true);
-    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '1.0.0' } }, false);
-    expect(service.isPlatformPackageOnDisk).toHaveBeenCalledOnceWith('@aily-project/sdk-test', '1.0.0',
+    await service.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-test': '~1.0.0' } }, false);
+    expect(service.isPlatformPackageOnDisk).toHaveBeenCalledOnceWith('@aily-project/sdk-test', '~1.0.0',
       { sdkBase: roots.AILY_SDK_PATH, compilersBase: roots.AILY_COMPILERS_PATH, toolsBase: roots.AILY_TOOLS_PATH });
     expect(window['npm'].run).not.toHaveBeenCalled(); expect(service.cmdService.runAsyncChecked).not.toHaveBeenCalled();
   });
@@ -92,7 +92,7 @@ describe('NpmService shared dependency operations', () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     service.isPlatformPackageOnDisk = jasmine.createSpy('ready').and.returnValues(true, false, true);
     await service.installBoardDependencies({ boardDependencies: {
-      '@aily-project/sdk-ready': '1.0.0', '@aily-project/sdk-missing': '1.0.0',
+      '@aily-project/sdk-ready': '~1.0.0', '@aily-project/sdk-missing': '~1.0.0',
     } }, false, true);
     expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
       'npm run postinstall', '/app/node_modules/@aily-project/sdk-missing', true, false, undefined,
@@ -112,7 +112,7 @@ describe('NpmService shared dependency operations', () => {
       postinstallStarted();
     }));
     const install = service.installBoardDependencies({ boardDependencies: {
-      '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
+      '@aily-project/sdk-first': '~1.0.0', '@aily-project/sdk-next': '~1.0.0',
     } }, false, true, session);
     await started;
     expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
@@ -131,13 +131,45 @@ describe('NpmService shared dependency operations', () => {
     service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/compiler', toolsBase: '/tools' });
     window['npm'].run.and.callFake(async () => { lifecycle.cancel(session.projectPath); });
     await expectAsync(service.installBoardDependencies({ boardDependencies: {
-      '@aily-project/sdk-first': '1.0.0', '@aily-project/sdk-next': '1.0.0',
+      '@aily-project/sdk-first': '~1.0.0', '@aily-project/sdk-next': '~1.0.0',
     } }, false, true, session)).toBeRejectedWith(jasmine.objectContaining({ code: 'PROJECT_DEPENDENCY_CANCELLED' }));
     expect(window['npm'].run).toHaveBeenCalledOnceWith({
-      cmd: 'npm install @aily-project/sdk-first@1.0.0 --save-exact --prefix "/app"',
+      cmd: 'npm install @aily-project/sdk-first@~1.0.0 --save-exact --prefix "/app"',
       projectPath: session.projectPath, projectSessionId: session.projectSessionId,
     });
     expect(service.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
+  });
+
+  it('stages a missing Blockly board tool and accepts both versions without reading the shared wrapper', async () => {
+    const name = '@aily-project/tool-esptool_py';
+    const old = '/tools/esptool_py@5.3.1';
+    const next = '/tools/esptool_py@5.3.0';
+    const executable = window['platform']?.isWindows === true ? 'esptool.exe' : 'esptool';
+    const files = new Set(['/tools', old, `${old}/${executable}`, `/app/node_modules/${name}/package.json`]);
+    service.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
+    window['path'].isExists = (path: string) => files.has(path);
+    window['fs'].readDirSync = () => [];
+    window['fs'].statSync = () => ({ _isFile: true, size: 1 });
+    window['fs'].readFileSync = jasmine.createSpy('sharedWrapper').and.returnValue('{"version":"5.3.1"}');
+    const board = (version: string) => ({
+      boardDependencies: { [name]: version },
+      dependencies: { '@aily-project/lib-user-choice': '2.0.0' },
+    });
+
+    expect(await service.getMissingBoardDependencies(board('5.3.0'))).toEqual([`${name}@5.3.0`]);
+    expect(await service.getMissingBoardDependencies(board('5.3.1'))).toEqual([]);
+    service.cmdService.runAsyncChecked.and.callFake(async () => {
+      files.add(next);
+      files.add(`${next}/${executable}`);
+    });
+    await service.installBoardDependencies(board('5.3.0'), false);
+    await service.installBoardDependencies(board('5.3.1'), false);
+    expect(await service.getMissingBoardDependencies(board('5.3.0'))).toEqual([]);
+    expect(await service.getMissingBoardDependencies(board('5.3.1'))).toEqual([]);
+    expect(service.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      `node "/child/scripts/install-versioned-platform-resource.js" "${name}" "5.3.0"`, '/app', true, false, undefined);
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(window['fs'].readFileSync).not.toHaveBeenCalled();
   });
 
   it('reports an already installed package as complete without reinstalling it', async () => {

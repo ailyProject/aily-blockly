@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
+const { platformResourcePaths } = require('./platform-resource-layout.cjs');
 
 const LEGACY_ARM_GCC = 'arm-none-eabi-gcc@7.2.1';
 const LEGACY_WINDOWS_PATH_LIMIT = 260;
@@ -29,13 +30,21 @@ function resolvePlatformResourceRoots(appDataPath, environment = process.env) {
     };
 }
 
+function resolveBoardResourceDirectory(base, kind, name, version) {
+    const paths = platformResourcePaths(kind, name, String(version))
+        .map(relative => path.join(base, relative));
+    const ready = kind === 'sdk'
+        ? directory => ['boards.txt', 'platform.txt'].every(file => fs.existsSync(path.join(directory, file)))
+        : directory => fs.existsSync(path.join(directory, 'bin'));
+    return paths.find(ready) || paths[0];
+}
+
 /** Builder accepts one tools root. A legacy split compiler directory is
  * projected into a private directory view instead of linking into shared tools.
  * Only directory entries are mapped; no SDK/tool body is copied or changed. */
-function prepareReadOnlyToolsView(appDataPath, resources, compilerDirectory) {
+function prepareReadOnlyToolsView(appDataPath, resources, compilerDirectory, compilerName = path.basename(compilerDirectory)) {
     if (!resources.readOnly || path.resolve(resources.compilerPath) === path.resolve(resources.toolsPath)
         || !fs.existsSync(compilerDirectory)) return resources.toolsPath;
-    const compilerName = path.basename(compilerDirectory);
     if (fs.existsSync(path.join(resources.toolsPath, compilerName))) return resources.toolsPath;
     const identity = createHash('sha256').update(JSON.stringify([resources.compilerPath, resources.toolsPath, compilerName])).digest('hex');
     const base = path.join(appDataPath, 'resource-views'), view = path.join(base, identity);
@@ -98,9 +107,9 @@ function shortenDirectory(directory, fits, preserveName = false) {
 
 /** Keep the full tool tree available under the same short root for dependency
  * discovery, compilation, linking and firmware conversion. */
-function prepareBuilderToolsPath(appDataPath, resources, compilerDirectory) {
-    const toolsPath = prepareReadOnlyToolsView(appDataPath, resources, compilerDirectory);
-    if (!isLegacyWindowsGcc(path.basename(compilerDirectory)) || !exceedsLegacyGccPathLimit(toolsPath)
+function prepareBuilderToolsPath(appDataPath, resources, compilerDirectory, compilerName = path.basename(compilerDirectory)) {
+    const toolsPath = prepareReadOnlyToolsView(appDataPath, resources, compilerDirectory, compilerName);
+    if (!isLegacyWindowsGcc(compilerName) || !exceedsLegacyGccPathLimit(toolsPath)
         || !fs.existsSync(path.join(toolsPath, LEGACY_ARM_GCC, 'bin', 'arm-none-eabi-g++.exe'))) return toolsPath;
     return shortenDirectory(toolsPath, candidate => !exceedsLegacyGccPathLimit(candidate));
 }
@@ -116,4 +125,4 @@ function prepareBuilderLibraryPath(compiler, { location, maxRelativePathBytes })
     return shortenDirectory(location, fits, true);
 }
 
-module.exports = { resolvePlatformResourceRoots, prepareReadOnlyToolsView, prepareBuilderToolsPath, prepareBuilderLibraryPath };
+module.exports = { resolvePlatformResourceRoots, resolveBoardResourceDirectory, prepareReadOnlyToolsView, prepareBuilderToolsPath, prepareBuilderLibraryPath };

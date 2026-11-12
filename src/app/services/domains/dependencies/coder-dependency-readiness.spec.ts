@@ -10,11 +10,13 @@ describe('Coder dependency installation and recovery', () => {
   let original: Record<string, any>;
 
   beforeEach(() => {
-    original = { path: window['path'], fs: window['fs'], npm: window['npm'], ipcRenderer: window['ipcRenderer'], env: window['env'] };
+    original = { path: window['path'], fs: window['fs'], npm: window['npm'], ipcRenderer: window['ipcRenderer'], env: window['env'], platform: window['platform'] };
     window['env'] = { get: jasmine.createSpy('envGet').and.resolveTo(undefined) };
-    window['path'] = { join: (...parts: string[]) => parts.join('/'), getAppDataPath: () => '/app', isExists: () => true,
+    window['path'] = { join: (...parts: string[]) => parts.join('/'), getAppDataPath: () => '/app', getAilyChildPath: () => '/child', isExists: () => true,
       basename: (path: string) => path.split('/').pop() };
-    window['fs'] = { readFileSync: () => JSON.stringify({ version: '1.0.0' }) };
+    window['fs'] = { readFileSync: () => JSON.stringify({ version: '1.0.0' }), readDirSync: () => [],
+      statSync: () => ({ _isFile: true, size: 1, mode: 0o755 }) };
+    window['platform'] = { isWindows: true };
     window['npm'] = { run: jasmine.createSpy('nativeNpm').and.resolveTo() };
     project = Object.create(ProjectService.prototype);
     project.isAilyCodeProject = () => true;
@@ -174,7 +176,7 @@ describe('Coder dependency installation and recovery', () => {
 
   it('does not remove existing SDK directories or rerun their postinstall in Blockly software', async () => {
     project.configService.isCoderProduct.and.returnValue(false);
-    const files = new Set(['/sdk/esp32_1.0.0', '/app/node_modules/@aily-project/sdk-esp32/package.json']);
+    const files = new Set(['/sdk/esp32_1.0.0', '/sdk/esp32_1.0.0/boards.txt', '/sdk/esp32_1.0.0/platform.txt']);
     window['path'].isExists = (path: string) => files.has(path);
     window['ipcRenderer'] = { invoke: jasmine.createSpy('remove') };
     npm.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
@@ -185,13 +187,16 @@ describe('Coder dependency installation and recovery', () => {
     expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
   });
 
-  it('preserves Blockly software native-install completion without the new SDK metadata check', async () => {
+  it('does not report Blockly installation success for a missing staged SDK', async () => {
     project.configService.isCoderProduct.and.returnValue(false);
     window['path'].isExists = () => false;
     npm.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
-    await npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '3.3.1' } }, false, true, session);
-    expect(window['npm'].run).toHaveBeenCalledTimes(1);
-    expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
+    await expectAsync(npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '3.3.1' } }, false, true, session))
+      .toBeRejectedWithError('NPM.DEPENDENCY_INCOMPLETE');
+    expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "3.3.1"', '/app', true, false, session);
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('error');
   });
 
   it('rejects unknown readiness and offers a complete retry before admitting execution', fakeAsync(() => {
@@ -232,15 +237,22 @@ describe('Coder dependency installation and recovery', () => {
     expect(window['npm'].run).not.toHaveBeenCalled();
   });
 
-  for (const missing of ['package', 'version', 'boards.txt', 'tool-directory']) {
+  for (const missing of ['package', 'version', 'boards.txt', 'tool-directory', 'tool-executable']) {
     it(`rejects execution when ${missing} becomes invalid after successful installation`, async () => {
       lifecycle.setResult(session, true);
+      if (missing === 'package' || missing === 'version') {
+        project.getBoardPackageJson.and.resolveTo({ boardDependencies: { '@aily-project/sdk-esp32': '^1.0.0' } });
+      }
       if (missing === 'package') window['path'].isExists = (path: string) => !path.includes('/app/node_modules/');
       if (missing === 'version') window['fs'].readFileSync = () => JSON.stringify({ version: '0.9.0' });
       if (missing === 'boards.txt') window['path'].isExists = (path: string) => !path.endsWith('/boards.txt');
       if (missing === 'tool-directory') {
         project.getBoardPackageJson.and.resolveTo({ boardDependencies: { '@aily-project/tool-ctags': '1.0.0' } });
         window['path'].isExists = (path: string) => !path.startsWith('/tools/');
+      }
+      if (missing === 'tool-executable') {
+        project.getBoardPackageJson.and.resolveTo({ boardDependencies: { '@aily-project/tool-esptool_py': '5.3.0' } });
+        window['path'].isExists = (path: string) => !path.endsWith('/esptool.exe');
       }
       await expectAsync(npm.assertCoderDependenciesReady('/project')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
       expect(lifecycle.getStatus('/project')).toBe('error');
@@ -315,27 +327,39 @@ describe('Coder dependency installation and recovery', () => {
     expect(npm.application.updateNotice.calls.allArgs().some(([notice]: any[]) => notice.state === 'done')).toBeFalse();
   });
 
-  it('repairs an incomplete SDK directory before rerunning postinstall', async () => {
+  it('stages an incomplete pinned SDK without running postinstall in the shared npm prefix', async () => {
     const sdk = '/sdk/esp32_1.0.0';
     const files = new Set([sdk, '/app/node_modules/@aily-project/sdk-esp32/package.json']);
     window['path'].isExists = (path: string) => files.has(path);
-    window['ipcRenderer'] = { invoke: jasmine.createSpy('remove').and.callFake(async (channel: string, data: any) => {
-      expect(channel).toBe('appdata-resource-remove');
-      expect(data).toEqual({ target: sdk });
-      files.delete(sdk);
-      return { ok: true };
-    }) };
     npm.getPlatformPathBases = async () => ({ sdkBase: '/sdk', compilersBase: '/tools', toolsBase: '/tools' });
     npm.cmdService.runAsyncChecked.and.callFake(async () => {
-      expect(files.has(sdk)).toBeFalse();
+      expect(files.has(sdk)).toBeTrue();
       [sdk, `${sdk}/boards.txt`, `${sdk}/platform.txt`].forEach(path => files.add(path));
     });
     await npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '1.0.0' } }, false, true, session);
-    expect(window['ipcRenderer'].invoke).toHaveBeenCalledTimes(1);
-    expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith('npm run postinstall', '/app/node_modules/@aily-project/sdk-esp32', true, false, session);
+    expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledOnceWith(
+      'node "/child/scripts/install-versioned-platform-resource.js" "@aily-project/sdk-esp32" "1.0.0"', '/app', true, false, session);
     expect(window['npm'].run).not.toHaveBeenCalled();
     expect(npm.application.updateNotice.calls.mostRecent().args[0].state).toBe('done');
     await npm.installBoardDependencies({ boardDependencies: { '@aily-project/sdk-esp32': '1.0.0' } }, false, true, session);
-    expect(window['ipcRenderer'].invoke).toHaveBeenCalledTimes(1);
+    expect(npm.cmdService.runAsyncChecked).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a verified exact tool payload with a newer shared npm record', async () => {
+    const board = { boardDependencies: { '@aily-project/tool-esptool_py': '5.3.0' } };
+    project.getBoardPackageJson.and.resolveTo(board);
+    lifecycle.setResult(session, true);
+    window['fs'].readFileSync = jasmine.createSpy('sharedManifest').and.returnValue('{"version":"5.3.1"}');
+    const files = new Set(['/tools', '/tools/esptool_py@5.3.0', '/tools/esptool_py@5.3.0/esptool.exe',
+      '/tools/esptool_py@5.3.1', '/tools/esptool_py@5.3.1/esptool.exe', '/app/node_modules/@aily-project/tool-esptool_py/package.json']);
+    window['path'].isExists = (path: string) => files.has(path);
+    await npm.assertCoderDependenciesReady('/project');
+    await npm.installBoardDependencies(board, false, true, session);
+    expect(window['fs'].readFileSync).not.toHaveBeenCalled();
+    expect(window['npm'].run).not.toHaveBeenCalled();
+    expect(npm.cmdService.runAsyncChecked).not.toHaveBeenCalled();
+
+    files.delete('/tools/esptool_py@5.3.0/esptool.exe');
+    await expectAsync(npm.assertCoderDependenciesReady('/project')).toBeRejectedWithError('NPM.DEPS_RETRY_REQUIRED');
   });
 });
