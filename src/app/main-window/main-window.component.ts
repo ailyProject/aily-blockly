@@ -19,7 +19,7 @@ import { AppStoreService } from '../tools/app-store/app-store.service';
 import { NzModalModule, NzModalRef, NzModalService } from 'ng-zorro-antd/modal';
 import { NpmService } from '@domain/dependencies/public-api';
 import { NavigationEnd, Router, RouterModule } from '@angular/router';
-import { combineLatest, distinctUntilChanged, filter, merge, Subscription, take } from 'rxjs';
+import { combineLatest, distinctUntilChanged, filter, map, merge, Subscription, take } from 'rxjs';
 import { ConfigService, ToolI18nService } from '@core/preferences/public-api';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { CloudSpaceComponent } from '../tools/cloud-space/cloud-space.component';
@@ -210,9 +210,13 @@ export class MainWindowComponent implements OnDestroy {
     this.setupExampleListListener();
     void this.electronService.sendRendererReady();
     this.metrics.record('app_opened');
-    this.ailyChatAutoOpenSubscription = this.authService.isLoggedIn$.pipe(
-      // Observe sign-out too, so a later login can open Chat again. Repeated
-      // authenticated snapshots must respect a panel the user has closed.
+    this.ailyChatAutoOpenSubscription = combineLatest([
+      this.authService.isLoggedIn$,
+      this.subappManager.state$,
+    ]).pipe(
+      // First-run installation may finish after login. Only open a runnable
+      // Chat, and do not reopen a closed panel on unrelated catalog refreshes.
+      map(([loggedIn]) => loggedIn && this.isAilyChatAvailable()),
       distinctUntilChanged(),
       filter(Boolean),
     ).subscribe(() => this.uiService.openPreferredAilyChat());
@@ -332,6 +336,11 @@ export class MainWindowComponent implements OnDestroy {
         },
         readCatalog: () => this.subappManager.state.apps,
         isAvailable: item => isAppAvailableForApplication(item.only, this.configService.getApplicationName()),
+        // These decisions were only persisted after a successful installation.
+        // Preserve old removals without treating a fresh install as an opt-out.
+        wasAilyChatInstalled: catalogId => Object.prototype.hasOwnProperty.call(
+          this.configService.data?.subappToolbarDefaults || {}, catalogId,
+        ),
         install: async catalogId => { await this.requiredSubapps.ensureInstalled(catalogId); },
         onError: (toolId, error) => console.warn(`[Subapp] Default ${toolId} startup setup failed:`, error),
       });
@@ -416,7 +425,7 @@ export class MainWindowComponent implements OnDestroy {
   }
 
   private scheduleAilyChatPrewarm(): void {
-    if (this.cancelAilyChatPrewarm) return;
+    if (this.destroyed || this.cancelAilyChatPrewarm) return;
     if (!this.authService.isLoggedIn) {
       if (!this.ailyChatPrewarmAuthSubscription) {
         this.ailyChatPrewarmAuthSubscription = this.authService.isLoggedIn$
@@ -428,10 +437,7 @@ export class MainWindowComponent implements OnDestroy {
       }
       return;
     }
-    const installed = this.subappManager.state.apps.some(
-      item => item.toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID && item.installed && item.config,
-    );
-    if (!installed) return;
+    if (!this.isAilyChatAvailable()) return;
 
     const run = () => {
       this.cancelAilyChatPrewarm = null;
@@ -440,6 +446,7 @@ export class MainWindowComponent implements OnDestroy {
         this.scheduleAilyChatPrewarm();
         return;
       }
+      if (this.destroyed || !this.isAilyChatAvailable()) return;
 
       void this.childToolProcessService.prewarm(DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID, 90000).catch(error => {
         console.warn('[Subapp] Aily Chat prewarm failed:', error);
@@ -454,6 +461,14 @@ export class MainWindowComponent implements OnDestroy {
 
     const timer = setTimeout(run, 1000);
     this.cancelAilyChatPrewarm = () => clearTimeout(timer);
+  }
+
+  private isAilyChatAvailable(): boolean {
+    return this.subappManager.state.apps.some(item =>
+      item.toolId === DEFAULT_AILY_CHAT_SUBAPP_TOOL_ID && item.installed && !!item.config
+      && !item.uninstalling && item.enabled !== false && item.app?.enabled !== false
+      && isAppAvailableForApplication(item.only, this.configService.getApplicationName()),
+    );
   }
 
   ngOnDestroy(): void {

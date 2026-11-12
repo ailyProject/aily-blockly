@@ -856,6 +856,26 @@ test('uninstall removes B, every A version, cache and only this root dependency'
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, false);
 });
 
+test('manual removal survives a manager restart and a failed reinstall; successful reinstall clears it', async t => {
+  const f = fixture(t);
+  assert.equal((await f.manager.list()).apps[0].manuallyUninstalled, false);
+  await f.manager.install({ id: ID });
+  const removed = await f.manager.uninstall({ id: ID });
+  assert.equal(removed.apps[0].installed, false);
+  assert.equal(removed.apps[0].manuallyUninstalled, true);
+  const restarted = createSubappManager(f.managerOptions);
+  assert.equal((await restarted.list()).apps[0].manuallyUninstalled, true);
+  const offline = createSubappManager({ ...f.managerOptions,
+    downloadFile: async () => { throw new Error('offline'); },
+  });
+  await assert.rejects(offline.install({ id: ID }), /offline/);
+  assert.equal((await restarted.list()).apps[0].manuallyUninstalled, true);
+  const installed = await restarted.install({ id: ID });
+  assert.equal(installed.apps[0].installed, true);
+  assert.equal(installed.apps[0].manuallyUninstalled, false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), false);
+});
+
 function coderUninstallFixture(t, managerOptions = {}) {
   const id = 'aily-coder-editor';
   const packageName = '@aily-project/subapp-aily-coder-editor';
@@ -946,6 +966,7 @@ test('a busy Windows preflight keeps the installation visible and a forced retry
   writeRunnablePackage(legacy, '0.1.32');
   await assert.rejects(f.manager.uninstall({ id: ID }), error => error.requiresForceClose === true);
   assert.equal(versions.isUninstalling(f.rootDir, f.entry), false);
+  assert.equal(versions.isManuallyUninstalled(f.rootDir, f.entry), false);
   assert.equal(readInstalledState(f.rootDir, f.entry).installed, true);
   assert.ok(fs.existsSync(path.join(legacy, 'package.json')));
   await f.manager.uninstall({ id: ID, forceClose: true });

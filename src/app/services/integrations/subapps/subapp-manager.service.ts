@@ -41,6 +41,7 @@ export interface SubappCatalogItem {
   installedVersion?: string | null;
   installed: boolean;
   uninstalling?: boolean;
+  manuallyUninstalled?: boolean;
   updateAvailable: boolean;
   updateStatus: SubappUpdateStatus;
   updatePolicy?: SubappUpdatePolicy;

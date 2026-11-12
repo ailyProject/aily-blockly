@@ -968,6 +968,7 @@ function createCatalogState(rootDir, index, locale, meta = {}) {
           installedVersion: installedState.installedVersion,
           installed: installedState.installed,
           uninstalling: installedState.uninstalling === true,
+          manuallyUninstalled: !installedState.installed && versions.isManuallyUninstalled(rootDir, entry),
           updateAvailable,
           updateStatus,
           ...(entry.update ? { updatePolicy: entry.update } : {}),
@@ -2333,6 +2334,7 @@ async function uninstallSubappVersions(rootDir, updateRootDir, entry, options = 
       removePackageFromRootManifests(rootDir, entry.package);
       assertSubappUninstallComplete(rootDir, entry, [...targets, updateCachePath]);
       restoreCatalogAfterUninstall(rootDir, entry);
+      versions.markManuallyUninstalled(rootDir, entry);
       versions.finishUninstall(rootDir, entry);
     });
   } catch (error) {
