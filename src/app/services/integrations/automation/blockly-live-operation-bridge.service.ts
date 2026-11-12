@@ -1374,15 +1374,11 @@ export class BlocklyLiveOperationBridgeService {
       defaultParentPath: () => this.projectService.getDefaultProjectParentPath(),
       generateUniqueName: (parentPath, prefix) =>
         this.projectService.generateUniqueProjectName(parentPath, prefix),
-      createProject: async (data) => {
-        const projectPath = window['path'].join(data.path, data.name.replace(/\s/g, '_'));
-        const ok = await this.projectService.projectNew(data, {
-          deferActivation: true,
-          templateDirectory: 'template_arduino',
-          activationReason: 'chat-tool-create',
-        });
-        return { ok, projectPath: ok ? projectPath : undefined };
-      },
+      createProject: (data) => this.projectService.projectNewWithResult(data, {
+        deferActivation: true,
+        templateDirectory: 'template_arduino',
+        activationReason: 'chat-tool-create',
+      }),
       openProject: (projectPath) => this.projectService.projectOpen(projectPath, {
         reason: 'chat-tool-create',
         lifecycleOwner,
